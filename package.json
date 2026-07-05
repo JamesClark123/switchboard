@@ -1,0 +1,20 @@
+{
+  "name": "switchboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Switchboard monorepo",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prepare": "husky",
+    "build": "make build",
+    "test": "make test",
+    "lint": "make lint",
+    "env:check": "make env-check"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
+  }
+}

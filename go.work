@@ -1,0 +1,9 @@
+go 1.26
+
+use (
+	./src/apps/switchboard-tui
+	./src/apps/switchboard-tui-e2e
+	./src/libs/switchboard-proto
+	./src/services/switchboardd
+	./src/services/switchboardd-e2e
+)

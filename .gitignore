@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Go
+*.exe
+*.test
+*.out
+cover.out
+vendor/
+
+# Switchboard local runtime state (daemon registry, workspace copies)
+*.sock

@@ -1,0 +1,249 @@
+// Switchboard daemon <-> TUI client contract.
+//
+// Transport: gRPC over a single bidirectional connection.
+//   - Local:  Unix domain socket  (switchboardd serve --socket <path>)
+//   - Remote: `ssh <host> switchboardd dial-stdio` bridges stdio <-> the
+//             remote daemon's Unix socket (the Docker-CLI dial-stdio pattern);
+//             the client wraps that stdio as a net.Conn via grpc.WithContextDialer.
+//
+// One daemon instance serves exactly one host. The client connects to N daemons
+// and is the source of truth for configs/groups/known-hosts (those are NOT in
+// this contract — they live client-side). This contract covers what the daemon
+// owns: sandbox lifecycle, the sbx option manifest, agent I/O, and the event stream.
+//
+// Mirrored at src/libs/switchboard-proto/proto/switchboard.proto.
+
+syntax = "proto3";
+
+package switchboard.v1;
+
+option go_package = "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen;switchboardv1";
+
+import "google/protobuf/timestamp.proto";
+
+service Switchboard {
+  // --- Identity / capability ---
+  rpc GetDaemonInfo(GetDaemonInfoRequest) returns (DaemonInfo);
+  // Full sbx option surface so the client editor covers 100% of kit options (FR-014).
+  rpc GetOptionManifest(GetOptionManifestRequest) returns (OptionManifest);
+
+  // --- Sandbox lifecycle (FR-001, FR-012a-f) ---
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  // Server-streams progress (copy %, sbx output) then a terminal Sandbox (FR-028).
+  rpc LaunchSandbox(LaunchSandboxRequest) returns (stream LaunchProgress);
+  rpc StopSandbox(SandboxIdRequest) returns (Sandbox);     // retains copy (FR-012a)
+  rpc RestartSandbox(SandboxIdRequest) returns (stream LaunchProgress); // from retained copy (FR-012b)
+  rpc DestroySandbox(SandboxIdRequest) returns (DestroyResponse);       // deletes copy (FR-012c)
+  rpc RenameSandbox(RenameSandboxRequest) returns (Sandbox);            // custom display name (FR-012e)
+
+  // --- Source discovery for the launch wizard (FR-007) ---
+  rpc ListSourceCandidates(ListSourceCandidatesRequest) returns (ListSourceCandidatesResponse);
+  // Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
+  rpc CheckResources(CheckResourcesRequest) returns (ResourceReport);
+
+  // --- Agent interaction (FR-022, FR-023) ---
+  rpc PromptAgent(PromptAgentRequest) returns (PromptAgentResponse);
+  // Bidirectional PTY stream for "attach in another terminal" / inline prompt pane.
+  rpc AttachAgent(stream AgentInput) returns (stream AgentOutput);
+
+  // --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
+  // On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+  rpc AckNotification(AckNotificationRequest) returns (AckNotificationResponse);
+
+  // --- VS Code open helper (FR-027): daemon returns the container name + in-container
+  //     workspace path; the CLIENT builds the vscode-remote URI and runs `code` locally. ---
+  rpc GetVSCodeTarget(SandboxIdRequest) returns (VSCodeTarget);
+}
+
+// ---------- Enums ----------
+
+enum SeedingMode {
+  SEEDING_MODE_UNSPECIFIED = 0;
+  SEEDING_MODE_DUPLICATE = 1; // default (FR-009): verbatim copy into controlled folder
+  SEEDING_MODE_CLONE = 2;     // sbx clone option (FR-008)
+}
+
+enum SandboxState {
+  SANDBOX_STATE_UNSPECIFIED = 0;
+  SANDBOX_STATE_CREATING = 1;
+  SANDBOX_STATE_RUNNING = 2;
+  SANDBOX_STATE_STOPPED = 3;
+  SANDBOX_STATE_DESTROYING = 4;
+  SANDBOX_STATE_ERROR = 5;
+}
+
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_IDLE = 1;         // task complete / awaiting nothing
+  AGENT_STATUS_WORKING = 2;
+  AGENT_STATUS_NEEDS_INPUT = 3;  // needs prompting (FR-025)
+  AGENT_STATUS_EXITED = 4;
+}
+
+enum NotificationKind {
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_KIND_TASK_COMPLETE = 1;    // FR-024
+  NOTIFICATION_KIND_NEEDS_PROMPTING = 2;  // FR-025
+}
+
+// ---------- Core messages ----------
+
+message AgentSpec {
+  string kind = 1;            // e.g. "claude-code"
+  repeated string args = 2;
+  string model = 3;
+}
+
+message SourceRef {
+  string path = 1;            // host-side absolute path (FR-007)
+  bool is_repo = 2;           // clone only valid when all sources are repos (FR-008)
+}
+
+// A frozen copy of the client-side Configuration, sent on launch and stored in the
+// daemon registry as config_snapshot (FR-002b, FR-012d). kit_options carry the full
+// sbx option set (FR-014); values are JSON-encoded scalars/lists for option fidelity.
+message ConfigSnapshot {
+  string name = 1;                       // becomes default sandbox label (FR-012e)
+  map<string, string> kit_options = 2;   // option key -> JSON-encoded value
+  SeedingMode seeding_mode = 3;
+  AgentSpec agent = 4;                   // empty => client/user chooses at launch (FR-016b)
+}
+
+message AgentSession {
+  AgentSpec spec = 1;
+  AgentStatus status = 2;
+  google.protobuf.Timestamp last_event_at = 3;
+  bool pty_attached = 4;
+}
+
+message Sandbox {
+  string id = 1;                         // unique auto id (FR-012e)
+  string display_name = 2;               // default = config label; user-overridable
+  SandboxState state = 3;
+  string host_id = 4;
+  ConfigSnapshot config_snapshot = 5;
+  string config_label = 6;
+  repeated SourceRef sources = 7;
+  SeedingMode seeding_mode = 8;
+  string workspace_path = 9;             // retained verbatim copy location
+  string container_ref = 10;             // sbx/Docker handle (re-adoption, FR-002a)
+  AgentSession agent = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  string error = 14;                     // populated when state == ERROR
+}
+
+// ---------- RPC payloads ----------
+
+message GetDaemonInfoRequest {}
+message DaemonInfo {
+  string host_id = 1;
+  string hostname = 2;
+  string daemon_version = 3;
+  string sbx_version = 4;
+  string workspace_root = 5;             // controlled folder for duplicates (FR-006)
+}
+
+message GetOptionManifestRequest {}
+message OptionManifest {
+  string sbx_version = 1;
+  repeated Option options = 2;           // every sbx option (FR-014)
+  message Option {
+    string key = 1;
+    string type = 2;                     // bool | string | int | enum | list
+    string description = 3;
+    repeated string enum_values = 4;
+    string default_value = 5;            // JSON-encoded
+    bool required = 6;
+  }
+}
+
+message ListSandboxesRequest {}
+message ListSandboxesResponse { repeated Sandbox sandboxes = 1; }
+
+message LaunchSandboxRequest {
+  ConfigSnapshot config = 1;             // the launch config (with or without agent)
+  repeated SourceRef sources = 2;        // selection for THIS launch (FR-007)
+  AgentSpec agent_override = 3;          // used when config.agent is empty (FR-016b)
+  string display_name = 4;               // optional custom name
+  bool override_resource_warning = 5;    // proceed despite low-resource warning (FR-012f)
+}
+
+message LaunchProgress {
+  oneof event {
+    CopyProgress copy = 1;               // verbatim duplication progress (FR-028)
+    string log_line = 2;                 // sbx stdout/stderr line
+    Sandbox done = 3;                    // terminal: the created/running sandbox
+    ResourceReport blocked = 4;          // returned instead of done when blocked w/o override
+  }
+  message CopyProgress {
+    uint64 bytes_copied = 1;
+    uint64 bytes_total = 2;
+    string current_path = 3;
+  }
+}
+
+message SandboxIdRequest { string sandbox_id = 1; }
+message DestroyResponse { bool deleted_workspace = 1; }
+message RenameSandboxRequest { string sandbox_id = 1; string display_name = 2; }
+
+message ListSourceCandidatesRequest {
+  string root = 1;                       // directory to enumerate (default: a configured base)
+  bool repos_only = 2;
+}
+message ListSourceCandidatesResponse { repeated SourceRef candidates = 1; }
+
+message CheckResourcesRequest { repeated SourceRef sources = 1; }   // estimate copy size
+message ResourceReport {
+  bool ok = 1;
+  uint64 required_bytes = 2;
+  uint64 available_bytes = 3;
+  repeated string warnings = 4;          // shown before launch; user may override (FR-012f)
+}
+
+message PromptAgentRequest { string sandbox_id = 1; string prompt = 2; }
+message PromptAgentResponse { bool accepted = 1; }
+
+message AgentInput {
+  string sandbox_id = 1;                 // first message selects the sandbox
+  bytes data = 2;                        // raw PTY bytes (keystrokes)
+  Resize resize = 3;
+  message Resize { uint32 cols = 1; uint32 rows = 2; }
+}
+message AgentOutput { bytes data = 1; }  // raw PTY bytes (screen)
+
+message SubscribeRequest {
+  bool replay_undelivered = 1;           // replay missed notifications on reconnect (FR-026b)
+}
+
+message Event {
+  oneof event {
+    Sandbox sandbox_changed = 1;         // state/agent-status update
+    NotificationEvent notification = 2;
+    SandboxRemoved removed = 3;
+  }
+  message SandboxRemoved { string sandbox_id = 1; }
+}
+
+message NotificationEvent {
+  string id = 1;
+  string sandbox_id = 2;
+  string host_id = 3;                    // subject host (FR-026)
+  NotificationKind kind = 4;
+  string message = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message AckNotificationRequest { repeated string notification_ids = 1; }
+message AckNotificationResponse { uint32 acked = 1; }
+
+// Client builds:  vscode-remote://attached-container+hex({"containerName":"/<name>"})<path>
+// (set DOCKER_HOST=ssh://<ssh_target> first for remote hosts). See research.md.
+message VSCodeTarget {
+  string container_name = 1;             // deprecated: unused now that VS Code opens the host folder
+  string workspace_path = 2;             // absolute path to the controlled workspace folder ON THE HOST
+                                         // (the retained verbatim copy) — opened directly, or over
+                                         // Remote-SSH for a remote host; NOT the running container
+  string ssh_target = 3;                 // non-empty for remote hosts => open via ssh-remote+<target>
+}

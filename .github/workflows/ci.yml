@@ -1,0 +1,69 @@
+name: CI
+
+# Mirrors the Rule V verification gates (adapted to the Go toolchain per the
+# plan's Constitution Check): gofmt/golangci-lint (Biome substitute), go vet
+# (strict-type intent), go test + 90% coverage floor (Rule VI), env:check
+# (Rule VIII), and the PTY/Docker E2E suites (Rule VI's Playwright substitute).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: |
+            src/libs/switchboard-proto/go.sum
+            src/services/switchboardd/go.sum
+            src/apps/switchboard-tui/go.sum
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Format check
+        run: make fmt-check
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        run: make lint
+
+      - name: Unit + integration tests
+        run: make test
+
+      - name: Env schema/example lockstep
+        run: make env-check
+
+      - name: Coverage (90% floor per module)
+        run: make cover
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # The TUI E2E drives the real binaries through a PTY using a stub sbx, so it
+      # runs here without Docker. The daemon E2E auto-skips when sbx/Docker are
+      # absent; to exercise it, provision a runner with the real sandbox runtime.
+      - name: E2E (PTY + Docker-gated)
+        run: make e2e

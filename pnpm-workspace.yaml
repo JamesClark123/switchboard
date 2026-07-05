@@ -1,0 +1,4 @@
+# Switchboard's workspace members are Go modules wired by `go.work` (see plan.md
+# Structure Decision). pnpm remains only as the repo's outer shell for the Husky
+# pre-commit hook runner; it has no package members of its own.
+packages: []

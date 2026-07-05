@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Rule V fast subset, adapted to the Go toolchain. Integration/E2E are CI-only.
+. "$(dirname "$0")/_/husky.sh" 2>/dev/null || true
+
+make fmt-check
+make vet
+make lint
+make test
+make env-check

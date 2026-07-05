@@ -1,0 +1,29 @@
+# golangci-lint config — the Biome substitute for Go (plan Constitution Check,
+# Rules I/II adaptation). Enforces "formatting is truth" (gofmt/goimports) and
+# "lint blocks merge" (errcheck/staticcheck/govet) intents.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # Generated protobuf stubs are not hand-maintained; do not lint them.
+      - path: 'gen/.*\.pb\.go'
+        linters:
+          - errcheck
+          - govet
+          - staticcheck
+          - unused
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: strict
