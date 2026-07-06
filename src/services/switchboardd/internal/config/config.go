@@ -24,8 +24,8 @@ type field struct {
 // the committed .env.example is kept in lockstep with (verified by env:check).
 var schema = []field{
 	{"SWITCHBOARDD_HOST_ID", false, "", "Stable id advertised to clients; defaults to the hostname."},
-	{"SWITCHBOARDD_SOCKET", false, "$XDG_RUNTIME_DIR/switchboard.sock", "Unix socket path the daemon listens on."},
-	{"SWITCHBOARDD_PID_FILE", false, "$XDG_RUNTIME_DIR/switchboard.pid", "PID file written while serving; used by `status`/`stop`."},
+	{"SWITCHBOARDD_SOCKET", false, "$XDG_RUNTIME_DIR/switchboard.sock", "Unix socket path the daemon listens on. When XDG_RUNTIME_DIR is unset (e.g. a bare SSH session) it falls back to $HOME/.local/share/switchboard."},
+	{"SWITCHBOARDD_PID_FILE", false, "$XDG_RUNTIME_DIR/switchboard.pid", "PID file written while serving; used by `status`/`stop`. Same XDG_RUNTIME_DIR fallback as the socket."},
 	{"SWITCHBOARDD_WORKSPACE_ROOT", false, "$HOME/switchboard/workspace", "Controlled folder for verbatim duplicates (FR-006)."},
 	{"SWITCHBOARDD_DATA_DIR", false, "$HOME/switchboard/data", "Directory for the bbolt sandbox registry."},
 	{"SWITCHBOARDD_SBX_BIN", false, "sbx", "Path/name of the host sandbox CLI."},
@@ -57,12 +57,39 @@ func SchemaKeys() []string {
 // Config, applying defaults and validating required keys. It returns an error
 // listing every missing required key rather than failing on the first.
 func Load(getenv func(string) string) (*Config, error) {
+	// XDG_RUNTIME_DIR is the conventional home for a user's runtime files (the
+	// socket + pid file), but it is only populated on systemd/pam interactive
+	// logins — a plain `ssh host` session, a cron job, or a container commonly
+	// leaves it empty. Without a fallback, "$XDG_RUNTIME_DIR/switchboard.sock"
+	// would collapse to "/switchboard.sock" (an unwritable root path) and the
+	// daemon would fail to start with a read-only-filesystem error. Resolve a
+	// per-user, always-writable base instead.
+	runtimeBase := getenv("XDG_RUNTIME_DIR")
+	if runtimeBase == "" {
+		if home := getenv("HOME"); home != "" {
+			runtimeBase = filepath.Join(home, ".local", "share", "switchboard")
+		} else {
+			runtimeBase = filepath.Join(os.TempDir(), "switchboard")
+		}
+	}
+	// expandDefault substitutes an empty XDG_RUNTIME_DIR with runtimeBase so the
+	// socket/pid defaults land in a writable directory; every other variable
+	// expands from the real environment as before.
+	expandDefault := func(s string) string {
+		return os.Expand(s, func(k string) string {
+			if k == "XDG_RUNTIME_DIR" {
+				return runtimeBase
+			}
+			return getenv(k)
+		})
+	}
+
 	vals := map[string]string{}
 	var missing []string
 	for _, f := range schema {
 		v := getenv(f.key)
 		if v == "" {
-			v = os.Expand(f.def, getenv)
+			v = expandDefault(f.def)
 		}
 		if v == "" && f.required {
 			missing = append(missing, f.key)

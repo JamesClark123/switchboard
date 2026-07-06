@@ -107,7 +107,7 @@ esac
 cat <<EOF
 
 Next steps:
-  1. Start the daemon:   sxbd serve --boot     # start now + on every boot (Linux/systemd)
+  1. Start the daemon:   sxbd serve --boot     # start now + on boot/login (systemd on Linux, launchd on macOS)
                          sxbd serve --watch    # or just run it in the background
   2. Launch the TUI:     sxb
 

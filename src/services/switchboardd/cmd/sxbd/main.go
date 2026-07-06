@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -225,10 +226,23 @@ func startBackground(cfg *config.Config, debug bool) error {
 	return nil
 }
 
-// installBootService writes and enables a systemd user unit so the daemon is
-// (re)started on every boot and restarted whenever it exits — it "always runs
-// unless explicitly stopped" (via `sxbd stop`).
+// installBootService installs a boot-autostart integration for the current OS so
+// the daemon is (re)started automatically and restarted whenever it exits — it
+// "always runs unless explicitly stopped" (via `sxbd stop`). Linux uses a systemd
+// user unit; macOS uses a launchd LaunchAgent.
 func installBootService(cfg *config.Config, debug bool) error {
+	switch runtime.GOOS {
+	case "linux":
+		return installSystemdService(cfg, debug)
+	case "darwin":
+		return installLaunchdService(cfg, debug)
+	default:
+		return fmt.Errorf("--boot is not supported on %s; start the daemon another way (e.g. `sxbd serve --watch`)", runtime.GOOS)
+	}
+}
+
+// installSystemdService writes and enables a systemd user unit (Linux).
+func installSystemdService(cfg *config.Config, debug bool) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("--boot requires systemd (systemctl not found on PATH); on this OS start the daemon another way (e.g. `sxbd serve --watch`)")
 	}
@@ -274,12 +288,62 @@ func installBootService(cfg *config.Config, debug bool) error {
 	return nil
 }
 
+// installLaunchdService writes and loads a launchd LaunchAgent (macOS). A
+// per-user LaunchAgent starts when the user logs in and is kept alive; a
+// boot-without-login daemon would require a root-owned LaunchDaemon, which is out
+// of scope for this per-user tool.
+func installLaunchdService(cfg *config.Config, debug bool) error {
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return fmt.Errorf("--boot requires launchd (launchctl not found on PATH); start the daemon another way (e.g. `sxbd serve --watch`)")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	plistPath, err := daemonctl.LaunchAgentPath(os.Getenv)
+	if err != nil {
+		return err
+	}
+	args := []string{"serve"}
+	if debug {
+		args = append(args, "--debug")
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return err
+	}
+	logPath := filepath.Join(cfg.DataDir, "switchboard.log")
+	plist := daemonctl.RenderLaunchAgent(daemonctl.UnitOptions{
+		ExecStart:   exe,
+		Args:        args,
+		Environment: daemonctl.CurrentEnv(os.Environ()),
+		LogPath:     logPath,
+	})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+		return err
+	}
+
+	// Reload cleanly: unload a prior instance if present (ignore "not loaded"),
+	// then load with -w so launchd persists it across logins.
+	_ = run("launchctl", "unload", plistPath)
+	if err := run("launchctl", "load", "-w", plistPath); err != nil {
+		return fmt.Errorf("launchctl load: %w", err)
+	}
+
+	fmt.Printf("installed %s\n", plistPath)
+	fmt.Println("sxbd will now start when you log in and restart if it exits.")
+	fmt.Println("check with: sxbd status   ·   stop with: sxbd stop")
+	return nil
+}
+
 // runStatus prints whether the daemon is running and whether boot-autostart is
 // enabled. It exits non-zero (3, matching `systemctl status`) when stopped.
 func runStatus(cfg *config.Config) int {
 	pid, running := daemonctl.Running(cfg.PidFile)
 	reachable := daemonctl.SocketReachable(cfg.Socket, 500*time.Millisecond)
-	boot := daemonctl.UnitInstalled(os.Getenv)
+	boot := daemonctl.BootInstalled(runtime.GOOS, os.Getenv)
 
 	switch {
 	case running:
@@ -289,8 +353,12 @@ func runStatus(cfg *config.Config) int {
 	default:
 		fmt.Println("○ sxbd is not running")
 	}
+	backend := daemonctl.BootBackendName(runtime.GOOS)
+	if backend == "" {
+		backend = "boot service"
+	}
 	fmt.Printf("  socket:  %s (%s)\n", cfg.Socket, yn(reachable, "reachable", "unreachable"))
-	fmt.Printf("  on boot: %s\n", yn(boot, "enabled (systemd user service)", "disabled"))
+	fmt.Printf("  on boot: %s\n", yn(boot, "enabled ("+backend+")", "disabled"))
 
 	if running || reachable {
 		return 0
@@ -302,10 +370,23 @@ func runStatus(cfg *config.Config) int {
 // (a clean stop, which Restart=always does not undo), otherwise SIGTERM to the
 // process recorded in the pid file.
 func runStop(cfg *config.Config) error {
-	if daemonctl.UnitInstalled(os.Getenv) {
-		if _, err := exec.LookPath("systemctl"); err == nil {
-			fmt.Println("stopping systemd service…")
-			return run("systemctl", "--user", "stop", daemonctl.UnitName)
+	// A boot-managed daemon restarts itself (systemd Restart=always / launchd
+	// KeepAlive), so a plain SIGTERM would just respawn — stop it through the
+	// init system instead.
+	if daemonctl.BootInstalled(runtime.GOOS, os.Getenv) {
+		switch runtime.GOOS {
+		case "linux":
+			if _, err := exec.LookPath("systemctl"); err == nil {
+				fmt.Println("stopping systemd service…")
+				return run("systemctl", "--user", "stop", daemonctl.UnitName)
+			}
+		case "darwin":
+			if plistPath, err := daemonctl.LaunchAgentPath(os.Getenv); err == nil {
+				if _, lerr := exec.LookPath("launchctl"); lerr == nil {
+					fmt.Println("stopping launchd service…")
+					return run("launchctl", "unload", plistPath)
+				}
+			}
 		}
 	}
 

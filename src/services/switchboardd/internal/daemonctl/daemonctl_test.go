@@ -179,6 +179,121 @@ func TestUserUnitPathAndInstalled(t *testing.T) {
 	}
 }
 
+func TestLaunchAgentPath(t *testing.T) {
+	getenv := func(k string) string {
+		if k == "HOME" {
+			return "/Users/dev"
+		}
+		return ""
+	}
+	got, err := LaunchAgentPath(getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/Users/dev/Library/LaunchAgents/" + LaunchdLabel + ".plist"; got != want {
+		t.Errorf("LaunchAgentPath = %q, want %q", got, want)
+	}
+	// HOME unset → error (rather than a root-relative path).
+	if _, err := LaunchAgentPath(func(string) string { return "" }); err == nil {
+		t.Error("expected an error when HOME is unset")
+	}
+}
+
+func TestRenderLaunchAgent(t *testing.T) {
+	plist := RenderLaunchAgent(UnitOptions{
+		ExecStart:   "/usr/local/bin/sxbd",
+		Args:        []string{"serve", "--debug"},
+		Environment: []string{"SWITCHBOARDD_SOCKET=/Users/dev/x.sock", "SWITCHBOARDD_HOST_ID=mac & co"},
+		LogPath:     "/Users/dev/switchboard.log",
+	})
+	for _, want := range []string{
+		`<key>Label</key>`,
+		`<string>` + LaunchdLabel + `</string>`,
+		`<string>/usr/local/bin/sxbd</string>`,
+		`<string>serve</string>`,
+		`<string>--debug</string>`,
+		`<key>RunAtLoad</key>`,
+		`<key>KeepAlive</key>`,
+		`<key>SWITCHBOARDD_SOCKET</key>`,
+		`<string>/Users/dev/x.sock</string>`,
+		`<key>StandardOutPath</key>`,
+		`<string>/Users/dev/switchboard.log</string>`,
+	} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("rendered plist missing %q\n%s", want, plist)
+		}
+	}
+	// XML metacharacters in an env value are escaped.
+	if !strings.Contains(plist, "mac &amp; co") {
+		t.Errorf("plist did not escape '&' in an env value:\n%s", plist)
+	}
+	// Args default to ["serve"] when none are given.
+	if p := RenderLaunchAgent(UnitOptions{ExecStart: "/bin/sxbd"}); !strings.Contains(p, "<string>serve</string>") {
+		t.Errorf("default args should be [serve]:\n%s", p)
+	}
+}
+
+func TestBootPathAndInstalledPerOS(t *testing.T) {
+	dir := t.TempDir()
+	getenv := func(k string) string {
+		switch k {
+		case "HOME":
+			return dir
+		default:
+			return ""
+		}
+	}
+
+	// darwin → LaunchAgent plist; linux → systemd unit.
+	dp, err := BootUnitPath("darwin", getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "Library", "LaunchAgents", LaunchdLabel+".plist"); dp != want {
+		t.Errorf("darwin BootUnitPath = %q, want %q", dp, want)
+	}
+	lp, err := BootUnitPath("linux", getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, ".config", "systemd", "user", UnitName); lp != want {
+		t.Errorf("linux BootUnitPath = %q, want %q", lp, want)
+	}
+	// Unsupported OS → error, and BootInstalled is false.
+	if _, err := BootUnitPath("plan9", getenv); err == nil {
+		t.Error("expected error for an unsupported OS")
+	}
+	if BootInstalled("plan9", getenv) {
+		t.Error("BootInstalled should be false on an unsupported OS")
+	}
+
+	// Not installed until the plist exists; then detected.
+	if BootInstalled("darwin", getenv) {
+		t.Error("launchd agent should not be installed yet")
+	}
+	if err := os.MkdirAll(filepath.Dir(dp), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dp, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !BootInstalled("darwin", getenv) {
+		t.Error("launchd agent should be detected after writing the plist")
+	}
+}
+
+func TestBootBackendName(t *testing.T) {
+	if got := BootBackendName("darwin"); got != "launchd agent" {
+		t.Errorf("darwin backend = %q", got)
+	}
+	if got := BootBackendName("linux"); got != "systemd user service" {
+		t.Errorf("linux backend = %q", got)
+	}
+	if got := BootBackendName("windows"); got != "" {
+		t.Errorf("unsupported backend = %q, want empty", got)
+	}
+}
+
 func TestCurrentEnv(t *testing.T) {
 	got := CurrentEnv([]string{
 		"PATH=/bin",

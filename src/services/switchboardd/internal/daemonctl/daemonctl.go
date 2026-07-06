@@ -19,8 +19,12 @@ import (
 	"time"
 )
 
-// UnitName is the systemd user unit installed by `serve --boot`.
+// UnitName is the systemd user unit installed by `serve --boot` on Linux.
 const UnitName = "switchboard.service"
+
+// LaunchdLabel is the macOS launchd LaunchAgent label installed by
+// `serve --boot`; the plist is written as "<LaunchdLabel>.plist".
+const LaunchdLabel = "com.switchboard.sxbd"
 
 // WritePID atomically records pid at path, creating the parent directory.
 func WritePID(path string, pid int) error {
@@ -99,11 +103,13 @@ func SocketReachable(socket string, timeout time.Duration) bool {
 	return true
 }
 
-// UnitOptions parameterizes the rendered systemd user unit.
+// UnitOptions parameterizes the rendered boot service (systemd unit or launchd
+// plist).
 type UnitOptions struct {
 	ExecStart   string   // absolute path to the daemon binary
 	Args        []string // subcommand + flags (defaults to ["serve"])
 	Environment []string // "KEY=value" lines carried into the service
+	LogPath     string   // stdout/stderr log file (launchd only; systemd uses journald)
 }
 
 // RenderUnit produces a systemd user unit that runs the daemon on boot and
@@ -153,6 +159,99 @@ func UnitInstalled(getenv func(string) string) bool {
 	}
 	_, err = os.Stat(path)
 	return err == nil
+}
+
+// LaunchAgentPath returns the on-disk path of the macOS launchd LaunchAgent
+// plist, under ~/Library/LaunchAgents (the per-user agent directory launchd
+// loads at login).
+func LaunchAgentPath(getenv func(string) string) (string, error) {
+	home := getenv("HOME")
+	if home == "" {
+		return "", fmt.Errorf("cannot locate LaunchAgents dir: HOME is not set")
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", LaunchdLabel+".plist"), nil
+}
+
+// RenderLaunchAgent produces a macOS launchd LaunchAgent plist equivalent to the
+// systemd user unit: it starts the daemon when the agent loads at login
+// (RunAtLoad) and restarts it whenever it exits (KeepAlive) — so it "always runs
+// unless explicitly stopped". launchd has no per-user journald, so stdout/stderr
+// are directed to LogPath when set.
+func RenderLaunchAgent(o UnitOptions) string {
+	args := o.Args
+	if len(args) == 0 {
+		args = []string{"serve"}
+	}
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	b.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
+	b.WriteString(`<plist version="1.0">` + "\n<dict>\n")
+	fmt.Fprintf(&b, "  <key>Label</key>\n  <string>%s</string>\n", plistEscape(LaunchdLabel))
+	b.WriteString("  <key>ProgramArguments</key>\n  <array>\n")
+	fmt.Fprintf(&b, "    <string>%s</string>\n", plistEscape(o.ExecStart))
+	for _, a := range args {
+		fmt.Fprintf(&b, "    <string>%s</string>\n", plistEscape(a))
+	}
+	b.WriteString("  </array>\n")
+	if len(o.Environment) > 0 {
+		b.WriteString("  <key>EnvironmentVariables</key>\n  <dict>\n")
+		for _, e := range o.Environment {
+			k, v, _ := strings.Cut(e, "=")
+			fmt.Fprintf(&b, "    <key>%s</key>\n    <string>%s</string>\n", plistEscape(k), plistEscape(v))
+		}
+		b.WriteString("  </dict>\n")
+	}
+	b.WriteString("  <key>RunAtLoad</key>\n  <true/>\n")
+	b.WriteString("  <key>KeepAlive</key>\n  <true/>\n")
+	if o.LogPath != "" {
+		fmt.Fprintf(&b, "  <key>StandardOutPath</key>\n  <string>%s</string>\n", plistEscape(o.LogPath))
+		fmt.Fprintf(&b, "  <key>StandardErrorPath</key>\n  <string>%s</string>\n", plistEscape(o.LogPath))
+	}
+	b.WriteString("</dict>\n</plist>\n")
+	return b.String()
+}
+
+// plistEscape escapes the XML metacharacters that may appear in a path or env
+// value embedded in a plist <string>.
+func plistEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
+
+// BootUnitPath returns where the boot integration for goos writes its unit file:
+// the systemd user unit on Linux, the launchd LaunchAgent plist on macOS.
+func BootUnitPath(goos string, getenv func(string) string) (string, error) {
+	switch goos {
+	case "darwin":
+		return LaunchAgentPath(getenv)
+	case "linux":
+		return UserUnitPath(getenv)
+	default:
+		return "", fmt.Errorf("no boot integration for %s", goos)
+	}
+}
+
+// BootInstalled reports whether the boot service for goos is installed on disk
+// (systemd unit on Linux, launchd agent on macOS).
+func BootInstalled(goos string, getenv func(string) string) bool {
+	p, err := BootUnitPath(goos, getenv)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(p)
+	return err == nil
+}
+
+// BootBackendName is a human-readable name for the boot integration on goos,
+// used in `sxbd status` output. Empty when the OS has no supported integration.
+func BootBackendName(goos string) string {
+	switch goos {
+	case "darwin":
+		return "launchd agent"
+	case "linux":
+		return "systemd user service"
+	default:
+		return ""
+	}
 }
 
 // CurrentEnv collects the SWITCHBOARDD_-prefixed variables from environ (each a

@@ -126,8 +126,8 @@ local `.env` (gitignored) for development.
 |-------------------------------|----------|--------------------------------------|---------|
 | `SWITCHBOARDD_WORKSPACE_ROOT` |          | `$HOME/switchboard/workspace`        | Controlled folder for verbatim duplicates |
 | `SWITCHBOARDD_DATA_DIR`       |          | `$HOME/switchboard/data`             | Directory for the bbolt sandbox registry |
-| `SWITCHBOARDD_SOCKET`         |          | `$XDG_RUNTIME_DIR/switchboard.sock`  | Unix socket the daemon listens on |
-| `SWITCHBOARDD_PID_FILE`       |          | `$XDG_RUNTIME_DIR/switchboard.pid`   | PID file maintained while serving; read by `status`/`stop` |
+| `SWITCHBOARDD_SOCKET`         |          | `$XDG_RUNTIME_DIR/switchboard.sock`  | Unix socket the daemon listens on. Falls back to `$HOME/.local/share/switchboard/` when `XDG_RUNTIME_DIR` is unset (e.g. a bare SSH session) |
+| `SWITCHBOARDD_PID_FILE`       |          | `$XDG_RUNTIME_DIR/switchboard.pid`   | PID file maintained while serving; read by `status`/`stop` (same `XDG_RUNTIME_DIR` fallback as the socket) |
 | `SWITCHBOARDD_HOST_ID`        |          | machine hostname                     | Stable host id advertised to clients |
 | `SWITCHBOARDD_SBX_BIN`        |          | `sbx`                                | Host sandbox CLI binary |
 | `SWITCHBOARDD_HOOK_ADDR`      |          | `127.0.0.1:8765`                     | Listen addr for the agent hook callback server |
@@ -156,7 +156,8 @@ sxbd serve            # foreground
 # …or run it in the background (detached; logs to $SWITCHBOARDD_DATA_DIR/switchboard.log):
 sxbd serve --watch    # or -w
 
-# …or have it start on every boot and restart if it exits (systemd user service):
+# …or have it start automatically and restart if it exits
+# (systemd user service on Linux, launchd LaunchAgent on macOS):
 sxbd serve --boot
 
 # …or point it elsewhere:
@@ -174,10 +175,10 @@ sxbd serve --debug
 |---------|---------|
 | `sxbd serve` | Listen on the Unix socket in the foreground. |
 | `sxbd serve --watch` (`-w`) | Detach and run in the background; the parent returns to the shell while the daemon keeps serving (logs go to `$SWITCHBOARDD_DATA_DIR/switchboard.log`). |
-| `sxbd serve --boot` | Install and enable a **systemd user service** so the daemon starts on every boot and is restarted whenever it exits (`Restart=always`) — it always runs unless explicitly stopped. Requires `systemctl`; best-effort `loginctl enable-linger` so it starts without an interactive login. |
+| `sxbd serve --boot` | Install a boot-autostart service so the daemon starts automatically and is restarted whenever it exits — it always runs unless explicitly stopped. On **Linux** this is a **systemd user service** (`Restart=always`; requires `systemctl`, plus best-effort `loginctl enable-linger` so it starts without an interactive login). On **macOS** it is a **launchd LaunchAgent** (`~/Library/LaunchAgents`, `KeepAlive`; requires `launchctl`) that starts at login. On other OSes, use `--watch`. |
 | `sxbd serve --debug` | (Combinable with the above.) Log every incoming RPC, with timing, and any error it returns. |
 | `sxbd status` | Report whether the daemon is running (pid + socket reachability) and whether boot-autostart is enabled. Exits `0` when running, `3` when stopped. |
-| `sxbd stop` | Stop the running daemon — a clean `systemctl --user stop` when boot-managed (which `Restart=always` does not undo), otherwise `SIGTERM` to the pid-file process. |
+| `sxbd stop` | Stop the running daemon — a clean `systemctl --user stop` (Linux) or `launchctl unload` (macOS) when boot-managed, so the init system's auto-restart does not respawn it; otherwise `SIGTERM` to the pid-file process. |
 | `sxbd dial-stdio` | Bridge stdio ↔ the local socket, used by the SSH remoting path — you do not invoke it directly. |
 
 Only one daemon may serve a given socket at a time: `serve`/`serve --watch` refuse to start
