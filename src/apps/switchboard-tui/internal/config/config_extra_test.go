@@ -45,6 +45,41 @@ func TestLoadHomeFallbackAndExplicit(t *testing.T) {
 	}
 }
 
+// TestLocalSocketFallback guards the client/daemon socket agreement: with
+// XDG_RUNTIME_DIR unset, SWITCHBOARD_LOCAL_SOCKET MUST resolve to
+// $HOME/.local/share/switchboard/switchboard.sock — the exact path switchboardd
+// falls back to — rather than collapsing to "/switchboard.sock".
+func TestLocalSocketFallback(t *testing.T) {
+	// XDG_RUNTIME_DIR unset, only HOME present.
+	env := map[string]string{"HOME": "/home/bob"}
+	cfg, err := Load(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/home/bob/.local/share/switchboard/switchboard.sock"; cfg.LocalSocket != want {
+		t.Errorf("LocalSocket fallback = %q, want %q (must match switchboardd)", cfg.LocalSocket, want)
+	}
+
+	// XDG_RUNTIME_DIR set → honored unchanged.
+	env2 := map[string]string{"HOME": "/home/bob", "XDG_RUNTIME_DIR": "/run/user/1000"}
+	cfg2, err := Load(func(k string) string { return env2[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/run/user/1000/switchboard.sock"; cfg2.LocalSocket != want {
+		t.Errorf("LocalSocket with XDG set = %q, want %q", cfg2.LocalSocket, want)
+	}
+
+	// Neither set → a real path, never root "/switchboard.sock".
+	cfg3, err := Load(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg3.LocalSocket == "/switchboard.sock" {
+		t.Errorf("no-HOME fallback collapsed to root: %q", cfg3.LocalSocket)
+	}
+}
+
 func TestSchemaKeysSorted(t *testing.T) {
 	keys := SchemaKeys()
 	for i := 1; i < len(keys); i++ {

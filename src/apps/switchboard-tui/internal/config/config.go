@@ -22,7 +22,7 @@ type field struct {
 
 var schema = []field{
 	{"SWITCHBOARD_CONFIG_DIR", false, "$XDG_CONFIG_HOME/switchboard", "Directory holding client TOML state (configs/groups/hosts)."},
-	{"SWITCHBOARD_LOCAL_SOCKET", false, "$XDG_RUNTIME_DIR/switchboard.sock", "Default local daemon Unix socket."},
+	{"SWITCHBOARD_LOCAL_SOCKET", false, "$XDG_RUNTIME_DIR/switchboard.sock", "Default local daemon Unix socket. When XDG_RUNTIME_DIR is unset it falls back to $HOME/.local/share/switchboard, matching switchboardd."},
 	{"SWITCHBOARD_CODE_BIN", false, "code", "VS Code CLI used to open sandboxes."},
 	{"SWITCHBOARD_SBX_BIN", false, "sbx", "Host sandbox CLI used to open a sandbox's interactive agent terminal."},
 	{"SWITCHBOARD_TERMINAL", false, "", "Terminal command prefix for the popout terminal (T); empty = system default (e.g. \"kitty -e\", \"gnome-terminal --\", \"tmux new-window\")."},
@@ -52,10 +52,21 @@ func SchemaKeys() []string {
 func Load(getenv func(string) string) (*Config, error) {
 	expand := func(s string) string {
 		return os.Expand(s, func(k string) string {
-			if k == "XDG_CONFIG_HOME" && getenv(k) == "" {
+			switch {
+			case k == "XDG_CONFIG_HOME" && getenv(k) == "":
 				if home, err := os.UserHomeDir(); err == nil {
 					return filepath.Join(home, ".config")
 				}
+			case k == "XDG_RUNTIME_DIR" && getenv(k) == "":
+				// Mirror switchboardd's socket fallback EXACTLY (see that package's
+				// config.Load) so the client and daemon agree on the local socket
+				// path when XDG_RUNTIME_DIR is unset — e.g. a bare `ssh host`
+				// session, cron, or a container. Diverging here reintroduces the
+				// "dial unix /switchboard.sock: no such file" mismatch.
+				if home := getenv("HOME"); home != "" {
+					return filepath.Join(home, ".local", "share", "switchboard")
+				}
+				return filepath.Join(os.TempDir(), "switchboard")
 			}
 			return getenv(k)
 		})
