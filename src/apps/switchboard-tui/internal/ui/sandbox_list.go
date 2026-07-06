@@ -239,6 +239,8 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enterGroups()
 	case keyIs(msg, m.keys.Inbox):
 		return m.enterNotifications()
+	case keyIs(msg, m.keys.Update):
+		return m.enterUpdate()
 	case keyIs(msg, m.keys.Terminal):
 		if sb := m.current(); sb != nil {
 			return m.openAgentTerminal(sb, m.currentHostID())
@@ -316,7 +318,12 @@ func (m Model) viewList() string {
 			header += "   " + indicator
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.list.View())
+	parts := make([]string, 0, 4)
+	if m.updateBanner != "" {
+		parts = append(parts, updateBannerStyle.Render(m.updateBanner))
+	}
+	parts = append(parts, header, "", m.list.View())
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func pad(s string, n int) string {

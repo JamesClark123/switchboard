@@ -21,6 +21,7 @@ type keyMap struct {
 	StartStop   key.Binding
 	Destroy     key.Binding
 	Rename      key.Binding
+	Update      key.Binding
 	Add         key.Binding
 	Delete      key.Binding
 	Connect     key.Binding
@@ -50,6 +51,7 @@ func newKeyMap() keyMap {
 		StartStop:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start/stop")),
 		Destroy:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "destroy")),
 		Rename:     key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
+		Update:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "update")),
 		Add:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		Connect:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "connect")),
@@ -79,5 +81,10 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	return append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Quit)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename)
+	// Surface the update key only when a newer release is available.
+	if m.updateBanner != "" {
+		hb = append(hb, k.Update)
+	}
+	return append(hb, k.Quit)
 }

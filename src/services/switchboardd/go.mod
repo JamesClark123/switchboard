@@ -11,7 +11,14 @@ require (
 )
 
 require (
-	github.com/creack/pty v1.1.24 // indirect
+	aead.dev/minisign v0.2.0 // indirect
+	github.com/minio/selfupdate v0.6.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+)
+
+require (
+	github.com/creack/pty v1.1.24
+	github.com/jamesclark123/switchboard/libs/switchboard-update v0.0.0
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
@@ -19,3 +26,5 @@ require (
 )
 
 replace github.com/jamesclark123/switchboard/libs/switchboard-proto => ../../libs/switchboard-proto
+
+replace github.com/jamesclark123/switchboard/libs/switchboard-update => ../../libs/switchboard-update

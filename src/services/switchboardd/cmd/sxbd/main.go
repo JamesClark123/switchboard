@@ -34,16 +34,29 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
 )
 
-// version is overridable at build time via -ldflags.
-var version = "0.1.0-dev"
+// version/commit/date are overridable at build time via -ldflags (set by
+// GoReleaser: -X main.version=... -X main.commit=... -X main.date=...).
+var (
+	version = "0.1.0-dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
-const usage = "usage: sxbd <serve [--watch|-w] [--boot] [--debug] | status | stop | dial-stdio>"
+const usage = "usage: sxbd <serve [--watch|-w] [--boot] [--debug] | status | stop | version | dial-stdio>"
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+
+	// `version` must work even when config is broken, so handle it before Load.
+	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Printf("sxbd %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
+
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
@@ -163,6 +176,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		HostID:        cfg.HostID,
 		DaemonVersion: version,
 		WorkspaceRoot: cfg.WorkspaceRoot,
+		PidFile:       cfg.PidFile,
 		Manifest:      manifest,
 		Hub:           hub,
 		Agents:        agents,

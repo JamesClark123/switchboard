@@ -147,11 +147,15 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature plan: `specs/001-sandbox-session-manager/plan.md` (Sandbox Session Manager —
-Bubble Tea TUI + per-host Go daemon for managing Docker sandboxes). See also that feature's
-`spec.md`, `research.md`, `data-model.md`, `contracts/switchboard.proto`, and `quickstart.md`.
+Active feature plan: `specs/002-release-channel/plan.md` (GitHub-Only Release Channel —
+GoReleaser-on-tag GitHub Releases + a `curl | sh` install script as the single, Homebrew-free,
+SHA-256-verified distribution/update channel for `sxb`/`sxbd`). See that feature's `spec.md`,
+`research.md`, `data-model.md`, `contracts/` (release-assets, install-script), and `quickstart.md`.
+The install script and the `switchboard-update` in-app updater share one asset-naming + checksum
+contract; keep them in lockstep.
 
-Note: this feature is implemented in **Go** (Bubble Tea is a Go library), which deviates from the
-constitution's TypeScript/pnpm/Biome/Vitest tooling. The deviations are recorded and justified in
-the plan's Constitution Check and Complexity Tracking; a constitution amendment is recommended.
+Prior feature: `specs/001-sandbox-session-manager/plan.md` (Sandbox Session Manager — Bubble Tea
+TUI + per-host Go daemon). Both features are implemented in **Go**, which deviates from the
+constitution's TypeScript/pnpm/Biome/Vitest tooling; deviations are recorded and justified in each
+plan's Constitution Check and Complexity Tracking (a constitution amendment is recommended).
 <!-- SPECKIT END -->

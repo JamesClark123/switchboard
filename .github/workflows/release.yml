@@ -1,0 +1,39 @@
+name: Release
+
+# Cuts a GitHub Release (cross-platform archives + SHA-256 checksums) on every
+# version tag — the single distribution channel. Install/self-update read these
+# release assets. See .goreleaser.yaml.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser needs full history + tags for the changelog/version
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: |
+            src/libs/switchboard-proto/go.sum
+            src/libs/switchboard-update/go.sum
+            src/services/switchboardd/go.sum
+            src/apps/switchboard-tui/go.sum
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -26,6 +26,9 @@ service Switchboard {
   rpc GetDaemonInfo(GetDaemonInfoRequest) returns (DaemonInfo);
   // Full sbx option surface so the client editor covers 100% of kit options (FR-014).
   rpc GetOptionManifest(GetOptionManifestRequest) returns (OptionManifest);
+  // Self-update this daemon's binary to a target release and restart. Streams
+  // progress; the connection drops when the daemon restarts on the new binary.
+  rpc UpdateDaemon(UpdateDaemonRequest) returns (stream UpdateProgress);
 
   // --- Sandbox lifecycle (FR-001, FR-012a-f) ---
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
@@ -143,6 +146,23 @@ message DaemonInfo {
   string daemon_version = 3;
   string sbx_version = 4;
   string workspace_root = 5;             // controlled folder for duplicates (FR-006)
+}
+
+// UpdateDaemonRequest asks the daemon to self-update to an exact release tag so
+// the client and every host converge on one version. Empty means "latest".
+message UpdateDaemonRequest {
+  string target_version = 1;             // e.g. "v0.4.1"; empty = latest
+}
+
+// UpdateProgress is streamed as the daemon downloads, verifies, and applies the
+// new binary. The stream ends (with done=true, or a set error) just before the
+// daemon restarts.
+message UpdateProgress {
+  string stage = 1;        // "checking" | "downloading" | "verifying" | "applying" | "restarting" | "done"
+  string message = 2;      // human-readable detail
+  bool   done = 3;         // terminal success
+  string error = 4;        // set on failure; nothing was swapped
+  string new_version = 5;  // set on done: the version now installed
 }
 
 message GetOptionManifestRequest {}

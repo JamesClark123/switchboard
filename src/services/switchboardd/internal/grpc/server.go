@@ -27,6 +27,7 @@ type Server struct {
 	daemonVersion string
 	sbxVersion    string
 	workspaceRoot string
+	pidFile       string
 	manifest      *pb.OptionManifest
 	hub           *agent.Hub
 	agents        *agent.Registry
@@ -41,6 +42,9 @@ type Config struct {
 	DaemonVersion string
 	SbxVersion    string
 	WorkspaceRoot string
+	// PidFile is cleared before the daemon re-execs during UpdateDaemon so the
+	// re-exec'd `serve` is not blocked by its own (still-live) pid entry.
+	PidFile string
 	// Manifest is the host's full sbx option surface (FR-014). MAY be nil when
 	// introspection was unavailable, in which case launch-time validation is a
 	// no-op and the editor renders no options.
@@ -67,6 +71,7 @@ func NewServer(cfg Config) *Server {
 		daemonVersion: cfg.DaemonVersion,
 		sbxVersion:    sbxVersion,
 		workspaceRoot: cfg.WorkspaceRoot,
+		pidFile:       cfg.PidFile,
 		manifest:      cfg.Manifest,
 		hub:           cfg.Hub,
 		agents:        cfg.Agents,

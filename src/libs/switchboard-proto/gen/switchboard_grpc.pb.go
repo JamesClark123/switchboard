@@ -36,6 +36,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Switchboard_GetDaemonInfo_FullMethodName        = "/switchboard.v1.Switchboard/GetDaemonInfo"
 	Switchboard_GetOptionManifest_FullMethodName    = "/switchboard.v1.Switchboard/GetOptionManifest"
+	Switchboard_UpdateDaemon_FullMethodName         = "/switchboard.v1.Switchboard/UpdateDaemon"
 	Switchboard_ListSandboxes_FullMethodName        = "/switchboard.v1.Switchboard/ListSandboxes"
 	Switchboard_LaunchSandbox_FullMethodName        = "/switchboard.v1.Switchboard/LaunchSandbox"
 	Switchboard_StopSandbox_FullMethodName          = "/switchboard.v1.Switchboard/StopSandbox"
@@ -59,6 +60,9 @@ type SwitchboardClient interface {
 	GetDaemonInfo(ctx context.Context, in *GetDaemonInfoRequest, opts ...grpc.CallOption) (*DaemonInfo, error)
 	// Full sbx option surface so the client editor covers 100% of kit options (FR-014).
 	GetOptionManifest(ctx context.Context, in *GetOptionManifestRequest, opts ...grpc.CallOption) (*OptionManifest, error)
+	// Self-update this daemon's binary to a target release and restart. Streams
+	// progress; the connection drops when the daemon restarts on the new binary.
+	UpdateDaemon(ctx context.Context, in *UpdateDaemonRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateProgress], error)
 	// --- Sandbox lifecycle (FR-001, FR-012a-f) ---
 	ListSandboxes(ctx context.Context, in *ListSandboxesRequest, opts ...grpc.CallOption) (*ListSandboxesResponse, error)
 	// Server-streams progress (copy %, sbx output) then a terminal Sandbox (FR-028).
@@ -113,6 +117,25 @@ func (c *switchboardClient) GetOptionManifest(ctx context.Context, in *GetOption
 	return out, nil
 }
 
+func (c *switchboardClient) UpdateDaemon(ctx context.Context, in *UpdateDaemonRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[0], Switchboard_UpdateDaemon_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[UpdateDaemonRequest, UpdateProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_UpdateDaemonClient = grpc.ServerStreamingClient[UpdateProgress]
+
 func (c *switchboardClient) ListSandboxes(ctx context.Context, in *ListSandboxesRequest, opts ...grpc.CallOption) (*ListSandboxesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSandboxesResponse)
@@ -125,7 +148,7 @@ func (c *switchboardClient) ListSandboxes(ctx context.Context, in *ListSandboxes
 
 func (c *switchboardClient) LaunchSandbox(ctx context.Context, in *LaunchSandboxRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[0], Switchboard_LaunchSandbox_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[1], Switchboard_LaunchSandbox_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +177,7 @@ func (c *switchboardClient) StopSandbox(ctx context.Context, in *SandboxIdReques
 
 func (c *switchboardClient) RestartSandbox(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[1], Switchboard_RestartSandbox_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[2], Switchboard_RestartSandbox_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +246,7 @@ func (c *switchboardClient) PromptAgent(ctx context.Context, in *PromptAgentRequ
 
 func (c *switchboardClient) AttachAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentInput, AgentOutput], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[2], Switchboard_AttachAgent_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[3], Switchboard_AttachAgent_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +259,7 @@ type Switchboard_AttachAgentClient = grpc.BidiStreamingClient[AgentInput, AgentO
 
 func (c *switchboardClient) Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[3], Switchboard_Subscribe_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[4], Switchboard_Subscribe_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +304,9 @@ type SwitchboardServer interface {
 	GetDaemonInfo(context.Context, *GetDaemonInfoRequest) (*DaemonInfo, error)
 	// Full sbx option surface so the client editor covers 100% of kit options (FR-014).
 	GetOptionManifest(context.Context, *GetOptionManifestRequest) (*OptionManifest, error)
+	// Self-update this daemon's binary to a target release and restart. Streams
+	// progress; the connection drops when the daemon restarts on the new binary.
+	UpdateDaemon(*UpdateDaemonRequest, grpc.ServerStreamingServer[UpdateProgress]) error
 	// --- Sandbox lifecycle (FR-001, FR-012a-f) ---
 	ListSandboxes(context.Context, *ListSandboxesRequest) (*ListSandboxesResponse, error)
 	// Server-streams progress (copy %, sbx output) then a terminal Sandbox (FR-028).
@@ -320,6 +346,9 @@ func (UnimplementedSwitchboardServer) GetDaemonInfo(context.Context, *GetDaemonI
 }
 func (UnimplementedSwitchboardServer) GetOptionManifest(context.Context, *GetOptionManifestRequest) (*OptionManifest, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOptionManifest not implemented")
+}
+func (UnimplementedSwitchboardServer) UpdateDaemon(*UpdateDaemonRequest, grpc.ServerStreamingServer[UpdateProgress]) error {
+	return status.Error(codes.Unimplemented, "method UpdateDaemon not implemented")
 }
 func (UnimplementedSwitchboardServer) ListSandboxes(context.Context, *ListSandboxesRequest) (*ListSandboxesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSandboxes not implemented")
@@ -416,6 +445,17 @@ func _Switchboard_GetOptionManifest_Handler(srv interface{}, ctx context.Context
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _Switchboard_UpdateDaemon_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(UpdateDaemonRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).UpdateDaemon(m, &grpc.GenericServerStream[UpdateDaemonRequest, UpdateProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_UpdateDaemonServer = grpc.ServerStreamingServer[UpdateProgress]
 
 func _Switchboard_ListSandboxes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListSandboxesRequest)
@@ -672,6 +712,11 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "UpdateDaemon",
+			Handler:       _Switchboard_UpdateDaemon_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "LaunchSandbox",
 			Handler:       _Switchboard_LaunchSandbox_Handler,

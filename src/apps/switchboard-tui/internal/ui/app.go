@@ -43,6 +43,10 @@ type Daemon interface {
 	AckNotifications(ctx context.Context, ids []string) error
 	// US5: VS Code open target.
 	VSCodeTarget(ctx context.Context, id string) (*pb.VSCodeTarget, error)
+	// Distribution/self-update: the daemon's advertised version, and a request
+	// to self-update it to a target release (empty = latest).
+	DaemonVersion() string
+	UpdateDaemon(ctx context.Context, target string, onProgress func(stage, message string)) error
 }
 
 type screen int
@@ -56,6 +60,7 @@ const (
 	screenHosts
 	screenNotifications
 	screenGroups
+	screenUpdate
 )
 
 // Model is the root Bubble Tea model.
@@ -122,6 +127,15 @@ type Model struct {
 	groups     groupsState
 	opener     *vscode.Opener
 
+	// self-update: the running client version, the latest release seen, a
+	// dismissable banner when an update is available, the in-flight update
+	// screen state, and a flag telling main to re-exec the new sxb on exit.
+	clientVersion string
+	latestVersion string
+	updateBanner  string
+	update        updateState
+	reexec        bool
+
 	quitting bool
 }
 
@@ -168,6 +182,17 @@ func (m Model) WithSbx(bin string) Model {
 	m.sbxBin = bin
 	return m
 }
+
+// WithVersion records the running client's build version so the TUI can detect
+// a newer release and warn about client/daemon version skew.
+func (m Model) WithVersion(v string) Model {
+	m.clientVersion = v
+	return m
+}
+
+// ShouldReexec reports whether main should replace the process with the freshly
+// installed sxb binary after the TUI exits (set by a completed self-update).
+func (m Model) ShouldReexec() bool { return m.reexec }
 
 // WithTerminal sets the external terminal command prefix used by the popout
 // terminal (`T` on the list). Empty disables the popout with a hint.
@@ -329,7 +354,7 @@ func (m Model) reloadCmd() tea.Cmd {
 // Init kicks off the first sandbox list load, opens the event subscription,
 // loads the tab-bar data, and starts the shared spinner.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), m.spinner.Tick)
+	return tea.Batch(m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), checkUpdateCmd(), m.spinner.Tick)
 }
 
 // Update routes messages by screen.
@@ -426,6 +451,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.listLoading = true
 		return m, m.reloadCmd()
 
+	case updateAvailableMsg:
+		m.latestVersion = msg.latest
+		if hint := updateHint(msg.latest, m.clientVersion); hint != "" {
+			m.updateBanner = hint
+			m.notifier.Notify("Switchboard update available", msg.latest)
+		}
+		return m, nil
+
+	case updateResultMsg:
+		return m.applyUpdateResult(msg)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -466,6 +502,9 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case screenNotifications:
 		m.notifyList, cmd = m.notifyList.Update(msg)
+	case screenUpdate:
+		// The update screen has no interactive component; advance the spinner.
+		m.spinner, cmd = m.spinner.Update(msg)
 	default:
 		m.list, cmd = m.list.Update(msg)
 	}
@@ -488,6 +527,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateNotificationsKey(msg)
 	case screenGroups:
 		return m.updateGroupsKey(msg)
+	case screenUpdate:
+		return m.updateUpdateKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -519,6 +560,8 @@ func (m Model) View() string {
 		body, hb = m.viewNotifications(), m.notificationsHelp()
 	case screenGroups:
 		body, hb = m.viewGroups(), m.groupsHelp()
+	case screenUpdate:
+		body, hb = m.viewUpdate(), m.updateHelpBindings()
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
@@ -551,7 +594,11 @@ func (m Model) mainListHeight() int {
 	if extraHelp < 0 {
 		extraHelp = 0
 	}
-	if h := m.bodyHeight() - 2 - extraHelp; h >= 3 {
+	banner := 0
+	if m.updateBanner != "" {
+		banner = 1 // the update banner occupies one line above the list
+	}
+	if h := m.bodyHeight() - 2 - extraHelp - banner; h >= 3 {
 		return h
 	}
 	return 3

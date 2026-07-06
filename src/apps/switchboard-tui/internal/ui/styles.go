@@ -51,7 +51,6 @@ var (
 			Bold(true).
 			Foreground(colAccent)
 
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(colText)
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
 	dimStyle      = lipgloss.NewStyle().Foreground(colMuted)
 	helpStyle     = lipgloss.NewStyle().Foreground(colMuted)

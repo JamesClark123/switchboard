@@ -31,6 +31,9 @@ type fakeDaemon struct {
 	ackedIDs     []string
 	subscribeErr error
 	vscodeErr    error
+	daemonVer    string
+	updateErr    error
+	updateTarget string
 }
 
 func (f *fakeDaemon) PromptAgent(_ context.Context, id, prompt string) error {
@@ -80,6 +83,18 @@ func (s *fakeStream) Recv() (*pb.Event, error) {
 }
 
 func (f *fakeDaemon) HostID() string { return "test-host" }
+
+func (f *fakeDaemon) DaemonVersion() string { return f.daemonVer }
+
+func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {
+	f.mu.Lock()
+	f.updateTarget = target
+	f.mu.Unlock()
+	if onProgress != nil {
+		onProgress("applying", "installing "+target)
+	}
+	return f.updateErr
+}
 
 func (f *fakeDaemon) List(context.Context) ([]*pb.Sandbox, error) {
 	f.mu.Lock()

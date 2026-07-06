@@ -53,7 +53,8 @@ src/
 ├── libs/switchboard-proto/      # shared gRPC/protobuf contract + domain helpers
 ├── services/switchboardd/       # the daemon  (cmd/sxbd, internal/…)
 ├── services/switchboardd-e2e/   # daemon E2E (real Docker, gated)
-├── apps/switchboard-tui/        # the TUI client (cmd/switchboard, internal/…)
+├── libs/switchboard-update/     # shared self-update core (release lookup, verify, apply)
+├── apps/switchboard-tui/        # the TUI client (cmd/sxb, internal/…)
 └── apps/switchboard-tui-e2e/    # TUI E2E (PTY-driven)
 ```
 
@@ -73,29 +74,45 @@ each module's `README.md`.
 
 ## Install
 
-Clone with submodules (the engineering rules are vendored as a submodule):
+Both `sxb` and `sxbd` are distributed as prebuilt binaries for macOS and Linux (amd64 + arm64)
+from [GitHub Releases](https://github.com/jamesclark123/switchboard/releases). Install on **every
+machine** that will run the TUI or the daemon — including each remote host you connect to.
+
+### Quick install (recommended — self-update capable)
 
 ```bash
-git clone --recurse-submodules <repo-url> switchboard
+curl -fsSL https://raw.githubusercontent.com/jamesclark123/switchboard/main/install.sh | sh
+```
+
+It detects your OS/arch, downloads the latest release, verifies its SHA-256 checksum, and installs
+`sxb` + `sxbd` to `/usr/local/bin` (or `~/.local/bin`). Pin a version with
+`SWITCHBOARD_VERSION=vX.Y.Z` or change the target with `SWITCHBOARD_INSTALL_DIR=...`. Binaries
+installed this way can update themselves from within the TUI (see [Updating](#updating)).
+
+> GitHub Releases (via the installer above and the in-app updater) is the **only** distribution
+> channel — there is no Homebrew tap or OS package. Every binary is SHA-256-verified before it is
+> written.
+
+### From source
+
+```bash
+git clone --recurse-submodules <repo-url> switchboard   # rules are a submodule
 cd switchboard
-```
-
-Build both binaries into `./bin`:
-
-```bash
-go build -o bin/switchboardd ./src/services/switchboardd/cmd/switchboardd
-go build -o bin/switchboard  ./src/apps/switchboard-tui/cmd/switchboard
-```
-
-Or install them onto your `PATH` (into `$(go env GOPATH)/bin`):
-
-```bash
-go install ./src/services/switchboardd/cmd/sxbd
-go install ./src/apps/switchboard-tui/cmd/sxb
+go build -o bin/sxbd ./src/services/switchboardd/cmd/sxbd
+go build -o bin/sxb  ./src/apps/switchboard-tui/cmd/sxb
 ```
 
 `make build` compiles every module to verify it builds, but does not emit named binaries — use the
-commands above to produce runnable `sxb` / `sxbd`.
+commands above (or `go install ./src/services/switchboardd/cmd/sxbd` and
+`go install ./src/apps/switchboard-tui/cmd/sxb`) to produce runnable binaries.
+
+> **Note:** `go install …/cmd/sxb@latest` is **not** supported — both app modules use local
+> `replace` directives, which `go install pkg@version` rejects. Use the quick installer or a local
+> checkout instead.
+
+> **macOS:** binaries installed via the quick installer or the in-app updater are not
+> Gatekeeper-quarantined. Only if you download a release `.tar.gz` **manually in a browser** do you
+> need `xattr -d com.apple.quarantine sxb sxbd` before first run.
 
 ## Configuration
 
@@ -196,7 +213,25 @@ The sandbox list is the home screen. Keys:
 | `i` | Notification inbox (task-complete / needs-prompting; 🔔 badge) |
 | `s` | Toggle the selected sandbox: stop if running, start otherwise |
 | `d` | Destroy the selected sandbox |
+| `u` | Update the client and all connected hosts (shown when a newer release exists) |
 | `R` | Rename · `r` refresh · `j`/`k` navigate · `q` quit |
+
+## Updating
+
+Switchboard is designed for frequent releases, so the TUI keeps itself and every connected daemon
+up to date with minimal effort.
+
+- **Notification:** on startup `sxb` checks GitHub for the latest release (best-effort; silent when
+  offline, opt out with `SXB_NO_UPDATE_CHECK=1`). When a newer version exists, a banner appears
+  above the sandbox list and a `u` key becomes available.
+- **One keystroke, all machines:** pressing `u` updates to the latest release across the board — it
+  drives **every connected daemon** (local and remote, over the existing SSH-tunneled connection)
+  to self-update its `sxbd` binary and restart, then swaps the local `sxb` binary and restarts the
+  TUI into the new version. All hosts converge on the same version, so no version skew is left
+  behind. Each download is SHA-256-verified before anything is replaced.
+- **Remote hosts** are reached as `ssh <host> sxbd dial-stdio`, so their `sxbd` lives on that host.
+  The `u` fan-out updates them in place; a host you have *not* connected to must be updated there
+  directly by re-running the installer.
 
 ## Testing
 
@@ -241,6 +276,31 @@ The wire contract lives at `src/libs/switchboard-proto/proto/switchboard.proto` 
 ```bash
 make proto    # requires protoc + protoc-gen-go + protoc-gen-go-grpc on PATH
 ```
+
+## Releasing
+
+Releases are built by [GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`) via the
+`Release` GitHub Actions workflow (`.github/workflows/release.yml`), triggered on any `v*` tag.
+Each release publishes cross-platform archives (both binaries per archive) and a `checksums.txt` to
+GitHub Releases — the single distribution channel (no Homebrew tap, no OS packages).
+
+**Cut a release:**
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0        # the Release workflow builds + publishes
+```
+
+Version/commit/date are stamped into both binaries via `-ldflags` at build time (a source build
+reports `0.1.0-dev`). Dry-run locally with `goreleaser release --snapshot --clean --skip=publish`
+and inspect `dist/` (each `switchboard_<os>_<arch>.tar.gz` should contain both binaries).
+
+The workflow needs no secrets beyond the automatically-provided `GITHUB_TOKEN` (it publishes only
+to this repo's Releases — there is no separate tap repo or PAT to configure).
+
+The build is hermetic per module (`GOWORK=off` + each module's `replace` directive), so every
+module's `go.sum` must be self-contained — keep them tidy with `GOWORK=off go mod tidy` in each
+module under `src/`.
 
 ## Project governance
 

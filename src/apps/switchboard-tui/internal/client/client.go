@@ -5,7 +5,9 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -28,6 +30,39 @@ func (c *Conn) API() pb.SwitchboardClient { return c.api }
 
 // HostID returns the connected daemon's host id (FR-006).
 func (c *Conn) HostID() string { return c.hostID }
+
+// DaemonVersion returns the version advertised by the connected daemon at
+// handshake (empty if unknown).
+func (c *Conn) DaemonVersion() string { return c.Info.GetDaemonVersion() }
+
+// UpdateDaemon asks the connected daemon to self-update to target (empty =
+// latest), forwarding each progress message to onProgress. It returns nil once
+// the daemon reports success; the daemon restarts on the new binary immediately
+// after, so this connection becomes unusable and the caller should reconnect.
+func (c *Conn) UpdateDaemon(ctx context.Context, target string, onProgress func(stage, message string)) error {
+	stream, err := c.api.UpdateDaemon(ctx, &pb.UpdateDaemonRequest{TargetVersion: target})
+	if err != nil {
+		return err
+	}
+	for {
+		p, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if onProgress != nil {
+			onProgress(p.GetStage(), p.GetMessage())
+		}
+		if e := p.GetError(); e != "" {
+			return errors.New(e)
+		}
+		if p.GetDone() {
+			return nil
+		}
+	}
+}
 
 // Close releases the underlying connection.
 func (c *Conn) Close() error {

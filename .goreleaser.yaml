@@ -1,0 +1,71 @@
+# GoReleaser config for the switchboard monorepo. Produces cross-platform
+# archives (each containing BOTH binaries) and SHA-256 checksums on every `v*`
+# tag. GitHub Releases is the single distribution channel — there is no Homebrew
+# tap (or any other package manager); install.sh and the in-app updater consume
+# these same assets. See .github/workflows/release.yml.
+#
+# The repo is a go.work workspace with two binaries in separate modules; each
+# build sets `dir:` to its module and `GOWORK=off` so it resolves the local
+# libs through that module's `replace` directive (hermetic, module-local). This
+# requires each module's go.sum to be self-contained (run `go mod tidy` with
+# GOWORK=off in every module — a prerequisite kept green in CI).
+version: 2
+project_name: switchboard
+
+before:
+  hooks:
+    - go version
+
+builds:
+  - id: sxbd
+    dir: src/services/switchboardd
+    main: ./cmd/sxbd
+    binary: sxbd
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+  - id: sxb
+    dir: src/apps/switchboard-tui
+    main: ./cmd/sxb
+    binary: sxb
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  # No `ids:` filter → the archive bundles binaries from ALL builds, so each
+  # archive contains both sxb and sxbd. Version-less names give stable
+  # /releases/latest/download/ URLs for install.sh; checksums.txt is per-release.
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
