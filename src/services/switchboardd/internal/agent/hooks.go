@@ -32,21 +32,32 @@ type claudeSettings struct {
 }
 
 // BuildSettings produces the .claude/settings.local.json contents that make a
-// sandbox's Claude Code call back to the daemon on Stop (task complete) and
-// Notification (needs prompting). The sandbox id is embedded so the daemon can
-// attribute the callback.
+// sandbox's Claude Code call back to the daemon on the lifecycle events the
+// daemon maps to an agent status (see HookServer.dispatch):
+//
+//   - UserPromptSubmit / PreToolUse -> WORKING (a task began, or the agent is
+//     actively running tools — the latter also flips it back to WORKING after a
+//     permission prompt is answered).
+//   - Notification                  -> NEEDS_INPUT (awaiting the user).
+//   - Stop                          -> IDLE + a task-complete notification.
+//
+// Without the work-start hooks the status would never leave IDLE while the agent
+// runs, so the "working" indicator would never show. The sandbox id is embedded
+// so the daemon can attribute each callback.
 func BuildSettings(sandboxID, callbackURL string) claudeSettings {
-	curl := func(event string) hookEntry {
+	curl := func(event string) []hookMatcher {
 		body := fmt.Sprintf(`{"event":"%s","sandbox_id":"%s"}`, event, sandboxID)
-		return hookEntry{
+		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{
 			Type:    "command",
 			Command: fmt.Sprintf("curl -s -X POST -H 'Content-Type: application/json' -d '%s' %s", body, callbackURL),
-		}
+		}}}}
 	}
 	return claudeSettings{
 		Hooks: map[string][]hookMatcher{
-			"Stop":         {{Matcher: "", Hooks: []hookEntry{curl("Stop")}}},
-			"Notification": {{Matcher: "", Hooks: []hookEntry{curl("Notification")}}},
+			"UserPromptSubmit": curl("UserPromptSubmit"),
+			"PreToolUse":       curl("PreToolUse"),
+			"Notification":     curl("Notification"),
+			"Stop":             curl("Stop"),
 		},
 	}
 }

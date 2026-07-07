@@ -192,13 +192,30 @@ func TestInjectHooks(t *testing.T) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.Hooks["Stop"]; !ok {
-		t.Error("settings missing Stop hook")
+	// Every event the daemon maps to a status MUST be injected, or that status is
+	// never reached. In particular the work-start hooks (UserPromptSubmit /
+	// PreToolUse) are what drive the WORKING indicator — their absence was a bug.
+	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "Notification", "Stop"} {
+		hm, ok := s.Hooks[event]
+		if !ok || len(hm) == 0 || len(hm[0].Hooks) == 0 {
+			t.Fatalf("settings missing %s hook", event)
+		}
+		if !strings.Contains(hm[0].Hooks[0].Command, "sb1") {
+			t.Errorf("%s hook command should embed the sandbox id", event)
+		}
+		// The posted event name must match the map key so dispatch reads it back.
+		if !strings.Contains(hm[0].Hooks[0].Command, `"event":"`+event+`"`) {
+			t.Errorf("%s hook should post its own event name", event)
+		}
 	}
-	if _, ok := s.Hooks["Notification"]; !ok {
-		t.Error("settings missing Notification hook")
-	}
-	if !strings.Contains(s.Hooks["Stop"][0].Hooks[0].Command, "sb1") {
-		t.Error("hook command should embed the sandbox id")
+
+	// The injected work-start events must actually map to WORKING in dispatch, so
+	// injection and handling stay in lockstep.
+	for _, event := range []string{"UserPromptSubmit", "PreToolUse"} {
+		st := &fakeStatus{}
+		NewHookServer(NewHub("h"), st).dispatch(hookPayload{Event: event, SandboxID: "sb1"})
+		if st.last != pb.AgentStatus_AGENT_STATUS_WORKING {
+			t.Errorf("%s should dispatch to WORKING, got %v", event, st.last)
+		}
 	}
 }
