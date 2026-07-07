@@ -130,7 +130,7 @@ local `.env` (gitignored) for development.
 | `SWITCHBOARDD_PID_FILE`       |          | `$XDG_RUNTIME_DIR/switchboard.pid`   | PID file maintained while serving; read by `status`/`stop` (same `XDG_RUNTIME_DIR` fallback as the socket) |
 | `SWITCHBOARDD_HOST_ID`        |          | machine hostname                     | Stable host id advertised to clients |
 | `SWITCHBOARDD_SBX_BIN`        |          | `sbx`                                | Host sandbox CLI binary |
-| `SWITCHBOARDD_HOOK_ADDR`      |          | `127.0.0.1:8765`                     | Listen addr for the agent hook callback server |
+| `SWITCHBOARDD_HOOK_ADDR`      |          | `0.0.0.0:8765`                       | Listen addr for the agent hook callback server. Binds all interfaces so sandboxes can reach it via `host.docker.internal`; a loopback-only bind is unreachable from a sandbox |
 
 ### TUI — `sxb` (`src/apps/switchboard-tui/.env.example`)
 

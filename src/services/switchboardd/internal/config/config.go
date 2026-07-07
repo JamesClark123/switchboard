@@ -29,7 +29,7 @@ var schema = []field{
 	{"SWITCHBOARDD_WORKSPACE_ROOT", false, "$HOME/switchboard/workspace", "Controlled folder for verbatim duplicates (FR-006)."},
 	{"SWITCHBOARDD_DATA_DIR", false, "$HOME/switchboard/data", "Directory for the bbolt sandbox registry."},
 	{"SWITCHBOARDD_SBX_BIN", false, "sbx", "Path/name of the host sandbox CLI."},
-	{"SWITCHBOARDD_HOOK_ADDR", false, "127.0.0.1:8765", "Listen address for the agent hook callback HTTP server."},
+	{"SWITCHBOARDD_HOOK_ADDR", false, "0.0.0.0:8765", "Listen address for the agent hook callback HTTP server. MUST be reachable from inside a sandbox container (which calls back via host.docker.internal), so it binds all interfaces by default — a loopback-only bind (127.0.0.1) is unreachable from the sandbox."},
 }
 
 // Config is the parsed, typed daemon configuration.

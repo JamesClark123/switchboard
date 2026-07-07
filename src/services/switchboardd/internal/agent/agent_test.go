@@ -207,6 +207,14 @@ func TestInjectHooks(t *testing.T) {
 		if !strings.Contains(hm[0].Hooks[0].Command, `"event":"`+event+`"`) {
 			t.Errorf("%s hook should post its own event name", event)
 		}
+		// The ping must be best-effort: time-bounded, output discarded, and never
+		// non-zero — otherwise a slow/unreachable daemon disrupts the agent.
+		cmd := hm[0].Hooks[0].Command
+		for _, want := range []string{"-m 2", "-o /dev/null", "|| true"} {
+			if !strings.Contains(cmd, want) {
+				t.Errorf("%s hook command should be best-effort (missing %q): %s", event, want, cmd)
+			}
+		}
 	}
 
 	// The injected work-start events must actually map to WORKING in dispatch, so

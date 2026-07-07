@@ -47,10 +47,15 @@ type claudeSettings struct {
 func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 	curl := func(event string) []hookMatcher {
 		body := fmt.Sprintf(`{"event":"%s","sandbox_id":"%s"}`, event, sandboxID)
-		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{
-			Type:    "command",
-			Command: fmt.Sprintf("curl -s -X POST -H 'Content-Type: application/json' -d '%s' %s", body, callbackURL),
-		}}}}
+		// Best-effort, fire-and-forget status ping. It MUST never disrupt the
+		// agent: `-m 2` bounds the time so a slow/unreachable daemon can't stall a
+		// prompt, `-o /dev/null` discards the response (UserPromptSubmit injects a
+		// hook's stdout into Claude's context), and `|| true` guarantees exit 0 so
+		// a failed ping is never surfaced as a hook error.
+		cmd := fmt.Sprintf(
+			"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' -d '%s' %s || true",
+			body, callbackURL)
+		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{Type: "command", Command: cmd}}}}
 	}
 	return claudeSettings{
 		Hooks: map[string][]hookMatcher{
