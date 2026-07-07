@@ -18,9 +18,9 @@ func attachCmd(sbxBin, sshTarget, name string) *exec.Cmd {
 	}
 	if sshTarget != "" {
 		// The remote host runs its own sbx from PATH; -t allocates a PTY.
-		return exec.Command("ssh", "-t", sshTarget, "sbx", "run", "--name", name)
+		return exec.Command("ssh", "-t", sshTarget, "sbx", "run", name)
 	}
-	return exec.Command(sbxBin, "run", "--name", name)
+	return exec.Command(sbxBin, "run", name)
 }
 
 // openAgentTerminal suspends the TUI and drops the user into the sandbox's
