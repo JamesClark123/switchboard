@@ -166,9 +166,13 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	}
 	title := sandboxTitle(row.sb)
 	// A daemon action is in flight for this sandbox: show a spinner + verb in
-	// place of the state badge until the response lands.
+	// place of the state badge until the response lands. Otherwise, surface the
+	// coding agent's live status (working / needs input / idle) so the user can
+	// tell at a glance what each sandbox's agent is doing.
 	if verb, ok := m.busy[row.sb.GetId()]; ok {
 		title = m.spinner.View() + " " + selectedStyle.Render(pad(verb+"…", 9)) + " " + row.sb.GetDisplayName()
+	} else if badge := m.agentBadge(row.sb); badge != "" {
+		title += "   " + badge
 	}
 	return listItem{
 		id:      row.sb.GetId(),
@@ -182,6 +186,106 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 
 func sandboxTitle(sb *pb.Sandbox) string {
 	return stateBadge(sb.GetState()) + "  " + sb.GetDisplayName()
+}
+
+// agentBadge renders a live indicator of the coding agent's status for a RUNNING
+// sandbox — working, waiting for a prompt, or idle — so users can see at a glance
+// what each agent is doing without opening the sandbox. It returns "" for
+// non-running sandboxes and for sandboxes launched without an agent (nothing to
+// show). The WORKING indicator reuses the model spinner so it animates while the
+// agent is active; IDLE is the resting state (initial, or after a task completes).
+func (m Model) agentBadge(sb *pb.Sandbox) string {
+	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetAgent() == nil {
+		return ""
+	}
+	switch sb.GetAgent().GetStatus() {
+	case pb.AgentStatus_AGENT_STATUS_WORKING:
+		return m.spinner.View() + " " + agentWorkStyle.Render("working")
+	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+		return agentWaitStyle.Render("◆ needs input")
+	case pb.AgentStatus_AGENT_STATUS_IDLE:
+		return agentIdleStyle.Render("✓ idle")
+	default: // UNSPECIFIED / EXITED — nothing to surface on the row
+		return ""
+	}
+}
+
+// anyAgentWorking reports whether any sandbox in the current tab has a working
+// agent, so the spinner-tick handler knows to keep re-rendering the list (the
+// "working" indicator animates via the shared spinner).
+func (m Model) anyAgentWorking() bool {
+	for _, row := range m.currentTabRows() {
+		if row.sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING &&
+			row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeSandboxUpdate applies a live Sandbox update from the event stream into the
+// in-memory lists (both the single-daemon list and the multi-host aggregate)
+// without a network round-trip. The daemon emits one Event_SandboxChanged per
+// agent-status/state change (FR-024/025) — including on every tool-use while the
+// agent works — so reloading over the wire each time would be needlessly chatty.
+// It reports whether a rendered field (state, agent status, or name) actually
+// changed, letting the caller skip a redundant re-render on no-op repeats.
+func (m *Model) mergeSandboxUpdate(sb *pb.Sandbox) bool {
+	if sb.GetId() == "" {
+		return false
+	}
+	changed := false
+	apply := func(list []*pb.Sandbox) {
+		for i, ex := range list {
+			if ex.GetId() == sb.GetId() {
+				if renderFieldsDiffer(ex, sb) {
+					changed = true
+				}
+				list[i] = sb
+				return
+			}
+		}
+	}
+	apply(m.sandboxes)
+	for hi := range m.hostAgg {
+		if m.hostAgg[hi].Host.Entry.ID == sb.GetHostId() {
+			apply(m.hostAgg[hi].Sandboxes)
+		}
+	}
+	return changed
+}
+
+// removeSandbox drops a sandbox from the in-memory lists on a Removed event,
+// reporting whether anything was removed (so the caller can skip a re-render).
+func (m *Model) removeSandbox(id string) bool {
+	if id == "" {
+		return false
+	}
+	removed := false
+	filter := func(list []*pb.Sandbox) []*pb.Sandbox {
+		out := list[:0]
+		for _, sb := range list {
+			if sb.GetId() == id {
+				removed = true
+				continue
+			}
+			out = append(out, sb)
+		}
+		return out
+	}
+	m.sandboxes = filter(m.sandboxes)
+	for hi := range m.hostAgg {
+		m.hostAgg[hi].Sandboxes = filter(m.hostAgg[hi].Sandboxes)
+	}
+	return removed
+}
+
+// renderFieldsDiffer reports whether two snapshots of the same sandbox differ in
+// any field the row renders, so repeated identical updates don't cause churn.
+func renderFieldsDiffer(a, b *pb.Sandbox) bool {
+	return a.GetState() != b.GetState() ||
+		a.GetAgent().GetStatus() != b.GetAgent().GetStatus() ||
+		a.GetDisplayName() != b.GetDisplayName()
 }
 
 func sandboxDesc(sb *pb.Sandbox) string {

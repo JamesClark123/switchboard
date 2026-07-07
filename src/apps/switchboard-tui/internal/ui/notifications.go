@@ -45,9 +45,16 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		// OS desktop notification in addition to the in-TUI list (FR-026a).
 		m.notifier.Notify("Switchboard: "+notifTitle(n.GetKind()), n.GetMessage())
 	case *pb.Event_SandboxChanged:
-		// A live state/agent-status change — refresh the list view opportunistically.
+		// A live state/agent-status change (e.g. the agent started working, needs a
+		// prompt, or went idle). Merge it in place and re-render the row so the
+		// agent badge updates live — no network reload needed.
+		if m.mergeSandboxUpdate(e.SandboxChanged) {
+			m.refreshListItems()
+		}
 	case *pb.Event_Removed:
-		// handled on next refresh
+		if m.removeSandbox(e.Removed.GetSandboxId()) {
+			m.refreshListItems()
+		}
 	}
 	var cmd tea.Cmd
 	if m.sub != nil {

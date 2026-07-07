@@ -58,6 +58,13 @@ var (
 	statusOKStyle  = lipgloss.NewStyle().Foreground(colRunning)
 	statusErrStyle = lipgloss.NewStyle().Foreground(colError)
 
+	// Agent-activity indicators shown on a running sandbox's row (see agentBadge).
+	// Colors intentionally match the notification inbox: warn ◆ = needs prompting,
+	// green ✓ = settled/task-complete.
+	agentWorkStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	agentWaitStyle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
+	agentIdleStyle = lipgloss.NewStyle().Foreground(colRunning)
+
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colSubtle).

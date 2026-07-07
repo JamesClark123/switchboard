@@ -369,9 +369,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		// Re-render busy rows so their spinner advances each frame (the list's
-		// item strings are static, so they must be rebuilt to animate).
-		if m.screen == screenList && len(m.busy) > 0 && m.list.FilterState() != list.Filtering {
+		// Re-render the list so spinners advance each frame (item strings are
+		// static, so they must be rebuilt to animate): both busy-action rows and
+		// any row whose agent is currently working.
+		if m.screen == screenList && m.list.FilterState() != list.Filtering && (len(m.busy) > 0 || m.anyAgentWorking()) {
 			m.refreshListItems()
 		}
 		return m, cmd

@@ -9,8 +9,8 @@ import (
 )
 
 // attachCmd builds the command that opens a sandbox's interactive agent terminal
-// — the view you get from `sbx run --name <id>`. Local hosts run sbx directly;
-// remote hosts run it over an SSH PTY (`ssh -t <target> sbx run --name <id>`) so
+// — the view you get from `sbx run <id>`. Local hosts run sbx directly;
+// remote hosts run it over an SSH PTY (`ssh -t <target> sbx run <id>`) so
 // the session rides the user's existing SSH, matching the rest of the client.
 func attachCmd(sbxBin, sshTarget, name string) *exec.Cmd {
 	if sbxBin == "" {
@@ -58,7 +58,7 @@ func (m Model) openPopoutTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.C
 }
 
 // popoutCmd spawns the configured terminal, detached, running the sandbox's
-// session command inside it (e.g. `gnome-terminal -- sbx run --name <name>`).
+// session command inside it (e.g. `gnome-terminal -- sbx run <name>`).
 func popoutCmd(prefix, session []string, name string) tea.Cmd {
 	return func() tea.Msg {
 		args := append(append([]string{}, prefix[1:]...), session...)

@@ -21,13 +21,13 @@ func TestAttachCmd(t *testing.T) {
 		}
 	}
 	// Local host: run sbx directly.
-	eq(attachCmd("sbx", "", "id1").Args, "sbx", "run", "--name", "id1")
+	eq(attachCmd("sbx", "", "id1").Args, "sbx", "run", "id1")
 	// A custom sbx binary is honored locally.
-	eq(attachCmd("/opt/sbx", "", "id1").Args, "/opt/sbx", "run", "--name", "id1")
+	eq(attachCmd("/opt/sbx", "", "id1").Args, "/opt/sbx", "run", "id1")
 	// Remote host: run over an SSH PTY.
-	eq(attachCmd("sbx", "user@box", "id1").Args, "ssh", "-t", "user@box", "sbx", "run", "--name", "id1")
+	eq(attachCmd("sbx", "user@box", "id1").Args, "ssh", "-t", "user@box", "sbx", "run", "id1")
 	// Empty sbx bin falls back to "sbx".
-	eq(attachCmd("", "", "id1").Args, "sbx", "run", "--name", "id1")
+	eq(attachCmd("", "", "id1").Args, "sbx", "run", "id1")
 }
 
 func TestTerminalOpensForRunningSandbox(t *testing.T) {
