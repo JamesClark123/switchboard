@@ -230,6 +230,12 @@ func (m Model) anyAgentWorking() bool {
 // agent works — so reloading over the wire each time would be needlessly chatty.
 // It reports whether a rendered field (state, agent status, or name) actually
 // changed, letting the caller skip a redundant re-render on no-op repeats.
+//
+// Sandboxes are matched by their unique id, NOT by host: the aggregate is keyed
+// by the client's host id (e.g. "local"), while the event's sb.HostId is the
+// daemon-assigned host id (the machine hostname), so those two legitimately
+// differ — gating on them would drop every live update into the void, leaving the
+// rendered list (which reads from m.hostAgg) stale until a manual reload.
 func (m *Model) mergeSandboxUpdate(sb *pb.Sandbox) bool {
 	if sb.GetId() == "" {
 		return false
@@ -248,9 +254,7 @@ func (m *Model) mergeSandboxUpdate(sb *pb.Sandbox) bool {
 	}
 	apply(m.sandboxes)
 	for hi := range m.hostAgg {
-		if m.hostAgg[hi].Host.Entry.ID == sb.GetHostId() {
-			apply(m.hostAgg[hi].Sandboxes)
-		}
+		apply(m.hostAgg[hi].Sandboxes)
 	}
 	return changed
 }

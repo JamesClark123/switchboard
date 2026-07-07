@@ -107,18 +107,27 @@ func TestMergeSandboxUpdateNoOpAndUnknown(t *testing.T) {
 }
 
 // TestAgentStatusAcrossHosts covers the multi-host aggregate merge/remove paths.
+// Critically, the client's host key ("local") differs from the sandbox's
+// daemon-assigned HostId ("my-box") — the realistic case. The live merge MUST
+// match by sandbox id regardless, or the rendered list (which reads m.hostAgg)
+// never updates until a manual reload.
 func TestAgentStatusAcrossHosts(t *testing.T) {
 	m := sized(New(&fakeDaemon{}, "/work"))
 	m.hostAgg = []client.HostSandboxes{{
-		Host:      client.HostConn{Entry: client.HostEntry{ID: "h1", DisplayName: "h1"}, State: client.HostConnected},
-		Sandboxes: []*pb.Sandbox{{Id: "s1", HostId: "h1", DisplayName: "s1", State: pb.SandboxState_SANDBOX_STATE_RUNNING, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE}}},
+		Host:      client.HostConn{Entry: client.HostEntry{ID: "local", DisplayName: "localhost"}, State: client.HostConnected},
+		Sandboxes: []*pb.Sandbox{{Id: "s1", HostId: "my-box", DisplayName: "s1", State: pb.SandboxState_SANDBOX_STATE_RUNNING, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE}}},
 	}}
 	m.rebuildTabs()
 	m.refreshListItems()
+	if strings.Contains(m.View(), "working") {
+		t.Fatal("precondition: should not show working yet")
+	}
 
-	upd := &pb.Sandbox{Id: "s1", HostId: "h1", DisplayName: "s1", State: pb.SandboxState_SANDBOX_STATE_RUNNING, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_WORKING}}
-	if !m.mergeSandboxUpdate(upd) {
-		t.Fatal("expected a change merging a host-aggregate sandbox")
+	// A live event whose HostId ("my-box") does NOT equal the client host key.
+	upd := &pb.Sandbox{Id: "s1", HostId: "my-box", DisplayName: "s1", State: pb.SandboxState_SANDBOX_STATE_RUNNING, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_WORKING}}
+	m, _ = update(m, changed(upd))
+	if !strings.Contains(m.View(), "working") {
+		t.Fatalf("aggregate row should update live despite host-id mismatch:\n%s", m.View())
 	}
 	if got := m.hostAgg[0].Sandboxes[0].GetAgent().GetStatus(); got != pb.AgentStatus_AGENT_STATUS_WORKING {
 		t.Errorf("aggregate sandbox status = %v, want WORKING", got)
