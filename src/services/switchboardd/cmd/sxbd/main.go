@@ -152,7 +152,20 @@ func runServe(cfg *config.Config, debug bool) error {
 
 	// US4: event hub, agent PTY registry, and the hook callback server.
 	hub := agent.NewHub(cfg.HostID)
-	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin))
+	// The PTY factory targets sbx by the sandbox's container_ref (the --name sbx
+	// knows it by), resolved from the uuid registry key; sbx cannot address a
+	// sandbox by uuid, so exec'ing with the uuid would EOF the terminal on attach.
+	sbxTarget := func(sandboxID string) string {
+		sb, err := mgr.Get(sandboxID)
+		if err != nil {
+			return ""
+		}
+		if ref := sb.GetContainerRef(); ref != "" {
+			return ref
+		}
+		return sb.GetDisplayName()
+	}
+	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
 	hookServer := agent.NewHookServer(hub, mgr)
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.

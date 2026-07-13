@@ -90,7 +90,10 @@ func (p *ptySession) Close() error {
 }
 
 // agentCommand maps an AgentSpec to the in-sandbox command. The daemon execs into
-// the sandbox via `sbx exec`.
+// the sandbox via `sbx exec`. The target MUST be the sbx-addressable handle
+// (the sandbox's container_ref / --name), NOT the daemon's uuid registry key:
+// sbx addresses sandboxes by name, so `sbx exec -it <uuid> …` would fail
+// immediately and the PTY would report EOF the moment a client attached.
 //
 // The command is launched UNWRAPPED (no setsid/nohup) on purpose. The T002 spike
 // (research.md R4 "Verification result") verified against real sbx/Docker that a
@@ -100,20 +103,32 @@ func (p *ptySession) Close() error {
 // the terminal closes / across a daemon restart's client-kill). A setsid wrap would
 // add nothing to survival and would strip the controlling TTY, risking interactive
 // job-control breakage; it is therefore deliberately not used.
-func agentCommand(sbxBin, sandboxID string, spec *pb.AgentSpec) *exec.Cmd {
+func agentCommand(sbxBin, target string, spec *pb.AgentSpec) *exec.Cmd {
 	inner := "bash"
 	if spec.GetKind() == "claude-code" {
 		inner = "claude"
 	}
-	args := []string{"exec", "-it", sandboxID, inner}
+	args := []string{"exec", "-it", target, inner}
 	args = append(args, spec.GetArgs()...)
 	return exec.Command(sbxBin, args...)
 }
 
 // PTYFactory returns a SessionFactory that starts the sandbox's agent under a PTY.
-func PTYFactory(sbxBin string) SessionFactory {
+//
+// resolve maps the daemon's uuid registry key to the sbx-addressable handle
+// (container_ref / --name) that `sbx exec` expects. It may return "" when the
+// sandbox is unknown; the factory then falls back to the uuid so behavior is no
+// worse than before resolution existed. resolve may be nil (uuid used directly),
+// which is intended only for tests.
+func PTYFactory(sbxBin string, resolve func(sandboxID string) string) SessionFactory {
 	return func(sandboxID string, spec *pb.AgentSpec) (Session, error) {
-		cmd := agentCommand(sbxBin, sandboxID, spec)
+		target := sandboxID
+		if resolve != nil {
+			if ref := resolve(sandboxID); ref != "" {
+				target = ref
+			}
+		}
+		cmd := agentCommand(sbxBin, target, spec)
 		f, err := pty.Start(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("start pty for %s: %w", sandboxID, err)

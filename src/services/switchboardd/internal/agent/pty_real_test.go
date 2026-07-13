@@ -12,7 +12,7 @@ import (
 // PTY. Using "echo" as the "sbx" binary makes the child print and exit, so
 // Read/Resize/Close all run without a sandbox runtime.
 func TestPTYFactoryRealSession(t *testing.T) {
-	sess, err := PTYFactory("echo")("sb1", &pb.AgentSpec{})
+	sess, err := PTYFactory("echo", nil)("sb1", &pb.AgentSpec{})
 	if err != nil {
 		t.Fatalf("PTYFactory start: %v", err)
 	}
