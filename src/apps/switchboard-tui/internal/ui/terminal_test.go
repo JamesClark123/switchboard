@@ -1,118 +1,147 @@
 package ui
 
 import (
-	"context"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
-func TestAttachCmd(t *testing.T) {
-	eq := func(got []string, want ...string) {
-		t.Helper()
-		if len(got) != len(want) {
-			t.Fatalf("args = %v, want %v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("args = %v, want %v", got, want)
-			}
-		}
-	}
-	// Local host: run sbx directly.
-	eq(attachCmd("sbx", "", "id1").Args, "sbx", "run", "id1")
-	// A custom sbx binary is honored locally.
-	eq(attachCmd("/opt/sbx", "", "id1").Args, "/opt/sbx", "run", "id1")
-	// Remote host: run over an SSH PTY.
-	eq(attachCmd("sbx", "user@box", "id1").Args, "ssh", "-t", "user@box", "sbx", "run", "id1")
-	// Empty sbx bin falls back to "sbx".
-	eq(attachCmd("", "", "id1").Args, "sbx", "run", "id1")
-}
-
-func TestTerminalOpensForRunningSandbox(t *testing.T) {
-	d := &fakeDaemon{}
-	m := withSandboxes(New(d, "/work").WithSbx("sbx"),
+// runningSbx builds a model with one running sandbox selected.
+func runningSbx(d *fakeDaemon) Model {
+	return withSandboxes(sized(New(d, "/work").WithSbx("sbx")),
 		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
+}
 
-	// 't' on a running sandbox suspends the TUI into the agent session.
-	mm, cmd := update(m, press("t"))
+// TestInPlaceTerminalOpensAndDetaches proves `t` opens the session in-place
+// (no TUI restart) showing the snapshot, and ctrl+q detaches back to the list
+// (US2, FR-009/011/012, SC-003).
+func TestInPlaceTerminalOpensAndDetaches(t *testing.T) {
+	d := &fakeDaemon{}
+	m := runningSbx(d)
+
+	// `t` issues the attach command; it must not change screens synchronously
+	// (the attach happens on a command) and must not restart the program.
+	m, cmd := update(m, press("t"))
 	if cmd == nil {
-		t.Fatal("t on a running sandbox should open the agent terminal")
+		t.Fatal("t should start attaching to the session")
 	}
-	if mm.screen != screenList {
-		t.Errorf("screen should stay list (Bubble Tea suspends around Exec), got %v", mm.screen)
+	// Run the attach command -> termOpenedMsg, feed it back.
+	msg := runCmd(cmd)
+	opened, ok := msg.(termOpenedMsg)
+	if !ok {
+		t.Fatalf("expected termOpenedMsg, got %T (%v)", msg, msg)
+	}
+	m, _ = update(m, opened)
+	if m.screen != screenTerminal {
+		t.Fatalf("screen = %v, want screenTerminal", m.screen)
+	}
+	if d.attachedID != "sb1" {
+		t.Fatalf("attached to %q, want sb1", d.attachedID)
+	}
+	// The daemon snapshot is rendered in the view (FR-003).
+	if !strings.Contains(m.viewTerminal(), "SNAPSHOT:sb1") {
+		t.Fatalf("terminal view missing snapshot: %q", m.viewTerminal())
+	}
+
+	// A keystroke is forwarded to the PTY (echoed by the fake into the screen).
+	m, _ = update(m, press("x"))
+	if !strings.Contains(m.viewTerminal(), "x") {
+		t.Error("keystroke should reach the session and echo back")
+	}
+
+	// ctrl+q detaches back to the list; the session was closed client-side but
+	// the daemon keeps it running (that's the fake's Close, not a stop).
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if m.screen != screenList {
+		t.Fatalf("after detach screen = %v, want screenList", m.screen)
+	}
+	if !d.termClosed {
+		t.Error("detach should Close the client session")
+	}
+	if !strings.Contains(m.status, "detached") {
+		t.Errorf("status = %q, want a detach note", m.status)
 	}
 }
 
-func TestTerminalHintForStoppedSandbox(t *testing.T) {
-	d := &fakeDaemon{}
-	m := withSandboxes(New(d, "/work"),
+func TestInPlaceTerminalHintForStoppedSandbox(t *testing.T) {
+	m := withSandboxes(sized(New(&fakeDaemon{}, "/work")),
 		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_STOPPED}})
-
 	mm, cmd := update(m, press("t"))
 	if cmd != nil {
-		t.Error("t on a stopped sandbox should not open a terminal")
+		t.Error("t on a stopped sandbox should not attach")
 	}
 	if !strings.Contains(mm.status, "start the sandbox") {
 		t.Errorf("status = %q, want a start-first hint", mm.status)
 	}
 }
 
-func TestPopoutTerminalLaunchesConfiguredTerminal(t *testing.T) {
-	d := &fakeDaemon{}
-	// "true" is a harmless binary; the popout Starts it detached and reports.
-	m := withSandboxes(New(d, "/work").WithSbx("sbx").WithTerminal("true"),
-		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
-
-	mm, cmd := update(m, press("T"))
-	if cmd == nil {
-		t.Fatal("T on a running sandbox should open a popout terminal")
+func TestInPlaceTerminalAttachError(t *testing.T) {
+	d := &fakeDaemon{attachErr: errFocusUnsupported} // any non-nil error
+	m := runningSbx(d)
+	m, cmd := update(m, press("t"))
+	msg := runCmd(cmd)
+	closed, ok := msg.(termClosedMsg)
+	if !ok {
+		t.Fatalf("expected termClosedMsg on attach error, got %T", msg)
 	}
-	if mm.screen != screenList {
-		t.Errorf("popout should not leave the list, got %v", mm.screen)
+	m, _ = update(m, closed)
+	if m.screen != screenList {
+		t.Errorf("a failed attach should stay on the list, got %v", m.screen)
 	}
-	if s, ok := runCmd(cmd).(statusMsg); !ok || !strings.Contains(string(s), "terminal window") {
-		t.Errorf("popout should report success, got %v", runCmd(cmd))
-	}
-}
-
-func TestPopoutTerminalHintsWhenUnconfigured(t *testing.T) {
-	d := &fakeDaemon{}
-	// No terminal configured (WithTerminal("")) -> a hint, no launch.
-	m := withSandboxes(New(d, "/work").WithSbx("sbx").WithTerminal(""),
-		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
-
-	mm, cmd := update(m, press("T"))
-	if cmd != nil {
-		t.Error("popout with no terminal configured should not launch anything")
-	}
-	if !strings.Contains(mm.status, "no terminal configured") {
-		t.Errorf("status = %q, want a configure hint", mm.status)
+	if !strings.Contains(m.status, "terminal:") {
+		t.Errorf("status = %q, want the attach error surfaced", m.status)
 	}
 }
 
-func TestAgentExitReturnsAndRefreshes(t *testing.T) {
-	m := sized(New(&fakeDaemon{}, "/work"))
+// TestExternalTerminalSingleInstance proves `T` opens one external terminal and a
+// repeat `T` does not spawn a second (US3, FR-014/015).
+func TestExternalTerminalSingleInstance(t *testing.T) {
+	d := &fakeDaemon{}
+	// A long-lived spawn so processAlive stays true between the two presses.
+	m := withSandboxes(sized(New(d, "/work").WithSbx("sbx").WithTerminal("sleep 30")),
+		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
 
-	// Clean exit: refresh the list and note the return.
-	m, cmd := update(m, agentExitMsg{name: "demo"})
-	if !strings.Contains(m.status, "returned from demo") {
+	m, _ = update(m, press("T"))
+	if len(m.extTerm) != 1 {
+		t.Fatalf("first T should spawn one external terminal, have %d", len(m.extTerm))
+	}
+	if !strings.Contains(m.status, "opened") {
+		t.Errorf("status = %q, want an opened note", m.status)
+	}
+
+	m, _ = update(m, press("T"))
+	if len(m.extTerm) != 1 {
+		t.Fatalf("second T must not spawn another, have %d", len(m.extTerm))
+	}
+	if !strings.Contains(m.status, "already open") && !strings.Contains(m.status, "front") {
+		t.Errorf("status = %q, want an already-open / focus note", m.status)
+	}
+}
+
+func TestExternalTerminalRespectsDaemonExternalFlag(t *testing.T) {
+	d := &fakeDaemon{}
+	m := withSandboxes(sized(New(d, "/work").WithTerminal("sleep 30")),
+		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING, ExternalAttached: true}})
+	m, _ = update(m, press("T"))
+	if len(m.extTerm) != 0 {
+		t.Error("should not spawn when the daemon reports an external terminal already attached")
+	}
+	if !strings.Contains(m.status, "already has an external terminal") {
 		t.Errorf("status = %q", m.status)
 	}
-	if !m.listLoading {
-		t.Error("returning from the terminal should refresh the list")
-	}
-	if runCmd(cmd) == nil {
-		t.Error("exit should trigger a reload command")
-	}
+}
 
-	// Failed session: surface the error, no refresh.
-	m2, cmd := update(sized(New(&fakeDaemon{}, "/work")), agentExitMsg{name: "demo", err: context.DeadlineExceeded})
-	if m2.err == nil || !strings.Contains(m2.status, "failed") {
-		t.Errorf("error exit should surface the failure: status=%q err=%v", m2.status, m2.err)
-	}
+func TestExternalTerminalUnconfigured(t *testing.T) {
+	d := &fakeDaemon{}
+	m := withSandboxes(sized(New(d, "/work").WithTerminal("")),
+		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
+	m, cmd := update(m, press("T"))
 	if cmd != nil {
-		t.Error("a failed session should not trigger a reload")
+		t.Error("no terminal configured should not launch anything")
+	}
+	if !strings.Contains(m.status, "no terminal configured") {
+		t.Errorf("status = %q", m.status)
 	}
 }

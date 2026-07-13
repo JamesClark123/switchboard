@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -112,12 +113,32 @@ func (r *SbxRunner) Destroy(ctx context.Context, ref string) error {
 	return err
 }
 
+// IsRunning reports whether ref (a sandbox name or id) is a live container.
+//
+// It queries `sbx ls --json` and matches the ref against each sandbox's name or
+// id. sbx has no `status` subcommand (verified against sbx v0.33.0: `sbx status
+// <ref>` exits non-zero with usage text), so re-adoption must read the list.
 func (r *SbxRunner) IsRunning(ctx context.Context, ref string) (bool, error) {
-	out, err := r.run(ctx, nil, "status", ref)
+	out, err := r.run(ctx, nil, "ls", "--json")
 	if err != nil {
-		return false, nil // treat an errored/unknown handle as not running
+		return false, nil // treat an errored/unknown runtime as not running
 	}
-	return strings.Contains(strings.ToLower(out), "running"), nil
+	var listing struct {
+		Sandboxes []struct {
+			Name   string `json:"name"`
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"sandboxes"`
+	}
+	if err := json.Unmarshal([]byte(out), &listing); err != nil {
+		return false, nil // unparseable listing => treat as not running
+	}
+	for _, s := range listing.Sandboxes {
+		if s.Name == ref || s.ID == ref {
+			return strings.EqualFold(s.Status, "running"), nil
+		}
+	}
+	return false, nil
 }
 
 func (r *SbxRunner) CloneRepo(ctx context.Context, repo, dest string, log func(string)) error {

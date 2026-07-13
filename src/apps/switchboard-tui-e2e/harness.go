@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func stubSbx(t *testing.T) string {
 case "$1" in
   --version) echo "sbx-e2e 0.0" ;;
   create) echo "container-$3" ;;
-  status) echo "running" ;;
+  ls) echo '{"sandboxes":[]}' ;;   # IsRunning parses ls --json
   *) exit 0 ;;
 esac
 `
@@ -78,6 +79,12 @@ func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
 		"SWITCHBOARDD_SOCKET="+sock,
 		"SWITCHBOARDD_WORKSPACE_ROOT="+filepath.Join(dir, "ws"),
 		"SWITCHBOARDD_DATA_DIR="+filepath.Join(dir, "data"),
+		// Isolate the PID file per test. It otherwise defaults to a GLOBAL
+		// $XDG_RUNTIME_DIR/switchboard.pid, so the first test's daemon (SIGKILLed
+		// on cleanup, skipping its deferred pidfile clear) would leave a stale
+		// entry that makes the next test's daemon exit with "already running" and
+		// never bind its socket.
+		"SWITCHBOARDD_PID_FILE="+filepath.Join(dir, "data", "switchboard.pid"),
 		"SWITCHBOARDD_SBX_BIN=sbx",
 		"SWITCHBOARDD_HOST_ID=e2e-host",
 	)
@@ -86,13 +93,18 @@ func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
 		_ = os.Remove(sock)
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sock); err == nil {
 			return sock
+		}
+		// Signal 0 probes liveness; if the daemon died during startup, fail fast.
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("daemon exited during startup: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

@@ -14,7 +14,9 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // Server implements pb.SwitchboardServer.
@@ -31,6 +33,7 @@ type Server struct {
 	manifest      *pb.OptionManifest
 	hub           *agent.Hub
 	agents        *agent.Registry
+	terms         *terminal.Registry
 
 	grpc *grpc.Server
 }
@@ -76,9 +79,28 @@ func NewServer(cfg Config) *Server {
 		hub:           cfg.Hub,
 		agents:        cfg.Agents,
 	}
-	// Publish manager sandbox-changes onto the event hub (US4 live updates).
-	if cfg.Hub != nil && cfg.Manager != nil {
-		cfg.Manager.SetOnChange(cfg.Hub.PublishSandbox)
+	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
+	// created on first attach from the agent PTY, kept alive across client detach.
+	if cfg.Agents != nil {
+		s.terms = terminal.NewRegistry(
+			func(sandboxID string) (terminal.PTY, error) {
+				return s.agents.Session(sandboxID, s.agentSpecFor(sandboxID))
+			},
+			0,
+			func(sandboxID string) { s.publishTerminalCounts(sandboxID) },
+		)
+	}
+	// Publish manager sandbox-changes onto the event hub (US4 live updates), and
+	// end a sandbox's terminal session when it leaves the running state (FR-006).
+	if cfg.Manager != nil {
+		cfg.Manager.SetOnChange(func(sb *pb.Sandbox) {
+			if s.terms != nil && sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+				s.terms.Close(sb.GetId())
+			}
+			if cfg.Hub != nil {
+				cfg.Hub.PublishSandbox(s.withTerminalCounts(sb))
+			}
+		})
 	}
 	var opts []grpc.ServerOption
 	if cfg.Debug {
@@ -132,11 +154,42 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 	}, nil
 }
 
-// ListSandboxes returns every sandbox known to this daemon (FR-017).
+// ListSandboxes returns every sandbox known to this daemon (FR-017), each
+// enriched with its live terminal-attachment count (feature 003, FR-008).
 func (s *Server) ListSandboxes(_ context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
 	all, err := s.mgr.List()
 	if err != nil {
 		return nil, err
 	}
+	for i, sb := range all {
+		all[i] = s.withTerminalCounts(sb)
+	}
 	return &pb.ListSandboxesResponse{Sandboxes: all}, nil
+}
+
+// withTerminalCounts returns a copy of sb with attached_terminals/external_attached
+// filled from the live terminal registry (feature 003). The stored proto is never
+// mutated. Returns sb unchanged when no terminal registry is configured.
+func (s *Server) withTerminalCounts(sb *pb.Sandbox) *pb.Sandbox {
+	if s.terms == nil || sb == nil {
+		return sb
+	}
+	n, ext := s.terms.Counts(sb.GetId())
+	out := proto.Clone(sb).(*pb.Sandbox)
+	out.AttachedTerminals = int32(n)
+	out.ExternalAttached = ext
+	return out
+}
+
+// publishTerminalCounts republishes a sandbox with refreshed attachment counts so
+// the list page reflects attach/detach within one refresh (FR-008, SC-005).
+func (s *Server) publishTerminalCounts(sandboxID string) {
+	if s.hub == nil || s.mgr == nil {
+		return
+	}
+	sb, err := s.mgr.Get(sandboxID)
+	if err != nil || sb == nil {
+		return
+	}
+	s.hub.PublishSandbox(s.withTerminalCounts(sb))
 }

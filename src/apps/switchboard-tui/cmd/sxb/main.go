@@ -16,7 +16,30 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/ui"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
+
+// resolveWorkspaceSandbox asks the daemon whether the current working directory
+// belongs to a sandbox workspace (US4, FR-017/018). It returns the sandbox id
+// only when one is found AND running; a stopped/unknown match falls back to the
+// TUI with a hint (FR-019/020).
+func resolveWorkspaceSandbox(conn *client.Conn) (string, bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := conn.ResolveWorkspace(ctx, cwd)
+	if err != nil || !res.GetFound() {
+		return "", false
+	}
+	if res.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		fmt.Fprintf(os.Stderr, "sandbox %s is not running; opening the manager…\n", res.GetSandboxId())
+		return "", false
+	}
+	return res.GetSandboxId(), true
+}
 
 // version/commit/date are overridable at build time via -ldflags (set by
 // GoReleaser: -X main.version=... -X main.commit=... -X main.date=...).
@@ -27,12 +50,23 @@ var (
 )
 
 func main() {
-	// `sxb version` prints build info and exits; no-arg launches the TUI.
+	// `sxb version` prints build info and exits; `sxb attach` opens a single
+	// session full-screen; no-arg launches the TUI (auto-opening a session when
+	// run inside a sandbox workspace).
+	attachMode := false
+	var attach attachArgs
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version", "--version", "-v":
 			fmt.Printf("sxb %s (commit %s, built %s)\n", version, commit, date)
 			return
+		case "attach":
+			a, err := parseAttachArgs(os.Args[2:])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			attachMode, attach = true, a
 		}
 	}
 
@@ -51,6 +85,25 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = conn.Close() }()
+
+	// `sxb attach`: open the requested sandbox's session full-screen and exit.
+	if attachMode {
+		if err := runAttach(context.Background(), conn, attach.sandboxID); err != nil {
+			fmt.Fprintln(os.Stderr, "attach:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Auto-open (US4, FR-017): when run inside a sandbox workspace, jump straight
+	// into that sandbox's session instead of the general TUI.
+	if id, ok := resolveWorkspaceSandbox(conn); ok {
+		if err := runAttach(context.Background(), conn, id); err != nil {
+			fmt.Fprintln(os.Stderr, "attach:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Source candidates are offered from the current working directory's parent
 	// by default; a future launch wizard will let the user pick a root.

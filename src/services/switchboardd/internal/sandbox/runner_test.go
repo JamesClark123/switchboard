@@ -22,7 +22,7 @@ case "$1" in
   create) echo "layer: Already exists"; echo "Created sandbox '$3'"; echo "  run: sbx run --name $3" ;;
   stop|start) exit 0 ;;
   rm) exit 0 ;;
-  status) echo "running" ;;
+  ls) echo '{"sandboxes":[{"name":"sb1","id":"id-1","status":"running"}]}' ;;  # IsRunning parses ls --json
   clone) mkdir -p "$3" ;;             # $3 is dest
   *) echo "unknown $1" >&2; exit 1 ;;
 esac
@@ -93,6 +93,48 @@ func TestSbxRunnerErrorPropagation(t *testing.T) {
 	running, err := r.IsRunning(context.Background(), "ref")
 	if err != nil || running {
 		t.Errorf("IsRunning on bad binary = %v, %v; want false, nil", running, err)
+	}
+}
+
+// sbxWithLs writes an sbx stub whose `ls` subcommand prints the given payload,
+// so IsRunning's ls --json parsing can be exercised across shapes.
+func sbxWithLs(t *testing.T, lsPayload string) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	script := "#!/usr/bin/env bash\nif [ \"$1\" = ls ]; then cat <<'EOF'\n" + lsPayload + "\nEOF\nfi\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func TestIsRunning(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		payload string
+		ref     string
+		want    bool
+	}{
+		{"match by name running", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`, "sb1", true},
+		{"match by id running", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`, "u1", true},
+		{"match but stopped", `{"sandboxes":[{"name":"sb1","id":"u1","status":"stopped"}]}`, "sb1", false},
+		{"no matching ref", `{"sandboxes":[{"name":"other","id":"u2","status":"running"}]}`, "sb1", false},
+		{"unparseable output", `not json at all`, "sb1", false},
+		{"empty list", `{"sandboxes":[]}`, "sb1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &SbxRunner{Bin: sbxWithLs(t, tc.payload)}
+			got, err := r.IsRunning(ctx, tc.ref)
+			if err != nil {
+				t.Fatalf("IsRunning err = %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("IsRunning(%q) = %v, want %v", tc.ref, got, tc.want)
+			}
+		})
 	}
 }
 

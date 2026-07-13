@@ -1,0 +1,112 @@
+// Contract DELTA for feature 003 (Terminal Session Persistence & Sandbox Tags).
+//
+// This file documents the changes to be merged into the authoritative contract at
+//   src/libs/switchboard-proto/proto/switchboard.proto
+// It is NOT a standalone service; it shows only the added/changed RPCs and messages,
+// with existing surrounding types referenced for context. Field numbers continue the
+// existing messages' numbering to stay backward-compatible with features 001/002.
+//
+// Design basis: research.md R1 (snapshot broadcaster), R5 (attach kinds / single external),
+// R6 (tags + workspace resolve). Persistence lives in the daemon; the transport just
+// carries snapshot-then-live bytes and control frames.
+
+syntax = "proto3";
+package switchboard.v1;
+
+// ============================================================================
+// service Switchboard — ADDED RPCs (append to the existing service block)
+// ============================================================================
+
+// rpc SetSandboxTag(SetSandboxTagRequest) returns (Sandbox);
+//     Set/change/clear a sandbox's mutable purpose tag (FR-021..024, R6). Empty
+//     tag clears it. Returns the updated Sandbox (with only `tag` changed).
+//
+// rpc ResolveWorkspace(ResolveWorkspaceRequest) returns (ResolveWorkspaceResponse);
+//     Authoritative "which sandbox owns this directory path" lookup (FR-017/018,
+//     R6). Primary detection is the on-disk `.switchboard/session.json` marker
+//     walk-up; this RPC is the cross-check for hosts where the client can't read
+//     the marker directly.
+//
+// AttachAgent is REUSED (already: `rpc AttachAgent(stream AgentInput) returns
+// (stream AgentOutput);`) but its message shapes are extended below to carry the
+// attach kind (first frame), the snapshot (first server frame), and resize.
+
+// ============================================================================
+// AttachAgent v2 — CHANGED messages
+// ============================================================================
+
+// AgentInput: the FIRST message on the stream now carries attach metadata; later
+// messages carry keystrokes or resize as before.
+message AgentInput {
+  string sandbox_id = 1;              // first message selects the sandbox (existing)
+  bytes data = 2;                     // raw PTY bytes / keystrokes (existing)
+  Resize resize = 3;                  // window size change (existing)
+  message Resize { uint32 cols = 1; uint32 rows = 2; }
+
+  // NEW: present only on the first frame. Declares the client kind so the daemon
+  // can enforce one-EXTERNAL-per-sandbox (R5) and count attachments (FR-007/008).
+  AttachInfo attach = 4;
+  message AttachInfo {
+    ClientKind kind = 1;              // IN_TUI | EXTERNAL
+    string client_label = 2;          // optional, for diagnostics
+    Resize initial_size = 3;          // client's starting window size
+  }
+}
+
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  CLIENT_KIND_IN_TUI = 1;            // the in-place Bubble Tea terminal view (US2)
+  CLIENT_KIND_EXTERNAL = 2;         // an `sxb attach` external terminal (US3)
+}
+
+// AgentOutput: was `bytes data = 1;`. Now a oneof so the FIRST server frame is a
+// one-shot Snapshot (current-screen redraw + optional scrollback, R1), followed by
+// live `data` frames.
+message AgentOutput {
+  oneof frame {
+    Snapshot snapshot = 1;           // first frame on (re)attach — immediate redraw
+    bytes data = 2;                  // live PTY output (existing semantics)
+  }
+  message Snapshot {
+    bytes data = 1;                  // ANSI redraw reconstructing the current screen
+    uint32 rows = 2;
+    uint32 cols = 3;
+    bytes scrollback = 4;            // optional bounded tail of prior output (FR-005)
+  }
+}
+
+// The daemon MUST reject a second CLIENT_KIND_EXTERNAL attach for the same sandbox
+// with gRPC status FAILED_PRECONDITION and a details message the client maps to
+// "external terminal already open" → bring existing to front (FR-014/015, R5).
+
+// ============================================================================
+// Tags & workspace resolution — NEW messages
+// ============================================================================
+
+message SetSandboxTagRequest {
+  string sandbox_id = 1;
+  string tag = 2;                    // <=64 chars; empty clears (FR-021/022, R6)
+}
+// returns Sandbox (existing message; see CHANGED fields below)
+
+message ResolveWorkspaceRequest {
+  string path = 1;                   // an absolute cwd (or any descendant) to resolve
+}
+message ResolveWorkspaceResponse {
+  bool found = 1;
+  string sandbox_id = 2;             // set when found
+  SandboxState state = 3;            // so the client can message "stopped" (FR-020)
+}
+
+// ============================================================================
+// Sandbox — CHANGED fields (append to the existing Sandbox message)
+// ============================================================================
+
+// message Sandbox { ... existing fields 1..14 ... }
+//   string tag = 15;                 // persisted mutable purpose tag (FR-023/024, R6)
+//   int32  attached_terminals = 16;  // derived live attachment count (FR-007/008)
+//   bool   external_attached = 17;   // derived: an EXTERNAL attachment exists (R5)
+//
+// tag is persisted in the bbolt registry; attached_terminals/external_attached are
+// derived from the live TerminalSession and republished via the existing
+// Event.sandbox_changed stream whenever a client attaches or detaches (SC-005).

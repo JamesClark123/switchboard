@@ -45,6 +45,8 @@ const (
 	Switchboard_RenameSandbox_FullMethodName        = "/switchboard.v1.Switchboard/RenameSandbox"
 	Switchboard_ListSourceCandidates_FullMethodName = "/switchboard.v1.Switchboard/ListSourceCandidates"
 	Switchboard_CheckResources_FullMethodName       = "/switchboard.v1.Switchboard/CheckResources"
+	Switchboard_SetSandboxTag_FullMethodName        = "/switchboard.v1.Switchboard/SetSandboxTag"
+	Switchboard_ResolveWorkspace_FullMethodName     = "/switchboard.v1.Switchboard/ResolveWorkspace"
 	Switchboard_PromptAgent_FullMethodName          = "/switchboard.v1.Switchboard/PromptAgent"
 	Switchboard_AttachAgent_FullMethodName          = "/switchboard.v1.Switchboard/AttachAgent"
 	Switchboard_Subscribe_FullMethodName            = "/switchboard.v1.Switchboard/Subscribe"
@@ -75,9 +77,15 @@ type SwitchboardClient interface {
 	ListSourceCandidates(ctx context.Context, in *ListSourceCandidatesRequest, opts ...grpc.CallOption) (*ListSourceCandidatesResponse, error)
 	// Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
 	CheckResources(ctx context.Context, in *CheckResourcesRequest, opts ...grpc.CallOption) (*ResourceReport, error)
+	// --- Sandbox tag (FR-021..024, feature 003): mutable, non-unique purpose label. ---
+	SetSandboxTag(ctx context.Context, in *SetSandboxTagRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// --- Workspace -> sandbox resolution for `sxb` auto-open (FR-017/018, feature 003). ---
+	ResolveWorkspace(ctx context.Context, in *ResolveWorkspaceRequest, opts ...grpc.CallOption) (*ResolveWorkspaceResponse, error)
 	// --- Agent interaction (FR-022, FR-023) ---
 	PromptAgent(ctx context.Context, in *PromptAgentRequest, opts ...grpc.CallOption) (*PromptAgentResponse, error)
-	// Bidirectional PTY stream for "attach in another terminal" / inline prompt pane.
+	// Bidirectional PTY stream for the persistent terminal session (feature 003):
+	// the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
+	// then live `data` frames follow. The session survives client detach.
 	AttachAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentInput, AgentOutput], error)
 	// --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
 	// On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
@@ -234,6 +242,26 @@ func (c *switchboardClient) CheckResources(ctx context.Context, in *CheckResourc
 	return out, nil
 }
 
+func (c *switchboardClient) SetSandboxTag(ctx context.Context, in *SetSandboxTagRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_SetSandboxTag_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) ResolveWorkspace(ctx context.Context, in *ResolveWorkspaceRequest, opts ...grpc.CallOption) (*ResolveWorkspaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveWorkspaceResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ResolveWorkspace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) PromptAgent(ctx context.Context, in *PromptAgentRequest, opts ...grpc.CallOption) (*PromptAgentResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PromptAgentResponse)
@@ -319,9 +347,15 @@ type SwitchboardServer interface {
 	ListSourceCandidates(context.Context, *ListSourceCandidatesRequest) (*ListSourceCandidatesResponse, error)
 	// Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
 	CheckResources(context.Context, *CheckResourcesRequest) (*ResourceReport, error)
+	// --- Sandbox tag (FR-021..024, feature 003): mutable, non-unique purpose label. ---
+	SetSandboxTag(context.Context, *SetSandboxTagRequest) (*Sandbox, error)
+	// --- Workspace -> sandbox resolution for `sxb` auto-open (FR-017/018, feature 003). ---
+	ResolveWorkspace(context.Context, *ResolveWorkspaceRequest) (*ResolveWorkspaceResponse, error)
 	// --- Agent interaction (FR-022, FR-023) ---
 	PromptAgent(context.Context, *PromptAgentRequest) (*PromptAgentResponse, error)
-	// Bidirectional PTY stream for "attach in another terminal" / inline prompt pane.
+	// Bidirectional PTY stream for the persistent terminal session (feature 003):
+	// the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
+	// then live `data` frames follow. The session survives client detach.
 	AttachAgent(grpc.BidiStreamingServer[AgentInput, AgentOutput]) error
 	// --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
 	// On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
@@ -373,6 +407,12 @@ func (UnimplementedSwitchboardServer) ListSourceCandidates(context.Context, *Lis
 }
 func (UnimplementedSwitchboardServer) CheckResources(context.Context, *CheckResourcesRequest) (*ResourceReport, error) {
 	return nil, status.Error(codes.Unimplemented, "method CheckResources not implemented")
+}
+func (UnimplementedSwitchboardServer) SetSandboxTag(context.Context, *SetSandboxTagRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSandboxTag not implemented")
+}
+func (UnimplementedSwitchboardServer) ResolveWorkspace(context.Context, *ResolveWorkspaceRequest) (*ResolveWorkspaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveWorkspace not implemented")
 }
 func (UnimplementedSwitchboardServer) PromptAgent(context.Context, *PromptAgentRequest) (*PromptAgentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PromptAgent not implemented")
@@ -587,6 +627,42 @@ func _Switchboard_CheckResources_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_SetSandboxTag_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSandboxTagRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetSandboxTag(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetSandboxTag_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetSandboxTag(ctx, req.(*SetSandboxTagRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_ResolveWorkspace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveWorkspaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ResolveWorkspace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ResolveWorkspace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ResolveWorkspace(ctx, req.(*ResolveWorkspaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_PromptAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PromptAgentRequest)
 	if err := dec(in); err != nil {
@@ -697,6 +773,14 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CheckResources",
 			Handler:    _Switchboard_CheckResources_Handler,
+		},
+		{
+			MethodName: "SetSandboxTag",
+			Handler:    _Switchboard_SetSandboxTag_Handler,
+		},
+		{
+			MethodName: "ResolveWorkspace",
+			Handler:    _Switchboard_ResolveWorkspace_Handler,
 		},
 		{
 			MethodName: "PromptAgent",

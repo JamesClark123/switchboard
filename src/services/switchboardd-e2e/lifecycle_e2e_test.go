@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,19 +67,41 @@ func startDaemon(t *testing.T, bin, dataDir, wsDir string) *daemonProc {
 		"SWITCHBOARDD_WORKSPACE_ROOT="+wsDir,
 		"SWITCHBOARDD_DATA_DIR="+dataDir,
 		"SWITCHBOARDD_HOST_ID=e2e",
+		// Isolate the PID file per data dir. It defaults to a GLOBAL
+		// $XDG_RUNTIME_DIR/switchboard.pid, which would (a) collide with a real
+		// daemon on the host and (b) let one leaked test daemon wedge every later
+		// run with "daemon already running". Keeping it beside DataDir means the
+		// re-adoption test's two daemons share it (as intended) while different
+		// tests and any real daemon stay isolated.
+		"SWITCHBOARDD_PID_FILE="+filepath.Join(dataDir, "switchboard.pid"),
 	)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Guarantee the process is reaped even if this function t.Fatals before
+	// returning a daemonProc (a too-tight readiness wait previously leaked
+	// daemons that then blocked subsequent runs).
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	// On a restart the daemon re-adopts still-running sandboxes and introspects
+	// the sbx option surface BEFORE it binds the socket (see cmd/sxbd/main.go:
+	// mgr.Readopt + sbxkit.Build precede srv.Serve). Against the real runtime that
+	// startup work makes several sbx/Docker calls and easily exceeds a few seconds,
+	// so the wait is generous — a too-tight deadline only produced a spurious
+	// "socket never appeared" while the daemon was still adopting.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sock); err == nil {
 			return &daemonProc{cmd: cmd, sock: sock}
 		}
+		// Signal 0 probes liveness without delivering a signal; ESRCH means the
+		// daemon died during startup, so fail fast instead of waiting the full 30s.
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			t.Fatalf("daemon exited during startup: %v", err)
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("daemon socket never appeared")
+	t.Fatal("daemon socket never appeared within 30s")
 	return nil
 }
 
@@ -148,6 +171,9 @@ func TestDaemonLifecycleE2E(t *testing.T) {
 	}
 
 	sb := launch(t, c, src)
+	// Safety net: the test destroys the sandbox explicitly below, but a mid-test
+	// failure would otherwise leak the "e2e"-named container into the next run.
+	t.Cleanup(func() { _ = exec.Command("sbx", "rm", "-f", "e2e").Run() })
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		t.Fatalf("state = %v", sb.GetState())
 	}
@@ -194,6 +220,10 @@ func TestDaemonReadoptionE2E(t *testing.T) {
 	_ = os.MkdirAll(src, 0o755)
 	_ = os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644)
 	sb := launch(t, c, src)
+	// This test intentionally never destroys the sandbox through the daemon (it
+	// asserts re-adoption of a still-running one), so guarantee host-level cleanup
+	// or the "e2e"-named container leaks and collides with the next run's create.
+	t.Cleanup(func() { _ = exec.Command("sbx", "rm", "-f", "e2e").Run() })
 
 	// Restart the daemon (the container keeps running).
 	d.stop()

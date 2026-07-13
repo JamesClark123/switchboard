@@ -90,7 +90,16 @@ func (p *ptySession) Close() error {
 }
 
 // agentCommand maps an AgentSpec to the in-sandbox command. The daemon execs into
-// the sandbox via `sbx exec`. NOTE (R6): the exact exec surface is unverified.
+// the sandbox via `sbx exec`.
+//
+// The command is launched UNWRAPPED (no setsid/nohup) on purpose. The T002 spike
+// (research.md R4 "Verification result") verified against real sbx/Docker that a
+// docker-exec child survives both a hard kill of the host exec client and a
+// controlling-PTY hangup — the exact ptySession.Close() sequence — so host-side
+// persistence already satisfies FR-002 (an in-flight AI prompt keeps running after
+// the terminal closes / across a daemon restart's client-kill). A setsid wrap would
+// add nothing to survival and would strip the controlling TTY, risking interactive
+// job-control breakage; it is therefore deliberately not used.
 func agentCommand(sbxBin, sandboxID string, spec *pb.AgentSpec) *exec.Cmd {
 	inner := "bash"
 	if spec.GetKind() == "claude-code" {

@@ -185,7 +185,41 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 }
 
 func sandboxTitle(sb *pb.Sandbox) string {
-	return stateBadge(sb.GetState()) + "  " + sb.GetDisplayName()
+	title := stateBadge(sb.GetState()) + "  " + sb.GetDisplayName()
+	if tag := sb.GetTag(); tag != "" {
+		title += "  " + tagBadgeStyle.Render("#"+tag)
+	}
+	if n := sb.GetAttachedTerminals(); n > 0 {
+		label := "▣ " + itoa(int(n))
+		if sb.GetExternalAttached() {
+			label += "⧉" // an external terminal is among them
+		}
+		title += "  " + termCountStyle.Render(label)
+	}
+	return title
+}
+
+// itoa is a tiny int→string without importing strconv for one call site.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
 }
 
 // agentBadge renders a live indicator of the coding agent's status for a RUNNING
@@ -289,7 +323,10 @@ func (m *Model) removeSandbox(id string) bool {
 func renderFieldsDiffer(a, b *pb.Sandbox) bool {
 	return a.GetState() != b.GetState() ||
 		a.GetAgent().GetStatus() != b.GetAgent().GetStatus() ||
-		a.GetDisplayName() != b.GetDisplayName()
+		a.GetDisplayName() != b.GetDisplayName() ||
+		a.GetTag() != b.GetTag() ||
+		a.GetAttachedTerminals() != b.GetAttachedTerminals() ||
+		a.GetExternalAttached() != b.GetExternalAttached()
 }
 
 func sandboxDesc(sb *pb.Sandbox) string {
@@ -351,12 +388,17 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enterUpdate()
 	case keyIs(msg, m.keys.Terminal):
 		if sb := m.current(); sb != nil {
-			return m.openAgentTerminal(sb, m.currentHostID())
+			return m.enterTerminal(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Popout):
 		if sb := m.current(); sb != nil {
-			return m.openPopoutTerminal(sb, m.currentHostID())
+			return m.openExternalTerminal(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.Tag):
+		if sb := m.current(); sb != nil {
+			return m.enterTag(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.VSCode):

@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260622092256-25656177ba8e
 	github.com/jamesclark123/switchboard/libs/switchboard-proto v0.0.0
 	github.com/pelletier/go-toml/v2 v2.2.3
+	golang.org/x/term v0.40.0
 	google.golang.org/grpc v1.81.1
 )
 
@@ -29,7 +30,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.6
-	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
+	github.com/charmbracelet/x/cellbuf v0.0.15
 	github.com/charmbracelet/x/exp/golden v0.0.0-20241011142426-46044092ad91 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect

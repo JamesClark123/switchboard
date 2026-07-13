@@ -44,9 +44,17 @@ service Switchboard {
   // Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
   rpc CheckResources(CheckResourcesRequest) returns (ResourceReport);
 
+  // --- Sandbox tag (FR-021..024, feature 003): mutable, non-unique purpose label. ---
+  rpc SetSandboxTag(SetSandboxTagRequest) returns (Sandbox);
+
+  // --- Workspace -> sandbox resolution for `sxb` auto-open (FR-017/018, feature 003). ---
+  rpc ResolveWorkspace(ResolveWorkspaceRequest) returns (ResolveWorkspaceResponse);
+
   // --- Agent interaction (FR-022, FR-023) ---
   rpc PromptAgent(PromptAgentRequest) returns (PromptAgentResponse);
-  // Bidirectional PTY stream for "attach in another terminal" / inline prompt pane.
+  // Bidirectional PTY stream for the persistent terminal session (feature 003):
+  // the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
+  // then live `data` frames follow. The session survives client detach.
   rpc AttachAgent(stream AgentInput) returns (stream AgentOutput);
 
   // --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
@@ -88,6 +96,14 @@ enum NotificationKind {
   NOTIFICATION_KIND_UNSPECIFIED = 0;
   NOTIFICATION_KIND_TASK_COMPLETE = 1;    // FR-024
   NOTIFICATION_KIND_NEEDS_PROMPTING = 2;  // FR-025
+}
+
+// ClientKind distinguishes attachments to a persistent terminal session so the
+// daemon can enforce one-EXTERNAL-per-sandbox and count attachments (feature 003).
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  CLIENT_KIND_IN_TUI = 1;    // the in-place Bubble Tea terminal view (US2)
+  CLIENT_KIND_EXTERNAL = 2;  // an `sxb attach` external terminal (US3)
 }
 
 // ---------- Core messages ----------
@@ -135,6 +151,10 @@ message Sandbox {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   string error = 14;                     // populated when state == ERROR
+  // --- feature 003 ---
+  string tag = 15;                       // mutable, non-unique purpose label (FR-021..024); persisted
+  int32 attached_terminals = 16;         // derived: live terminal-session attachment count (FR-007/008)
+  bool external_attached = 17;           // derived: an EXTERNAL attachment exists (FR-014/015)
 }
 
 // ---------- RPC payloads ----------
@@ -208,6 +228,18 @@ message SandboxIdRequest { string sandbox_id = 1; }
 message DestroyResponse { bool deleted_workspace = 1; }
 message RenameSandboxRequest { string sandbox_id = 1; string display_name = 2; }
 
+// feature 003: set/change/clear a sandbox's mutable purpose tag. Empty tag clears
+// it. Returns the updated Sandbox (only `tag`/`updated_at` change).
+message SetSandboxTagRequest { string sandbox_id = 1; string tag = 2; }
+
+// feature 003: resolve which sandbox owns a filesystem path (for `sxb` auto-open).
+message ResolveWorkspaceRequest { string path = 1; }
+message ResolveWorkspaceResponse {
+  bool found = 1;
+  string sandbox_id = 2;
+  SandboxState state = 3;                // so the client can message "stopped" (FR-020)
+}
+
 message ListSourceCandidatesRequest {
   string root = 1;                       // directory to enumerate (default: a configured base)
   bool repos_only = 2;
@@ -230,8 +262,29 @@ message AgentInput {
   bytes data = 2;                        // raw PTY bytes (keystrokes)
   Resize resize = 3;
   message Resize { uint32 cols = 1; uint32 rows = 2; }
+
+  // attach is set only on the FIRST frame (feature 003). It declares the client
+  // kind so the daemon can enforce one-EXTERNAL-per-sandbox and count attachments.
+  AttachInfo attach = 4;
+  message AttachInfo {
+    ClientKind kind = 1;
+    string client_label = 2;             // optional, diagnostics
+    Resize initial_size = 3;             // client's starting window size
+  }
 }
-message AgentOutput { bytes data = 1; }  // raw PTY bytes (screen)
+
+// AgentOutput is either a one-shot Snapshot (first frame on attach) or a live
+// `data` frame (feature 003). A frame with snapshot set carries no live data.
+message AgentOutput {
+  bytes data = 1;                        // live PTY output (screen)
+  Snapshot snapshot = 2;                 // set only on the first frame after attach
+  message Snapshot {
+    bytes data = 1;                      // bytes to replay for an immediate redraw
+    uint32 rows = 2;
+    uint32 cols = 3;
+    bytes scrollback = 4;                // reserved: bounded prior-output tail (FR-005)
+  }
+}
 
 message SubscribeRequest {
   bool replay_undelivered = 1;           // replay missed notifications on reconnect (FR-026b)

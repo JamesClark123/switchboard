@@ -65,6 +65,10 @@ var (
 	agentWaitStyle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
 	agentIdleStyle = lipgloss.NewStyle().Foreground(colRunning)
 
+	// feature 003: sandbox tag chip (US5) and connected-terminal count (US3).
+	tagBadgeStyle  = lipgloss.NewStyle().Foreground(colAccentB).Bold(true)
+	termCountStyle = lipgloss.NewStyle().Foreground(colMuted)
+
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colSubtle).

@@ -157,7 +157,9 @@ func TestPromptAndAttachAgent(t *testing.T) {
 		t.Fatalf("PromptAgent: %v / accepted=%v", err, resp.GetAccepted())
 	}
 
-	// Attach: send raw bytes, receive the echo back over the bidi stream.
+	// Attach: send raw bytes, receive the echo back over the bidi stream. Under
+	// feature 003 the first frame may be a Snapshot (replaying the earlier prompt)
+	// followed by live data frames, so collect bytes across a few frames.
 	stream, err := client.AttachAgent(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -165,14 +167,20 @@ func TestPromptAndAttachAgent(t *testing.T) {
 	if err := stream.Send(&pb.AgentInput{SandboxId: "sb1", Data: []byte("echo me")}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := stream.Recv()
-	if err != nil {
-		t.Fatal(err)
+	var got []byte
+	for i := 0; i < 5; i++ {
+		out, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, out.GetSnapshot().GetData()...)
+		got = append(got, out.GetData()...)
+		if containsBytes(got, "echo me") {
+			break
+		}
 	}
-	// The session is shared with the prompt above, so output may include the
-	// earlier prompt; assert our bytes are present.
-	if !containsBytes(out.GetData(), "hi there") && !containsBytes(out.GetData(), "echo me") {
-		t.Errorf("attach output = %q", string(out.GetData()))
+	if !containsBytes(got, "echo me") {
+		t.Errorf("attach output = %q, want it to contain the echoed bytes", string(got))
 	}
 }
 

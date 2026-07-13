@@ -21,6 +21,7 @@ type keyMap struct {
 	StartStop   key.Binding
 	Destroy     key.Binding
 	Rename      key.Binding
+	Tag         key.Binding
 	Update      key.Binding
 	Add         key.Binding
 	Delete      key.Binding
@@ -46,11 +47,12 @@ func newKeyMap() keyMap {
 		Groups:     key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "groups")),
 		VSCode:     key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "vscode")),
 		Terminal:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "terminal")),
-		Popout:     key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "popout terminal")),
+		Popout:     key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "external terminal")),
 		Inbox:      key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "inbox")),
 		StartStop:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start/stop")),
 		Destroy:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "destroy")),
 		Rename:     key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
+		Tag:        key.NewBinding(key.WithKeys("#"), key.WithHelp("#", "tag")),
 		Update:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "update")),
 		Add:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
@@ -81,7 +83,7 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

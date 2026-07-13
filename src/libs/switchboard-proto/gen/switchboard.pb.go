@@ -248,6 +248,57 @@ func (NotificationKind) EnumDescriptor() ([]byte, []int) {
 	return file_switchboard_proto_rawDescGZIP(), []int{3}
 }
 
+// ClientKind distinguishes attachments to a persistent terminal session so the
+// daemon can enforce one-EXTERNAL-per-sandbox and count attachments (feature 003).
+type ClientKind int32
+
+const (
+	ClientKind_CLIENT_KIND_UNSPECIFIED ClientKind = 0
+	ClientKind_CLIENT_KIND_IN_TUI      ClientKind = 1 // the in-place Bubble Tea terminal view (US2)
+	ClientKind_CLIENT_KIND_EXTERNAL    ClientKind = 2 // an `sxb attach` external terminal (US3)
+)
+
+// Enum value maps for ClientKind.
+var (
+	ClientKind_name = map[int32]string{
+		0: "CLIENT_KIND_UNSPECIFIED",
+		1: "CLIENT_KIND_IN_TUI",
+		2: "CLIENT_KIND_EXTERNAL",
+	}
+	ClientKind_value = map[string]int32{
+		"CLIENT_KIND_UNSPECIFIED": 0,
+		"CLIENT_KIND_IN_TUI":      1,
+		"CLIENT_KIND_EXTERNAL":    2,
+	}
+)
+
+func (x ClientKind) Enum() *ClientKind {
+	p := new(ClientKind)
+	*p = x
+	return p
+}
+
+func (x ClientKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClientKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[4].Descriptor()
+}
+
+func (ClientKind) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[4]
+}
+
+func (x ClientKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClientKind.Descriptor instead.
+func (ClientKind) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{4}
+}
+
 type AgentSpec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // e.g. "claude-code"
@@ -515,8 +566,12 @@ type Sandbox struct {
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	Error          string                 `protobuf:"bytes,14,opt,name=error,proto3" json:"error,omitempty"` // populated when state == ERROR
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// --- feature 003 ---
+	Tag               string `protobuf:"bytes,15,opt,name=tag,proto3" json:"tag,omitempty"`                                                       // mutable, non-unique purpose label (FR-021..024); persisted
+	AttachedTerminals int32  `protobuf:"varint,16,opt,name=attached_terminals,json=attachedTerminals,proto3" json:"attached_terminals,omitempty"` // derived: live terminal-session attachment count (FR-007/008)
+	ExternalAttached  bool   `protobuf:"varint,17,opt,name=external_attached,json=externalAttached,proto3" json:"external_attached,omitempty"`    // derived: an EXTERNAL attachment exists (FR-014/015)
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Sandbox) Reset() {
@@ -645,6 +700,27 @@ func (x *Sandbox) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *Sandbox) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
+func (x *Sandbox) GetAttachedTerminals() int32 {
+	if x != nil {
+		return x.AttachedTerminals
+	}
+	return 0
+}
+
+func (x *Sandbox) GetExternalAttached() bool {
+	if x != nil {
+		return x.ExternalAttached
+	}
+	return false
 }
 
 type GetDaemonInfoRequest struct {
@@ -1382,6 +1458,165 @@ func (x *RenameSandboxRequest) GetDisplayName() string {
 	return ""
 }
 
+// feature 003: set/change/clear a sandbox's mutable purpose tag. Empty tag clears
+// it. Returns the updated Sandbox (only `tag`/`updated_at` change).
+type SetSandboxTagRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	Tag           string                 `protobuf:"bytes,2,opt,name=tag,proto3" json:"tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetSandboxTagRequest) Reset() {
+	*x = SetSandboxTagRequest{}
+	mi := &file_switchboard_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetSandboxTagRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetSandboxTagRequest) ProtoMessage() {}
+
+func (x *SetSandboxTagRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetSandboxTagRequest.ProtoReflect.Descriptor instead.
+func (*SetSandboxTagRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *SetSandboxTagRequest) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
+	}
+	return ""
+}
+
+func (x *SetSandboxTagRequest) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
+// feature 003: resolve which sandbox owns a filesystem path (for `sxb` auto-open).
+type ResolveWorkspaceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveWorkspaceRequest) Reset() {
+	*x = ResolveWorkspaceRequest{}
+	mi := &file_switchboard_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveWorkspaceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveWorkspaceRequest) ProtoMessage() {}
+
+func (x *ResolveWorkspaceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveWorkspaceRequest.ProtoReflect.Descriptor instead.
+func (*ResolveWorkspaceRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ResolveWorkspaceRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type ResolveWorkspaceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Found         bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	SandboxId     string                 `protobuf:"bytes,2,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	State         SandboxState           `protobuf:"varint,3,opt,name=state,proto3,enum=switchboard.v1.SandboxState" json:"state,omitempty"` // so the client can message "stopped" (FR-020)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveWorkspaceResponse) Reset() {
+	*x = ResolveWorkspaceResponse{}
+	mi := &file_switchboard_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveWorkspaceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveWorkspaceResponse) ProtoMessage() {}
+
+func (x *ResolveWorkspaceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveWorkspaceResponse.ProtoReflect.Descriptor instead.
+func (*ResolveWorkspaceResponse) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ResolveWorkspaceResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *ResolveWorkspaceResponse) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
+	}
+	return ""
+}
+
+func (x *ResolveWorkspaceResponse) GetState() SandboxState {
+	if x != nil {
+		return x.State
+	}
+	return SandboxState_SANDBOX_STATE_UNSPECIFIED
+}
+
 type ListSourceCandidatesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"` // directory to enumerate (default: a configured base)
@@ -1392,7 +1627,7 @@ type ListSourceCandidatesRequest struct {
 
 func (x *ListSourceCandidatesRequest) Reset() {
 	*x = ListSourceCandidatesRequest{}
-	mi := &file_switchboard_proto_msgTypes[18]
+	mi := &file_switchboard_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1404,7 +1639,7 @@ func (x *ListSourceCandidatesRequest) String() string {
 func (*ListSourceCandidatesRequest) ProtoMessage() {}
 
 func (x *ListSourceCandidatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[18]
+	mi := &file_switchboard_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1417,7 +1652,7 @@ func (x *ListSourceCandidatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSourceCandidatesRequest.ProtoReflect.Descriptor instead.
 func (*ListSourceCandidatesRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{18}
+	return file_switchboard_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListSourceCandidatesRequest) GetRoot() string {
@@ -1443,7 +1678,7 @@ type ListSourceCandidatesResponse struct {
 
 func (x *ListSourceCandidatesResponse) Reset() {
 	*x = ListSourceCandidatesResponse{}
-	mi := &file_switchboard_proto_msgTypes[19]
+	mi := &file_switchboard_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1455,7 +1690,7 @@ func (x *ListSourceCandidatesResponse) String() string {
 func (*ListSourceCandidatesResponse) ProtoMessage() {}
 
 func (x *ListSourceCandidatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[19]
+	mi := &file_switchboard_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1468,7 +1703,7 @@ func (x *ListSourceCandidatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSourceCandidatesResponse.ProtoReflect.Descriptor instead.
 func (*ListSourceCandidatesResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{19}
+	return file_switchboard_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListSourceCandidatesResponse) GetCandidates() []*SourceRef {
@@ -1487,7 +1722,7 @@ type CheckResourcesRequest struct {
 
 func (x *CheckResourcesRequest) Reset() {
 	*x = CheckResourcesRequest{}
-	mi := &file_switchboard_proto_msgTypes[20]
+	mi := &file_switchboard_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1499,7 +1734,7 @@ func (x *CheckResourcesRequest) String() string {
 func (*CheckResourcesRequest) ProtoMessage() {}
 
 func (x *CheckResourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[20]
+	mi := &file_switchboard_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1512,7 +1747,7 @@ func (x *CheckResourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckResourcesRequest.ProtoReflect.Descriptor instead.
 func (*CheckResourcesRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{20}
+	return file_switchboard_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CheckResourcesRequest) GetSources() []*SourceRef {
@@ -1534,7 +1769,7 @@ type ResourceReport struct {
 
 func (x *ResourceReport) Reset() {
 	*x = ResourceReport{}
-	mi := &file_switchboard_proto_msgTypes[21]
+	mi := &file_switchboard_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1546,7 +1781,7 @@ func (x *ResourceReport) String() string {
 func (*ResourceReport) ProtoMessage() {}
 
 func (x *ResourceReport) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[21]
+	mi := &file_switchboard_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1559,7 +1794,7 @@ func (x *ResourceReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceReport.ProtoReflect.Descriptor instead.
 func (*ResourceReport) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{21}
+	return file_switchboard_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ResourceReport) GetOk() bool {
@@ -1600,7 +1835,7 @@ type PromptAgentRequest struct {
 
 func (x *PromptAgentRequest) Reset() {
 	*x = PromptAgentRequest{}
-	mi := &file_switchboard_proto_msgTypes[22]
+	mi := &file_switchboard_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1612,7 +1847,7 @@ func (x *PromptAgentRequest) String() string {
 func (*PromptAgentRequest) ProtoMessage() {}
 
 func (x *PromptAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[22]
+	mi := &file_switchboard_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1625,7 +1860,7 @@ func (x *PromptAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromptAgentRequest.ProtoReflect.Descriptor instead.
 func (*PromptAgentRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{22}
+	return file_switchboard_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PromptAgentRequest) GetSandboxId() string {
@@ -1651,7 +1886,7 @@ type PromptAgentResponse struct {
 
 func (x *PromptAgentResponse) Reset() {
 	*x = PromptAgentResponse{}
-	mi := &file_switchboard_proto_msgTypes[23]
+	mi := &file_switchboard_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1663,7 +1898,7 @@ func (x *PromptAgentResponse) String() string {
 func (*PromptAgentResponse) ProtoMessage() {}
 
 func (x *PromptAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[23]
+	mi := &file_switchboard_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1676,7 +1911,7 @@ func (x *PromptAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromptAgentResponse.ProtoReflect.Descriptor instead.
 func (*PromptAgentResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{23}
+	return file_switchboard_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *PromptAgentResponse) GetAccepted() bool {
@@ -1687,17 +1922,20 @@ func (x *PromptAgentResponse) GetAccepted() bool {
 }
 
 type AgentInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"` // first message selects the sandbox
-	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`                            // raw PTY bytes (keystrokes)
-	Resize        *AgentInput_Resize     `protobuf:"bytes,3,opt,name=resize,proto3" json:"resize,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"` // first message selects the sandbox
+	Data      []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`                            // raw PTY bytes (keystrokes)
+	Resize    *AgentInput_Resize     `protobuf:"bytes,3,opt,name=resize,proto3" json:"resize,omitempty"`
+	// attach is set only on the FIRST frame (feature 003). It declares the client
+	// kind so the daemon can enforce one-EXTERNAL-per-sandbox and count attachments.
+	Attach        *AgentInput_AttachInfo `protobuf:"bytes,4,opt,name=attach,proto3" json:"attach,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AgentInput) Reset() {
 	*x = AgentInput{}
-	mi := &file_switchboard_proto_msgTypes[24]
+	mi := &file_switchboard_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1709,7 +1947,7 @@ func (x *AgentInput) String() string {
 func (*AgentInput) ProtoMessage() {}
 
 func (x *AgentInput) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[24]
+	mi := &file_switchboard_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1722,7 +1960,7 @@ func (x *AgentInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentInput.ProtoReflect.Descriptor instead.
 func (*AgentInput) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{24}
+	return file_switchboard_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *AgentInput) GetSandboxId() string {
@@ -1746,16 +1984,26 @@ func (x *AgentInput) GetResize() *AgentInput_Resize {
 	return nil
 }
 
+func (x *AgentInput) GetAttach() *AgentInput_AttachInfo {
+	if x != nil {
+		return x.Attach
+	}
+	return nil
+}
+
+// AgentOutput is either a one-shot Snapshot (first frame on attach) or a live
+// `data` frame (feature 003). A frame with snapshot set carries no live data.
 type AgentOutput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`         // live PTY output (screen)
+	Snapshot      *AgentOutput_Snapshot  `protobuf:"bytes,2,opt,name=snapshot,proto3" json:"snapshot,omitempty"` // set only on the first frame after attach
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AgentOutput) Reset() {
 	*x = AgentOutput{}
-	mi := &file_switchboard_proto_msgTypes[25]
+	mi := &file_switchboard_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1767,7 +2015,7 @@ func (x *AgentOutput) String() string {
 func (*AgentOutput) ProtoMessage() {}
 
 func (x *AgentOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[25]
+	mi := &file_switchboard_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1780,12 +2028,19 @@ func (x *AgentOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentOutput.ProtoReflect.Descriptor instead.
 func (*AgentOutput) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{25}
+	return file_switchboard_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *AgentOutput) GetData() []byte {
 	if x != nil {
 		return x.Data
+	}
+	return nil
+}
+
+func (x *AgentOutput) GetSnapshot() *AgentOutput_Snapshot {
+	if x != nil {
+		return x.Snapshot
 	}
 	return nil
 }
@@ -1799,7 +2054,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_switchboard_proto_msgTypes[26]
+	mi := &file_switchboard_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2066,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[26]
+	mi := &file_switchboard_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2079,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{26}
+	return file_switchboard_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SubscribeRequest) GetReplayUndelivered() bool {
@@ -1848,7 +2103,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_switchboard_proto_msgTypes[27]
+	mi := &file_switchboard_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1860,7 +2115,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[27]
+	mi := &file_switchboard_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1873,7 +2128,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{27}
+	return file_switchboard_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Event) GetEvent() isEvent_Event {
@@ -1946,7 +2201,7 @@ type NotificationEvent struct {
 
 func (x *NotificationEvent) Reset() {
 	*x = NotificationEvent{}
-	mi := &file_switchboard_proto_msgTypes[28]
+	mi := &file_switchboard_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1958,7 +2213,7 @@ func (x *NotificationEvent) String() string {
 func (*NotificationEvent) ProtoMessage() {}
 
 func (x *NotificationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[28]
+	mi := &file_switchboard_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1971,7 +2226,7 @@ func (x *NotificationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationEvent.ProtoReflect.Descriptor instead.
 func (*NotificationEvent) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{28}
+	return file_switchboard_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *NotificationEvent) GetId() string {
@@ -2025,7 +2280,7 @@ type AckNotificationRequest struct {
 
 func (x *AckNotificationRequest) Reset() {
 	*x = AckNotificationRequest{}
-	mi := &file_switchboard_proto_msgTypes[29]
+	mi := &file_switchboard_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2037,7 +2292,7 @@ func (x *AckNotificationRequest) String() string {
 func (*AckNotificationRequest) ProtoMessage() {}
 
 func (x *AckNotificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[29]
+	mi := &file_switchboard_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2050,7 +2305,7 @@ func (x *AckNotificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckNotificationRequest.ProtoReflect.Descriptor instead.
 func (*AckNotificationRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{29}
+	return file_switchboard_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *AckNotificationRequest) GetNotificationIds() []string {
@@ -2069,7 +2324,7 @@ type AckNotificationResponse struct {
 
 func (x *AckNotificationResponse) Reset() {
 	*x = AckNotificationResponse{}
-	mi := &file_switchboard_proto_msgTypes[30]
+	mi := &file_switchboard_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2081,7 +2336,7 @@ func (x *AckNotificationResponse) String() string {
 func (*AckNotificationResponse) ProtoMessage() {}
 
 func (x *AckNotificationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[30]
+	mi := &file_switchboard_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2094,7 +2349,7 @@ func (x *AckNotificationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckNotificationResponse.ProtoReflect.Descriptor instead.
 func (*AckNotificationResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{30}
+	return file_switchboard_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *AckNotificationResponse) GetAcked() uint32 {
@@ -2117,7 +2372,7 @@ type VSCodeTarget struct {
 
 func (x *VSCodeTarget) Reset() {
 	*x = VSCodeTarget{}
-	mi := &file_switchboard_proto_msgTypes[31]
+	mi := &file_switchboard_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2129,7 +2384,7 @@ func (x *VSCodeTarget) String() string {
 func (*VSCodeTarget) ProtoMessage() {}
 
 func (x *VSCodeTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[31]
+	mi := &file_switchboard_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2142,7 +2397,7 @@ func (x *VSCodeTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSCodeTarget.ProtoReflect.Descriptor instead.
 func (*VSCodeTarget) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{31}
+	return file_switchboard_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *VSCodeTarget) GetContainerName() string {
@@ -2180,7 +2435,7 @@ type OptionManifest_Option struct {
 
 func (x *OptionManifest_Option) Reset() {
 	*x = OptionManifest_Option{}
-	mi := &file_switchboard_proto_msgTypes[33]
+	mi := &file_switchboard_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2192,7 +2447,7 @@ func (x *OptionManifest_Option) String() string {
 func (*OptionManifest_Option) ProtoMessage() {}
 
 func (x *OptionManifest_Option) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[33]
+	mi := &file_switchboard_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2261,7 +2516,7 @@ type LaunchProgress_CopyProgress struct {
 
 func (x *LaunchProgress_CopyProgress) Reset() {
 	*x = LaunchProgress_CopyProgress{}
-	mi := &file_switchboard_proto_msgTypes[34]
+	mi := &file_switchboard_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2273,7 +2528,7 @@ func (x *LaunchProgress_CopyProgress) String() string {
 func (*LaunchProgress_CopyProgress) ProtoMessage() {}
 
 func (x *LaunchProgress_CopyProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[34]
+	mi := &file_switchboard_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2320,7 +2575,7 @@ type AgentInput_Resize struct {
 
 func (x *AgentInput_Resize) Reset() {
 	*x = AgentInput_Resize{}
-	mi := &file_switchboard_proto_msgTypes[35]
+	mi := &file_switchboard_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2332,7 +2587,7 @@ func (x *AgentInput_Resize) String() string {
 func (*AgentInput_Resize) ProtoMessage() {}
 
 func (x *AgentInput_Resize) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[35]
+	mi := &file_switchboard_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2345,7 +2600,7 @@ func (x *AgentInput_Resize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentInput_Resize.ProtoReflect.Descriptor instead.
 func (*AgentInput_Resize) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{24, 0}
+	return file_switchboard_proto_rawDescGZIP(), []int{27, 0}
 }
 
 func (x *AgentInput_Resize) GetCols() uint32 {
@@ -2362,6 +2617,134 @@ func (x *AgentInput_Resize) GetRows() uint32 {
 	return 0
 }
 
+type AgentInput_AttachInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          ClientKind             `protobuf:"varint,1,opt,name=kind,proto3,enum=switchboard.v1.ClientKind" json:"kind,omitempty"`
+	ClientLabel   string                 `protobuf:"bytes,2,opt,name=client_label,json=clientLabel,proto3" json:"client_label,omitempty"` // optional, diagnostics
+	InitialSize   *AgentInput_Resize     `protobuf:"bytes,3,opt,name=initial_size,json=initialSize,proto3" json:"initial_size,omitempty"` // client's starting window size
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentInput_AttachInfo) Reset() {
+	*x = AgentInput_AttachInfo{}
+	mi := &file_switchboard_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentInput_AttachInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentInput_AttachInfo) ProtoMessage() {}
+
+func (x *AgentInput_AttachInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentInput_AttachInfo.ProtoReflect.Descriptor instead.
+func (*AgentInput_AttachInfo) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{27, 1}
+}
+
+func (x *AgentInput_AttachInfo) GetKind() ClientKind {
+	if x != nil {
+		return x.Kind
+	}
+	return ClientKind_CLIENT_KIND_UNSPECIFIED
+}
+
+func (x *AgentInput_AttachInfo) GetClientLabel() string {
+	if x != nil {
+		return x.ClientLabel
+	}
+	return ""
+}
+
+func (x *AgentInput_AttachInfo) GetInitialSize() *AgentInput_Resize {
+	if x != nil {
+		return x.InitialSize
+	}
+	return nil
+}
+
+type AgentOutput_Snapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"` // bytes to replay for an immediate redraw
+	Rows          uint32                 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
+	Cols          uint32                 `protobuf:"varint,3,opt,name=cols,proto3" json:"cols,omitempty"`
+	Scrollback    []byte                 `protobuf:"bytes,4,opt,name=scrollback,proto3" json:"scrollback,omitempty"` // reserved: bounded prior-output tail (FR-005)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentOutput_Snapshot) Reset() {
+	*x = AgentOutput_Snapshot{}
+	mi := &file_switchboard_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentOutput_Snapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentOutput_Snapshot) ProtoMessage() {}
+
+func (x *AgentOutput_Snapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentOutput_Snapshot.ProtoReflect.Descriptor instead.
+func (*AgentOutput_Snapshot) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{28, 0}
+}
+
+func (x *AgentOutput_Snapshot) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *AgentOutput_Snapshot) GetRows() uint32 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+func (x *AgentOutput_Snapshot) GetCols() uint32 {
+	if x != nil {
+		return x.Cols
+	}
+	return 0
+}
+
+func (x *AgentOutput_Snapshot) GetScrollback() []byte {
+	if x != nil {
+		return x.Scrollback
+	}
+	return nil
+}
+
 type Event_SandboxRemoved struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
@@ -2371,7 +2754,7 @@ type Event_SandboxRemoved struct {
 
 func (x *Event_SandboxRemoved) Reset() {
 	*x = Event_SandboxRemoved{}
-	mi := &file_switchboard_proto_msgTypes[36]
+	mi := &file_switchboard_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2383,7 +2766,7 @@ func (x *Event_SandboxRemoved) String() string {
 func (*Event_SandboxRemoved) ProtoMessage() {}
 
 func (x *Event_SandboxRemoved) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[36]
+	mi := &file_switchboard_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2396,7 +2779,7 @@ func (x *Event_SandboxRemoved) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event_SandboxRemoved.ProtoReflect.Descriptor instead.
 func (*Event_SandboxRemoved) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{27, 0}
+	return file_switchboard_proto_rawDescGZIP(), []int{30, 0}
 }
 
 func (x *Event_SandboxRemoved) GetSandboxId() string {
@@ -2431,7 +2814,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x04spec\x18\x01 \x01(\v2\x19.switchboard.v1.AgentSpecR\x04spec\x123\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1b.switchboard.v1.AgentStatusR\x06status\x12>\n" +
 	"\rlast_event_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vlastEventAt\x12!\n" +
-	"\fpty_attached\x18\x04 \x01(\bR\vptyAttached\"\xf6\x04\n" +
+	"\fpty_attached\x18\x04 \x01(\bR\vptyAttached\"\xe4\x05\n" +
 	"\aSandbox\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x122\n" +
@@ -2449,7 +2832,10 @@ const file_switchboard_proto_rawDesc = "" +
 	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x14\n" +
-	"\x05error\x18\x0e \x01(\tR\x05error\"\x16\n" +
+	"\x05error\x18\x0e \x01(\tR\x05error\x12\x10\n" +
+	"\x03tag\x18\x0f \x01(\tR\x03tag\x12-\n" +
+	"\x12attached_terminals\x18\x10 \x01(\x05R\x11attachedTerminals\x12+\n" +
+	"\x11external_attached\x18\x11 \x01(\bR\x10externalAttached\"\x16\n" +
 	"\x14GetDaemonInfoRequest\"\xb0\x01\n" +
 	"\n" +
 	"DaemonInfo\x12\x17\n" +
@@ -2509,7 +2895,18 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x14RenameSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
-	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"P\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"G\n" +
+	"\x14SetSandboxTagRequest\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x10\n" +
+	"\x03tag\x18\x02 \x01(\tR\x03tag\"-\n" +
+	"\x17ResolveWorkspaceRequest\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\"\x83\x01\n" +
+	"\x18ResolveWorkspaceResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\x02 \x01(\tR\tsandboxId\x122\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1c.switchboard.v1.SandboxStateR\x05state\"P\n" +
 	"\x1bListSourceCandidatesRequest\x12\x12\n" +
 	"\x04root\x18\x01 \x01(\tR\x04root\x12\x1d\n" +
 	"\n" +
@@ -2530,18 +2927,32 @@ const file_switchboard_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"1\n" +
 	"\x13PromptAgentResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xac\x01\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\x93\x03\n" +
 	"\n" +
 	"AgentInput\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x129\n" +
-	"\x06resize\x18\x03 \x01(\v2!.switchboard.v1.AgentInput.ResizeR\x06resize\x1a0\n" +
+	"\x06resize\x18\x03 \x01(\v2!.switchboard.v1.AgentInput.ResizeR\x06resize\x12=\n" +
+	"\x06attach\x18\x04 \x01(\v2%.switchboard.v1.AgentInput.AttachInfoR\x06attach\x1a0\n" +
 	"\x06Resize\x12\x12\n" +
 	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
-	"\x04rows\x18\x02 \x01(\rR\x04rows\"!\n" +
+	"\x04rows\x18\x02 \x01(\rR\x04rows\x1a\xa5\x01\n" +
+	"\n" +
+	"AttachInfo\x12.\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1a.switchboard.v1.ClientKindR\x04kind\x12!\n" +
+	"\fclient_label\x18\x02 \x01(\tR\vclientLabel\x12D\n" +
+	"\finitial_size\x18\x03 \x01(\v2!.switchboard.v1.AgentInput.ResizeR\vinitialSize\"\xcb\x01\n" +
 	"\vAgentOutput\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"A\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12@\n" +
+	"\bsnapshot\x18\x02 \x01(\v2$.switchboard.v1.AgentOutput.SnapshotR\bsnapshot\x1af\n" +
+	"\bSnapshot\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x12\n" +
+	"\x04rows\x18\x02 \x01(\rR\x04rows\x12\x12\n" +
+	"\x04cols\x18\x03 \x01(\rR\x04cols\x12\x1e\n" +
+	"\n" +
+	"scrollback\x18\x04 \x01(\fR\n" +
+	"scrollback\"A\n" +
 	"\x10SubscribeRequest\x12-\n" +
 	"\x12replay_undelivered\x18\x01 \x01(\bR\x11replayUndelivered\"\x90\x02\n" +
 	"\x05Event\x12B\n" +
@@ -2590,7 +3001,12 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x10NotificationKind\x12!\n" +
 	"\x1dNOTIFICATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fNOTIFICATION_KIND_TASK_COMPLETE\x10\x01\x12%\n" +
-	"!NOTIFICATION_KIND_NEEDS_PROMPTING\x10\x022\x81\v\n" +
+	"!NOTIFICATION_KIND_NEEDS_PROMPTING\x10\x02*[\n" +
+	"\n" +
+	"ClientKind\x12\x1b\n" +
+	"\x17CLIENT_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12CLIENT_KIND_IN_TUI\x10\x01\x12\x18\n" +
+	"\x14CLIENT_KIND_EXTERNAL\x10\x022\xb8\f\n" +
 	"\vSwitchboard\x12Q\n" +
 	"\rGetDaemonInfo\x12$.switchboard.v1.GetDaemonInfoRequest\x1a\x1a.switchboard.v1.DaemonInfo\x12]\n" +
 	"\x11GetOptionManifest\x12(.switchboard.v1.GetOptionManifestRequest\x1a\x1e.switchboard.v1.OptionManifest\x12U\n" +
@@ -2602,7 +3018,9 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0eDestroySandbox\x12 .switchboard.v1.SandboxIdRequest\x1a\x1f.switchboard.v1.DestroyResponse\x12N\n" +
 	"\rRenameSandbox\x12$.switchboard.v1.RenameSandboxRequest\x1a\x17.switchboard.v1.Sandbox\x12q\n" +
 	"\x14ListSourceCandidates\x12+.switchboard.v1.ListSourceCandidatesRequest\x1a,.switchboard.v1.ListSourceCandidatesResponse\x12W\n" +
-	"\x0eCheckResources\x12%.switchboard.v1.CheckResourcesRequest\x1a\x1e.switchboard.v1.ResourceReport\x12V\n" +
+	"\x0eCheckResources\x12%.switchboard.v1.CheckResourcesRequest\x1a\x1e.switchboard.v1.ResourceReport\x12N\n" +
+	"\rSetSandboxTag\x12$.switchboard.v1.SetSandboxTagRequest\x1a\x17.switchboard.v1.Sandbox\x12e\n" +
+	"\x10ResolveWorkspace\x12'.switchboard.v1.ResolveWorkspaceRequest\x1a(.switchboard.v1.ResolveWorkspaceResponse\x12V\n" +
 	"\vPromptAgent\x12\".switchboard.v1.PromptAgentRequest\x1a#.switchboard.v1.PromptAgentResponse\x12J\n" +
 	"\vAttachAgent\x12\x1a.switchboard.v1.AgentInput\x1a\x1b.switchboard.v1.AgentOutput(\x010\x01\x12F\n" +
 	"\tSubscribe\x12 .switchboard.v1.SubscribeRequest\x1a\x15.switchboard.v1.Event0\x01\x12b\n" +
@@ -2621,119 +3039,134 @@ func file_switchboard_proto_rawDescGZIP() []byte {
 	return file_switchboard_proto_rawDescData
 }
 
-var file_switchboard_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_switchboard_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_switchboard_proto_goTypes = []any{
 	(SeedingMode)(0),                     // 0: switchboard.v1.SeedingMode
 	(SandboxState)(0),                    // 1: switchboard.v1.SandboxState
 	(AgentStatus)(0),                     // 2: switchboard.v1.AgentStatus
 	(NotificationKind)(0),                // 3: switchboard.v1.NotificationKind
-	(*AgentSpec)(nil),                    // 4: switchboard.v1.AgentSpec
-	(*SourceRef)(nil),                    // 5: switchboard.v1.SourceRef
-	(*ConfigSnapshot)(nil),               // 6: switchboard.v1.ConfigSnapshot
-	(*AgentSession)(nil),                 // 7: switchboard.v1.AgentSession
-	(*Sandbox)(nil),                      // 8: switchboard.v1.Sandbox
-	(*GetDaemonInfoRequest)(nil),         // 9: switchboard.v1.GetDaemonInfoRequest
-	(*DaemonInfo)(nil),                   // 10: switchboard.v1.DaemonInfo
-	(*UpdateDaemonRequest)(nil),          // 11: switchboard.v1.UpdateDaemonRequest
-	(*UpdateProgress)(nil),               // 12: switchboard.v1.UpdateProgress
-	(*GetOptionManifestRequest)(nil),     // 13: switchboard.v1.GetOptionManifestRequest
-	(*OptionManifest)(nil),               // 14: switchboard.v1.OptionManifest
-	(*ListSandboxesRequest)(nil),         // 15: switchboard.v1.ListSandboxesRequest
-	(*ListSandboxesResponse)(nil),        // 16: switchboard.v1.ListSandboxesResponse
-	(*LaunchSandboxRequest)(nil),         // 17: switchboard.v1.LaunchSandboxRequest
-	(*LaunchProgress)(nil),               // 18: switchboard.v1.LaunchProgress
-	(*SandboxIdRequest)(nil),             // 19: switchboard.v1.SandboxIdRequest
-	(*DestroyResponse)(nil),              // 20: switchboard.v1.DestroyResponse
-	(*RenameSandboxRequest)(nil),         // 21: switchboard.v1.RenameSandboxRequest
-	(*ListSourceCandidatesRequest)(nil),  // 22: switchboard.v1.ListSourceCandidatesRequest
-	(*ListSourceCandidatesResponse)(nil), // 23: switchboard.v1.ListSourceCandidatesResponse
-	(*CheckResourcesRequest)(nil),        // 24: switchboard.v1.CheckResourcesRequest
-	(*ResourceReport)(nil),               // 25: switchboard.v1.ResourceReport
-	(*PromptAgentRequest)(nil),           // 26: switchboard.v1.PromptAgentRequest
-	(*PromptAgentResponse)(nil),          // 27: switchboard.v1.PromptAgentResponse
-	(*AgentInput)(nil),                   // 28: switchboard.v1.AgentInput
-	(*AgentOutput)(nil),                  // 29: switchboard.v1.AgentOutput
-	(*SubscribeRequest)(nil),             // 30: switchboard.v1.SubscribeRequest
-	(*Event)(nil),                        // 31: switchboard.v1.Event
-	(*NotificationEvent)(nil),            // 32: switchboard.v1.NotificationEvent
-	(*AckNotificationRequest)(nil),       // 33: switchboard.v1.AckNotificationRequest
-	(*AckNotificationResponse)(nil),      // 34: switchboard.v1.AckNotificationResponse
-	(*VSCodeTarget)(nil),                 // 35: switchboard.v1.VSCodeTarget
-	nil,                                  // 36: switchboard.v1.ConfigSnapshot.KitOptionsEntry
-	(*OptionManifest_Option)(nil),        // 37: switchboard.v1.OptionManifest.Option
-	(*LaunchProgress_CopyProgress)(nil),  // 38: switchboard.v1.LaunchProgress.CopyProgress
-	(*AgentInput_Resize)(nil),            // 39: switchboard.v1.AgentInput.Resize
-	(*Event_SandboxRemoved)(nil),         // 40: switchboard.v1.Event.SandboxRemoved
-	(*timestamppb.Timestamp)(nil),        // 41: google.protobuf.Timestamp
+	(ClientKind)(0),                      // 4: switchboard.v1.ClientKind
+	(*AgentSpec)(nil),                    // 5: switchboard.v1.AgentSpec
+	(*SourceRef)(nil),                    // 6: switchboard.v1.SourceRef
+	(*ConfigSnapshot)(nil),               // 7: switchboard.v1.ConfigSnapshot
+	(*AgentSession)(nil),                 // 8: switchboard.v1.AgentSession
+	(*Sandbox)(nil),                      // 9: switchboard.v1.Sandbox
+	(*GetDaemonInfoRequest)(nil),         // 10: switchboard.v1.GetDaemonInfoRequest
+	(*DaemonInfo)(nil),                   // 11: switchboard.v1.DaemonInfo
+	(*UpdateDaemonRequest)(nil),          // 12: switchboard.v1.UpdateDaemonRequest
+	(*UpdateProgress)(nil),               // 13: switchboard.v1.UpdateProgress
+	(*GetOptionManifestRequest)(nil),     // 14: switchboard.v1.GetOptionManifestRequest
+	(*OptionManifest)(nil),               // 15: switchboard.v1.OptionManifest
+	(*ListSandboxesRequest)(nil),         // 16: switchboard.v1.ListSandboxesRequest
+	(*ListSandboxesResponse)(nil),        // 17: switchboard.v1.ListSandboxesResponse
+	(*LaunchSandboxRequest)(nil),         // 18: switchboard.v1.LaunchSandboxRequest
+	(*LaunchProgress)(nil),               // 19: switchboard.v1.LaunchProgress
+	(*SandboxIdRequest)(nil),             // 20: switchboard.v1.SandboxIdRequest
+	(*DestroyResponse)(nil),              // 21: switchboard.v1.DestroyResponse
+	(*RenameSandboxRequest)(nil),         // 22: switchboard.v1.RenameSandboxRequest
+	(*SetSandboxTagRequest)(nil),         // 23: switchboard.v1.SetSandboxTagRequest
+	(*ResolveWorkspaceRequest)(nil),      // 24: switchboard.v1.ResolveWorkspaceRequest
+	(*ResolveWorkspaceResponse)(nil),     // 25: switchboard.v1.ResolveWorkspaceResponse
+	(*ListSourceCandidatesRequest)(nil),  // 26: switchboard.v1.ListSourceCandidatesRequest
+	(*ListSourceCandidatesResponse)(nil), // 27: switchboard.v1.ListSourceCandidatesResponse
+	(*CheckResourcesRequest)(nil),        // 28: switchboard.v1.CheckResourcesRequest
+	(*ResourceReport)(nil),               // 29: switchboard.v1.ResourceReport
+	(*PromptAgentRequest)(nil),           // 30: switchboard.v1.PromptAgentRequest
+	(*PromptAgentResponse)(nil),          // 31: switchboard.v1.PromptAgentResponse
+	(*AgentInput)(nil),                   // 32: switchboard.v1.AgentInput
+	(*AgentOutput)(nil),                  // 33: switchboard.v1.AgentOutput
+	(*SubscribeRequest)(nil),             // 34: switchboard.v1.SubscribeRequest
+	(*Event)(nil),                        // 35: switchboard.v1.Event
+	(*NotificationEvent)(nil),            // 36: switchboard.v1.NotificationEvent
+	(*AckNotificationRequest)(nil),       // 37: switchboard.v1.AckNotificationRequest
+	(*AckNotificationResponse)(nil),      // 38: switchboard.v1.AckNotificationResponse
+	(*VSCodeTarget)(nil),                 // 39: switchboard.v1.VSCodeTarget
+	nil,                                  // 40: switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	(*OptionManifest_Option)(nil),        // 41: switchboard.v1.OptionManifest.Option
+	(*LaunchProgress_CopyProgress)(nil),  // 42: switchboard.v1.LaunchProgress.CopyProgress
+	(*AgentInput_Resize)(nil),            // 43: switchboard.v1.AgentInput.Resize
+	(*AgentInput_AttachInfo)(nil),        // 44: switchboard.v1.AgentInput.AttachInfo
+	(*AgentOutput_Snapshot)(nil),         // 45: switchboard.v1.AgentOutput.Snapshot
+	(*Event_SandboxRemoved)(nil),         // 46: switchboard.v1.Event.SandboxRemoved
+	(*timestamppb.Timestamp)(nil),        // 47: google.protobuf.Timestamp
 }
 var file_switchboard_proto_depIdxs = []int32{
-	36, // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	40, // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
 	0,  // 1: switchboard.v1.ConfigSnapshot.seeding_mode:type_name -> switchboard.v1.SeedingMode
-	4,  // 2: switchboard.v1.ConfigSnapshot.agent:type_name -> switchboard.v1.AgentSpec
-	4,  // 3: switchboard.v1.AgentSession.spec:type_name -> switchboard.v1.AgentSpec
+	5,  // 2: switchboard.v1.ConfigSnapshot.agent:type_name -> switchboard.v1.AgentSpec
+	5,  // 3: switchboard.v1.AgentSession.spec:type_name -> switchboard.v1.AgentSpec
 	2,  // 4: switchboard.v1.AgentSession.status:type_name -> switchboard.v1.AgentStatus
-	41, // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
+	47, // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
 	1,  // 6: switchboard.v1.Sandbox.state:type_name -> switchboard.v1.SandboxState
-	6,  // 7: switchboard.v1.Sandbox.config_snapshot:type_name -> switchboard.v1.ConfigSnapshot
-	5,  // 8: switchboard.v1.Sandbox.sources:type_name -> switchboard.v1.SourceRef
+	7,  // 7: switchboard.v1.Sandbox.config_snapshot:type_name -> switchboard.v1.ConfigSnapshot
+	6,  // 8: switchboard.v1.Sandbox.sources:type_name -> switchboard.v1.SourceRef
 	0,  // 9: switchboard.v1.Sandbox.seeding_mode:type_name -> switchboard.v1.SeedingMode
-	7,  // 10: switchboard.v1.Sandbox.agent:type_name -> switchboard.v1.AgentSession
-	41, // 11: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	41, // 12: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
-	37, // 13: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
-	8,  // 14: switchboard.v1.ListSandboxesResponse.sandboxes:type_name -> switchboard.v1.Sandbox
-	6,  // 15: switchboard.v1.LaunchSandboxRequest.config:type_name -> switchboard.v1.ConfigSnapshot
-	5,  // 16: switchboard.v1.LaunchSandboxRequest.sources:type_name -> switchboard.v1.SourceRef
-	4,  // 17: switchboard.v1.LaunchSandboxRequest.agent_override:type_name -> switchboard.v1.AgentSpec
-	38, // 18: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
-	8,  // 19: switchboard.v1.LaunchProgress.done:type_name -> switchboard.v1.Sandbox
-	25, // 20: switchboard.v1.LaunchProgress.blocked:type_name -> switchboard.v1.ResourceReport
-	5,  // 21: switchboard.v1.ListSourceCandidatesResponse.candidates:type_name -> switchboard.v1.SourceRef
-	5,  // 22: switchboard.v1.CheckResourcesRequest.sources:type_name -> switchboard.v1.SourceRef
-	39, // 23: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
-	8,  // 24: switchboard.v1.Event.sandbox_changed:type_name -> switchboard.v1.Sandbox
-	32, // 25: switchboard.v1.Event.notification:type_name -> switchboard.v1.NotificationEvent
-	40, // 26: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
-	3,  // 27: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
-	41, // 28: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
-	9,  // 29: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
-	13, // 30: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
-	11, // 31: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
-	15, // 32: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
-	17, // 33: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
-	19, // 34: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	19, // 35: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	19, // 36: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
-	21, // 37: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
-	22, // 38: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
-	24, // 39: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
-	26, // 40: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
-	28, // 41: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
-	30, // 42: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
-	33, // 43: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
-	19, // 44: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
-	10, // 45: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
-	14, // 46: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
-	12, // 47: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
-	16, // 48: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
-	18, // 49: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
-	8,  // 50: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
-	18, // 51: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
-	20, // 52: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
-	8,  // 53: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
-	23, // 54: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
-	25, // 55: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
-	27, // 56: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
-	29, // 57: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
-	31, // 58: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
-	34, // 59: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
-	35, // 60: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
-	45, // [45:61] is the sub-list for method output_type
-	29, // [29:45] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	8,  // 10: switchboard.v1.Sandbox.agent:type_name -> switchboard.v1.AgentSession
+	47, // 11: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	47, // 12: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
+	41, // 13: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
+	9,  // 14: switchboard.v1.ListSandboxesResponse.sandboxes:type_name -> switchboard.v1.Sandbox
+	7,  // 15: switchboard.v1.LaunchSandboxRequest.config:type_name -> switchboard.v1.ConfigSnapshot
+	6,  // 16: switchboard.v1.LaunchSandboxRequest.sources:type_name -> switchboard.v1.SourceRef
+	5,  // 17: switchboard.v1.LaunchSandboxRequest.agent_override:type_name -> switchboard.v1.AgentSpec
+	42, // 18: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
+	9,  // 19: switchboard.v1.LaunchProgress.done:type_name -> switchboard.v1.Sandbox
+	29, // 20: switchboard.v1.LaunchProgress.blocked:type_name -> switchboard.v1.ResourceReport
+	1,  // 21: switchboard.v1.ResolveWorkspaceResponse.state:type_name -> switchboard.v1.SandboxState
+	6,  // 22: switchboard.v1.ListSourceCandidatesResponse.candidates:type_name -> switchboard.v1.SourceRef
+	6,  // 23: switchboard.v1.CheckResourcesRequest.sources:type_name -> switchboard.v1.SourceRef
+	43, // 24: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
+	44, // 25: switchboard.v1.AgentInput.attach:type_name -> switchboard.v1.AgentInput.AttachInfo
+	45, // 26: switchboard.v1.AgentOutput.snapshot:type_name -> switchboard.v1.AgentOutput.Snapshot
+	9,  // 27: switchboard.v1.Event.sandbox_changed:type_name -> switchboard.v1.Sandbox
+	36, // 28: switchboard.v1.Event.notification:type_name -> switchboard.v1.NotificationEvent
+	46, // 29: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
+	3,  // 30: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
+	47, // 31: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
+	4,  // 32: switchboard.v1.AgentInput.AttachInfo.kind:type_name -> switchboard.v1.ClientKind
+	43, // 33: switchboard.v1.AgentInput.AttachInfo.initial_size:type_name -> switchboard.v1.AgentInput.Resize
+	10, // 34: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
+	14, // 35: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
+	12, // 36: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
+	16, // 37: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
+	18, // 38: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
+	20, // 39: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	20, // 40: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	20, // 41: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
+	22, // 42: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
+	26, // 43: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
+	28, // 44: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
+	23, // 45: switchboard.v1.Switchboard.SetSandboxTag:input_type -> switchboard.v1.SetSandboxTagRequest
+	24, // 46: switchboard.v1.Switchboard.ResolveWorkspace:input_type -> switchboard.v1.ResolveWorkspaceRequest
+	30, // 47: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
+	32, // 48: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
+	34, // 49: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
+	37, // 50: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
+	20, // 51: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
+	11, // 52: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
+	15, // 53: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
+	13, // 54: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
+	17, // 55: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
+	19, // 56: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
+	9,  // 57: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
+	19, // 58: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
+	21, // 59: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
+	9,  // 60: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
+	27, // 61: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
+	29, // 62: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
+	9,  // 63: switchboard.v1.Switchboard.SetSandboxTag:output_type -> switchboard.v1.Sandbox
+	25, // 64: switchboard.v1.Switchboard.ResolveWorkspace:output_type -> switchboard.v1.ResolveWorkspaceResponse
+	31, // 65: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
+	33, // 66: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
+	35, // 67: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
+	38, // 68: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
+	39, // 69: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
+	52, // [52:70] is the sub-list for method output_type
+	34, // [34:52] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_switchboard_proto_init() }
@@ -2747,7 +3180,7 @@ func file_switchboard_proto_init() {
 		(*LaunchProgress_Done)(nil),
 		(*LaunchProgress_Blocked)(nil),
 	}
-	file_switchboard_proto_msgTypes[27].OneofWrappers = []any{
+	file_switchboard_proto_msgTypes[30].OneofWrappers = []any{
 		(*Event_SandboxChanged)(nil),
 		(*Event_Notification)(nil),
 		(*Event_Removed)(nil),
@@ -2757,8 +3190,8 @@ func file_switchboard_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_switchboard_proto_rawDesc), len(file_switchboard_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   37,
+			NumEnums:      5,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -94,6 +94,33 @@ func (s *Server) RenameSandbox(ctx context.Context, req *pb.RenameSandboxRequest
 	return s.mgr.Rename(ctx, req.GetSandboxId(), req.GetDisplayName())
 }
 
+// SetSandboxTag sets or clears a sandbox's mutable purpose tag (feature 003,
+// FR-021..024). It changes no other attribute and never affects lifecycle.
+func (s *Server) SetSandboxTag(_ context.Context, req *pb.SetSandboxTagRequest) (*pb.Sandbox, error) {
+	sb, err := s.mgr.SetTag(req.GetSandboxId(), req.GetTag())
+	if err != nil {
+		return nil, err
+	}
+	return s.withTerminalCounts(sb), nil
+}
+
+// ResolveWorkspace maps a filesystem path to the sandbox that owns it, so `sxb`
+// run inside a workspace can open that sandbox's session (feature 003, FR-017/018).
+func (s *Server) ResolveWorkspace(_ context.Context, req *pb.ResolveWorkspaceRequest) (*pb.ResolveWorkspaceResponse, error) {
+	sb, ok, err := s.mgr.ResolveWorkspace(req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return &pb.ResolveWorkspaceResponse{Found: false}, nil
+	}
+	return &pb.ResolveWorkspaceResponse{
+		Found:     true,
+		SandboxId: sb.GetId(),
+		State:     sb.GetState(),
+	}, nil
+}
+
 // ListSourceCandidates enumerates launch candidates under a root (FR-007).
 func (s *Server) ListSourceCandidates(_ context.Context, req *pb.ListSourceCandidatesRequest) (*pb.ListSourceCandidatesResponse, error) {
 	root := req.GetRoot()

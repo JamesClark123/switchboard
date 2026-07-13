@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -156,6 +157,13 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 
 	if err := m.seed(ctx, sb, onProgress, onLog); err != nil {
 		return m.fail(sb, err)
+	}
+
+	// Drop a workspace marker so `sxb` run from inside the copy can auto-resolve
+	// this sandbox (feature 003, FR-017). Best-effort; ResolveWorkspace is the
+	// authoritative fallback.
+	if err := writeWorkspaceMarker(workspacePath, m.hostID, id); err != nil && onLog != nil {
+		onLog("warning: workspace marker not written: " + err.Error())
 	}
 
 	// Inject agent hooks into the seeded workspace so the agent reports task
@@ -389,6 +397,84 @@ func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now ti
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// SetTag sets (or clears, when tag is "") a sandbox's mutable purpose tag
+// (feature 003, FR-021/022). The tag is trimmed and capped; no other field
+// changes, so tagging never affects identity or lifecycle. Persisted via the
+// registry's proto marshaling and emitted so the list updates.
+func (m *Manager) SetTag(sandboxID, tag string) (*pb.Sandbox, error) {
+	tag = strings.TrimSpace(tag)
+	if len(tag) > maxTagLen {
+		tag = tag[:maxTagLen]
+	}
+	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
+		s.Tag = tag
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(out)
+	return out, nil
+}
+
+// maxTagLen bounds a sandbox tag (research.md R6).
+const maxTagLen = 64
+
+// workspaceMarkerDir/File name the on-disk marker `sxb` walks up to find so it can
+// auto-open a sandbox's session from within its workspace copy (feature 003, R6).
+const (
+	workspaceMarkerDir  = ".switchboard"
+	workspaceMarkerFile = "session.json"
+)
+
+// writeWorkspaceMarker records {host_id, sandbox_id} under <workspace>/.switchboard/
+// session.json. Overwrites any prior marker.
+func writeWorkspaceMarker(workspacePath, hostID, sandboxID string) error {
+	if workspacePath == "" {
+		return nil
+	}
+	dir := filepath.Join(workspacePath, workspaceMarkerDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	blob, err := json.Marshal(map[string]string{"host_id": hostID, "sandbox_id": sandboxID})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, workspaceMarkerFile), blob, 0o644)
+}
+
+// ResolveWorkspace returns the sandbox whose retained workspace copy contains
+// path (or is path), matching the deepest workspace so nested subdirectories
+// resolve correctly (feature 003, FR-017/018). ok is false when no sandbox owns
+// the path.
+func (m *Manager) ResolveWorkspace(path string) (*pb.Sandbox, bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, false, err
+	}
+	all, err := m.store.List()
+	if err != nil {
+		return nil, false, err
+	}
+	var best *pb.Sandbox
+	var bestLen int
+	for _, sb := range all {
+		wp := sb.GetWorkspacePath()
+		if wp == "" {
+			continue
+		}
+		if within(wp, abs) && len(wp) > bestLen {
+			best, bestLen = sb, len(wp)
+		}
+	}
+	if best == nil {
+		return nil, false, nil
+	}
+	return best, true, nil
 }
 
 // sandboxNameRe constrains sandbox names: they become a filesystem directory and

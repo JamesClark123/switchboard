@@ -34,6 +34,14 @@ type fakeDaemon struct {
 	daemonVer    string
 	updateErr    error
 	updateTarget string
+
+	// feature 003 fakes
+	tagErr     error
+	lastTagID  string
+	lastTag    string
+	attachErr  error
+	attachedID string
+	termClosed bool
 }
 
 func (f *fakeDaemon) PromptAgent(_ context.Context, id, prompt string) error {
@@ -62,6 +70,58 @@ func (f *fakeDaemon) VSCodeTarget(_ context.Context, id string) (*pb.VSCodeTarge
 		return nil, f.vscodeErr
 	}
 	return &pb.VSCodeTarget{ContainerName: "/" + id, WorkspacePath: "/workspace"}, nil
+}
+
+// SetTag records/clears the tag on the matching sandbox and returns it (US5).
+func (f *fakeDaemon) SetTag(_ context.Context, id, tag string) (*pb.Sandbox, error) {
+	if f.tagErr != nil {
+		return nil, f.tagErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastTagID, f.lastTag = id, tag
+	for _, sb := range f.sandboxes {
+		if sb.GetId() == id {
+			sb.Tag = tag
+			return sb, nil
+		}
+	}
+	return &pb.Sandbox{Id: id, Tag: tag}, nil
+}
+
+// AttachTerminal returns a fake session that writes a canned snapshot to sink and
+// echoes subsequent input, so the in-place terminal view (US2) is testable
+// without a real PTY. attachErr, when set, simulates a rejected attach.
+func (f *fakeDaemon) AttachTerminal(_ context.Context, sandboxID string, _ client.AttachKind, _, _ uint32, sink io.Writer) (client.TermSession, error) {
+	if f.attachErr != nil {
+		return nil, f.attachErr
+	}
+	f.mu.Lock()
+	f.attachedID = sandboxID
+	f.mu.Unlock()
+	_, _ = sink.Write([]byte("SNAPSHOT:" + sandboxID))
+	return &fakeTermSession{sink: sink, d: f}, nil
+}
+
+type fakeTermSession struct {
+	sink   io.Writer
+	d      *fakeDaemon
+	closed bool
+}
+
+func (s *fakeTermSession) SendData(p []byte) error {
+	_, err := s.sink.Write(p) // echo, like a shell
+	return err
+}
+func (s *fakeTermSession) SendResize(uint32, uint32) error { return nil }
+func (s *fakeTermSession) Close() error {
+	s.closed = true
+	if s.d != nil {
+		s.d.mu.Lock()
+		s.d.termClosed = true
+		s.d.mu.Unlock()
+	}
+	return nil
 }
 
 // fakeStream feeds queued events (or blocks until ctx is done when ch is nil).

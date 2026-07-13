@@ -147,15 +147,25 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature plan: `specs/002-release-channel/plan.md` (GitHub-Only Release Channel —
-GoReleaser-on-tag GitHub Releases + a `curl | sh` install script as the single, Homebrew-free,
-SHA-256-verified distribution/update channel for `sxb`/`sxbd`). See that feature's `spec.md`,
-`research.md`, `data-model.md`, `contracts/` (release-assets, install-script), and `quickstart.md`.
-The install script and the `switchboard-update` in-app updater share one asset-naming + checksum
-contract; keep them in lockstep.
+Active feature plan: `specs/003-terminal-session-persistence/plan.md` (Terminal Session Persistence
+& Sandbox Tags — the daemon keeps each running sandbox's PTY session alive so clients can
+detach/reattach and see prior output, and AI prompts keep running with no terminal attached). A new
+`services/switchboardd/internal/terminal` broadcaster reads the PTY once and tees it into a VT
+emulator (`charmbracelet/x/vt`, fallback `hinshun/vt10x`) + a bounded scrollback ring + fan-out to N
+clients, sending a snapshot on attach. Client side: an in-place TUI terminal view (`t`), an `sxb
+attach` mode used by external terminals (`T`, one-per-sandbox, bring-to-front) and by workspace
+auto-open (bare `sxb` inside a sandbox workspace), per-sandbox attachment counts, and a mutable
+`tag` on each sandbox (daemon registry, mirrors `RenameSandbox`). See that feature's `spec.md`,
+`research.md`, `data-model.md`, `contracts/` (switchboard-terminal.proto, cli-attach), and
+`quickstart.md`. Builds on 001; adds one contract revision, no new module.
 
-Prior feature: `specs/001-sandbox-session-manager/plan.md` (Sandbox Session Manager — Bubble Tea
-TUI + per-host Go daemon). Both features are implemented in **Go**, which deviates from the
-constitution's TypeScript/pnpm/Biome/Vitest tooling; deviations are recorded and justified in each
-plan's Constitution Check and Complexity Tracking (a constitution amendment is recommended).
+Prior feature: `specs/002-release-channel/plan.md` (GitHub-Only Release Channel — GoReleaser-on-tag
+GitHub Releases + a `curl | sh` SHA-256-verified install/update channel for `sxb`/`sxbd`; install
+script and the `switchboard-update` in-app updater share one asset-naming + checksum contract).
+
+Foundation: `specs/001-sandbox-session-manager/plan.md` (Sandbox Session Manager — Bubble Tea TUI +
+per-host Go daemon; gRPC contract, bbolt registry, `sbx` orchestration). All features are
+implemented in **Go**, which deviates from the constitution's TypeScript/pnpm/Biome/Vitest tooling;
+deviations are recorded and justified in 001's Constitution Check and Complexity Tracking (a
+constitution amendment is recommended). Feature 003 adds no new deviations.
 <!-- SPECKIT END -->

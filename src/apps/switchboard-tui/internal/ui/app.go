@@ -8,6 +8,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -35,6 +36,11 @@ type Daemon interface {
 	Restart(ctx context.Context, id string) (*pb.Sandbox, error)
 	Destroy(ctx context.Context, id string) (bool, error)
 	Rename(ctx context.Context, id, name string) (*pb.Sandbox, error)
+	// SetTag sets/clears a sandbox's mutable purpose tag (US5, FR-021..024).
+	SetTag(ctx context.Context, id, tag string) (*pb.Sandbox, error)
+	// AttachTerminal attaches to a sandbox's persistent session, streaming
+	// snapshot + live PTY bytes into sink (US2, feature 003).
+	AttachTerminal(ctx context.Context, sandboxID string, kind client.AttachKind, cols, rows uint32, sink io.Writer) (client.TermSession, error)
 	ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error)
 	OptionManifest(ctx context.Context) (*pb.OptionManifest, error)
 	// US4: agent prompting + live event subscription.
@@ -55,6 +61,8 @@ const (
 	screenList screen = iota
 	screenLaunch
 	screenRename
+	screenTag
+	screenTerminal
 	screenConfigEditor
 	screenConfigPicker
 	screenHosts
@@ -102,6 +110,15 @@ type Model struct {
 	rename     textinput.Model
 	renameID   string
 	renameHost string
+
+	// US5: tag editor (mirrors rename).
+	tagInput textinput.Model
+	tagID    string
+	tagHost  string
+
+	// US2/US3: in-place persistent terminal view + tracking of external terminals.
+	term    termState
+	extTerm map[string]*extTerminal // sandbox id -> spawned external terminal
 
 	// US2: saved configurations + sbx option manifest.
 	configs *store.ConfigStore
@@ -151,6 +168,12 @@ func New(daemon Daemon, srcRoot string) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colAccent)
 
+	tagTi := textinput.New()
+	tagTi.Prompt = "› "
+	tagTi.PromptStyle = selectedStyle
+	tagTi.Cursor.Style = cursorBarStyle
+	tagTi.CharLimit = 64 // matches the daemon's tag cap (research.md R6)
+
 	m := Model{
 		daemon:      daemon,
 		srcRoot:     srcRoot,
@@ -160,6 +183,8 @@ func New(daemon Daemon, srcRoot string) Model {
 		help:        newHelp(),
 		spinner:     sp,
 		rename:      ti,
+		tagInput:    tagTi,
+		extTerm:     map[string]*extTerminal{},
 		width:       80,
 		height:      24,
 		busy:        map[string]string{},
@@ -245,13 +270,6 @@ type launchResultMsg struct {
 	sb      *pb.Sandbox
 	blocked *pb.ResourceReport
 	err     error
-}
-
-// agentExitMsg is delivered after an interactive agent terminal session (opened
-// with `p`) exits and the TUI is restored.
-type agentExitMsg struct {
-	name string
-	err  error
 }
 
 func (e errMsg) Error() string { return e.err.Error() }
@@ -364,7 +382,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.help.Width = msg.Width
 		m.list.SetSize(m.bodyWidth(), m.mainListHeight())
+		if m.screen == screenTerminal {
+			m.resizeTerminal()
+		}
 		return m, nil
+
+	case termOpenedMsg:
+		return m.handleTermOpened(msg)
+	case termUpdateMsg:
+		// New PTY output arrived; re-render and keep listening while attached.
+		if m.screen == screenTerminal && m.term.session != nil {
+			return m, m.waitTermUpdateCmd()
+		}
+		return m, nil
+	case termClosedMsg:
+		return m.handleTermClosed(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -440,18 +472,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case launchResultMsg:
 		return m.handleLaunchResult(msg)
 
-	case agentExitMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.status = "terminal session failed: " + msg.err.Error()
-			return m, nil
-		}
-		// The agent may have changed sandbox state; refresh on return.
-		m.err = nil
-		m.status = "returned from " + msg.name
-		m.listLoading = true
-		return m, m.reloadCmd()
-
 	case updateAvailableMsg:
 		m.latestVersion = msg.latest
 		if hint := updateHint(msg.latest, m.clientVersion); hint != "" {
@@ -487,6 +507,8 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.advanceEditorForm(msg)
 	case screenRename:
 		m.rename, cmd = m.rename.Update(msg)
+	case screenTag:
+		m.tagInput, cmd = m.tagInput.Update(msg)
 	case screenConfigPicker:
 		m.picker.list, cmd = m.picker.list.Update(msg)
 	case screenHosts:
@@ -518,6 +540,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateLaunchKey(msg)
 	case screenRename:
 		return m.updateRenameKey(msg)
+	case screenTag:
+		return m.updateTagKey(msg)
+	case screenTerminal:
+		return m.updateTerminalKey(msg)
 	case screenConfigEditor:
 		return m.updateEditorKey(msg)
 	case screenConfigPicker:
@@ -546,11 +572,18 @@ func (m Model) View() string {
 		return overlayCenter(bg, m.launchModal(), m.width, m.height)
 	}
 
+	// The in-place terminal view takes the full body (US2).
+	if m.screen == screenTerminal {
+		return m.chrome(m.viewTerminal(), m.terminalHelp())
+	}
+
 	var body string
 	var hb helpBindings
 	switch m.screen {
 	case screenRename:
 		body, hb = m.viewRename(), m.renameHelp()
+	case screenTag:
+		body, hb = m.viewTag(), m.tagHelp()
 	case screenConfigEditor:
 		body, hb = m.viewEditor(), m.editorHelp()
 	case screenConfigPicker:

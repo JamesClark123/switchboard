@@ -105,6 +105,39 @@ func (c *Conn) Rename(ctx context.Context, id, name string) (*pb.Sandbox, error)
 	return c.api.RenameSandbox(ctx, &pb.RenameSandboxRequest{SandboxId: id, DisplayName: name})
 }
 
+// SetTag sets or clears a sandbox's mutable purpose tag (feature 003, FR-021..024).
+func (c *Conn) SetTag(ctx context.Context, id, tag string) (*pb.Sandbox, error) {
+	return c.api.SetSandboxTag(ctx, &pb.SetSandboxTagRequest{SandboxId: id, Tag: tag})
+}
+
+// ResolveWorkspace asks the daemon which sandbox owns a filesystem path, so `sxb`
+// run inside a workspace can attach to that sandbox's session (feature 003, FR-017/018).
+func (c *Conn) ResolveWorkspace(ctx context.Context, path string) (*pb.ResolveWorkspaceResponse, error) {
+	return c.api.ResolveWorkspace(ctx, &pb.ResolveWorkspaceRequest{Path: path})
+}
+
+// TermSession is the caller's handle to a live persistent terminal attachment.
+// *AttachStream satisfies it; the TUI depends on this interface so it can be faked.
+type TermSession interface {
+	SendData(p []byte) error
+	SendResize(cols, rows uint32) error
+	Close() error
+}
+
+// AttachTerminal opens the sandbox's persistent session and streams snapshot +
+// live PTY bytes into sink (feature 003). It is a thin convenience over
+// AttachAgent that returns the TermSession interface.
+func (c *Conn) AttachTerminal(ctx context.Context, sandboxID string, kind AttachKind, cols, rows uint32, sink io.Writer) (TermSession, error) {
+	return c.AttachAgent(ctx, AttachOptions{
+		SandboxID: sandboxID,
+		Kind:      kind,
+		Cols:      cols,
+		Rows:      rows,
+		Label:     "sxb-tui",
+		Sink:      sink,
+	})
+}
+
 // EventStream is the receive side of a Subscribe stream.
 type EventStream interface {
 	Recv() (*pb.Event, error)
