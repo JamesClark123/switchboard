@@ -105,19 +105,28 @@ type Target struct {
 	Workdir string
 }
 
-// agentInner picks the in-sandbox command to launch for an agent spec. The sbx
-// runner currently always creates sandboxes with the `claude` agent
+// agentArgv builds the in-sandbox command + arguments to launch for an agent spec.
+// The sbx runner currently always creates sandboxes with the `claude` agent
 // (sandbox/runner.go), so an unset kind maps to claude rather than a bare shell —
 // opening the terminal should drop the user into their agent, matching what
 // `sbx run claude` does. A future multi-runner world can carry the concrete kind
 // through here.
-func agentInner(spec *pb.AgentSpec) string {
+//
+// Claude is launched with --dangerously-skip-permissions so it runs
+// non-interactively inside the throwaway sandbox: a detached session has no
+// terminal attached to answer a permission prompt, so it must never block on one.
+// (The injected settings.local.json also sets defaultMode=bypassPermissions; the
+// flag is the CLI-level belt-and-braces for the same intent.) Spec args follow so
+// a caller can still override/extend the invocation.
+func agentArgv(spec *pb.AgentSpec) []string {
+	var argv []string
 	switch spec.GetKind() {
 	case "", "claude", "claude-code":
-		return "claude"
+		argv = []string{"claude", "--dangerously-skip-permissions"}
 	default:
-		return spec.GetKind()
+		argv = []string{spec.GetKind()}
 	}
+	return append(argv, spec.GetArgs()...)
 }
 
 // agentCommand maps an AgentSpec to the in-sandbox command. The daemon execs into
@@ -136,11 +145,10 @@ func agentInner(spec *pb.AgentSpec) string {
 // client-kill). `exec` replaces the wrapping shell with the agent so the PTY's
 // controlling process IS the agent, keeping interactive job control intact.
 func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec) *exec.Cmd {
-	launch := shellQuote(agentInner(spec))
-	for _, a := range spec.GetArgs() {
+	launch := "exec"
+	for _, a := range agentArgv(spec) {
 		launch += " " + shellQuote(a)
 	}
-	launch = "exec " + launch
 	if tgt.Workdir != "" {
 		launch = "cd " + shellQuote(tgt.Workdir) + " 2>/dev/null; " + launch
 	}

@@ -192,6 +192,10 @@ func TestInjectHooks(t *testing.T) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		t.Fatal(err)
 	}
+	// Sandboxes run the agent unattended, so permission prompts must be bypassed.
+	if s.Permissions.DefaultMode != "bypassPermissions" {
+		t.Errorf("defaultMode = %q, want bypassPermissions", s.Permissions.DefaultMode)
+	}
 	// Every event the daemon maps to a status MUST be injected, or that status is
 	// never reached. In particular the work-start hooks (UserPromptSubmit /
 	// PreToolUse) are what drive the WORKING indicator — their absence was a bug.

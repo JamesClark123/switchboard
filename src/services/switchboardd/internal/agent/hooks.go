@@ -27,8 +27,12 @@ type hookMatcher struct {
 	Matcher string      `json:"matcher"`
 	Hooks   []hookEntry `json:"hooks"`
 }
+type claudePermissions struct {
+	DefaultMode string `json:"defaultMode"`
+}
 type claudeSettings struct {
-	Hooks map[string][]hookMatcher `json:"hooks"`
+	Permissions claudePermissions        `json:"permissions"`
+	Hooks       map[string][]hookMatcher `json:"hooks"`
 }
 
 // BuildSettings produces the .claude/settings.local.json contents that make a
@@ -44,6 +48,10 @@ type claudeSettings struct {
 // Without the work-start hooks the status would never leave IDLE while the agent
 // runs, so the "working" indicator would never show. The sandbox id is embedded
 // so the daemon can attribute each callback.
+//
+// It also sets permissions.defaultMode to "bypassPermissions" so the agent runs
+// non-interactively inside the sandbox — no permission prompt can block a detached
+// session that has no terminal attached to answer it.
 func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 	curl := func(event string) []hookMatcher {
 		body := fmt.Sprintf(`{"event":"%s","sandbox_id":"%s"}`, event, sandboxID)
@@ -58,6 +66,11 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{Type: "command", Command: cmd}}}}
 	}
 	return claudeSettings{
+		// Sandboxes are isolated throwaway environments driven by an unattended
+		// agent, so skip the interactive permission prompts entirely — otherwise a
+		// detached prompt would stall forever waiting on approval nobody is there
+		// to give.
+		Permissions: claudePermissions{DefaultMode: "bypassPermissions"},
 		Hooks: map[string][]hookMatcher{
 			"UserPromptSubmit": curl("UserPromptSubmit"),
 			"PreToolUse":       curl("PreToolUse"),

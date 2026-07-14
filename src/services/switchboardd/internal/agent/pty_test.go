@@ -132,17 +132,22 @@ func TestAgentCommandMapping(t *testing.T) {
 		}
 	}
 	script := c.Args[len(c.Args)-1]
-	for _, sub := range []string{"cd '/home/u/ws'", "exec 'claude' '--model' 'opus'"} {
+	// Claude runs with --dangerously-skip-permissions (non-interactive sandbox),
+	// then any spec args, from the code directory.
+	for _, sub := range []string{
+		"cd '/home/u/ws'",
+		"exec 'claude' '--dangerously-skip-permissions' '--model' 'opus'",
+	} {
 		if !strings.Contains(script, sub) {
 			t.Errorf("launch script %q missing %q", script, sub)
 		}
 	}
 
-	// An unset kind still targets the agent (claude), matching the sbx runner,
-	// rather than dropping to a bare shell.
+	// An unset kind still targets the agent (claude) with the skip-permissions
+	// flag, matching the sbx runner, rather than dropping to a bare shell.
 	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{})
-	if s := c2.Args[len(c2.Args)-1]; !strings.Contains(s, "exec 'claude'") {
-		t.Errorf("default launch = %q, want it to exec claude", s)
+	if s := c2.Args[len(c2.Args)-1]; !strings.Contains(s, "exec 'claude' '--dangerously-skip-permissions'") {
+		t.Errorf("default launch = %q, want it to exec claude with --dangerously-skip-permissions", s)
 	}
 	// With no workdir there is no cd prefix.
 	if s := c2.Args[len(c2.Args)-1]; strings.Contains(s, "cd ") {
