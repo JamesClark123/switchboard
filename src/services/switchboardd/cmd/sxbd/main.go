@@ -155,15 +155,18 @@ func runServe(cfg *config.Config, debug bool) error {
 	// The PTY factory targets sbx by the sandbox's container_ref (the --name sbx
 	// knows it by), resolved from the uuid registry key; sbx cannot address a
 	// sandbox by uuid, so exec'ing with the uuid would EOF the terminal on attach.
-	sbxTarget := func(sandboxID string) string {
+	// It also carries the sandbox's workspace path so the agent opens in the code
+	// directory (equivalent to `sbx run <agent>` there), not the container root.
+	sbxTarget := func(sandboxID string) agent.Target {
 		sb, err := mgr.Get(sandboxID)
 		if err != nil {
-			return ""
+			return agent.Target{}
 		}
-		if ref := sb.GetContainerRef(); ref != "" {
-			return ref
+		ref := sb.GetContainerRef()
+		if ref == "" {
+			ref = sb.GetDisplayName()
 		}
-		return sb.GetDisplayName()
+		return agent.Target{Ref: ref, Workdir: sb.GetWorkspacePath()}
 	}
 	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
 	hookServer := agent.NewHookServer(hub, mgr)

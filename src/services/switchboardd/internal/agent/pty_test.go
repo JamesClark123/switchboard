@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -117,21 +118,34 @@ func TestRegistryFactoryError(t *testing.T) {
 }
 
 func TestAgentCommandMapping(t *testing.T) {
-	c := agentCommand("sbx", "sb1", &pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}})
-	got := append([]string{c.Path}, c.Args[1:]...)
-	want := []string{"sbx", "exec", "-it", "sb1", "claude", "--model", "opus"}
-	// c.Path may be resolved to an absolute path; compare the trailing args.
-	if len(got) != len(want) {
+	// The agent is launched from the sandbox's code directory via a bash -lc that
+	// cd's then execs, so the terminal opens where `sbx run <agent>` would.
+	c := agentCommand("sbx", Target{Ref: "sb-ref", Workdir: "/home/u/ws"},
+		&pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}})
+	want := []string{"exec", "-it", "sb-ref", "bash", "-lc"}
+	if len(c.Args) != len(want)+2 { // Args[0] is the binary; +1 for the launch script
 		t.Fatalf("args = %v", c.Args)
 	}
-	for i := 1; i < len(want); i++ {
-		if c.Args[i] != want[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, c.Args[i], want[i])
+	for i, w := range want {
+		if c.Args[i+1] != w {
+			t.Errorf("arg[%d] = %q, want %q", i+1, c.Args[i+1], w)
 		}
 	}
-	// Non-claude agents default to a shell.
-	c2 := agentCommand("sbx", "sb1", &pb.AgentSpec{})
-	if c2.Args[len(c2.Args)-1] != "bash" {
-		t.Errorf("default inner cmd = %q, want bash", c2.Args[len(c2.Args)-1])
+	script := c.Args[len(c.Args)-1]
+	for _, sub := range []string{"cd '/home/u/ws'", "exec 'claude' '--model' 'opus'"} {
+		if !strings.Contains(script, sub) {
+			t.Errorf("launch script %q missing %q", script, sub)
+		}
+	}
+
+	// An unset kind still targets the agent (claude), matching the sbx runner,
+	// rather than dropping to a bare shell.
+	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{})
+	if s := c2.Args[len(c2.Args)-1]; !strings.Contains(s, "exec 'claude'") {
+		t.Errorf("default launch = %q, want it to exec claude", s)
+	}
+	// With no workdir there is no cd prefix.
+	if s := c2.Args[len(c2.Args)-1]; strings.Contains(s, "cd ") {
+		t.Errorf("launch %q should not cd when workdir is empty", s)
 	}
 }

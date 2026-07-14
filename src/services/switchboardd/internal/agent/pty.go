@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/creack/pty"
@@ -89,46 +90,86 @@ func (p *ptySession) Close() error {
 	return p.f.Close()
 }
 
-// agentCommand maps an AgentSpec to the in-sandbox command. The daemon execs into
-// the sandbox via `sbx exec`. The target MUST be the sbx-addressable handle
-// (the sandbox's container_ref / --name), NOT the daemon's uuid registry key:
-// sbx addresses sandboxes by name, so `sbx exec -it <uuid> …` would fail
-// immediately and the PTY would report EOF the moment a client attached.
-//
-// The command is launched UNWRAPPED (no setsid/nohup) on purpose. The T002 spike
-// (research.md R4 "Verification result") verified against real sbx/Docker that a
-// docker-exec child survives both a hard kill of the host exec client and a
-// controlling-PTY hangup — the exact ptySession.Close() sequence — so host-side
-// persistence already satisfies FR-002 (an in-flight AI prompt keeps running after
-// the terminal closes / across a daemon restart's client-kill). A setsid wrap would
-// add nothing to survival and would strip the controlling TTY, risking interactive
-// job-control breakage; it is therefore deliberately not used.
-func agentCommand(sbxBin, target string, spec *pb.AgentSpec) *exec.Cmd {
-	inner := "bash"
-	if spec.GetKind() == "claude-code" {
-		inner = "claude"
+// Target describes how the daemon reaches a sandbox's agent through `sbx`.
+type Target struct {
+	// Ref is the sbx-addressable handle (container_ref / --name). It MUST NOT be
+	// the daemon's uuid registry key: sbx addresses sandboxes by name, so
+	// `sbx exec -it <uuid> …` fails immediately and the PTY reports EOF the moment
+	// a client attaches.
+	Ref string
+	// Workdir is the in-container working directory to open the agent in — the
+	// sandbox's code directory. sbx mounts the seeded workspace at the same path
+	// it has on the host (which is why `sxb` run inside the sandbox finds the
+	// workspace marker by walking up, FR-017), so this is the sandbox's
+	// WorkspacePath. Empty means "leave sbx's default directory".
+	Workdir string
+}
+
+// agentInner picks the in-sandbox command to launch for an agent spec. The sbx
+// runner currently always creates sandboxes with the `claude` agent
+// (sandbox/runner.go), so an unset kind maps to claude rather than a bare shell —
+// opening the terminal should drop the user into their agent, matching what
+// `sbx run claude` does. A future multi-runner world can carry the concrete kind
+// through here.
+func agentInner(spec *pb.AgentSpec) string {
+	switch spec.GetKind() {
+	case "", "claude", "claude-code":
+		return "claude"
+	default:
+		return spec.GetKind()
 	}
-	args := []string{"exec", "-it", target, inner}
-	args = append(args, spec.GetArgs()...)
+}
+
+// agentCommand maps an AgentSpec to the in-sandbox command. The daemon execs into
+// the sandbox via `sbx exec` and launches the agent from the sandbox's code
+// directory (tgt.Workdir) so the terminal opens exactly where `sbx run <agent>`
+// would — not at the container root. The `cd` is best-effort (`; exec` rather than
+// `&& exec`) so a missing/renamed workspace still yields a working agent shell
+// instead of an immediate EOF.
+//
+// The command is launched UNWRAPPED w.r.t. session/job-control (no setsid/nohup)
+// on purpose. The T002 spike (research.md R4 "Verification result") verified
+// against real sbx/Docker that a docker-exec child survives both a hard kill of
+// the host exec client and a controlling-PTY hangup — the exact ptySession.Close()
+// sequence — so host-side persistence already satisfies FR-002 (an in-flight AI
+// prompt keeps running after the terminal closes / across a daemon restart's
+// client-kill). `exec` replaces the wrapping shell with the agent so the PTY's
+// controlling process IS the agent, keeping interactive job control intact.
+func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec) *exec.Cmd {
+	launch := shellQuote(agentInner(spec))
+	for _, a := range spec.GetArgs() {
+		launch += " " + shellQuote(a)
+	}
+	launch = "exec " + launch
+	if tgt.Workdir != "" {
+		launch = "cd " + shellQuote(tgt.Workdir) + " 2>/dev/null; " + launch
+	}
+	args := []string{"exec", "-it", tgt.Ref, "bash", "-lc", launch}
 	return exec.Command(sbxBin, args...)
+}
+
+// shellQuote wraps s in single quotes for safe use inside a `bash -lc` string,
+// escaping any embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // PTYFactory returns a SessionFactory that starts the sandbox's agent under a PTY.
 //
-// resolve maps the daemon's uuid registry key to the sbx-addressable handle
-// (container_ref / --name) that `sbx exec` expects. It may return "" when the
-// sandbox is unknown; the factory then falls back to the uuid so behavior is no
-// worse than before resolution existed. resolve may be nil (uuid used directly),
-// which is intended only for tests.
-func PTYFactory(sbxBin string, resolve func(sandboxID string) string) SessionFactory {
+// resolve maps the daemon's uuid registry key to the sbx Target (handle + code
+// directory). It may return a zero Target when the sandbox is unknown; the factory
+// then falls back to targeting the uuid so behavior is no worse than before
+// resolution existed. resolve may be nil (uuid used directly, no workdir), which is
+// intended only for tests.
+func PTYFactory(sbxBin string, resolve func(sandboxID string) Target) SessionFactory {
 	return func(sandboxID string, spec *pb.AgentSpec) (Session, error) {
-		target := sandboxID
+		tgt := Target{Ref: sandboxID}
 		if resolve != nil {
-			if ref := resolve(sandboxID); ref != "" {
-				target = ref
+			if r := resolve(sandboxID); r.Ref != "" {
+				tgt = r
 			}
 		}
-		cmd := agentCommand(sbxBin, target, spec)
+		cmd := agentCommand(sbxBin, tgt, spec)
 		f, err := pty.Start(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("start pty for %s: %w", sandboxID, err)

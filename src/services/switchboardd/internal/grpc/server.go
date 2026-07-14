@@ -94,8 +94,17 @@ func NewServer(cfg Config) *Server {
 	// end a sandbox's terminal session when it leaves the running state (FR-006).
 	if cfg.Manager != nil {
 		cfg.Manager.SetOnChange(func(sb *pb.Sandbox) {
-			if s.terms != nil && sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
-				s.terms.Close(sb.GetId())
+			if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+				// Closing the broadcaster kills the shared agent PTY (FR-006). The
+				// agent registry must drop its cached session too, otherwise the
+				// next attach after a restart is handed the dead PTY and the client
+				// sees an immediate EOF instead of a fresh terminal.
+				if s.terms != nil {
+					s.terms.Close(sb.GetId())
+				}
+				if s.agents != nil {
+					s.agents.Close(sb.GetId())
+				}
 			}
 			if cfg.Hub != nil {
 				cfg.Hub.PublishSandbox(s.withTerminalCounts(sb))
