@@ -510,3 +510,121 @@ func TestClampAndDegenerateSizes(t *testing.T) {
 		t.Fatalf("resize clamp = (%d,%d)", c, r)
 	}
 }
+
+// hasReverseAtVisible reports whether a rendered line has a reverse-video (SGR
+// 7) run somewhere before its visible text — used to detect the block cursor.
+func hasReverse(rendered string) bool {
+	return strings.Contains(rendered, "\x1b[7m") || strings.Contains(rendered, ";7m") ||
+		strings.Contains(rendered, "[7;") || strings.Contains(rendered, "\x1b[7;")
+}
+
+func TestCursorIsRenderedByDefault(t *testing.T) {
+	// A fresh screen with output shows a visible (reverse-video) cursor cell.
+	s := New(10, 2)
+	s.Write([]byte("hi"))
+	if !hasReverse(s.Render()) {
+		t.Fatalf("expected a reverse-video cursor in %q", s.Render())
+	}
+}
+
+func TestCursorHiddenByDECTCEM(t *testing.T) {
+	s := New(10, 2)
+	s.Write([]byte("hi"))
+	s.Write([]byte("\x1b[?25l")) // hide cursor
+	if hasReverse(s.Render()) {
+		t.Fatalf("cursor should be hidden after ?25l: %q", s.Render())
+	}
+	s.Write([]byte("\x1b[?25h")) // show cursor again
+	if !hasReverse(s.Render()) {
+		t.Fatalf("cursor should be visible after ?25h: %q", s.Render())
+	}
+}
+
+func TestCursorOverlayDoesNotCorruptContent(t *testing.T) {
+	// Rendering the cursor is non-destructive: the underlying glyph and later
+	// renders are unchanged.
+	s := New(10, 2)
+	s.Write([]byte("\x1b[1;1Hab")) // cursor ends at col 2
+	s.Write([]byte("\x1b[1;1H"))   // move cursor back onto 'a'
+	if got := firstNonEmptyLine(s.Render()); got != "ab" {
+		t.Fatalf("content with cursor over 'a' = %q, want ab", got)
+	}
+	// A second render must still show the same content (overlay was restored).
+	if got := firstNonEmptyLine(s.Render()); got != "ab" {
+		t.Fatalf("content after re-render = %q, want ab", got)
+	}
+}
+
+func TestScrollbackCapturesAndOffset(t *testing.T) {
+	s := New(20, 2)
+	// Push 'first' off the top of the 2-row grid.
+	s.Write([]byte("first\r\nsecond\r\nthird"))
+	// Live view no longer shows 'first'.
+	if strings.Contains(stripStyle(s.Render()), "first") {
+		t.Fatalf("live view should not contain scrolled-off 'first'")
+	}
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("fresh offset = %d, want 0", s.ScrollOffset())
+	}
+	// Scroll up into history: 'first' reappears.
+	if n := s.ScrollUp(1); n != 1 {
+		t.Fatalf("ScrollUp moved %d lines, want 1", n)
+	}
+	if s.ScrollOffset() != 1 {
+		t.Fatalf("offset after ScrollUp = %d, want 1", s.ScrollOffset())
+	}
+	if !strings.Contains(stripStyle(s.Render()), "first") {
+		t.Fatalf("scrolled-up view should contain 'first': %q", stripStyle(s.Render()))
+	}
+	// Cannot scroll past the oldest line.
+	if n := s.ScrollUp(50); n != 0 {
+		t.Fatalf("ScrollUp past top moved %d lines, want 0", n)
+	}
+	// Scroll back down and snap to the live view.
+	s.ScrollDown(1)
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("offset after ScrollDown = %d, want 0", s.ScrollOffset())
+	}
+}
+
+func TestScrollToBottomFollowsLive(t *testing.T) {
+	s := New(20, 2)
+	s.Write([]byte("a\r\nb\r\nc"))
+	s.ScrollUp(1)
+	if s.ScrollOffset() == 0 {
+		t.Fatalf("precondition: expected scrolled up")
+	}
+	s.ScrollToBottom()
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("ScrollToBottom offset = %d, want 0", s.ScrollOffset())
+	}
+}
+
+func TestScrollAnchorsWhenNewOutputArrives(t *testing.T) {
+	s := New(20, 2)
+	s.Write([]byte("l1\r\nl2\r\nl3")) // 'l1' in scrollback
+	s.ScrollUp(1)                     // viewing 'l1' at top
+	view := stripStyle(s.Render())
+	if !strings.Contains(view, "l1") {
+		t.Fatalf("precondition: expected 'l1' in view, got %q", view)
+	}
+	// New output scrolls the live region; the anchored view should keep showing
+	// 'l1' rather than jumping.
+	s.Write([]byte("\r\nl4"))
+	if got := stripStyle(s.Render()); !strings.Contains(got, "l1") {
+		t.Fatalf("view drifted after new output: %q", got)
+	}
+}
+
+func TestResetClearsScrollback(t *testing.T) {
+	s := New(20, 2)
+	s.Write([]byte("a\r\nb\r\nc"))
+	s.ScrollUp(1)
+	s.Reset()
+	if s.ScrollOffset() != 0 {
+		t.Fatalf("offset after reset = %d, want 0", s.ScrollOffset())
+	}
+	if n := s.ScrollUp(5); n != 0 {
+		t.Fatalf("scrollback survived reset: moved %d lines", n)
+	}
+}

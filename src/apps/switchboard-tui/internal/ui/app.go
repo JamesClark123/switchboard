@@ -483,6 +483,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateResultMsg:
 		return m.applyUpdateResult(msg)
 
+	case tea.MouseMsg:
+		// The terminal view consumes the wheel to scroll its own history; other
+		// screens forward it (e.g. the sandbox list scrolls with the wheel).
+		if m.screen == screenTerminal {
+			return m.updateTerminalMouse(msg)
+		}
+		return m.forward(msg)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}

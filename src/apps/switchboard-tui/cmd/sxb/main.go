@@ -133,7 +133,10 @@ func main() {
 		m = m.WithGroups(st.Groups(), vscode.NewOpener(cfg.CodeBin))
 	}
 
-	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	// WithMouseCellMotion enables mouse-wheel events so the in-place terminal
+	// view can scroll its own scrollback (and the sandbox list scrolls with the
+	// wheel too) instead of the events falling through to the host terminal.
+	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		os.Exit(1)

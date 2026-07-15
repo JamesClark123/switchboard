@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -185,9 +186,30 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if b := keyToBytes(msg); len(b) > 0 {
+		// Typing snaps the view back to the live output so the user sees what
+		// they're sending rather than staying stuck in scrollback.
+		if m.term.screen != nil {
+			m.term.screen.ScrollToBottom()
+		}
 		if err := m.term.session.SendData(b); err != nil {
 			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name})
 		}
+	}
+	return m, nil
+}
+
+// updateTerminalMouse scrolls the in-place terminal's scrollback with the wheel
+// (US2). The screen is a pointer, so mutating it here re-renders on the next
+// View pass with no extra command.
+func (m Model) updateTerminalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.term.screen == nil {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.term.screen.ScrollUp(3)
+	case tea.MouseButtonWheelDown:
+		m.term.screen.ScrollDown(3)
 	}
 	return m, nil
 }
@@ -204,6 +226,9 @@ func (m Model) viewTerminal() string {
 	}
 	header := sectionStyle.Render("Terminal ") + dimStyle.Render(m.term.name) +
 		dimStyle.Render("   ctrl+q to detach (session keeps running)")
+	if off := m.term.screen.ScrollOffset(); off > 0 {
+		header += dimStyle.Render("   ⇡ scrolled " + strconv.Itoa(off) + " (type to follow)")
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.term.screen.Render())
 }
 

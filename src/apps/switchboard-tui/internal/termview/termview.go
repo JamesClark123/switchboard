@@ -26,17 +26,29 @@ import (
 // It is safe for concurrent use by one writer (the attach-stream reader) and
 // one reader (the Bubble Tea render loop) via an internal mutex.
 type Screen struct {
-	mu   sync.Mutex
-	buf  *cellbuf.Buffer
-	pen  cellbuf.Style
-	cx   int
-	cy   int
-	sx   int // saved cursor x
-	sy   int // saved cursor y
-	rows int
-	cols int
-	pars *ansi.Parser
+	mu           sync.Mutex
+	buf          *cellbuf.Buffer
+	pen          cellbuf.Style
+	cx           int
+	cy           int
+	sx           int // saved cursor x
+	sy           int // saved cursor y
+	rows         int
+	cols         int
+	pars         *ansi.Parser
+	cursorHidden bool // DECTCEM (CSI ?25 l/h): the PTY app hid the cursor
+
+	// scrollback history + viewport offset. Lines that scroll off the top of
+	// the grid are rendered once and retained here (bounded) so the client can
+	// scroll back through prior output. viewOffset is how many lines the view is
+	// scrolled up from the live screen (0 == following live output).
+	scroll     []string
+	viewOffset int
 }
+
+// maxScrollback bounds the client-side history retained for scroll-back. Older
+// lines are dropped once the cap is exceeded.
+const maxScrollback = 5000
 
 // New returns a Screen sized to cols×rows. cols/rows below 1 are clamped to 1.
 func New(cols, rows int) *Screen {
@@ -108,6 +120,56 @@ func (s *Screen) Reset() {
 	s.cx, s.cy = 0, 0
 	s.sx, s.sy = 0, 0
 	s.pen = cellbuf.Style{}
+	s.cursorHidden = false
+	s.scroll = nil
+	s.viewOffset = 0
+}
+
+// ScrollUp moves the viewport up by n lines into scrollback history, returning
+// the number of lines actually scrolled (0 when already at the oldest line).
+func (s *Screen) ScrollUp(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := s.viewOffset
+	s.viewOffset += n
+	if s.viewOffset > len(s.scroll) {
+		s.viewOffset = len(s.scroll)
+	}
+	return s.viewOffset - before
+}
+
+// ScrollDown moves the viewport back down toward the live screen by n lines,
+// returning the number of lines actually scrolled (0 when already at the bottom).
+func (s *Screen) ScrollDown(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := s.viewOffset
+	s.viewOffset -= n
+	if s.viewOffset < 0 {
+		s.viewOffset = 0
+	}
+	return before - s.viewOffset
+}
+
+// ScrollToBottom snaps the viewport back to the live screen (follows output).
+func (s *Screen) ScrollToBottom() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.viewOffset = 0
+}
+
+// ScrollOffset reports how many lines the viewport is scrolled up from the live
+// screen (0 while following live output).
+func (s *Screen) ScrollOffset() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.viewOffset
 }
 
 // Cursor returns the current cursor position (0-based col, row).
@@ -120,10 +182,21 @@ func (s *Screen) Cursor() (col, row int) {
 // Render returns a lipgloss-friendly string of the current screen, one line
 // per row, with ANSI styling embedded. Trailing blank rows are preserved so
 // the caller sees a stable-height block matching the configured geometry —
-// the Bubble Tea viewport expects that.
+// the Bubble Tea viewport expects that. When the viewport is scrolled up into
+// history, the equivalent window of scrollback + live rows is drawn instead.
 func (s *Screen) Render() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.viewOffset > 0 {
+		return s.renderWindow()
+	}
+	return s.renderLive()
+}
+
+// renderLive draws the live grid with the text cursor overlaid as a reverse-
+// video cell (unless the PTY app hid it via DECTCEM). Called with s.mu held.
+func (s *Screen) renderLive() string {
+	restore := s.overlayCursor()
 	var out strings.Builder
 	for y := 0; y < s.rows; y++ {
 		_, line := cellbuf.RenderLine(s.buf, y)
@@ -132,7 +205,46 @@ func (s *Screen) Render() string {
 			out.WriteByte('\n')
 		}
 	}
+	if restore != nil {
+		restore()
+	}
 	return out.String()
+}
+
+// renderWindow draws a rows-high window into the combined scrollback + live
+// grid, positioned by viewOffset. No cursor is shown while scrolled back.
+// Called with s.mu held.
+func (s *Screen) renderWindow() string {
+	top := len(s.scroll) - s.viewOffset
+	var out strings.Builder
+	for i := 0; i < s.rows; i++ {
+		idx := top + i
+		if idx < len(s.scroll) {
+			out.WriteString(s.scroll[idx])
+		} else {
+			_, line := cellbuf.RenderLine(s.buf, idx-len(s.scroll))
+			out.WriteString(line)
+		}
+		if i < s.rows-1 {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
+}
+
+// overlayCursor temporarily reverses the cell under the cursor so Render draws a
+// visible block cursor, returning a func that restores the original cell (nil
+// when the cursor is hidden or out of bounds). Called with s.mu held.
+func (s *Screen) overlayCursor() func() {
+	if s.cursorHidden || s.cx < 0 || s.cy < 0 || s.cx >= s.cols || s.cy >= s.rows {
+		return nil
+	}
+	orig := s.buf.Cell(s.cx, s.cy) // never nil: blank cells read back as BlankCell
+	cursor := orig.Clone()
+	cursor.Style.Reverse(true)
+	s.buf.SetCell(s.cx, s.cy, cursor)
+	cx, cy := s.cx, s.cy
+	return func() { s.buf.SetCell(cx, cy, orig) }
 }
 
 // --- parser callbacks (called with s.mu held) ---
@@ -185,17 +297,41 @@ func (s *Screen) newline() {
 }
 
 // scrollUp shifts the top n rows off the screen and clears the freshly-exposed
-// bottom rows. n is clamped to the screen height.
+// bottom rows. n is clamped to the screen height. The displaced rows are pushed
+// into scrollback so the client can scroll back through them.
 func (s *Screen) scrollUp(n int) {
 	if n <= 0 {
 		return
 	}
-	if n >= s.rows {
-		s.buf.Clear()
-		return
+	if n > s.rows {
+		n = s.rows
 	}
-	s.buf.InsertLine(s.rows, n, nil)
-	s.buf.DeleteLine(0, n, nil)
+	for y := 0; y < n; y++ {
+		_, line := cellbuf.RenderLine(s.buf, y)
+		s.pushScrollback(line)
+	}
+	if n == s.rows {
+		s.buf.Clear()
+	} else {
+		s.buf.InsertLine(s.rows, n, nil)
+		s.buf.DeleteLine(0, n, nil)
+	}
+	// Keep the viewport visually anchored while the user is scrolled up: new
+	// history pushes the live region down, so grow the offset in step.
+	if s.viewOffset > 0 {
+		s.viewOffset += n
+		if s.viewOffset > len(s.scroll) {
+			s.viewOffset = len(s.scroll)
+		}
+	}
+}
+
+// pushScrollback appends a displaced line to the bounded scrollback history.
+func (s *Screen) pushScrollback(line string) {
+	s.scroll = append(s.scroll, line)
+	if over := len(s.scroll) - maxScrollback; over > 0 {
+		s.scroll = s.scroll[over:]
+	}
 }
 
 // scrollDown is symmetric — used by reverse-index (ESC M) at the top row.
@@ -276,7 +412,13 @@ func (s *Screen) csi(cmd ansi.Cmd, params ansi.Params) {
 	case 'u': // RCP — restore cursor position
 		s.cx, s.cy = s.sx, s.sy
 	case 'r': // DECSTBM — set scrolling region: intentionally ignored (single region)
-	case 'h', 'l': // SM / RM — set/reset mode: ignored (cursor visibility handled elsewhere)
+	case 'h', 'l': // SM / RM — set/reset mode
+		// DECTCEM (CSI ?25 h/l) toggles cursor visibility; other modes ignored.
+		if cmd.Prefix() == '?' {
+			if p, _, ok := params.Param(0, 0); ok && p == 25 {
+				s.cursorHidden = cmd.Final() == 'l'
+			}
+		}
 	case 't': // window manipulation — ignored
 	}
 }
@@ -304,6 +446,9 @@ func (s *Screen) esc(cmd ansi.Cmd) {
 		s.cx, s.cy = 0, 0
 		s.sx, s.sy = 0, 0
 		s.pen = cellbuf.Style{}
+		s.cursorHidden = false
+		s.scroll = nil
+		s.viewOffset = 0
 	}
 }
 
