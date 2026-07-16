@@ -120,6 +120,45 @@ func TestExternalTerminalSingleInstance(t *testing.T) {
 	}
 }
 
+// Closing the external terminal must free the single-instance slot so the next
+// `T` can open a new one — otherwise the user is wedged out (FR-014/015). The
+// first press returns a reap command; running it after the spawned process ends
+// yields extTermClosedMsg, which Update uses to drop the tracking entry.
+func TestExternalTerminalReopensAfterClose(t *testing.T) {
+	d := &fakeDaemon{}
+	// `true` exits immediately, standing in for a closed terminal window.
+	m := withSandboxes(sized(New(d, "/work").WithSbx("sbx").WithTerminal("true")),
+		[]*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
+
+	m, reap := update(m, press("T"))
+	if len(m.extTerm) != 1 {
+		t.Fatalf("first T should spawn one external terminal, have %d", len(m.extTerm))
+	}
+	if reap == nil {
+		t.Fatal("opening an external terminal must return a reap command")
+	}
+
+	// The window closes: run the reap command (waits for exit) and feed its
+	// message back through Update; the tracking entry must be dropped.
+	closed := runCmd(reap)
+	if _, ok := closed.(extTermClosedMsg); !ok {
+		t.Fatalf("reap command produced %T, want extTermClosedMsg", closed)
+	}
+	m, _ = update(m, closed)
+	if len(m.extTerm) != 0 {
+		t.Fatalf("closing the terminal should free the slot, have %d", len(m.extTerm))
+	}
+
+	// A second T now opens a fresh terminal instead of refusing as a duplicate.
+	m, _ = update(m, press("T"))
+	if len(m.extTerm) != 1 {
+		t.Fatalf("T after close should spawn again, have %d", len(m.extTerm))
+	}
+	if !strings.Contains(m.status, "opened") {
+		t.Errorf("status = %q, want an opened note after reopening", m.status)
+	}
+}
+
 func TestExternalTerminalRespectsDaemonExternalFlag(t *testing.T) {
 	d := &fakeDaemon{}
 	m := withSandboxes(sized(New(d, "/work").WithTerminal("sleep 30")),

@@ -18,6 +18,26 @@ type extTerminal struct {
 	sandboxID string
 }
 
+// extTermClosedMsg reports that a spawned external terminal's process has exited
+// (the user closed the window). The Update loop drops it from the tracking map so
+// a later `T` opens a fresh terminal instead of refusing it as a duplicate.
+type extTermClosedMsg struct {
+	sandboxID string
+	proc      *os.Process
+}
+
+// reapExtTermCmd waits for the spawned terminal to exit and then reports it closed.
+// The Wait is essential: without it the child is never reaped, and a zombie process
+// still answers signal 0 — so processAlive would report the closed terminal as still
+// running forever, wedging the single-instance guard and blocking every later `T`.
+func reapExtTermCmd(id string, cmd *exec.Cmd) tea.Cmd {
+	proc := cmd.Process
+	return func() tea.Msg {
+		_ = cmd.Wait()
+		return extTermClosedMsg{sandboxID: id, proc: proc}
+	}
+}
+
 // openExternalTerminal (uppercase `T`) opens the sandbox's persistent session in
 // a separate terminal window running `sxb attach`. Only one external terminal per
 // sandbox is allowed: if one is already tracked (or the daemon reports an external
@@ -66,7 +86,7 @@ func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea
 	}
 	m.extTerm[id] = &extTerminal{proc: cmd.Process, sandboxID: id}
 	m.status = "opened " + name + " in an external terminal"
-	return m, nil
+	return m, reapExtTermCmd(id, cmd)
 }
 
 // processAlive reports whether p is still running (signal 0 probes existence).

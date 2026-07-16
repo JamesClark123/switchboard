@@ -424,6 +424,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case termClosedMsg:
 		return m.handleTermClosed(msg)
+	case extTermClosedMsg:
+		// The external terminal window was closed; forget it so a later `T` opens
+		// a fresh one rather than treating the dead process as still attached. Match
+		// on the exact process so a terminal reopened for the same sandbox survives.
+		if et, ok := m.extTerm[msg.sandboxID]; ok && et.proc == msg.proc {
+			delete(m.extTerm, msg.sandboxID)
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
