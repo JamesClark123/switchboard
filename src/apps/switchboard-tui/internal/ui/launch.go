@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -45,6 +46,15 @@ type launchState struct {
 
 	name   textinput.Model // optional per-host sandbox name (becomes the workspace dir)
 	naming bool            // true while editing the name field
+
+	// Agent-kit selection (feature 004, FR-032). Creation is the ONLY point sbx
+	// accepts `--kit`, so kits chosen here are passed to `sbx create`; attaching
+	// later goes through `sbx kit add`, which restarts the sandbox.
+	kitPick   bool            // true while choosing kits
+	kitCursor int             // highlighted kit row
+	kitAll    []*store.Kit    // kits available to attach
+	kitOn     map[string]bool // chosen kit ids
+	kitOrder  []string        // selection order — sbx composes stacked kits in order
 
 	inProgress bool
 	progress   string
@@ -189,14 +199,102 @@ func (m Model) launchHelp() helpBindings {
 	if m.launch.naming {
 		return helpBindings{hkey("enter", "done"), hkey("esc", "cancel name")}
 	}
+	if m.launch.kitPick {
+		return helpBindings{hkey("space", "toggle kit"), hkey("↑/↓", "move"), hkey("enter/esc", "done")}
+	}
 	return helpBindings{
 		hkey("space", "select"),
 		hkey("→/←", "open/up"),
 		hkey("N", "name"),
 		hkey("m", "seeding mode"),
+		hkey("K", "kits"),
 		hkey("enter", "launch"),
 		hkey("esc", "cancel"),
 	}
+}
+
+// openLaunchKitPick enters the kit-selection sub-mode, loading the saved kits.
+func (m Model) openLaunchKitPick() (tea.Model, tea.Cmd) {
+	if m.kits == nil {
+		return m, nil
+	}
+	kits, err := m.kits.List()
+	if err != nil {
+		m.launch.loadErr = "kits unavailable: " + err.Error()
+		return m, nil
+	}
+	m.launch.kitAll = kits
+	m.launch.kitPick = true
+	m.launch.kitCursor = 0
+	if m.launch.kitOn == nil {
+		m.launch.kitOn = map[string]bool{}
+	}
+	return m, nil
+}
+
+// updateLaunchKitKey drives the kit-selection sub-mode.
+func (m Model) updateLaunchKitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "esc":
+		m.launch.kitPick = false
+		return m, nil
+	case "up", "k":
+		if m.launch.kitCursor > 0 {
+			m.launch.kitCursor--
+		}
+	case "down", "j":
+		if m.launch.kitCursor < len(m.launch.kitAll)-1 {
+			m.launch.kitCursor++
+		}
+	case " ":
+		m.launch.toggleKit()
+	}
+	return m, nil
+}
+
+// toggleKit selects/deselects the highlighted kit, preserving selection order:
+// sbx composes stacked kits in the order given, so the order is meaningful.
+func (l *launchState) toggleKit() {
+	if l.kitCursor < 0 || l.kitCursor >= len(l.kitAll) {
+		return
+	}
+	id := l.kitAll[l.kitCursor].ID()
+	if l.kitOn == nil {
+		l.kitOn = map[string]bool{}
+	}
+	if l.kitOn[id] {
+		delete(l.kitOn, id)
+		for i, existing := range l.kitOrder {
+			if existing == id {
+				l.kitOrder = append(l.kitOrder[:i], l.kitOrder[i+1:]...)
+				break
+			}
+		}
+		return
+	}
+	l.kitOn[id] = true
+	l.kitOrder = append(l.kitOrder, id)
+}
+
+// selectedKitRefs renders the chosen kits as wire refs, in selection order.
+func (l *launchState) selectedKitRefs() ([]*pb.KitRef, error) {
+	byID := map[string]*store.Kit{}
+	for _, k := range l.kitAll {
+		byID[k.ID()] = k
+	}
+	refs := make([]*pb.KitRef, 0, len(l.kitOrder))
+	for _, id := range l.kitOrder {
+		k, ok := byID[id]
+		if !ok {
+			continue
+		}
+		ref, err := k.ToRef()
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
 }
 
 func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -206,10 +304,15 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.launch.naming {
 		return m.updateLaunchNameKey(msg)
 	}
+	if m.launch.kitPick {
+		return m.updateLaunchKitKey(msg)
+	}
 	switch msg.String() {
 	case "esc":
 		m.screen = screenList
 		return m, nil
+	case "K":
+		return m.openLaunchKitPick()
 	case "up", "k":
 		m.launch.moveCursor(-1)
 	case "down", "j":
@@ -277,10 +380,19 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 		snapshot = &pb.ConfigSnapshot{}
 	}
 	snapshot.SeedingMode = mode
+	// Kits chosen in the wizard ride along with the create — sbx only honours
+	// `--kit` at creation (FR-032).
+	kitRefs, err := m.launch.selectedKitRefs()
+	if err != nil {
+		m.launch.progress = ""
+		m.launch.loadErr = "kit error: " + err.Error()
+		return m, nil
+	}
 	req := &pb.LaunchSandboxRequest{
 		Config:      snapshot,
 		Sources:     sources,
 		DisplayName: strings.TrimSpace(m.launch.name.Value()),
+		Kits:        kitRefs,
 	}
 
 	ch := make(chan tea.Msg, 32)
@@ -356,12 +468,15 @@ func (m Model) launchModal() string {
 	title := sectionStyle.Render("Launch sandbox") + dimStyle.Render("  ·  host "+m.daemon.HostID())
 
 	var content string
-	if m.launch.inProgress {
+	switch {
+	case m.launch.inProgress:
 		content = lipgloss.JoinVertical(lipgloss.Left,
 			m.spinner.View()+" launching…",
 			m.launch.bar.ViewAs(m.launch.pct),
 		)
-	} else {
+	case m.launch.kitPick:
+		content = m.launchKitPicker()
+	default:
 		content = m.launchBrowser()
 	}
 
@@ -369,12 +484,49 @@ func (m Model) launchModal() string {
 	if m.launch.progress != "" && !m.launch.inProgress {
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(m.launch.progress))
 	}
-	help := "space select · →/← open/up · N name · m mode · enter launch · esc cancel"
-	if m.launch.naming {
+	help := "space select · →/← open/up · N name · m mode · K kits · enter launch · esc cancel"
+	switch {
+	case m.launch.naming:
 		help = "type a name · enter done · esc cancel name"
+	case m.launch.kitPick:
+		help = "space toggle · ↑/↓ move · enter/esc done"
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
+}
+
+// launchKitPicker renders the kit-selection sub-mode. Selection order is shown
+// because sbx composes stacked kits in the order they are passed.
+func (m Model) launchKitPicker() string {
+	if len(m.launch.kitAll) == 0 {
+		return dimStyle.Render("No kits saved. Press K on the sandbox list to create one.")
+	}
+	rows := []string{dimStyle.Render("Kits are applied at creation, in the order selected."), ""}
+	for i, k := range m.launch.kitAll {
+		id := k.ID()
+		mark := "[ ]"
+		if m.launch.kitOn[id] {
+			mark = "[" + strconv.Itoa(indexOfString(m.launch.kitOrder, id)+1) + "]"
+		}
+		label := kitLabel(k)
+		if i == m.launch.kitCursor {
+			label = selectedStyle.Render(label)
+			rows = append(rows, cursorBarStyle.Render("▌ ")+mark+" "+label)
+			continue
+		}
+		rows = append(rows, "  "+mark+" "+label)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// indexOfString returns the position of s in list, or -1.
+func indexOfString(list []string, s string) int {
+	for i, v := range list {
+		if v == s {
+			return i
+		}
+	}
+	return -1
 }
 
 // launchBrowser renders the directory browser: current path, seeding mode, the
@@ -393,10 +545,15 @@ func (m Model) launchBrowser() string {
 	} else {
 		nameLine = "Name: " + dimStyle.Render("(optional — N to name)")
 	}
+	kitLine := "Kits: " + dimStyle.Render("(none — K to attach)")
+	if n := len(l.kitOrder); n > 0 {
+		kitLine = "Kits: " + selectedStyle.Render(strings.Join(l.kitOrder, ", ")) + dimStyle.Render("  (K to edit)")
+	}
 	head := lipgloss.JoinVertical(lipgloss.Left,
 		nameLine,
 		dimStyle.Render(l.dir),
 		"Seeding mode: "+selectedStyle.Render(mode)+dimStyle.Render("  (m to toggle)"),
+		kitLine,
 		"",
 	)
 

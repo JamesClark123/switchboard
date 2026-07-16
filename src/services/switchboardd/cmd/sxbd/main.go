@@ -193,6 +193,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		HostID:        cfg.HostID,
 		DaemonVersion: version,
 		WorkspaceRoot: cfg.WorkspaceRoot,
+		KitRoot:       cfg.KitRoot,
 		PidFile:       cfg.PidFile,
 		Manifest:      manifest,
 		Hub:           hub,

@@ -131,6 +131,9 @@ func main() {
 
 		// Groups + VS Code opener (US5).
 		m = m.WithGroups(st.Groups(), vscode.NewOpener(cfg.CodeBin))
+
+		// Agent kits (feature 004).
+		m = m.WithKits(st.Kits())
 	}
 
 	// WithMouseCellMotion enables mouse-wheel events so the in-place terminal

@@ -43,6 +43,9 @@ const (
 	Switchboard_RestartSandbox_FullMethodName       = "/switchboard.v1.Switchboard/RestartSandbox"
 	Switchboard_DestroySandbox_FullMethodName       = "/switchboard.v1.Switchboard/DestroySandbox"
 	Switchboard_RenameSandbox_FullMethodName        = "/switchboard.v1.Switchboard/RenameSandbox"
+	Switchboard_RefreshSandbox_FullMethodName       = "/switchboard.v1.Switchboard/RefreshSandbox"
+	Switchboard_ValidateKit_FullMethodName          = "/switchboard.v1.Switchboard/ValidateKit"
+	Switchboard_AddSandboxKit_FullMethodName        = "/switchboard.v1.Switchboard/AddSandboxKit"
 	Switchboard_ListSourceCandidates_FullMethodName = "/switchboard.v1.Switchboard/ListSourceCandidates"
 	Switchboard_CheckResources_FullMethodName       = "/switchboard.v1.Switchboard/CheckResources"
 	Switchboard_SetSandboxTag_FullMethodName        = "/switchboard.v1.Switchboard/SetSandboxTag"
@@ -73,6 +76,22 @@ type SwitchboardClient interface {
 	RestartSandbox(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error)
 	DestroySandbox(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (*DestroyResponse, error)
 	RenameSandbox(ctx context.Context, in *RenameSandboxRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// DESTRUCTIVE (feature 004, FR-030): deletes the retained workspace copy and
+	// re-seeds it from the recorded sources, then brings the sandbox back up on the
+	// SAME container so installed packages / agent history survive. Streams copy
+	// progress + sbx logs then a terminal Sandbox, exactly like LaunchSandbox.
+	// Clients MUST confirm with the user before calling this.
+	RefreshSandbox(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error)
+	// --- Agent kits (feature 004, FR-031..034) ---
+	// Kits are authored and owned CLIENT-side (like configs); the daemon only
+	// materializes a KitSpec's spec.yaml into a directory the host `sbx` can consume.
+	// Validate a kit without attaching it (`sbx kit validate`), for editor feedback.
+	ValidateKit(ctx context.Context, in *ValidateKitRequest, opts ...grpc.CallOption) (*ValidateKitResponse, error)
+	// Attach a kit to an ALREADY-RUNNING sandbox (`sbx kit add`). sbx restarts the
+	// sandbox to apply it; VM state is preserved. Kits CANNOT be removed from a
+	// running sandbox — destroy and recreate to start clean. Streams sbx logs then
+	// a terminal Sandbox.
+	AddSandboxKit(ctx context.Context, in *AddSandboxKitRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error)
 	// --- Source discovery for the launch wizard (FR-007) ---
 	ListSourceCandidates(ctx context.Context, in *ListSourceCandidatesRequest, opts ...grpc.CallOption) (*ListSourceCandidatesResponse, error)
 	// Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
@@ -222,6 +241,54 @@ func (c *switchboardClient) RenameSandbox(ctx context.Context, in *RenameSandbox
 	return out, nil
 }
 
+func (c *switchboardClient) RefreshSandbox(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[3], Switchboard_RefreshSandbox_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SandboxIdRequest, LaunchProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_RefreshSandboxClient = grpc.ServerStreamingClient[LaunchProgress]
+
+func (c *switchboardClient) ValidateKit(ctx context.Context, in *ValidateKitRequest, opts ...grpc.CallOption) (*ValidateKitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateKitResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ValidateKit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) AddSandboxKit(ctx context.Context, in *AddSandboxKitRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[4], Switchboard_AddSandboxKit_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AddSandboxKitRequest, LaunchProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AddSandboxKitClient = grpc.ServerStreamingClient[LaunchProgress]
+
 func (c *switchboardClient) ListSourceCandidates(ctx context.Context, in *ListSourceCandidatesRequest, opts ...grpc.CallOption) (*ListSourceCandidatesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSourceCandidatesResponse)
@@ -274,7 +341,7 @@ func (c *switchboardClient) PromptAgent(ctx context.Context, in *PromptAgentRequ
 
 func (c *switchboardClient) AttachAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentInput, AgentOutput], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[3], Switchboard_AttachAgent_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[5], Switchboard_AttachAgent_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +354,7 @@ type Switchboard_AttachAgentClient = grpc.BidiStreamingClient[AgentInput, AgentO
 
 func (c *switchboardClient) Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[4], Switchboard_Subscribe_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[6], Switchboard_Subscribe_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -343,6 +410,22 @@ type SwitchboardServer interface {
 	RestartSandbox(*SandboxIdRequest, grpc.ServerStreamingServer[LaunchProgress]) error
 	DestroySandbox(context.Context, *SandboxIdRequest) (*DestroyResponse, error)
 	RenameSandbox(context.Context, *RenameSandboxRequest) (*Sandbox, error)
+	// DESTRUCTIVE (feature 004, FR-030): deletes the retained workspace copy and
+	// re-seeds it from the recorded sources, then brings the sandbox back up on the
+	// SAME container so installed packages / agent history survive. Streams copy
+	// progress + sbx logs then a terminal Sandbox, exactly like LaunchSandbox.
+	// Clients MUST confirm with the user before calling this.
+	RefreshSandbox(*SandboxIdRequest, grpc.ServerStreamingServer[LaunchProgress]) error
+	// --- Agent kits (feature 004, FR-031..034) ---
+	// Kits are authored and owned CLIENT-side (like configs); the daemon only
+	// materializes a KitSpec's spec.yaml into a directory the host `sbx` can consume.
+	// Validate a kit without attaching it (`sbx kit validate`), for editor feedback.
+	ValidateKit(context.Context, *ValidateKitRequest) (*ValidateKitResponse, error)
+	// Attach a kit to an ALREADY-RUNNING sandbox (`sbx kit add`). sbx restarts the
+	// sandbox to apply it; VM state is preserved. Kits CANNOT be removed from a
+	// running sandbox — destroy and recreate to start clean. Streams sbx logs then
+	// a terminal Sandbox.
+	AddSandboxKit(*AddSandboxKitRequest, grpc.ServerStreamingServer[LaunchProgress]) error
 	// --- Source discovery for the launch wizard (FR-007) ---
 	ListSourceCandidates(context.Context, *ListSourceCandidatesRequest) (*ListSourceCandidatesResponse, error)
 	// Pre-launch disk/resource check; returns warnings the client may override (FR-012f).
@@ -401,6 +484,15 @@ func (UnimplementedSwitchboardServer) DestroySandbox(context.Context, *SandboxId
 }
 func (UnimplementedSwitchboardServer) RenameSandbox(context.Context, *RenameSandboxRequest) (*Sandbox, error) {
 	return nil, status.Error(codes.Unimplemented, "method RenameSandbox not implemented")
+}
+func (UnimplementedSwitchboardServer) RefreshSandbox(*SandboxIdRequest, grpc.ServerStreamingServer[LaunchProgress]) error {
+	return status.Error(codes.Unimplemented, "method RefreshSandbox not implemented")
+}
+func (UnimplementedSwitchboardServer) ValidateKit(context.Context, *ValidateKitRequest) (*ValidateKitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateKit not implemented")
+}
+func (UnimplementedSwitchboardServer) AddSandboxKit(*AddSandboxKitRequest, grpc.ServerStreamingServer[LaunchProgress]) error {
+	return status.Error(codes.Unimplemented, "method AddSandboxKit not implemented")
 }
 func (UnimplementedSwitchboardServer) ListSourceCandidates(context.Context, *ListSourceCandidatesRequest) (*ListSourceCandidatesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSourceCandidates not implemented")
@@ -591,6 +683,46 @@ func _Switchboard_RenameSandbox_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_RefreshSandbox_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SandboxIdRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).RefreshSandbox(m, &grpc.GenericServerStream[SandboxIdRequest, LaunchProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_RefreshSandboxServer = grpc.ServerStreamingServer[LaunchProgress]
+
+func _Switchboard_ValidateKit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateKitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ValidateKit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ValidateKit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ValidateKit(ctx, req.(*ValidateKitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_AddSandboxKit_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AddSandboxKitRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).AddSandboxKit(m, &grpc.GenericServerStream[AddSandboxKitRequest, LaunchProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AddSandboxKitServer = grpc.ServerStreamingServer[LaunchProgress]
+
 func _Switchboard_ListSourceCandidates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListSourceCandidatesRequest)
 	if err := dec(in); err != nil {
@@ -767,6 +899,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Switchboard_RenameSandbox_Handler,
 		},
 		{
+			MethodName: "ValidateKit",
+			Handler:    _Switchboard_ValidateKit_Handler,
+		},
+		{
 			MethodName: "ListSourceCandidates",
 			Handler:    _Switchboard_ListSourceCandidates_Handler,
 		},
@@ -809,6 +945,16 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "RestartSandbox",
 			Handler:       _Switchboard_RestartSandbox_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "RefreshSandbox",
+			Handler:       _Switchboard_RefreshSandbox_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "AddSandboxKit",
+			Handler:       _Switchboard_AddSandboxKit_Handler,
 			ServerStreams: true,
 		},
 		{

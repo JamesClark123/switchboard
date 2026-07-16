@@ -19,6 +19,11 @@ type LaunchSpec struct {
 	KitOptions    map[string]string // JSON-encoded option values (FR-014)
 	SeedingMode   pb.SeedingMode
 	Sources       []*pb.SourceRef
+	// KitSources are agent-kit sources rendered as one `--kit <src>` each
+	// (feature 004, FR-032): a materialized local path, a .zip, a git+URL, or an
+	// OCI ref. Only honoured at creation — sbx rejects `--kit` against an existing
+	// sandbox; use AddKit for that.
+	KitSources []string
 }
 
 // Runner abstracts the host sandbox CLI (`sbx`). The daemon shells out to it; the
@@ -32,6 +37,12 @@ type Runner interface {
 	Stop(ctx context.Context, containerRef string) error
 	Start(ctx context.Context, containerRef string) error // restart from retained copy
 	Destroy(ctx context.Context, containerRef string) error
+	// AddKit attaches a kit to an existing sandbox (`sbx kit add`). sbx restarts
+	// the sandbox to apply it, preserving VM state.
+	AddKit(ctx context.Context, containerRef, kitSource string, log func(string)) error
+	// ValidateKit checks a materialized kit directory (`sbx kit validate`),
+	// returning sbx's diagnostics verbatim when it rejects the kit.
+	ValidateKit(ctx context.Context, kitDir string) (string, error)
 	// IsRunning reports whether containerRef is a live container (re-adoption).
 	IsRunning(ctx context.Context, containerRef string) (bool, error)
 	// CloneRepo uses the sandbox tooling's clone option to seed dest from a repo.
@@ -54,6 +65,18 @@ func flags(opts map[string]string) []string {
 	for _, k := range keys {
 		v := strings.Trim(opts[k], `"`)
 		out = append(out, "--"+k, v)
+	}
+	return out
+}
+
+// kitFlags renders each kit source as a repeated `--kit <src>` pair, in the order
+// given: sbx composes stacked kits, and the author's order is meaningful.
+func kitFlags(sources []string) []string {
+	out := make([]string, 0, len(sources)*2)
+	for _, s := range sources {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, "--kit", s)
+		}
 	}
 	return out
 }
@@ -89,6 +112,7 @@ func (r *SbxRunner) Launch(ctx context.Context, spec LaunchSpec, log func(string
 	// for now we default to the claude runner. We need to support specifying different runners in the future
 	args := []string{"create", "--name", name, "claude", spec.WorkspacePath}
 	args = append(args, flags(spec.KitOptions)...)
+	args = append(args, kitFlags(spec.KitSources)...)
 	if log != nil {
 		log(fmt.Sprintf("launching sandbox %s with args: %v", name, args))
 	}
@@ -144,4 +168,28 @@ func (r *SbxRunner) IsRunning(ctx context.Context, ref string) (bool, error) {
 func (r *SbxRunner) CloneRepo(ctx context.Context, repo, dest string, log func(string)) error {
 	_, err := r.run(ctx, log, "clone", repo, dest)
 	return err
+}
+
+// AddKit maps to `sbx kit add <sandbox> <kit-source>` (feature 004, FR-033).
+//
+// The kit source is POSITIONAL here, unlike the `--kit <src>` flag `sbx create`
+// takes: sbx rejects `--kit` against an existing sandbox with "--kit can only be
+// used when creating a new sandbox". Verified against the sbx docs (kits.md);
+// `sbx` is not installed in the dev environment, so this and ValidateKit are the
+// two call-sites to reconcile first if the surface has moved.
+//
+// sbx restarts the sandbox to apply the kit; VM state (installed packages, images,
+// volumes, agent history) is preserved across that restart. Kits cannot be removed
+// from a running sandbox — the sandbox must be destroyed and recreated.
+func (r *SbxRunner) AddKit(ctx context.Context, ref, kitSource string, log func(string)) error {
+	_, err := r.run(ctx, log, "kit", "add", ref, kitSource)
+	return err
+}
+
+// ValidateKit maps to `sbx kit validate <path>`. sbx reports schema errors and
+// deprecation warnings on a non-zero exit; its combined output is returned so the
+// client can surface the diagnostics verbatim rather than a generic failure.
+func (r *SbxRunner) ValidateKit(ctx context.Context, kitDir string) (string, error) {
+	out, err := exec.CommandContext(ctx, r.Bin, "kit", "validate", kitDir).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }

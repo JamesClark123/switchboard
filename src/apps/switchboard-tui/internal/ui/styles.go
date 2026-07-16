@@ -58,6 +58,10 @@ var (
 	statusOKStyle  = lipgloss.NewStyle().Foreground(colRunning)
 	statusErrStyle = lipgloss.NewStyle().Foreground(colError)
 
+	// dangerStyle marks the irreversible consequence in a destructive-action
+	// confirmation (feature 004).
+	dangerStyle = lipgloss.NewStyle().Foreground(colError).Bold(true)
+
 	// Agent-activity indicators shown on a running sandbox's row (see agentBadge).
 	// Colors intentionally match the notification inbox: warn ◆ = needs prompting,
 	// green ✓ = settled/task-complete.

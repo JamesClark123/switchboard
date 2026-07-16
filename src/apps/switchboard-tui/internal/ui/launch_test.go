@@ -42,6 +42,49 @@ type fakeDaemon struct {
 	attachErr  error
 	attachedID string
 	termClosed bool
+
+	// feature 004 fakes: refresh + kits
+	refreshErr    error
+	refreshedID   string
+	addKitErr     error
+	addKitID      string
+	addKitRef     *pb.KitRef
+	validateResp  *pb.ValidateKitResponse
+	validateErr   error
+	validatedSpec *pb.KitSpec
+}
+
+func (f *fakeDaemon) Refresh(_ context.Context, id string, _ func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshedID = id
+	if f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
+	return &pb.Sandbox{Id: id, DisplayName: "sb-" + id, State: pb.SandboxState_SANDBOX_STATE_RUNNING}, nil
+}
+
+func (f *fakeDaemon) AddKit(_ context.Context, id string, ref *pb.KitRef, _ func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addKitID, f.addKitRef = id, ref
+	if f.addKitErr != nil {
+		return nil, f.addKitErr
+	}
+	return &pb.Sandbox{Id: id, State: pb.SandboxState_SANDBOX_STATE_RUNNING}, nil
+}
+
+func (f *fakeDaemon) ValidateKit(_ context.Context, spec *pb.KitSpec) (*pb.ValidateKitResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.validatedSpec = spec
+	if f.validateErr != nil {
+		return nil, f.validateErr
+	}
+	if f.validateResp != nil {
+		return f.validateResp, nil
+	}
+	return &pb.ValidateKitResponse{Ok: true}, nil
 }
 
 func (f *fakeDaemon) PromptAgent(_ context.Context, id, prompt string) error {

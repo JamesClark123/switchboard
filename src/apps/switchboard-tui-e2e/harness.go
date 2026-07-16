@@ -122,11 +122,19 @@ type ptyProcess struct {
 // spawnTUI starts the TUI under a PTY connected to the daemon socket, with srcRoot
 // as the working directory (its children are the launch candidates).
 func spawnTUI(t *testing.T, tuiBin, sock, srcRoot string) *ptyProcess {
+	return spawnTUIWithConfig(t, tuiBin, sock, srcRoot, t.TempDir())
+}
+
+// spawnTUIWithConfig is spawnTUI with an explicit client config dir, so a test can
+// inspect (or pre-seed) the client-side state the TUI writes — e.g. authored kits
+// under <configDir>/kits/<id>/spec.yaml (feature 004).
+func spawnTUIWithConfig(t *testing.T, tuiBin, sock, srcRoot, configDir string) *ptyProcess {
 	t.Helper()
 	cmd := exec.Command(tuiBin)
 	cmd.Dir = srcRoot
 	cmd.Env = append(os.Environ(),
 		"SWITCHBOARD_LOCAL_SOCKET="+sock,
+		"SWITCHBOARD_CONFIG_DIR="+configDir,
 		"TERM=xterm-256color",
 	)
 	ptmx, err := pty.Start(cmd)
@@ -149,14 +157,38 @@ func spawnTUI(t *testing.T, tuiBin, sock, srcRoot string) *ptyProcess {
 func (p *ptyProcess) send(s string) { _, _ = p.ptmx.WriteString(s) }
 
 // expect waits until the captured output contains sub, or fails after timeout.
+//
+// It searches the WHOLE cumulative buffer, so it matches instantly if sub was ever
+// printed before. That is fine for a one-way flow, but when a step's expected text
+// is also on the previous screen (e.g. a section title that stays put across an
+// edit), the assertion passes on stale output and the test races ahead of the app.
+// Use expectNew for those steps.
 func (p *ptyProcess) expect(t *testing.T, sub string, timeout time.Duration) {
+	t.Helper()
+	p.expectFrom(t, 0, sub, timeout)
+}
+
+// mark returns the current output length, for use with expectNew.
+func (p *ptyProcess) mark() int { return len(p.buf.String()) }
+
+// expectNew waits for sub in output produced after mark. The TUI repaints the full
+// screen on every update, so anything currently visible reappears in new output —
+// which makes this a reliable "wait for the app to actually redraw" barrier rather
+// than a match against what was already on screen.
+func (p *ptyProcess) expectNew(t *testing.T, from int, sub string, timeout time.Duration) {
+	t.Helper()
+	p.expectFrom(t, from, sub, timeout)
+}
+
+func (p *ptyProcess) expectFrom(t *testing.T, from int, sub string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if strings.Contains(p.buf.String(), sub) {
+		s := p.buf.String()
+		if from <= len(s) && strings.Contains(s[from:], sub) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("expected %q within %s.\n--- output ---\n%s", sub, timeout, p.buf.String())
+	t.Fatalf("expected %q within %s (from offset %d).\n--- output ---\n%s", sub, timeout, from, p.buf.String())
 }

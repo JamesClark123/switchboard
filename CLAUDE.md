@@ -147,7 +147,21 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature plan: `specs/003-terminal-session-persistence/plan.md` (Terminal Session Persistence
+Active feature: `specs/004-sandbox-refresh-and-kits/spec.md` (Sandbox Refresh & Agent Kits). Two
+additions to the sandbox list page. **Refresh** (`F`, confirmation-gated): deletes a sandbox's
+retained workspace copy, re-seeds from its recorded sources, and brings it back up on the *same*
+container (`Manager.Refresh`); the copy must be deleted, not copied over, because `duplicate`
+crashes `EEXIST` on symlinks and never deletes. **Agent kits**: client-authored Docker Sandboxes
+kits (`kind: mixin`), stored as real `kits/<id>/spec.yaml` under the client config dir and rendered
+with `yaml.v3`; the daemon (`internal/kit`) only materializes the YAML into `SWITCHBOARDD_KIT_ROOT`
+for `sbx`. Attach at creation (`--kit` per kit, launch wizard `K`) or to a running sandbox
+(`sbx kit add`, list-page `A` — restarts the sandbox, so the daemon tears down its PTY first).
+Kit manager is `K`; validation shells out to `sbx kit validate`. See that feature's `spec.md` and
+`contracts/switchboard-kits.proto`. ⚠️ `sbx` is not installed in dev, so the kit CLI surface is
+documentation-derived — `SbxRunner.AddKit`/`ValidateKit`/`kitFlags` are the call-sites to reconcile
+first, each pinned by an argv-asserting test.
+
+Prior feature: `specs/003-terminal-session-persistence/plan.md` (Terminal Session Persistence
 & Sandbox Tags — the daemon keeps each running sandbox's PTY session alive so clients can
 detach/reattach and see prior output, and AI prompts keep running with no terminal attached). A new
 `services/switchboardd/internal/terminal` broadcaster reads the PTY once and tees it into a VT
@@ -159,7 +173,7 @@ auto-open (bare `sxb` inside a sandbox workspace), per-sandbox attachment counts
 `research.md`, `data-model.md`, `contracts/` (switchboard-terminal.proto, cli-attach), and
 `quickstart.md`. Builds on 001; adds one contract revision, no new module.
 
-Prior feature: `specs/002-release-channel/plan.md` (GitHub-Only Release Channel — GoReleaser-on-tag
+Earlier feature: `specs/002-release-channel/plan.md` (GitHub-Only Release Channel — GoReleaser-on-tag
 GitHub Releases + a `curl | sh` SHA-256-verified install/update channel for `sxb`/`sxbd`; install
 script and the `switchboard-update` in-app updater share one asset-naming + checksum contract).
 

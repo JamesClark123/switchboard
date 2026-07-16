@@ -91,6 +91,69 @@ func (c *Conn) Restart(ctx context.Context, id string) (*pb.Sandbox, error) {
 	return done, nil
 }
 
+// Refresh re-seeds a sandbox's workspace from its recorded sources and restarts it
+// (feature 004, FR-030).
+//
+// DESTRUCTIVE: the retained workspace copy is deleted and rebuilt, so uncommitted
+// agent work is lost. Callers MUST confirm with the user first.
+//
+// Progress frames are collapsed here (as in Restart) and only the terminal Sandbox
+// is returned; onLog, when non-nil, receives sbx output and copy progress as it
+// arrives so a long re-seed isn't silent.
+func (c *Conn) Refresh(ctx context.Context, id string, onLog func(LaunchUpdate)) (*pb.Sandbox, error) {
+	stream, err := c.api.RefreshSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
+	if err != nil {
+		return nil, err
+	}
+	return drainLaunchProgress(stream, onLog)
+}
+
+// AddKit attaches a kit to an existing sandbox (`sbx kit add`, FR-033). sbx
+// restarts the sandbox to apply it; VM state is preserved.
+func (c *Conn) AddKit(ctx context.Context, id string, ref *pb.KitRef, onLog func(LaunchUpdate)) (*pb.Sandbox, error) {
+	stream, err := c.api.AddSandboxKit(ctx, &pb.AddSandboxKitRequest{SandboxId: id, Kit: ref})
+	if err != nil {
+		return nil, err
+	}
+	return drainLaunchProgress(stream, onLog)
+}
+
+// ValidateKit checks a kit against the host `sbx` (FR-034).
+func (c *Conn) ValidateKit(ctx context.Context, spec *pb.KitSpec) (*pb.ValidateKitResponse, error) {
+	return c.api.ValidateKit(ctx, &pb.ValidateKitRequest{Kit: spec})
+}
+
+// launchProgressStream is the shape shared by every LaunchProgress-streaming RPC;
+// the generated per-RPC stream types are distinct but agree on Recv.
+type launchProgressStream interface {
+	Recv() (*pb.LaunchProgress, error)
+}
+
+// drainLaunchProgress consumes a LaunchProgress stream to EOF, forwarding each
+// frame to onLog and returning the last terminal Sandbox.
+func drainLaunchProgress(stream launchProgressStream, onLog func(LaunchUpdate)) (*pb.Sandbox, error) {
+	var done *pb.Sandbox
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if onLog != nil {
+			onLog(LaunchUpdate{Copy: msg.GetCopy(), LogLine: msg.GetLogLine(), Done: msg.GetDone()})
+		}
+		if d := msg.GetDone(); d != nil {
+			done = d
+		}
+	}
+	if done == nil {
+		return nil, fmt.Errorf("operation ended without a terminal result")
+	}
+	return done, nil
+}
+
 // Destroy removes a sandbox and deletes its copy (FR-012c).
 func (c *Conn) Destroy(ctx context.Context, id string) (bool, error) {
 	resp, err := c.api.DestroySandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,14 @@ type fakeRunner struct {
 	running  map[string]bool
 	launches int
 	failNext error
+	// kitAdds records "<ref> <kitSource>" per AddKit call; lastKits records the
+	// KitSources of the most recent Launch, so tests can assert kits survive a
+	// container recreate.
+	kitAdds  []string
+	lastKits []string
+	// failStart makes Start fail, forcing bringUp down its relaunch branch (the
+	// common real-world case: sbx often can't resume a container across a stop).
+	failStart bool
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
@@ -32,6 +41,7 @@ func (f *fakeRunner) Launch(_ context.Context, spec LaunchSpec, _ func(string)) 
 		return "", err
 	}
 	f.launches++
+	f.lastKits = spec.KitSources
 	// Mirror the real SbxRunner: the handle is the assigned --name (the human
 	// name), falling back to the id.
 	ref := spec.Name
@@ -50,6 +60,9 @@ func (f *fakeRunner) Stop(_ context.Context, ref string) error {
 func (f *fakeRunner) Start(_ context.Context, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failStart {
+		return errors.New("start unsupported")
+	}
 	f.running[ref] = true
 	return nil
 }
@@ -66,6 +79,27 @@ func (f *fakeRunner) IsRunning(_ context.Context, ref string) (bool, error) {
 }
 func (f *fakeRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
 	return os.MkdirAll(dest, 0o755)
+}
+func (f *fakeRunner) AddKit(_ context.Context, ref, kitSource string, _ func(string)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failNext != nil {
+		err := f.failNext
+		f.failNext = nil
+		return err
+	}
+	f.kitAdds = append(f.kitAdds, ref+" "+kitSource)
+	return nil
+}
+func (f *fakeRunner) ValidateKit(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failNext != nil {
+		err := f.failNext
+		f.failNext = nil
+		return "spec.yaml: invalid kind", err
+	}
+	return "", nil
 }
 
 func newTestManager(t *testing.T) (*Manager, *registry.Registry, *fakeRunner, string) {

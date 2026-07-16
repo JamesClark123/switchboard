@@ -1,0 +1,103 @@
+// Contract revision for feature 004 (Sandbox Refresh & Agent Kits).
+//
+// This file is a REVISION DOC, not a compiled input: it records only what feature
+// 004 adds to the live contract at
+// src/libs/switchboard-proto/proto/switchboard.proto (which remains the single
+// source of truth, regenerated via `make proto`). Mirrors the pattern feature 003
+// used for switchboard-terminal.proto.
+//
+// Design note: kits are owned CLIENT-side, like configs. The contract header states
+// the client is the source of truth for configs/groups/known-hosts; daemon-owned
+// kits would invert that and make a kit authored against host A invisible on host B.
+// The daemon's only role is to materialize a kit's spec.yaml into a directory the
+// local `sbx` can consume.
+
+syntax = "proto3";
+
+package switchboard.v1;
+
+// ---------- Added to service Switchboard ----------
+
+// DESTRUCTIVE (FR-030): deletes the retained workspace copy and re-seeds it from
+// the recorded sources, then brings the sandbox back up on the SAME container so
+// installed packages / agent history survive. Streams copy progress + sbx logs then
+// a terminal Sandbox — reusing LaunchProgress verbatim, so no new message is
+// needed. Clients MUST confirm with the user before calling (FR-031).
+//
+//   rpc RefreshSandbox(SandboxIdRequest) returns (stream LaunchProgress);
+//
+// Validate a kit without attaching it (`sbx kit validate`), for editor feedback
+// (FR-034). A rejected kit is a RESULT, not an RPC error — it comes back in the
+// response body.
+//
+//   rpc ValidateKit(ValidateKitRequest) returns (ValidateKitResponse);
+//
+// Attach a kit to an ALREADY-RUNNING sandbox (`sbx kit add`, FR-033). sbx restarts
+// the sandbox to apply it; VM state is preserved. Kits CANNOT be removed from a
+// running sandbox — destroy and recreate to start clean.
+//
+//   rpc AddSandboxKit(AddSandboxKitRequest) returns (stream LaunchProgress);
+
+// ---------- Added messages ----------
+
+// KitSpec is a kit authored client-side. The client renders the spec.yaml itself;
+// the daemon writes spec_yaml verbatim into <kit_root>/<id>/spec.yaml so the host
+// `sbx` can consume it as a local-path kit source.
+//
+// The payload is the rendered YAML rather than a structured mirror of Docker's
+// schema on purpose: Docker documents the kit schema as experimental and subject to
+// change, and the published reference already disagrees with the shipped
+// sbx-kits-contrib kits on field names. Keeping it opaque lets the schema evolve
+// with no contract change, with the host `sbx` as the authority via ValidateKit.
+message KitSpec {
+  string id = 1;         // client-side kit id; also the materialized directory name
+  string spec_yaml = 2;  // full spec.yaml content
+}
+
+// KitRef selects a kit either by inline authored spec or by an external source
+// string that the host `sbx` resolves itself.
+message KitRef {
+  oneof ref {
+    KitSpec spec = 1;    // authored client-side, materialized on the daemon host
+    // External source, resolved by sbx: local path | .zip | git+https://…#ref=&dir=
+    // | OCI ref (ghcr.io/org/kit:1.0).
+    string source = 2;
+  }
+}
+
+message ValidateKitRequest { KitSpec kit = 1; }
+message ValidateKitResponse {
+  bool ok = 1;
+  repeated string errors = 2;    // `sbx kit validate` diagnostics (empty when ok)
+  repeated string warnings = 3;  // e.g. deprecated-field warnings from sbx
+}
+
+message AddSandboxKitRequest {
+  string sandbox_id = 1;
+  KitRef kit = 2;
+}
+
+// ---------- Added fields on existing messages ----------
+
+// message Sandbox — next free field number was 18:
+//
+//   // Resolved `--kit` sources attached at create + via AddSandboxKit; persisted.
+//   // Kept RESOLVABLE (not just display labels) so a container recreate can
+//   // re-attach them: sbx honours `--kit` only at creation, so a relaunch that
+//   // dropped these would silently hand back a differently-provisioned sandbox.
+//   repeated string kits = 18;
+//
+// message LaunchSandboxRequest — next free field number was 6:
+//
+//   // Kits to attach at creation (FR-032), rendered as one `--kit <src>` per entry.
+//   // Creation is the ONLY point sbx accepts `--kit`; use AddSandboxKit for a
+//   // sandbox that already exists.
+//   repeated KitRef kits = 6;
+
+// ---------- Compatibility ----------
+//
+// Every change is additive: new RPCs, new messages, and new field numbers on the
+// tail of existing messages. The bbolt registry persists *pb.Sandbox directly, so
+// Sandbox.kits joins the stored schema automatically and proto's unknown-field
+// tolerance means records written before this feature decode fine (kits = empty).
+// No migration is required.

@@ -10,6 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.3
 	golang.org/x/term v0.40.0
 	google.golang.org/grpc v1.81.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

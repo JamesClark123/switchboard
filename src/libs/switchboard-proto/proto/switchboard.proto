@@ -38,6 +38,23 @@ service Switchboard {
   rpc RestartSandbox(SandboxIdRequest) returns (stream LaunchProgress); // from retained copy (FR-012b)
   rpc DestroySandbox(SandboxIdRequest) returns (DestroyResponse);       // deletes copy (FR-012c)
   rpc RenameSandbox(RenameSandboxRequest) returns (Sandbox);            // custom display name (FR-012e)
+  // DESTRUCTIVE (feature 004, FR-030): deletes the retained workspace copy and
+  // re-seeds it from the recorded sources, then brings the sandbox back up on the
+  // SAME container so installed packages / agent history survive. Streams copy
+  // progress + sbx logs then a terminal Sandbox, exactly like LaunchSandbox.
+  // Clients MUST confirm with the user before calling this.
+  rpc RefreshSandbox(SandboxIdRequest) returns (stream LaunchProgress);
+
+  // --- Agent kits (feature 004, FR-031..034) ---
+  // Kits are authored and owned CLIENT-side (like configs); the daemon only
+  // materializes a KitSpec's spec.yaml into a directory the host `sbx` can consume.
+  // Validate a kit without attaching it (`sbx kit validate`), for editor feedback.
+  rpc ValidateKit(ValidateKitRequest) returns (ValidateKitResponse);
+  // Attach a kit to an ALREADY-RUNNING sandbox (`sbx kit add`). sbx restarts the
+  // sandbox to apply it; VM state is preserved. Kits CANNOT be removed from a
+  // running sandbox — destroy and recreate to start clean. Streams sbx logs then
+  // a terminal Sandbox.
+  rpc AddSandboxKit(AddSandboxKitRequest) returns (stream LaunchProgress);
 
   // --- Source discovery for the launch wizard (FR-007) ---
   rpc ListSourceCandidates(ListSourceCandidatesRequest) returns (ListSourceCandidatesResponse);
@@ -155,6 +172,49 @@ message Sandbox {
   string tag = 15;                       // mutable, non-unique purpose label (FR-021..024); persisted
   int32 attached_terminals = 16;         // derived: live terminal-session attachment count (FR-007/008)
   bool external_attached = 17;           // derived: an EXTERNAL attachment exists (FR-014/015)
+  // --- feature 004 ---
+  // Resolved `--kit` sources attached at create + via AddSandboxKit; persisted.
+  // Kept resolvable (not just display labels) so a container recreate can re-attach
+  // them — sbx honours `--kit` only at creation, so a relaunch that dropped these
+  // would silently hand back a differently-provisioned sandbox.
+  repeated string kits = 18;
+}
+
+// ---------- Agent kits (feature 004) ----------
+
+// KitSpec is a kit authored client-side. The client owns kit storage (mirroring
+// configs, FR-002c) and renders the spec.yaml itself; the daemon writes spec_yaml
+// verbatim into <kit_root>/<id>/spec.yaml so the host `sbx` can consume it as a
+// local-path kit source. Keeping the wire payload the rendered YAML (rather than a
+// structured mirror of Docker's schema) means the experimental kit schema can
+// evolve without a contract change — the host `sbx` stays the authority on what
+// is valid, via ValidateKit.
+message KitSpec {
+  string id = 1;         // client-side kit id; also the materialized directory name
+  string spec_yaml = 2;  // full spec.yaml content
+}
+
+// KitRef selects a kit either by inline authored spec or by an external source
+// string that the host `sbx` resolves itself.
+message KitRef {
+  oneof ref {
+    KitSpec spec = 1;    // authored client-side, materialized on the daemon host
+    // External source, resolved by sbx: local path | .zip | git+https://…#ref=&dir=
+    // | OCI ref (ghcr.io/org/kit:1.0).
+    string source = 2;
+  }
+}
+
+message ValidateKitRequest { KitSpec kit = 1; }
+message ValidateKitResponse {
+  bool ok = 1;
+  repeated string errors = 2;    // `sbx kit validate` diagnostics (empty when ok)
+  repeated string warnings = 3;  // e.g. deprecated-field warnings from sbx
+}
+
+message AddSandboxKitRequest {
+  string sandbox_id = 1;
+  KitRef kit = 2;
 }
 
 // ---------- RPC payloads ----------
@@ -208,6 +268,10 @@ message LaunchSandboxRequest {
   AgentSpec agent_override = 3;          // used when config.agent is empty (FR-016b)
   string display_name = 4;               // optional custom name
   bool override_resource_warning = 5;    // proceed despite low-resource warning (FR-012f)
+  // Kits to attach at creation (feature 004, FR-032), rendered as one `--kit <src>`
+  // per entry. Creation time is the ONLY point `--kit` is accepted by sbx; use
+  // AddSandboxKit for a sandbox that already exists.
+  repeated KitRef kits = 6;
 }
 
 message LaunchProgress {

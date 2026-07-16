@@ -18,7 +18,10 @@ import (
 )
 
 // testRunner is a no-op Runner for the gRPC integration test.
-type testRunner struct{ running map[string]bool }
+type testRunner struct {
+	running map[string]bool
+	kitAdds []string // kit sources passed to `sbx kit add`
+}
 
 func (r *testRunner) Launch(_ context.Context, spec sandbox.LaunchSpec, _ func(string)) (string, error) {
 	ref := spec.Name // sbx names by the human name (mirrors the real runner)
@@ -37,6 +40,11 @@ func (r *testRunner) IsRunning(_ context.Context, ref string) (bool, error) {
 func (r *testRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
 	return os.MkdirAll(dest, 0o755)
 }
+func (r *testRunner) AddKit(_ context.Context, _, kitSource string, _ func(string)) error {
+	r.kitAdds = append(r.kitAdds, kitSource)
+	return nil
+}
+func (r *testRunner) ValidateKit(_ context.Context, _ string) (string, error) { return "", nil }
 
 func startServer(t *testing.T) (pb.SwitchboardClient, string) {
 	t.Helper()
@@ -52,7 +60,10 @@ func startServer(t *testing.T) (pb.SwitchboardClient, string) {
 		t.Fatal(err)
 	}
 	mgr := sandbox.NewManager(reg, &testRunner{running: map[string]bool{}}, ws, "host-1")
-	srv := sbgrpc.NewServer(sbgrpc.Config{Manager: mgr, HostID: "host-1", DaemonVersion: "test", WorkspaceRoot: ws})
+	srv := sbgrpc.NewServer(sbgrpc.Config{
+		Manager: mgr, HostID: "host-1", DaemonVersion: "test", WorkspaceRoot: ws,
+		KitRoot: filepath.Join(dir, "kits"),
+	})
 
 	sock := filepath.Join(dir, "d.sock")
 	lis, err := net.Listen("unix", sock)

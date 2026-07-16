@@ -13,6 +13,7 @@ import (
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/kit"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc"
@@ -34,6 +35,7 @@ type Server struct {
 	hub           *agent.Hub
 	agents        *agent.Registry
 	terms         *terminal.Registry
+	kits          *kit.Materializer
 
 	grpc *grpc.Server
 }
@@ -45,6 +47,9 @@ type Config struct {
 	DaemonVersion string
 	SbxVersion    string
 	WorkspaceRoot string
+	// KitRoot is where client-authored kits are materialized for `sbx --kit`
+	// (feature 004).
+	KitRoot string
 	// PidFile is cleared before the daemon re-execs during UpdateDaemon so the
 	// re-exec'd `serve` is not blocked by its own (still-live) pid entry.
 	PidFile string
@@ -78,6 +83,7 @@ func NewServer(cfg Config) *Server {
 		manifest:      cfg.Manifest,
 		hub:           cfg.Hub,
 		agents:        cfg.Agents,
+		kits:          &kit.Materializer{Root: cfg.KitRoot},
 	}
 	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
 	// created on first attach from the agent PTY, kept alive across client detach.

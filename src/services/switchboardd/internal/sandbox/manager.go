@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ type LaunchRequest struct {
 	Sources       []*pb.SourceRef
 	AgentOverride *pb.AgentSpec
 	DisplayName   string
+	// KitSources are already-resolved `--kit` sources (feature 004, FR-032). The
+	// gRPC layer materializes inline KitSpecs to local paths before calling in, so
+	// the Manager deals only in strings sbx understands.
+	KitSources []string
 }
 
 // List returns all sandboxes on this host, first pruning any whose retained
@@ -147,6 +152,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		SeedingMode:    req.Config.GetSeedingMode(),
 		WorkspacePath:  workspacePath,
 		Agent:          &pb.AgentSession{Spec: agent, Status: pb.AgentStatus_AGENT_STATUS_IDLE, LastEventAt: now},
+		Kits:           req.KitSources,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -181,6 +187,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		KitOptions:    req.Config.GetKitOptions(),
 		SeedingMode:   req.Config.GetSeedingMode(),
 		Sources:       req.Sources,
+		KitSources:    req.KitSources,
 	}, onLog)
 	if err != nil {
 		return m.fail(sb, err)
@@ -313,34 +320,12 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 		return nil, err
 	}
 
-	started := false
-	if sb.GetContainerRef() != "" {
-		log.Printf("[debug] restart sandbox %s: start via %v", id, sbxRefs(sb))
-		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Start(ctx, r) }); err == nil {
-			started = true
-		} else {
-			// sbx couldn't resume it (no such container, no `start` subcommand,
-			// etc.). Drop any stale container and relaunch from the retained copy.
-			log.Printf("[debug] restart %s: start failed (%v); relaunching from the retained copy", id, err)
-			_ = tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Destroy(ctx, r) })
-		}
-	}
-	if !started {
-		ref, lerr := m.runner.Launch(ctx, LaunchSpec{
-			SandboxID:     id,
-			Name:          sb.GetDisplayName(),
-			WorkspacePath: sb.GetWorkspacePath(),
-			KitOptions:    sb.GetConfigSnapshot().GetKitOptions(),
-			SeedingMode:   sb.GetSeedingMode(),
-			Sources:       sb.GetSources(),
-		}, onLog)
-		if lerr != nil {
-			return nil, lerr
-		}
-		sb.ContainerRef = ref
+	ref, err := m.bringUp(ctx, sb, onLog)
+	if err != nil {
+		return nil, err
 	}
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		s.ContainerRef = sb.GetContainerRef()
+		s.ContainerRef = ref
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
 		s.UpdatedAt = timestamppb.Now()
 		return nil
@@ -350,6 +335,184 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// bringUp resumes sb's container and returns the resulting handle, relaunching
+// from the retained workspace copy when sbx cannot resume it. Shared by Restart
+// (FR-012b) and Refresh (FR-030); it neither re-seeds nor writes the record.
+//
+// The relaunch path re-passes sb.Kits so kits attached to this sandbox survive a
+// container recreate — `--kit` is only honoured at creation, so a relaunch that
+// dropped them would silently return a differently-provisioned sandbox.
+func (m *Manager) bringUp(ctx context.Context, sb *pb.Sandbox, onLog func(string)) (string, error) {
+	if sb.GetContainerRef() != "" {
+		log.Printf("[debug] bring up sandbox %s: start via %v", sb.GetId(), sbxRefs(sb))
+		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Start(ctx, r) }); err == nil {
+			return sb.GetContainerRef(), nil
+		} else {
+			// sbx couldn't resume it (no such container, no `start` subcommand,
+			// etc.). Drop any stale container and relaunch from the retained copy.
+			log.Printf("[debug] bring up %s: start failed (%v); relaunching from the retained copy", sb.GetId(), err)
+			_ = tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Destroy(ctx, r) })
+		}
+	}
+	return m.runner.Launch(ctx, LaunchSpec{
+		SandboxID:     sb.GetId(),
+		Name:          sb.GetDisplayName(),
+		WorkspacePath: sb.GetWorkspacePath(),
+		KitOptions:    sb.GetConfigSnapshot().GetKitOptions(),
+		SeedingMode:   sb.GetSeedingMode(),
+		Sources:       sb.GetSources(),
+		KitSources:    sb.GetKits(),
+	}, onLog)
+}
+
+// Refresh deletes a sandbox's retained workspace copy, re-seeds it from the
+// recorded sources, and brings the sandbox back up on the SAME container
+// (feature 004, FR-030).
+//
+// DESTRUCTIVE: everything the agent wrote into the workspace — including
+// uncommitted work — is lost. Container state (installed packages, images, agent
+// history) survives, because the container is resumed rather than recreated.
+//
+// The old copy MUST be deleted rather than copied over: duplicate.copyTree creates
+// symlinks via os.Symlink, which fails EEXIST on a second pass, and it never
+// deletes, so copying over a populated workspace would yield a union of the old and
+// new trees rather than the fresh one the caller asked for.
+func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplicate.Progress), onLog func(string)) (*pb.Sandbox, error) {
+	sb, err := m.store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(sb.GetSources()) == 0 {
+		return nil, fmt.Errorf("sandbox %s has no recorded sources to re-seed from", id)
+	}
+	wp := sb.GetWorkspacePath()
+	if wp == "" || !within(m.workspaceRoot, wp) {
+		return nil, fmt.Errorf("refuse to refresh %s: workspace %q is outside the controlled folder %q", id, wp, m.workspaceRoot)
+	}
+
+	// Stop first — the workspace is mounted into the running container and is about
+	// to be deleted underneath it. Best-effort: an already-stopped or vanished
+	// container must not block a refresh.
+	if sb.GetContainerRef() != "" {
+		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Stop(ctx, r) }); err != nil {
+			log.Printf("[warn] refresh %s: stop failed (continuing): %v", id, err)
+			if onLog != nil {
+				onLog("warning: stop failed, continuing: " + err.Error())
+			}
+		}
+	}
+	// Emitting a non-RUNNING state ends the terminal session and drops the cached
+	// PTY (server on-change hook, FR-006). Required, not incidental: those sessions
+	// sit in the workspace we are about to delete, and a stale PTY would hand the
+	// next attach an immediate EOF.
+	stopped, err := m.store.Update(id, func(s *pb.Sandbox) error {
+		s.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(stopped)
+
+	if err := os.RemoveAll(wp); err != nil {
+		return m.fail(sb, fmt.Errorf("delete workspace copy: %w", err))
+	}
+	if err := m.seed(ctx, sb, onProgress, onLog); err != nil {
+		return m.fail(sb, err)
+	}
+	// The wipe took the marker and the injected hooks with it, so both are re-run —
+	// unlike Restart, which reuses a retained copy that still has them.
+	if err := writeWorkspaceMarker(wp, m.hostID, id); err != nil && onLog != nil {
+		onLog("warning: workspace marker not written: " + err.Error())
+	}
+	if m.injectHooks != nil {
+		if err := m.injectHooks(id, wp); err != nil && onLog != nil {
+			onLog("warning: hook injection failed: " + err.Error())
+		}
+	}
+
+	ref, err := m.bringUp(ctx, sb, onLog)
+	if err != nil {
+		return m.fail(sb, err)
+	}
+	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
+		s.ContainerRef = ref
+		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		s.Error = "" // a previous failure is resolved once the refresh completes
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(out)
+	return out, nil
+}
+
+// AddKit attaches a kit to an existing sandbox via `sbx kit add` (feature 004,
+// FR-033) and records the source so a later container recreate re-attaches it.
+//
+// kitSource is already resolved (a materialized local path, a .zip, a git+URL, or
+// an OCI ref) — the gRPC layer materializes inline kits before calling in.
+//
+// sbx restarts the sandbox to apply the kit, preserving VM state. That restart
+// happens INSIDE sbx, so nothing else would tell the daemon that the PTY it holds
+// has died. Emitting a non-RUNNING state first drives the server's on-change hook
+// to end the terminal session and drop the cached PTY; without it the next attach
+// is handed a dead PTY and the client sees an immediate EOF.
+func (m *Manager) AddKit(ctx context.Context, id, kitSource string, onLog func(string)) (*pb.Sandbox, error) {
+	sb, err := m.store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	kitSource = strings.TrimSpace(kitSource)
+	if kitSource == "" {
+		return nil, errors.New("kit source is required")
+	}
+	if sb.GetContainerRef() == "" {
+		return nil, fmt.Errorf("sandbox %s has no container to attach a kit to", id)
+	}
+
+	applying, err := m.store.Update(id, func(s *pb.Sandbox) error {
+		s.State = pb.SandboxState_SANDBOX_STATE_CREATING
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(applying)
+
+	if err := tryRefs(sbxRefs(sb), func(r string) error {
+		return m.runner.AddKit(ctx, r, kitSource, onLog)
+	}); err != nil {
+		return m.fail(sb, err)
+	}
+
+	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
+		if !slices.Contains(s.GetKits(), kitSource) {
+			s.Kits = append(s.Kits, kitSource)
+		}
+		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		s.Error = ""
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(out)
+	return out, nil
+}
+
+// ValidateKit checks a materialized kit directory with the host `sbx`
+// (feature 004, FR-034), returning sbx's combined output alongside the exit error
+// so callers can surface its diagnostics verbatim.
+func (m *Manager) ValidateKit(ctx context.Context, kitDir string) (string, error) {
+	return m.runner.ValidateKit(ctx, kitDir)
 }
 
 // Destroy removes the container and DELETES the retained copy (FR-012c).

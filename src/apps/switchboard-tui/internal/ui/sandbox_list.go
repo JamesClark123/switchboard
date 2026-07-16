@@ -430,6 +430,18 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.enterRename(sb, m.currentHostID())
 		}
 		return m, nil
+	case keyIs(msg, m.keys.RefreshSandbox):
+		if sb := m.current(); sb != nil {
+			return m.confirmRefresh(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.Kits):
+		return m.enterKitPicker()
+	case keyIs(msg, m.keys.AddKit):
+		if sb := m.current(); sb != nil {
+			return m.enterKitAttach(sb, m.currentHostID())
+		}
+		return m, nil
 	}
 
 	// Everything else (navigation, filter start, pagination) goes to the list.

@@ -36,6 +36,14 @@ type Daemon interface {
 	Restart(ctx context.Context, id string) (*pb.Sandbox, error)
 	Destroy(ctx context.Context, id string) (bool, error)
 	Rename(ctx context.Context, id, name string) (*pb.Sandbox, error)
+	// Refresh re-seeds a sandbox's workspace from its recorded sources and
+	// restarts it (feature 004, FR-030). DESTRUCTIVE — gate it behind a
+	// confirmation.
+	Refresh(ctx context.Context, id string, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
+	// AddKit attaches a kit to an existing sandbox (`sbx kit add`, FR-033); sbx
+	// restarts it to apply. ValidateKit checks a kit against the host sbx (FR-034).
+	AddKit(ctx context.Context, id string, ref *pb.KitRef, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
+	ValidateKit(ctx context.Context, spec *pb.KitSpec) (*pb.ValidateKitResponse, error)
 	// SetTag sets/clears a sandbox's mutable purpose tag (US5, FR-021..024).
 	SetTag(ctx context.Context, id, tag string) (*pb.Sandbox, error)
 	// AttachTerminal attaches to a sandbox's persistent session, streaming
@@ -60,11 +68,14 @@ type screen int
 const (
 	screenList screen = iota
 	screenLaunch
+	screenConfirm
 	screenRename
 	screenTag
 	screenTerminal
 	screenConfigEditor
 	screenConfigPicker
+	screenKitPicker
+	screenKitEditor
 	screenHosts
 	screenNotifications
 	screenGroups
@@ -115,6 +126,15 @@ type Model struct {
 	tagInput textinput.Model
 	tagID    string
 	tagHost  string
+
+	// confirm backs the modal yes/no gate in front of destructive actions
+	// (feature 004); valid only while screen == screenConfirm.
+	confirm confirmState
+
+	// Agent kits (feature 004): the client-side store plus the picker/editor state.
+	kits      *store.KitStore
+	kitPicker kitPickerState
+	kitEditor kitEditorState
 
 	// US2/US3: in-place persistent terminal view + tracking of external terminals.
 	term    termState
@@ -230,6 +250,13 @@ func (m Model) WithTerminal(cmd string) Model {
 func (m Model) WithGroups(gs *store.GroupStore, opener *vscode.Opener) Model {
 	m.groupStore = gs
 	m.opener = opener
+	return m
+}
+
+// WithKits attaches the client-side agent-kit store (feature 004). Kits are owned
+// client-side, so one kit is usable against every connected host.
+func (m Model) WithKits(ks *store.KitStore) Model {
+	m.kits = ks
 	return m
 }
 
@@ -448,6 +475,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case configsMsg:
 		return m.applyConfigs(msg)
 
+	case kitsMsg:
+		return m.applyKits(msg)
+
+	case kitValidatedMsg:
+		return m.applyKitValidation(msg)
+
 	case hostsMsg:
 		return m.applyHosts(msg)
 
@@ -519,6 +552,15 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tagInput, cmd = m.tagInput.Update(msg)
 	case screenConfigPicker:
 		m.picker.list, cmd = m.picker.list.Update(msg)
+	case screenKitPicker:
+		m.kitPicker.list, cmd = m.kitPicker.list.Update(msg)
+	case screenKitEditor:
+		// Only forward once a form is open; the section/item lists are rendered
+		// directly and have no async work of their own.
+		if m.kitEditor.form != nil {
+			return m.advanceKitForm(msg)
+		}
+		return m, nil
 	case screenHosts:
 		if m.hosts.adding {
 			m.hosts.input, cmd = m.hosts.input.Update(msg)
@@ -546,6 +588,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenLaunch:
 		return m.updateLaunchKey(msg)
+	case screenConfirm:
+		return m.updateConfirmKey(msg)
 	case screenRename:
 		return m.updateRenameKey(msg)
 	case screenTag:
@@ -556,6 +600,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateEditorKey(msg)
 	case screenConfigPicker:
 		return m.updatePickerKey(msg)
+	case screenKitPicker:
+		return m.updateKitPickerKey(msg)
+	case screenKitEditor:
+		return m.updateKitEditorKey(msg)
 	case screenHosts:
 		return m.updateHostsKey(msg)
 	case screenNotifications:
@@ -580,6 +628,13 @@ func (m Model) View() string {
 		return overlayCenter(bg, m.launchModal(), m.width, m.height)
 	}
 
+	// The destructive-action gate floats over the list it refers to, so the user can
+	// still see the row they are about to act on (feature 004).
+	if m.screen == screenConfirm {
+		bg := m.chrome(m.viewList(), m.confirmHelp())
+		return overlayCenter(bg, m.confirmModal(), m.width, m.height)
+	}
+
 	// The in-place terminal view takes the full body (US2).
 	if m.screen == screenTerminal {
 		return m.chrome(m.viewTerminal(), m.terminalHelp())
@@ -596,6 +651,10 @@ func (m Model) View() string {
 		body, hb = m.viewEditor(), m.editorHelp()
 	case screenConfigPicker:
 		body, hb = m.viewPicker(), m.pickerHelp()
+	case screenKitPicker:
+		body, hb = m.kitPicker.list.View(), m.kitPickerHelp()
+	case screenKitEditor:
+		body, hb = m.viewKitEditor(), m.kitEditorHelp()
 	case screenHosts:
 		body, hb = m.viewHosts(), m.hostsHelp()
 	case screenNotifications:
