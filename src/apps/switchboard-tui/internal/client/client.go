@@ -35,6 +35,10 @@ func (c *Conn) HostID() string { return c.hostID }
 // handshake (empty if unknown).
 func (c *Conn) DaemonVersion() string { return c.Info.GetDaemonVersion() }
 
+// WorkspaceRoot returns the daemon's controlled workspace folder on its host
+// (FR-006), advertised at handshake (empty if unknown).
+func (c *Conn) WorkspaceRoot() string { return c.Info.GetWorkspaceRoot() }
+
 // UpdateDaemon asks the connected daemon to self-update to target (empty =
 // latest), forwarding each progress message to onProgress. It returns nil once
 // the daemon reports success; the daemon restarts on the new binary immediately

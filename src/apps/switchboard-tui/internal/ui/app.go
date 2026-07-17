@@ -61,6 +61,10 @@ type Daemon interface {
 	// to self-update it to a target release (empty = latest).
 	DaemonVersion() string
 	UpdateDaemon(ctx context.Context, target string, onProgress func(stage, message string)) error
+	// WorkspaceRoot is the daemon's controlled folder on ITS host (FR-006); the
+	// launch browser uses it as the starting directory when targeting a remote
+	// host, whose filesystem the client cannot read directly.
+	WorkspaceRoot() string
 }
 
 type screen int
@@ -296,6 +300,15 @@ type subOpenedMsg struct{ stream client.EventStream }
 type eventMsg struct{ ev *pb.Event }
 type eventErrMsg struct{ err error }
 type groupsMsg []store.Group
+
+// browseMsg carries one directory listing fetched from a REMOTE target host's
+// daemon for the launch source browser (the local host is browsed synchronously).
+type browseMsg struct {
+	host    string
+	dir     string
+	entries []fsEntry
+	err     string
+}
 type listDataMsg struct {
 	hosts  []client.HostSandboxes
 	groups []store.Group
@@ -506,6 +519,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostsMsg:
 		return m.applyHosts(msg)
+
+	case browseMsg:
+		return m.applyBrowse(msg)
 
 	case subOpenedMsg:
 		m.sub = msg.stream

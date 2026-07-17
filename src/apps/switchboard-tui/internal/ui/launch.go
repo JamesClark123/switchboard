@@ -22,10 +22,17 @@ const browseVisible = 10
 
 // fsEntry is one row in the launch directory browser.
 type fsEntry struct {
-	name  string
-	path  string
-	isDir bool
-	up    bool // the ".." parent-navigation row
+	name   string
+	path   string
+	isDir  bool
+	isRepo bool // dir contains a .git (drives SourceRef.IsRepo)
+	up     bool // the ".." parent-navigation row
+}
+
+// hostChoice is one selectable target host in the launch wizard's host picker.
+type hostChoice struct {
+	id    string
+	label string
 }
 
 // launchState backs the launch layer: a filesystem browser that supports
@@ -34,14 +41,25 @@ type fsEntry struct {
 type launchState struct {
 	config *store.Configuration // non-nil => launching from a saved config (T042)
 
-	dir       string          // directory currently being browsed
+	// targetHost is the host the sandbox is created on and whose filesystem the
+	// source browser enumerates (US3 multi-host). Empty == the active/local host.
+	targetHost string
+
+	dir       string          // directory currently being browsed (on targetHost)
 	entries   []fsEntry       // rows of dir (".." first when not at root)
 	cursor    int             // highlighted row
 	offset    int             // scroll offset into entries
-	selected  map[string]bool // chosen absolute paths (the sources to seed)
+	selected  map[string]bool // chosen host-side paths (the sources to seed)
+	srcRepo   map[string]bool // path -> is-a-repo, captured at selection time
 	order     []string        // selection order, so sources keep a stable order
+	loading   bool            // a remote ListSources RPC is in flight
 	loadErr   string          // directory read error, if any
 	cloneMode bool            // false => duplicate (default, FR-009)
+
+	// Host picker sub-mode: choose which connected host to create the sandbox on.
+	hostPick    bool
+	hostCursor  int
+	hostChoices []hostChoice
 
 	name   textinput.Model // optional per-host sandbox name (becomes the workspace dir)
 	naming bool            // true while editing the name field
@@ -69,6 +87,7 @@ type launchState struct {
 // struct in place and the row re-renders on the shared spinner tick.
 type launchInFlight struct {
 	tempID   string       // client-generated placeholder id (until the daemon assigns the real one)
+	host     string       // target host id the sandbox is being created on (for row attribution)
 	seq      int          // stable ordering among concurrent launches
 	sb       *pb.Sandbox  // the placeholder row (State = CREATING)
 	progress string       // latest human-readable progress ("copying 45%")
@@ -86,12 +105,17 @@ func newNameInput() textinput.Model {
 	return ti
 }
 
-// enterLaunch opens the launch overlay rooted at the source directory.
+// enterLaunch opens the launch overlay rooted at the source directory of the
+// active host.
 func (m Model) enterLaunch() (tea.Model, tea.Cmd) {
 	m.screen = screenLaunch
-	m.launch = launchState{selected: map[string]bool{}, name: newNameInput()}
-	m.launch.loadDir(m.launchRoot())
-	return m, nil
+	m.launch = launchState{
+		selected:   map[string]bool{},
+		srcRepo:    map[string]bool{},
+		name:       newNameInput(),
+		targetHost: m.activeHost,
+	}
+	return m.startBrowse(m.launchRootFor(m.activeHost))
 }
 
 // enterLaunchWithConfig opens the launch overlay pre-bound to a saved config; its
@@ -99,13 +123,14 @@ func (m Model) enterLaunch() (tea.Model, tea.Cmd) {
 func (m Model) enterLaunchWithConfig(cfg *store.Configuration) (tea.Model, tea.Cmd) {
 	m.screen = screenLaunch
 	m.launch = launchState{
-		config:    cfg,
-		selected:  map[string]bool{},
-		cloneMode: cfg.SeedingMode == "clone",
-		name:      newNameInput(),
+		config:     cfg,
+		selected:   map[string]bool{},
+		srcRepo:    map[string]bool{},
+		cloneMode:  cfg.SeedingMode == "clone",
+		name:       newNameInput(),
+		targetHost: m.activeHost,
 	}
-	m.launch.loadDir(m.launchRoot())
-	return m, nil
+	return m.startBrowse(m.launchRootFor(m.activeHost))
 }
 
 func (m Model) launchRoot() string {
@@ -114,6 +139,100 @@ func (m Model) launchRoot() string {
 	}
 	wd, _ := os.Getwd()
 	return wd
+}
+
+// isLocalHost reports whether host is the local daemon (its filesystem is the
+// client's own). Single-host clients (no manager) are always local.
+func (m Model) isLocalHost(host string) bool {
+	if m.manager == nil {
+		return true
+	}
+	if hc, ok := m.manager.Get(host); ok {
+		return hc.Entry.Kind == "local"
+	}
+	return false
+}
+
+// launchRootFor is the directory the source browser starts in for host. The
+// local daemon shares the client's filesystem, so browse from the client cwd
+// (the user is usually in their project tree); a remote host is browsed from the
+// daemon's advertised workspace root, an absolute path that exists on that host.
+func (m Model) launchRootFor(host string) string {
+	if m.isLocalHost(host) {
+		if r := m.launchRoot(); r != "" {
+			return r
+		}
+	}
+	if wr := m.daemonForHost(host).WorkspaceRoot(); wr != "" {
+		return wr
+	}
+	return m.launchRoot()
+}
+
+// startBrowse points the browser at dir on the current target host. The local
+// host is read synchronously (os.ReadDir); a remote host is fetched over gRPC
+// (ListSources), showing a loading state until browseMsg lands.
+func (m Model) startBrowse(dir string) (tea.Model, tea.Cmd) {
+	if m.isLocalHost(m.launch.targetHost) {
+		m.launch.loading = false
+		m.launch.loadDir(dir)
+		return m, nil
+	}
+	m.launch.loading = true
+	m.launch.loadErr = ""
+	m.launch.dir = dir
+	m.launch.entries = nil
+	return m, m.browseCmd(m.launch.targetHost, dir)
+}
+
+// browseCmd fetches a remote directory listing from host's daemon. The daemon
+// returns child directories (with is-repo flags); we prepend a ".." row for
+// upward navigation unless already at the filesystem root.
+func (m Model) browseCmd(host, dir string) tea.Cmd {
+	d := m.daemonForHost(host)
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		cands, err := d.ListSources(ctx, dir, false)
+		if err != nil {
+			return browseMsg{host: host, dir: dir, err: err.Error()}
+		}
+		rows := make([]fsEntry, 0, len(cands)+1)
+		if parent := filepath.Dir(dir); dir != "" && parent != dir {
+			rows = append(rows, fsEntry{name: "..", path: parent, isDir: true, up: true})
+		}
+		for _, c := range cands {
+			rows = append(rows, fsEntry{
+				name:   filepath.Base(c.GetPath()),
+				path:   c.GetPath(),
+				isDir:  true,
+				isRepo: c.GetIsRepo(),
+			})
+		}
+		return browseMsg{host: host, dir: dir, entries: rows}
+	}
+}
+
+// applyBrowse installs a remote directory listing, ignoring a stale response
+// whose host/dir no longer matches the current browse target.
+func (m Model) applyBrowse(msg browseMsg) (tea.Model, tea.Cmd) {
+	if m.screen != screenLaunch || msg.host != m.launch.targetHost || msg.dir != m.launch.dir {
+		return m, nil
+	}
+	m.launch.loading = false
+	if msg.err != "" {
+		m.launch.loadErr = msg.err
+		m.launch.entries = nil
+		return m, nil
+	}
+	m.launch.loadErr = ""
+	m.launch.entries = msg.entries
+	m.launch.cursor = 0
+	if len(msg.entries) > 0 && msg.entries[0].up {
+		m.launch.cursor = 1
+	}
+	m.launch.offset = 0
+	return m, nil
 }
 
 // loadDir reads dir into the browser, listing sub-directories first then files
@@ -134,6 +253,7 @@ func (l *launchState) loadDir(dir string) {
 		}
 		entry := fsEntry{name: name, path: filepath.Join(dir, name), isDir: e.IsDir()}
 		if entry.isDir {
+			entry.isRepo = isGitRepo(entry.path)
 			dirs = append(dirs, entry)
 		} else {
 			files = append(files, entry)
@@ -174,6 +294,7 @@ func (l *launchState) toggle() {
 	}
 	if l.selected[e.path] {
 		delete(l.selected, e.path)
+		delete(l.srcRepo, e.path)
 		for i, p := range l.order {
 			if p == e.path {
 				l.order = append(l.order[:i], l.order[i+1:]...)
@@ -183,6 +304,10 @@ func (l *launchState) toggle() {
 		return
 	}
 	l.selected[e.path] = true
+	if l.srcRepo == nil {
+		l.srcRepo = map[string]bool{}
+	}
+	l.srcRepo[e.path] = e.isRepo
 	l.order = append(l.order, e.path)
 }
 
@@ -209,12 +334,16 @@ func (m Model) launchHelp() helpBindings {
 	if m.launch.kitPick {
 		return helpBindings{hkey("space", "toggle kit"), hkey("↑/↓", "move"), hkey("enter/esc", "done")}
 	}
+	if m.launch.hostPick {
+		return helpBindings{hkey("↑/↓", "move"), hkey("enter", "select host"), hkey("esc", "cancel")}
+	}
 	return helpBindings{
 		hkey("space", "select"),
 		hkey("→/←", "open/up"),
 		hkey("N", "name"),
 		hkey("m", "seeding mode"),
 		hkey("K", "kits"),
+		hkey("H", "host"),
 		hkey("enter", "launch"),
 		hkey("esc", "cancel"),
 	}
@@ -311,22 +440,27 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.launch.kitPick {
 		return m.updateLaunchKitKey(msg)
 	}
+	if m.launch.hostPick {
+		return m.updateLaunchHostKey(msg)
+	}
 	switch msg.String() {
 	case "esc":
 		m.screen = screenList
 		return m, nil
 	case "K":
 		return m.openLaunchKitPick()
+	case "H":
+		return m.openLaunchHostPick()
 	case "up", "k":
 		m.launch.moveCursor(-1)
 	case "down", "j":
 		m.launch.moveCursor(1)
 	case "right", "l":
 		if e, ok := m.launch.current(); ok && e.isDir {
-			m.launch.loadDir(e.path)
+			return m.startBrowse(e.path)
 		}
 	case "left", "h", "backspace":
-		m.launch.loadDir(filepath.Dir(m.launch.dir))
+		return m.startBrowse(filepath.Dir(m.launch.dir))
 	case " ":
 		m.launch.toggle()
 	case "N":
@@ -338,6 +472,90 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startLaunch()
 	}
 	return m, nil
+}
+
+// connectedHostChoices lists the hosts a sandbox can be created on right now:
+// every connected host (the local daemon is always one). Empty when multi-host
+// support is not configured.
+func (m Model) connectedHostChoices() []hostChoice {
+	if m.manager == nil {
+		return nil
+	}
+	var out []hostChoice
+	for _, hc := range m.manager.List() {
+		if hc.State == client.HostConnected && hc.Conn != nil {
+			out = append(out, hostChoice{id: hc.Entry.ID, label: hc.Entry.DisplayName})
+		}
+	}
+	return out
+}
+
+// openLaunchHostPick enters the host-selection sub-mode, cursor on the current
+// target. A no-op when there is nothing to switch between (single/no host).
+func (m Model) openLaunchHostPick() (tea.Model, tea.Cmd) {
+	choices := m.connectedHostChoices()
+	if len(choices) < 2 {
+		m.launch.progress = "no other connected host — connect one on the hosts screen (h)"
+		return m, nil
+	}
+	m.launch.hostChoices = choices
+	m.launch.hostPick = true
+	m.launch.hostCursor = 0
+	for i, c := range choices {
+		if c.id == m.launch.targetHost {
+			m.launch.hostCursor = i
+			break
+		}
+	}
+	return m, nil
+}
+
+// updateLaunchHostKey drives the host-selection sub-mode. Choosing a different
+// host re-roots the browser on it and clears selections (paths are host-local).
+func (m Model) updateLaunchHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.launch.hostPick = false
+		return m, nil
+	case "enter":
+		m.launch.hostPick = false
+		c, ok := m.launch.currentHostChoice()
+		if !ok || c.id == m.launch.targetHost {
+			return m, nil
+		}
+		m.launch.targetHost = c.id
+		m.launch.progress = ""
+		m.launch.selected = map[string]bool{}
+		m.launch.srcRepo = map[string]bool{}
+		m.launch.order = nil
+		return m.startBrowse(m.launchRootFor(c.id))
+	case "up", "k":
+		if m.launch.hostCursor > 0 {
+			m.launch.hostCursor--
+		}
+	case "down", "j":
+		if m.launch.hostCursor < len(m.launch.hostChoices)-1 {
+			m.launch.hostCursor++
+		}
+	}
+	return m, nil
+}
+
+func (l *launchState) currentHostChoice() (hostChoice, bool) {
+	if l.hostCursor < 0 || l.hostCursor >= len(l.hostChoices) {
+		return hostChoice{}, false
+	}
+	return l.hostChoices[l.hostCursor], true
+}
+
+// launchTargetLabel is the display name of the current target host.
+func (m Model) launchTargetLabel() string {
+	for _, c := range m.connectedHostChoices() {
+		if c.id == m.launch.targetHost {
+			return c.label
+		}
+	}
+	return m.daemonForHost(m.launch.targetHost).HostID()
 }
 
 // updateLaunchNameKey edits the optional sandbox-name field; enter/esc return to
@@ -357,7 +575,9 @@ func (m Model) updateLaunchNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) selectedSources() []*pb.SourceRef {
 	out := make([]*pb.SourceRef, 0, len(m.launch.order))
 	for _, p := range m.launch.order {
-		out = append(out, &pb.SourceRef{Path: p, IsRepo: isGitRepo(p)})
+		// IsRepo is captured at selection time (from the target host's listing),
+		// since p may be a path on a remote host the client cannot stat.
+		out = append(out, &pb.SourceRef{Path: p, IsRepo: m.launch.srcRepo[p]})
 	}
 	return out
 }
@@ -404,6 +624,12 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	}
 
 	// Register the optimistic placeholder and detach the launch to the background.
+	// It is attributed to the chosen target host so its row lands under the right
+	// host tab (the launch may target a host other than the active one).
+	host := m.launch.targetHost
+	if host == "" {
+		host = m.activeHost
+	}
 	m.launchSeq++
 	tempID := fmt.Sprintf("pending-%d", m.launchSeq)
 	ch := make(chan tea.Msg, 32)
@@ -412,6 +638,7 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	}
 	m.launching[tempID] = &launchInFlight{
 		tempID:   tempID,
+		host:     host,
 		seq:      m.launchSeq,
 		progress: "starting…",
 		ch:       ch,
@@ -426,7 +653,7 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	m.screen = screenList
 	m.refreshListItems()
 
-	d := m.daemon
+	d := m.daemonForHost(m.launch.targetHost)
 	go func() {
 		sb, blocked, err := d.Launch(context.Background(), req, func(u client.LaunchUpdate) {
 			ch <- launchProgressMsg{id: tempID, update: u}
@@ -477,6 +704,10 @@ func (m Model) handleLaunchProgress(msg launchProgressMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
+	host := m.activeHost
+	if lf, ok := m.launching[msg.id]; ok && lf.host != "" {
+		host = lf.host
+	}
 	delete(m.launching, msg.id)
 	if msg.err != nil {
 		m.err = msg.err
@@ -496,7 +727,7 @@ func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
 	// fields + the tab-bar aggregate.
 	m.err = nil
 	m.status = "launched " + short(msg.sb.GetId())
-	m.insertSandbox(msg.sb)
+	m.insertSandbox(msg.sb, host)
 	m.listLoading = true
 	m.refreshListItems()
 	return m, m.reloadCmd()
@@ -504,12 +735,14 @@ func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
 
 // launchModal renders the launch layer's modal box (browser or live progress).
 func (m Model) launchModal() string {
-	title := sectionStyle.Render("Launch sandbox") + dimStyle.Render("  ·  host "+m.daemon.HostID())
+	title := sectionStyle.Render("Launch sandbox") + dimStyle.Render("  ·  host "+m.launchTargetLabel())
 
 	var content string
 	switch {
 	case m.launch.kitPick:
 		content = m.launchKitPicker()
+	case m.launch.hostPick:
+		content = m.launchHostPicker()
 	default:
 		content = m.launchBrowser()
 	}
@@ -518,15 +751,37 @@ func (m Model) launchModal() string {
 	if m.launch.progress != "" {
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(m.launch.progress))
 	}
-	help := "space select · →/← open/up · N name · m mode · K kits · enter launch · esc cancel"
+	help := "space select · →/← open/up · N name · m mode · K kits · H host · enter launch · esc cancel"
 	switch {
 	case m.launch.naming:
 		help = "type a name · enter done · esc cancel name"
 	case m.launch.kitPick:
 		help = "space toggle · ↑/↓ move · enter/esc done"
+	case m.launch.hostPick:
+		help = "↑/↓ move · enter select host · esc cancel"
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
+}
+
+// launchHostPicker renders the target-host chooser: every connected host, with
+// the current target marked.
+func (m Model) launchHostPicker() string {
+	rows := []string{dimStyle.Render("Create the sandbox on which host?"), ""}
+	for i, c := range m.launch.hostChoices {
+		mark := "   "
+		if c.id == m.launch.targetHost {
+			mark = statusOKStyle.Render(" ● ")
+		}
+		label := c.label
+		if i == m.launch.hostCursor {
+			label = selectedStyle.Render(label)
+			rows = append(rows, cursorBarStyle.Render("▌")+mark+label)
+			continue
+		}
+		rows = append(rows, " "+mark+label)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // launchKitPicker renders the kit-selection sub-mode. Selection order is shown
@@ -593,6 +848,8 @@ func (m Model) launchBrowser() string {
 
 	var body string
 	switch {
+	case l.loading:
+		body = dimStyle.Render("loading " + l.dir + " …")
 	case l.loadErr != "":
 		body = statusErrStyle.Render("cannot read directory: " + l.loadErr)
 	case len(l.entries) == 0:

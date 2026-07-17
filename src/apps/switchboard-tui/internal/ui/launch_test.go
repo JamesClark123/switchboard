@@ -20,6 +20,8 @@ import (
 // daemon without any gRPC/Docker/sbx involvement.
 type fakeDaemon struct {
 	mu           sync.Mutex
+	hostID       string // overrides the default "test-host" when set
+	workspace    string // WorkspaceRoot() override
 	sandboxes    []*pb.Sandbox
 	candidates   []*pb.SourceRef
 	manifest     *pb.OptionManifest
@@ -185,7 +187,14 @@ func (s *fakeStream) Recv() (*pb.Event, error) {
 	}
 }
 
-func (f *fakeDaemon) HostID() string { return "test-host" }
+func (f *fakeDaemon) HostID() string {
+	if f.hostID != "" {
+		return f.hostID
+	}
+	return "test-host"
+}
+
+func (f *fakeDaemon) WorkspaceRoot() string { return f.workspace }
 
 func (f *fakeDaemon) DaemonVersion() string { return f.daemonVer }
 

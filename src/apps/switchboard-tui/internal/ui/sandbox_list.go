@@ -74,6 +74,17 @@ func (m Model) connectedHosts() []client.HostSandboxes {
 	return out
 }
 
+// hostDisplayName resolves a host id to its friendly name via the manager,
+// falling back to the id itself when it is unknown or multi-host is disabled.
+func (m Model) hostDisplayName(host string) string {
+	if m.manager != nil && host != "" {
+		if hc, ok := m.manager.Get(host); ok && hc.Entry.DisplayName != "" {
+			return hc.Entry.DisplayName
+		}
+	}
+	return host
+}
+
 // allRows flattens every known sandbox with its owning host. It prefers the
 // cross-host aggregate; without a manager it falls back to the active daemon's
 // list so the single-daemon case keeps working.
@@ -91,10 +102,14 @@ func (m Model) allRows() []sandboxRow {
 		}
 	}
 	// Optimistic, still-creating launches, appended after the daemon's real rows.
-	// They live on the active daemon (startLaunch always targets m.daemon), so they
-	// carry the active host id for tab filtering.
+	// Each carries the host it was launched on (which may differ from the active
+	// host) so it lands under the correct host tab.
 	for _, lf := range m.launchingOrdered() {
-		rows = append(rows, sandboxRow{host: m.activeHost, hostName: m.activeHost, sb: lf.sb})
+		host := lf.host
+		if host == "" {
+			host = m.activeHost
+		}
+		rows = append(rows, sandboxRow{host: host, hostName: m.hostDisplayName(host), sb: lf.sb})
 	}
 	return rows
 }
@@ -114,9 +129,12 @@ func (m Model) launchingOrdered() []*launchInFlight {
 // not already present, so its row survives the frames between a launch completing
 // and the follow-up reload landing (avoiding a one-frame blink). A reload replaces
 // these slices wholesale, so the insert is transient and never duplicates.
-func (m *Model) insertSandbox(sb *pb.Sandbox) {
+func (m *Model) insertSandbox(sb *pb.Sandbox, host string) {
 	if sb.GetId() == "" {
 		return
+	}
+	if host == "" {
+		host = m.activeHost
 	}
 	present := func(list []*pb.Sandbox) bool {
 		for _, ex := range list {
@@ -126,17 +144,24 @@ func (m *Model) insertSandbox(sb *pb.Sandbox) {
 		}
 		return false
 	}
-	if !present(m.sandboxes) {
-		m.sandboxes = append(m.sandboxes, sb)
-	}
+	// With a cross-host aggregate, attribute the sandbox to its owning host so it
+	// renders under the right tab; mirror into m.sandboxes only when it belongs to
+	// the active daemon (whose list that slice represents).
 	for i := range m.hostAgg {
-		if m.hostAgg[i].Host.Entry.ID != m.activeHost {
+		if m.hostAgg[i].Host.Entry.ID != host {
 			continue
 		}
 		if !present(m.hostAgg[i].Sandboxes) {
 			m.hostAgg[i].Sandboxes = append(m.hostAgg[i].Sandboxes, sb)
 		}
+		if host == m.activeHost && !present(m.sandboxes) {
+			m.sandboxes = append(m.sandboxes, sb)
+		}
 		return
+	}
+	// No aggregate (single-daemon view): the sandbox belongs to the active list.
+	if !present(m.sandboxes) {
+		m.sandboxes = append(m.sandboxes, sb)
 	}
 }
 
