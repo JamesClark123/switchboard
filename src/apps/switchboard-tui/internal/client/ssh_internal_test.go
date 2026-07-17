@@ -49,7 +49,7 @@ func TestDefaultDialBothKinds(t *testing.T) {
 func TestDialSSHError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	if _, err := DialSSH(ctx, "switchboard.invalid", []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=1"}); err == nil {
+	if _, err := DialSSH(ctx, "switchboard.invalid", []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=1"}, ""); err == nil {
 		t.Error("expected DialSSH error for an unreachable target")
 	}
 }

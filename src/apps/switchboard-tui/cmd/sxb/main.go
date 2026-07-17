@@ -50,6 +50,13 @@ var (
 )
 
 func main() {
+	// When ssh invokes this binary as its SSH_ASKPASS helper, print the password
+	// and exit before any other startup (see client.SSHCommand). This is how an
+	// SSH password typed into the TUI reaches ssh without a tty prompt.
+	if client.RunAskpassIfRequested() {
+		return
+	}
+
 	// `sxb version` prints build info and exits; `sxb attach` opens a single
 	// session full-screen; no-arg launches the TUI (auto-opening a session when
 	// run inside a sandbox workspace).

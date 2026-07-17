@@ -89,9 +89,14 @@ func TestHostsScreenConnectActivate(t *testing.T) {
 		t.Errorf("status = %q", m.hosts.status)
 	}
 
-	// Connect the first host.
-	m, cmd = update(m, press("c"))
-	m, _ = update(m, runCmd(cmd)) // hostsMsg after connect
+	// Connect the first host: 'c' on an ssh host opens the password prompt;
+	// submitting a blank password uses key/agent auth (here, the mocked dialer).
+	m, _ = update(m, press("c"))
+	if !m.hosts.connecting {
+		t.Fatal("c on an ssh host should open the password prompt")
+	}
+	m, cmd = update(m, tea.KeyMsg{Type: tea.KeyEnter}) // submit blank password
+	m, _ = update(m, runCmd(cmd))                      // hostsMsg after connect
 	row := m.hostsCurrent()
 	if row == nil || row.Host.State != client.HostConnected {
 		t.Fatalf("host not connected: %+v", row)
@@ -140,8 +145,9 @@ func TestHostsAddDisconnectRemove(t *testing.T) {
 		t.Errorf("host not persisted: %+v", saved)
 	}
 
-	// Connect then disconnect.
-	m, cmd = update(m, press("c"))
+	// Connect (via the password prompt, blank = key/agent auth) then disconnect.
+	m, _ = update(m, press("c"))
+	m, cmd = update(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m, _ = update(m, runCmd(cmd))
 	m, _ = update(m, press("x"))
 	row := m.hostsCurrent()

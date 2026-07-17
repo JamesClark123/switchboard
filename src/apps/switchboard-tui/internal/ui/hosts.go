@@ -19,8 +19,15 @@ type hostsState struct {
 	rows   []client.HostSandboxes
 	adding bool
 	input  textinput.Model
-	status string
-	ready  bool
+	// connecting drives the masked SSH-password prompt shown before dialing an
+	// ssh host, so the password is captured by the TUI rather than leaking to
+	// ssh's shared tty (where it would be read as UI commands).
+	connecting bool
+	pwInput    textinput.Model
+	pwHostID   string
+	pwTarget   string
+	status     string
+	ready      bool
 }
 
 // enterHosts loads known hosts into the manager and shows the hosts screen.
@@ -64,14 +71,15 @@ func (m Model) hostsCmd() tea.Cmd {
 	}
 }
 
-// connectHostCmd connects to a host then re-snapshots.
-func (m Model) connectHostCmd(id string) tea.Cmd {
+// connectHostCmd connects to a host (supplying an SSH password when non-empty)
+// then re-snapshots.
+func (m Model) connectHostCmd(id, password string) tea.Cmd {
 	mgr := m.manager
 	hs := m.hostStore
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
-		if err := mgr.Connect(ctx, id); err == nil && hs != nil {
+		if err := mgr.ConnectWithPassword(ctx, id, password); err == nil && hs != nil {
 			_ = hs.Touch(id, time.Now())
 		}
 		return hostsMsg(mgr.AggregateSandboxes(ctx))
@@ -128,7 +136,7 @@ func hostDesc(row client.HostSandboxes) string {
 }
 
 func (m Model) hostsHelp() helpBindings {
-	if m.hosts.adding {
+	if m.hosts.adding || m.hosts.connecting {
 		return helpBindings{m.keys.Confirm, m.keys.Cancel}
 	}
 	return helpBindings{m.keys.Connect, m.keys.Disconnect, m.keys.Enter, m.keys.Add, m.keys.Delete, m.keys.Back}
@@ -137,6 +145,9 @@ func (m Model) hostsHelp() helpBindings {
 func (m Model) updateHostsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.hosts.adding {
 		return m.updateHostAddKey(msg)
+	}
+	if m.hosts.connecting {
+		return m.updateHostPasswordKey(msg)
 	}
 	if m.hosts.list.FilterState() == list.Filtering {
 		var cmd tea.Cmd
@@ -149,7 +160,12 @@ func (m Model) updateHostsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "c":
 		if row := m.hostsCurrent(); row != nil {
-			return m, m.connectHostCmd(row.Host.Entry.ID)
+			// SSH hosts prompt for a password in the TUI first (blank = key/agent
+			// auth); local hosts have no interactive auth so connect directly.
+			if row.Host.Entry.Kind == "ssh" {
+				return m.enterHostPassword(row.Host.Entry.ID, row.Host.Entry.SSHTarget)
+			}
+			return m, m.connectHostCmd(row.Host.Entry.ID, "")
 		}
 		return m, nil
 	case "x":
@@ -229,6 +245,39 @@ func (m Model) updateHostAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// enterHostPassword opens the masked SSH-password prompt for a host. The
+// password is typed into the TUI (never ssh's shared tty); submitting an empty
+// value falls back to key/agent auth.
+func (m Model) enterHostPassword(id, target string) (tea.Model, tea.Cmd) {
+	m.hosts.connecting = true
+	m.hosts.pwHostID = id
+	m.hosts.pwTarget = target
+	ti := textinput.New()
+	ti.Prompt = "› "
+	ti.Placeholder = "password (blank = key/agent auth)"
+	ti.EchoMode = textinput.EchoPassword
+	ti.PromptStyle = selectedStyle
+	m.hosts.pwInput = ti
+	return m, m.hosts.pwInput.Focus()
+}
+
+func (m Model) updateHostPasswordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.hosts.connecting = false
+		m.hosts.pwInput.Blur()
+		return m, nil
+	case tea.KeyEnter:
+		id, password := m.hosts.pwHostID, m.hosts.pwInput.Value()
+		m.hosts.connecting = false
+		m.hosts.pwInput.Blur()
+		return m, m.connectHostCmd(id, password)
+	}
+	var cmd tea.Cmd
+	m.hosts.pwInput, cmd = m.hosts.pwInput.Update(msg)
+	return m, cmd
+}
+
 func (m Model) hostsCurrent() *client.HostSandboxes {
 	if it, ok := m.hosts.list.SelectedItem().(listItem); ok {
 		if row, ok := it.payload.(client.HostSandboxes); ok {
@@ -244,6 +293,13 @@ func (m Model) viewHosts() string {
 			sectionStyle.Render("Add SSH host"),
 			"",
 			panelStyle.Width(m.bodyWidth()-2).Render(m.hosts.input.View()),
+		)
+	}
+	if m.hosts.connecting {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			sectionStyle.Render("SSH password ")+dimStyle.Render(m.hosts.pwTarget),
+			"",
+			panelStyle.Width(m.bodyWidth()-2).Render(m.hosts.pwInput.View()),
 		)
 	}
 	out := m.hosts.list.View()

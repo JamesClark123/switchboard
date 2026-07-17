@@ -41,6 +41,11 @@ type HostEntry struct {
 	SocketPath  string
 	SSHTarget   string
 	SSHOptions  []string
+	// SSHPassword is a transient, per-connect secret handed to ssh via
+	// SSH_ASKPASS. It is NEVER persisted (the store->entry mapping never sets
+	// it) and is only populated on the copy the dialer receives, by
+	// ConnectWithPassword.
+	SSHPassword string
 }
 
 // HostConn is a managed host: its entry, current state, live connection (when
@@ -58,7 +63,7 @@ type DialFunc func(ctx context.Context, e HostEntry) (*Conn, error)
 // defaultDial dispatches on kind: local => Unix socket, ssh => dial-stdio.
 func defaultDial(ctx context.Context, e HostEntry) (*Conn, error) {
 	if e.Kind == "ssh" {
-		return DialSSH(ctx, e.SSHTarget, e.SSHOptions)
+		return DialSSH(ctx, e.SSHTarget, e.SSHOptions, e.SSHPassword)
 	}
 	return DialLocal(ctx, e.SocketPath)
 }
@@ -116,6 +121,13 @@ func (m *Manager) Adopt(id string, conn *Conn) {
 // already-known host simply re-dials (resync happens by re-listing afterwards,
 // SC-010). Returns the host's error, if any.
 func (m *Manager) Connect(ctx context.Context, id string) error {
+	return m.ConnectWithPassword(ctx, id, "")
+}
+
+// ConnectWithPassword dials a host, supplying an SSH password non-interactively
+// for this dial only (see SSHCommand). An empty password means key/agent auth.
+// The password is never stored on the host entry.
+func (m *Manager) ConnectWithPassword(ctx context.Context, id, password string) error {
 	m.mu.Lock()
 	hc, ok := m.hosts[id]
 	dial := m.dial
@@ -130,6 +142,7 @@ func (m *Manager) Connect(ctx context.Context, id string) error {
 	hc.State = HostConnecting
 	hc.Err = nil
 	entry := hc.Entry
+	entry.SSHPassword = password // transient: only the dialer's copy carries it
 	m.mu.Unlock()
 
 	conn, err := dial(ctx, entry)

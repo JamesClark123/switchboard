@@ -9,11 +9,44 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// Env vars that wire sxb's own binary in as ssh's SSH_ASKPASS helper. When they
+// are set, the process prints the password to stdout and exits (see
+// RunAskpassIfRequested). This lets the TUI collect an SSH password in a masked
+// field and hand it to ssh non-interactively — instead of ssh prompting on the
+// shared controlling terminal, which the Bubble Tea TUI already owns in raw
+// mode (there a tty prompt would capture the user's password keystrokes as UI
+// commands).
+const (
+	askpassSentinelEnv = "SWITCHBOARD_SSH_ASKPASS"
+	askpassSecretEnv   = "SWITCHBOARD_SSH_PASSWORD"
+)
+
+// RunAskpassIfRequested reports whether this process was invoked by ssh as its
+// SSH_ASKPASS helper. When it returns true the caller MUST exit immediately
+// without doing anything else — main() calls this before any other startup.
+func RunAskpassIfRequested() bool {
+	if os.Getenv(askpassSentinelEnv) != "1" {
+		return false
+	}
+	fmt.Println(os.Getenv(askpassSecretEnv))
+	return true
+}
+
+// askpassProgram is the absolute path to this binary, used as ssh's SSH_ASKPASS
+// helper. Falls back to argv[0] if the executable path cannot be resolved.
+func askpassProgram() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return os.Args[0]
+}
 
 // stdioConn adapts a child process's stdin/stdout to net.Conn so gRPC can speak
 // over it. This is the Docker-CLI `dial-stdio` pattern (research R1): the child
@@ -109,17 +142,56 @@ func DialCommand(ctx context.Context, cmd *exec.Cmd) (*Conn, error) {
 	return conn, nil
 }
 
-// SSHCommand builds the `ssh [opts] <target> sxbd dial-stdio` command.
-func SSHCommand(ctx context.Context, target string, opts []string) *exec.Cmd {
-	args := make([]string, 0, len(opts)+3)
+// SSHCommand builds `ssh [opts] [hardening] <target> sxbd dial-stdio`.
+//
+// The child is always started in its own session (Setsid), detached from the
+// controlling terminal, so ssh can never read the TUI's tty for a password or
+// host-key prompt. When password is non-empty it is supplied non-interactively
+// via SSH_ASKPASS (this binary, see RunAskpassIfRequested); when it is empty
+// only key/agent auth is attempted (BatchMode) so a passwordless connect fails
+// fast instead of blocking on a prompt it can never answer.
+func SSHCommand(ctx context.Context, target string, opts []string, password string) *exec.Cmd {
+	args := make([]string, 0, len(opts)+8)
+	// User-supplied opts come first: ssh honors the first value of a repeated
+	// -o, so the caller can override any of the hardening defaults below.
 	args = append(args, opts...)
+	// accept-new adds unknown host keys without an interactive prompt while
+	// still refusing changed keys — required now that there is no tty to prompt on.
+	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	if password != "" {
+		args = append(args,
+			"-o", "NumberOfPasswordPrompts=1",
+			"-o", "PreferredAuthentications=password,keyboard-interactive")
+	} else {
+		args = append(args, "-o", "BatchMode=yes")
+	}
 	args = append(args, target, "sxbd", "dial-stdio")
-	return exec.CommandContext(ctx, "ssh", args...)
+
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	// New session => no controlling terminal, so ssh must use SSH_ASKPASS (when
+	// set) rather than the shared tty for any prompt.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if password != "" {
+		env := append(os.Environ(),
+			"SSH_ASKPASS="+askpassProgram(),
+			"SSH_ASKPASS_REQUIRE=force", // OpenSSH >=8.4: use askpass even with a tty
+			askpassSentinelEnv+"=1",
+			askpassSecretEnv+"="+password,
+		)
+		// Older OpenSSH only consults SSH_ASKPASS when DISPLAY is set; a
+		// placeholder suffices since our helper ignores it.
+		if os.Getenv("DISPLAY") == "" {
+			env = append(env, "DISPLAY=switchboard:0")
+		}
+		cmd.Env = env
+	}
+	return cmd
 }
 
 // DialSSH connects to a remote daemon over SSH using the dial-stdio bridge
 // (FR-004). Auth/transport are the user's existing SSH (no new port, no separate
-// auth system).
-func DialSSH(ctx context.Context, target string, opts []string) (*Conn, error) {
-	return DialCommand(ctx, SSHCommand(ctx, target, opts))
+// auth system). password is supplied non-interactively when non-empty; empty
+// means key/agent auth only. See SSHCommand.
+func DialSSH(ctx context.Context, target string, opts []string, password string) (*Conn, error) {
+	return DialCommand(ctx, SSHCommand(ctx, target, opts, password))
 }

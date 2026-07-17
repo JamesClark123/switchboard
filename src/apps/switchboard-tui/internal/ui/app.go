@@ -585,9 +585,12 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case screenHosts:
-		if m.hosts.adding {
+		switch {
+		case m.hosts.adding:
 			m.hosts.input, cmd = m.hosts.input.Update(msg)
-		} else {
+		case m.hosts.connecting:
+			m.hosts.pwInput, cmd = m.hosts.pwInput.Update(msg)
+		default:
 			m.hosts.list, cmd = m.hosts.list.Update(msg)
 		}
 	case screenGroups:

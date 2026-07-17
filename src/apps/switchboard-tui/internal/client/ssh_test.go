@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,8 +86,14 @@ func TestDialCommandFailsWhenBridgeCannotReachSocket(t *testing.T) {
 }
 
 func TestSSHCommandArgs(t *testing.T) {
-	cmd := client.SSHCommand(context.Background(), "user@build-box", []string{"-i", "/key", "-p", "2222"})
-	want := []string{"ssh", "-i", "/key", "-p", "2222", "user@build-box", "sxbd", "dial-stdio"}
+	// No password: user opts, then hardening, then key/agent-only (BatchMode).
+	cmd := client.SSHCommand(context.Background(), "user@build-box", []string{"-i", "/key", "-p", "2222"}, "")
+	want := []string{
+		"ssh", "-i", "/key", "-p", "2222",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "BatchMode=yes",
+		"user@build-box", "sxbd", "dial-stdio",
+	}
 	if len(cmd.Args) != len(want) {
 		t.Fatalf("args = %v, want %v", cmd.Args, want)
 	}
@@ -94,5 +101,61 @@ func TestSSHCommandArgs(t *testing.T) {
 		if cmd.Args[i] != want[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, cmd.Args[i], want[i])
 		}
+	}
+	// The child must be detached from the controlling terminal so ssh cannot
+	// read the TUI's tty for a prompt.
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Error("ssh command should start a new session (Setsid) to detach from the tty")
+	}
+}
+
+func TestSSHCommandPasswordMode(t *testing.T) {
+	cmd := client.SSHCommand(context.Background(), "user@build-box", nil, "s3cr3t")
+	joined := strings.Join(cmd.Args, " ")
+	// Password auth is preferred and limited to a single attempt; BatchMode must
+	// NOT be set (that would disable password auth entirely).
+	for _, want := range []string{
+		"PreferredAuthentications=password,keyboard-interactive",
+		"NumberOfPasswordPrompts=1",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("password-mode args %q missing %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "BatchMode=yes") {
+		t.Error("password mode must not set BatchMode=yes")
+	}
+	// The password is wired through SSH_ASKPASS (this binary), not the tty.
+	env := envMap(cmd.Env)
+	if env["SWITCHBOARD_SSH_ASKPASS"] != "1" || env["SWITCHBOARD_SSH_PASSWORD"] != "s3cr3t" {
+		t.Errorf("askpass env not wired: %v", env)
+	}
+	if env["SSH_ASKPASS"] == "" || env["SSH_ASKPASS_REQUIRE"] != "force" {
+		t.Errorf("SSH_ASKPASS not forced: %v", env)
+	}
+	if env["DISPLAY"] == "" {
+		t.Error("DISPLAY should be set so older ssh consults SSH_ASKPASS")
+	}
+}
+
+func envMap(env []string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			out[kv[:i]] = kv[i+1:]
+		}
+	}
+	return out
+}
+
+func TestRunAskpassIfRequested(t *testing.T) {
+	// Not in askpass mode by default.
+	t.Setenv("SWITCHBOARD_SSH_ASKPASS", "")
+	if client.RunAskpassIfRequested() {
+		t.Error("should not be in askpass mode without the sentinel")
+	}
+	t.Setenv("SWITCHBOARD_SSH_ASKPASS", "1")
+	if !client.RunAskpassIfRequested() {
+		t.Error("should be in askpass mode when the sentinel is set")
 	}
 }
