@@ -112,18 +112,19 @@ func TestSSHCommandArgs(t *testing.T) {
 func TestSSHCommandPasswordMode(t *testing.T) {
 	cmd := client.SSHCommand(context.Background(), "user@build-box", nil, "s3cr3t")
 	joined := strings.Join(cmd.Args, " ")
-	// Password auth is preferred and limited to a single attempt; BatchMode must
-	// NOT be set (that would disable password auth entirely).
-	for _, want := range []string{
-		"PreferredAuthentications=password,keyboard-interactive",
-		"NumberOfPasswordPrompts=1",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("password-mode args %q missing %q", joined, want)
-		}
+	// Password retries are capped, but BatchMode must NOT be set (it would
+	// disable password auth entirely).
+	if !strings.Contains(joined, "NumberOfPasswordPrompts=1") {
+		t.Errorf("password-mode args %q missing NumberOfPasswordPrompts=1", joined)
 	}
 	if strings.Contains(joined, "BatchMode=yes") {
 		t.Error("password mode must not set BatchMode=yes")
+	}
+	// The auth methods MUST NOT be overridden: the user's keys/agent and
+	// ~/.ssh/config must still be honored (the password is only a fallback).
+	// Forcing PreferredAuthentications breaks key-authenticated hosts.
+	if strings.Contains(joined, "PreferredAuthentications") {
+		t.Errorf("password mode must not override PreferredAuthentications: %q", joined)
 	}
 	// The password is wired through SSH_ASKPASS (this binary), not the tty.
 	env := envMap(cmd.Env)

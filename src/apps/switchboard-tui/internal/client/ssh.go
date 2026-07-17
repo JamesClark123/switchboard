@@ -159,9 +159,12 @@ func SSHCommand(ctx context.Context, target string, opts []string, password stri
 	// still refusing changed keys — required now that there is no tty to prompt on.
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 	if password != "" {
-		args = append(args,
-			"-o", "NumberOfPasswordPrompts=1",
-			"-o", "PreferredAuthentications=password,keyboard-interactive")
+		// Cap password retries so a wrong password fails fast instead of
+		// re-invoking askpass. Crucially, do NOT set PreferredAuthentications:
+		// the user's keys/agent (and their ~/.ssh/config) must still be tried
+		// first — the askpass password is only a fallback for when ssh actually
+		// prompts. Forcing password-only here breaks key-authenticated hosts.
+		args = append(args, "-o", "NumberOfPasswordPrompts=1")
 	} else {
 		args = append(args, "-o", "BatchMode=yes")
 	}
