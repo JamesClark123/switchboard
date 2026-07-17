@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -351,45 +352,85 @@ func TestLaunchRootFallback(t *testing.T) {
 	}
 }
 
-func TestLaunchIgnoresInputWhileStreaming(t *testing.T) {
-	m := sized(New(&fakeDaemon{}, t.TempDir()))
+// TestLaunchDetachesToOptimisticRow verifies that starting a launch closes the
+// wizard, drops the user back on the list with an optimistic "creating…" row, and
+// leaves the TUI usable (the launch streams in the background).
+func TestLaunchDetachesToOptimisticRow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := sized(New(&fakeDaemon{}, root))
+	m, _ = update(m, press("n"))                     // open the launch browser
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeySpace}) // select "proj"
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter}) // launch
+
+	if m.screen != screenList {
+		t.Fatalf("after launch screen = %v, want screenList (no blocking modal)", m.screen)
+	}
+	if len(m.launching) != 1 {
+		t.Fatalf("launching = %d, want 1 optimistic placeholder", len(m.launching))
+	}
+	if !strings.Contains(m.viewList(), "creating") {
+		t.Errorf("list should show a creating row; got:\n%s", m.viewList())
+	}
+	// Input is NOT blocked: opening the launch browser again works immediately.
 	m, _ = update(m, press("n"))
-	m.launch.inProgress = true
-	if _, c := update(m, press("x")); c != nil {
-		t.Error("keys should be ignored while a launch streams")
+	if m.screen != screenLaunch {
+		t.Error("the TUI should stay usable while a launch streams (n reopened the wizard)")
 	}
 }
 
 func TestHandleLaunchProgressAndResults(t *testing.T) {
 	d := &fakeDaemon{}
 	m := sized(New(d, "/work"))
-	m.screen = screenLaunch
-	m.launch.bar = newBar()
+	// Register an optimistic in-flight launch the way startLaunch would.
+	ch := make(chan tea.Msg, 8)
+	m.launchSeq = 1
+	m.launching["pending-1"] = &launchInFlight{
+		tempID: "pending-1", seq: 1, ch: ch, progress: "starting…",
+		sb: &pb.Sandbox{Id: "pending-1", State: pb.SandboxState_SANDBOX_STATE_CREATING},
+	}
 
-	// Copy progress.
-	m, _ = update(m, launchProgressMsg{Copy: &pb.LaunchProgress_CopyProgress{BytesCopied: 1, BytesTotal: 2, CurrentPath: "p"}})
-	if !strings.Contains(m.launch.progress, "copying") {
-		t.Errorf("copy progress = %q", m.launch.progress)
+	// Copy progress updates the placeholder row's live text.
+	m, _ = update(m, launchProgressMsg{id: "pending-1", update: client.LaunchUpdate{Copy: &pb.LaunchProgress_CopyProgress{BytesCopied: 1, BytesTotal: 2, CurrentPath: "p"}}})
+	if got := m.launching["pending-1"].progress; !strings.Contains(got, "copying") {
+		t.Errorf("copy progress = %q", got)
 	}
 	// Log line.
-	m, _ = update(m, launchProgressMsg{LogLine: "hello"})
-	if !strings.Contains(m.launch.progress, "hello") {
-		t.Errorf("log progress = %q", m.launch.progress)
+	m, _ = update(m, launchProgressMsg{id: "pending-1", update: client.LaunchUpdate{LogLine: "hello"}})
+	if got := m.launching["pending-1"].progress; !strings.Contains(got, "hello") {
+		t.Errorf("log progress = %q", got)
 	}
-	// Blocked result.
-	m, _ = update(m, launchResultMsg{blocked: &pb.ResourceReport{Warnings: []string{"low disk"}}})
-	if !strings.Contains(m.launch.progress, "low disk") {
-		t.Errorf("blocked progress = %q", m.launch.progress)
+	// Blocked result drops the placeholder and reports it in the status line.
+	mb, _ := update(m, launchResultMsg{id: "pending-1", blocked: &pb.ResourceReport{Warnings: []string{"low disk"}}})
+	if _, ok := mb.launching["pending-1"]; ok {
+		t.Error("a blocked launch should drop the placeholder")
 	}
-	// Error result.
-	m, _ = update(m, launchResultMsg{err: context.DeadlineExceeded})
-	if !strings.Contains(m.launch.progress, "failed") {
-		t.Errorf("error progress = %q", m.launch.progress)
+	if !strings.Contains(mb.status, "low disk") {
+		t.Errorf("blocked status = %q", mb.status)
 	}
-	// Success result returns to list.
-	m, cmd := update(m, launchResultMsg{sb: &pb.Sandbox{Id: "id123456"}})
-	if m.screen != screenList {
-		t.Error("successful launch should return to list")
+	// Error result surfaces the failure.
+	me, _ := update(m, launchResultMsg{id: "pending-1", err: context.DeadlineExceeded})
+	if !strings.Contains(me.status, "failed") {
+		t.Errorf("error status = %q", me.status)
+	}
+	// Success drops the placeholder, inserts the real sandbox, and reloads.
+	ms, cmd := update(m, launchResultMsg{id: "pending-1", sb: &pb.Sandbox{Id: "id123456"}})
+	if ms.screen != screenList {
+		t.Error("successful launch should be on the list")
+	}
+	if _, ok := ms.launching["pending-1"]; ok {
+		t.Error("successful launch should drop the placeholder")
+	}
+	found := false
+	for _, sb := range ms.sandboxes {
+		if sb.GetId() == "id123456" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("successful launch should insert the real sandbox so the row does not blink out")
 	}
 	if runCmd(cmd) == nil {
 		t.Error("successful launch should refresh the list")

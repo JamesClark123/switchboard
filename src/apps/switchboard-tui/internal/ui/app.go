@@ -2,7 +2,7 @@
 // launch/config/hosts/groups/notification flows driving the local daemon. The
 // daemon is reached through the Daemon interface so the UI is testable with a
 // fake (teatest). Rendering is built on Charm's bubbles (list, textinput,
-// textarea, spinner, progress, help), lipgloss (styling), and huh (forms).
+// textarea, spinner, help), lipgloss (styling), and huh (forms).
 package ui
 
 import (
@@ -110,6 +110,13 @@ type Model struct {
 	busy        map[string]string
 	listLoading bool
 
+	// launching holds optimistic placeholders for launches still copying/booting,
+	// keyed by a client-generated temp id. They render as CREATING rows (allRows
+	// appends them) and are kept separate from sandboxes/hostAgg so a list reload
+	// never wipes them. launchSeq stamps a stable order onto concurrent launches.
+	launching map[string]*launchInFlight
+	launchSeq int
+
 	// shared chrome components.
 	keys    keyMap
 	help    help.Model
@@ -208,6 +215,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		width:       80,
 		height:      24,
 		busy:        map[string]string{},
+		launching:   map[string]*launchInFlight{},
 		listLoading: true, // the first list load is in flight until it arrives
 	}
 	m.help.Width = m.width
@@ -292,8 +300,15 @@ type listDataMsg struct {
 	hosts  []client.HostSandboxes
 	groups []store.Group
 }
-type launchProgressMsg client.LaunchUpdate
+
+// launchProgressMsg carries one streamed progress frame for the launch identified
+// by its optimistic placeholder id.
+type launchProgressMsg struct {
+	id     string
+	update client.LaunchUpdate
+}
 type launchResultMsg struct {
+	id      string
 	sb      *pb.Sandbox
 	blocked *pb.ResourceReport
 	err     error
@@ -439,7 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-render the list so spinners advance each frame (item strings are
 		// static, so they must be rebuilt to animate): both busy-action rows and
 		// any row whose agent is currently working.
-		if m.screen == screenList && m.list.FilterState() != list.Filtering && (len(m.busy) > 0 || m.anyAgentWorking()) {
+		if m.screen == screenList && m.list.FilterState() != list.Filtering && (len(m.busy) > 0 || len(m.launching) > 0 || m.anyAgentWorking()) {
 			m.refreshListItems()
 		}
 		return m, cmd
@@ -508,7 +523,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyGroups(msg)
 
 	case launchProgressMsg:
-		return m.handleLaunchProgress(client.LaunchUpdate(msg))
+		return m.handleLaunchProgress(msg)
 
 	case launchResultMsg:
 		return m.handleLaunchResult(msg)

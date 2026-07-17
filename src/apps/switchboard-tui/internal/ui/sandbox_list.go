@@ -2,6 +2,7 @@ package ui
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -77,20 +78,66 @@ func (m Model) connectedHosts() []client.HostSandboxes {
 // cross-host aggregate; without a manager it falls back to the active daemon's
 // list so the single-daemon case keeps working.
 func (m Model) allRows() []sandboxRow {
+	var rows []sandboxRow
 	if len(m.hostAgg) > 0 {
-		var rows []sandboxRow
 		for _, hs := range m.hostAgg {
 			for _, sb := range hs.Sandboxes {
 				rows = append(rows, sandboxRow{host: hs.Host.Entry.ID, hostName: hs.Host.Entry.DisplayName, sb: sb})
 			}
 		}
-		return rows
+	} else {
+		for _, sb := range m.sandboxes {
+			rows = append(rows, sandboxRow{host: m.activeHost, hostName: m.activeHost, sb: sb})
+		}
 	}
-	rows := make([]sandboxRow, 0, len(m.sandboxes))
-	for _, sb := range m.sandboxes {
-		rows = append(rows, sandboxRow{host: m.activeHost, hostName: m.activeHost, sb: sb})
+	// Optimistic, still-creating launches, appended after the daemon's real rows.
+	// They live on the active daemon (startLaunch always targets m.daemon), so they
+	// carry the active host id for tab filtering.
+	for _, lf := range m.launchingOrdered() {
+		rows = append(rows, sandboxRow{host: m.activeHost, hostName: m.activeHost, sb: lf.sb})
 	}
 	return rows
+}
+
+// launchingOrdered returns the in-flight launch placeholders in a stable order
+// (by launch sequence), so concurrent "creating…" rows don't reshuffle each tick.
+func (m Model) launchingOrdered() []*launchInFlight {
+	out := make([]*launchInFlight, 0, len(m.launching))
+	for _, lf := range m.launching {
+		out = append(out, lf)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
+}
+
+// insertSandbox appends a freshly-launched sandbox to the in-memory lists if it is
+// not already present, so its row survives the frames between a launch completing
+// and the follow-up reload landing (avoiding a one-frame blink). A reload replaces
+// these slices wholesale, so the insert is transient and never duplicates.
+func (m *Model) insertSandbox(sb *pb.Sandbox) {
+	if sb.GetId() == "" {
+		return
+	}
+	present := func(list []*pb.Sandbox) bool {
+		for _, ex := range list {
+			if ex.GetId() == sb.GetId() {
+				return true
+			}
+		}
+		return false
+	}
+	if !present(m.sandboxes) {
+		m.sandboxes = append(m.sandboxes, sb)
+	}
+	for i := range m.hostAgg {
+		if m.hostAgg[i].Host.Entry.ID != m.activeHost {
+			continue
+		}
+		if !present(m.hostAgg[i].Sandboxes) {
+			m.hostAgg[i].Sandboxes = append(m.hostAgg[i].Sandboxes, sb)
+		}
+		return
+	}
 }
 
 // currentTabRows filters allRows down to the selected tab.
@@ -163,6 +210,19 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	desc := sandboxDesc(row.sb)
 	if showHost && row.hostName != "" {
 		desc += dimStyle.Render("  ·  @" + row.hostName)
+	}
+	// A still-creating optimistic launch: show a spinner, the "creating" verb, and
+	// the live copy/boot progress in place of the usual state badge.
+	if lf, ok := m.launching[row.sb.GetId()]; ok {
+		name := row.sb.GetDisplayName()
+		if name == "" {
+			name = "new sandbox"
+		}
+		title := m.spinner.View() + " " + selectedStyle.Render(pad("creating", 9)) + " " + name
+		if lf.progress != "" {
+			title += "  " + dimStyle.Render(lf.progress)
+		}
+		return listItem{id: row.sb.GetId(), host: row.host, title: title, desc: desc, filter: name, payload: row.sb}
 	}
 	title := sandboxTitle(row.sb)
 	// A daemon action is in flight for this sandbox: show a spinner + verb in
@@ -350,6 +410,20 @@ func (m Model) current() *pb.Sandbox {
 	return nil
 }
 
+// actionable returns the selected sandbox unless it is a still-creating optimistic
+// placeholder — those have no real daemon id yet, so per-sandbox actions must wait
+// for the launch to resolve. Returning nil makes such keypresses a harmless no-op.
+func (m Model) actionable() *pb.Sandbox {
+	sb := m.current()
+	if sb == nil {
+		return nil
+	}
+	if _, pending := m.launching[sb.GetId()]; pending {
+		return nil
+	}
+	return sb
+}
+
 func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While the fuzzy filter input is active, all keys belong to the list.
 	if m.list.FilterState() == list.Filtering {
@@ -387,27 +461,27 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyIs(msg, m.keys.Update):
 		return m.enterUpdate()
 	case keyIs(msg, m.keys.Terminal):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.enterTerminal(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Popout):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.openExternalTerminal(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Tag):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.enterTag(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.VSCode):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.startBusy(sb.GetId(), "opening"), m.openVSCodeCmd(m.currentHostID(), sb.GetId())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.StartStop):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			d := m.daemonForHost(m.currentHostID())
 			// One key toggles by state: stop a running sandbox, start any other.
 			if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
@@ -417,12 +491,12 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Destroy):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.startBusy(sb.GetId(), "destroying"), m.destroyCmd(m.daemonForHost(m.currentHostID()), sb.GetId())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Rename):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
 				m.status = "stop the sandbox before renaming it"
 				return m, nil
@@ -431,14 +505,14 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case keyIs(msg, m.keys.RefreshSandbox):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.confirmRefresh(sb, m.currentHostID())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.Kits):
 		return m.enterKitPicker()
 	case keyIs(msg, m.keys.AddKit):
-		if sb := m.current(); sb != nil {
+		if sb := m.actionable(); sb != nil {
 			return m.enterKitAttach(sb, m.currentHostID())
 		}
 		return m, nil

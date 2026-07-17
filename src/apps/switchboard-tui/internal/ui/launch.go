@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -56,11 +55,24 @@ type launchState struct {
 	kitOn     map[string]bool // chosen kit ids
 	kitOrder  []string        // selection order — sbx composes stacked kits in order
 
-	inProgress bool
-	progress   string
-	pct        float64
-	bar        progress.Model
-	ch         chan tea.Msg
+	// progress carries a pre-launch validation/kit error shown under the browser
+	// (e.g. "select at least one directory"). Live launch progress no longer lives
+	// here — once a launch starts it detaches to an optimistic list row (see
+	// launchInFlight) so the modal closes and the TUI stays usable.
+	progress string
+}
+
+// launchInFlight is one optimistic, still-streaming launch. Its placeholder shows
+// as a CREATING row on the sandbox list (allRows appends it) so the user gets
+// immediate feedback and can keep using the TUI — even start further launches —
+// while the workspace copies and the container boots. Progress events mutate this
+// struct in place and the row re-renders on the shared spinner tick.
+type launchInFlight struct {
+	tempID   string       // client-generated placeholder id (until the daemon assigns the real one)
+	seq      int          // stable ordering among concurrent launches
+	sb       *pb.Sandbox  // the placeholder row (State = CREATING)
+	progress string       // latest human-readable progress ("copying 45%")
+	ch       chan tea.Msg // per-launch progress/result channel
 }
 
 // newNameInput builds the optional sandbox-name field for the launch overlay.
@@ -77,7 +89,7 @@ func newNameInput() textinput.Model {
 // enterLaunch opens the launch overlay rooted at the source directory.
 func (m Model) enterLaunch() (tea.Model, tea.Cmd) {
 	m.screen = screenLaunch
-	m.launch = launchState{selected: map[string]bool{}, bar: newBar(), name: newNameInput()}
+	m.launch = launchState{selected: map[string]bool{}, name: newNameInput()}
 	m.launch.loadDir(m.launchRoot())
 	return m, nil
 }
@@ -90,7 +102,6 @@ func (m Model) enterLaunchWithConfig(cfg *store.Configuration) (tea.Model, tea.C
 		config:    cfg,
 		selected:  map[string]bool{},
 		cloneMode: cfg.SeedingMode == "clone",
-		bar:       newBar(),
 		name:      newNameInput(),
 	}
 	m.launch.loadDir(m.launchRoot())
@@ -103,10 +114,6 @@ func (m Model) launchRoot() string {
 	}
 	wd, _ := os.Getwd()
 	return wd
-}
-
-func newBar() progress.Model {
-	return progress.New(progress.WithGradient("#7D56F4", "#43BF6D"), progress.WithoutPercentage())
 }
 
 // loadDir reads dir into the browser, listing sub-directories first then files
@@ -298,9 +305,6 @@ func (l *launchState) selectedKitRefs() ([]*pb.KitRef, error) {
 }
 
 func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.launch.inProgress {
-		return m, nil // ignore input while a launch streams
-	}
 	if m.launch.naming {
 		return m.updateLaunchNameKey(msg)
 	}
@@ -358,9 +362,12 @@ func (m Model) selectedSources() []*pb.SourceRef {
 	return out
 }
 
-// startLaunch begins a streaming launch from the selected sources. Progress
-// events flow over a channel and are pumped into Bubble Tea one message at a time
-// (the canonical streaming pattern), so the copy progress (FR-028) renders live.
+// startLaunch begins a streaming launch from the selected sources. Rather than
+// hold the modal open behind a progress bar, it drops an optimistic CREATING row
+// onto the list and closes the wizard immediately, so the workspace copy + boot
+// (FR-028) happens in the background while the user keeps using the TUI. Progress
+// events flow over a per-launch channel and are pumped into Bubble Tea one message
+// at a time (the canonical streaming pattern), updating that row live.
 func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	sources := m.selectedSources()
 	if len(sources) == 0 {
@@ -388,24 +395,43 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 		m.launch.loadErr = "kit error: " + err.Error()
 		return m, nil
 	}
+	name := strings.TrimSpace(m.launch.name.Value())
 	req := &pb.LaunchSandboxRequest{
 		Config:      snapshot,
 		Sources:     sources,
-		DisplayName: strings.TrimSpace(m.launch.name.Value()),
+		DisplayName: name,
 		Kits:        kitRefs,
 	}
 
+	// Register the optimistic placeholder and detach the launch to the background.
+	m.launchSeq++
+	tempID := fmt.Sprintf("pending-%d", m.launchSeq)
 	ch := make(chan tea.Msg, 32)
-	m.launch.ch = ch
-	m.launch.inProgress = true
-	m.launch.progress = "starting…"
+	if m.launching == nil {
+		m.launching = map[string]*launchInFlight{}
+	}
+	m.launching[tempID] = &launchInFlight{
+		tempID:   tempID,
+		seq:      m.launchSeq,
+		progress: "starting…",
+		ch:       ch,
+		sb: &pb.Sandbox{
+			Id:          tempID,
+			DisplayName: name,
+			State:       pb.SandboxState_SANDBOX_STATE_CREATING,
+			Sources:     sources,
+			SeedingMode: mode,
+		},
+	}
+	m.screen = screenList
+	m.refreshListItems()
 
 	d := m.daemon
 	go func() {
 		sb, blocked, err := d.Launch(context.Background(), req, func(u client.LaunchUpdate) {
-			ch <- launchProgressMsg(u)
+			ch <- launchProgressMsg{id: tempID, update: u}
 		})
-		ch <- launchResultMsg{sb: sb, blocked: blocked, err: err}
+		ch <- launchResultMsg{id: tempID, sb: sb, blocked: blocked, err: err}
 		close(ch)
 	}()
 
@@ -430,36 +456,49 @@ func waitForMsg(ch chan tea.Msg) tea.Cmd {
 	}
 }
 
-func (m Model) handleLaunchProgress(u client.LaunchUpdate) (tea.Model, tea.Cmd) {
+func (m Model) handleLaunchProgress(msg launchProgressMsg) (tea.Model, tea.Cmd) {
+	lf, ok := m.launching[msg.id]
+	if !ok {
+		return m, nil // launch already resolved; drop a late progress frame
+	}
+	u := msg.update
 	if u.Copy != nil {
 		total := u.Copy.GetBytesTotal()
-		m.launch.pct = 0
+		pct := 0
 		if total > 0 {
-			m.launch.pct = float64(u.Copy.GetBytesCopied()) / float64(total)
+			pct = int(100 * u.Copy.GetBytesCopied() / total)
 		}
-		m.launch.progress = fmt.Sprintf("copying %d%% (%d/%d bytes) %s",
-			int(100*m.launch.pct), u.Copy.GetBytesCopied(), total, u.Copy.GetCurrentPath())
+		lf.progress = fmt.Sprintf("copying %d%% %s", pct, filepath.Base(u.Copy.GetCurrentPath()))
 	} else if u.LogLine != "" {
-		m.launch.progress = "sbx: " + u.LogLine
+		lf.progress = "sbx: " + u.LogLine
 	}
-	return m, waitForMsg(m.launch.ch)
+	m.refreshListItems()
+	return m, waitForMsg(lf.ch)
 }
 
 func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
-	m.launch.inProgress = false
+	delete(m.launching, msg.id)
 	if msg.err != nil {
 		m.err = msg.err
-		m.launch.progress = "launch failed: " + msg.err.Error()
+		m.status = "launch failed: " + msg.err.Error()
+		m.refreshListItems()
 		return m, nil
 	}
 	if msg.blocked != nil {
-		m.launch.progress = "blocked (low resources): " + strings.Join(msg.blocked.GetWarnings(), "; ") +
-			"  — free disk and retry"
+		m.err = nil
+		m.status = "launch blocked (low resources): " +
+			strings.Join(msg.blocked.GetWarnings(), "; ") + " — free disk and retry"
+		m.refreshListItems()
 		return m, nil
 	}
-	// Success: close the overlay and refresh (including the tab-bar aggregate).
-	m.screen = screenList
+	// Success: swap the placeholder for the daemon's real sandbox (inserted now so
+	// the row doesn't blink out before the reload lands), then reload for canonical
+	// fields + the tab-bar aggregate.
+	m.err = nil
 	m.status = "launched " + short(msg.sb.GetId())
+	m.insertSandbox(msg.sb)
+	m.listLoading = true
+	m.refreshListItems()
 	return m, m.reloadCmd()
 }
 
@@ -469,11 +508,6 @@ func (m Model) launchModal() string {
 
 	var content string
 	switch {
-	case m.launch.inProgress:
-		content = lipgloss.JoinVertical(lipgloss.Left,
-			m.spinner.View()+" launching…",
-			m.launch.bar.ViewAs(m.launch.pct),
-		)
 	case m.launch.kitPick:
 		content = m.launchKitPicker()
 	default:
@@ -481,7 +515,7 @@ func (m Model) launchModal() string {
 	}
 
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", content)
-	if m.launch.progress != "" && !m.launch.inProgress {
+	if m.launch.progress != "" {
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(m.launch.progress))
 	}
 	help := "space select · →/← open/up · N name · m mode · K kits · enter launch · esc cancel"
