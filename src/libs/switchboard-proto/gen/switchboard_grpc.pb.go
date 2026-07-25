@@ -55,6 +55,8 @@ const (
 	Switchboard_Subscribe_FullMethodName            = "/switchboard.v1.Switchboard/Subscribe"
 	Switchboard_AckNotification_FullMethodName      = "/switchboard.v1.Switchboard/AckNotification"
 	Switchboard_GetVSCodeTarget_FullMethodName      = "/switchboard.v1.Switchboard/GetVSCodeTarget"
+	Switchboard_DecideEscapeHatchRun_FullMethodName = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
+	Switchboard_ListEscapeHatchRuns_FullMethodName  = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -114,6 +116,19 @@ type SwitchboardClient interface {
 	//
 	//	workspace path; the CLIENT builds the vscode-remote URI and runs `code` locally. ---
 	GetVSCodeTarget(ctx context.Context, in *SandboxIdRequest, opts ...grpc.CallOption) (*VSCodeTarget, error)
+	// --- Escape hatch (feature 005) ---
+	// The AI INVOKES a command over the agent-hook HTTP server (POST /escape-hatch/run,
+	// see specs/005-escape-hatch/contracts/escape-hatch-http.md), NOT gRPC. These RPCs
+	// are the CLIENT surface: approve/deny a gated run, and review runs this session.
+	//
+	// Approve or deny a REQUIRES_APPROVAL run that is PENDING_APPROVAL (FR-039). The
+	// daemon blocks the run on a 5-minute deny-by-default window; this is the client's
+	// input to that gate. Idempotent on an already-resolved run.
+	DecideEscapeHatchRun(ctx context.Context, in *DecideEscapeHatchRunRequest, opts ...grpc.CallOption) (*DecideEscapeHatchRunResponse, error)
+	// List escape-hatch runs for a sandbox in the current daemon session (FR-042).
+	// Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
+	// sandboxes on this host.
+	ListEscapeHatchRuns(ctx context.Context, in *ListEscapeHatchRunsRequest, opts ...grpc.CallOption) (*ListEscapeHatchRunsResponse, error)
 }
 
 type switchboardClient struct {
@@ -391,6 +406,26 @@ func (c *switchboardClient) GetVSCodeTarget(ctx context.Context, in *SandboxIdRe
 	return out, nil
 }
 
+func (c *switchboardClient) DecideEscapeHatchRun(ctx context.Context, in *DecideEscapeHatchRunRequest, opts ...grpc.CallOption) (*DecideEscapeHatchRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecideEscapeHatchRunResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DecideEscapeHatchRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) ListEscapeHatchRuns(ctx context.Context, in *ListEscapeHatchRunsRequest, opts ...grpc.CallOption) (*ListEscapeHatchRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListEscapeHatchRunsResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListEscapeHatchRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -448,6 +483,19 @@ type SwitchboardServer interface {
 	//
 	//	workspace path; the CLIENT builds the vscode-remote URI and runs `code` locally. ---
 	GetVSCodeTarget(context.Context, *SandboxIdRequest) (*VSCodeTarget, error)
+	// --- Escape hatch (feature 005) ---
+	// The AI INVOKES a command over the agent-hook HTTP server (POST /escape-hatch/run,
+	// see specs/005-escape-hatch/contracts/escape-hatch-http.md), NOT gRPC. These RPCs
+	// are the CLIENT surface: approve/deny a gated run, and review runs this session.
+	//
+	// Approve or deny a REQUIRES_APPROVAL run that is PENDING_APPROVAL (FR-039). The
+	// daemon blocks the run on a 5-minute deny-by-default window; this is the client's
+	// input to that gate. Idempotent on an already-resolved run.
+	DecideEscapeHatchRun(context.Context, *DecideEscapeHatchRunRequest) (*DecideEscapeHatchRunResponse, error)
+	// List escape-hatch runs for a sandbox in the current daemon session (FR-042).
+	// Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
+	// sandboxes on this host.
+	ListEscapeHatchRuns(context.Context, *ListEscapeHatchRunsRequest) (*ListEscapeHatchRunsResponse, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -520,6 +568,12 @@ func (UnimplementedSwitchboardServer) AckNotification(context.Context, *AckNotif
 }
 func (UnimplementedSwitchboardServer) GetVSCodeTarget(context.Context, *SandboxIdRequest) (*VSCodeTarget, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetVSCodeTarget not implemented")
+}
+func (UnimplementedSwitchboardServer) DecideEscapeHatchRun(context.Context, *DecideEscapeHatchRunRequest) (*DecideEscapeHatchRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DecideEscapeHatchRun not implemented")
+}
+func (UnimplementedSwitchboardServer) ListEscapeHatchRuns(context.Context, *ListEscapeHatchRunsRequest) (*ListEscapeHatchRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListEscapeHatchRuns not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -867,6 +921,42 @@ func _Switchboard_GetVSCodeTarget_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_DecideEscapeHatchRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecideEscapeHatchRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DecideEscapeHatchRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DecideEscapeHatchRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DecideEscapeHatchRun(ctx, req.(*DecideEscapeHatchRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_ListEscapeHatchRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListEscapeHatchRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListEscapeHatchRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListEscapeHatchRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListEscapeHatchRuns(ctx, req.(*ListEscapeHatchRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -929,6 +1019,14 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetVSCodeTarget",
 			Handler:    _Switchboard_GetVSCodeTarget_Handler,
+		},
+		{
+			MethodName: "DecideEscapeHatchRun",
+			Handler:    _Switchboard_DecideEscapeHatchRun_Handler,
+		},
+		{
+			MethodName: "ListEscapeHatchRuns",
+			Handler:    _Switchboard_ListEscapeHatchRuns_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -42,12 +43,34 @@ type Manager struct {
 	// injectHooks, when set, is called after a workspace is seeded so the agent's
 	// Claude Code hooks can be written into it (US4). MAY be nil.
 	injectHooks func(sandboxID, workspacePath string) error
+
+	// injectEscapeHatch, when set, is called after a workspace is seeded to write the
+	// escape-hatch wrapper + CLAUDE.md rule block (feature 005), given the sandbox's
+	// resolved command set. MAY be nil.
+	injectEscapeHatch func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error
 }
 
 // SetHookInjector registers a callback invoked after seeding to inject agent
 // hooks into the workspace (US4).
 func (m *Manager) SetHookInjector(fn func(sandboxID, workspacePath string) error) {
 	m.injectHooks = fn
+}
+
+// SetEscapeHatchInjector registers a callback invoked after seeding to inject the
+// escape-hatch wrapper + rule block (feature 005).
+func (m *Manager) SetEscapeHatchInjector(fn func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error) {
+	m.injectEscapeHatch = fn
+}
+
+// injectEscapeHatchInto runs the escape-hatch injector for a sandbox, if registered.
+// Best-effort: a failure is logged, never fatal (mirrors hook injection).
+func (m *Manager) injectEscapeHatchInto(sb *pb.Sandbox, onLog func(string)) {
+	if m.injectEscapeHatch == nil {
+		return
+	}
+	if err := m.injectEscapeHatch(sb.GetId(), sb.GetWorkspacePath(), sb.GetEscapeHatchCommands()); err != nil && onLog != nil {
+		onLog("warning: escape-hatch injection failed: " + err.Error())
+	}
 }
 
 // NewManager constructs a Manager.
@@ -74,6 +97,11 @@ type LaunchRequest struct {
 	// gRPC layer materializes inline KitSpecs to local paths before calling in, so
 	// the Manager deals only in strings sbx understands.
 	KitSources []string
+	// EscapeHatchCommands is the resolved escape-hatch command set for this sandbox
+	// (feature 005, FR-036) — the gRPC layer merges the attached kits' commands with
+	// later-kit-wins before calling in. Persisted on the sandbox so the allowlist is
+	// enforceable and survives a container recreate.
+	EscapeHatchCommands []*pb.EscapeHatchCommand
 }
 
 // List returns all sandboxes on this host, first pruning any whose retained
@@ -142,19 +170,20 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	}
 
 	sb := &pb.Sandbox{
-		Id:             id,
-		DisplayName:    name,
-		State:          pb.SandboxState_SANDBOX_STATE_CREATING,
-		HostId:         m.hostID,
-		ConfigSnapshot: req.Config,
-		ConfigLabel:    req.Config.GetName(),
-		Sources:        req.Sources,
-		SeedingMode:    req.Config.GetSeedingMode(),
-		WorkspacePath:  workspacePath,
-		Agent:          &pb.AgentSession{Spec: agent, Status: pb.AgentStatus_AGENT_STATUS_IDLE, LastEventAt: now},
-		Kits:           req.KitSources,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		Id:                  id,
+		DisplayName:         name,
+		State:               pb.SandboxState_SANDBOX_STATE_CREATING,
+		HostId:              m.hostID,
+		ConfigSnapshot:      req.Config,
+		ConfigLabel:         req.Config.GetName(),
+		Sources:             req.Sources,
+		SeedingMode:         req.Config.GetSeedingMode(),
+		WorkspacePath:       workspacePath,
+		Agent:               &pb.AgentSession{Spec: agent, Status: pb.AgentStatus_AGENT_STATUS_IDLE, LastEventAt: now},
+		Kits:                req.KitSources,
+		EscapeHatchCommands: req.EscapeHatchCommands,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if err := m.store.Put(sb); err != nil {
 		return nil, err
@@ -179,6 +208,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 			onLog("warning: hook injection failed: " + err.Error())
 		}
 	}
+	m.injectEscapeHatchInto(sb, onLog)
 
 	ref, err := m.runner.Launch(ctx, LaunchSpec{
 		SandboxID:     id,
@@ -433,6 +463,8 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 			onLog("warning: hook injection failed: " + err.Error())
 		}
 	}
+	// The wipe took the wrapper + rule block too; re-inject from the persisted set.
+	m.injectEscapeHatchInto(sb, onLog)
 
 	ref, err := m.bringUp(ctx, sb, onLog)
 	if err != nil {
@@ -463,7 +495,9 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // has died. Emitting a non-RUNNING state first drives the server's on-change hook
 // to end the terminal session and drop the cached PTY; without it the next attach
 // is handed a dead PTY and the client sees an immediate EOF.
-func (m *Manager) AddKit(ctx context.Context, id, kitSource string, onLog func(string)) (*pb.Sandbox, error) {
+// newCommands carries the attached kit's escape-hatch commands (feature 005); they
+// are merged into the sandbox's resolved set with later-kit-wins on name collision.
+func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, onLog func(string)) (*pb.Sandbox, error) {
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -471,6 +505,12 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, onLog func(s
 	kitSource = strings.TrimSpace(kitSource)
 	if kitSource == "" {
 		return nil, errors.New("kit source is required")
+	}
+	// Merge up front so an invalid escape-hatch entry fails the attach before sbx
+	// restarts the sandbox.
+	mergedCommands, err := escapehatch.Resolve(sb.GetEscapeHatchCommands(), newCommands)
+	if err != nil {
+		return nil, err
 	}
 	if sb.GetContainerRef() == "" {
 		return nil, fmt.Errorf("sandbox %s has no container to attach a kit to", id)
@@ -496,6 +536,7 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, onLog func(s
 		if !slices.Contains(s.GetKits(), kitSource) {
 			s.Kits = append(s.Kits, kitSource)
 		}
+		s.EscapeHatchCommands = mergedCommands
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
 		s.Error = ""
 		s.UpdatedAt = timestamppb.Now()
@@ -504,6 +545,9 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, onLog func(s
 	if err != nil {
 		return nil, err
 	}
+	// The attached kit may have changed the escape-hatch set; re-inject the wrapper +
+	// rule block from the merged set.
+	m.injectEscapeHatchInto(out, onLog)
 	m.emit(out)
 	return out, nil
 }

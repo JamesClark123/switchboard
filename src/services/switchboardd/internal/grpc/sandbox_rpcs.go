@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/resources"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
@@ -61,12 +62,21 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// Resolve the escape-hatch command set from the attached client-authored kits
+	// with later-kit-wins on name collision (feature 005, FR-036). A bad entry fails
+	// the launch up front, before any copy.
+	ehCommands, err := escapehatch.Resolve(escapehatch.CommandsFromRefs(req.GetKits())...)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	sb, err := s.mgr.Launch(ctx, sandbox.LaunchRequest{
-		Config:        req.GetConfig(),
-		Sources:       req.GetSources(),
-		AgentOverride: req.GetAgentOverride(),
-		DisplayName:   req.GetDisplayName(),
-		KitSources:    kitSources,
+		Config:              req.GetConfig(),
+		Sources:             req.GetSources(),
+		AgentOverride:       req.GetAgentOverride(),
+		DisplayName:         req.GetDisplayName(),
+		KitSources:          kitSources,
+		EscapeHatchCommands: ehCommands,
 	}, onProgress, onLog)
 	if err != nil {
 		return err
@@ -134,8 +144,11 @@ func (s *Server) AddSandboxKit(req *pb.AddSandboxKitRequest, stream pb.Switchboa
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
+	// The kit's escape-hatch commands (client-authored kits only) are merged into the
+	// sandbox's set inside AddKit, later-kit-wins (feature 005).
+	newCommands := req.GetKit().GetSpec().GetEscapeHatch()
 	_, onLog := progressSender(stream)
-	sb, err := s.mgr.AddKit(stream.Context(), req.GetSandboxId(), src, onLog)
+	sb, err := s.mgr.AddKit(stream.Context(), req.GetSandboxId(), src, newCommands, onLog)
 	if err != nil {
 		return err
 	}

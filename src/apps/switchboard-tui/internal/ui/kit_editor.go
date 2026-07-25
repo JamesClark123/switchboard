@@ -36,6 +36,7 @@ const (
 	secEnvironment
 	secCredentials
 	secAgentContext
+	secEscapeHatch
 	secCount
 )
 
@@ -57,6 +58,8 @@ func (s kitSection) title() string {
 		return "Credentials"
 	case secAgentContext:
 		return "Agent context"
+	case secEscapeHatch:
+		return "Escape-hatch commands"
 	}
 	return ""
 }
@@ -79,13 +82,15 @@ func (s kitSection) blurb() string {
 		return "service credential sources (host-side, via proxy)"
 	case secAgentContext:
 		return "markdown appended to the agent's memory"
+	case secEscapeHatch:
+		return "whole commands the agent may run OUTSIDE the sandbox"
 	}
 	return ""
 }
 
 // itemized reports whether a section holds a list of items (vs. a single form).
 func (s kitSection) itemized() bool {
-	return s == secInstall || s == secStartup || s == secInitFiles
+	return s == secInstall || s == secStartup || s == secInitFiles || s == secEscapeHatch
 }
 
 // kitFormVals holds the values bound into whichever form is open.
@@ -112,6 +117,10 @@ type kitFormVals struct {
 	itemBackground                  bool
 	itemPath, itemContent, itemMode string
 	itemOnlyIfMissing               bool
+
+	// escape-hatch item fields (feature 005)
+	ehName, ehWhenToUse, ehWorkingDir, ehMaxDuration string
+	ehRequiresApproval                               bool
 }
 
 // kitEditorState backs the editor. The kit under edit is held by value so an
@@ -153,6 +162,7 @@ const (
 	formInstall
 	formStartup
 	formInitFile
+	formEscapeHatch
 )
 
 // enterKitEditor opens the editor on an existing kit, or a blank one when nil.
@@ -423,6 +433,30 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 			huh.NewConfirm().Key("onlyIfMissing").Title("Only if missing").Value(&v.itemOnlyIfMissing),
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
 		))
+	case secEscapeHatch:
+		var it store.KitEscapeHatchCommand
+		if idx >= 0 && idx < len(m.kitEditor.kit.EscapeHatch) {
+			it = m.kitEditor.kit.EscapeHatch[idx]
+		}
+		v.ehName, v.itemCommand, v.ehWhenToUse = it.Name, it.Command, it.WhenToUse
+		v.ehRequiresApproval, v.ehWorkingDir = it.RequiresApproval, it.WorkingDir
+		if it.MaxDurationSecs > 0 {
+			v.ehMaxDuration = strconv.Itoa(int(it.MaxDurationSecs))
+		}
+		return m.openKitForm(formEscapeHatch, m.newKitForm(
+			huh.NewInput().Key("name").Title("Name").
+				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
+			huh.NewText().Key("command").Title("Command").
+				Description("The EXACT command, run on the host via sh -c. The agent cannot change it.").Value(&v.itemCommand),
+			huh.NewText().Key("whenToUse").Title("When to use").
+				Description("Plain-language guidance the agent's rule shows for this command.").Value(&v.ehWhenToUse),
+			huh.NewConfirm().Key("requiresApproval").Title("Requires approval").
+				Description("On = the developer must approve each run. Off = auto-run.").Value(&v.ehRequiresApproval),
+			huh.NewInput().Key("workingDir").Title("Working dir").
+				Description("Optional, relative to the workspace.").Value(&v.ehWorkingDir),
+			huh.NewInput().Key("maxDuration").Title("Max duration (seconds)").
+				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
+		))
 	}
 	return m, nil
 }
@@ -529,6 +563,34 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 		} else {
 			k.Commands.InitFiles = append(k.Commands.InitFiles, it)
 		}
+	case formEscapeHatch:
+		name, cmd := strings.TrimSpace(v.ehName), strings.TrimSpace(v.itemCommand)
+		if name == "" || cmd == "" {
+			m.kitEditor.status = "name and command are required"
+			return m, nil
+		}
+		var maxSecs uint32
+		if d := strings.TrimSpace(v.ehMaxDuration); d != "" {
+			n, err := strconv.Atoi(d)
+			if err != nil || n < 0 {
+				m.kitEditor.status = "max duration must be a non-negative number of seconds"
+				return m, nil
+			}
+			maxSecs = uint32(n)
+		}
+		it := store.KitEscapeHatchCommand{
+			Name:             name,
+			Command:          cmd,
+			WhenToUse:        strings.TrimSpace(v.ehWhenToUse),
+			RequiresApproval: v.ehRequiresApproval,
+			WorkingDir:       strings.TrimSpace(v.ehWorkingDir),
+			MaxDurationSecs:  maxSecs,
+		}
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.EscapeHatch) {
+			k.EscapeHatch[i] = it
+		} else {
+			k.EscapeHatch = append(k.EscapeHatch, it)
+		}
 	}
 	m.kitEditor.form = nil
 	m.kitEditor.vals = nil
@@ -548,6 +610,13 @@ func (m *Model) ensureCommands() {
 }
 
 func (m *Model) deleteKitItem(idx int) {
+	if m.kitEditor.section == secEscapeHatch {
+		if idx < len(m.kitEditor.kit.EscapeHatch) {
+			m.kitEditor.kit.EscapeHatch = append(m.kitEditor.kit.EscapeHatch[:idx], m.kitEditor.kit.EscapeHatch[idx+1:]...)
+		}
+		m.kitEditor.validation = nil
+		return
+	}
 	c := m.kitEditor.kit.Commands
 	if c == nil {
 		return
@@ -574,6 +643,12 @@ func (m *Model) deleteKitItem(idx int) {
 func (m Model) saveKit() (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(m.kitEditor.kit.Name) == "" {
 		m.kitEditor.status = "name required (Identity)"
+		return m, nil
+	}
+	// Escape-hatch commands are switchboard-owned; validate them client-side (the
+	// Docker portion is validated separately via `v`/ValidateKit).
+	if errs := m.kitEditor.kit.ValidateEscapeHatch(); len(errs) > 0 {
+		m.kitEditor.status = errs[0]
 		return m, nil
 	}
 	kit := m.kitEditor.kit
@@ -709,6 +784,9 @@ func (m Model) kitEditorStatusLine() string {
 }
 
 func (m Model) kitSectionLen() int {
+	if m.kitEditor.section == secEscapeHatch {
+		return len(m.kitEditor.kit.EscapeHatch)
+	}
 	c := m.kitEditor.kit.Commands
 	if c == nil {
 		return 0
@@ -763,6 +841,8 @@ func (m Model) kitSectionCount(s kitSection) string {
 			return "✓"
 		}
 		return "—"
+	case secEscapeHatch:
+		n = len(k.EscapeHatch)
 	}
 	if n == 0 {
 		return "—"
@@ -771,6 +851,17 @@ func (m Model) kitSectionCount(s kitSection) string {
 }
 
 func (m Model) kitItemLabel(s kitSection, i int) string {
+	if s == secEscapeHatch {
+		if i >= len(m.kitEditor.kit.EscapeHatch) {
+			return ""
+		}
+		it := m.kitEditor.kit.EscapeHatch[i]
+		gate := " auto"
+		if it.RequiresApproval {
+			gate = " approval"
+		}
+		return truncate(it.Name+": "+it.Command, 56) + dimStyle.Render(gate)
+	}
 	c := m.kitEditor.kit.Commands
 	if c == nil {
 		return ""

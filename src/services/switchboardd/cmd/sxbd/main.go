@@ -26,9 +26,11 @@ import (
 	"syscall"
 	"time"
 
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/config"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/daemonctl"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	sbgrpc "github.com/jamesclark123/switchboard/services/switchboardd/internal/grpc"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
@@ -178,8 +180,18 @@ func runServe(cfg *config.Config, debug bool) error {
 		return agent.InjectHooks(workspacePath, sandboxID, callbackURL)
 	})
 
+	// Escape hatch (feature 005): the service runs allowlisted commands on the host
+	// and delivers results back to the agent via the PTY-injection Prompt path. The
+	// wrapper POSTs to /escape-hatch/run (host.docker.internal), a sibling of /hook.
+	ehCallbackURL := fmt.Sprintf("http://host.docker.internal:%s/escape-hatch/run", port)
+	ehService := escapehatch.New(mgr, hub, agents.Prompt)
+	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
+		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
+	})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hook", hookServer.Handle)
+	mux.HandleFunc("/escape-hatch/run", ehService.HandleRun)
 	hookHTTP := &http.Server{Addr: cfg.HookAddr, Handler: mux}
 	go func() {
 		if err := hookHTTP.ListenAndServe(); err != nil && !strings.Contains(err.Error(), "Server closed") {
@@ -198,6 +210,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		Manifest:      manifest,
 		Hub:           hub,
 		Agents:        agents,
+		EscapeHatch:   ehService,
 		Debug:         debug,
 	})
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)

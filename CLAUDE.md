@@ -147,7 +147,27 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/004-sandbox-refresh-and-kits/spec.md` (Sandbox Refresh & Agent Kits). Two
+Active feature: `specs/005-escape-hatch/plan.md` (Escape Hatch). Lets a sandbox's AI run a small,
+human-authored set of **whole, fixed** commands *outside* the sandbox — on the daemon's host, in the
+sandbox's bind-mounted `workspace_path` — and delivers each result back to the agent even with no
+terminal attached. Commands are a **structured, switchboard-owned** section on a client kit (a new
+`kits/<id>/escape-hatch.yaml` sidecar + `pb.KitSpec.escape_hatch`), deliberately **NOT** in the opaque
+Docker `spec.yaml` (`sbx` never sees them). Resolved per sandbox with **later-kit-wins** on name
+collision, persisted as `Sandbox.escape_hatch_commands`. The AI invokes by name via a daemon-injected
+wrapper (`<workspace>/.switchboard/escape-hatch`) that POSTs to a **new `/escape-hatch/run` route on the
+existing agent-hook HTTP server** (`host.docker.internal:8765`); the daemon validates the name against
+the allowlist, runs `sh -c` with a bounded timeout (per-command or **30-min** default) + **1 MiB** output
+cap + cancel-on-stop, and **pushes the outcome back into the agent via `agent.Registry.Prompt`** (the
+detached-prompt PTY path). New daemon package `internal/escapehatch` (executor/consent/runs/resolve/
+inject/http). `requires-approval` commands block on a **5-min deny-by-default** window decided by a new
+`DecideEscapeHatchRun` RPC + a `confirm.go`-style approval modal. Runs are **in-memory only** (session =
+daemon uptime); observability via a new `Event.escape_hatch_run` arm + two `NotificationKind`s +
+`ListEscapeHatchRuns`. Kit editor gains an escape-hatch section. See `spec.md`, `research.md` (R1–R7),
+`data-model.md`, `contracts/` (switchboard-escape-hatch.proto, escape-hatch-http.md), `quickstart.md`.
+Builds on 003 (hooks/PTY/hub) + 004 (kits); additive proto revision, one new daemon package, **no new
+env vars**. ⚠️ `sbx` still not installed in dev — host argv stays stub-asserted.
+
+Prior feature: `specs/004-sandbox-refresh-and-kits/spec.md` (Sandbox Refresh & Agent Kits). Two
 additions to the sandbox list page. **Refresh** (`F`, confirmation-gated): deletes a sandbox's
 retained workspace copy, re-seeds from its recorded sources, and brings it back up on the *same*
 container (`Manager.Refresh`); the copy must be deleted, not copied over, because `duplicate`

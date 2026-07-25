@@ -54,6 +54,17 @@ type fakeDaemon struct {
 	validateResp  *pb.ValidateKitResponse
 	validateErr   error
 	validatedSpec *pb.KitSpec
+
+	// feature 005 fakes: escape-hatch runs + approval decisions
+	runs        []*pb.EscapeHatchRun
+	decidedRuns []decidedRun
+	decideErr   error
+	listRunsErr error
+}
+
+type decidedRun struct {
+	runID    string
+	approved bool
 }
 
 func (f *fakeDaemon) Refresh(_ context.Context, id string, _ func(client.LaunchUpdate)) (*pb.Sandbox, error) {
@@ -108,6 +119,28 @@ func (f *fakeDaemon) Subscribe(ctx context.Context, _ bool) (client.EventStream,
 		return nil, f.subscribeErr
 	}
 	return &fakeStream{ctx: ctx, ch: f.events}, nil
+}
+
+func (f *fakeDaemon) DecideEscapeHatchRun(_ context.Context, runID string, approved bool) (pb.EscapeHatchRunStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.decideErr != nil {
+		return pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_UNSPECIFIED, f.decideErr
+	}
+	f.decidedRuns = append(f.decidedRuns, decidedRun{runID: runID, approved: approved})
+	if approved {
+		return pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_RUNNING, nil
+	}
+	return pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_DENIED, nil
+}
+
+func (f *fakeDaemon) ListEscapeHatchRuns(_ context.Context, sandboxID string) ([]*pb.EscapeHatchRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listRunsErr != nil {
+		return nil, f.listRunsErr
+	}
+	return f.runs, nil
 }
 
 func (f *fakeDaemon) VSCodeTarget(_ context.Context, id string) (*pb.VSCodeTarget, error) {

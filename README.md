@@ -211,11 +211,35 @@ The sandbox list is the home screen. Keys:
 | `v` | Open the selected sandbox in VS Code |
 | `t` | Open the sandbox's terminal inline (suspends the TUI; resumes on exit) |
 | `T` | Open the sandbox's terminal in a popout window (keeps the TUI running) |
-| `i` | Notification inbox (task-complete / needs-prompting; 🔔 badge) |
+| `i` | Notification inbox (task-complete / needs-prompting / escape-hatch; 🔔 badge) |
 | `s` | Toggle the selected sandbox: stop if running, start otherwise |
 | `d` | Destroy the selected sandbox |
+| `K` | Manage agent kits · `A` attach a kit to the selected sandbox |
+| `E` | Review the selected sandbox's escape-hatch runs (this session) |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
-| `R` | Rename · `r` refresh · `j`/`k` navigate · `q` quit |
+| `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
+
+### Escape Hatch
+
+Some commands can't run usefully inside a sandbox — `pnpm install` wants the real package cache, and
+end-to-end tests want real hardware, not a microVM. **Escape Hatch** lets a sandbox's AI run a small,
+human-authored set of *whole, fixed* commands **outside** the sandbox — on the daemon's host, in the
+sandbox's workspace — and delivers each result back to the agent, even with no terminal attached.
+
+- **Author on a kit.** In the kit editor (`K`), the **Escape-hatch commands** section takes, per
+  command: a name, the exact command string, a when-to-use note, a consent mode (*auto-run* or
+  *requires-approval*), and optional working dir + max duration. These live in a `kits/<id>/escape-hatch.yaml`
+  sidecar — deliberately **not** in the Docker `spec.yaml`, so `sbx` never sees them.
+- **Attach & invoke.** Attaching the kit (at launch, or `A` on a running sandbox) makes each command
+  invokable by the agent by name and injects a rule into the agent's `CLAUDE.md` describing when to
+  use each and that they run on the host. The agent invokes one via a daemon-injected wrapper; the
+  daemon validates the name against the sandbox's allowlist and runs only the fixed, pre-authorized
+  string — never anything the agent supplies.
+- **Consent & bounds.** *auto-run* commands run unattended; *requires-approval* commands pause for a
+  developer's approval (a 5-minute, deny-by-default window). Every run is bounded by its own or a
+  30-minute default timeout, its output capped at 1 MiB, and cancelled if its sandbox stops.
+- **Observe.** In-progress and awaiting-approval runs show a row badge; `E` opens the session's run
+  history (command, status, exit code, captured output). Runs are in-memory for the daemon's lifetime.
 
 ## Updating
 

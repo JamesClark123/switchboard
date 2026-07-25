@@ -236,6 +236,26 @@ func (c *Conn) AckNotifications(ctx context.Context, ids []string) error {
 	return err
 }
 
+// DecideEscapeHatchRun approves or denies a pending escape-hatch run (feature 005,
+// FR-039).
+func (c *Conn) DecideEscapeHatchRun(ctx context.Context, runID string, approved bool) (pb.EscapeHatchRunStatus, error) {
+	resp, err := c.api.DecideEscapeHatchRun(ctx, &pb.DecideEscapeHatchRunRequest{RunId: runID, Approved: approved})
+	if err != nil {
+		return pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_UNSPECIFIED, err
+	}
+	return resp.GetStatus(), nil
+}
+
+// ListEscapeHatchRuns returns the session's escape-hatch runs for a sandbox (empty
+// id => all sandboxes on this host) (feature 005, FR-042).
+func (c *Conn) ListEscapeHatchRuns(ctx context.Context, sandboxID string) ([]*pb.EscapeHatchRun, error) {
+	resp, err := c.api.ListEscapeHatchRuns(ctx, &pb.ListEscapeHatchRunsRequest{SandboxId: sandboxID})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetRuns(), nil
+}
+
 // ListSources enumerates launch candidates under root (FR-007).
 func (c *Conn) ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error) {
 	resp, err := c.api.ListSourceCandidates(ctx, &pb.ListSourceCandidatesRequest{Root: root, ReposOnly: reposOnly})

@@ -42,6 +42,25 @@ type Kit struct {
 	// AgentContext is markdown appended to the agent's memory. Named `agentContext`
 	// since sbx v0.32.0 (previously `memory`).
 	AgentContext string `yaml:"agentContext,omitempty"`
+
+	// EscapeHatch is a switchboard-owned section (feature 005): commands the
+	// sandbox's agent may run OUTSIDE the sandbox. It is deliberately NOT rendered
+	// into spec.yaml — `yaml:"-"` keeps it out of SpecYAML so `sbx kit validate`
+	// never sees it — and is persisted in a sidecar kits/<id>/escape-hatch.yaml,
+	// travelling to the daemon as structured proto on KitSpec.escape_hatch.
+	EscapeHatch []KitEscapeHatchCommand `yaml:"-"`
+}
+
+// KitEscapeHatchCommand is one authorized out-of-sandbox command (feature 005). The
+// command string is fixed; the agent chooses which command to run by name, never
+// what it is.
+type KitEscapeHatchCommand struct {
+	Name             string `yaml:"name"`
+	Command          string `yaml:"command"`
+	WhenToUse        string `yaml:"whenToUse"`
+	RequiresApproval bool   `yaml:"requiresApproval,omitempty"` // false => auto-run
+	WorkingDir       string `yaml:"workingDir,omitempty"`       // optional, workspace-relative
+	MaxDurationSecs  uint32 `yaml:"maxDurationSeconds,omitempty"`
 }
 
 // KitCommands is the section the editor centres on: what the kit runs inside the
@@ -125,6 +144,10 @@ var ErrKitNotFound = errors.New("kit not found")
 func (k *KitStore) dir(id string) string  { return filepath.Join(k.s.Dir(), "kits", id) }
 func (k *KitStore) file(id string) string { return filepath.Join(k.dir(id), "spec.yaml") }
 
+// ehFile is the switchboard-owned escape-hatch sidecar (feature 005), kept beside
+// spec.yaml but never rendered into it, so the Docker artifact stays pure.
+func (k *KitStore) ehFile(id string) string { return filepath.Join(k.dir(id), "escape-hatch.yaml") }
+
 // ID is the kit's stable identifier: its directory name, derived from Name. It is
 // also the directory name the daemon materializes into, so it is constrained to
 // what the daemon accepts (lowercase alphanumeric, '-', '_').
@@ -179,13 +202,38 @@ func (kit *Kit) SpecYAML() (string, error) {
 	return buf.String(), nil
 }
 
-// ToSpec renders the kit into the wire payload the daemon materializes.
+// ToSpec renders the kit into the wire payload the daemon materializes. The
+// escape-hatch commands (feature 005) ride the KitSpec as structured proto — they
+// are NOT part of spec_yaml, so `sbx` never sees them.
 func (kit *Kit) ToSpec() (*pb.KitSpec, error) {
 	y, err := kit.SpecYAML()
 	if err != nil {
 		return nil, err
 	}
-	return &pb.KitSpec{Id: kit.ID(), SpecYaml: y}, nil
+	return &pb.KitSpec{Id: kit.ID(), SpecYaml: y, EscapeHatch: kit.escapeHatchProto()}, nil
+}
+
+// escapeHatchProto maps the client escape-hatch commands to their wire form.
+func (kit *Kit) escapeHatchProto() []*pb.EscapeHatchCommand {
+	if len(kit.EscapeHatch) == 0 {
+		return nil
+	}
+	out := make([]*pb.EscapeHatchCommand, 0, len(kit.EscapeHatch))
+	for _, c := range kit.EscapeHatch {
+		mode := pb.ConsentMode_CONSENT_MODE_AUTO_RUN
+		if c.RequiresApproval {
+			mode = pb.ConsentMode_CONSENT_MODE_REQUIRES_APPROVAL
+		}
+		out = append(out, &pb.EscapeHatchCommand{
+			Name:               c.Name,
+			Command:            c.Command,
+			WhenToUse:          c.WhenToUse,
+			ConsentMode:        mode,
+			WorkingDir:         c.WorkingDir,
+			MaxDurationSeconds: c.MaxDurationSecs,
+		})
+	}
+	return out
 }
 
 // ToRef wraps the kit as a KitRef for launch/attach.
@@ -217,7 +265,46 @@ func (k *KitStore) Save(kit *Kit) (*Kit, error) {
 	if err := os.WriteFile(k.file(id), []byte(y), 0o644); err != nil {
 		return nil, err
 	}
+	if err := k.saveEscapeHatch(id, kit.EscapeHatch); err != nil {
+		return nil, err
+	}
 	return kit, nil
+}
+
+// escapeHatchSidecar is the on-disk shape of escape-hatch.yaml.
+type escapeHatchSidecar struct {
+	EscapeHatch []KitEscapeHatchCommand `yaml:"escapeHatch"`
+}
+
+// saveEscapeHatch writes (or, when empty, removes) the escape-hatch sidecar.
+func (k *KitStore) saveEscapeHatch(id string, cmds []KitEscapeHatchCommand) error {
+	if len(cmds) == 0 {
+		if err := os.Remove(k.ehFile(id)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, err := yaml.Marshal(escapeHatchSidecar{EscapeHatch: cmds})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(k.ehFile(id), b, 0o644)
+}
+
+// loadEscapeHatch reads the escape-hatch sidecar; a missing file yields no commands.
+func (k *KitStore) loadEscapeHatch(id string) ([]KitEscapeHatchCommand, error) {
+	b, err := os.ReadFile(k.ehFile(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var sc escapeHatchSidecar
+	if err := yaml.Unmarshal(b, &sc); err != nil {
+		return nil, err
+	}
+	return sc.EscapeHatch, nil
 }
 
 // Get loads a kit by id (ErrKitNotFound when absent).
@@ -233,6 +320,12 @@ func (k *KitStore) Get(id string) (*Kit, error) {
 	if err := yaml.Unmarshal(b, &kit); err != nil {
 		return nil, err
 	}
+	// The escape-hatch commands live in a sidecar, not spec.yaml (feature 005).
+	eh, err := k.loadEscapeHatch(id)
+	if err != nil {
+		return nil, err
+	}
+	kit.EscapeHatch = eh
 	return &kit, nil
 }
 

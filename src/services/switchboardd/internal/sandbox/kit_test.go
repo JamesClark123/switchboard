@@ -37,7 +37,7 @@ func TestAddKitRecordsSourceAndRestores(t *testing.T) {
 	m, _, runner, dir := newTestManager(t)
 	sb, _ := launchOne(t, m, dir, "proj")
 
-	out, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil)
+	out, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestAddKitEmitsNonRunningSoTerminalIsTornDown(t *testing.T) {
 	var states []pb.SandboxState
 	m.SetOnChange(func(s *pb.Sandbox) { states = append(states, s.GetState()) })
 
-	if _, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil); err != nil {
+	if _, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(states) < 2 || states[0] == pb.SandboxState_SANDBOX_STATE_RUNNING {
@@ -82,7 +82,7 @@ func TestAddKitIsIdempotentPerSource(t *testing.T) {
 	sb, _ := launchOne(t, m, dir, "proj")
 
 	for range 2 {
-		if _, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil); err != nil {
+		if _, err := m.AddKit(ctx, sb.GetId(), "/kits/ruff", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -98,7 +98,7 @@ func TestAddKitIsIdempotentPerSource(t *testing.T) {
 func TestAddKitRequiresSource(t *testing.T) {
 	m, _, _, dir := newTestManager(t)
 	sb, _ := launchOne(t, m, dir, "proj")
-	if _, err := m.AddKit(context.Background(), sb.GetId(), "  ", nil); err == nil {
+	if _, err := m.AddKit(context.Background(), sb.GetId(), "  ", nil, nil); err == nil {
 		t.Error("expected AddKit to reject an empty kit source")
 	}
 }

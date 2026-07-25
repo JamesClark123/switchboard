@@ -55,6 +55,8 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		if m.removeSandbox(e.Removed.GetSandboxId()) {
 			m.refreshListItems()
 		}
+	case *pb.Event_EscapeHatchRun:
+		return m.handleEscapeHatchRun(e.EscapeHatchRun)
 	}
 	var cmd tea.Cmd
 	if m.sub != nil {
@@ -63,9 +65,44 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleEscapeHatchRun tracks a run's live state for the list badge and, on a
+// pending-approval run, raises the approval modal if one is not already up (feature
+// 005). Re-arms the event receiver on every path.
+func (m Model) handleEscapeHatchRun(run *pb.EscapeHatchRun) (tea.Model, tea.Cmd) {
+	if m.pendingRuns == nil {
+		m.pendingRuns = map[string]*pb.EscapeHatchRun{}
+	}
+	rearm := func() tea.Cmd {
+		if m.sub != nil {
+			return m.recvCmd(m.sub)
+		}
+		return nil
+	}
+	if run.GetStatus() == pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_PENDING_APPROVAL {
+		m.pendingRuns[run.GetId()] = run
+		m.refreshListItems() // show the awaiting-approval badge
+		// Only auto-open the modal when the user is on the list and not already
+		// answering another prompt; otherwise the badge + notification suffice.
+		if m.screen == screenList {
+			out, _ := m.enterApproval(run)
+			return out, rearm()
+		}
+		return m, rearm()
+	}
+	// A resolved run is no longer pending.
+	delete(m.pendingRuns, run.GetId())
+	m.refreshListItems()
+	return m, rearm()
+}
+
 func notifTitle(k pb.NotificationKind) string {
-	if k == pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING {
+	switch k {
+	case pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING:
 		return "needs prompting"
+	case pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL:
+		return "escape-hatch approval"
+	case pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_RUN_COMPLETE:
+		return "escape-hatch run"
 	}
 	return "task complete"
 }
@@ -92,7 +129,9 @@ func (m Model) enterNotifications() (tea.Model, tea.Cmd) {
 }
 
 func notifIcon(k pb.NotificationKind) string {
-	if k == pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING {
+	switch k {
+	case pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING,
+		pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")
 	}
 	return lipgloss.NewStyle().Foreground(colRunning).Render("✓")

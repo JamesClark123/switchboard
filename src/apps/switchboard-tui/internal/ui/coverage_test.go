@@ -98,7 +98,7 @@ func TestHelpFooterWrapsInsteadOfTruncating(t *testing.T) {
 		mm, _ := update(m, tea.WindowSizeMsg{Width: width, Height: 30})
 		return strings.Count(mm.renderHelp(mm.listHelp()), "\n") + 1
 	}
-	wide := lines(200)  // everything on one line
+	wide := lines(240)  // everything on one line (footer grew with the escape-hatch runs key)
 	narrow := lines(40) // must wrap onto more lines
 	if wide != 1 {
 		t.Errorf("wide help should be one line, got %d", wide)

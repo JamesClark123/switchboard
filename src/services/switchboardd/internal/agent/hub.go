@@ -97,6 +97,18 @@ func (h *Hub) PublishRemoved(sandboxID string) {
 	h.fanout(&pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: sandboxID}}})
 }
 
+// PublishEscapeHatchRun broadcasts an escape-hatch run state change (feature 005).
+// Like PublishSandbox it is live-only (not buffered/replayed) — the durable record
+// is the in-memory RunStore, queryable via ListEscapeHatchRuns.
+func (h *Hub) PublishEscapeHatchRun(run *pb.EscapeHatchRun) {
+	if run == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fanout(&pb.Event{Event: &pb.Event_EscapeHatchRun{EscapeHatchRun: run}})
+}
+
 // EmitNotification buffers and broadcasts a NotificationEvent (FR-024/025). The
 // event identifies the subject sandbox and this host (FR-026).
 func (h *Hub) EmitNotification(sandboxID string, kind pb.NotificationKind, message string, now time.Time) *pb.NotificationEvent {

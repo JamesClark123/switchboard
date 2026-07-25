@@ -82,6 +82,20 @@ service Switchboard {
   // --- VS Code open helper (FR-027): daemon returns the container name + in-container
   //     workspace path; the CLIENT builds the vscode-remote URI and runs `code` locally. ---
   rpc GetVSCodeTarget(SandboxIdRequest) returns (VSCodeTarget);
+
+  // --- Escape hatch (feature 005) ---
+  // The AI INVOKES a command over the agent-hook HTTP server (POST /escape-hatch/run,
+  // see specs/005-escape-hatch/contracts/escape-hatch-http.md), NOT gRPC. These RPCs
+  // are the CLIENT surface: approve/deny a gated run, and review runs this session.
+  //
+  // Approve or deny a REQUIRES_APPROVAL run that is PENDING_APPROVAL (FR-039). The
+  // daemon blocks the run on a 5-minute deny-by-default window; this is the client's
+  // input to that gate. Idempotent on an already-resolved run.
+  rpc DecideEscapeHatchRun(DecideEscapeHatchRunRequest) returns (DecideEscapeHatchRunResponse);
+  // List escape-hatch runs for a sandbox in the current daemon session (FR-042).
+  // Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
+  // sandboxes on this host.
+  rpc ListEscapeHatchRuns(ListEscapeHatchRunsRequest) returns (ListEscapeHatchRunsResponse);
 }
 
 // ---------- Enums ----------
@@ -113,6 +127,28 @@ enum NotificationKind {
   NOTIFICATION_KIND_UNSPECIFIED = 0;
   NOTIFICATION_KIND_TASK_COMPLETE = 1;    // FR-024
   NOTIFICATION_KIND_NEEDS_PROMPTING = 2;  // FR-025
+  // --- feature 005 ---
+  NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL = 3; // FR-039: prompt the developer
+  NOTIFICATION_KIND_ESCAPE_HATCH_RUN_COMPLETE = 4;   // FR-042: run finished (any terminal outcome)
+}
+
+// --- Escape hatch (feature 005) ---
+
+enum ConsentMode {
+  CONSENT_MODE_UNSPECIFIED = 0;       // rejected at attach — author must choose
+  CONSENT_MODE_AUTO_RUN = 1;          // runs without per-invocation approval
+  CONSENT_MODE_REQUIRES_APPROVAL = 2; // pauses for developer approval each invocation
+}
+
+enum EscapeHatchRunStatus {
+  ESCAPE_HATCH_RUN_STATUS_UNSPECIFIED = 0;
+  ESCAPE_HATCH_RUN_STATUS_PENDING_APPROVAL = 1;
+  ESCAPE_HATCH_RUN_STATUS_RUNNING = 2;
+  ESCAPE_HATCH_RUN_STATUS_SUCCEEDED = 3;
+  ESCAPE_HATCH_RUN_STATUS_FAILED = 4;    // non-zero exit OR launch failure (diagnostics in output)
+  ESCAPE_HATCH_RUN_STATUS_TIMED_OUT = 5;
+  ESCAPE_HATCH_RUN_STATUS_CANCELLED = 6; // sandbox stopped/destroyed/refreshed mid-run
+  ESCAPE_HATCH_RUN_STATUS_DENIED = 7;    // approval denied or window elapsed
 }
 
 // ClientKind distinguishes attachments to a persistent terminal session so the
@@ -178,6 +214,12 @@ message Sandbox {
   // them — sbx honours `--kit` only at creation, so a relaunch that dropped these
   // would silently hand back a differently-provisioned sandbox.
   repeated string kits = 18;
+  // --- feature 005 ---
+  // RESOLVED escape-hatch command set = union of attached kits' commands, later-kit-
+  // wins on name collision. Persisted so the allowlist is enforceable, a container
+  // recreate replays it, and refresh can re-inject the rule + wrapper. This — not the
+  // opaque `kits` list — is what the invocation endpoint validates against (FR-036).
+  repeated EscapeHatchCommand escape_hatch_commands = 19;
 }
 
 // ---------- Agent kits (feature 004) ----------
@@ -192,6 +234,10 @@ message Sandbox {
 message KitSpec {
   string id = 1;         // client-side kit id; also the materialized directory name
   string spec_yaml = 2;  // full spec.yaml content
+  // feature 005: structured, switchboard-owned escape-hatch commands. NOT rendered
+  // into spec_yaml — the host `sbx` never sees them; the daemon enforces + runs them.
+  // Present only on client-authored kits (KitRef.spec); external `source` kits carry none.
+  repeated EscapeHatchCommand escape_hatch = 3;
 }
 
 // KitRef selects a kit either by inline authored spec or by an external source
@@ -216,6 +262,46 @@ message AddSandboxKitRequest {
   string sandbox_id = 1;
   KitRef kit = 2;
 }
+
+// ---------- Escape hatch (feature 005) ----------
+
+// EscapeHatchCommand: one authorized command declared on a kit. The `command`
+// string is FIXED — the agent chooses which command by name and when, never what
+// it is. Carried on KitSpec and, once resolved, on Sandbox.
+message EscapeHatchCommand {
+  string name = 1;                  // stable, kebab-case; unique within a kit; the allowlist key
+  string command = 2;              // exact string, run via `sh -c`
+  string when_to_use = 3;          // plain-language guidance for the injected rule
+  ConsentMode consent_mode = 4;
+  string working_dir = 5;          // optional, workspace-relative (no escape past root)
+  uint32 max_duration_seconds = 6; // optional; 0 => daemon default (30 min)
+}
+
+// EscapeHatchRun: one execution triggered by the agent. In-memory, session-scoped.
+// `output` is bounded (<=1 MiB) and may be truncated.
+message EscapeHatchRun {
+  string id = 1;                   // ehr-<seq>
+  string sandbox_id = 2;
+  string command_name = 3;
+  string command = 4;             // the exact string that ran (audit; agent could not alter it)
+  EscapeHatchRunStatus status = 5;
+  int32 exit_status = 6;          // set for SUCCEEDED/FAILED
+  string output = 7;              // bounded, captured stdout+stderr
+  bool output_truncated = 8;
+  google.protobuf.Timestamp started_at = 9; // execution start (post-approval)
+  google.protobuf.Timestamp ended_at = 10;  // terminal outcome
+}
+
+message DecideEscapeHatchRunRequest {
+  string run_id = 1;
+  bool approved = 2;              // false = deny; anything but an explicit true is deny-by-default
+}
+message DecideEscapeHatchRunResponse {
+  EscapeHatchRunStatus status = 1; // resolved status after applying the decision
+}
+
+message ListEscapeHatchRunsRequest { string sandbox_id = 1; } // empty => all sandboxes on this host
+message ListEscapeHatchRunsResponse { repeated EscapeHatchRun runs = 1; }
 
 // ---------- RPC payloads ----------
 
@@ -359,6 +445,9 @@ message Event {
     Sandbox sandbox_changed = 1;         // state/agent-status update
     NotificationEvent notification = 2;
     SandboxRemoved removed = 3;
+    // feature 005: a run's state changed (created / approved / running / terminal).
+    // Drives the list-page badge, the approval modal, and the inbox.
+    EscapeHatchRun escape_hatch_run = 4;
   }
   message SandboxRemoved { string sandbox_id = 1; }
 }

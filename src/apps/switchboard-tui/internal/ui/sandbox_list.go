@@ -259,6 +259,9 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	} else if badge := m.agentBadge(row.sb); badge != "" {
 		title += "   " + badge
 	}
+	if eh := m.escapeHatchBadge(row.sb.GetId()); eh != "" {
+		title += "   " + eh
+	}
 	return listItem{
 		id:      row.sb.GetId(),
 		host:    row.host,
@@ -539,6 +542,11 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyIs(msg, m.keys.AddKit):
 		if sb := m.actionable(); sb != nil {
 			return m.enterKitAttach(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.EscapeHatchRuns):
+		if sb := m.actionable(); sb != nil {
+			return m.enterRuns(sb, m.currentHostID())
 		}
 		return m, nil
 	}

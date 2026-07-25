@@ -55,6 +55,10 @@ type Daemon interface {
 	PromptAgent(ctx context.Context, id, prompt string) error
 	Subscribe(ctx context.Context, replay bool) (client.EventStream, error)
 	AckNotifications(ctx context.Context, ids []string) error
+	// Escape hatch (feature 005): approve/deny a pending run (FR-039) and list the
+	// session's runs for review (FR-042).
+	DecideEscapeHatchRun(ctx context.Context, runID string, approved bool) (pb.EscapeHatchRunStatus, error)
+	ListEscapeHatchRuns(ctx context.Context, sandboxID string) ([]*pb.EscapeHatchRun, error)
 	// US5: VS Code open target.
 	VSCodeTarget(ctx context.Context, id string) (*pb.VSCodeTarget, error)
 	// Distribution/self-update: the daemon's advertised version, and a request
@@ -84,6 +88,8 @@ const (
 	screenNotifications
 	screenGroups
 	screenUpdate
+	screenApproval
+	screenRuns
 )
 
 // Model is the root Bubble Tea model.
@@ -183,6 +189,12 @@ type Model struct {
 	updateBanner  string
 	update        updateState
 	reexec        bool
+
+	// Escape hatch (feature 005): the approval modal state, the run-review screen
+	// state, and the set of runs currently awaiting approval (for row badges).
+	approval    approvalState
+	runsView    runsState
+	pendingRuns map[string]*pb.EscapeHatchRun // runID -> pending-approval run
 
 	quitting bool
 }
@@ -517,6 +529,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case kitValidatedMsg:
 		return m.applyKitValidation(msg)
 
+	case runsLoadedMsg:
+		return m.applyRuns(msg)
+
 	case hostsMsg:
 		return m.applyHosts(msg)
 
@@ -654,6 +669,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateGroupsKey(msg)
 	case screenUpdate:
 		return m.updateUpdateKey(msg)
+	case screenApproval:
+		return m.updateApprovalKey(msg)
+	case screenRuns:
+		return m.updateRunsKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -675,6 +694,13 @@ func (m Model) View() string {
 	if m.screen == screenConfirm {
 		bg := m.chrome(m.viewList(), m.confirmHelp())
 		return overlayCenter(bg, m.confirmModal(), m.width, m.height)
+	}
+
+	// The escape-hatch approval gate floats over the list (feature 005), same path
+	// as the destructive-action confirm.
+	if m.screen == screenApproval {
+		bg := m.chrome(m.viewList(), m.approvalHelp())
+		return overlayCenter(bg, m.approvalModal(), m.width, m.height)
 	}
 
 	// The in-place terminal view takes the full body (US2).
@@ -705,6 +731,8 @@ func (m Model) View() string {
 		body, hb = m.viewGroups(), m.groupsHelp()
 	case screenUpdate:
 		body, hb = m.viewUpdate(), m.updateHelpBindings()
+	case screenRuns:
+		body, hb = m.viewRuns(), m.runsHelp()
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
