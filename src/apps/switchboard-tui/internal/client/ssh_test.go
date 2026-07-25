@@ -75,6 +75,48 @@ func TestDialCommandTransportEndToEnd(t *testing.T) {
 	}
 }
 
+// TestDialCommandSurvivesDialContextCancel is the regression test for the
+// "stdio connection already consumed (child exited?)" failure. connectHostCmd
+// dials with a short-lived ctxTimeout context and cancels it (defer cancel) the
+// moment the connect finishes. The stdio child (and therefore the *Conn's
+// transport) MUST outlive that dial context; if it does not, the next RPC on the
+// stored connection finds the transport dead and gRPC redials into the
+// single-use guard. The bridge child here is built with exec.Command (no context
+// binding), mirroring the fixed SSHCommand.
+func TestDialCommandSurvivesDialContextCancel(t *testing.T) {
+	sock := startFakeOnSocket(t)
+
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "SWB_BRIDGE_SOCK="+sock)
+
+	dialCtx, cancel := context.WithCancel(context.Background())
+	conn, err := client.DialCommand(dialCtx, cmd)
+	if err != nil {
+		t.Fatalf("DialCommand: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Cancel the dial context, exactly as connectHostCmd's deferred cancel does
+	// once the connect returns. The established connection must remain usable.
+	cancel()
+
+	if _, err := conn.ListSources(context.Background(), "/work", false); err != nil {
+		t.Errorf("RPC after dial-context cancel: %v", err)
+	}
+}
+
+// TestSSHCommandNotBoundToContext guards the fix at the source: the ssh child
+// must not be created via exec.CommandContext, which would kill it when the dial
+// context is cancelled. exec.Command leaves cmd.Cancel nil; exec.CommandContext
+// sets it to a process-killing func.
+func TestSSHCommandNotBoundToContext(t *testing.T) {
+	cmd := client.SSHCommand("user@build-box", nil, "")
+	if cmd.Cancel != nil {
+		t.Error("ssh child must not be bound to a context (cmd.Cancel should be nil); " +
+			"a context-bound child dies when the dial context is cancelled")
+	}
+}
+
 func TestDialCommandFailsWhenBridgeCannotReachSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -87,7 +129,7 @@ func TestDialCommandFailsWhenBridgeCannotReachSocket(t *testing.T) {
 
 func TestSSHCommandArgs(t *testing.T) {
 	// No password: user opts, then hardening, then key/agent-only (BatchMode).
-	cmd := client.SSHCommand(context.Background(), "user@build-box", []string{"-i", "/key", "-p", "2222"}, "")
+	cmd := client.SSHCommand("user@build-box", []string{"-i", "/key", "-p", "2222"}, "")
 	want := []string{
 		"ssh", "-i", "/key", "-p", "2222",
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -110,7 +152,7 @@ func TestSSHCommandArgs(t *testing.T) {
 }
 
 func TestSSHCommandPasswordMode(t *testing.T) {
-	cmd := client.SSHCommand(context.Background(), "user@build-box", nil, "s3cr3t")
+	cmd := client.SSHCommand("user@build-box", nil, "s3cr3t")
 	joined := strings.Join(cmd.Args, " ")
 	// Password retries are capped, but BatchMode must NOT be set (it would
 	// disable password auth entirely).

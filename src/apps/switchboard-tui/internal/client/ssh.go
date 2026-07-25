@@ -150,7 +150,15 @@ func DialCommand(ctx context.Context, cmd *exec.Cmd) (*Conn, error) {
 // via SSH_ASKPASS (this binary, see RunAskpassIfRequested); when it is empty
 // only key/agent auth is attempted (BatchMode) so a passwordless connect fails
 // fast instead of blocking on a prompt it can never answer.
-func SSHCommand(ctx context.Context, target string, opts []string, password string) *exec.Cmd {
+//
+// The command is deliberately NOT bound to a context via exec.CommandContext:
+// the ssh child is the transport for the whole *Conn, which outlives the dial.
+// Its lifetime is owned by stdioConn.Close (invoked on every dial-failure path
+// and by gRPC when the transport is torn down at Conn.Close). Binding it to the
+// short-lived dial context instead would kill the child the instant that
+// context is cancelled — leaving a live *Conn whose transport is already dead,
+// so the next RPC fails with "stdio connection already consumed (child exited?)".
+func SSHCommand(target string, opts []string, password string) *exec.Cmd {
 	args := make([]string, 0, len(opts)+8)
 	// User-supplied opts come first: ssh honors the first value of a repeated
 	// -o, so the caller can override any of the hardening defaults below.
@@ -170,7 +178,7 @@ func SSHCommand(ctx context.Context, target string, opts []string, password stri
 	}
 	args = append(args, target, "sxbd", "dial-stdio")
 
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := exec.Command("ssh", args...)
 	// New session => no controlling terminal, so ssh must use SSH_ASKPASS (when
 	// set) rather than the shared tty for any prompt.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -196,5 +204,5 @@ func SSHCommand(ctx context.Context, target string, opts []string, password stri
 // auth system). password is supplied non-interactively when non-empty; empty
 // means key/agent auth only. See SSHCommand.
 func DialSSH(ctx context.Context, target string, opts []string, password string) (*Conn, error) {
-	return DialCommand(ctx, SSHCommand(ctx, target, opts, password))
+	return DialCommand(ctx, SSHCommand(target, opts, password))
 }
