@@ -138,6 +138,42 @@ func TestIsRunning(t *testing.T) {
 	}
 }
 
+// TestSbxRunnerAllowNetwork pins the argv for `sbx policy allow network <dest>`
+// (the allow-list entry the daemon adds so sandboxes can reach its hook /
+// escape-hatch callback port). sbx isn't installed in dev, so the argv is
+// asserted against a recording stub rather than a real sbx.
+func TestSbxRunnerAllowNetwork(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	argsFile := filepath.Join(dir, "args")
+	// The stub records its argv (one per line) so the test can assert it exactly.
+	script := "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > " + argsFile + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &SbxRunner{Bin: bin}
+	if err := r.AllowNetwork(context.Background(), "localhost:8765"); err != nil {
+		t.Fatalf("AllowNetwork: %v", err)
+	}
+
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read recorded args: %v", err)
+	}
+	want := "policy\nallow\nnetwork\nlocalhost:8765\n"
+	if string(got) != want {
+		t.Errorf("AllowNetwork argv = %q, want %q", string(got), want)
+	}
+}
+
+func TestSbxRunnerAllowNetworkErrorPropagation(t *testing.T) {
+	r := &SbxRunner{Bin: filepath.Join(t.TempDir(), "does-not-exist")}
+	if err := r.AllowNetwork(context.Background(), "localhost:8765"); err == nil {
+		t.Error("expected AllowNetwork error with missing binary")
+	}
+}
+
 func TestFlagsDeterministic(t *testing.T) {
 	got := flags(map[string]string{"b": "2", "a": `"x"`, "c": "true"})
 	want := []string{"--a", "x", "--b", "2", "--c", "true"}

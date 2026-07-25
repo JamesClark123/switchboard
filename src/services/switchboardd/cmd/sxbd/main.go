@@ -175,6 +175,16 @@ func runServe(cfg *config.Config, debug bool) error {
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
+
+	// Both the agent hooks (003) and the escape hatch (005) POST from inside a
+	// sandbox to host.docker.internal:<port>, which sbx's default deny-by-default
+	// network policy blocks. Allow the callback port up front so those callbacks
+	// are reachable without the user hand-running `sbx policy allow`. Non-fatal:
+	// sbx may be unavailable in dev, and a pre-existing allow makes this a no-op.
+	if err := runner.AllowNetwork(ctx, "localhost:"+port); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not allow the hook callback port in the sbx network policy:", err)
+	}
+
 	callbackURL := fmt.Sprintf("http://host.docker.internal:%s/hook", port)
 	mgr.SetHookInjector(func(sandboxID, workspacePath string) error {
 		return agent.InjectHooks(workspacePath, sandboxID, callbackURL)

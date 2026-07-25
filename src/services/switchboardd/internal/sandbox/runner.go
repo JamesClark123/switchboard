@@ -122,6 +122,25 @@ func (r *SbxRunner) Launch(ctx context.Context, spec LaunchSpec, log func(string
 	return name, nil
 }
 
+// AllowNetwork adds dest (a "host:port", e.g. "localhost:8765") to the host's sbx
+// network-policy allow-list so sandboxes may reach it. Maps to
+// `sbx policy allow network <dest>`.
+//
+// The daemon's agent-hook / escape-hatch callback server listens on this port;
+// sandboxes reach it at host.docker.internal:<port>, which sbx's policy matches
+// as localhost:<port>. Without this allow the default deny-by-default policy
+// blocks the wrapper's POST (feature 003 hooks and feature 005 escape hatch
+// both depend on it). The setting is host-global and idempotent per sbx's docs,
+// so it is safe (and cheap) to re-apply on every daemon start.
+//
+// NOTE (research R6): `sbx` is not installed in the dev environment, so this argv
+// is documentation-derived (CLAUDE.md network section) and pinned by a test; it
+// is a call-site to reconcile against a real `sbx` if the policy surface moves.
+func (r *SbxRunner) AllowNetwork(ctx context.Context, dest string) error {
+	_, err := r.run(ctx, nil, "policy", "allow", "network", dest)
+	return err
+}
+
 func (r *SbxRunner) Stop(ctx context.Context, ref string) error {
 	_, err := r.run(ctx, nil, "stop", ref)
 	return err
