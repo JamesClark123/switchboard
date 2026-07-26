@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -183,7 +184,7 @@ func (m Model) enterKitEditor(k *store.Kit) (tea.Model, tea.Cmd) {
 func (m Model) kitEditorHelp() helpBindings {
 	switch {
 	case m.kitEditor.form != nil:
-		return helpBindings{hkey("tab/enter", "next"), hkey("ctrl+s", "apply"), hkey("esc", "cancel")}
+		return helpBindings{hkey("tab", "next"), hkey("enter", "new line"), hkey("ctrl+s", "apply"), hkey("esc", "cancel")}
 	case m.kitEditor.inSection && m.kitEditor.section.itemized():
 		return helpBindings{hkey("a", "add"), hkey("enter", "edit"), hkey("d", "delete"), hkey("ctrl+s", "save"), hkey("esc", "back")}
 	default:
@@ -904,7 +905,27 @@ func (m Model) kitItemLabel(s kitSection, i int) string {
 func (m Model) newKitForm(fields ...huh.Field) *huh.Form {
 	return huh.NewForm(huh.NewGroup(fields...)).
 		WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).
+		WithKeyMap(kitFormKeyMap())
+}
+
+// kitFormKeyMap makes Enter insert a newline in the editor's multi-line Text fields
+// (subcommands, workspaces, allowed/denied domains, env vars, … — one list entry per
+// line) instead of advancing to the next field. huh's default binds Enter to "next"
+// and puts newline on alt+enter/ctrl+j, which is unintuitive for these list fields.
+//
+// Tab still moves between fields; the editor applies the whole form with ctrl+s
+// (intercepted before the form sees it), so Enter is freed up for newlines. Enter is
+// removed from Text.Next/Submit because huh dispatches those before the textarea's
+// newline, and the textarea's newline key is driven from Text.NewLine. Single-line
+// Input/Confirm fields keep huh's default (Enter advances).
+func kitFormKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Text.NewLine = key.NewBinding(key.WithKeys("enter", "alt+enter", "ctrl+j"), key.WithHelp("enter", "new line"))
+	km.Text.Next = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next"))
+	km.Text.Prev = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
+	km.Text.Submit = key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "apply"))
+	return km
 }
 
 // splitLines turns a text-area value into a trimmed, non-empty list.
