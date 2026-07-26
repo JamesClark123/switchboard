@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -66,6 +67,11 @@ func (s *memSession) Close() error {
 }
 
 func TestRegistryPromptAndReuse(t *testing.T) {
+	// Prompt sleeps promptSubmitDelay between the body and the Enter; zero it so
+	// the test is fast and deterministic (both writes land before the Read below).
+	defer func(d time.Duration) { promptSubmitDelay = d }(promptSubmitDelay)
+	promptSubmitDelay = 0
+
 	created := 0
 	last := newMemSession()
 	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) {
@@ -77,11 +83,12 @@ func TestRegistryPromptAndReuse(t *testing.T) {
 	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	// The prompt (plus newline) is readable from the session.
+	// The body is submitted with a carriage return (Enter), not a linefeed: a
+	// raw-mode TUI treats "\n" as a literal newline and only "\r" as submit.
 	buf := make([]byte, 64)
 	n, _ := last.Read(buf)
-	if string(buf[:n]) != "hello\n" {
-		t.Errorf("prompt = %q, want hello\\n", string(buf[:n]))
+	if string(buf[:n]) != "hello\r" {
+		t.Errorf("prompt = %q, want hello\\r", string(buf[:n]))
 	}
 
 	// A second prompt reuses the same session (created once).

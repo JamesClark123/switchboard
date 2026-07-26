@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/creack/pty"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -50,13 +51,32 @@ func (r *Registry) Session(sandboxID string, spec *pb.AgentSpec) (Session, error
 	return s, nil
 }
 
-// Prompt writes a prompt line to the sandbox's agent (FR-022).
+// promptSubmitDelay separates the prompt body from the trailing Enter keystroke.
+// A raw-mode agent TUI (Claude Code) coalesces bytes that arrive together into a
+// single "paste" and does NOT treat a newline inside a paste as a submit — so a
+// body-plus-terminator written in one shot lands in the input box unsent, which is
+// why a result required the user to press Enter. Writing the body, pausing past the
+// paste-coalescing window, then sending the Enter as a distinct keystroke makes the
+// agent submit on its own. Package-level so tests can zero it.
+var promptSubmitDelay = 50 * time.Millisecond
+
+// Prompt types text into the sandbox's agent and submits it (FR-022).
+//
+// Submission uses a carriage return ("\r") — the byte a terminal sends for the
+// Enter key in raw mode — NOT a linefeed ("\n"), which the agent's multiline input
+// inserts as a literal newline rather than submitting. The Enter is a separate
+// write, sent after promptSubmitDelay so it is not swallowed by the agent's paste
+// detection along with the body (see promptSubmitDelay).
 func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) error {
 	s, err := r.Session(sandboxID, spec)
 	if err != nil {
 		return err
 	}
-	_, err = s.Write([]byte(text + "\n"))
+	if _, err := s.Write([]byte(text)); err != nil {
+		return err
+	}
+	time.Sleep(promptSubmitDelay)
+	_, err = s.Write([]byte("\r"))
 	return err
 }
 
