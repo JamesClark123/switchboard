@@ -37,8 +37,10 @@ func Inject(workspacePath, sandboxID, callbackURL string, commands []*pb.EscapeH
 }
 
 // writeWrapper lays down the executable wrapper. It embeds the sandbox id and the
-// callback URL and forwards only the command NAME to the daemon — it can never send
-// a command string (SC-004).
+// callback URL and forwards the command NAME plus (for commands that permit them) an
+// optional workspace selector and argument string — never a command string (SC-004).
+// The daemon resolves the name against this sandbox's allowlist and validates the
+// workspace/args against that command's declared constraints.
 func writeWrapper(workspacePath, sandboxID, callbackURL string) error {
 	path := filepath.Join(workspacePath, wrapperRelPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -46,17 +48,31 @@ func writeWrapper(workspacePath, sandboxID, callbackURL string) error {
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 # switchboard escape-hatch wrapper (feature 005) — generated, do not edit.
-# Usage: escape-hatch <command-name>
-# Sends ONLY the command name; the daemon resolves it against this sandbox's
-# allowlist and runs the fixed, pre-authorized command on the host. Async: this
-# returns immediately and the result is delivered back to the agent when the run
-# finishes.
-if [ -z "$1" ]; then
-  echo "usage: escape-hatch <command-name>" >&2
+# Usage: escape-hatch <command-name> [--workspace <dir>] [-- <args...>]
+# Sends the command name and, when the command allows them, a workspace selector
+# and argument string; the daemon resolves the name against this sandbox's allowlist
+# and validates the workspace/args before running the fixed, pre-authorized command
+# on the host. Async: this returns immediately and the result is delivered back to
+# the agent when the run finishes.
+name="${1:-}"
+if [ -z "$name" ]; then
+  echo "usage: escape-hatch <command-name> [--workspace <dir>] [-- <args...>]" >&2
   exit 2
 fi
+[ $# -gt 0 ] && shift
+workspace=""
+args=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workspace) shift; workspace="${1:-}"; [ $# -gt 0 ] && shift ;;
+    --) shift; args="$*"; break ;;
+    *) echo "escape-hatch: unexpected argument: $1" >&2; exit 2 ;;
+  esac
+done
+# JSON-escape a value (backslash and double-quote only; inputs are simple tokens).
+esc() { printf '%%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 curl -s -X POST -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"%s\",\"name\":\"$1\"}" \
+  -d "{\"sandbox_id\":\"%s\",\"name\":\"$(esc "$name")\",\"workspace\":\"$(esc "$workspace")\",\"args\":\"$(esc "$args")\"}" \
   %s
 `, sandboxID, callbackURL)
 	return os.WriteFile(path, []byte(script), 0o755)

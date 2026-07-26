@@ -17,11 +17,21 @@ New proto message; the structured, switchboard-owned unit that travels with a cl
 | Field | Type | Rules |
 |-------|------|-------|
 | `name` | string | Required. Stable, human-readable. Unique **within a kit** (client-validated). Across a sandbox's kits, later-attached kits override a same-named command (clarification Q1). Used as the wrapper argument and the allowlist key. |
-| `command` | string | Required. The **exact** string run via `sh -c`. Fixed — the agent supplies no part of it. |
+| `command` | string | Required. The **fixed, trusted prefix** run via `sh -c`. The agent supplies no part of it; any agent-supplied arguments (below) are appended as **positional parameters**, never re-parsed by the shell. |
 | `when_to_use` | string | Required. Plain-language guidance surfaced in the injected rule (FR-037). |
 | `consent_mode` | enum `ConsentMode` | `CONSENT_MODE_AUTO_RUN` \| `CONSENT_MODE_REQUIRES_APPROVAL`. Required (no `UNSPECIFIED` accepted at attach). |
-| `working_dir` | string | Optional. **Workspace-relative**; joined onto `workspace_path`. Rejected if it escapes the workspace (no `..` traversal past root). Empty ⇒ workspace root. |
+| `working_dir` | string | Optional. **Workspace-relative**; joined onto `workspace_path`. Rejected if it escapes the workspace. The **default** dir, used when `workspaces` is empty. |
 | `max_duration_seconds` | uint32 | Optional. `0` ⇒ daemon default (30 min, Q3). |
+| `subcommands` | repeated string | Optional (enhancement). Allowed exact argument strings the agent may choose (friendly form). Mutually exclusive with `args_pattern`. |
+| `args_pattern` | string | Optional (enhancement). Anchored regex the agent's argument string must **fully** match (power form). A loose pattern broadens which arguments reach the fixed command — hence a client-side authoring warning. Mutually exclusive with `subcommands`. |
+| `workspaces` | repeated string | Optional (enhancement). Workspace-relative **literal paths or globs** (e.g. `src/apps/*`). When set, the agent picks one via `--workspace`; the daemon validates the choice matches an entry and stays inside the workspace. Empty ⇒ `working_dir`, no selection. |
+
+**Invocation surface** (agent-facing, injected wrapper + rule):
+`escape-hatch <name> [--workspace <dir>] [-- <args...>]`. The wrapper POSTs `{sandbox_id, name,
+workspace, args}`; the daemon rejects any argument not matching `subcommands`/`args_pattern` (HTTP 400)
+and any workspace not matching `workspaces` (HTTP 400). Both agent inputs are **human-gated**: nothing
+the agent supplies escapes the author's allowlist, and arguments run as positional parameters so shell
+metacharacters are inert.
 
 **Lifecycle**: authored → validated (client-side) → attached (rides the kit) → **resolved** per sandbox
 → persisted on the sandbox → injected as rule + wrapper. It has no identity of its own beyond `name`
@@ -63,6 +73,8 @@ Surfaced to clients over the event stream and `ListEscapeHatchRuns`; **not** in 
 | `output` | string | Bounded (≤1 MiB), possibly truncated. |
 | `output_truncated` | bool | True when the cap clipped the capture. |
 | `started_at` / `ended_at` | timestamp | `started_at` set when execution begins (post-approval); `ended_at` on terminal outcome. |
+| `args` | string | Agent-supplied arguments that ran (audit; empty if none). |
+| `working_dir` | string | Resolved workspace-relative directory it ran in (audit; empty = workspace root). |
 
 **State transitions**:
 
@@ -111,9 +123,12 @@ type KitEscapeHatchCommand struct {
     Name             string
     Command          string
     WhenToUse        string
-    RequiresApproval bool   // false => auto-run
-    WorkingDir       string // optional, workspace-relative
-    MaxDurationSecs  uint32 // optional, 0 => daemon default
+    RequiresApproval bool     // false => auto-run
+    WorkingDir       string   // optional, workspace-relative (default when Workspaces empty)
+    MaxDurationSecs  uint32   // optional, 0 => daemon default
+    Subcommands      []string // optional; allowed agent argument strings (mutually exclusive with ArgsPattern)
+    ArgsPattern      string   // optional; anchored regex for agent arguments (loose = lower safety)
+    Workspaces       []string // optional; workspace-relative literal paths or globs the agent may target
 }
 ```
 

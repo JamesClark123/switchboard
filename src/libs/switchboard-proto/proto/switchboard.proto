@@ -266,15 +266,29 @@ message AddSandboxKitRequest {
 // ---------- Escape hatch (feature 005) ----------
 
 // EscapeHatchCommand: one authorized command declared on a kit. The `command`
-// string is FIXED — the agent chooses which command by name and when, never what
-// it is. Carried on KitSpec and, once resolved, on Sandbox.
+// string is the FIXED, trusted prefix. A command MAY additionally allow the agent
+// to supply arguments (constrained by `subcommands` OR `args_pattern`) and to pick
+// a target workspace (constrained by `workspaces`). Any agent-supplied argument is
+// passed as positional parameters (`sh -c '<command> "$@"' … <args>`), never
+// re-parsed as shell syntax — so a loose pattern broadens which arguments reach the
+// fixed tool but cannot inject shell metacharacters. Carried on KitSpec and, once
+// resolved, on Sandbox.
 message EscapeHatchCommand {
   string name = 1;                  // stable, kebab-case; unique within a kit; the allowlist key
-  string command = 2;              // exact string, run via `sh -c`
+  string command = 2;              // fixed, trusted command prefix, run via `sh -c`
   string when_to_use = 3;          // plain-language guidance for the injected rule
   ConsentMode consent_mode = 4;
-  string working_dir = 5;          // optional, workspace-relative (no escape past root)
+  string working_dir = 5;          // optional, workspace-relative (no escape past root); default dir when `workspaces` is empty
   uint32 max_duration_seconds = 6; // optional; 0 => daemon default (30 min)
+  // Agent-supplied arguments (feature 005 enhancement). At most ONE of the two may
+  // be set; both empty => the command takes no agent arguments (the original fixed
+  // behavior).
+  repeated string subcommands = 7; // allowed exact argument strings the agent may choose (friendly form)
+  string args_pattern = 8;         // anchored regex the agent's argument string must fully match (power form)
+  // Targetable workspaces (feature 005 enhancement). Each entry is a
+  // workspace-relative literal path OR a glob (e.g. "src/apps/*"). Empty => the
+  // command runs in `working_dir` and the agent may not pick a workspace.
+  repeated string workspaces = 9;
 }
 
 // EscapeHatchRun: one execution triggered by the agent. In-memory, session-scoped.
@@ -283,13 +297,15 @@ message EscapeHatchRun {
   string id = 1;                   // ehr-<seq>
   string sandbox_id = 2;
   string command_name = 3;
-  string command = 4;             // the exact string that ran (audit; agent could not alter it)
+  string command = 4;             // the fixed command prefix that ran (audit)
   EscapeHatchRunStatus status = 5;
   int32 exit_status = 6;          // set for SUCCEEDED/FAILED
   string output = 7;              // bounded, captured stdout+stderr
   bool output_truncated = 8;
   google.protobuf.Timestamp started_at = 9; // execution start (post-approval)
   google.protobuf.Timestamp ended_at = 10;  // terminal outcome
+  string args = 11;               // agent-supplied arguments that ran (audit; empty if none)
+  string working_dir = 12;        // resolved workspace-relative dir it ran in (audit; empty = workspace root)
 }
 
 message DecideEscapeHatchRunRequest {

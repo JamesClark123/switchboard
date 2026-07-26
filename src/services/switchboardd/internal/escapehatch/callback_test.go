@@ -14,7 +14,7 @@ import (
 func TestAutoRunDeliversOutcomeToAgent(t *testing.T) {
 	svc, prompts := serviceWith(t, t.TempDir(), shCmd("greet", "echo hello-world"))
 
-	run, err := svc.Invoke("sb1", "greet")
+	run, err := svc.Invoke("sb1", "greet", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestAutoRunDeliversOutcomeToAgent(t *testing.T) {
 
 func TestNonZeroExitDeliveredAsFailure(t *testing.T) {
 	svc, prompts := serviceWith(t, t.TempDir(), shCmd("boom", "echo nope 1>&2; exit 2"))
-	if _, err := svc.Invoke("sb1", "boom"); err != nil {
+	if _, err := svc.Invoke("sb1", "boom", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	select {

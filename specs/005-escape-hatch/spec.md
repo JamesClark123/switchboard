@@ -193,17 +193,28 @@ outcome (command, sandbox, status, exit code, output) is retrievable afterward i
 - Q: What is the default maximum run duration when a command does not specify one? → A: 30 minutes.
 - Q: How long is the approval window for a requires-approval command before it is treated as denied? → A: 5 minutes.
 
+### Session 2026-07-26 (enhancement: agent-supplied arguments & workspace targeting)
+
+- Q: How should a command allow the agent to choose a subcommand (e.g. `pnpm install|dev|build`)? → A: **Both** forms — a friendly `subcommands` allowlist OR a raw `args_pattern` regex (mutually exclusive), with a client-side warning that a loose regex lowers safety.
+- Q: How is agent-supplied argument input kept injection-safe given the relaxed model? → A: The `command` remains a fixed, trusted prefix; agent arguments are passed as **positional parameters** (`sh -c '<command> "$@"' … <args>`), never re-parsed as shell syntax. A loose pattern broadens which arguments reach the fixed command but cannot inject shell metacharacters.
+- Q: How does a command declare the workspaces it can target so the agent picks one instead of a hardcoded `cd`? → A: A `workspaces` list of workspace-relative **literal paths or globs** (e.g. `src/apps/*`); the daemon validates the agent's `--workspace` choice matches an entry and stays inside the workspace.
+- Q: How does the agent pass the workspace and arguments? → A: Named flags — `escape-hatch <name> [--workspace <dir>] [-- <args...>]`. A rejected argument/workspace is HTTP 400 (nothing runs); the agent can correct and retry.
+
 ## Requirements *(mandatory)*
 
 ### Authoring (extends the kit editor)
 
 - **FR-035**: A kit MUST be able to declare an ordered list of **escape-hatch commands**, each with: a
-  stable human-readable name; the **exact command to run** (fixed — the agent supplies no arguments and
-  cannot alter the string); a plain-language description of when/why the agent should use it; a **consent
-  mode** of either *auto-run* or *requires-approval*; and optionally a working directory relative to the
-  workspace and a maximum run duration. The client MUST let developers add, edit, and remove these
-  entries from the kit editor, validate them with the rest of the kit, and MUST NOT mutate the stored kit
-  on an abandoned edit.
+  stable human-readable name; the **fixed command prefix to run** (the trusted, agent-unalterable part);
+  a plain-language description of when/why the agent should use it; a **consent mode** of either
+  *auto-run* or *requires-approval*; and optionally a working directory relative to the workspace and a
+  maximum run duration. The client MUST let developers add, edit, and remove these entries from the kit
+  editor, validate them with the rest of the kit, and MUST NOT mutate the stored kit on an abandoned edit.
+- **FR-035a** (enhancement): A command MAY additionally declare (a) an allowlist of agent-supplied
+  **arguments** — either a `subcommands` list of exact allowed strings OR a mutually-exclusive
+  `args_pattern` regex — and (b) a set of targetable **workspaces**, each a workspace-relative literal
+  path or glob. The client MUST validate these (at most one argument form; a regex that compiles; each
+  workspace relative and non-escaping) and MUST warn that a loose `args_pattern` lowers safety.
 - **FR-036**: Escape-hatch commands MUST be attached to a sandbox by attaching the kit that declares
   them (at creation or to a running sandbox) and MUST be persisted with the sandbox so a container
   recreate replays the same command set. A sandbox's set of invokable escape-hatch commands MUST be
@@ -222,11 +233,14 @@ outcome (command, sandbox, status, exit code, output) is retrievable afterward i
 ### Execution
 
 - **FR-038**: When the agent invokes an available escape-hatch command, the system MUST execute the
-  **exact predefined command** on the host of the daemon supervising that sandbox — outside the sandbox —
-  in the sandbox's workspace. The command MUST see the sandbox's current workspace contents, and its
-  effects on the workspace MUST become visible to the sandbox. The agent MUST NOT be able to change the
-  command, append arguments, or otherwise run anything other than the whole, named, predefined commands;
-  the escape hatch MUST NOT expose a general shell on the host.
+  predefined command on the host of the daemon supervising that sandbox — outside the sandbox — in the
+  sandbox's workspace (or, when the command declares targetable workspaces, in the agent-selected one).
+  The command MUST see that directory's current workspace contents, and its effects MUST become visible
+  to the sandbox. The agent MUST NOT be able to alter the fixed command prefix. It MAY supply arguments
+  and a workspace **only** within the author-declared allowlists (FR-035a); the daemon MUST reject any
+  argument or workspace outside them (running nothing), and MUST pass accepted arguments as **positional
+  parameters** so shell metacharacters cannot inject additional commands. The escape hatch MUST NOT
+  expose a general shell on the host.
 - **FR-039**: Consent MUST be enforced per command: *auto-run* commands execute without per-invocation
   approval; *requires-approval* commands MUST pause before any host execution and obtain the supervising
   developer's explicit approval — the prompt naming the sandbox, the exact command, and that it runs on

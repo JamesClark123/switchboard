@@ -2,17 +2,21 @@ package escapehatch
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
 
 // runRequest is the body the injected wrapper POSTs to /escape-hatch/run. It carries
-// only the sandbox id and the command NAME — never a command string. The name is
-// resolved against the sandbox's persisted allowlist; there is no field by which the
-// agent can influence what runs (SC-004).
+// the sandbox id, the command NAME, and — for commands that permit it — an optional
+// workspace selector and argument string. It never carries a command string: the
+// name resolves against the sandbox's persisted allowlist, and workspace/args are
+// validated against that command's declared constraints (SC-004).
 type runRequest struct {
 	SandboxID string `json:"sandbox_id"`
 	Name      string `json:"name"`
+	Workspace string `json:"workspace"`
+	Args      string `json:"args"`
 }
 
 type runResponse struct {
@@ -43,11 +47,18 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.Invoke(req.SandboxID, req.Name)
+	run, err := s.Invoke(req.SandboxID, req.Name, req.Workspace, req.Args)
 	if err != nil {
-		// Unknown name or sandbox -> 404, nothing ran. The wrapper prints this and the
-		// agent learns the command is unavailable.
-		writeJSON(w, http.StatusNotFound, errorResponse{Error: "command not available"})
+		switch {
+		case errors.Is(err, ErrInvalidArgs), errors.Is(err, ErrInvalidWorkspace):
+			// The command exists but the agent's arguments/workspace are rejected.
+			// 400 with the reason so the agent can correct and retry.
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		default:
+			// Unknown name or sandbox -> 404, nothing ran. The wrapper prints this and
+			// the agent learns the command is unavailable.
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: "command not available"})
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, runResponse{RunID: run.GetId(), Status: statusSlug(run.GetStatus())})

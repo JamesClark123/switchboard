@@ -20,6 +20,15 @@ var ErrCommandNotAvailable = errors.New("escape-hatch command not available")
 // not own.
 var ErrUnknownSandbox = errors.New("unknown sandbox")
 
+// ErrInvalidArgs is returned when the agent supplies arguments a command does not
+// allow (not a listed subcommand, not matching the pattern, or none accepted). The
+// command exists — it is the argument that is rejected — so this maps to HTTP 400.
+var ErrInvalidArgs = errors.New("invalid escape-hatch arguments")
+
+// ErrInvalidWorkspace is returned when the agent's --workspace selector is missing,
+// disallowed, or escapes the workspace. Maps to HTTP 400.
+var ErrInvalidWorkspace = errors.New("invalid escape-hatch workspace")
+
 // SandboxLookup resolves a sandbox record by id (implemented by the sandbox
 // Manager). The service needs the workspace path, the resolved allowlist, and the
 // agent spec for the result callback.
@@ -78,7 +87,7 @@ func (s *Service) SetApprovalWindow(d time.Duration) { s.consent.SetWindow(d) }
 // created run immediately (async — the HTTP handler does not wait for completion,
 // research R1). It is the daemon's enforcement point: the name MUST resolve against
 // the sandbox's persisted allowlist or nothing runs (SC-004).
-func (s *Service) Invoke(sandboxID, name string) (*pb.EscapeHatchRun, error) {
+func (s *Service) Invoke(sandboxID, name, workspaceSel, args string) (*pb.EscapeHatchRun, error) {
 	sb, err := s.sandboxes.Get(sandboxID)
 	if err != nil || sb == nil {
 		return nil, ErrUnknownSandbox
@@ -87,12 +96,25 @@ func (s *Service) Invoke(sandboxID, name string) (*pb.EscapeHatchRun, error) {
 	if !ok {
 		return nil, ErrCommandNotAvailable
 	}
+	// Validate the agent's inputs against the command's declared constraints BEFORE
+	// anything is scheduled. A rejection here means nothing runs and the agent is
+	// told why (the security boundary now also covers arguments and workspace).
+	argTokens, err := matchArgs(cmd, args)
+	if err != nil {
+		return nil, err
+	}
+	relDir, err := matchWorkspace(cmd, workspaceSel)
+	if err != nil {
+		return nil, err
+	}
 
 	approval := cmd.GetConsentMode() == pb.ConsentMode_CONSENT_MODE_REQUIRES_APPROVAL
 	run := &pb.EscapeHatchRun{
 		SandboxId:   sandboxID,
 		CommandName: name,
 		Command:     cmd.GetCommand(),
+		Args:        strings.TrimSpace(args),
+		WorkingDir:  relDir,
 		Status:      pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_RUNNING,
 	}
 	if approval {
@@ -110,12 +132,12 @@ func (s *Service) Invoke(sandboxID, name string) (*pb.EscapeHatchRun, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	token := s.trackCancel(sandboxID, cancel)
-	go s.run(ctx, cancel, sandboxID, token, sb.GetWorkspacePath(), created.GetId(), cmd, approval)
+	go s.run(ctx, cancel, sandboxID, token, sb.GetWorkspacePath(), created.GetId(), cmd, relDir, argTokens, approval)
 	return created, nil
 }
 
 // run drives one invocation to a terminal outcome on its own goroutine.
-func (s *Service) run(ctx context.Context, cancel context.CancelFunc, sandboxID string, token int, workspacePath, runID string, cmd *pb.EscapeHatchCommand, approval bool) {
+func (s *Service) run(ctx context.Context, cancel context.CancelFunc, sandboxID string, token int, workspacePath, runID string, cmd *pb.EscapeHatchCommand, relDir string, argTokens []string, approval bool) {
 	defer cancel()
 	defer s.untrackCancel(sandboxID, token)
 
@@ -139,7 +161,7 @@ func (s *Service) run(ctx context.Context, cancel context.CancelFunc, sandboxID 
 		}
 	}
 
-	outcome := s.exec.Run(ctx, workspacePath, cmd)
+	outcome := s.exec.Run(ctx, workspacePath, cmd, relDir, argTokens)
 	s.finalize(runID, outcome)
 }
 
@@ -266,7 +288,14 @@ func (s *Service) deliver(run *pb.EscapeHatchRun) {
 // callbackMessage renders the injected turn the agent reads on completion.
 func callbackMessage(run *pb.EscapeHatchRun) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[escape-hatch] %q finished: %s", run.GetCommandName(), statusLabel(run.GetStatus()))
+	label := run.GetCommandName()
+	if args := run.GetArgs(); args != "" {
+		label += " " + args
+	}
+	if dir := run.GetWorkingDir(); dir != "" {
+		label += " (in " + dir + ")"
+	}
+	fmt.Fprintf(&b, "[escape-hatch] %q finished: %s", label, statusLabel(run.GetStatus()))
 	switch run.GetStatus() {
 	case pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_SUCCEEDED,
 		pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_FAILED:

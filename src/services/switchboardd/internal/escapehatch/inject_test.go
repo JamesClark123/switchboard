@@ -33,9 +33,12 @@ func TestInjectWritesWrapper(t *testing.T) {
 	if !strings.Contains(s, testCallbackURL) {
 		t.Error("wrapper should embed the callback URL")
 	}
-	// It must forward only the NAME ($1), never a command string (SC-004).
-	if !strings.Contains(s, `\"name\":\"$1\"`) {
-		t.Errorf("wrapper should send only the command name:\n%s", s)
+	// It must forward the NAME (plus optional workspace/args), never a command string
+	// (SC-004). The name and the agent-supplied fields are the only inputs.
+	for _, field := range []string{`\"name\":\"$(esc "$name")\"`, `\"workspace\":\"$(esc "$workspace")\"`, `\"args\":\"$(esc "$args")\"`} {
+		if !strings.Contains(s, field) {
+			t.Errorf("wrapper missing field %q:\n%s", field, s)
+		}
 	}
 	if strings.Contains(s, "pnpm install") {
 		t.Error("wrapper must NOT contain any command string")

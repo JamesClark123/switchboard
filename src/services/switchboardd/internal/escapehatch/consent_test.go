@@ -32,7 +32,7 @@ func TestApprovalRequiredDoesNotExecuteBeforeApproval(t *testing.T) {
 	marker := filepath.Join(ws, "ran")
 	svc, _ := serviceWith(t, ws, approvalCmd("deploy", "touch "+marker))
 
-	run, err := svc.Invoke("sb1", "deploy")
+	run, err := svc.Invoke("sb1", "deploy", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestApprovalProceedsOnApprove(t *testing.T) {
 	marker := filepath.Join(ws, "ran")
 	svc, prompts := serviceWith(t, ws, approvalCmd("deploy", "touch "+marker))
 
-	run, _ := svc.Invoke("sb1", "deploy")
+	run, _ := svc.Invoke("sb1", "deploy", "", "")
 	// Wait until the run is registered as pending, then approve.
 	time.Sleep(100 * time.Millisecond)
 	if st := svc.Decide(run.GetId(), true); st == pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_UNSPECIFIED {
@@ -72,7 +72,7 @@ func TestApprovalDeniedDoesNotExecute(t *testing.T) {
 	marker := filepath.Join(ws, "ran")
 	svc, _ := serviceWith(t, ws, approvalCmd("deploy", "touch "+marker))
 
-	run, _ := svc.Invoke("sb1", "deploy")
+	run, _ := svc.Invoke("sb1", "deploy", "", "")
 	time.Sleep(100 * time.Millisecond)
 	svc.Decide(run.GetId(), false)
 	waitStatus(t, svc, run.GetId(), pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_DENIED)
@@ -87,14 +87,14 @@ func TestApprovalWindowElapsesToDenied(t *testing.T) {
 	svc, _ := serviceWith(t, ws, approvalCmd("deploy", "true"))
 	svc.SetApprovalWindow(50 * time.Millisecond)
 
-	run, _ := svc.Invoke("sb1", "deploy")
+	run, _ := svc.Invoke("sb1", "deploy", "", "")
 	waitStatus(t, svc, run.GetId(), pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_DENIED)
 }
 
 func TestDuplicateDecisionIsNoOp(t *testing.T) {
 	ws := t.TempDir()
 	svc, _ := serviceWith(t, ws, approvalCmd("deploy", "true"))
-	run, _ := svc.Invoke("sb1", "deploy")
+	run, _ := svc.Invoke("sb1", "deploy", "", "")
 	time.Sleep(100 * time.Millisecond)
 
 	svc.Decide(run.GetId(), true)
@@ -106,7 +106,7 @@ func TestDuplicateDecisionIsNoOp(t *testing.T) {
 func TestCancelPendingApprovalYieldsCancelled(t *testing.T) {
 	ws := t.TempDir()
 	svc, _ := serviceWith(t, ws, approvalCmd("deploy", "true"))
-	run, _ := svc.Invoke("sb1", "deploy")
+	run, _ := svc.Invoke("sb1", "deploy", "", "")
 	time.Sleep(100 * time.Millisecond)
 	// Sandbox stop cancels in-flight runs (including pending-approval ones).
 	svc.Cancel("sb1")

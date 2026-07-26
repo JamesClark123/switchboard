@@ -61,6 +61,15 @@ type KitEscapeHatchCommand struct {
 	RequiresApproval bool   `yaml:"requiresApproval,omitempty"` // false => auto-run
 	WorkingDir       string `yaml:"workingDir,omitempty"`       // optional, workspace-relative
 	MaxDurationSecs  uint32 `yaml:"maxDurationSeconds,omitempty"`
+	// Subcommands and ArgsPattern are the two mutually-exclusive ways to let the
+	// agent supply arguments (feature 005 enhancement). Both empty => the command
+	// takes no agent arguments. Subcommands is the friendly form (an allowlist);
+	// ArgsPattern is a regex — a loose pattern broadens what the fixed command runs.
+	Subcommands []string `yaml:"subcommands,omitempty"`
+	ArgsPattern string   `yaml:"argsPattern,omitempty"`
+	// Workspaces lists the workspace-relative paths or globs the agent may target
+	// with --workspace. Empty => the command runs in WorkingDir.
+	Workspaces []string `yaml:"workspaces,omitempty"`
 }
 
 // KitCommands is the section the editor centres on: what the kit runs inside the
@@ -231,6 +240,9 @@ func (kit *Kit) escapeHatchProto() []*pb.EscapeHatchCommand {
 			ConsentMode:        mode,
 			WorkingDir:         c.WorkingDir,
 			MaxDurationSeconds: c.MaxDurationSecs,
+			Subcommands:        c.Subcommands,
+			ArgsPattern:        c.ArgsPattern,
+			Workspaces:         c.Workspaces,
 		})
 	}
 	return out

@@ -75,7 +75,7 @@ func TestListEscapeHatchRunsRPC(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eh.Invoke("sb1", "hello"); err != nil {
+	if _, err := eh.Invoke("sb1", "hello", "", ""); err != nil {
 		t.Fatal(err)
 	}
 

@@ -61,11 +61,21 @@ enum EscapeHatchRunStatus {
 // when, never what it is. Carried on KitSpec and, once resolved, on Sandbox.
 message EscapeHatchCommand {
   string name = 1;                 // stable, kebab-case; unique within a kit; the allowlist key
-  string command = 2;             // exact string, run via `sh -c`
+  string command = 2;             // fixed, trusted command prefix, run via `sh -c`
   string when_to_use = 3;         // plain-language guidance for the injected rule
   ConsentMode consent_mode = 4;
-  string working_dir = 5;         // optional, workspace-relative (no escape past root)
+  string working_dir = 5;         // optional, workspace-relative (no escape past root); default when `workspaces` empty
   uint32 max_duration_seconds = 6;// optional; 0 => daemon default (30 min)
+  // Agent-supplied arguments (enhancement). At most ONE of the two; both empty =>
+  // the command takes no agent arguments. Any supplied argument is passed as
+  // positional parameters (`sh -c '<command> "$@"' … <args>`), never re-parsed as
+  // shell syntax — a loose pattern broadens which arguments reach the fixed command
+  // but cannot inject shell metacharacters.
+  repeated string subcommands = 7; // allowed exact argument strings (friendly form)
+  string args_pattern = 8;         // anchored regex the argument string must fully match (power form)
+  // Targetable workspaces (enhancement): workspace-relative literal paths OR globs
+  // (e.g. "src/apps/*"). Empty => run in `working_dir`, no workspace selection.
+  repeated string workspaces = 9;
 }
 
 // EscapeHatchRun: one execution triggered by the agent (data-model §3). In-memory,

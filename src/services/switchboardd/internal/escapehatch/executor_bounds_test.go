@@ -15,7 +15,7 @@ import (
 func TestExecutorTruncatesLargeOutput(t *testing.T) {
 	// Emit ~2 MiB, well over the 1 MiB cap.
 	out := NewExecutor().Run(context.Background(), t.TempDir(),
-		shCmd("x", "head -c 2000000 /dev/zero | tr '\\0' 'a'"))
+		shCmd("x", "head -c 2000000 /dev/zero | tr '\\0' 'a'"), "", nil)
 	if !out.Truncated {
 		t.Error("output over 1 MiB should be marked truncated")
 	}
@@ -28,7 +28,7 @@ func TestExecutorTimesOut(t *testing.T) {
 	cmd := shCmd("x", "sleep 30")
 	cmd.MaxDurationSeconds = 1
 	start := time.Now()
-	out := NewExecutor().Run(context.Background(), t.TempDir(), cmd)
+	out := NewExecutor().Run(context.Background(), t.TempDir(), cmd, "", nil)
 	if out.Status != pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_TIMED_OUT {
 		t.Fatalf("status = %v, want TIMED_OUT", out.Status)
 	}
@@ -46,7 +46,7 @@ func TestExecutorCancelLeavesNoOrphan(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan Outcome, 1)
 	go func() {
-		done <- NewExecutor().Run(ctx, ws, shCmd("x", "sleep 5; touch "+marker))
+		done <- NewExecutor().Run(ctx, ws, shCmd("x", "sleep 5; touch "+marker), "", nil)
 	}()
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -75,7 +75,7 @@ func TestExecutorConcurrentOutputNotInterleaved(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			results[n] = NewExecutor().Run(context.Background(), ws, shCmd("x", cmds[n]))
+			results[n] = NewExecutor().Run(context.Background(), ws, shCmd("x", cmds[n]), "", nil)
 		}(i)
 	}
 	wg.Wait()

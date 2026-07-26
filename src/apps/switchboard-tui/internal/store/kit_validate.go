@@ -42,8 +42,41 @@ func (kit *Kit) ValidateEscapeHatch() []string {
 		if c.WorkingDir != "" && !workingDirWithinWorkspace(c.WorkingDir) {
 			errs = append(errs, label+": working dir must be relative and stay within the workspace")
 		}
+
+		// Argument matching: at most one of subcommands / args-pattern, and a pattern
+		// must compile. A loose pattern is allowed (with a warning surfaced in the
+		// editor) but an invalid one is a hard error — nothing could ever match it.
+		hasSubs := len(nonBlank(c.Subcommands)) > 0
+		hasPattern := strings.TrimSpace(c.ArgsPattern) != ""
+		if hasSubs && hasPattern {
+			errs = append(errs, label+": set either subcommands or an args pattern, not both")
+		}
+		if hasPattern {
+			if _, err := regexp.Compile(`^(?:` + c.ArgsPattern + `)$`); err != nil {
+				errs = append(errs, label+": args pattern is not a valid regular expression")
+			}
+		}
+
+		// Targetable workspaces: each entry (literal path or glob) must be relative
+		// and stay within the workspace.
+		for _, ws := range nonBlank(c.Workspaces) {
+			if !workingDirWithinWorkspace(ws) {
+				errs = append(errs, label+": workspace "+ws+" must be relative and stay within the workspace")
+			}
+		}
 	}
 	return errs
+}
+
+// nonBlank drops empty/whitespace-only entries from a string slice.
+func nonBlank(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // workingDirWithinWorkspace reports whether a workspace-relative path stays inside

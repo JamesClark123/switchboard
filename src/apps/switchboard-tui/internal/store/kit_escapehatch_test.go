@@ -76,6 +76,42 @@ func TestToSpecCarriesEscapeHatchAsProto(t *testing.T) {
 	}
 }
 
+func TestEscapeHatchNewFieldsRoundTripAndProto(t *testing.T) {
+	ks := newKitStore(t)
+	kit := &Kit{Name: "monorepo", EscapeHatch: []KitEscapeHatchCommand{{
+		Name: "pnpm", Command: "pnpm", WhenToUse: "run a pnpm script",
+		Subcommands: []string{"install", "dev"},
+		Workspaces:  []string{"src/apps/*", "packages/shared"},
+	}}}
+	if _, err := ks.Save(kit); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ks.Get("monorepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := got.EscapeHatch[0]
+	if len(c.Subcommands) != 2 || c.Subcommands[0] != "install" {
+		t.Errorf("subcommands did not survive the sidecar round-trip: %v", c.Subcommands)
+	}
+	if len(c.Workspaces) != 2 || c.Workspaces[0] != "src/apps/*" {
+		t.Errorf("workspaces did not survive the sidecar round-trip: %v", c.Workspaces)
+	}
+
+	spec, err := got.ToSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := spec.GetEscapeHatch()[0]
+	if len(pc.GetSubcommands()) != 2 || len(pc.GetWorkspaces()) != 2 {
+		t.Errorf("new fields did not map into the proto: subs=%v ws=%v", pc.GetSubcommands(), pc.GetWorkspaces())
+	}
+	// Escape-hatch content (including the new fields) must never enter spec.yaml.
+	if strings.Contains(spec.GetSpecYaml(), "subcommands") || strings.Contains(spec.GetSpecYaml(), "pnpm") {
+		t.Error("spec_yaml must not contain escape-hatch content")
+	}
+}
+
 func TestSaveWithNoEscapeHatchRemovesSidecar(t *testing.T) {
 	ks := newKitStore(t)
 	if _, err := ks.Save(escapeHatchKit()); err != nil {
@@ -111,6 +147,13 @@ func TestValidateEscapeHatch(t *testing.T) {
 		{"absolute working dir", KitEscapeHatchCommand{Name: "x", Command: "c", WhenToUse: "w", WorkingDir: "/etc"}, true},
 		{"escaping working dir", KitEscapeHatchCommand{Name: "x", Command: "c", WhenToUse: "w", WorkingDir: "../../etc"}, true},
 		{"nested working dir ok", KitEscapeHatchCommand{Name: "x", Command: "c", WhenToUse: "w", WorkingDir: "app/sub"}, false},
+		{"subcommands ok", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", Subcommands: []string{"install", "dev"}}, false},
+		{"valid args pattern ok", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", ArgsPattern: "install|dev"}, false},
+		{"both subcommands and pattern", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", Subcommands: []string{"install"}, ArgsPattern: "dev"}, true},
+		{"invalid args pattern", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", ArgsPattern: "instal("}, true},
+		{"workspaces glob ok", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", Workspaces: []string{"src/apps/*", "packages/shared"}}, false},
+		{"escaping workspace", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", Workspaces: []string{"../outside"}}, true},
+		{"absolute workspace", KitEscapeHatchCommand{Name: "pnpm", Command: "pnpm", WhenToUse: "w", Workspaces: []string{"/etc"}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

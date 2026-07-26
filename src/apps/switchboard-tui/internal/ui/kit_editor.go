@@ -121,6 +121,9 @@ type kitFormVals struct {
 	// escape-hatch item fields (feature 005)
 	ehName, ehWhenToUse, ehWorkingDir, ehMaxDuration string
 	ehRequiresApproval                               bool
+	// ehSubcommands and ehWorkspaces are newline-separated lists in the form;
+	// ehArgsPattern is a raw regex. Parsed into slices on apply.
+	ehSubcommands, ehArgsPattern, ehWorkspaces string
 }
 
 // kitEditorState backs the editor. The kit under edit is held by value so an
@@ -440,6 +443,9 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 		}
 		v.ehName, v.itemCommand, v.ehWhenToUse = it.Name, it.Command, it.WhenToUse
 		v.ehRequiresApproval, v.ehWorkingDir = it.RequiresApproval, it.WorkingDir
+		v.ehSubcommands = strings.Join(it.Subcommands, "\n")
+		v.ehArgsPattern = it.ArgsPattern
+		v.ehWorkspaces = strings.Join(it.Workspaces, "\n")
 		if it.MaxDurationSecs > 0 {
 			v.ehMaxDuration = strconv.Itoa(int(it.MaxDurationSecs))
 		}
@@ -447,13 +453,19 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 			huh.NewInput().Key("name").Title("Name").
 				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
 			huh.NewText().Key("command").Title("Command").
-				Description("The EXACT command, run on the host via sh -c. The agent cannot change it.").Value(&v.itemCommand),
+				Description("The fixed command prefix, run on the host via sh -c. The agent cannot change it.").Value(&v.itemCommand),
 			huh.NewText().Key("whenToUse").Title("When to use").
 				Description("Plain-language guidance the agent's rule shows for this command.").Value(&v.ehWhenToUse),
+			huh.NewText().Key("subcommands").Title("Allowed subcommands (one per line)").
+				Description("Optional. The agent may pass one of these as arguments (e.g. install, dev). Leave blank for none.").Value(&v.ehSubcommands),
+			huh.NewInput().Key("argsPattern").Title("Args regex (advanced)").
+				Description("Optional alternative to subcommands. WARNING: a loose regex lets the agent pass more arguments to the command and lowers safety.").Value(&v.ehArgsPattern),
+			huh.NewText().Key("workspaces").Title("Targetable workspaces (one per line)").
+				Description("Optional. Workspace-relative paths or globs (e.g. src/apps/*). If set, the agent picks one with --workspace.").Value(&v.ehWorkspaces),
 			huh.NewConfirm().Key("requiresApproval").Title("Requires approval").
 				Description("On = the developer must approve each run. Off = auto-run.").Value(&v.ehRequiresApproval),
-			huh.NewInput().Key("workingDir").Title("Working dir").
-				Description("Optional, relative to the workspace.").Value(&v.ehWorkingDir),
+			huh.NewInput().Key("workingDir").Title("Default working dir").
+				Description("Optional, relative to the workspace. Used when no targetable workspaces are set.").Value(&v.ehWorkingDir),
 			huh.NewInput().Key("maxDuration").Title("Max duration (seconds)").
 				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
 		))
@@ -585,6 +597,9 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			RequiresApproval: v.ehRequiresApproval,
 			WorkingDir:       strings.TrimSpace(v.ehWorkingDir),
 			MaxDurationSecs:  maxSecs,
+			Subcommands:      splitLines(v.ehSubcommands),
+			ArgsPattern:      strings.TrimSpace(v.ehArgsPattern),
+			Workspaces:       splitLines(v.ehWorkspaces),
 		}
 		if i := m.kitEditor.formItem; i >= 0 && i < len(k.EscapeHatch) {
 			k.EscapeHatch[i] = it

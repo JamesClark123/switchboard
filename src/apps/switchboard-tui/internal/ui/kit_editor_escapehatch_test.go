@@ -45,6 +45,9 @@ func setEHVals(out Model, c store.KitEscapeHatchCommand) Model {
 	v.ehWhenToUse = c.WhenToUse
 	v.ehRequiresApproval = c.RequiresApproval
 	v.ehWorkingDir = c.WorkingDir
+	v.ehSubcommands = strings.Join(c.Subcommands, "\n")
+	v.ehArgsPattern = c.ArgsPattern
+	v.ehWorkspaces = strings.Join(c.Workspaces, "\n")
 	if c.MaxDurationSecs > 0 {
 		v.ehMaxDuration = "600"
 	}
@@ -91,6 +94,27 @@ func TestKitEditorAddApprovalGatedCommand(t *testing.T) {
 	got := out.kitEditor.kit.EscapeHatch
 	if len(got) != 1 || !got[0].RequiresApproval {
 		t.Fatalf("command should be approval-gated: %+v", got)
+	}
+}
+
+func TestKitEditorAddCommandWithSubcommandsAndWorkspaces(t *testing.T) {
+	out := editorOn(t, &store.Kit{Name: "bare"})
+	out = navToEscapeHatch(t, out)
+	out = openEHForm(t, out, -1)
+	out = setEHVals(out, store.KitEscapeHatchCommand{
+		Name: "pnpm", Command: "pnpm", WhenToUse: "run scripts",
+		Subcommands: []string{"install", "dev"},
+		Workspaces:  []string{"src/apps/*", "packages/shared"},
+	})
+	got := out.kitEditor.kit.EscapeHatch
+	if len(got) != 1 {
+		t.Fatalf("want 1 command, got %d", len(got))
+	}
+	if len(got[0].Subcommands) != 2 || got[0].Subcommands[1] != "dev" {
+		t.Errorf("subcommands not applied through the form: %v", got[0].Subcommands)
+	}
+	if len(got[0].Workspaces) != 2 || got[0].Workspaces[0] != "src/apps/*" {
+		t.Errorf("workspaces not applied through the form: %v", got[0].Workspaces)
 	}
 }
 

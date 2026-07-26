@@ -14,6 +14,40 @@ func auto(name, command string) *pb.EscapeHatchCommand {
 	return cmd(name, command, pb.ConsentMode_CONSENT_MODE_AUTO_RUN)
 }
 
+func TestResolveRejectsBothSubcommandsAndPattern(t *testing.T) {
+	c := auto("pnpm", "pnpm")
+	c.Subcommands = []string{"install"}
+	c.ArgsPattern = "install|dev"
+	if _, err := Resolve([]*pb.EscapeHatchCommand{c}); err == nil {
+		t.Error("a command setting both subcommands and args_pattern must be rejected")
+	}
+}
+
+func TestResolveRejectsInvalidArgsPattern(t *testing.T) {
+	c := auto("pnpm", "pnpm")
+	c.ArgsPattern = "instal(" // unbalanced paren
+	if _, err := Resolve([]*pb.EscapeHatchCommand{c}); err == nil {
+		t.Error("an args_pattern that does not compile must be rejected")
+	}
+}
+
+func TestResolveRejectsEscapingWorkspace(t *testing.T) {
+	c := auto("pnpm", "pnpm")
+	c.Workspaces = []string{"../outside"}
+	if _, err := Resolve([]*pb.EscapeHatchCommand{c}); err == nil {
+		t.Error("a workspace entry that escapes the workspace must be rejected")
+	}
+}
+
+func TestResolveAcceptsValidArgsAndWorkspaces(t *testing.T) {
+	c := auto("pnpm", "pnpm")
+	c.Subcommands = []string{"install", "dev"}
+	c.Workspaces = []string{"src/apps/*", "packages/shared"}
+	if _, err := Resolve([]*pb.EscapeHatchCommand{c}); err != nil {
+		t.Errorf("a well-formed command with args + workspaces should resolve: %v", err)
+	}
+}
+
 func TestResolveLaterKitWinsOnNameCollision(t *testing.T) {
 	kitA := []*pb.EscapeHatchCommand{auto("install-deps", "pnpm install")}
 	kitB := []*pb.EscapeHatchCommand{auto("install-deps", "npm ci")}

@@ -1182,18 +1182,32 @@ func (x *AddSandboxKitRequest) GetKit() *KitRef {
 }
 
 // EscapeHatchCommand: one authorized command declared on a kit. The `command`
-// string is FIXED — the agent chooses which command by name and when, never what
-// it is. Carried on KitSpec and, once resolved, on Sandbox.
+// string is the FIXED, trusted prefix. A command MAY additionally allow the agent
+// to supply arguments (constrained by `subcommands` OR `args_pattern`) and to pick
+// a target workspace (constrained by `workspaces`). Any agent-supplied argument is
+// passed as positional parameters (`sh -c '<command> "$@"' … <args>`), never
+// re-parsed as shell syntax — so a loose pattern broadens which arguments reach the
+// fixed tool but cannot inject shell metacharacters. Carried on KitSpec and, once
+// resolved, on Sandbox.
 type EscapeHatchCommand struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                              // stable, kebab-case; unique within a kit; the allowlist key
-	Command            string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`                        // exact string, run via `sh -c`
+	Command            string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`                        // fixed, trusted command prefix, run via `sh -c`
 	WhenToUse          string                 `protobuf:"bytes,3,opt,name=when_to_use,json=whenToUse,proto3" json:"when_to_use,omitempty"` // plain-language guidance for the injected rule
 	ConsentMode        ConsentMode            `protobuf:"varint,4,opt,name=consent_mode,json=consentMode,proto3,enum=switchboard.v1.ConsentMode" json:"consent_mode,omitempty"`
-	WorkingDir         string                 `protobuf:"bytes,5,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`                            // optional, workspace-relative (no escape past root)
+	WorkingDir         string                 `protobuf:"bytes,5,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`                            // optional, workspace-relative (no escape past root); default dir when `workspaces` is empty
 	MaxDurationSeconds uint32                 `protobuf:"varint,6,opt,name=max_duration_seconds,json=maxDurationSeconds,proto3" json:"max_duration_seconds,omitempty"` // optional; 0 => daemon default (30 min)
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Agent-supplied arguments (feature 005 enhancement). At most ONE of the two may
+	// be set; both empty => the command takes no agent arguments (the original fixed
+	// behavior).
+	Subcommands []string `protobuf:"bytes,7,rep,name=subcommands,proto3" json:"subcommands,omitempty"`                    // allowed exact argument strings the agent may choose (friendly form)
+	ArgsPattern string   `protobuf:"bytes,8,opt,name=args_pattern,json=argsPattern,proto3" json:"args_pattern,omitempty"` // anchored regex the agent's argument string must fully match (power form)
+	// Targetable workspaces (feature 005 enhancement). Each entry is a
+	// workspace-relative literal path OR a glob (e.g. "src/apps/*"). Empty => the
+	// command runs in `working_dir` and the agent may not pick a workspace.
+	Workspaces    []string `protobuf:"bytes,9,rep,name=workspaces,proto3" json:"workspaces,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EscapeHatchCommand) Reset() {
@@ -1268,6 +1282,27 @@ func (x *EscapeHatchCommand) GetMaxDurationSeconds() uint32 {
 	return 0
 }
 
+func (x *EscapeHatchCommand) GetSubcommands() []string {
+	if x != nil {
+		return x.Subcommands
+	}
+	return nil
+}
+
+func (x *EscapeHatchCommand) GetArgsPattern() string {
+	if x != nil {
+		return x.ArgsPattern
+	}
+	return ""
+}
+
+func (x *EscapeHatchCommand) GetWorkspaces() []string {
+	if x != nil {
+		return x.Workspaces
+	}
+	return nil
+}
+
 // EscapeHatchRun: one execution triggered by the agent. In-memory, session-scoped.
 // `output` is bounded (<=1 MiB) and may be truncated.
 type EscapeHatchRun struct {
@@ -1275,13 +1310,15 @@ type EscapeHatchRun struct {
 	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // ehr-<seq>
 	SandboxId       string                 `protobuf:"bytes,2,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	CommandName     string                 `protobuf:"bytes,3,opt,name=command_name,json=commandName,proto3" json:"command_name,omitempty"`
-	Command         string                 `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"` // the exact string that ran (audit; agent could not alter it)
+	Command         string                 `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"` // the fixed command prefix that ran (audit)
 	Status          EscapeHatchRunStatus   `protobuf:"varint,5,opt,name=status,proto3,enum=switchboard.v1.EscapeHatchRunStatus" json:"status,omitempty"`
 	ExitStatus      int32                  `protobuf:"varint,6,opt,name=exit_status,json=exitStatus,proto3" json:"exit_status,omitempty"` // set for SUCCEEDED/FAILED
 	Output          string                 `protobuf:"bytes,7,opt,name=output,proto3" json:"output,omitempty"`                            // bounded, captured stdout+stderr
 	OutputTruncated bool                   `protobuf:"varint,8,opt,name=output_truncated,json=outputTruncated,proto3" json:"output_truncated,omitempty"`
-	StartedAt       *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"` // execution start (post-approval)
-	EndedAt         *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`      // terminal outcome
+	StartedAt       *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`     // execution start (post-approval)
+	EndedAt         *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`          // terminal outcome
+	Args            string                 `protobuf:"bytes,11,opt,name=args,proto3" json:"args,omitempty"`                               // agent-supplied arguments that ran (audit; empty if none)
+	WorkingDir      string                 `protobuf:"bytes,12,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"` // resolved workspace-relative dir it ran in (audit; empty = workspace root)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1384,6 +1421,20 @@ func (x *EscapeHatchRun) GetEndedAt() *timestamppb.Timestamp {
 		return x.EndedAt
 	}
 	return nil
+}
+
+func (x *EscapeHatchRun) GetArgs() string {
+	if x != nil {
+		return x.Args
+	}
+	return ""
+}
+
+func (x *EscapeHatchRun) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
 }
 
 type DecideEscapeHatchRunRequest struct {
@@ -3731,7 +3782,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x14AddSandboxKitRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12(\n" +
-	"\x03kit\x18\x02 \x01(\v2\x16.switchboard.v1.KitRefR\x03kit\"\xf5\x01\n" +
+	"\x03kit\x18\x02 \x01(\v2\x16.switchboard.v1.KitRefR\x03kit\"\xda\x02\n" +
 	"\x12EscapeHatchCommand\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x1e\n" +
@@ -3739,7 +3790,12 @@ const file_switchboard_proto_rawDesc = "" +
 	"\fconsent_mode\x18\x04 \x01(\x0e2\x1b.switchboard.v1.ConsentModeR\vconsentMode\x12\x1f\n" +
 	"\vworking_dir\x18\x05 \x01(\tR\n" +
 	"workingDir\x120\n" +
-	"\x14max_duration_seconds\x18\x06 \x01(\rR\x12maxDurationSeconds\"\x90\x03\n" +
+	"\x14max_duration_seconds\x18\x06 \x01(\rR\x12maxDurationSeconds\x12 \n" +
+	"\vsubcommands\x18\a \x03(\tR\vsubcommands\x12!\n" +
+	"\fargs_pattern\x18\b \x01(\tR\vargsPattern\x12\x1e\n" +
+	"\n" +
+	"workspaces\x18\t \x03(\tR\n" +
+	"workspaces\"\xc5\x03\n" +
 	"\x0eEscapeHatchRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -3754,7 +3810,10 @@ const file_switchboard_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
 	"\bended_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\"P\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12\x12\n" +
+	"\x04args\x18\v \x01(\tR\x04args\x12\x1f\n" +
+	"\vworking_dir\x18\f \x01(\tR\n" +
+	"workingDir\"P\n" +
 	"\x1bDecideEscapeHatchRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1a\n" +
 	"\bapproved\x18\x02 \x01(\bR\bapproved\"\\\n" +

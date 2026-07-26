@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -41,13 +42,19 @@ type Executor struct{}
 // NewExecutor constructs an Executor.
 func NewExecutor() *Executor { return &Executor{} }
 
-// Run executes cmd's fixed command string with `sh -c` in the sandbox's workspace
-// (joined with the command's optional workspace-relative working_dir), streaming and
+// Run executes cmd's fixed command prefix with `sh -c` in the sandbox's workspace
+// (joined with relDir, the resolved workspace-relative directory), streaming and
 // bounding output, bounded by the command's max_duration_seconds or the 30-minute
 // default. It blocks until the command finishes, is cancelled (parent ctx), or times
 // out.
-func (e *Executor) Run(parent context.Context, workspacePath string, cmd *pb.EscapeHatchCommand) Outcome {
-	dir, err := resolveWorkdir(workspacePath, cmd.GetWorkingDir())
+//
+// argTokens are the validated, agent-supplied arguments. They are passed as
+// positional parameters to the fixed command (`sh -c '<command> "$@"' sh <tokens>`),
+// so the shell never re-parses them as syntax — a metacharacter in an argument is an
+// inert positional value, not an injection point. When there are no arguments the
+// command runs exactly as before (`sh -c '<command>'`), preserving its semantics.
+func (e *Executor) Run(parent context.Context, workspacePath string, cmd *pb.EscapeHatchCommand, relDir string, argTokens []string) Outcome {
+	dir, err := resolveWorkdir(workspacePath, relDir)
 	if err != nil {
 		return Outcome{Status: pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_FAILED, Output: err.Error()}
 	}
@@ -59,7 +66,7 @@ func (e *Executor) Run(parent context.Context, workspacePath string, cmd *pb.Esc
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd.GetCommand())
+	c := exec.CommandContext(ctx, "/bin/sh", shellArgs(cmd.GetCommand(), argTokens)...)
 	c.Dir = dir
 	// Own process group so a timeout/cancel kills the whole child tree, not just sh,
 	// leaving no orphaned host process (FR-041, SC-008). The default CommandContext
@@ -112,10 +119,23 @@ func (e *Executor) Run(parent context.Context, workspacePath string, cmd *pb.Esc
 	return Outcome{Status: pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_SUCCEEDED, ExitCode: 0, Output: out, Truncated: truncated}
 }
 
-// resolveWorkdir joins an optional workspace-relative working_dir onto the
-// workspace path and re-validates containment daemon-side (analysis S1,
-// defense-in-depth), independent of the client-side check. A dir that escapes the
-// workspace is refused.
+// shellArgs builds the argv passed to `/bin/sh` for a command and its validated
+// positional arguments. With no arguments it is a plain `-c <command>` (unchanged
+// semantics). With arguments it is `-c '<command> "$@"' sh <tokens...>`, which binds
+// the tokens to $1..$N so the fixed command sees them as separate, un-re-parsed
+// arguments.
+func shellArgs(command string, argTokens []string) []string {
+	if len(argTokens) == 0 {
+		return []string{"-c", command}
+	}
+	args := []string{"-c", command + ` "$@"`, "sh"}
+	return append(args, argTokens...)
+}
+
+// resolveWorkdir joins an optional workspace-relative directory onto the workspace
+// path and re-validates containment daemon-side (analysis S1, defense-in-depth),
+// independent of the client-side check. A dir that escapes the workspace, or that
+// does not exist as a directory, is refused with a clear message.
 func resolveWorkdir(workspacePath, workingDir string) (string, error) {
 	if workingDir == "" {
 		return workspacePath, nil
@@ -127,6 +147,9 @@ func resolveWorkdir(workspacePath, workingDir string) (string, error) {
 	rel, err := filepath.Rel(workspacePath, joined)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("working_dir %q escapes the workspace", workingDir)
+	}
+	if info, err := os.Stat(joined); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("workspace %q is not a directory in this sandbox's workspace", workingDir)
 	}
 	return joined, nil
 }

@@ -2,6 +2,7 @@ package escapehatch
 
 import (
 	"fmt"
+	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -70,6 +71,22 @@ func validate(cmd *pb.EscapeHatchCommand) error {
 	}
 	if cmd.GetConsentMode() == pb.ConsentMode_CONSENT_MODE_UNSPECIFIED {
 		return fmt.Errorf("escape-hatch command %q must set a consent mode (auto-run or requires-approval)", cmd.GetName())
+	}
+	// At most one argument-matching form: a subcommand list OR a regex, not both.
+	if len(nonEmpty(cmd.GetSubcommands())) > 0 && strings.TrimSpace(cmd.GetArgsPattern()) != "" {
+		return fmt.Errorf("escape-hatch command %q sets both subcommands and args_pattern (choose one)", cmd.GetName())
+	}
+	// A declared regex must compile, or nothing the agent sends could ever match.
+	if pat := strings.TrimSpace(cmd.GetArgsPattern()); pat != "" {
+		if _, err := compileAnchored(pat); err != nil {
+			return fmt.Errorf("escape-hatch command %q has an invalid args_pattern: %w", cmd.GetName(), err)
+		}
+	}
+	// Every allowed workspace entry must be workspace-relative and non-escaping.
+	for _, ws := range nonEmpty(cmd.GetWorkspaces()) {
+		if !workspaceRelOK(ws) {
+			return fmt.Errorf("escape-hatch command %q has a workspace %q that is absolute or escapes the workspace", cmd.GetName(), ws)
+		}
 	}
 	return nil
 }

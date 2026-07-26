@@ -148,17 +148,21 @@ A package that reads any env var MUST:
 
 <!-- SPECKIT START -->
 Active feature: `specs/005-escape-hatch/plan.md` (Escape Hatch). Lets a sandbox's AI run a small,
-human-authored set of **whole, fixed** commands *outside* the sandbox — on the daemon's host, in the
-sandbox's bind-mounted `workspace_path` — and delivers each result back to the agent even with no
-terminal attached. Commands are a **structured, switchboard-owned** section on a client kit (a new
+human-authored set of commands with a **fixed, trusted prefix** *outside* the sandbox — on the daemon's
+host, in the sandbox's bind-mounted `workspace_path` — and delivers each result back to the agent even
+with no terminal attached. Commands are a **structured, switchboard-owned** section on a client kit (a new
 `kits/<id>/escape-hatch.yaml` sidecar + `pb.KitSpec.escape_hatch`), deliberately **NOT** in the opaque
 Docker `spec.yaml` (`sbx` never sees them). Resolved per sandbox with **later-kit-wins** on name
-collision, persisted as `Sandbox.escape_hatch_commands`. The AI invokes by name via a daemon-injected
-wrapper (`<workspace>/.switchboard/escape-hatch`) that POSTs to a **new `/escape-hatch/run` route on the
-existing agent-hook HTTP server** (`host.docker.internal:8765`); the daemon validates the name against
-the allowlist, runs `sh -c` with a bounded timeout (per-command or **30-min** default) + **1 MiB** output
-cap + cancel-on-stop, and **pushes the outcome back into the agent via `agent.Registry.Prompt`** (the
-detached-prompt PTY path). New daemon package `internal/escapehatch` (executor/consent/runs/resolve/
+collision, persisted as `Sandbox.escape_hatch_commands`. The AI invokes via a daemon-injected wrapper
+(`<workspace>/.switchboard/escape-hatch <name> [--workspace <dir>] [-- <args...>]`) that POSTs to a **new
+`/escape-hatch/run` route on the existing agent-hook HTTP server** (`host.docker.internal:8765`); the
+daemon validates the name against the allowlist, validates any agent-supplied **arguments** (author's
+`subcommands` list OR `args_pattern` regex — passed as **positional params**, never shell-re-parsed, so a
+loose regex broadens args but can't inject) and **workspace** (`workspaces` literal/glob allowlist;
+`--workspace` picks one), then runs `sh -c` with a bounded timeout (per-command or **30-min** default) +
+**1 MiB** output cap + cancel-on-stop, and **pushes the outcome back into the agent via
+`agent.Registry.Prompt`** (the detached-prompt PTY path; carriage-return-submitted). A rejected
+argument/workspace is HTTP 400, nothing runs. New daemon package `internal/escapehatch` (executor/consent/runs/resolve/
 inject/http). `requires-approval` commands block on a **5-min deny-by-default** window decided by a new
 `DecideEscapeHatchRun` RPC + a `confirm.go`-style approval modal. Runs are **in-memory only** (session =
 daemon uptime); observability via a new `Event.escape_hatch_run` arm + two `NotificationKind`s +

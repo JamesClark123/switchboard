@@ -16,7 +16,7 @@ func shCmd(name, command string) *pb.EscapeHatchCommand {
 
 func TestExecutorRunsInWorkspace(t *testing.T) {
 	ws := t.TempDir()
-	out := NewExecutor().Run(context.Background(), ws, shCmd("pwd", "pwd"))
+	out := NewExecutor().Run(context.Background(), ws, shCmd("pwd", "pwd"), "", nil)
 	if out.Status != pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_SUCCEEDED {
 		t.Fatalf("status = %v, want SUCCEEDED (output: %q)", out.Status, out.Output)
 	}
@@ -31,23 +31,21 @@ func TestExecutorHonoursRelativeWorkingDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, "sub", "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := shCmd("pwd", "pwd")
-	cmd.WorkingDir = "sub/dir"
-	out := NewExecutor().Run(context.Background(), ws, cmd)
+	out := NewExecutor().Run(context.Background(), ws, shCmd("pwd", "pwd"), "sub/dir", nil)
 	if !strings.Contains(out.Output, filepath.Join("sub", "dir")) {
 		t.Errorf("did not honour working_dir: %q", out.Output)
 	}
 }
 
 func TestExecutorCapturesStdoutAndStderr(t *testing.T) {
-	out := NewExecutor().Run(context.Background(), t.TempDir(), shCmd("x", "echo out; echo err 1>&2"))
+	out := NewExecutor().Run(context.Background(), t.TempDir(), shCmd("x", "echo out; echo err 1>&2"), "", nil)
 	if !strings.Contains(out.Output, "out") || !strings.Contains(out.Output, "err") {
 		t.Errorf("should capture both stdout and stderr: %q", out.Output)
 	}
 }
 
 func TestExecutorReportsNonZeroExit(t *testing.T) {
-	out := NewExecutor().Run(context.Background(), t.TempDir(), shCmd("x", "echo boom; exit 3"))
+	out := NewExecutor().Run(context.Background(), t.TempDir(), shCmd("x", "echo boom; exit 3"), "", nil)
 	if out.Status != pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_FAILED {
 		t.Fatalf("status = %v, want FAILED", out.Status)
 	}
@@ -62,7 +60,7 @@ func TestExecutorReportsNonZeroExit(t *testing.T) {
 func TestExecutorReportsLaunchFailure(t *testing.T) {
 	// A working_dir that does not exist makes the process fail to start.
 	cmd := shCmd("x", "true")
-	out := NewExecutor().Run(context.Background(), "/no/such/workspace/at/all", cmd)
+	out := NewExecutor().Run(context.Background(), "/no/such/workspace/at/all", cmd, "", nil)
 	if out.Status != pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_FAILED {
 		t.Fatalf("status = %v, want FAILED for a launch failure", out.Status)
 	}
@@ -79,7 +77,15 @@ func TestResolveWorkdirRejectsEscape(t *testing.T) {
 	if _, err := resolveWorkdir(ws, "/etc"); err == nil {
 		t.Error("expected an error for an absolute working_dir")
 	}
+	if err := os.MkdirAll(filepath.Join(ws, "sub", "ok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := resolveWorkdir(ws, "sub/ok"); err != nil {
 		t.Errorf("nested relative dir should be allowed: %v", err)
+	}
+	// A relative dir that does not exist is rejected with a clear error rather than
+	// deferring to an opaque chdir failure at exec time.
+	if _, err := resolveWorkdir(ws, "sub/missing"); err == nil {
+		t.Error("expected an error for a non-existent working_dir")
 	}
 }
