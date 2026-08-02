@@ -3,7 +3,9 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +30,9 @@ type fakeRunner struct {
 	// failStart makes Start fail, forcing bringUp down its relaunch branch (the
 	// common real-world case: sbx often can't resume a container across a stop).
 	failStart bool
+	// feature 006: recorded "<ref> <host>:<sandbox>" port publish/unpublish calls.
+	published   []string
+	unpublished []string
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
@@ -79,6 +84,31 @@ func (f *fakeRunner) IsRunning(_ context.Context, ref string) (bool, error) {
 }
 func (f *fakeRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
 	return os.MkdirAll(dest, 0o755)
+}
+
+// --- feature 006: port-forwarding surface ---
+
+func (f *fakeRunner) PublishPort(_ context.Context, ref string, hostPort, sandboxPort uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.published = append(f.published, fmt.Sprintf("%s %d:%d", ref, hostPort, sandboxPort))
+	return nil
+}
+
+func (f *fakeRunner) UnpublishPort(_ context.Context, ref string, hostPort, sandboxPort uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpublished = append(f.unpublished, fmt.Sprintf("%s %d:%d", ref, hostPort, sandboxPort))
+	return nil
+}
+
+// Exec runs argv on the HOST rather than in a sandbox — there is no sandbox in
+// these tests, and the manager only needs the command to be runnable.
+func (f *fakeRunner) Exec(ctx context.Context, _ string, argv []string) *exec.Cmd {
+	if len(argv) == 0 {
+		argv = []string{"true"}
+	}
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
 func (f *fakeRunner) AddKit(_ context.Context, ref, kitSource string, _ func(string)) error {
 	f.mu.Lock()

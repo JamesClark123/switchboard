@@ -2,9 +2,11 @@ package grpc_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,8 +21,9 @@ import (
 
 // testRunner is a no-op Runner for the gRPC integration test.
 type testRunner struct {
-	running map[string]bool
-	kitAdds []string // kit sources passed to `sbx kit add`
+	running   map[string]bool
+	kitAdds   []string // kit sources passed to `sbx kit add`
+	published []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
 }
 
 func (r *testRunner) Launch(_ context.Context, spec sandbox.LaunchSpec, _ func(string)) (string, error) {
@@ -45,6 +48,22 @@ func (r *testRunner) AddKit(_ context.Context, _, kitSource string, _ func(strin
 	return nil
 }
 func (r *testRunner) ValidateKit(_ context.Context, _ string) (string, error) { return "", nil }
+
+// --- feature 006: port-forwarding surface (no-ops; there is no real sandbox here) ---
+
+func (r *testRunner) PublishPort(_ context.Context, ref string, hostPort, sandboxPort uint32) error {
+	r.published = append(r.published, fmt.Sprintf("%s %d:%d", ref, hostPort, sandboxPort))
+	return nil
+}
+
+func (r *testRunner) UnpublishPort(_ context.Context, _ string, _, _ uint32) error { return nil }
+
+func (r *testRunner) Exec(ctx context.Context, _ string, argv []string) *exec.Cmd {
+	if len(argv) == 0 {
+		argv = []string{"true"}
+	}
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
+}
 
 func startServer(t *testing.T) (pb.SwitchboardClient, string) {
 	t.Helper()

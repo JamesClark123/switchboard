@@ -147,7 +147,31 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/005-escape-hatch/plan.md` (Escape Hatch). Lets a sandbox's AI run a small,
+Active feature: `specs/006-port-forwarding/plan.md` (Port Forwarding). A kit declares long-running
+**services** (name, start command, **listen port**, `IN_SANDBOX` | `ON_HOST`, optional `is_website` +
+workspace-relative `working_dir`) in a second switchboard-owned sidecar — `kits/<id>/services.yaml` +
+`pb.KitSpec.services`, never in the opaque `spec.yaml` — resolved per sandbox **later-kit-wins** and
+persisted as `Sandbox.services`. The developer picks what to start from a per-sandbox list (`p`);
+**nothing ever auto-starts** (not on kit attach, sandbox create/start, or daemon restart). Each running
+service gets a free port **on the developer's own machine**: the **client** binds `127.0.0.1:0` and
+relays each connection to the daemon over a new **bidi `ForwardPort` stream on the existing connection**
+(one path for local *and* SSH hosts — no second ssh session, and the client is the sole port allocator so
+FR-049 uniqueness is structural). Daemon-side, in-sandbox services are reached via
+`sbx ports --publish 127.0.0.1:P:<listen>/tcp`; on-host services are dialled directly. `RUNNING` means
+**reachable** — set only after a successful dial; a readiness failure inside a sandbox is diagnosed
+against `/proc/net/tcp` so a **loopback-only bind** is named with its remedy. On-host port collisions are
+the author's choice: a `{{port}}` token in the command gets a freshly allocated host port (concurrent
+sandboxes coexist), otherwise the declared port is used and a second instance fails `PORT_IN_USE`. Stop
+signals the **whole process tree**, waits a 10 s grace, force-kills, and releases the port only once the
+listen port is observed free. Instances are **in-memory only**; observability via `Event.service_instance`
++ `NOTIFICATION_KIND_SERVICE_FAILED` (failures only — starts/stops are silent). New packages
+`switchboardd/internal/portforward` and `switchboard-tui/internal/forward`; two new `Runner` methods
+(`PublishPort`/`UnpublishPort`, `Exec`). See `spec.md`, `research.md` (R1–R9), `data-model.md`,
+`contracts/` (switchboard-port-forwarding.proto, sbx-ports-cli.md), `quickstart.md`. Additive proto
+revision, **no new env vars**. ⚠️ `sbx` still not installed in dev — and **`sbx exec` argv is assumed by
+analogy, not documented**: it is the highest-risk reconciliation item (3 call sites).
+
+Prior feature: `specs/005-escape-hatch/plan.md` (Escape Hatch). Lets a sandbox's AI run a small,
 human-authored set of commands with a **fixed, trusted prefix** *outside* the sandbox — on the daemon's
 host, in the sandbox's bind-mounted `workspace_path` — and delivers each result back to the agent even
 with no terminal attached. Commands are a **structured, switchboard-owned** section on a client kit (a new

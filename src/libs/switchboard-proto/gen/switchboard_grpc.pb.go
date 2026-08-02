@@ -57,6 +57,10 @@ const (
 	Switchboard_GetVSCodeTarget_FullMethodName      = "/switchboard.v1.Switchboard/GetVSCodeTarget"
 	Switchboard_DecideEscapeHatchRun_FullMethodName = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
 	Switchboard_ListEscapeHatchRuns_FullMethodName  = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
+	Switchboard_ListSandboxServices_FullMethodName  = "/switchboard.v1.Switchboard/ListSandboxServices"
+	Switchboard_StartSandboxService_FullMethodName  = "/switchboard.v1.Switchboard/StartSandboxService"
+	Switchboard_StopSandboxService_FullMethodName   = "/switchboard.v1.Switchboard/StopSandboxService"
+	Switchboard_ForwardPort_FullMethodName          = "/switchboard.v1.Switchboard/ForwardPort"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -129,6 +133,25 @@ type SwitchboardClient interface {
 	// Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
 	// sandboxes on this host.
 	ListEscapeHatchRuns(ctx context.Context, in *ListEscapeHatchRunsRequest, opts ...grpc.CallOption) (*ListEscapeHatchRunsResponse, error)
+	// --- Port forwarding (feature 006) ---
+	// Services are DECLARED on a kit and started only by the developer's explicit
+	// selection (FR-045) — nothing here is reachable by the sandbox's agent.
+	//
+	// Every service the sandbox's attached kits declare, joined with its current
+	// instance state. The set is exactly Sandbox.services — no more.
+	ListSandboxServices(ctx context.Context, in *ListSandboxServicesRequest, opts ...grpc.CallOption) (*ListSandboxServicesResponse, error)
+	// Start one declared service by NAME, validated against the sandbox's persisted
+	// service set (an unknown name starts nothing => NOT_FOUND). Returns as soon as
+	// the instance exists (STARTING); readiness arrives via Event.service_instance.
+	// Idempotent: a STARTING/RUNNING service returns its existing instance (FR-048).
+	StartSandboxService(ctx context.Context, in *StartSandboxServiceRequest, opts ...grpc.CallOption) (*StartSandboxServiceResponse, error)
+	// Terminate the whole process tree — graceful signal, bounded grace period, then
+	// force-kill — releasing the port only once the listen port is observed free
+	// (FR-048). Idempotent on an already-stopped service.
+	StopSandboxService(ctx context.Context, in *StopSandboxServiceRequest, opts ...grpc.CallOption) (*StopSandboxServiceResponse, error)
+	// Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
+	// One stream per accepted TCP connection; see PortForwardFrame.
+	ForwardPort(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PortForwardFrame, PortForwardFrame], error)
 }
 
 type switchboardClient struct {
@@ -426,6 +449,49 @@ func (c *switchboardClient) ListEscapeHatchRuns(ctx context.Context, in *ListEsc
 	return out, nil
 }
 
+func (c *switchboardClient) ListSandboxServices(ctx context.Context, in *ListSandboxServicesRequest, opts ...grpc.CallOption) (*ListSandboxServicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSandboxServicesResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListSandboxServices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) StartSandboxService(ctx context.Context, in *StartSandboxServiceRequest, opts ...grpc.CallOption) (*StartSandboxServiceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartSandboxServiceResponse)
+	err := c.cc.Invoke(ctx, Switchboard_StartSandboxService_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) StopSandboxService(ctx context.Context, in *StopSandboxServiceRequest, opts ...grpc.CallOption) (*StopSandboxServiceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StopSandboxServiceResponse)
+	err := c.cc.Invoke(ctx, Switchboard_StopSandboxService_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) ForwardPort(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PortForwardFrame, PortForwardFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[7], Switchboard_ForwardPort_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PortForwardFrame, PortForwardFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_ForwardPortClient = grpc.BidiStreamingClient[PortForwardFrame, PortForwardFrame]
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -496,6 +562,25 @@ type SwitchboardServer interface {
 	// Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
 	// sandboxes on this host.
 	ListEscapeHatchRuns(context.Context, *ListEscapeHatchRunsRequest) (*ListEscapeHatchRunsResponse, error)
+	// --- Port forwarding (feature 006) ---
+	// Services are DECLARED on a kit and started only by the developer's explicit
+	// selection (FR-045) — nothing here is reachable by the sandbox's agent.
+	//
+	// Every service the sandbox's attached kits declare, joined with its current
+	// instance state. The set is exactly Sandbox.services — no more.
+	ListSandboxServices(context.Context, *ListSandboxServicesRequest) (*ListSandboxServicesResponse, error)
+	// Start one declared service by NAME, validated against the sandbox's persisted
+	// service set (an unknown name starts nothing => NOT_FOUND). Returns as soon as
+	// the instance exists (STARTING); readiness arrives via Event.service_instance.
+	// Idempotent: a STARTING/RUNNING service returns its existing instance (FR-048).
+	StartSandboxService(context.Context, *StartSandboxServiceRequest) (*StartSandboxServiceResponse, error)
+	// Terminate the whole process tree — graceful signal, bounded grace period, then
+	// force-kill — releasing the port only once the listen port is observed free
+	// (FR-048). Idempotent on an already-stopped service.
+	StopSandboxService(context.Context, *StopSandboxServiceRequest) (*StopSandboxServiceResponse, error)
+	// Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
+	// One stream per accepted TCP connection; see PortForwardFrame.
+	ForwardPort(grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]) error
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -574,6 +659,18 @@ func (UnimplementedSwitchboardServer) DecideEscapeHatchRun(context.Context, *Dec
 }
 func (UnimplementedSwitchboardServer) ListEscapeHatchRuns(context.Context, *ListEscapeHatchRunsRequest) (*ListEscapeHatchRunsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListEscapeHatchRuns not implemented")
+}
+func (UnimplementedSwitchboardServer) ListSandboxServices(context.Context, *ListSandboxServicesRequest) (*ListSandboxServicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSandboxServices not implemented")
+}
+func (UnimplementedSwitchboardServer) StartSandboxService(context.Context, *StartSandboxServiceRequest) (*StartSandboxServiceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartSandboxService not implemented")
+}
+func (UnimplementedSwitchboardServer) StopSandboxService(context.Context, *StopSandboxServiceRequest) (*StopSandboxServiceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopSandboxService not implemented")
+}
+func (UnimplementedSwitchboardServer) ForwardPort(grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]) error {
+	return status.Error(codes.Unimplemented, "method ForwardPort not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -957,6 +1054,67 @@ func _Switchboard_ListEscapeHatchRuns_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_ListSandboxServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSandboxServicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListSandboxServices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListSandboxServices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListSandboxServices(ctx, req.(*ListSandboxServicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_StartSandboxService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartSandboxServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).StartSandboxService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_StartSandboxService_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).StartSandboxService(ctx, req.(*StartSandboxServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_StopSandboxService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopSandboxServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).StopSandboxService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_StopSandboxService_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).StopSandboxService(ctx, req.(*StopSandboxServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_ForwardPort_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(SwitchboardServer).ForwardPort(&grpc.GenericServerStream[PortForwardFrame, PortForwardFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_ForwardPortServer = grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1028,6 +1186,18 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListEscapeHatchRuns",
 			Handler:    _Switchboard_ListEscapeHatchRuns_Handler,
 		},
+		{
+			MethodName: "ListSandboxServices",
+			Handler:    _Switchboard_ListSandboxServices_Handler,
+		},
+		{
+			MethodName: "StartSandboxService",
+			Handler:    _Switchboard_StartSandboxService_Handler,
+		},
+		{
+			MethodName: "StopSandboxService",
+			Handler:    _Switchboard_StopSandboxService_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1065,6 +1235,12 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Subscribe",
 			Handler:       _Switchboard_Subscribe_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "ForwardPort",
+			Handler:       _Switchboard_ForwardPort_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "switchboard.proto",

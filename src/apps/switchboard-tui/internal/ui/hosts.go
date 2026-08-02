@@ -171,6 +171,9 @@ func (m Model) updateHostsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		if row := m.hostsCurrent(); row != nil {
 			m.manager.Disconnect(row.Host.Entry.ID)
+			// The access path to that host's services is gone; say so rather than
+			// leaving dead local addresses on screen (feature 006, US5-2).
+			m = m.hostDisconnected(row.Host.Entry.ID)
 			return m, m.hostsCmd()
 		}
 		return m, nil

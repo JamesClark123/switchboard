@@ -47,6 +47,15 @@ type Runner interface {
 	IsRunning(ctx context.Context, containerRef string) (bool, error)
 	// CloneRepo uses the sandbox tooling's clone option to seed dest from a repo.
 	CloneRepo(ctx context.Context, repo, dest string, log func(string)) error
+	// PublishPort exposes sandboxPort inside containerRef as hostPort on the daemon
+	// host's LOOPBACK interface (feature 006, research R2).
+	PublishPort(ctx context.Context, containerRef string, hostPort, sandboxPort uint32) error
+	// UnpublishPort reverses PublishPort with the identical triple.
+	UnpublishPort(ctx context.Context, containerRef string, hostPort, sandboxPort uint32) error
+	// Exec BUILDS (does not start) a command that runs argv inside containerRef.
+	// Returning the *exec.Cmd lets the caller wire pipes and a process group for a
+	// long-running service, or just call CombinedOutput for a one-shot probe.
+	Exec(ctx context.Context, containerRef string, argv []string) *exec.Cmd
 }
 
 // SbxRunner is the production Runner that shells out to the host `sbx` binary.
@@ -187,6 +196,51 @@ func (r *SbxRunner) IsRunning(ctx context.Context, ref string) (bool, error) {
 func (r *SbxRunner) CloneRepo(ctx context.Context, repo, dest string, log func(string)) error {
 	_, err := r.run(ctx, log, "clone", repo, dest)
 	return err
+}
+
+// portSpec renders the publish/unpublish triple `127.0.0.1:<host>:<sandbox>/tcp`.
+//
+// The host IP is pinned to loopback deliberately. `sbx ports --publish` takes
+// `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]`, and omitting the host IP binds
+// every interface — which would put a forwarded sandbox service on the LAN. Feature
+// 006 exposes services to the developer, not to their network, so the segment is
+// always written out (spec Assumptions; research R2).
+func portSpec(hostPort, sandboxPort uint32) string {
+	return fmt.Sprintf("127.0.0.1:%d:%d/tcp", hostPort, sandboxPort)
+}
+
+// PublishPort maps to `sbx ports <ref> --publish 127.0.0.1:<host>:<sandbox>/tcp`
+// (feature 006, FR-050).
+//
+// NOTE (research R2/R6): `sbx` is not installed in the dev environment, so this
+// argv is documentation-derived (CLAUDE.md, "Publishing ports to the host") and
+// pinned by a test. See specs/006-port-forwarding/contracts/sbx-ports-cli.md for
+// the reconciliation checklist.
+func (r *SbxRunner) PublishPort(ctx context.Context, ref string, hostPort, sandboxPort uint32) error {
+	_, err := r.run(ctx, nil, "ports", ref, "--publish", portSpec(hostPort, sandboxPort))
+	return err
+}
+
+// UnpublishPort reverses PublishPort. The triple MUST mirror the publish exactly —
+// the caller replays the stored pair rather than recomputing it from the
+// declaration, because {{port}} substitution can move the effective port.
+func (r *SbxRunner) UnpublishPort(ctx context.Context, ref string, hostPort, sandboxPort uint32) error {
+	_, err := r.run(ctx, nil, "ports", ref, "--unpublish", portSpec(hostPort, sandboxPort))
+	return err
+}
+
+// Exec maps to `sbx exec <ref> -- <argv...>`, building the command without
+// starting it.
+//
+// ⚠ NOTE (research R3): this is the LEAST verified argv in the runner. Unlike the
+// ports surface, no documentation was consulted for it — it is assumed by analogy
+// with `docker exec`. Three feature-006 call sites ride on it (starting an
+// in-sandbox service, reading /proc/net/tcp to diagnose a loopback-only bind, and
+// killing the in-sandbox process group), so all three move together if the real
+// spelling differs. It is the first thing to reconcile against a real `sbx`.
+func (r *SbxRunner) Exec(ctx context.Context, ref string, argv []string) *exec.Cmd {
+	args := append([]string{"exec", ref, "--"}, argv...)
+	return exec.CommandContext(ctx, r.Bin, args...)
 }
 
 // AddKit maps to `sbx kit add <sandbox> <kit-source>` (feature 004, FR-033).

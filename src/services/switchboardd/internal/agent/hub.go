@@ -109,6 +109,20 @@ func (h *Hub) PublishEscapeHatchRun(run *pb.EscapeHatchRun) {
 	h.fanout(&pb.Event{Event: &pb.Event_EscapeHatchRun{EscapeHatchRun: run}})
 }
 
+// PublishServiceInstance broadcasts a service-instance state change (feature 006,
+// FR-052). Live-only, like the other Publish* methods — the durable record is the
+// in-memory instance store, queryable via ListSandboxServices. A FAILED transition
+// additionally raises a notification, but the supervisor owns that decision; this
+// method only fans out the state.
+func (h *Hub) PublishServiceInstance(inst *pb.ServiceInstance) {
+	if inst == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fanout(&pb.Event{Event: &pb.Event_ServiceInstance{ServiceInstance: inst}})
+}
+
 // EmitNotification buffers and broadcasts a NotificationEvent (FR-024/025). The
 // event identifies the subject sandbox and this host (FR-026).
 func (h *Hub) EmitNotification(sandboxID string, kind pb.NotificationKind, message string, now time.Time) *pb.NotificationEvent {

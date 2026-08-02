@@ -264,3 +264,40 @@ func (c *Conn) ListSources(ctx context.Context, root string, reposOnly bool) ([]
 	}
 	return resp.GetCandidates(), nil
 }
+
+// --- Port forwarding (feature 006) ---
+
+// ListServices returns the sandbox's declared services joined with their current
+// instance state (FR-045).
+func (c *Conn) ListServices(ctx context.Context, sandboxID string) ([]*pb.SandboxService, error) {
+	resp, err := c.api.ListSandboxServices(ctx, &pb.ListSandboxServicesRequest{SandboxId: sandboxID})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetServices(), nil
+}
+
+// StartService starts one declared service by name. It returns as soon as the
+// instance exists (STARTING); readiness arrives on the event stream.
+func (c *Conn) StartService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
+	resp, err := c.api.StartSandboxService(ctx, &pb.StartSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetInstance(), nil
+}
+
+// StopService terminates a running service and releases its ports (FR-048).
+func (c *Conn) StopService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
+	resp, err := c.api.StopSandboxService(ctx, &pb.StopSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetInstance(), nil
+}
+
+// ForwardPort opens one relay stream for a single TCP connection on the developer's
+// machine. The caller sends the initial `open` frame; see internal/forward.
+func (c *Conn) ForwardPort(ctx context.Context) (pb.Switchboard_ForwardPortClient, error) {
+	return c.api.ForwardPort(ctx)
+}

@@ -68,6 +68,50 @@ func (kit *Kit) ValidateEscapeHatch() []string {
 	return errs
 }
 
+// ValidateServices checks the kit's declared services against the authoring rules
+// (feature 006, FR-043), returning a human-readable error per violation. Each
+// message names the offending field, because "the kit is invalid" is useless to
+// someone with six services on screen.
+//
+// This is the client-side gate; portforward.Resolve re-checks the minimum
+// invariants daemon-side at attach, so a hand-edited services.yaml cannot bypass
+// it, and the executor re-validates working-dir containment at start time.
+func (kit *Kit) ValidateServices() []string {
+	var errs []string
+	seen := make(map[string]bool, len(kit.Services))
+	for i, s := range kit.Services {
+		label := fmt.Sprintf("service #%d", i+1)
+		if s.Name != "" {
+			label = fmt.Sprintf("service %q", s.Name)
+		}
+		if strings.TrimSpace(s.Name) == "" {
+			errs = append(errs, label+": name is required")
+		} else if !kebabRe.MatchString(s.Name) {
+			errs = append(errs, label+": name must be kebab-case (lowercase letters, digits, hyphens)")
+		} else if seen[s.Name] {
+			errs = append(errs, label+": duplicate name within this kit")
+		}
+		seen[s.Name] = true
+
+		if strings.TrimSpace(s.Command) == "" {
+			errs = append(errs, label+": command is required")
+		}
+		if s.ListenPort == 0 || s.ListenPort > 65535 {
+			errs = append(errs, label+": listen port must be between 1 and 65535")
+		}
+		if s.WorkingDir != "" && !workingDirWithinWorkspace(s.WorkingDir) {
+			errs = append(errs, label+": working dir must be relative and stay within the workspace")
+		}
+		// {{port}} only means something for an on-host service: an in-sandbox service
+		// has its own network namespace, so its declared port can never collide and
+		// substituting a different one would just break the publish mapping.
+		if !s.OnHost && strings.Contains(s.Command, "{{port}}") {
+			errs = append(errs, label+": {{port}} only applies to an on-host service (an in-sandbox port cannot collide)")
+		}
+	}
+	return errs
+}
+
 // nonBlank drops empty/whitespace-only entries from a string slice.
 func nonBlank(in []string) []string {
 	out := make([]string, 0, len(in))

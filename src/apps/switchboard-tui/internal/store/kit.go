@@ -49,6 +49,46 @@ type Kit struct {
 	// never sees it — and is persisted in a sidecar kits/<id>/escape-hatch.yaml,
 	// travelling to the daemon as structured proto on KitSpec.escape_hatch.
 	EscapeHatch []KitEscapeHatchCommand `yaml:"-"`
+
+	// Services is the second switchboard-owned section (feature 006): the
+	// long-running services a sandbox using this kit can offer. Same treatment as
+	// EscapeHatch — `yaml:"-"` keeps it out of spec.yaml so `sbx kit validate` never
+	// sees it, and it is persisted in a sidecar kits/<id>/services.yaml, travelling
+	// to the daemon as structured proto on KitSpec.services.
+	Services []KitService `yaml:"-"`
+}
+
+// KitService is one long-running service declared on a kit (feature 006, FR-043).
+// The developer — never the agent — chooses which of these to start.
+type KitService struct {
+	Name string `yaml:"name"`
+	// Command is run via `sh -c`. For an on-host service it may contain the
+	// {{port}} token, which the daemon replaces with a freshly allocated host port
+	// so two sandboxes can run the same service at once (research R4).
+	Command string `yaml:"command"`
+	// ListenPort is what the command binds IN ITS OWN environment — inside the
+	// sandbox, or on the daemon host. It is not the port the developer connects to;
+	// that one is allocated on their machine when the service starts.
+	ListenPort uint32 `yaml:"listenPort"`
+	// OnHost selects the execution location: false => in the sandbox (the default),
+	// true => on the host supervising it. Rendered as a bool rather than an enum
+	// because the sidecar is hand-editable and "onHost: true" reads unambiguously.
+	OnHost bool `yaml:"onHost,omitempty"`
+	// IsWebsite enables the browser-open action; otherwise the client offers a
+	// copyable address (FR-050).
+	IsWebsite  bool   `yaml:"isWebsite,omitempty"`
+	WorkingDir string `yaml:"workingDir,omitempty"` // optional, workspace-relative
+	// ReadinessTimeoutSecs bounds how long the service may take to start listening.
+	// 0 => the daemon default (60s).
+	ReadinessTimeoutSecs uint32 `yaml:"readinessTimeoutSeconds,omitempty"`
+}
+
+// Location renders the execution location for display.
+func (s KitService) Location() string {
+	if s.OnHost {
+		return "on host"
+	}
+	return "in sandbox"
 }
 
 // KitEscapeHatchCommand is one authorized out-of-sandbox command (feature 005). The
@@ -157,6 +197,10 @@ func (k *KitStore) file(id string) string { return filepath.Join(k.dir(id), "spe
 // spec.yaml but never rendered into it, so the Docker artifact stays pure.
 func (k *KitStore) ehFile(id string) string { return filepath.Join(k.dir(id), "escape-hatch.yaml") }
 
+// svcFile is the switchboard-owned services sidecar (feature 006), kept beside
+// spec.yaml on the same terms as the escape-hatch one.
+func (k *KitStore) svcFile(id string) string { return filepath.Join(k.dir(id), "services.yaml") }
+
 // ID is the kit's stable identifier: its directory name, derived from Name. It is
 // also the directory name the daemon materializes into, so it is constrained to
 // what the daemon accepts (lowercase alphanumeric, '-', '_').
@@ -219,7 +263,36 @@ func (kit *Kit) ToSpec() (*pb.KitSpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pb.KitSpec{Id: kit.ID(), SpecYaml: y, EscapeHatch: kit.escapeHatchProto()}, nil
+	return &pb.KitSpec{
+		Id:          kit.ID(),
+		SpecYaml:    y,
+		EscapeHatch: kit.escapeHatchProto(),
+		Services:    kit.servicesProto(),
+	}, nil
+}
+
+// servicesProto maps the client service declarations to their wire form.
+func (kit *Kit) servicesProto() []*pb.KitService {
+	if len(kit.Services) == 0 {
+		return nil
+	}
+	out := make([]*pb.KitService, 0, len(kit.Services))
+	for _, s := range kit.Services {
+		loc := pb.ServiceLocation_SERVICE_LOCATION_IN_SANDBOX
+		if s.OnHost {
+			loc = pb.ServiceLocation_SERVICE_LOCATION_ON_HOST
+		}
+		out = append(out, &pb.KitService{
+			Name:                    s.Name,
+			Command:                 s.Command,
+			ListenPort:              s.ListenPort,
+			Location:                loc,
+			IsWebsite:               s.IsWebsite,
+			WorkingDir:              s.WorkingDir,
+			ReadinessTimeoutSeconds: s.ReadinessTimeoutSecs,
+		})
+	}
+	return out
 }
 
 // escapeHatchProto maps the client escape-hatch commands to their wire form.
@@ -280,6 +353,9 @@ func (k *KitStore) Save(kit *Kit) (*Kit, error) {
 	if err := k.saveEscapeHatch(id, kit.EscapeHatch); err != nil {
 		return nil, err
 	}
+	if err := k.saveServices(id, kit.Services); err != nil {
+		return nil, err
+	}
 	return kit, nil
 }
 
@@ -319,6 +395,42 @@ func (k *KitStore) loadEscapeHatch(id string) ([]KitEscapeHatchCommand, error) {
 	return sc.EscapeHatch, nil
 }
 
+// servicesSidecar is the on-disk shape of services.yaml.
+type servicesSidecar struct {
+	Services []KitService `yaml:"services"`
+}
+
+// saveServices writes (or, when empty, removes) the services sidecar.
+func (k *KitStore) saveServices(id string, services []KitService) error {
+	if len(services) == 0 {
+		if err := os.Remove(k.svcFile(id)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, err := yaml.Marshal(servicesSidecar{Services: services})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(k.svcFile(id), b, 0o644)
+}
+
+// loadServices reads the services sidecar; a missing file yields no services.
+func (k *KitStore) loadServices(id string) ([]KitService, error) {
+	b, err := os.ReadFile(k.svcFile(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var sc servicesSidecar
+	if err := yaml.Unmarshal(b, &sc); err != nil {
+		return nil, err
+	}
+	return sc.Services, nil
+}
+
 // Get loads a kit by id (ErrKitNotFound when absent).
 func (k *KitStore) Get(id string) (*Kit, error) {
 	b, err := os.ReadFile(k.file(id))
@@ -338,6 +450,12 @@ func (k *KitStore) Get(id string) (*Kit, error) {
 		return nil, err
 	}
 	kit.EscapeHatch = eh
+	// Likewise the services (feature 006).
+	services, err := k.loadServices(id)
+	if err != nil {
+		return nil, err
+	}
+	kit.Services = services
 	return &kit, nil
 }
 

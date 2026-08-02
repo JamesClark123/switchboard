@@ -262,6 +262,11 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	if eh := m.escapeHatchBadge(row.sb.GetId()); eh != "" {
 		title += "   " + eh
 	}
+	// feature 006: the only cross-sandbox surface — how many services this sandbox
+	// currently has running (FR-045).
+	if svc := m.runningServicesBadge(row.sb.GetId()); svc != "" {
+		title += "   " + svc
+	}
 	return listItem{
 		id:      row.sb.GetId(),
 		host:    row.host,
@@ -547,6 +552,11 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyIs(msg, m.keys.EscapeHatchRuns):
 		if sb := m.actionable(); sb != nil {
 			return m.enterRuns(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.Services):
+		if sb := m.actionable(); sb != nil {
+			return m.enterServices(sb, m.currentHostID())
 		}
 		return m, nil
 	}

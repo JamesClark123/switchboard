@@ -86,7 +86,7 @@ func TestConnAttachTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	// The snapshot was drained into the sink before AttachTerminal returned.
 	if string(sink.data) == "" || !contains(sink.data, "SNAP:sb1") {
 		t.Fatalf("sink after attach = %q, want the snapshot", string(sink.data))

@@ -72,7 +72,7 @@ func TestAddKitMergesEscapeHatchLaterWins(t *testing.T) {
 		{Name: "install-deps", Command: "npm ci", ConsentMode: pb.ConsentMode_CONSENT_MODE_AUTO_RUN}, // collision -> later wins
 		{Name: "e2e", Command: "pnpm test:e2e", ConsentMode: pb.ConsentMode_CONSENT_MODE_REQUIRES_APPROVAL},
 	}
-	out, err := m.AddKit(ctx, sb.GetId(), "/kits/extra", newCmds, nil)
+	out, err := m.AddKit(ctx, sb.GetId(), "/kits/extra", newCmds, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

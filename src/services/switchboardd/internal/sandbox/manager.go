@@ -17,6 +17,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -102,6 +103,11 @@ type LaunchRequest struct {
 	// later-kit-wins before calling in. Persisted on the sandbox so the allowlist is
 	// enforceable and survives a container recreate.
 	EscapeHatchCommands []*pb.EscapeHatchCommand
+	// Services is the resolved service set for this sandbox (feature 006, FR-044) —
+	// the gRPC layer merges the attached kits' services with later-kit-wins before
+	// calling in. Persisted on the sandbox so the startable set is enforceable and
+	// survives a container recreate.
+	Services []*pb.KitService
 }
 
 // List returns all sandboxes on this host, first pruning any whose retained
@@ -182,6 +188,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		Agent:               &pb.AgentSession{Spec: agent, Status: pb.AgentStatus_AGENT_STATUS_IDLE, LastEventAt: now},
 		Kits:                req.KitSources,
 		EscapeHatchCommands: req.EscapeHatchCommands,
+		Services:            req.Services,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -497,7 +504,9 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // is handed a dead PTY and the client sees an immediate EOF.
 // newCommands carries the attached kit's escape-hatch commands (feature 005); they
 // are merged into the sandbox's resolved set with later-kit-wins on name collision.
-func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, onLog func(string)) (*pb.Sandbox, error) {
+// newServices carries the attached kit's declared services (feature 006); they are
+// merged into the sandbox's resolved set with the same later-kit-wins rule.
+func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, newServices []*pb.KitService, onLog func(string)) (*pb.Sandbox, error) {
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -509,6 +518,12 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands 
 	// Merge up front so an invalid escape-hatch entry fails the attach before sbx
 	// restarts the sandbox.
 	mergedCommands, err := escapehatch.Resolve(sb.GetEscapeHatchCommands(), newCommands)
+	if err != nil {
+		return nil, err
+	}
+	// Same up-front merge for services: an invalid declaration must fail the attach
+	// before sbx restarts the sandbox, not after.
+	mergedServices, err := portforward.Resolve(sb.GetServices(), newServices)
 	if err != nil {
 		return nil, err
 	}
@@ -537,6 +552,7 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands 
 			s.Kits = append(s.Kits, kitSource)
 		}
 		s.EscapeHatchCommands = mergedCommands
+		s.Services = mergedServices
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
 		s.Error = ""
 		s.UpdatedAt = timestamppb.Now()

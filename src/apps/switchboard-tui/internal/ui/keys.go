@@ -18,27 +18,30 @@ type keyMap struct {
 	// EscapeHatchRuns opens the escape-hatch run review for the selected sandbox
 	// (feature 005).
 	EscapeHatchRuns key.Binding
-	Launch          key.Binding
-	NewConfig       key.Binding
-	FromConfig      key.Binding
-	Hosts           key.Binding
-	Groups          key.Binding
-	VSCode          key.Binding
-	Terminal        key.Binding
-	Popout          key.Binding
-	Inbox           key.Binding
-	StartStop       key.Binding
-	Destroy         key.Binding
-	Rename          key.Binding
-	Tag             key.Binding
-	Update          key.Binding
-	Add             key.Binding
-	Delete          key.Binding
-	Connect         key.Binding
-	Disconnect      key.Binding
-	Toggle          key.Binding
-	Confirm         key.Binding
-	Cancel          key.Binding
+	// Services opens the per-sandbox port-forwarding screen (feature 006, FR-045).
+	// `p` for ports; verified free against every other binding in this map.
+	Services   key.Binding
+	Launch     key.Binding
+	NewConfig  key.Binding
+	FromConfig key.Binding
+	Hosts      key.Binding
+	Groups     key.Binding
+	VSCode     key.Binding
+	Terminal   key.Binding
+	Popout     key.Binding
+	Inbox      key.Binding
+	StartStop  key.Binding
+	Destroy    key.Binding
+	Rename     key.Binding
+	Tag        key.Binding
+	Update     key.Binding
+	Add        key.Binding
+	Delete     key.Binding
+	Connect    key.Binding
+	Disconnect key.Binding
+	Toggle     key.Binding
+	Confirm    key.Binding
+	Cancel     key.Binding
 }
 
 func newKeyMap() keyMap {
@@ -55,6 +58,7 @@ func newKeyMap() keyMap {
 		Kits:            key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kits")),
 		AddKit:          key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "add kit")),
 		EscapeHatchRuns: key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "runs")),
+		Services:        key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
 		Launch:          key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
 		NewConfig:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
 		FromConfig:      key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "from config")),
@@ -98,7 +102,7 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Kits, k.AddKit, k.EscapeHatchRuns)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

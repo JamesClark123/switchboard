@@ -96,6 +96,26 @@ service Switchboard {
   // Runs are in-memory only ("session" = daemon uptime); empty sandbox_id => all
   // sandboxes on this host.
   rpc ListEscapeHatchRuns(ListEscapeHatchRunsRequest) returns (ListEscapeHatchRunsResponse);
+
+  // --- Port forwarding (feature 006) ---
+  // Services are DECLARED on a kit and started only by the developer's explicit
+  // selection (FR-045) — nothing here is reachable by the sandbox's agent.
+  //
+  // Every service the sandbox's attached kits declare, joined with its current
+  // instance state. The set is exactly Sandbox.services — no more.
+  rpc ListSandboxServices(ListSandboxServicesRequest) returns (ListSandboxServicesResponse);
+  // Start one declared service by NAME, validated against the sandbox's persisted
+  // service set (an unknown name starts nothing => NOT_FOUND). Returns as soon as
+  // the instance exists (STARTING); readiness arrives via Event.service_instance.
+  // Idempotent: a STARTING/RUNNING service returns its existing instance (FR-048).
+  rpc StartSandboxService(StartSandboxServiceRequest) returns (StartSandboxServiceResponse);
+  // Terminate the whole process tree — graceful signal, bounded grace period, then
+  // force-kill — releasing the port only once the listen port is observed free
+  // (FR-048). Idempotent on an already-stopped service.
+  rpc StopSandboxService(StopSandboxServiceRequest) returns (StopSandboxServiceResponse);
+  // Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
+  // One stream per accepted TCP connection; see PortForwardFrame.
+  rpc ForwardPort(stream PortForwardFrame) returns (stream PortForwardFrame);
 }
 
 // ---------- Enums ----------
@@ -130,6 +150,10 @@ enum NotificationKind {
   // --- feature 005 ---
   NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL = 3; // FR-039: prompt the developer
   NOTIFICATION_KIND_ESCAPE_HATCH_RUN_COMPLETE = 4;   // FR-042: run finished (any terminal outcome)
+  // --- feature 006 ---
+  // FR-052: a service entered FAILED. Failures only — a successful start and a
+  // developer-initiated stop are silent (they are actions the developer just took).
+  NOTIFICATION_KIND_SERVICE_FAILED = 5;
 }
 
 // --- Escape hatch (feature 005) ---
@@ -149,6 +173,41 @@ enum EscapeHatchRunStatus {
   ESCAPE_HATCH_RUN_STATUS_TIMED_OUT = 5;
   ESCAPE_HATCH_RUN_STATUS_CANCELLED = 6; // sandbox stopped/destroyed/refreshed mid-run
   ESCAPE_HATCH_RUN_STATUS_DENIED = 7;    // approval denied or window elapsed
+}
+
+// --- Port forwarding (feature 006) ---
+
+// Where a declared service's command runs (FR-043, FR-046). UNSPECIFIED is
+// rejected at authoring and at attach: there is no safe default, and guessing
+// would run a host command inside a sandbox or vice versa.
+enum ServiceLocation {
+  SERVICE_LOCATION_UNSPECIFIED = 0;
+  SERVICE_LOCATION_IN_SANDBOX = 1;
+  SERVICE_LOCATION_ON_HOST = 2;
+}
+
+// FR-047. RUNNING is a claim about REACHABILITY, not about process launch: the
+// daemon sets it only after a successful dial of the host endpoint.
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  SERVICE_STATE_STOPPED = 1;
+  SERVICE_STATE_STARTING = 2;
+  SERVICE_STATE_RUNNING = 3;
+  SERVICE_STATE_FAILED = 4;
+}
+
+// FR-051: every failure carries a reason, never silently dropped.
+enum ServiceFailureReason {
+  SERVICE_FAILURE_REASON_UNSPECIFIED = 0;
+  SERVICE_FAILURE_REASON_LAUNCH_FAILED = 1;          // could not start the command
+  SERVICE_FAILURE_REASON_PORT_IN_USE = 2;            // effective port already held
+  SERVICE_FAILURE_REASON_NOT_LISTENING = 3;          // readiness window elapsed, nothing listening
+  SERVICE_FAILURE_REASON_NOT_LISTENING_LOOPBACK = 4; // bound to loopback only (research R5)
+  SERVICE_FAILURE_REASON_EXITED_EARLY = 5;           // exited before becoming ready
+  SERVICE_FAILURE_REASON_EXITED_UNEXPECTEDLY = 6;    // exited after reaching RUNNING
+  SERVICE_FAILURE_REASON_SANDBOX_NOT_RUNNING = 7;    // in-sandbox start with the sandbox stopped
+  SERVICE_FAILURE_REASON_NO_LOCAL_PORT = 8;          // no free port on the developer's machine
+  SERVICE_FAILURE_REASON_HOST_UNREACHABLE = 9;       // remote host path lost while running
 }
 
 // ClientKind distinguishes attachments to a persistent terminal session so the
@@ -220,6 +279,12 @@ message Sandbox {
   // recreate replays it, and refresh can re-inject the rule + wrapper. This — not the
   // opaque `kits` list — is what the invocation endpoint validates against (FR-036).
   repeated EscapeHatchCommand escape_hatch_commands = 19;
+  // --- feature 006 ---
+  // RESOLVED service set = union of attached kits' services, later-kit-wins on
+  // name collision. Persisted so the startable set is enforceable (FR-044/FR-045)
+  // and a container recreate replays it. This — not the opaque `kits` list — is
+  // what StartSandboxService validates a name against.
+  repeated KitService services = 20;
 }
 
 // ---------- Agent kits (feature 004) ----------
@@ -238,6 +303,9 @@ message KitSpec {
   // into spec_yaml — the host `sbx` never sees them; the daemon enforces + runs them.
   // Present only on client-authored kits (KitRef.spec); external `source` kits carry none.
   repeated EscapeHatchCommand escape_hatch = 3;
+  // feature 006: structured, switchboard-owned service declarations. Also NOT
+  // rendered into spec_yaml; persisted client-side in kits/<id>/services.yaml.
+  repeated KitService services = 4;
 }
 
 // KitRef selects a kit either by inline authored spec or by an external source
@@ -318,6 +386,93 @@ message DecideEscapeHatchRunResponse {
 
 message ListEscapeHatchRunsRequest { string sandbox_id = 1; } // empty => all sandboxes on this host
 message ListEscapeHatchRunsResponse { repeated EscapeHatchRun runs = 1; }
+
+// ---------- Port forwarding (feature 006) ----------
+
+// KitService: one long-running service declared on a kit (FR-043). Like
+// EscapeHatchCommand, this is switchboard-owned structured data — it is NOT
+// rendered into the opaque Docker spec.yaml, and the host `sbx` never sees it.
+// Carried on KitSpec and, once resolved, on Sandbox.
+message KitService {
+  string name = 1;         // kebab-case; unique within the kit; the allowlist key
+  string command = 2;      // run via `sh -c`; may contain the {{port}} token (research R4)
+  uint32 listen_port = 3;  // 1..65535 — what the command binds IN ITS OWN environment
+  ServiceLocation location = 4;
+  bool is_website = 5;     // enables the browser-open action; else a copyable address
+  string working_dir = 6;  // optional, workspace-relative (no escape past root)
+  uint32 readiness_timeout_seconds = 7; // 0 => daemon default (60s)
+}
+
+// ServiceInstance: one execution attempt of a KitService for one sandbox.
+// In-memory and session-scoped (research R7) — a daemon restart leaves no
+// instance running and none claiming to be (FR-045, SC-005).
+message ServiceInstance {
+  string id = 1;                  // svc-<seq>
+  string sandbox_id = 2;
+  string service_name = 3;        // resolves against Sandbox.services (the allowlist check)
+  ServiceState state = 4;
+  // What the command actually binds. Equals listen_port except for an on-host
+  // service whose command uses {{port}}, where the daemon allocates a free host
+  // port so concurrent sandboxes do not collide (research R4).
+  uint32 effective_port = 5;
+  uint32 host_endpoint_port = 6;  // port on the DAEMON HOST that ForwardPort dials
+  uint32 local_port = 7;          // port on the DEVELOPER'S MACHINE; 0 while not forwarded
+  ServiceFailureReason failure_reason = 8;
+  string failure_detail = 9;      // human-readable; names the remedy where one exists
+  string output = 10;             // bounded 1 MiB, TAIL-retained (research R9)
+  bool output_truncated = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp ended_at = 13;
+}
+
+// One row of the per-sandbox service list: the declaration joined with its
+// current instance (absent => never started this session).
+message SandboxService {
+  KitService declared = 1;
+  ServiceInstance instance = 2;   // unset => STOPPED, never started
+}
+
+message ListSandboxServicesRequest { string sandbox_id = 1; }
+message ListSandboxServicesResponse { repeated SandboxService services = 1; }
+
+message StartSandboxServiceRequest {
+  string sandbox_id = 1;
+  string service_name = 2;
+}
+message StartSandboxServiceResponse { ServiceInstance instance = 1; }
+
+message StopSandboxServiceRequest {
+  string sandbox_id = 1;
+  string service_name = 2;
+}
+message StopSandboxServiceResponse { ServiceInstance instance = 1; }
+
+// PortForwardFrame is one message on the ForwardPort byte relay (research R1).
+// One stream per accepted TCP connection on the developer's machine:
+//
+//   client                                   daemon
+//   ──────────────────────────────────────────────────────────────────
+//   open{instance_id, local_port}   ──────►  dial 127.0.0.1:<host_endpoint_port>
+//                                   ◄──────  opened{} | error status
+//   data ◄──────────────────────────────────► data          (until either closes)
+//
+// The first client frame MUST be `open`; anything else is INVALID_ARGUMENT. The
+// daemon rejects an instance that is not RUNNING (FAILED_PRECONDITION), which is
+// what stops a stale client from presenting a dead address as working.
+message PortForwardFrame {
+  oneof frame {
+    Open open = 1;       // client -> daemon, first frame only
+    Opened opened = 2;   // daemon -> client, once, after a successful dial
+    bytes data = 3;      // both directions
+    Closed closed = 4;   // either direction; carries a reason when abnormal
+  }
+  message Open {
+    string instance_id = 1;
+    uint32 local_port = 2;   // the port the client bound on the developer's machine
+  }
+  message Opened {}
+  message Closed { string reason = 1; }  // empty => normal half-close
+}
 
 // ---------- RPC payloads ----------
 
@@ -464,6 +619,9 @@ message Event {
     // feature 005: a run's state changed (created / approved / running / terminal).
     // Drives the list-page badge, the approval modal, and the inbox.
     EscapeHatchRun escape_hatch_run = 4;
+    // feature 006: a service instance's state changed. Drives the per-sandbox
+    // service list, the sandbox-list running indicator, and the inbox.
+    ServiceInstance service_instance = 5;
   }
   message SandboxRemoved { string sandbox_id = 1; }
 }

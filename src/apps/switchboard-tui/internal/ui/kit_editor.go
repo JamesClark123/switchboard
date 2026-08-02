@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ const (
 	secCredentials
 	secAgentContext
 	secEscapeHatch
+	secServices
 	secCount
 )
 
@@ -61,6 +64,8 @@ func (s kitSection) title() string {
 		return "Agent context"
 	case secEscapeHatch:
 		return "Escape-hatch commands"
+	case secServices:
+		return "Services (port forwarding)"
 	}
 	return ""
 }
@@ -85,13 +90,15 @@ func (s kitSection) blurb() string {
 		return "markdown appended to the agent's memory"
 	case secEscapeHatch:
 		return "whole commands the agent may run OUTSIDE the sandbox"
+	case secServices:
+		return "long-running services YOU can start and reach on a local port"
 	}
 	return ""
 }
 
 // itemized reports whether a section holds a list of items (vs. a single form).
 func (s kitSection) itemized() bool {
-	return s == secInstall || s == secStartup || s == secInitFiles || s == secEscapeHatch
+	return s == secInstall || s == secStartup || s == secInitFiles || s == secEscapeHatch || s == secServices
 }
 
 // kitFormVals holds the values bound into whichever form is open.
@@ -125,6 +132,11 @@ type kitFormVals struct {
 	// ehSubcommands and ehWorkspaces are newline-separated lists in the form;
 	// ehArgsPattern is a raw regex. Parsed into slices on apply.
 	ehSubcommands, ehArgsPattern, ehWorkspaces string
+
+	// service item fields (feature 006). svcPort and svcReadiness are strings so a
+	// non-numeric entry can be rejected with a message instead of silently zeroing.
+	svcName, svcPort, svcWorkingDir, svcReadiness string
+	svcOnHost, svcIsWebsite                       bool
 }
 
 // kitEditorState backs the editor. The kit under edit is held by value so an
@@ -167,6 +179,7 @@ const (
 	formStartup
 	formInitFile
 	formEscapeHatch
+	formService
 )
 
 // enterKitEditor opens the editor on an existing kit, or a blank one when nil.
@@ -470,6 +483,35 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 			huh.NewInput().Key("maxDuration").Title("Max duration (seconds)").
 				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
 		))
+	case secServices:
+		var it store.KitService
+		if idx >= 0 && idx < len(m.kitEditor.kit.Services) {
+			it = m.kitEditor.kit.Services[idx]
+		}
+		v.svcName, v.itemCommand = it.Name, it.Command
+		v.svcOnHost, v.svcIsWebsite, v.svcWorkingDir = it.OnHost, it.IsWebsite, it.WorkingDir
+		if it.ListenPort > 0 {
+			v.svcPort = strconv.Itoa(int(it.ListenPort))
+		}
+		if it.ReadinessTimeoutSecs > 0 {
+			v.svcReadiness = strconv.Itoa(int(it.ReadinessTimeoutSecs))
+		}
+		return m.openKitForm(formService, m.newKitForm(
+			huh.NewInput().Key("name").Title("Name").
+				Description("kebab-case, e.g. web. You start the service by this name.").Value(&v.svcName),
+			huh.NewText().Key("command").Title("Start command").
+				Description("Run via sh -c. Must listen on ALL interfaces (e.g. --host 0.0.0.0), or it\nwill be unreachable from outside its environment.").Value(&v.itemCommand),
+			huh.NewInput().Key("listenPort").Title("Listen port").
+				Description("The port THIS COMMAND binds in its own environment — not the one you\nconnect to. A free local port is assigned for you when it starts.").Value(&v.svcPort),
+			huh.NewConfirm().Key("onHost").Title("Run on the host").
+				Description("Off = inside the sandbox. On = on the host supervising it, in this\nsandbox's workspace. On-host commands may use {{port}} for a fresh port.").Value(&v.svcOnHost),
+			huh.NewConfirm().Key("isWebsite").Title("Serves a website").
+				Description("On = offer to open it in a browser. Off = show a copyable address.").Value(&v.svcIsWebsite),
+			huh.NewInput().Key("workingDir").Title("Working dir").
+				Description("Optional, relative to the workspace.").Value(&v.svcWorkingDir),
+			huh.NewInput().Key("readiness").Title("Readiness timeout (seconds)").
+				Description("Optional; blank = 60s. How long it may take to start listening.").Value(&v.svcReadiness),
+		))
 	}
 	return m, nil
 }
@@ -607,6 +649,40 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 		} else {
 			k.EscapeHatch = append(k.EscapeHatch, it)
 		}
+	case formService:
+		name, cmd := strings.TrimSpace(v.svcName), strings.TrimSpace(v.itemCommand)
+		if name == "" || cmd == "" {
+			m.kitEditor.status = "name and command are required"
+			return m, nil
+		}
+		port, err := parsePort(v.svcPort)
+		if err != nil {
+			m.kitEditor.status = "listen port: " + err.Error()
+			return m, nil
+		}
+		var readiness uint32
+		if d := strings.TrimSpace(v.svcReadiness); d != "" {
+			n, err := strconv.Atoi(d)
+			if err != nil || n < 0 {
+				m.kitEditor.status = "readiness timeout must be a non-negative number of seconds"
+				return m, nil
+			}
+			readiness = uint32(n)
+		}
+		it := store.KitService{
+			Name:                 name,
+			Command:              cmd,
+			ListenPort:           port,
+			OnHost:               v.svcOnHost,
+			IsWebsite:            v.svcIsWebsite,
+			WorkingDir:           strings.TrimSpace(v.svcWorkingDir),
+			ReadinessTimeoutSecs: readiness,
+		}
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Services) {
+			k.Services[i] = it
+		} else {
+			k.Services = append(k.Services, it)
+		}
 	}
 	m.kitEditor.form = nil
 	m.kitEditor.vals = nil
@@ -626,6 +702,13 @@ func (m *Model) ensureCommands() {
 }
 
 func (m *Model) deleteKitItem(idx int) {
+	if m.kitEditor.section == secServices {
+		if idx < len(m.kitEditor.kit.Services) {
+			m.kitEditor.kit.Services = append(m.kitEditor.kit.Services[:idx], m.kitEditor.kit.Services[idx+1:]...)
+		}
+		m.kitEditor.validation = nil
+		return
+	}
 	if m.kitEditor.section == secEscapeHatch {
 		if idx < len(m.kitEditor.kit.EscapeHatch) {
 			m.kitEditor.kit.EscapeHatch = append(m.kitEditor.kit.EscapeHatch[:idx], m.kitEditor.kit.EscapeHatch[idx+1:]...)
@@ -664,6 +747,11 @@ func (m Model) saveKit() (tea.Model, tea.Cmd) {
 	// Escape-hatch commands are switchboard-owned; validate them client-side (the
 	// Docker portion is validated separately via `v`/ValidateKit).
 	if errs := m.kitEditor.kit.ValidateEscapeHatch(); len(errs) > 0 {
+		m.kitEditor.status = errs[0]
+		return m, nil
+	}
+	// Services are switchboard-owned too (feature 006); same client-side gate.
+	if errs := m.kitEditor.kit.ValidateServices(); len(errs) > 0 {
 		m.kitEditor.status = errs[0]
 		return m, nil
 	}
@@ -800,6 +888,9 @@ func (m Model) kitEditorStatusLine() string {
 }
 
 func (m Model) kitSectionLen() int {
+	if m.kitEditor.section == secServices {
+		return len(m.kitEditor.kit.Services)
+	}
 	if m.kitEditor.section == secEscapeHatch {
 		return len(m.kitEditor.kit.EscapeHatch)
 	}
@@ -859,6 +950,8 @@ func (m Model) kitSectionCount(s kitSection) string {
 		return "—"
 	case secEscapeHatch:
 		n = len(k.EscapeHatch)
+	case secServices:
+		n = len(k.Services)
 	}
 	if n == 0 {
 		return "—"
@@ -867,6 +960,17 @@ func (m Model) kitSectionCount(s kitSection) string {
 }
 
 func (m Model) kitItemLabel(s kitSection, i int) string {
+	if s == secServices {
+		if i >= len(m.kitEditor.kit.Services) {
+			return ""
+		}
+		it := m.kitEditor.kit.Services[i]
+		suffix := fmt.Sprintf("  :%d %s", it.ListenPort, it.Location())
+		if it.IsWebsite {
+			suffix += " web"
+		}
+		return truncate(it.Name+": "+it.Command, 48) + dimStyle.Render(suffix)
+	}
 	if s == secEscapeHatch {
 		if i >= len(m.kitEditor.kit.EscapeHatch) {
 			return ""
@@ -898,6 +1002,24 @@ func (m Model) kitItemLabel(s kitSection, i int) string {
 		return truncate(it.Path, 60) + dimStyle.Render("  "+defaultStr(it.Mode, "0644"))
 	}
 	return ""
+}
+
+// parsePort validates a listen-port entry. A blank or non-numeric port is rejected
+// with a message rather than silently becoming 0, which would attach a service that
+// can never be reached.
+func parsePort(in string) (uint32, error) {
+	in = strings.TrimSpace(in)
+	if in == "" {
+		return 0, errors.New("a listen port is required")
+	}
+	n, err := strconv.Atoi(in)
+	if err != nil {
+		return 0, errors.New("must be a number")
+	}
+	if n < 1 || n > 65535 {
+		return 0, errors.New("must be between 1 and 65535")
+	}
+	return uint32(n), nil
 }
 
 // ---------- helpers ----------

@@ -37,6 +37,13 @@ type fakeDaemon struct {
 	updateErr    error
 	updateTarget string
 
+	// feature 006 fakes
+	services        []*pb.SandboxService
+	listServicesErr error
+	serviceErr      error
+	startedServices []string
+	stoppedServices []string
+
 	// feature 003 fakes
 	tagErr     error
 	lastTagID  string
@@ -141,6 +148,37 @@ func (f *fakeDaemon) ListEscapeHatchRuns(_ context.Context, sandboxID string) ([
 		return nil, f.listRunsErr
 	}
 	return f.runs, nil
+}
+
+// --- feature 006: port forwarding ---
+
+func (f *fakeDaemon) ListServices(_ context.Context, sandboxID string) ([]*pb.SandboxService, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listServicesErr != nil {
+		return nil, f.listServicesErr
+	}
+	return f.services, nil
+}
+
+func (f *fakeDaemon) StartService(_ context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.serviceErr != nil {
+		return nil, f.serviceErr
+	}
+	f.startedServices = append(f.startedServices, sandboxID+"/"+name)
+	return &pb.ServiceInstance{Id: "svc-1", SandboxId: sandboxID, ServiceName: name, State: pb.ServiceState_SERVICE_STATE_STARTING}, nil
+}
+
+func (f *fakeDaemon) StopService(_ context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.serviceErr != nil {
+		return nil, f.serviceErr
+	}
+	f.stoppedServices = append(f.stoppedServices, sandboxID+"/"+name)
+	return &pb.ServiceInstance{Id: "svc-1", SandboxId: sandboxID, ServiceName: name, State: pb.ServiceState_SERVICE_STATE_STOPPED}, nil
 }
 
 func (f *fakeDaemon) VSCodeTarget(_ context.Context, id string) (*pb.VSCodeTarget, error) {

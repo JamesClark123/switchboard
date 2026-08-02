@@ -57,6 +57,8 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		}
 	case *pb.Event_EscapeHatchRun:
 		return m.handleEscapeHatchRun(e.EscapeHatchRun)
+	case *pb.Event_ServiceInstance:
+		return m.handleServiceInstance(e.ServiceInstance)
 	}
 	var cmd tea.Cmd
 	if m.sub != nil {
@@ -103,6 +105,10 @@ func notifTitle(k pb.NotificationKind) string {
 		return "escape-hatch approval"
 	case pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_RUN_COMPLETE:
 		return "escape-hatch run"
+	case pb.NotificationKind_NOTIFICATION_KIND_SERVICE_FAILED:
+		// feature 006: the only service transition that notifies, because it is the
+		// only one the developer did not just perform themselves (FR-052).
+		return "service failed"
 	}
 	return "task complete"
 }

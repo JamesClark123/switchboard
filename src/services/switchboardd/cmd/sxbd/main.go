@@ -32,6 +32,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/daemonctl"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	sbgrpc "github.com/jamesclark123/switchboard/services/switchboardd/internal/grpc"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
@@ -199,6 +200,11 @@ func runServe(cfg *config.Config, debug bool) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
 	})
 
+	// Port forwarding (feature 006): the supervisor owns service lifecycle on this
+	// host. It reaches sandboxes through the same `sbx` runner the manager uses, and
+	// publishes state changes on the hub the client is already subscribed to.
+	services := portforward.NewSupervisor(mgr, runner, hub)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hook", hookServer.Handle)
 	mux.HandleFunc("/escape-hatch/run", ehService.HandleRun)
@@ -221,6 +227,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		Hub:           hub,
 		Agents:        agents,
 		EscapeHatch:   ehService,
+		Services:      services,
 		Debug:         debug,
 	})
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)

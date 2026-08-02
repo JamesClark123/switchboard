@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/notify"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
@@ -59,6 +60,11 @@ type Daemon interface {
 	// session's runs for review (FR-042).
 	DecideEscapeHatchRun(ctx context.Context, runID string, approved bool) (pb.EscapeHatchRunStatus, error)
 	ListEscapeHatchRuns(ctx context.Context, sandboxID string) ([]*pb.EscapeHatchRun, error)
+	// Port forwarding (feature 006): the declared service set for a sandbox, and
+	// the developer-driven start/stop of one service by name (FR-045).
+	ListServices(ctx context.Context, sandboxID string) ([]*pb.SandboxService, error)
+	StartService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error)
+	StopService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error)
 	// US5: VS Code open target.
 	VSCodeTarget(ctx context.Context, id string) (*pb.VSCodeTarget, error)
 	// Distribution/self-update: the daemon's advertised version, and a request
@@ -90,6 +96,7 @@ const (
 	screenUpdate
 	screenApproval
 	screenRuns
+	screenServices
 )
 
 // Model is the root Bubble Tea model.
@@ -196,6 +203,16 @@ type Model struct {
 	runsView    runsState
 	pendingRuns map[string]*pb.EscapeHatchRun // runID -> pending-approval run
 
+	// --- feature 006: port forwarding ---
+	servicesView servicesState
+	// serviceInstances is the live view of every service instance this client knows
+	// about, keyed by instance id. It backs the sandbox-list running indicator and
+	// the per-sandbox screen, and is fed by Event.service_instance.
+	serviceInstances map[string]*pb.ServiceInstance
+	// forwards owns the listeners on THIS machine (research R1). The client is the
+	// sole allocator of those ports.
+	forwards *forward.Manager
+
 	quitting bool
 }
 
@@ -218,21 +235,24 @@ func New(daemon Daemon, srcRoot string) Model {
 	tagTi.CharLimit = 64 // matches the daemon's tag cap (research.md R6)
 
 	m := Model{
-		daemon:      daemon,
-		srcRoot:     srcRoot,
-		screen:      screenList,
-		notifier:    notify.NoopNotifier{},
-		keys:        newKeyMap(),
-		help:        newHelp(),
-		spinner:     sp,
-		rename:      ti,
-		tagInput:    tagTi,
-		extTerm:     map[string]*extTerminal{},
-		width:       80,
-		height:      24,
-		busy:        map[string]string{},
-		launching:   map[string]*launchInFlight{},
-		listLoading: true, // the first list load is in flight until it arrives
+		daemon:   daemon,
+		srcRoot:  srcRoot,
+		screen:   screenList,
+		notifier: notify.NoopNotifier{},
+		keys:     newKeyMap(),
+		help:     newHelp(),
+		spinner:  sp,
+		rename:   ti,
+		tagInput: tagTi,
+		extTerm:  map[string]*extTerminal{},
+		width:    80,
+		height:   24,
+		busy:     map[string]string{},
+		// feature 006: the client owns every listener on this machine.
+		serviceInstances: map[string]*pb.ServiceInstance{},
+		forwards:         forward.NewManager(),
+		launching:        map[string]*launchInFlight{},
+		listLoading:      true, // the first list load is in flight until it arrives
 	}
 	m.help.Width = m.width
 	m.list = newSandboxList(m.bodyWidth(), m.mainListHeight())
@@ -532,6 +552,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runsLoadedMsg:
 		return m.applyRuns(msg)
 
+	case servicesLoadedMsg:
+		return m.applyServices(msg)
+
+	case servicesRefreshMsg:
+		if m.screen != screenServices || m.servicesView.sandboxID != msg.sandboxID {
+			return m, nil
+		}
+		return m, m.listServicesCmd(m.daemonForHost(m.servicesView.host), msg.sandboxID)
+
 	case hostsMsg:
 		return m.applyHosts(msg)
 
@@ -673,6 +702,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateApprovalKey(msg)
 	case screenRuns:
 		return m.updateRunsKey(msg)
+	case screenServices:
+		return m.updateServicesKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -733,6 +764,8 @@ func (m Model) View() string {
 		body, hb = m.viewUpdate(), m.updateHelpBindings()
 	case screenRuns:
 		body, hb = m.viewRuns(), m.runsHelp()
+	case screenServices:
+		body, hb = m.viewServices(), m.servicesHelp()
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}

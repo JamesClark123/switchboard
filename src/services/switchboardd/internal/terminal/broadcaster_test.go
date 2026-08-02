@@ -79,7 +79,7 @@ func recv(t *testing.T, ch <-chan []byte) []byte {
 func TestFanOutToMultipleClients(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	c1, err := b.Attach(KindInTUI, 80, 24)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestFanOutToMultipleClients(t *testing.T) {
 func TestSnapshotReplaysPriorOutput(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Output produced before anyone attaches must be in the reconnect snapshot.
 	pty.feed([]byte("line1\r\n"))
@@ -122,7 +122,7 @@ func TestSnapshotReplaysPriorOutput(t *testing.T) {
 func TestDetachKeepsSessionAlive(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	c1, _ := b.Attach(KindInTUI, 80, 24)
 	c1.Close() // detach
@@ -161,7 +161,7 @@ func TestRingBoundsMemory(t *testing.T) {
 func TestSmallestOfAttachedResize(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if _, err := b.Attach(KindInTUI, 100, 40); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestSmallestOfAttachedResize(t *testing.T) {
 func TestSecondExternalRejected(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if _, err := b.Attach(KindExternal, 80, 24); err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestSecondExternalRejected(t *testing.T) {
 func TestWriteForwardsToPTY(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	c, _ := b.Attach(KindInTUI, 80, 24)
 	if _, err := c.Write([]byte("ls\n")); err != nil {
 		t.Fatal(err)
@@ -282,7 +282,7 @@ func TestRegistryCountsPublished(t *testing.T) {
 func TestConnResizeReconcilesPTY(t *testing.T) {
 	pty := newFakePTY()
 	b := New(pty, 0, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	c, _ := b.Attach(KindInTUI, 100, 40)
 	c.Resize(70, 20)
 	waitFor(t, func() bool { r, ok := pty.lastResize(); return ok && r == [2]uint16{70, 20} })

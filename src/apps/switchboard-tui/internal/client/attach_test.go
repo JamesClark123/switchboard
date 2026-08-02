@@ -174,7 +174,7 @@ func TestAttachSnapshotThenLiveFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer as.Close()
+	defer func() { _ = as.Close() }()
 
 	if string(as.Snapshot) != "SNAP" || as.Rows != 24 || as.Cols != 80 {
 		t.Fatalf("snapshot fields = (%q,%d,%d)", as.Snapshot, as.Rows, as.Cols)
@@ -194,7 +194,7 @@ func TestAttachSendsInitialAttachInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer as.Close()
+	defer func() { _ = as.Close() }()
 
 	// Wait for the first frame to arrive to guarantee the server captured
 	// the initial input.
@@ -235,7 +235,7 @@ func TestAttachSendDataAndResize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer as.Close()
+	defer func() { _ = as.Close() }()
 
 	if err := as.SendData([]byte("hi\n")); err != nil {
 		t.Fatal(err)
@@ -407,7 +407,7 @@ func TestAttachFirstFrameIsPureData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer as.Close()
+	defer func() { _ = as.Close() }()
 	waitFor(t, func() bool { return sink.String() == "only-live" }, "sink received live-only data")
 	if len(as.Snapshot) != 0 {
 		t.Fatalf("snapshot should be empty, got %q", as.Snapshot)

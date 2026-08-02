@@ -15,6 +15,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/kit"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc"
@@ -38,6 +39,7 @@ type Server struct {
 	terms         *terminal.Registry
 	kits          *kit.Materializer
 	escapeHatch   *escapehatch.Service
+	services      *portforward.Supervisor
 
 	grpc *grpc.Server
 }
@@ -66,6 +68,9 @@ type Config struct {
 	// EscapeHatch owns escape-hatch run lifecycle + observability (feature 005). MAY
 	// be nil (the RPCs then report unimplemented and no runs are cancelled on stop).
 	EscapeHatch *escapehatch.Service
+	// Services owns the port-forwarding service lifecycle (feature 006). MAY be nil
+	// (the RPCs then report unimplemented and no services are stopped on teardown).
+	Services *portforward.Supervisor
 	// Debug, when true, logs every RPC action and error to stderr (serve --debug).
 	Debug bool
 }
@@ -90,6 +95,7 @@ func NewServer(cfg Config) *Server {
 		agents:        cfg.Agents,
 		kits:          &kit.Materializer{Root: cfg.KitRoot},
 		escapeHatch:   cfg.EscapeHatch,
+		services:      cfg.Services,
 	}
 	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
 	// created on first attach from the agent PTY, kept alive across client detach.
@@ -121,6 +127,12 @@ func NewServer(cfg Config) *Server {
 				// destroy / refresh must leave no orphaned host process (FR-041).
 				if s.escapeHatch != nil {
 					s.escapeHatch.Cancel(sb.GetId())
+				}
+				// Same for port-forwarded services (feature 006, FR-048): every one
+				// of this sandbox's services stops, releasing its ports, so a stop or
+				// destroy never leaves an orphan holding a port.
+				if s.services != nil {
+					s.services.StopAll(sb.GetId())
 				}
 			}
 			if cfg.Hub != nil {
