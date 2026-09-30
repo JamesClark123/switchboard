@@ -143,6 +143,11 @@ func runServe(cfg *config.Config, debug bool) error {
 	if err := mgr.Readopt(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: re-adoption error:", err)
 	}
+	// Collect any `.switchboard/staging` debris an add interrupted by a daemon
+	// crash left behind (feature 007, research R2). Best-effort, never fatal.
+	if err := mgr.PurgeStaging(); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: staging purge:", err)
+	}
 
 	// Introspect the host's sbx option surface (FR-014). Non-fatal: if sbx is
 	// unavailable the manifest is empty and option validation/editing degrades

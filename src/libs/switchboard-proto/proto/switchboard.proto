@@ -116,6 +116,57 @@ service Switchboard {
   // Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
   // One stream per accepted TCP connection; see PortForwardFrame.
   rpc ForwardPort(stream PortForwardFrame) returns (stream PortForwardFrame);
+
+  // --- Edit sandbox sources (feature 007, FR-053..FR-067) ---
+  // Both RPCs edit the seeded folder set of an EXISTING sandbox IN PLACE — the
+  // sandbox is never stopped, restarted, or recreated (FR-054), and its state
+  // never changes (no CREATING/ERROR transitions; a failed add leaves the sandbox
+  // exactly as it was, FR-058). Eligible states: RUNNING, STOPPED. While another
+  // add/remove/refresh is in flight for the same sandbox, both return
+  // FAILED_PRECONDITION naming the in-flight operation (FR-066). Completed edits
+  // reach other clients through the existing Event.sandbox_changed arm (FR-067);
+  // edits are developer-initiated and therefore raise no inbox notification.
+  //
+  // Seed additional folders into an existing sandbox's workspace, honoring the
+  // sandbox's recorded seeding mode (duplicate => verbatim copy; clone => repo
+  // clone, non-repos refused). Streams the SAME LaunchProgress shape as
+  // LaunchSandbox/RefreshSandbox: `copy` for duplication progress (FR-055),
+  // `log_line` for clone/sbx-free host output, `blocked` (instead of `done`) when
+  // the resource gate trips without override (FR-057), then a terminal `done`
+  // carrying the updated Sandbox (its `sources` now includes the additions).
+  //
+  // Refused BEFORE any byte is copied (FR-056) — INVALID_ARGUMENT /
+  // ALREADY_EXISTS / FAILED_PRECONDITION naming the offending folder — when: a
+  // path is missing or not a directory; a folder name collides with a recorded
+  // source, an on-disk top-level workspace entry, or another selection in the
+  // same request; the folder name is the reserved ".switchboard"; a clone-mode
+  // add is not a git repository (re-verified daemon-side); or the sandbox state
+  // is CREATING/DESTROYING/ERROR.
+  //
+  // Failure atomicity (FR-058): the copy stages inside the workspace's reserved
+  // internal folder and is renamed into place only when complete, so a live agent
+  // never observes a partially copied seeded folder, and any failure removes all
+  // staged/renamed content from this operation, leaving record and workspace
+  // untouched.
+  rpc AddSandboxSources(AddSandboxSourcesRequest) returns (stream LaunchProgress);
+  // Delete seeded folders' copies from an existing sandbox's workspace and drop
+  // them from the record. DESTRUCTIVE for the sandbox's copy (never the origin):
+  // the CLIENT is responsible for the FR-060 confirmation before calling — the
+  // daemon does not re-confirm (the RefreshSandbox precedent).
+  //
+  // Targets are EXACT recorded SourceRef.path values; an unknown path is
+  // NOT_FOUND and nothing in the batch is deleted. Refused up front when the
+  // batch would leave the sandbox with zero seeded folders (FR-061,
+  // FAILED_PRECONDITION) or while a declared service instance is starting or
+  // running with its working directory at or beneath a selected folder (FR-062,
+  // FAILED_PRECONDITION naming the service and the remedy). A folder whose copy
+  // is already missing on disk is dropped from the record and counts as success
+  // (FR-063). On a mid-batch deletion failure the folders already deleted STAY
+  // dropped from the record — the record follows the disk (research R3) — and the
+  // error names the folder that failed.
+  //
+  // Returns the updated Sandbox (its `sources` reflect exactly what remains).
+  rpc RemoveSandboxSources(RemoveSandboxSourcesRequest) returns (Sandbox);
 }
 
 // ---------- Enums ----------
@@ -552,6 +603,28 @@ message RenameSandboxRequest { string sandbox_id = 1; string display_name = 2; }
 // feature 003: set/change/clear a sandbox's mutable purpose tag. Empty tag clears
 // it. Returns the updated Sandbox (only `tag`/`updated_at` change).
 message SetSandboxTagRequest { string sandbox_id = 1; string tag = 2; }
+
+// ---------- Edit sandbox sources (feature 007) ----------
+
+// AddSandboxSourcesRequest mirrors the launch surface deliberately: SourceRef
+// carries the same {path, is_repo} the launch wizard captures (is_repo is
+// advisory — clone-mode adds re-verify daemon-side), and
+// override_resource_warning round-trips the LaunchProgress.blocked resource gate
+// exactly as LaunchSandboxRequest does (FR-057).
+message AddSandboxSourcesRequest {
+  string sandbox_id = 1;
+  repeated SourceRef sources = 2;          // >= 1; folder names must be unique in-batch
+  bool override_resource_warning = 3;      // re-send with true after a `blocked` reply
+}
+
+// RemoveSandboxSourcesRequest identifies folders by the EXACT recorded
+// SourceRef.path (the identity the record stores and the UI displays) — not by
+// basename, not by index — so retries of a partially failed batch simply re-send
+// the survivors.
+message RemoveSandboxSourcesRequest {
+  string sandbox_id = 1;
+  repeated string source_paths = 2;        // >= 1; each must match a recorded source
+}
 
 // feature 003: resolve which sandbox owns a filesystem path (for `sxb` auto-open).
 message ResolveWorkspaceRequest { string path = 1; }

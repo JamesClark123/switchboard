@@ -147,7 +147,30 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/006-port-forwarding/plan.md` (Port Forwarding). A kit declares long-running
+Active feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing
+sandbox's seeded folder set **editable in place** — add folders (copied/cloned exactly as at launch)
+and remove them, on a **live** sandbox: no container stop/restart/recreate, no interruption to agent
+sessions, terminals, or services, and the sandbox's state is **never** driven by an edit (a failed add
+never ERRORs it). Two additive RPCs: `AddSandboxSources` (streams the existing `LaunchProgress` shape,
+incl. the `blocked` resource gate) and `RemoveSandboxSources` (unary, targets = **exact recorded
+`SourceRef.path` values**); **no new proto field** — `Sandbox.sources` just becomes mutable, and edits
+reach other clients via the existing `Event.sandbox_changed` emit. Adds **stage under the workspace's
+own `.switchboard/staging/` then `os.Rename` into place** (live agent never sees a half-copied tree;
+failure = rollback, record untouched); removals are a `within()`-guarded `RemoveAll` on the workspace
+*child* (the mount root is never disturbed — that's why, unlike `Refresh`, no stop is needed), and on
+partial batch failure the **record follows the disk**. Guards: folder-name collision vs record ∪ disk ∪
+batch, reserved `.switchboard`, clone-mode re-verifies `is_repo`, ≥1 source always remains, removal
+refused while a declared service's `working_dir` sits in the folder (refuse, never auto-stop), and a new
+per-sandbox try-acquire **operation latch** (also taken by `Refresh`) serializes seed-mutating ops.
+Eligible states: RUNNING/STOPPED only. TUI: `S` sources overlay (`a` add via the launch browser,
+`space`+`d` remove behind a `confirm.go` dialog); add timeout 30 min / remove 10 min, package constants.
+**Zero new `sbx` surface, no new package, no new env vars.** ⚠️ Sole runtime assumption: the sandbox sees
+host-side workspace edits **live** (the 003/005 bind-mount bet) — quickstart **Scenario 0** reconciles it
+first; if a runtime snapshots instead, fall back to stop→mutate→bring-up inside the same RPCs. See
+`spec.md` (FR-053..067), `research.md` (R1–R8), `data-model.md`, `contracts/switchboard-edit-sources.proto`,
+`quickstart.md`.
+
+Prior feature: `specs/006-port-forwarding/plan.md` (Port Forwarding). A kit declares long-running
 **services** (name, start command, **listen port**, `IN_SANDBOX` | `ON_HOST`, optional `is_website` +
 workspace-relative `working_dir`) in a second switchboard-owned sidecar — `kits/<id>/services.yaml` +
 `pb.KitSpec.services`, never in the opaque `spec.yaml` — resolved per sandbox **later-kit-wins** and

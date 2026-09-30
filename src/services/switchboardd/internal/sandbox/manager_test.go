@@ -33,6 +33,14 @@ type fakeRunner struct {
 	// feature 006: recorded "<ref> <host>:<sandbox>" port publish/unpublish calls.
 	published   []string
 	unpublished []string
+	// feature 007: lastSources records the Sources of the most recent Launch (so
+	// tests can assert an edited set reaches a relaunch); cloneDests records every
+	// CloneRepo destination; failCloneOn makes the Nth CloneRepo call (1-based)
+	// fail, to exercise mid-batch add rollback.
+	lastSources []*pb.SourceRef
+	cloneDests  []string
+	cloneCalls  int
+	failCloneOn int
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
@@ -47,6 +55,7 @@ func (f *fakeRunner) Launch(_ context.Context, spec LaunchSpec, _ func(string)) 
 	}
 	f.launches++
 	f.lastKits = spec.KitSources
+	f.lastSources = spec.Sources
 	// Mirror the real SbxRunner: the handle is the assigned --name (the human
 	// name), falling back to the id.
 	ref := spec.Name
@@ -83,6 +92,14 @@ func (f *fakeRunner) IsRunning(_ context.Context, ref string) (bool, error) {
 	return f.running[ref], nil
 }
 func (f *fakeRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
+	f.mu.Lock()
+	f.cloneCalls++
+	f.cloneDests = append(f.cloneDests, dest)
+	fail := f.failCloneOn != 0 && f.cloneCalls == f.failCloneOn
+	f.mu.Unlock()
+	if fail {
+		return errors.New("clone failed")
+	}
 	return os.MkdirAll(dest, 0o755)
 }
 

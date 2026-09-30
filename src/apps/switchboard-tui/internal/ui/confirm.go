@@ -24,6 +24,14 @@ type confirmState struct {
 	sandboxID string
 	// onConfirm runs when the user accepts. Never nil while screen == screenConfirm.
 	onConfirm tea.Cmd
+	// warning replaces the default "This cannot be undone." line when set — a gate
+	// in front of a risky-but-reversible step (the feature-007 low-resource
+	// override) should not claim irreversibility.
+	warning string
+	// returnTo is the screen shown after the dialog closes (accept or cancel).
+	// The zero value is the sandbox list; the sources overlay sets itself so a
+	// removal lands the user back on the editor (feature 007).
+	returnTo screen
 }
 
 // enterConfirm opens the dialog over the sandbox list. The caller supplies the
@@ -45,8 +53,8 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y", "enter":
 		cmd := m.confirm.onConfirm
 		id, verb := m.confirm.sandboxID, m.confirm.verb
+		m.screen = m.confirm.returnTo
 		m.confirm = confirmState{}
-		m.screen = screenList
 		if cmd == nil {
 			return m, nil
 		}
@@ -55,8 +63,8 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case "n", "N", "esc", "q", "ctrl+c":
+		m.screen = m.confirm.returnTo
 		m.confirm = confirmState{}
-		m.screen = screenList
 		return m, nil
 	}
 	return m, nil
@@ -67,9 +75,13 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) confirmModal() string {
 	rows := []string{sectionStyle.Render(m.confirm.title), ""}
 	rows = append(rows, m.confirm.body...)
+	warning := m.confirm.warning
+	if warning == "" {
+		warning = "This cannot be undone."
+	}
 	rows = append(rows,
 		"",
-		dangerStyle.Render("This cannot be undone."),
+		dangerStyle.Render(warning),
 		"",
 		dimStyle.Render("y/enter confirm · n/esc cancel"),
 	)

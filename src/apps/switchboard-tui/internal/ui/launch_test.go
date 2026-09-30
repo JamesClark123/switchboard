@@ -67,6 +67,15 @@ type fakeDaemon struct {
 	decidedRuns []decidedRun
 	decideErr   error
 	listRunsErr error
+
+	// feature 007 fakes: source edits (see sources_test.go)
+	addedSources     map[string][]*pb.SourceRef
+	addSourcesErr    error
+	addBlocked       *pb.ResourceReport // returned while override is false
+	addGate          chan struct{}      // when set, AddSources blocks until it closes
+	lastAddOverride  bool
+	removedSources   map[string][]string
+	removeSourcesErr error
 }
 
 type decidedRun struct {

@@ -38,6 +38,14 @@ func (c *Conn) Launch(ctx context.Context, req *pb.LaunchSandboxRequest, onUpdat
 	if err != nil {
 		return nil, nil, err
 	}
+	return consumeGatedStream(stream, onUpdate, "launch")
+}
+
+// consumeGatedStream drains a LaunchProgress stream that may end in `blocked`
+// (the resource gate) instead of `done`: copy/log frames go to onUpdate, a
+// blocked report is returned as such, and done yields the terminal Sandbox.
+// Shared by Launch and AddSources, which round-trip the gate identically (FR-057).
+func consumeGatedStream(stream launchProgressStream, onUpdate func(LaunchUpdate), what string) (*pb.Sandbox, *pb.ResourceReport, error) {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -61,7 +69,32 @@ func (c *Conn) Launch(ctx context.Context, req *pb.LaunchSandboxRequest, onUpdat
 			return ev.Done, nil, nil
 		}
 	}
-	return nil, nil, fmt.Errorf("launch ended without a terminal result")
+	return nil, nil, fmt.Errorf("%s ended without a terminal result", what)
+}
+
+// --- Edit sandbox sources (feature 007) ---
+
+// AddSources seeds additional folders into an EXISTING sandbox's workspace in
+// place — no restart, no state change (FR-053/FR-054) — consuming the stream
+// exactly as Launch does: copy/log frames via onUpdate, a low-resource `blocked`
+// report returned for the override round-trip (re-send with override=true,
+// FR-057), and the updated Sandbox on `done`.
+func (c *Conn) AddSources(ctx context.Context, id string, sources []*pb.SourceRef, override bool, onUpdate func(LaunchUpdate)) (*pb.Sandbox, *pb.ResourceReport, error) {
+	stream, err := c.api.AddSandboxSources(ctx, &pb.AddSandboxSourcesRequest{
+		SandboxId: id, Sources: sources, OverrideResourceWarning: override,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return consumeGatedStream(stream, onUpdate, "add sources")
+}
+
+// RemoveSources deletes seeded folders' copies from a sandbox's workspace and
+// drops them from its record (FR-059). paths are EXACT recorded SourceRef.path
+// values. DESTRUCTIVE for the copy — callers MUST confirm with the user first
+// (FR-060). Unary, like Stop.
+func (c *Conn) RemoveSources(ctx context.Context, id string, paths []string) (*pb.Sandbox, error) {
+	return c.api.RemoveSandboxSources(ctx, &pb.RemoveSandboxSourcesRequest{SandboxId: id, SourcePaths: paths})
 }
 
 // Stop stops a sandbox, retaining its copy (FR-012a).

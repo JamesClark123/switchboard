@@ -49,6 +49,11 @@ type Manager struct {
 	// escape-hatch wrapper + CLAUDE.md rule block (feature 005), given the sandbox's
 	// resolved command set. MAY be nil.
 	injectEscapeHatch func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error
+
+	// ops is the per-sandbox operation latch shared by Refresh, AddSources, and
+	// RemoveSources (feature 007, FR-066): seed-mutating operations on one
+	// workspace never interleave. See oplock.go.
+	ops opLock
 }
 
 // SetHookInjector registers a callback invoked after seeding to inject agent
@@ -417,6 +422,15 @@ func (m *Manager) bringUp(ctx context.Context, sb *pb.Sandbox, onLog func(string
 // deletes, so copying over a populated workspace would yield a union of the old and
 // new trees rather than the fresh one the caller asked for.
 func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplicate.Progress), onLog func(string)) (*pb.Sandbox, error) {
+	// Refresh deletes and re-seeds the whole workspace, so it takes the same
+	// per-sandbox latch as the feature-007 source edits (FR-066): an add renaming
+	// into a workspace a refresh is simultaneously wiping is exactly the
+	// interleaving the latch exists to refuse.
+	if err := m.ops.acquire(id, opRefresh); err != nil {
+		return nil, err
+	}
+	defer m.ops.release(id)
+
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err

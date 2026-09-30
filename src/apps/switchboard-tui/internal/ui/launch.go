@@ -216,7 +216,7 @@ func (m Model) browseCmd(host, dir string) tea.Cmd {
 // applyBrowse installs a remote directory listing, ignoring a stale response
 // whose host/dir no longer matches the current browse target.
 func (m Model) applyBrowse(msg browseMsg) (tea.Model, tea.Cmd) {
-	if m.screen != screenLaunch || msg.host != m.launch.targetHost || msg.dir != m.launch.dir {
+	if !m.browserActive() || msg.host != m.launch.targetHost || msg.dir != m.launch.dir {
 		return m, nil
 	}
 	m.launch.loading = false
@@ -233,6 +233,12 @@ func (m Model) applyBrowse(msg browseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.launch.offset = 0
 	return m, nil
+}
+
+// browserActive reports whether the filesystem browser is on screen: the launch
+// wizard, or the sources overlay's add sub-mode (feature 007), which reuses it.
+func (m Model) browserActive() bool {
+	return m.screen == screenLaunch || (m.screen == screenSources && m.sourcesView.browsing)
 }
 
 // loadDir reads dir into the browser, listing sub-directories first then files
@@ -846,54 +852,60 @@ func (m Model) launchBrowser() string {
 		"",
 	)
 
-	var body string
+	return lipgloss.JoinVertical(lipgloss.Left, head, l.entriesView(), "", l.selectionView())
+}
+
+// entriesView renders the scrollable entry list with selection checkboxes (or
+// the loading / error / empty placeholder). Shared with the sources overlay's add
+// sub-mode (feature 007), which browses with the same machinery.
+func (l launchState) entriesView() string {
 	switch {
 	case l.loading:
-		body = dimStyle.Render("loading " + l.dir + " …")
+		return dimStyle.Render("loading " + l.dir + " …")
 	case l.loadErr != "":
-		body = statusErrStyle.Render("cannot read directory: " + l.loadErr)
+		return statusErrStyle.Render("cannot read directory: " + l.loadErr)
 	case len(l.entries) == 0:
-		body = dimStyle.Render("(empty directory)")
-	default:
-		var b strings.Builder
-		end := l.offset + browseVisible
-		if end > len(l.entries) {
-			end = len(l.entries)
-		}
-		for i := l.offset; i < end; i++ {
-			e := l.entries[i]
-			cursor := "  "
-			if i == l.cursor {
-				cursor = cursorBarStyle.Render("> ")
-			}
-			check := "[ ]"
-			if e.up {
-				check = "   "
-			} else if l.selected[e.path] {
-				check = statusOKStyle.Render("[x]")
-			}
-			name := e.name
-			if e.isDir && !e.up {
-				name += "/"
-			}
-			b.WriteString(cursor + check + " " + name + "\n")
-		}
-		if len(l.entries) > browseVisible {
-			b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d of %d", end, len(l.entries))))
-		}
-		body = strings.TrimRight(b.String(), "\n")
+		return dimStyle.Render("(empty directory)")
 	}
-
-	sel := dimStyle.Render("No directories selected yet.")
-	if len(l.order) > 0 {
-		names := make([]string, 0, len(l.order))
-		for _, p := range l.order {
-			names = append(names, filepath.Base(p))
-		}
-		sel = selectedStyle.Render(fmt.Sprintf("Selected (%d): ", len(l.order))) + strings.Join(names, ", ")
+	var b strings.Builder
+	end := l.offset + browseVisible
+	if end > len(l.entries) {
+		end = len(l.entries)
 	}
+	for i := l.offset; i < end; i++ {
+		e := l.entries[i]
+		cursor := "  "
+		if i == l.cursor {
+			cursor = cursorBarStyle.Render("> ")
+		}
+		check := "[ ]"
+		if e.up {
+			check = "   "
+		} else if l.selected[e.path] {
+			check = statusOKStyle.Render("[x]")
+		}
+		name := e.name
+		if e.isDir && !e.up {
+			name += "/"
+		}
+		b.WriteString(cursor + check + " " + name + "\n")
+	}
+	if len(l.entries) > browseVisible {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d of %d", end, len(l.entries))))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
-	return lipgloss.JoinVertical(lipgloss.Left, head, body, "", sel)
+// selectionView renders the "Selected (n): …" summary line.
+func (l launchState) selectionView() string {
+	if len(l.order) == 0 {
+		return dimStyle.Render("No directories selected yet.")
+	}
+	names := make([]string, 0, len(l.order))
+	for _, p := range l.order {
+		names = append(names, filepath.Base(p))
+	}
+	return selectedStyle.Render(fmt.Sprintf("Selected (%d): ", len(l.order))) + strings.Join(names, ", ")
 }
 
 // modalInnerWidth is the content width inside the launch modal.

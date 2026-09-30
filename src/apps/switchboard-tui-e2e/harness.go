@@ -46,11 +46,14 @@ func buildBinaries(t *testing.T) (tui, daemon string) {
 }
 
 // stubSbx writes a fake `sbx` so launches succeed without Docker, and returns a
-// PATH-prefix directory containing it.
+// PATH-prefix directory containing it. Every invocation is appended to
+// <dir>/sbx.log (one argv per line) so a test can assert which lifecycle
+// commands ran — e.g. that a source edit never stopped the sandbox (feature 007).
 func stubSbx(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := `#!/usr/bin/env bash
+echo "$*" >> "` + filepath.Join(dir, "sbx.log") + `"
 case "$1" in
   --version) echo "sbx-e2e 0.0" ;;
   create) echo "container-$3" ;;
@@ -67,17 +70,25 @@ esac
 // startDaemon launches `sxbd serve` with a stub sbx and returns the
 // socket path. The daemon is killed on test cleanup.
 func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
+	sock, _ := startDaemonAt(t, daemonBin, sbxDir)
+	return sock
+}
+
+// startDaemonAt is startDaemon plus the daemon's controlled workspace root, so a
+// test can inspect what a sandbox's workspace copy actually holds on disk.
+func startDaemonAt(t *testing.T, daemonBin, sbxDir string) (sock, workspaceRoot string) {
 	t.Helper()
 	dir := t.TempDir()
+	workspaceRoot = filepath.Join(dir, "ws")
 	// Keep the socket path well under the 108-char sun_path limit.
-	sock := fmt.Sprintf("/tmp/sb-e2e-%d.sock", os.Getpid())
+	sock = fmt.Sprintf("/tmp/sb-e2e-%d.sock", os.Getpid())
 	_ = os.Remove(sock)
 
 	cmd := exec.Command(daemonBin, "serve")
 	cmd.Env = append(os.Environ(),
 		"PATH="+sbxDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"SWITCHBOARDD_SOCKET="+sock,
-		"SWITCHBOARDD_WORKSPACE_ROOT="+filepath.Join(dir, "ws"),
+		"SWITCHBOARDD_WORKSPACE_ROOT="+workspaceRoot,
 		"SWITCHBOARDD_DATA_DIR="+filepath.Join(dir, "data"),
 		// Isolate the PID file per test. It otherwise defaults to a GLOBAL
 		// $XDG_RUNTIME_DIR/switchboard.pid, so the first test's daemon (SIGKILLed
@@ -100,7 +111,7 @@ func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sock); err == nil {
-			return sock
+			return sock, workspaceRoot
 		}
 		// Signal 0 probes liveness; if the daemon died during startup, fail fast.
 		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
@@ -109,7 +120,7 @@ func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("daemon socket never appeared")
-	return ""
+	return "", ""
 }
 
 // ptyProcess is a process driven through a PTY.

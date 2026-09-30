@@ -75,6 +75,11 @@ type Daemon interface {
 	// launch browser uses it as the starting directory when targeting a remote
 	// host, whose filesystem the client cannot read directly.
 	WorkspaceRoot() string
+	// Edit sandbox sources (feature 007): add folders to an existing sandbox in
+	// place (streaming, with the launch-style low-resource override round-trip)
+	// and remove seeded folders (DESTRUCTIVE — gate it behind a confirmation).
+	AddSources(ctx context.Context, id string, sources []*pb.SourceRef, override bool, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, *pb.ResourceReport, error)
+	RemoveSources(ctx context.Context, id string, paths []string) (*pb.Sandbox, error)
 }
 
 type screen int
@@ -97,6 +102,7 @@ const (
 	screenApproval
 	screenRuns
 	screenServices
+	screenSources
 )
 
 // Model is the root Bubble Tea model.
@@ -213,6 +219,13 @@ type Model struct {
 	// sole allocator of those ports.
 	forwards *forward.Manager
 
+	// --- feature 007: edit sandbox sources ---
+	// sourcesView backs the `S` overlay; sourceAdds tracks in-flight adds by
+	// sandbox id so the row (and the overlay) can badge live copy progress while
+	// the sandbox itself stays RUNNING/STOPPED (FR-054/FR-055).
+	sourcesView sourcesState
+	sourceAdds  map[string]*sourceAddInFlight
+
 	quitting bool
 }
 
@@ -252,6 +265,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		serviceInstances: map[string]*pb.ServiceInstance{},
 		forwards:         forward.NewManager(),
 		launching:        map[string]*launchInFlight{},
+		sourceAdds:       map[string]*sourceAddInFlight{},
 		listLoading:      true, // the first list load is in flight until it arrives
 	}
 	m.help.Width = m.width
@@ -499,7 +513,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-render the list so spinners advance each frame (item strings are
 		// static, so they must be rebuilt to animate): both busy-action rows and
 		// any row whose agent is currently working.
-		if m.screen == screenList && m.list.FilterState() != list.Filtering && (len(m.busy) > 0 || len(m.launching) > 0 || m.anyAgentWorking()) {
+		if m.screen == screenList && m.list.FilterState() != list.Filtering && (len(m.busy) > 0 || len(m.launching) > 0 || len(m.sourceAdds) > 0 || m.anyAgentWorking()) {
 			m.refreshListItems()
 		}
 		return m, cmd
@@ -587,6 +601,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case launchResultMsg:
 		return m.handleLaunchResult(msg)
+
+	case sourcesProgressMsg:
+		return m.handleSourcesProgress(msg)
+	case sourcesAddResultMsg:
+		return m.handleSourcesAddResult(msg)
+	case sourcesOverrideMsg:
+		return m.dispatchAddSources(msg.id, msg.host, msg.sources, true)
+	case sourcesRemovedMsg:
+		return m.handleSourcesRemoved(msg)
 
 	case updateAvailableMsg:
 		m.latestVersion = msg.latest
@@ -704,6 +727,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateRunsKey(msg)
 	case screenServices:
 		return m.updateServicesKey(msg)
+	case screenSources:
+		return m.updateSourcesKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -732,6 +757,13 @@ func (m Model) View() string {
 	if m.screen == screenApproval {
 		bg := m.chrome(m.viewList(), m.approvalHelp())
 		return overlayCenter(bg, m.approvalModal(), m.width, m.height)
+	}
+
+	// The sources editor floats over the list too (feature 007), so the row it
+	// edits stays visible while folders are added or marked for removal.
+	if m.screen == screenSources {
+		bg := m.chrome(m.viewList(), m.sourcesHelp())
+		return overlayCenter(bg, m.sourcesModal(), m.width, m.height)
 	}
 
 	// The in-place terminal view takes the full body (US2).

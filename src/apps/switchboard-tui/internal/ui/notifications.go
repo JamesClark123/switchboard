@@ -51,6 +51,9 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		if m.mergeSandboxUpdate(e.SandboxChanged) {
 			m.refreshListItems()
 		}
+		// feature 007: an edit made elsewhere (another client, a completed add on
+		// this one) reaches an open sources overlay without a manual reload.
+		m.syncSourcesOverlay(e.SandboxChanged)
 	case *pb.Event_Removed:
 		if m.removeSandbox(e.Removed.GetSandboxId()) {
 			m.refreshListItems()

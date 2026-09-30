@@ -2,6 +2,8 @@ package escapehatch
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -94,5 +96,38 @@ func TestMatchWorkspaceNoneDeclared(t *testing.T) {
 	}
 	if dir, err := matchWorkspace(cmd, ""); err != nil || dir != "sub/dir" {
 		t.Errorf("empty selector = (%q, %v), want (sub/dir, nil)", dir, err)
+	}
+}
+
+// Feature 007 regression guard (FR-064, spec US3-4): escape-hatch workspace
+// scoping evaluates against the CURRENT workspace children. A `workspaces` glob
+// that matches an added folder resolves it once the folder exists, and stops
+// resolving a removed folder — no stale grants, and no code change was needed
+// because matching is pure and the executor re-checks the directory on disk.
+func TestWorkspaceScopingFollowsWorkspaceEdits(t *testing.T) {
+	cmd := &pb.EscapeHatchCommand{Workspaces: []string{"*"}}
+	dir, err := matchWorkspace(cmd, "repo-b")
+	if err != nil || dir != "repo-b" {
+		t.Fatalf("glob should accept repo-b: (%q, %v)", dir, err)
+	}
+
+	ws := t.TempDir()
+	// Before the add: the grant does not resolve to anything runnable.
+	if _, err := resolveWorkdir(ws, dir); err == nil {
+		t.Fatal("a folder that is not seeded must not resolve")
+	}
+	// After the add (the folder now exists): it resolves.
+	if err := os.MkdirAll(filepath.Join(ws, "repo-b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveWorkdir(ws, dir); err != nil || got != filepath.Join(ws, "repo-b") {
+		t.Fatalf("added folder should resolve: (%q, %v)", got, err)
+	}
+	// After the removal: the same grant stops resolving — nothing stale.
+	if err := os.RemoveAll(filepath.Join(ws, "repo-b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveWorkdir(ws, dir); err == nil {
+		t.Fatal("a removed folder must stop resolving")
 	}
 }

@@ -216,8 +216,18 @@ The sandbox list is the home screen. Keys:
 | `d` | Destroy the selected sandbox |
 | `K` | Manage agent kits · `A` attach a kit to the selected sandbox |
 | `E` | Review the selected sandbox's escape-hatch runs (this session) |
+| `S` | Edit the selected sandbox's seeded folders in place: `a` add folders (browse like launch), `space` mark, `d` remove marked (confirmed) — no restart |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
+
+**Editing seeded folders after launch.** `S` opens the sources overlay for the selected
+sandbox. Adds copy the new folder into the workspace's own `.switchboard/staging/` and rename it
+into place only once complete, so a live agent never sees a half-copied tree; removals delete
+only the sandbox's copy (never the original) behind a confirmation that names every folder.
+Neither operation stops or restarts the sandbox — attached terminals, the agent session, and
+running services carry on — and the recorded folder list stays the single source of truth for
+the row, `F` refresh, and relaunch. A sandbox always keeps at least one seeded folder, and a
+removal is refused while a running service's working directory sits inside the folder.
 
 ### Escape Hatch
 

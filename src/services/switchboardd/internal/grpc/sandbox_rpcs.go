@@ -2,12 +2,15 @@ package grpc
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/resources"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
@@ -125,6 +128,129 @@ func (s *Server) RefreshSandbox(req *pb.SandboxIdRequest, stream pb.Switchboard_
 		return err
 	}
 	return stream.Send(&pb.LaunchProgress{Event: &pb.LaunchProgress_Done{Done: s.withTerminalCounts(sb)}})
+}
+
+// --- Edit sandbox sources (feature 007, FR-053..FR-067) ---
+
+// AddSandboxSources seeds additional folders into an existing sandbox's workspace
+// IN PLACE — no stop, restart, or state change (FR-054) — streaming the same
+// LaunchProgress shape as LaunchSandbox: copy progress / clone log lines, then a
+// terminal `done` carrying the updated Sandbox, or `blocked` when the duplicate-
+// mode resource gate trips without override (FR-057). Every research-R6 refusal
+// is checked before the gate so nothing waits behind a size walk, and the manager
+// re-checks under its latch before a byte is copied (FR-056).
+func (s *Server) AddSandboxSources(req *pb.AddSandboxSourcesRequest, stream pb.Switchboard_AddSandboxSourcesServer) error {
+	sb, refs, err := s.mgr.ValidateAddSources(req.GetSandboxId(), req.GetSources())
+	if err != nil {
+		return sourcesStatus(err)
+	}
+	// Resource gate, exactly like LaunchSandbox: duplicate mode only (clone sizes
+	// are unknowable up front), overridable by re-sending with the flag set.
+	if !req.GetOverrideResourceWarning() && sb.GetSeedingMode() != pb.SeedingMode_SEEDING_MODE_CLONE {
+		paths := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			paths = append(paths, ref.GetPath())
+		}
+		rep, err := resources.Check(paths, s.workspaceRoot)
+		if err != nil {
+			return err
+		}
+		if !rep.OK {
+			return stream.Send(&pb.LaunchProgress{Event: &pb.LaunchProgress_Blocked{Blocked: toResourceReport(rep)}})
+		}
+	}
+	onProgress, onLog := progressSender(stream)
+	out, err := s.mgr.AddSources(stream.Context(), req.GetSandboxId(), req.GetSources(), onProgress, onLog)
+	if err != nil {
+		return sourcesStatus(err)
+	}
+	return stream.Send(&pb.LaunchProgress{Event: &pb.LaunchProgress_Done{Done: s.withTerminalCounts(out)}})
+}
+
+// RemoveSandboxSources deletes seeded folders' copies and drops them from the
+// record (FR-059). DESTRUCTIVE for the copy — the client confirms first (FR-060);
+// the daemon does not re-confirm, as with RefreshSandbox. Targets are exact
+// recorded SourceRef.path values. The FR-062 service guard runs here, where the
+// port-forwarding supervisor is wired: a removal is refused while a declared
+// service instance is starting or running with its working directory at or
+// beneath a selected folder — refuse, never auto-stop.
+func (s *Server) RemoveSandboxSources(ctx context.Context, req *pb.RemoveSandboxSourcesRequest) (*pb.Sandbox, error) {
+	sb, err := s.mgr.Get(req.GetSandboxId())
+	if err != nil {
+		return nil, sourcesStatus(err)
+	}
+	if err := s.serviceBlocksRemoval(sb, req.GetSourcePaths()); err != nil {
+		return nil, err
+	}
+	out, err := s.mgr.RemoveSources(ctx, req.GetSandboxId(), req.GetSourcePaths())
+	if err != nil {
+		// On a mid-batch failure the manager already persisted and emitted the
+		// folders that did go; the error names the one that did not.
+		return nil, sourcesStatus(err)
+	}
+	return s.withTerminalCounts(out), nil
+}
+
+// serviceBlocksRemoval implements the FR-062 guard: an ACTIVE (starting or
+// running) instance of a declared service whose workspace-relative working_dir is
+// a selected folder, or sits beneath one, blocks the removal, naming the service
+// and the remedy. A root/empty working_dir never blocks — the root is not being
+// deleted (research R4).
+func (s *Server) serviceBlocksRemoval(sb *pb.Sandbox, paths []string) error {
+	if s.services == nil || len(paths) == 0 {
+		return nil
+	}
+	folders := map[string]bool{}
+	for _, p := range paths {
+		folders[filepath.Base(filepath.Clean(p))] = true
+	}
+	declared := map[string]*pb.KitService{}
+	for _, d := range sb.GetServices() {
+		declared[d.GetName()] = d
+	}
+	for _, inst := range s.services.Instances().ActiveBySandbox(sb.GetId()) {
+		d, ok := declared[inst.GetServiceName()]
+		if !ok {
+			continue
+		}
+		wd := filepath.ToSlash(filepath.Clean(strings.TrimSpace(d.GetWorkingDir())))
+		if wd == "" || wd == "." {
+			continue
+		}
+		top := strings.SplitN(wd, "/", 2)[0]
+		if folders[top] {
+			verb := "running"
+			if inst.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
+				verb = "starting"
+			}
+			return status.Errorf(codes.FailedPrecondition,
+				"service %q is %s with its working directory in %q — stop it first", d.GetName(), verb, top)
+		}
+	}
+	return nil
+}
+
+// sourcesStatus maps the manager's source-edit sentinels onto gRPC codes
+// (research R6). An error that already carries a status passes through.
+func sourcesStatus(err error) error {
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, sandbox.ErrSourceNotRecorded):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandbox.ErrInvalidSource):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, sandbox.ErrSourceExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, sandbox.ErrBusy),
+		errors.Is(err, sandbox.ErrIneligibleState),
+		errors.Is(err, sandbox.ErrNotRepo),
+		errors.Is(err, sandbox.ErrLastSource):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return err
+	}
 }
 
 // ValidateKit materializes a kit and checks it with `sbx kit validate`, so the

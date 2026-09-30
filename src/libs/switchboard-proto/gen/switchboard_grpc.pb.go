@@ -61,6 +61,8 @@ const (
 	Switchboard_StartSandboxService_FullMethodName  = "/switchboard.v1.Switchboard/StartSandboxService"
 	Switchboard_StopSandboxService_FullMethodName   = "/switchboard.v1.Switchboard/StopSandboxService"
 	Switchboard_ForwardPort_FullMethodName          = "/switchboard.v1.Switchboard/ForwardPort"
+	Switchboard_AddSandboxSources_FullMethodName    = "/switchboard.v1.Switchboard/AddSandboxSources"
+	Switchboard_RemoveSandboxSources_FullMethodName = "/switchboard.v1.Switchboard/RemoveSandboxSources"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -152,6 +154,56 @@ type SwitchboardClient interface {
 	// Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
 	// One stream per accepted TCP connection; see PortForwardFrame.
 	ForwardPort(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PortForwardFrame, PortForwardFrame], error)
+	// --- Edit sandbox sources (feature 007, FR-053..FR-067) ---
+	// Both RPCs edit the seeded folder set of an EXISTING sandbox IN PLACE — the
+	// sandbox is never stopped, restarted, or recreated (FR-054), and its state
+	// never changes (no CREATING/ERROR transitions; a failed add leaves the sandbox
+	// exactly as it was, FR-058). Eligible states: RUNNING, STOPPED. While another
+	// add/remove/refresh is in flight for the same sandbox, both return
+	// FAILED_PRECONDITION naming the in-flight operation (FR-066). Completed edits
+	// reach other clients through the existing Event.sandbox_changed arm (FR-067);
+	// edits are developer-initiated and therefore raise no inbox notification.
+	//
+	// Seed additional folders into an existing sandbox's workspace, honoring the
+	// sandbox's recorded seeding mode (duplicate => verbatim copy; clone => repo
+	// clone, non-repos refused). Streams the SAME LaunchProgress shape as
+	// LaunchSandbox/RefreshSandbox: `copy` for duplication progress (FR-055),
+	// `log_line` for clone/sbx-free host output, `blocked` (instead of `done`) when
+	// the resource gate trips without override (FR-057), then a terminal `done`
+	// carrying the updated Sandbox (its `sources` now includes the additions).
+	//
+	// Refused BEFORE any byte is copied (FR-056) — INVALID_ARGUMENT /
+	// ALREADY_EXISTS / FAILED_PRECONDITION naming the offending folder — when: a
+	// path is missing or not a directory; a folder name collides with a recorded
+	// source, an on-disk top-level workspace entry, or another selection in the
+	// same request; the folder name is the reserved ".switchboard"; a clone-mode
+	// add is not a git repository (re-verified daemon-side); or the sandbox state
+	// is CREATING/DESTROYING/ERROR.
+	//
+	// Failure atomicity (FR-058): the copy stages inside the workspace's reserved
+	// internal folder and is renamed into place only when complete, so a live agent
+	// never observes a partially copied seeded folder, and any failure removes all
+	// staged/renamed content from this operation, leaving record and workspace
+	// untouched.
+	AddSandboxSources(ctx context.Context, in *AddSandboxSourcesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error)
+	// Delete seeded folders' copies from an existing sandbox's workspace and drop
+	// them from the record. DESTRUCTIVE for the sandbox's copy (never the origin):
+	// the CLIENT is responsible for the FR-060 confirmation before calling — the
+	// daemon does not re-confirm (the RefreshSandbox precedent).
+	//
+	// Targets are EXACT recorded SourceRef.path values; an unknown path is
+	// NOT_FOUND and nothing in the batch is deleted. Refused up front when the
+	// batch would leave the sandbox with zero seeded folders (FR-061,
+	// FAILED_PRECONDITION) or while a declared service instance is starting or
+	// running with its working directory at or beneath a selected folder (FR-062,
+	// FAILED_PRECONDITION naming the service and the remedy). A folder whose copy
+	// is already missing on disk is dropped from the record and counts as success
+	// (FR-063). On a mid-batch deletion failure the folders already deleted STAY
+	// dropped from the record — the record follows the disk (research R3) — and the
+	// error names the folder that failed.
+	//
+	// Returns the updated Sandbox (its `sources` reflect exactly what remains).
+	RemoveSandboxSources(ctx context.Context, in *RemoveSandboxSourcesRequest, opts ...grpc.CallOption) (*Sandbox, error)
 }
 
 type switchboardClient struct {
@@ -492,6 +544,35 @@ func (c *switchboardClient) ForwardPort(ctx context.Context, opts ...grpc.CallOp
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_ForwardPortClient = grpc.BidiStreamingClient[PortForwardFrame, PortForwardFrame]
 
+func (c *switchboardClient) AddSandboxSources(ctx context.Context, in *AddSandboxSourcesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[8], Switchboard_AddSandboxSources_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AddSandboxSourcesRequest, LaunchProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AddSandboxSourcesClient = grpc.ServerStreamingClient[LaunchProgress]
+
+func (c *switchboardClient) RemoveSandboxSources(ctx context.Context, in *RemoveSandboxSourcesRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_RemoveSandboxSources_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -581,6 +662,56 @@ type SwitchboardServer interface {
 	// Byte relay that puts a RUNNING service on a port on the DEVELOPER'S machine.
 	// One stream per accepted TCP connection; see PortForwardFrame.
 	ForwardPort(grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]) error
+	// --- Edit sandbox sources (feature 007, FR-053..FR-067) ---
+	// Both RPCs edit the seeded folder set of an EXISTING sandbox IN PLACE — the
+	// sandbox is never stopped, restarted, or recreated (FR-054), and its state
+	// never changes (no CREATING/ERROR transitions; a failed add leaves the sandbox
+	// exactly as it was, FR-058). Eligible states: RUNNING, STOPPED. While another
+	// add/remove/refresh is in flight for the same sandbox, both return
+	// FAILED_PRECONDITION naming the in-flight operation (FR-066). Completed edits
+	// reach other clients through the existing Event.sandbox_changed arm (FR-067);
+	// edits are developer-initiated and therefore raise no inbox notification.
+	//
+	// Seed additional folders into an existing sandbox's workspace, honoring the
+	// sandbox's recorded seeding mode (duplicate => verbatim copy; clone => repo
+	// clone, non-repos refused). Streams the SAME LaunchProgress shape as
+	// LaunchSandbox/RefreshSandbox: `copy` for duplication progress (FR-055),
+	// `log_line` for clone/sbx-free host output, `blocked` (instead of `done`) when
+	// the resource gate trips without override (FR-057), then a terminal `done`
+	// carrying the updated Sandbox (its `sources` now includes the additions).
+	//
+	// Refused BEFORE any byte is copied (FR-056) — INVALID_ARGUMENT /
+	// ALREADY_EXISTS / FAILED_PRECONDITION naming the offending folder — when: a
+	// path is missing or not a directory; a folder name collides with a recorded
+	// source, an on-disk top-level workspace entry, or another selection in the
+	// same request; the folder name is the reserved ".switchboard"; a clone-mode
+	// add is not a git repository (re-verified daemon-side); or the sandbox state
+	// is CREATING/DESTROYING/ERROR.
+	//
+	// Failure atomicity (FR-058): the copy stages inside the workspace's reserved
+	// internal folder and is renamed into place only when complete, so a live agent
+	// never observes a partially copied seeded folder, and any failure removes all
+	// staged/renamed content from this operation, leaving record and workspace
+	// untouched.
+	AddSandboxSources(*AddSandboxSourcesRequest, grpc.ServerStreamingServer[LaunchProgress]) error
+	// Delete seeded folders' copies from an existing sandbox's workspace and drop
+	// them from the record. DESTRUCTIVE for the sandbox's copy (never the origin):
+	// the CLIENT is responsible for the FR-060 confirmation before calling — the
+	// daemon does not re-confirm (the RefreshSandbox precedent).
+	//
+	// Targets are EXACT recorded SourceRef.path values; an unknown path is
+	// NOT_FOUND and nothing in the batch is deleted. Refused up front when the
+	// batch would leave the sandbox with zero seeded folders (FR-061,
+	// FAILED_PRECONDITION) or while a declared service instance is starting or
+	// running with its working directory at or beneath a selected folder (FR-062,
+	// FAILED_PRECONDITION naming the service and the remedy). A folder whose copy
+	// is already missing on disk is dropped from the record and counts as success
+	// (FR-063). On a mid-batch deletion failure the folders already deleted STAY
+	// dropped from the record — the record follows the disk (research R3) — and the
+	// error names the folder that failed.
+	//
+	// Returns the updated Sandbox (its `sources` reflect exactly what remains).
+	RemoveSandboxSources(context.Context, *RemoveSandboxSourcesRequest) (*Sandbox, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -671,6 +802,12 @@ func (UnimplementedSwitchboardServer) StopSandboxService(context.Context, *StopS
 }
 func (UnimplementedSwitchboardServer) ForwardPort(grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]) error {
 	return status.Error(codes.Unimplemented, "method ForwardPort not implemented")
+}
+func (UnimplementedSwitchboardServer) AddSandboxSources(*AddSandboxSourcesRequest, grpc.ServerStreamingServer[LaunchProgress]) error {
+	return status.Error(codes.Unimplemented, "method AddSandboxSources not implemented")
+}
+func (UnimplementedSwitchboardServer) RemoveSandboxSources(context.Context, *RemoveSandboxSourcesRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveSandboxSources not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -1115,6 +1252,35 @@ func _Switchboard_ForwardPort_Handler(srv interface{}, stream grpc.ServerStream)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_ForwardPortServer = grpc.BidiStreamingServer[PortForwardFrame, PortForwardFrame]
 
+func _Switchboard_AddSandboxSources_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AddSandboxSourcesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).AddSandboxSources(m, &grpc.GenericServerStream[AddSandboxSourcesRequest, LaunchProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AddSandboxSourcesServer = grpc.ServerStreamingServer[LaunchProgress]
+
+func _Switchboard_RemoveSandboxSources_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveSandboxSourcesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RemoveSandboxSources(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RemoveSandboxSources_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RemoveSandboxSources(ctx, req.(*RemoveSandboxSourcesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1198,6 +1364,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "StopSandboxService",
 			Handler:    _Switchboard_StopSandboxService_Handler,
 		},
+		{
+			MethodName: "RemoveSandboxSources",
+			Handler:    _Switchboard_RemoveSandboxSources_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1241,6 +1411,11 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _Switchboard_ForwardPort_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "AddSandboxSources",
+			Handler:       _Switchboard_AddSandboxSources_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "switchboard.proto",

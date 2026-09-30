@@ -39,6 +39,17 @@ Verbatim copy of every selected file. Defaults: **symlinks copied as-is** (not
 dereferenced), **mode bits preserved**, non-regular files (FIFOs/sockets/devices)
 skipped. Sources are opened read-only; nothing is written outside the workspace root.
 
+**Editing seeded folders in place (feature 007).** `AddSandboxSources` copies (or clones) each
+new source into the workspace's own `.switchboard/staging/<folder>` and renames it to
+`<workspace>/<folder>` only once *every* source in the request has staged — a same-filesystem
+rename, so an agent live in the workspace never observes a partial tree. Any failure removes the
+staging area plus the folders that operation had already renamed, leaving the record and the
+sandbox state untouched (a failed add never ERRORs a sandbox). `RemoveSandboxSources` deletes
+only the workspace *child* (the bind-mount root is never disturbed, which is why — unlike a
+refresh — nothing has to stop); on a mid-batch failure the record follows the disk. A per-sandbox
+try-acquire latch serializes add / remove / refresh, and leftover staging debris from a daemon
+crash is purged on startup.
+
 ## Residual risk (research R6)
 
 `internal/sandbox/runner.go` (`SbxRunner`) encodes the assumed `sbx` subcommand

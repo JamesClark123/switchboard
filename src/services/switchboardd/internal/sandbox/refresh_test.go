@@ -2,8 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -193,5 +195,96 @@ func TestRefreshReportsProgress(t *testing.T) {
 	}
 	if !progressed {
 		t.Error("expected Refresh to report copy progress")
+	}
+}
+
+// --- feature 007: the refresh participates in the per-sandbox operation latch ---
+
+// A refresh while another seed-mutating operation holds the latch is refused
+// without touching the workspace (FR-066), and names the in-flight operation.
+func TestRefreshRefusedWhileLatched(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	sb, _ := launchOne(t, m, dir, "proj")
+
+	if err := m.ops.acquire(sb.GetId(), opAddSources); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.Refresh(ctx, sb.GetId(), nil, nil)
+	if err == nil {
+		t.Fatal("expected Refresh to be refused while an add holds the latch")
+	}
+	if !errors.Is(err, ErrBusy) || !strings.Contains(err.Error(), "add sources in progress") {
+		t.Errorf("err = %v, want ErrBusy naming the in-flight add", err)
+	}
+	if _, err := os.Stat(filepath.Join(sb.GetWorkspacePath(), "proj", "file.txt")); err != nil {
+		t.Errorf("a refused refresh must not touch the workspace: %v", err)
+	}
+	got, _ := reg.Get(sb.GetId())
+	if got.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("state = %v, want RUNNING (a refused refresh changes nothing)", got.GetState())
+	}
+	m.ops.release(sb.GetId())
+
+	// The latch is released on every return path: a normal refresh, and a refused
+	// one (no recorded sources), both leave it free afterwards.
+	if _, err := m.Refresh(ctx, sb.GetId(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, held := m.ops.holder(sb.GetId()); held {
+		t.Error("latch still held after a successful refresh")
+	}
+	if _, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.Sources = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Refresh(ctx, sb.GetId(), nil, nil); err == nil {
+		t.Fatal("expected refusal without sources")
+	}
+	if _, held := m.ops.holder(sb.GetId()); held {
+		t.Error("latch still held after a refused refresh")
+	}
+}
+
+// After edits, a refresh re-seeds EXACTLY the edited set (FR-064, SC-004): the
+// added folder is re-copied fresh and the removed one is not resurrected.
+func TestRefreshReseedsEditedSet(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	sb, srcA := launchOne(t, m, dir, "repo-a")
+	ws := sb.GetWorkspacePath()
+	srcB := makeSource(t, dir, "repo-b")
+
+	if _, err := m.AddSources(ctx, sb.GetId(), []*pb.SourceRef{srcB}, nil, nil); err != nil {
+		t.Fatalf("AddSources: %v", err)
+	}
+	if _, err := m.RemoveSources(ctx, sb.GetId(), []string{srcA.GetPath()}); err != nil {
+		t.Fatalf("RemoveSources: %v", err)
+	}
+	// The record — what the refresh confirm lists — now shows exactly {repo-b}.
+	rec, _ := reg.Get(sb.GetId())
+	if len(rec.GetSources()) != 1 || rec.GetSources()[0].GetPath() != srcB.GetPath() {
+		t.Fatalf("record sources = %+v, want exactly repo-b", rec.GetSources())
+	}
+	// Agent scratch inside repo-b must not survive the refresh (it is a fresh copy).
+	scratch := filepath.Join(ws, "repo-b", "scratch.txt")
+	if err := os.WriteFile(scratch, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := m.Refresh(ctx, sb.GetId(), nil, nil)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "repo-b", "file.txt")); err != nil {
+		t.Errorf("added folder was not re-seeded: %v", err)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Error("refresh must re-copy the added folder fresh")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "repo-a")); !os.IsNotExist(err) {
+		t.Error("removed folder was resurrected by the refresh")
+	}
+	if len(out.GetSources()) != 1 || out.GetSources()[0].GetPath() != srcB.GetPath() {
+		t.Errorf("sources after refresh = %+v, want exactly repo-b", out.GetSources())
 	}
 }

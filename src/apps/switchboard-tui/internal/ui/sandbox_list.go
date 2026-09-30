@@ -267,6 +267,11 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	if svc := m.runningServicesBadge(row.sb.GetId()); svc != "" {
 		title += "   " + svc
 	}
+	// feature 007: an add in flight badges live copy progress on the row. The
+	// state badge stays what it is — the sandbox is never CREATING for an edit.
+	if add, ok := m.sourceAdds[row.sb.GetId()]; ok {
+		title += "   " + m.spinner.View() + " " + dimStyle.Render(add.progress)
+	}
 	return listItem{
 		id:      row.sb.GetId(),
 		host:    row.host,
@@ -419,7 +424,22 @@ func renderFieldsDiffer(a, b *pb.Sandbox) bool {
 		a.GetDisplayName() != b.GetDisplayName() ||
 		a.GetTag() != b.GetTag() ||
 		a.GetAttachedTerminals() != b.GetAttachedTerminals() ||
-		a.GetExternalAttached() != b.GetExternalAttached()
+		a.GetExternalAttached() != b.GetExternalAttached() ||
+		!sameSources(a.GetSources(), b.GetSources())
+}
+
+// sameSources reports whether two recorded source sets list the same paths in
+// the same order (the row renders their folder names — feature 007, FR-064).
+func sameSources(a, b []*pb.SourceRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].GetPath() != b[i].GetPath() {
+			return false
+		}
+	}
+	return true
 }
 
 func sandboxDesc(sb *pb.Sandbox) string {
@@ -557,6 +577,11 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyIs(msg, m.keys.Services):
 		if sb := m.actionable(); sb != nil {
 			return m.enterServices(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.Sources):
+		if sb := m.actionable(); sb != nil {
+			return m.enterSources(sb, m.currentHostID())
 		}
 		return m, nil
 	}

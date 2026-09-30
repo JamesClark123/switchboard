@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,19 @@ type testRunner struct {
 	running   map[string]bool
 	kitAdds   []string // kit sources passed to `sbx kit add`
 	published []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
+	// feature 007: when set, CloneRepo signals cloneEntered on entry and then
+	// waits for the current gate (see setCloneGate) to close, so a test can hold
+	// an add mid-flight.
+	cloneEntered chan struct{}
+	gateMu       sync.Mutex
+	cloneGate    chan struct{}
+}
+
+// setCloneGate installs (or, with nil, clears) the channel CloneRepo blocks on.
+func (r *testRunner) setCloneGate(ch chan struct{}) {
+	r.gateMu.Lock()
+	r.cloneGate = ch
+	r.gateMu.Unlock()
 }
 
 func (r *testRunner) Launch(_ context.Context, spec sandbox.LaunchSpec, _ func(string)) (string, error) {
@@ -41,6 +55,15 @@ func (r *testRunner) IsRunning(_ context.Context, ref string) (bool, error) {
 	return r.running[ref], nil
 }
 func (r *testRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
+	if r.cloneEntered != nil {
+		r.cloneEntered <- struct{}{}
+	}
+	r.gateMu.Lock()
+	gate := r.cloneGate
+	r.gateMu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	return os.MkdirAll(dest, 0o755)
 }
 func (r *testRunner) AddKit(_ context.Context, _, kitSource string, _ func(string)) error {
