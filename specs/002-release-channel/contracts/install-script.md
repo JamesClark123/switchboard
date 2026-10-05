@@ -17,7 +17,7 @@ Must run under a POSIX `sh` (no bashisms required) and need no toolchain beyond 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `SWITCHBOARD_VERSION` | latest release | Pin a specific tag, e.g. `v0.1.0` (FR-013, SC-006). |
-| `SWITCHBOARD_INSTALL_DIR` | `/usr/local/bin`, else `~/.local/bin` | Target directory for the binaries (FR-012). |
+| `SWITCHBOARD_INSTALL_DIR` | `/usr/local/bin` if user-writable, else `~/.local/bin` | Target directory for the binaries (FR-012). |
 | `SWITCHBOARD_BASE_URL` | GitHub Releases download base | Override the download base (mirrors/testing); enables offline validation (R6, quickstart). |
 
 ## Platform detection
@@ -33,9 +33,12 @@ Must run under a POSIX `sh` (no bashisms required) and need no toolchain beyond 
 2. Download `switchboard_<os>_<arch>.tar.gz` and `checksums.txt` to a temp dir.
 3. **Verify** the archive's SHA-256 against its `checksums.txt` entry; abort on mismatch **before**
    touching the install dir (FR-011, SC-003).
-4. Extract and install `sxb` and `sxbd` (mode `0755`) into the install dir — elevating with `sudo`
-   only if the default dir isn't writable, else falling back to the per-user dir (FR-012).
-5. Warn if the install dir is not on `PATH` (FR-012).
+4. Extract and install `sxb` and `sxbd` (mode `0755`) into the install dir, **never as root**: the
+   in-app updater swaps the binaries in place unprivileged, so they must stay user-writable. If the
+   default dir isn't writable, install into the per-user dir and elevate with `sudo` only to symlink
+   both binaries into the default dir; skip the elevation when the links already exist, and carry on
+   (with a note) if it is refused (FR-012).
+5. Warn if the on-`PATH` dir (the linked default dir, else the install dir) is not on `PATH` (FR-012).
 6. Print next steps: how to start the daemon (`sxbd serve --boot`/`--watch`) and launch `sxb`, plus
    the note that each remote host running the daemon must be installed there too (FR-016).
 

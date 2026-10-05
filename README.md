@@ -85,7 +85,9 @@ curl -fsSL https://raw.githubusercontent.com/jamesclark123/switchboard/main/inst
 ```
 
 It detects your OS/arch, downloads the latest release, verifies its SHA-256 checksum, and installs
-`sxb` + `sxbd` to `/usr/local/bin` (or `~/.local/bin`). Pin a version with
+`sxb` + `sxbd` to `/usr/local/bin` when you can write to it. Otherwise they go to `~/.local/bin`
+and are symlinked into `/usr/local/bin` (the only step that uses `sudo`) — the binaries themselves
+always stay owned by you, which is what lets them self-update without elevating. Pin a version with
 `SWITCHBOARD_VERSION=vX.Y.Z` or change the target with `SWITCHBOARD_INSTALL_DIR=...`. Binaries
 installed this way can update themselves from within the TUI (see [Updating](#updating)).
 
@@ -267,6 +269,10 @@ up to date with minimal effort.
 - **Remote hosts** are reached as `ssh <host> sxbd dial-stdio`, so their `sxbd` lives on that host.
   The `u` fan-out updates them in place; a host you have *not* connected to must be updated there
   directly by re-running the installer.
+- **`permission denied` when updating?** The binary sits in a directory its user cannot write —
+  typically a root-owned `/usr/local/bin` from an older installer that copied it there with `sudo`.
+  Re-run the installer once on that machine; it moves the binaries to `~/.local/bin` (symlinked from
+  `/usr/local/bin`) and later updates need no elevation.
 
 ## Testing
 

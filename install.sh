@@ -5,7 +5,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/jamesclark123/switchboard/main/install.sh | sh
 #
 # Overrides (env): SWITCHBOARD_VERSION=vX.Y.Z (default: latest),
-# SWITCHBOARD_INSTALL_DIR (default: /usr/local/bin, else ~/.local/bin).
+# SWITCHBOARD_INSTALL_DIR (default: /usr/local/bin when you can write to it, else
+# ~/.local/bin with the binaries symlinked into /usr/local/bin via sudo).
 #
 # Binaries installed this way are self-update capable: run the TUI and press `u`
 # to update the client and every connected host. Each remote host that runs the
@@ -45,19 +46,20 @@ else
 fi
 
 # --- choose an install dir ---
+# The binaries must live somewhere this user can write: the in-app updater swaps
+# them in place without elevating, so a root-owned copy can never update itself.
+# When the default /usr/local/bin needs root, install into ~/.local/bin instead
+# and elevate only to symlink the binaries onto PATH from /usr/local/bin.
 install_dir="${SWITCHBOARD_INSTALL_DIR:-/usr/local/bin}"
-sudo=""
+link_dir=""
 if [ ! -d "$install_dir" ] || [ ! -w "$install_dir" ]; then
 	if [ "$install_dir" = "/usr/local/bin" ]; then
 		if command -v sudo >/dev/null 2>&1 && [ -d "$install_dir" ]; then
-			sudo="sudo"
-		else
-			install_dir="$HOME/.local/bin"
-			mkdir -p "$install_dir"
+			link_dir="$install_dir"
 		fi
-	else
-		mkdir -p "$install_dir"
+		install_dir="$HOME/.local/bin"
 	fi
+	mkdir -p "$install_dir"
 fi
 
 # --- download + verify + install ---
@@ -95,13 +97,32 @@ fi
 tar -xzf "$tmp/$asset" -C "$tmp"
 for bin in sxb sxbd; do
 	[ -f "$tmp/$bin" ] || err "$bin missing from archive"
-	$sudo install -m 0755 "$tmp/$bin" "$install_dir/$bin"
+	install -m 0755 "$tmp/$bin" "$install_dir/$bin"
 done
-
 printf 'install: installed sxb and sxbd to %s\n' "$install_dir"
+
+# --- link onto PATH (only when the install had to move off /usr/local/bin) ---
+if [ -n "$link_dir" ]; then
+	linked=1
+	for bin in sxb sxbd; do
+		[ "$(readlink "$link_dir/$bin" 2>/dev/null || true)" = "$install_dir/$bin" ] || linked=0
+	done
+	if [ "$linked" = 0 ]; then
+		printf 'install: linking sxb and sxbd into %s (needs sudo)\n' "$link_dir"
+		if ! sudo ln -sf "$install_dir/sxb" "$install_dir/sxbd" "$link_dir/"; then
+			printf 'install: note: could not link into %s\n' "$link_dir"
+			if [ -e "$link_dir/sxb" ] || [ -e "$link_dir/sxbd" ]; then
+				printf 'install: warning: an older copy in %s may shadow this install — remove it\n' "$link_dir"
+			fi
+			link_dir=""
+		fi
+	fi
+fi
+
+path_dir="${link_dir:-$install_dir}"
 case ":$PATH:" in
-	*":$install_dir:"*) ;;
-	*) printf 'install: note: %s is not on your PATH — add it to use sxb/sxbd\n' "$install_dir" ;;
+	*":$path_dir:"*) ;;
+	*) printf 'install: note: %s is not on your PATH — add it to use sxb/sxbd\n' "$path_dir" ;;
 esac
 
 cat <<EOF

@@ -17,9 +17,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -39,13 +42,19 @@ const (
 
 	// ChecksumsAsset is the release asset holding SHA-256 sums (GoReleaser default).
 	ChecksumsAsset = "checksums.txt"
+
+	// InstallCommand is the one-line installer. It is surfaced when an update
+	// cannot be applied in place, because re-running it is the way out.
+	InstallCommand = "curl -fsSL https://raw.githubusercontent.com/" + RepoOwner + "/" + RepoName + "/main/install.sh | sh"
 )
 
 // apiBase and httpClient are package-level so tests can point them at a local
-// server; production uses the real GitHub API over HTTPS.
+// server; production uses the real GitHub API over HTTPS. selfExecutable is
+// indirected so tests can aim ApplyToSelf at a scratch file.
 var (
-	apiBase    = "https://api.github.com"
-	httpClient = &http.Client{Timeout: 60 * time.Second}
+	apiBase        = "https://api.github.com"
+	httpClient     = &http.Client{Timeout: 60 * time.Second}
+	selfExecutable = os.Executable
 )
 
 // Release is the subset of a GitHub release the updater needs.
@@ -224,13 +233,29 @@ func ExtractBinary(targz []byte, name string) ([]byte, error) {
 }
 
 // ApplyToPath atomically replaces the executable at `path` with binaryBytes.
+// Symlinks are resolved first: the installer links the binaries onto PATH from a
+// user-writable directory, and the replacement is staged next to the target, so
+// the swap must land beside the real file rather than in the link's (typically
+// root-owned) directory.
 func ApplyToPath(binaryBytes []byte, path string) error {
-	return selfupdate.Apply(bytes.NewReader(binaryBytes), selfupdate.Options{TargetPath: path})
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	err := selfupdate.Apply(bytes.NewReader(binaryBytes), selfupdate.Options{TargetPath: path})
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("%w: %s is not writable by this user (was it installed with sudo?) — re-run the installer on the affected machine once to fix this: %s",
+			err, filepath.Dir(path), InstallCommand)
+	}
+	return err
 }
 
 // ApplyToSelf atomically replaces the currently-running executable.
 func ApplyToSelf(binaryBytes []byte) error {
-	return selfupdate.Apply(bytes.NewReader(binaryBytes), selfupdate.Options{})
+	exe, err := selfExecutable()
+	if err != nil {
+		return err
+	}
+	return ApplyToPath(binaryBytes, exe)
 }
 
 // IsBrewManaged reports whether execPath resolves under a Homebrew prefix, in

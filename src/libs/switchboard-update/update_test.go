@@ -7,11 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -269,6 +272,85 @@ func TestApplyToPath(t *testing.T) {
 	}
 	if string(got) != "NEWBINARY" {
 		t.Errorf("after apply = %q, want NEWBINARY", got)
+	}
+}
+
+// The installer links binaries onto PATH from a user-writable directory; the
+// swap must replace the real file and leave the link (and its directory) alone.
+func TestApplyToPathFollowsSymlink(t *testing.T) {
+	realDir, linkDir := t.TempDir(), t.TempDir()
+	target := filepath.Join(realDir, "sxb")
+	if err := os.WriteFile(target, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(linkDir, "sxb")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// A read-only link directory stands in for a root-owned /usr/local/bin.
+	if err := os.Chmod(linkDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(linkDir, 0o755) })
+
+	if err := ApplyToPath([]byte("NEWBINARY"), link); err != nil {
+		t.Fatalf("ApplyToPath via symlink: %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "NEWBINARY" {
+		t.Errorf("real file after apply = %q, want NEWBINARY", got)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link must remain a symlink (mode %v, err %v)", fi.Mode(), err)
+	}
+}
+
+func TestApplyToPathPermissionDeniedNamesTheFix(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sxb")
+	if err := os.WriteFile(target, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err := ApplyToPath([]byte("NEWBINARY"), target)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("err = %v, want a permission error", err)
+	}
+	for _, want := range []string{dir, InstallCommand} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err %q should mention %q", err, want)
+		}
+	}
+	if got, _ := os.ReadFile(target); string(got) != "OLD" {
+		t.Errorf("target after failed apply = %q, want it untouched", got)
+	}
+}
+
+func TestApplyToSelf(t *testing.T) {
+	prev := selfExecutable
+	t.Cleanup(func() { selfExecutable = prev })
+
+	target := filepath.Join(t.TempDir(), "sxbd")
+	if err := os.WriteFile(target, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selfExecutable = func() (string, error) { return target, nil }
+	if err := ApplyToSelf([]byte("NEWBINARY")); err != nil {
+		t.Fatalf("ApplyToSelf: %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "NEWBINARY" {
+		t.Errorf("after apply = %q, want NEWBINARY", got)
+	}
+
+	selfExecutable = func() (string, error) { return "", errors.New("no executable") }
+	if err := ApplyToSelf([]byte("NEWBINARY")); err == nil {
+		t.Error("ApplyToSelf must surface an executable-lookup failure")
 	}
 }
 
