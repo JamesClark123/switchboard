@@ -42,6 +42,13 @@ type updateState struct {
 
 type updateAvailableMsg struct{ latest string }
 
+// updateCheckInterval is how often a running client re-asks GitHub for the latest
+// release after the startup check, so a long-lived sxb notices new releases.
+const updateCheckInterval = 30 * time.Minute
+
+// updateCheckTickMsg fires when the next periodic release check is due.
+type updateCheckTickMsg struct{}
+
 type updateResultMsg struct {
 	results   []hostUpdate
 	localVer  string
@@ -69,8 +76,41 @@ var applyLocalUpdate = func(ctx context.Context, target, execPath string) (versi
 // selfExecPath resolves the running client's executable path (stubbed in tests).
 var selfExecPath = os.Executable
 
-// checkUpdateCmd asks GitHub for the latest release on startup. It is
-// offline-safe (any error is swallowed) and opt-out via SXB_NO_UPDATE_CHECK.
+// scheduleUpdateCheck arms the next periodic release check.
+func scheduleUpdateCheck() tea.Cmd {
+	return tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
+}
+
+// handleUpdateCheckTick runs a release check and re-arms the timer. The timer is
+// re-armed here rather than from the check's result because an offline or
+// opted-out check yields no message at all.
+func (m Model) handleUpdateCheckTick() (tea.Model, tea.Cmd) {
+	return m, tea.Batch(checkUpdateCmd(), scheduleUpdateCheck())
+}
+
+// applyUpdateAvailable records the latest release. The banner and desktop
+// notification fire only when the release is news — the periodic poll re-reports
+// the same version every time — and not for the version the local client was
+// already swapped to while it waits for a restart (its running version is stale
+// by design, and applyUpdateResult cleared the banner on purpose).
+func (m Model) applyUpdateAvailable(msg updateAvailableMsg) (tea.Model, tea.Cmd) {
+	if msg.latest == m.latestVersion {
+		return m, nil
+	}
+	m.latestVersion = msg.latest
+	if m.update.finished && m.update.localErr == nil && !m.update.localBrew && msg.latest == m.update.localVer {
+		return m, nil
+	}
+	if hint := updateHint(msg.latest, m.clientVersion); hint != "" {
+		m.updateBanner = hint
+		m.notifier.Notify("Switchboard update available", msg.latest)
+	}
+	return m, nil
+}
+
+// checkUpdateCmd asks GitHub for the latest release — on startup and then every
+// updateCheckInterval. It is offline-safe (any error is swallowed) and opt-out via
+// SXB_NO_UPDATE_CHECK.
 func checkUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
 		if os.Getenv("SXB_NO_UPDATE_CHECK") != "" {

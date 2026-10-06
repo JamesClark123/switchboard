@@ -268,6 +268,7 @@ func (m Model) dispatchAddSources(id, host string, sources []*pb.SourceRef, over
 		progress:  "adding " + folderNames(sources) + " — starting",
 		ch:        ch,
 	}
+	m.beginOpLog(id, m.sandboxName(id), "add sources")
 	if m.overlayFor(id) {
 		m.sourcesView.browsing = false
 		m.sourcesView.status = ""
@@ -310,8 +311,10 @@ func (m Model) handleSourcesProgress(msg sourcesProgressMsg) (tea.Model, tea.Cmd
 			}
 		}
 		add.progress = fmt.Sprintf("adding %s — %d%%", folder, pct)
+		m.setOpLatest(msg.id, add.progress)
 	case u.LogLine != "":
 		add.progress = "adding " + folderNames(add.sources) + " — " + truncate(u.LogLine, 40)
+		m.appendOpLog(msg.id, u.LogLine)
 	}
 	m.refreshListItems()
 	return m, waitForMsg(add.ch)
@@ -321,6 +324,7 @@ func (m Model) handleSourcesProgress(msg sourcesProgressMsg) (tea.Model, tea.Cmd
 // prompt on a low-resource block (FR-057), or merge the updated record.
 func (m Model) handleSourcesAddResult(msg sourcesAddResultMsg) (tea.Model, tea.Cmd) {
 	delete(m.sourceAdds, msg.id)
+	m.finishOpLog(msg.id, msg.err)
 	name := m.sandboxName(msg.id)
 	switch {
 	case msg.err != nil:

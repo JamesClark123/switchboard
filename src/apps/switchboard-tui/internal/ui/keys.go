@@ -24,7 +24,12 @@ type keyMap struct {
 	// Sources opens the per-sandbox seeded-folder editor (feature 007). `S` —
 	// capital-letter management surfaces are the house pattern (K/A/E/F); verified
 	// free against every other binding in this map.
-	Sources    key.Binding
+	Sources key.Binding
+	// Log opens the sbx output of the selected sandbox's last launch / kit attach /
+	// refresh / source add (oplog.go). `l`; verified free against every other
+	// binding in this map (the list's own `l` page binding never sees it because
+	// list keys are dispatched here first).
+	Log        key.Binding
 	Launch     key.Binding
 	NewConfig  key.Binding
 	FromConfig key.Binding
@@ -64,6 +69,7 @@ func newKeyMap() keyMap {
 		EscapeHatchRuns: key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "runs")),
 		Services:        key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
 		Sources:         key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sources")),
+		Log:             key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "sbx output")),
 		Launch:          key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
 		NewConfig:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
 		FromConfig:      key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "from config")),
@@ -107,7 +113,7 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.Log)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

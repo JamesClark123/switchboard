@@ -106,12 +106,12 @@ func TestConfirmAcceptRunsRefresh(t *testing.T) {
 		if cmd == nil {
 			t.Fatalf("%q: expected a refresh command", key)
 		}
-		msg := runCmd(cmd)
+		got = drainOp(t, got, runCmd(cmd))
 		if d.refreshedID != "sb-1" {
 			t.Errorf("%q: refreshed %q, want sb-1", key, d.refreshedID)
 		}
-		if _, ok := msg.(statusMsg); !ok {
-			t.Errorf("%q: msg = %T, want statusMsg", key, msg)
+		if !strings.Contains(got.status, "refreshed") {
+			t.Errorf("%q: status = %q, want the refreshed confirmation", key, got.status)
 		}
 	}
 }
@@ -121,10 +121,10 @@ func TestRefreshErrorSurfaces(t *testing.T) {
 	d := &fakeDaemon{refreshErr: errBoom{}}
 	m := listModel(t, d)
 	out, _ := update(m, press("F"))
-	_, cmd := update(out, press("y"))
-	msg := runCmd(cmd)
-	if _, ok := msg.(errMsg); !ok {
-		t.Fatalf("msg = %T, want errMsg", msg)
+	out, cmd := update(out, press("y"))
+	out = drainOp(t, out, runCmd(cmd))
+	if out.err == nil || !strings.HasPrefix(out.status, "error") {
+		t.Fatalf("err = %v, status = %q; want the daemon error surfaced", out.err, out.status)
 	}
 }
 

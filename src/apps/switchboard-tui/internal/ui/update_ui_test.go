@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
@@ -212,5 +213,64 @@ func TestCheckUpdateOptOut(t *testing.T) {
 	t.Setenv("SXB_NO_UPDATE_CHECK", "1")
 	if msg := runCmd(checkUpdateCmd()); msg != nil {
 		t.Errorf("opt-out should suppress the update check, got %T", msg)
+	}
+}
+
+// pollNotifier counts desktop notifications for the periodic-check tests.
+type pollNotifier struct{ n int }
+
+func (p *pollNotifier) Notify(string, string) { p.n++ }
+
+func TestUpdatePollIntervalAndTick(t *testing.T) {
+	if updateCheckInterval != 30*time.Minute {
+		t.Errorf("updateCheckInterval = %v, want 30m", updateCheckInterval)
+	}
+	m := New(&fakeDaemon{}, "/work").WithVersion("v0.4.0")
+	// The tick runs a check and re-arms itself even when checking is opted out
+	// (an opted-out check yields no message that could re-arm it).
+	t.Setenv("SXB_NO_UPDATE_CHECK", "1")
+	_, cmd := update(m, updateCheckTickMsg{})
+	if cmd == nil {
+		t.Fatal("the periodic tick must re-arm the next check")
+	}
+	if m.Init() == nil {
+		t.Fatal("Init should schedule the periodic check")
+	}
+}
+
+// Re-reporting the same release every poll must not re-raise the banner or spam
+// notifications; a genuinely newer release does.
+func TestUpdateAvailableRepeatIsQuietNewerIsNot(t *testing.T) {
+	n := &pollNotifier{}
+	m := New(&fakeDaemon{}, "/work").WithVersion("v0.4.0").WithNotifier(n)
+	m, _ = update(m, updateAvailableMsg{latest: "v0.5.0"})
+	m, _ = update(m, updateAvailableMsg{latest: "v0.5.0"})
+	if n.n != 1 || !strings.Contains(m.updateBanner, "v0.5.0") {
+		t.Errorf("notifications = %d, banner = %q; want one notification and the v0.5.0 banner", n.n, m.updateBanner)
+	}
+	m.updateBanner = "" // as if the user had acted on it
+	m, _ = update(m, updateAvailableMsg{latest: "v0.5.0"})
+	if n.n != 1 || m.updateBanner != "" {
+		t.Errorf("a repeated report should stay quiet; notifications = %d, banner = %q", n.n, m.updateBanner)
+	}
+	m, _ = update(m, updateAvailableMsg{latest: "v0.6.0"})
+	if n.n != 2 || !strings.Contains(m.updateBanner, "v0.6.0") {
+		t.Errorf("a newer release should notify again; notifications = %d, banner = %q", n.n, m.updateBanner)
+	}
+}
+
+// After the client swapped itself and awaits a restart, polling the version it
+// just installed must not bring the banner back; a release beyond it still does.
+func TestUpdateAvailableAfterSwapStaysClear(t *testing.T) {
+	n := &pollNotifier{}
+	m := New(&fakeDaemon{}, "/work").WithVersion("v0.4.0").WithNotifier(n)
+	m.update = updateState{finished: true, localVer: "v0.5.0"}
+	m, _ = update(m, updateAvailableMsg{latest: "v0.5.0"})
+	if m.updateBanner != "" || n.n != 0 {
+		t.Errorf("banner = %q, notifications = %d; want nothing for the version already installed", m.updateBanner, n.n)
+	}
+	m, _ = update(m, updateAvailableMsg{latest: "v0.6.0"})
+	if !strings.Contains(m.updateBanner, "v0.6.0") || n.n != 1 {
+		t.Errorf("banner = %q, notifications = %d; want the newer release surfaced", m.updateBanner, n.n)
 	}
 }

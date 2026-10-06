@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -221,14 +222,12 @@ func (m Model) confirmAttachKit(k *store.Kit) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) addKitCmd(d Daemon, id string, ref *pb.KitRef, label string) tea.Cmd {
-	return func() tea.Msg {
-		// `sbx kit add` re-runs the kit's install commands and restarts the sandbox,
-		// which can take minutes — well past the shared 60s RPC timeout.
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-		if _, err := d.AddKit(ctx, id, ref, nil); err != nil {
-			return errMsg{err}
-		}
-		return statusMsg("attached kit " + label)
-	}
+	// `sbx kit add` re-runs the kit's install commands and restarts the sandbox,
+	// which can take minutes — well past the shared 60s RPC timeout. Its output is
+	// streamed into the sandbox's sbx log (`l`) so a failing install is diagnosable.
+	return streamOpCmd(id, "kit add", refreshTimeout,
+		func(ctx context.Context, onLog func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+			return d.AddKit(ctx, id, ref, onLog)
+		},
+		func(*pb.Sandbox) string { return "attached kit " + label })
 }

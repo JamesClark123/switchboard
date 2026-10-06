@@ -256,6 +256,10 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	// tell at a glance what each sandbox's agent is doing.
 	if verb, ok := m.busy[row.sb.GetId()]; ok {
 		title = m.spinner.View() + " " + selectedStyle.Render(pad(verb+"…", 9)) + " " + row.sb.GetDisplayName()
+		// A streaming op (kit add, refresh) shows its live sbx line like a launch does.
+		if latest := m.opLatest(row.sb.GetId()); latest != "" {
+			title += "  " + dimStyle.Render(truncate(latest, 60))
+		}
 	} else if badge := m.agentBadge(row.sb); badge != "" {
 		title += "   " + badge
 	}
@@ -584,6 +588,10 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.enterSources(sb, m.currentHostID())
 		}
 		return m, nil
+	case keyIs(msg, m.keys.Log):
+		// Deliberately current(), not actionable(): a still-creating placeholder is
+		// exactly the row whose sbx output is worth watching.
+		return m.enterOpLog(m.current())
 	}
 
 	// Everything else (navigation, filter start, pagination) goes to the list.

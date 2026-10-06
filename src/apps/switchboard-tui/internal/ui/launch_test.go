@@ -52,7 +52,9 @@ type fakeDaemon struct {
 	attachedID string
 	termClosed bool
 
-	// feature 004 fakes: refresh + kits
+	// feature 004 fakes: refresh + kits. streamLines stands in for the sbx
+	// output the daemon streams as LaunchProgress.log_line during Refresh/AddKit.
+	streamLines   []string
 	refreshErr    error
 	refreshedID   string
 	addKitErr     error
@@ -83,20 +85,32 @@ type decidedRun struct {
 	approved bool
 }
 
-func (f *fakeDaemon) Refresh(_ context.Context, id string, _ func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+// stream replays streamLines to onLog (nil-safe), as the daemon would.
+func (f *fakeDaemon) stream(onLog func(client.LaunchUpdate)) {
+	if onLog == nil {
+		return
+	}
+	for _, l := range f.streamLines {
+		onLog(client.LaunchUpdate{LogLine: l})
+	}
+}
+
+func (f *fakeDaemon) Refresh(_ context.Context, id string, onLog func(client.LaunchUpdate)) (*pb.Sandbox, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refreshedID = id
+	f.stream(onLog)
 	if f.refreshErr != nil {
 		return nil, f.refreshErr
 	}
 	return &pb.Sandbox{Id: id, DisplayName: "sb-" + id, State: pb.SandboxState_SANDBOX_STATE_RUNNING}, nil
 }
 
-func (f *fakeDaemon) AddKit(_ context.Context, id string, ref *pb.KitRef, _ func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+func (f *fakeDaemon) AddKit(_ context.Context, id string, ref *pb.KitRef, onLog func(client.LaunchUpdate)) (*pb.Sandbox, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addKitID, f.addKitRef = id, ref
+	f.stream(onLog)
 	if f.addKitErr != nil {
 		return nil, f.addKitErr
 	}

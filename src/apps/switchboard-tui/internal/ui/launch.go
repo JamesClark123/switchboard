@@ -656,6 +656,7 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 			SeedingMode: mode,
 		},
 	}
+	m.beginOpLog(tempID, name, "launch")
 	m.screen = screenList
 	m.refreshListItems()
 
@@ -702,8 +703,10 @@ func (m Model) handleLaunchProgress(msg launchProgressMsg) (tea.Model, tea.Cmd) 
 			pct = int(100 * u.Copy.GetBytesCopied() / total)
 		}
 		lf.progress = fmt.Sprintf("copying %d%% %s", pct, filepath.Base(u.Copy.GetCurrentPath()))
+		m.setOpLatest(msg.id, lf.progress)
 	} else if u.LogLine != "" {
 		lf.progress = "sbx: " + u.LogLine
+		m.appendOpLog(msg.id, u.LogLine)
 	}
 	m.refreshListItems()
 	return m, waitForMsg(lf.ch)
@@ -716,12 +719,14 @@ func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
 	}
 	delete(m.launching, msg.id)
 	if msg.err != nil {
+		m.finishOpLog(msg.id, msg.err)
 		m.err = msg.err
-		m.status = "launch failed: " + msg.err.Error()
+		m.status = "launch failed: " + msg.err.Error() + m.opLogHint(msg.id)
 		m.refreshListItems()
 		return m, nil
 	}
 	if msg.blocked != nil {
+		delete(m.opLogs, msg.id) // the resource gate fired before sbx ran: nothing to keep
 		m.err = nil
 		m.status = "launch blocked (low resources): " +
 			strings.Join(msg.blocked.GetWarnings(), "; ") + " — free disk and retry"
@@ -733,6 +738,8 @@ func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
 	// fields + the tab-bar aggregate.
 	m.err = nil
 	m.status = "launched " + short(msg.sb.GetId())
+	m.rekeyOpLog(msg.id, msg.sb.GetId())
+	m.finishOpLog(msg.sb.GetId(), nil)
 	m.insertSandbox(msg.sb, host)
 	m.listLoading = true
 	m.refreshListItems()

@@ -99,9 +99,42 @@ func (r *SbxRunner) run(ctx context.Context, log func(string), args ...string) (
 		}
 	}
 	if err != nil {
-		return "", fmt.Errorf("%s %s: %w", r.Bin, strings.Join(args, " "), err)
+		// sbx explains a failure in its output (a kit install command's stderr, a
+		// rejected flag), not in the exit status — carry the tail so a client that
+		// did not keep the streamed lines can still show why.
+		return "", fmt.Errorf("%s %s: %w%s", r.Bin, strings.Join(args, " "), err, outputTail(out))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// errTailLines/errTailRunes bound how much of a failed command's output is folded
+// into its error: enough to name the cause, small enough for a one-line status bar.
+const (
+	errTailLines = 5
+	errTailRunes = 400
+)
+
+// outputTail renders the last few non-empty lines of out as a ": a | b | c"
+// suffix (newlines collapsed, since status lines are single-line), or "" when
+// there is no output to show.
+func outputTail(out []byte) string {
+	var lines []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) > errTailLines {
+		lines = lines[len(lines)-errTailLines:]
+	}
+	tail := strings.Join(lines, " | ")
+	if r := []rune(tail); len(r) > errTailRunes {
+		tail = "…" + string(r[len(r)-errTailRunes:])
+	}
+	return ": " + tail
 }
 
 // Launch maps to `sbx create --name <id> claude <workspace> [kit flags]`.

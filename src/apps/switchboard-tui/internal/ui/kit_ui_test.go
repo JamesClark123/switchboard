@@ -192,9 +192,12 @@ func TestAttachKitIsConfirmedThenSendsSpec(t *testing.T) {
 	}
 
 	out, cmd = update(out, press("y"))
-	runCmd(cmd)
+	out = drainOp(t, out, runCmd(cmd))
 	if d.addKitID != "sb-1" {
 		t.Errorf("attached to %q, want sb-1", d.addKitID)
+	}
+	if !strings.Contains(out.status, "attached kit") {
+		t.Errorf("status = %q, want the attach confirmation", out.status)
 	}
 	// The kit travels as an inline spec the daemon materializes, not a bare name.
 	spec := d.addKitRef.GetSpec()

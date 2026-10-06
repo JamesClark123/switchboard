@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -93,6 +94,71 @@ func TestSbxRunnerErrorPropagation(t *testing.T) {
 	running, err := r.IsRunning(context.Background(), "ref")
 	if err != nil || running {
 		t.Errorf("IsRunning on bad binary = %v, %v; want false, nil", running, err)
+	}
+}
+
+// A failing sbx explains itself on stdout/stderr, not in its exit code; the error
+// must carry the tail of that output so the client can show the cause.
+func TestSbxRunnerErrorCarriesOutputTail(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	script := `#!/usr/bin/env bash
+echo "pulling image"
+for i in 1 2 3 4 5 6; do echo "progress $i"; done
+echo "npm ERR! install failed" >&2
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &SbxRunner{Bin: bin}
+	var logged []string
+	err := r.AddKit(context.Background(), "sb", "/kits/x", func(l string) { logged = append(logged, l) })
+	if err == nil {
+		t.Fatal("expected an error from the failing stub")
+	}
+	msg := err.Error()
+	for _, want := range []string{"kit add sb /kits/x", "exit status 1", "npm ERR! install failed", "progress 6"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q should contain %q", msg, want)
+		}
+	}
+	// Only the tail travels in the error (the stream already carried the rest).
+	if strings.Contains(msg, "pulling image") {
+		t.Errorf("error %q should not include early output", msg)
+	}
+	if len(logged) != 8 {
+		t.Errorf("streamed %d lines, want all 8", len(logged))
+	}
+}
+
+func TestOutputTail(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	cases := []struct {
+		name, in string
+		want     string // substring that must appear; "" means the result must be empty
+		absent   string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "whitespace only", in: "\n  \n", want: ""},
+		{name: "few lines joined", in: "a\nb\n", want: ": a | b"},
+		{name: "last five kept", in: "1\n2\n3\n4\n5\n6\n7", want: ": 3 | 4 | 5 | 6 | 7", absent: "2"},
+		{name: "long line truncated from the left", in: long + "END", want: "…", absent: strings.Repeat("x", 450)},
+	}
+	for _, tc := range cases {
+		got := outputTail([]byte(tc.in))
+		if tc.want == "" && got != "" {
+			t.Errorf("%s: outputTail = %q, want empty", tc.name, got)
+		}
+		if tc.want != "" && !strings.Contains(got, tc.want) {
+			t.Errorf("%s: outputTail = %q, want it to contain %q", tc.name, got, tc.want)
+		}
+		if tc.absent != "" && strings.Contains(got, tc.absent) {
+			t.Errorf("%s: outputTail = %q should not contain %q", tc.name, got, tc.absent)
+		}
+		if tc.name == "long line truncated from the left" && !strings.HasSuffix(got, "END") {
+			t.Errorf("%s: outputTail = %q should keep the end of the output", tc.name, got)
+		}
 	}
 }
 

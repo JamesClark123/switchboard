@@ -219,6 +219,7 @@ The sandbox list is the home screen. Keys:
 | `K` | Manage agent kits · `A` attach a kit to the selected sandbox |
 | `E` | Review the selected sandbox's escape-hatch runs (this session) |
 | `S` | Edit the selected sandbox's seeded folders in place: `a` add folders (browse like launch), `space` mark, `d` remove marked (confirmed) — no restart |
+| `l` | Show the `sbx` output of the selected sandbox's last launch / kit attach / refresh / source add — kit install-command output lives here; a failed launch's log stays reachable |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
 
@@ -258,9 +259,10 @@ sandbox's workspace — and delivers each result back to the agent, even with no
 Switchboard is designed for frequent releases, so the TUI keeps itself and every connected daemon
 up to date with minimal effort.
 
-- **Notification:** on startup `sxb` checks GitHub for the latest release (best-effort; silent when
-  offline, opt out with `SXB_NO_UPDATE_CHECK=1`). When a newer version exists, a banner appears
-  above the sandbox list and a `u` key becomes available.
+- **Notification:** `sxb` checks GitHub for the latest release on startup and every 30 minutes
+  thereafter (best-effort; silent when offline, opt out with `SXB_NO_UPDATE_CHECK=1`). When a newer
+  version exists, a banner appears above the sandbox list and a `u` key becomes available; a release
+  that is already known is not re-announced.
 - **One keystroke, all machines:** pressing `u` updates to the latest release across the board — it
   drives **every connected daemon** (local and remote, over the existing SSH-tunneled connection)
   to self-update its `sxbd` binary and restart, then swaps the local `sxb` binary and restarts the

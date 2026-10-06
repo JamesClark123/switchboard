@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -53,16 +54,13 @@ func (m Model) confirmRefresh(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) 
 // The daemon is captured as a parameter rather than read off m inside the closure:
 // Model is copied on every Update, so a closure over m would act on a stale copy.
 func (m Model) refreshCmdFor(d Daemon, id string) tea.Cmd {
-	return func() tea.Msg {
-		// A refresh re-copies the sources from scratch, which for a large repo can
-		// take far longer than a normal RPC — hence its own generous timeout rather
-		// than the shared 60s one.
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-		sb, err := d.Refresh(ctx, id, nil)
-		if err != nil {
-			return errMsg{err}
-		}
-		return statusMsg("refreshed " + sb.GetDisplayName())
-	}
+	// A refresh re-copies the sources from scratch, which for a large repo can
+	// take far longer than a normal RPC — hence its own generous timeout rather
+	// than the shared 60s one. The streamed sbx output lands in the sandbox's
+	// sbx log (`l`).
+	return streamOpCmd(id, "refresh", refreshTimeout,
+		func(ctx context.Context, onLog func(client.LaunchUpdate)) (*pb.Sandbox, error) {
+			return d.Refresh(ctx, id, onLog)
+		},
+		func(sb *pb.Sandbox) string { return "refreshed " + sb.GetDisplayName() })
 }

@@ -103,6 +103,7 @@ const (
 	screenRuns
 	screenServices
 	screenSources
+	screenOpLog
 )
 
 // Model is the root Bubble Tea model.
@@ -226,6 +227,13 @@ type Model struct {
 	sourcesView sourcesState
 	sourceAdds  map[string]*sourceAddInFlight
 
+	// sbx output: the lines the daemon streams while a launch, kit attach,
+	// refresh or source add runs, kept per sandbox for the `l` overlay. It is the
+	// only place a kit's install-command output survives (see oplog.go).
+	opLogs      map[string]*opLog
+	lastOpLogID string
+	opLogView   opLogState
+
 	quitting bool
 }
 
@@ -266,6 +274,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		forwards:         forward.NewManager(),
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
+		opLogs:           map[string]*opLog{},
 		listLoading:      true, // the first list load is in flight until it arrives
 	}
 	m.help.Width = m.width
@@ -471,9 +480,10 @@ func (m Model) reloadCmd() tea.Cmd {
 }
 
 // Init kicks off the first sandbox list load, opens the event subscription,
-// loads the tab-bar data, and starts the shared spinner.
+// loads the tab-bar data, runs the first release check (and arms the periodic
+// one), and starts the shared spinner.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), checkUpdateCmd(), m.spinner.Tick)
+	return tea.Batch(m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), checkUpdateCmd(), scheduleUpdateCheck(), m.spinner.Tick)
 }
 
 // Update routes messages by screen.
@@ -611,13 +621,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sourcesRemovedMsg:
 		return m.handleSourcesRemoved(msg)
 
+	case opStartedMsg:
+		return m.handleOpStarted(msg)
+	case opProgressMsg:
+		return m.handleOpProgress(msg)
+	case opResultMsg:
+		return m.handleOpResult(msg)
 	case updateAvailableMsg:
-		m.latestVersion = msg.latest
-		if hint := updateHint(msg.latest, m.clientVersion); hint != "" {
-			m.updateBanner = hint
-			m.notifier.Notify("Switchboard update available", msg.latest)
-		}
-		return m, nil
+		return m.applyUpdateAvailable(msg)
+	case updateCheckTickMsg:
+		return m.handleUpdateCheckTick()
 
 	case updateResultMsg:
 		return m.applyUpdateResult(msg)
@@ -729,6 +742,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateServicesKey(msg)
 	case screenSources:
 		return m.updateSourcesKey(msg)
+	case screenOpLog:
+		return m.updateOpLogKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -764,6 +779,13 @@ func (m Model) View() string {
 	if m.screen == screenSources {
 		bg := m.chrome(m.viewList(), m.sourcesHelp())
 		return overlayCenter(bg, m.sourcesModal(), m.width, m.height)
+	}
+
+	// The sbx output viewer floats over the list for the same reason: the row
+	// whose launch/attach/refresh it shows stays in view.
+	if m.screen == screenOpLog {
+		bg := m.chrome(m.viewList(), m.opLogHelp())
+		return overlayCenter(bg, m.opLogModal(), m.width, m.height)
 	}
 
 	// The in-place terminal view takes the full body (US2).
