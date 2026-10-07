@@ -164,7 +164,7 @@ func TestKitEditorDeleteEscapeHatch(t *testing.T) {
 
 // An abandoned edit must not mutate the stored kit or its sidecar (US1).
 func TestKitEditorAbandonedEscapeHatchEditLeavesStoreUntouched(t *testing.T) {
-	kit := &store.Kit{Name: "ruff", Commands: &store.KitCommands{Install: []store.KitInstallCommand{{Command: "pip install ruff"}}}}
+	kit := &store.Kit{Name: "ruff", Setup: &store.KitSetup{Install: []store.KitInstallCommand{{Command: "pip install ruff"}}}}
 	out := editorOn(t, kit)
 	out = navToEscapeHatch(t, out)
 	out = openEHForm(t, out, -1)

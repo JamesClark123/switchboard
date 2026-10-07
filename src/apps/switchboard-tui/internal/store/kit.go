@@ -12,7 +12,8 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-// Kit is a client-authored Docker Sandboxes agent kit (feature 004).
+// Kit is a client-authored Docker Sandboxes agent kit (feature 004), authored in
+// kit schema version 2 since feature 008 (FR-091).
 //
 // Unlike Configuration (TOML), a kit is stored as the real artifact Docker
 // defines — kits/<id>/spec.yaml — so it can be hand-edited, shared, committed, or
@@ -23,10 +24,13 @@ import (
 // Only `kind: mixin` is authored here. A mixin extends an existing agent, which
 // is what switchboard's sandboxes are; a `kind: sandbox` kit would replace the
 // agent image and entrypoint wholesale and is out of scope for the editor —
-// attach one as an external source instead.
+// attach one as an external source instead. Schema 3 (workloads/sets) does not
+// compose with the built-in agents at all and is refused (FR-099).
 //
 // The schema is Docker's and is explicitly experimental, so unknown/incoming
-// fields are NOT round-tripped: the editor owns the fields it renders. See
+// fields are NOT round-tripped: the editor owns the fields it renders. A legacy
+// (schema 1) file is migrated on load (kit_migrate.go) and written back as
+// schema 2 on the next save. See
 // https://docs.docker.com/ai/sandboxes/customize/kit-reference/
 type Kit struct {
 	SchemaVersion string `yaml:"schemaVersion"`
@@ -34,14 +38,25 @@ type Kit struct {
 	Name          string `yaml:"name"`
 	DisplayName   string `yaml:"displayName,omitempty"`
 	Description   string `yaml:"description,omitempty"`
+	Version       string `yaml:"version,omitempty"`
+	// Requires optionally pins the base agent the mixin is designed for.
+	Requires *KitRequires `yaml:"requires,omitempty"`
 
-	Credentials *KitCredentials `yaml:"credentials,omitempty"`
-	Network     *KitNetwork     `yaml:"network,omitempty"`
+	Permissions *KitPermissions `yaml:"permissions,omitempty"`
 	Environment *KitEnvironment `yaml:"environment,omitempty"`
-	Commands    *KitCommands    `yaml:"commands,omitempty"`
-	// AgentContext is markdown appended to the agent's memory. Named `agentContext`
-	// since sbx v0.32.0 (previously `memory`).
-	AgentContext string `yaml:"agentContext,omitempty"`
+	// Credentials declares which credential services the kit needs and how the
+	// proxy injects them. Schema 2 has no host-side value source: values are
+	// supplied and bound on the host (`sbx secret set` + credential bindings).
+	Credentials []KitCredential `yaml:"credentials,omitempty"`
+	Setup       *KitSetup       `yaml:"setup,omitempty"`
+	// AgentInstructions is markdown the runtime writes into the agent's kit memory
+	// (schema 2 name for the former agentContext/memory).
+	AgentInstructions *KitAgentInstructions `yaml:"agentInstructions,omitempty"`
+
+	// Unsupported is set (never persisted) when the file on disk is a schema the
+	// editor cannot author — schema 3 — with the reason; such a kit is listed but
+	// neither editable nor attachable (FR-099).
+	Unsupported string `yaml:"-"`
 
 	// EscapeHatch is a switchboard-owned section (feature 005): commands the
 	// sandbox's agent may run OUTSIDE the sandbox. It is deliberately NOT rendered
@@ -56,6 +71,103 @@ type Kit struct {
 	// sees it, and it is persisted in a sidecar kits/<id>/services.yaml, travelling
 	// to the daemon as structured proto on KitSpec.services.
 	Services []KitService `yaml:"-"`
+}
+
+// KitRequires pins the base agent (`requires.agent`), validated by the runtime as
+// a kit name.
+type KitRequires struct {
+	Agent string `yaml:"agent,omitempty"`
+}
+
+// KitPermissions holds the kit's permission declarations; network is the only one
+// authored here.
+type KitPermissions struct {
+	Network *KitNetworkPerms `yaml:"network,omitempty"`
+}
+
+// KitNetworkPerms declares egress: domains the sandbox may reach and domains it
+// is blocked from. Deny wins over allow, including across composed kits.
+type KitNetworkPerms struct {
+	Allow []string `yaml:"allow,omitempty"`
+	Deny  []string `yaml:"deny,omitempty"`
+}
+
+// KitEnvironment declares container env vars set directly in the container.
+type KitEnvironment struct {
+	Variables map[string]string `yaml:"variables,omitempty"`
+}
+
+// KitCredential is one credential service the kit needs (schema 2 `credentials`
+// list entry). It never carries a value or a host source.
+type KitCredential struct {
+	Service     string     `yaml:"service"`
+	Description string     `yaml:"description,omitempty"`
+	Required    bool       `yaml:"required,omitempty"`
+	APIKey      *KitAPIKey `yaml:"apiKey,omitempty"`
+}
+
+// KitAPIKey is API-key injection: the env var name the agent sees, whether the
+// proxy manages it, and where the proxy injects the real value.
+type KitAPIKey struct {
+	Name         string      `yaml:"name"`
+	ProxyManaged bool        `yaml:"proxyManaged,omitempty"`
+	Inject       []KitInject `yaml:"inject,omitempty"`
+}
+
+// KitInject is one injection target: the domain (which must also be allowed in
+// permissions.network), the header, and its value format with one %s.
+type KitInject struct {
+	Domain string `yaml:"domain"`
+	Header string `yaml:"header"`
+	Format string `yaml:"format,omitempty"`
+}
+
+// KitSetup is the section the editor centres on: what the kit runs and writes
+// inside the sandbox (schema 2 `setup`).
+type KitSetup struct {
+	// Install runs ONCE at sandbox creation, as `sh -c <command>`, before the agent
+	// attaches. This is where package installs belong.
+	Install []KitInstallCommand `yaml:"install,omitempty"`
+	// Files are written at every sandbox start, with ${WORKDIR} expanded to the
+	// workspace path. Use these for anything that must be on disk before the agent
+	// runs — startup commands can't be relied on for that.
+	Files []KitInitFile `yaml:"files,omitempty"`
+	// Startup runs at EVERY sandbox start, as an argv array (no shell). These must
+	// be idempotent: they replay on every restart, including the ones `sbx kit add`
+	// and a refresh trigger.
+	Startup []KitStartupCommand `yaml:"startup,omitempty"`
+}
+
+// KitAgentInstructions is the schema 2 agent-instructions block.
+type KitAgentInstructions struct {
+	Content string `yaml:"content,omitempty"`
+}
+
+// KitInstallCommand is a shell string run once at creation. User defaults to "0"
+// (root) when omitted.
+type KitInstallCommand struct {
+	Command     string `yaml:"command"`
+	User        string `yaml:"user,omitempty"`
+	Description string `yaml:"description,omitempty"`
+}
+
+// KitStartupCommand is an argv array run at every start. User defaults to "1000"
+// (the agent) when omitted.
+type KitStartupCommand struct {
+	Command     []string `yaml:"command"`
+	User        string   `yaml:"user,omitempty"`
+	Background  bool     `yaml:"background,omitempty"`
+	Description string   `yaml:"description,omitempty"`
+}
+
+// KitInitFile is a file written into the container at start (schema 2
+// `setup.files` entry).
+type KitInitFile struct {
+	Path          string `yaml:"path"`
+	Content       string `yaml:"content"`
+	Mode          string `yaml:"mode,omitempty"`
+	OnlyIfMissing bool   `yaml:"onlyIfMissing,omitempty"`
+	Description   string `yaml:"description,omitempty"`
 }
 
 // KitService is one long-running service declared on a kit (feature 006, FR-043).
@@ -112,73 +224,6 @@ type KitEscapeHatchCommand struct {
 	Workspaces []string `yaml:"workspaces,omitempty"`
 }
 
-// KitCommands is the section the editor centres on: what the kit runs inside the
-// sandbox.
-type KitCommands struct {
-	// Install runs ONCE at sandbox creation, as `sh -c <command>`, before the agent
-	// attaches. This is where package installs belong.
-	Install []KitInstallCommand `yaml:"install,omitempty"`
-	// InitFiles are written at every sandbox start, with ${WORKDIR} expanded to the
-	// workspace path. Use these for anything that must be on disk before the agent
-	// runs — startup commands can't be relied on for that.
-	InitFiles []KitInitFile `yaml:"initFiles,omitempty"`
-	// Startup runs at EVERY sandbox start, as an argv array (no shell). These must
-	// be idempotent: they replay on every restart, including the ones `sbx kit add`
-	// and a refresh trigger.
-	Startup []KitStartupCommand `yaml:"startup,omitempty"`
-}
-
-// KitInstallCommand is a shell string run once at creation. User defaults to "0"
-// (root) when omitted.
-type KitInstallCommand struct {
-	Command     string `yaml:"command"`
-	User        string `yaml:"user,omitempty"`
-	Description string `yaml:"description,omitempty"`
-}
-
-// KitStartupCommand is an argv array run at every start. User defaults to "1000"
-// (the agent) when omitted.
-type KitStartupCommand struct {
-	Command     []string `yaml:"command"`
-	User        string   `yaml:"user,omitempty"`
-	Background  bool     `yaml:"background,omitempty"`
-	Description string   `yaml:"description,omitempty"`
-}
-
-// KitInitFile is a file written into the container at start.
-type KitInitFile struct {
-	Path          string `yaml:"path"`
-	Content       string `yaml:"content"`
-	Mode          string `yaml:"mode,omitempty"`
-	OnlyIfMissing bool   `yaml:"onlyIfMissing,omitempty"`
-	Description   string `yaml:"description,omitempty"`
-}
-
-// KitNetwork declares the kit's egress policy. Deny rules win over allow rules,
-// including across composed kits.
-type KitNetwork struct {
-	AllowedDomains []string `yaml:"allowedDomains,omitempty"`
-	DeniedDomains  []string `yaml:"deniedDomains,omitempty"`
-}
-
-// KitEnvironment declares container env vars. ProxyManaged names are populated by
-// the proxy at request time and pair with Credentials.
-type KitEnvironment struct {
-	Variables    map[string]string `yaml:"variables,omitempty"`
-	ProxyManaged []string          `yaml:"proxyManaged,omitempty"`
-}
-
-// KitCredentials maps a service id to where its secret comes from. Secrets stay on
-// the host and are injected by the proxy — no credential value is ever stored here.
-type KitCredentials struct {
-	Sources map[string]KitCredentialSource `yaml:"sources,omitempty"`
-}
-
-// KitCredentialSource names the env vars a service's credential may come from.
-type KitCredentialSource struct {
-	Env []string `yaml:"env,omitempty"`
-}
-
 // KitStore persists kits under <configDir>/kits/<id>/spec.yaml.
 type KitStore struct {
 	s *Store
@@ -213,34 +258,45 @@ func (kit *Kit) ID() string { return slug(kit.Name) }
 // an empty string, which would quietly name a kit after the wrong entity instead of
 // failing. SpecYAML rejects the empty case before calling here.
 func (kit *Kit) Normalize() {
-	kit.SchemaVersion = "1"
+	kit.SchemaVersion = "2"
 	kit.Kind = "mixin"
 	if strings.TrimSpace(kit.Name) != "" {
 		kit.Name = slug(kit.Name)
 	} else {
 		kit.Name = ""
 	}
-	if kit.Commands != nil && len(kit.Commands.Install) == 0 && len(kit.Commands.Startup) == 0 && len(kit.Commands.InitFiles) == 0 {
-		kit.Commands = nil
+	if kit.Requires != nil && strings.TrimSpace(kit.Requires.Agent) == "" {
+		kit.Requires = nil
 	}
-	if kit.Network != nil && len(kit.Network.AllowedDomains) == 0 && len(kit.Network.DeniedDomains) == 0 {
-		kit.Network = nil
+	if kit.Setup != nil && len(kit.Setup.Install) == 0 && len(kit.Setup.Startup) == 0 && len(kit.Setup.Files) == 0 {
+		kit.Setup = nil
 	}
-	if kit.Environment != nil && len(kit.Environment.Variables) == 0 && len(kit.Environment.ProxyManaged) == 0 {
+	if kit.Permissions != nil {
+		if n := kit.Permissions.Network; n != nil && len(n.Allow) == 0 && len(n.Deny) == 0 {
+			kit.Permissions.Network = nil
+		}
+		if kit.Permissions.Network == nil {
+			kit.Permissions = nil
+		}
+	}
+	if kit.Environment != nil && len(kit.Environment.Variables) == 0 {
 		kit.Environment = nil
 	}
-	if kit.Credentials != nil && len(kit.Credentials.Sources) == 0 {
-		kit.Credentials = nil
+	if kit.AgentInstructions != nil && strings.TrimSpace(kit.AgentInstructions.Content) == "" {
+		kit.AgentInstructions = nil
 	}
 }
 
 // SpecYAML renders the kit as spec.yaml. yaml.v3 owns quoting and block scalars
-// here rather than any hand-rolled emitter: install commands and initFile contents
-// are arbitrary shell and multi-line text, where escaping mistakes would produce a
-// spec that parses but means something else.
+// here rather than any hand-rolled emitter: install commands and setup-file
+// contents are arbitrary shell and multi-line text, where escaping mistakes would
+// produce a spec that parses but means something else.
 func (kit *Kit) SpecYAML() (string, error) {
 	if strings.TrimSpace(kit.Name) == "" {
 		return "", errors.New("kit name is required")
+	}
+	if kit.Unsupported != "" {
+		return "", errors.New("kit cannot be rendered: " + kit.Unsupported)
 	}
 	kit.Normalize()
 	var buf bytes.Buffer
@@ -431,32 +487,41 @@ func (k *KitStore) loadServices(id string) ([]KitService, error) {
 	return sc.Services, nil
 }
 
-// Get loads a kit by id (ErrKitNotFound when absent).
+// Get loads a kit by id (ErrKitNotFound when absent). A legacy (schema 1) file is
+// migrated to schema 2 in memory; use GetWithMigration to see what was carried
+// and dropped. A schema 3 file loads as an Unsupported kit (listed, not editable).
 func (k *KitStore) Get(id string) (*Kit, error) {
+	kit, _, err := k.GetWithMigration(id)
+	return kit, err
+}
+
+// GetWithMigration is Get plus the migration report (nil when the file was already
+// schema 2). Nothing on disk changes until Save (Key Decision 9).
+func (k *KitStore) GetWithMigration(id string) (*Kit, *Migration, error) {
 	b, err := os.ReadFile(k.file(id))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrKitNotFound
+			return nil, nil, ErrKitNotFound
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	var kit Kit
-	if err := yaml.Unmarshal(b, &kit); err != nil {
-		return nil, err
+	kit, mig, err := decodeSpec(b)
+	if err != nil {
+		return nil, nil, err
 	}
 	// The escape-hatch commands live in a sidecar, not spec.yaml (feature 005).
 	eh, err := k.loadEscapeHatch(id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	kit.EscapeHatch = eh
 	// Likewise the services (feature 006).
 	services, err := k.loadServices(id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	kit.Services = services
-	return &kit, nil
+	return kit, mig, nil
 }
 
 // List returns all saved kits, ordered by name. A directory without a readable

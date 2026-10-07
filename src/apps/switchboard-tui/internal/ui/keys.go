@@ -25,6 +25,15 @@ type keyMap struct {
 	// capital-letter management surfaces are the house pattern (K/A/E/F); verified
 	// free against every other binding in this map.
 	Sources key.Binding
+	// ScreenNext/ScreenPrev move between the two top-level screens — the sandbox
+	// list and the daemon screen (feature 008, FR-068). Shift+arrows so plain
+	// arrows keep their list meaning.
+	ScreenNext key.Binding
+	ScreenPrev key.Binding
+	// Settings opens the TUI-persisted settings screen (feature 008, FR-101).
+	// `,` is free against every other binding and reachable from both top-level
+	// screens.
+	Settings key.Binding
 	// Log opens the sbx output of the selected sandbox's last launch / kit attach /
 	// refresh / source add (oplog.go). `l`; verified free against every other
 	// binding in this map (the list's own `l` page binding never sees it because
@@ -70,6 +79,9 @@ func newKeyMap() keyMap {
 		Services:        key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
 		Sources:         key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sources")),
 		Log:             key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "sbx output")),
+		ScreenNext:      key.NewBinding(key.WithKeys("shift+right"), key.WithHelp("shift+→", "daemons")),
+		ScreenPrev:      key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", "sandboxes")),
+		Settings:        key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		Launch:          key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
 		NewConfig:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
 		FromConfig:      key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "from config")),
@@ -113,7 +125,7 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.Log)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.Log, k.ScreenNext, k.Settings)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

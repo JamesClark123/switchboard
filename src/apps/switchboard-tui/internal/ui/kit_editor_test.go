@@ -72,7 +72,7 @@ func TestKitEditorSectionNavigation(t *testing.T) {
 func TestKitEditorSectionListView(t *testing.T) {
 	out := editorOn(t, ruffKit())
 	v := out.View()
-	for _, want := range []string{"Identity", "Install commands", "Startup commands", "Init files", "Network", "Environment", "Credentials", "Agent context", "kind: mixin"} {
+	for _, want := range []string{"Identity", "Install commands", "Startup commands", "Setup files", "Network permissions", "Environment", "Credential services", "Agent instructions", "kind: mixin", "schemaVersion: 2"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("section list missing %q; got:\n%s", want, v)
 		}
@@ -113,7 +113,7 @@ func TestKitEditorAddInstallCommand(t *testing.T) {
 	if out.kitEditor.form != nil {
 		t.Error("ctrl+s should close the item form")
 	}
-	got := out.kitEditor.kit.Commands.Install
+	got := out.kitEditor.kit.Setup.Install
 	if len(got) != 1 || got[0].Command != "apt-get install -y jq" {
 		t.Fatalf("install commands = %+v, want the typed command", got)
 	}
@@ -133,7 +133,7 @@ func TestKitEditorRejectsEmptyInstallCommand(t *testing.T) {
 	if !strings.Contains(out.kitEditor.status, "command is required") {
 		t.Errorf("status = %q, want a required-field message", out.kitEditor.status)
 	}
-	if out.kitEditor.kit.Commands != nil && len(out.kitEditor.kit.Commands.Install) != 0 {
+	if out.kitEditor.kit.Setup != nil && len(out.kitEditor.kit.Setup.Install) != 0 {
 		t.Error("a blank command was appended")
 	}
 }
@@ -148,7 +148,7 @@ func TestKitEditorEditsExistingItemInPlace(t *testing.T) {
 		t.Fatalf("formItem = %d, want 0", out.kitEditor.formItem)
 	}
 	out, _ = update(out, ctrlS())
-	if got := out.kitEditor.kit.Commands.Install; len(got) != 1 {
+	if got := out.kitEditor.kit.Setup.Install; len(got) != 1 {
 		t.Errorf("editing item 0 produced %d commands, want 1", len(got))
 	}
 }
@@ -158,7 +158,7 @@ func TestKitEditorDeleteItem(t *testing.T) {
 	out, _ = update(out, press("j"))
 	out, _ = update(out, press("enter"))
 	out, _ = update(out, press("d"))
-	if n := len(out.kitEditor.kit.Commands.Install); n != 0 {
+	if n := len(out.kitEditor.kit.Setup.Install); n != 0 {
 		t.Errorf("install commands = %d, want 0 after delete", n)
 	}
 	if v := out.View(); !strings.Contains(v, "(none)") {
@@ -177,7 +177,7 @@ func TestKitEditorCancelItemForm(t *testing.T) {
 	if out.kitEditor.form != nil {
 		t.Error("esc should close the form")
 	}
-	if out.kitEditor.kit.Commands != nil && len(out.kitEditor.kit.Commands.Install) != 0 {
+	if out.kitEditor.kit.Setup != nil && len(out.kitEditor.kit.Setup.Install) != 0 {
 		t.Error("cancelled item was still added")
 	}
 }
@@ -194,7 +194,7 @@ func TestKitEditorStartupArgvIsLineDelimited(t *testing.T) {
 	out, _ = update(out, tea.KeyMsg{Type: tea.KeyCtrlJ})
 	out = typeIn(out, "-c")
 	out, _ = update(out, ctrlS())
-	got := out.kitEditor.kit.Commands.Startup
+	got := out.kitEditor.kit.Setup.Startup
 	if len(got) != 1 {
 		t.Fatalf("startup = %+v, want one command", got)
 	}
@@ -206,7 +206,7 @@ func TestKitEditorStartupArgvIsLineDelimited(t *testing.T) {
 // An init file needs a path; content alone is not enough.
 func TestKitEditorInitFileRequiresPath(t *testing.T) {
 	out := editorOn(t, &store.Kit{Name: "bare"})
-	out.kitEditor.section = secInitFiles
+	out.kitEditor.section = secSetupFiles
 	out, _ = update(out, press("enter"))
 	out = pressCmd(out, "a")
 	out, _ = update(out, ctrlS())
@@ -224,8 +224,7 @@ func TestKitEditorScalarSectionsOpenForms(t *testing.T) {
 		{secIdentity, formIdentity},
 		{secNetwork, formNetwork},
 		{secEnvironment, formEnvironment},
-		{secCredentials, formCredentials},
-		{secAgentContext, formAgentContext},
+		{secAgentInstructions, formAgentInstructions},
 	} {
 		out := editorOn(t, ruffKit())
 		out.kitEditor.section = tc.section
@@ -322,33 +321,6 @@ func TestJoinEnvRoundTripsAndIsSorted(t *testing.T) {
 	}
 }
 
-func TestParseCredentials(t *testing.T) {
-	got, err := parseCredentials("github=GH_TOKEN,GITHUB_TOKEN\nanthropic=ANTHROPIC_API_KEY")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got["github"].Env) != 2 || got["github"].Env[1] != "GITHUB_TOKEN" {
-		t.Errorf("parseCredentials = %+v", got)
-	}
-	for _, bad := range []string{"github", "=GH_TOKEN", "github="} {
-		if _, err := parseCredentials(bad); err == nil {
-			t.Errorf("parseCredentials(%q) should be rejected", bad)
-		}
-	}
-}
-
-func TestJoinCredentialsRoundTrips(t *testing.T) {
-	in := map[string]store.KitCredentialSource{"github": {Env: []string{"GH_TOKEN", "X"}}}
-	s := joinCredentials(in)
-	back, err := parseCredentials(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(back["github"].Env) != 2 {
-		t.Errorf("round trip = %+v", back)
-	}
-}
-
 func TestDefaultAndOmitDefault(t *testing.T) {
 	if got := defaultStr("  ", "0"); got != "0" {
 		t.Errorf("defaultStr = %q, want the default", got)
@@ -399,8 +371,8 @@ func TestKitSectionTitlesAndBlurbs(t *testing.T) {
 			t.Errorf("section %d has no blurb", s)
 		}
 	}
-	if !secInstall.itemized() || !secStartup.itemized() || !secInitFiles.itemized() {
-		t.Error("command sections should be itemized")
+	if !secInstall.itemized() || !secStartup.itemized() || !secSetupFiles.itemized() || !secCredentials.itemized() {
+		t.Error("setup and credential sections should be itemized")
 	}
 	if secIdentity.itemized() || secNetwork.itemized() {
 		t.Error("scalar sections should not be itemized")
@@ -411,5 +383,24 @@ func TestKitLineError(t *testing.T) {
 	err := errKitLine("expected KEY=value", "bad")
 	if !strings.Contains(err.Error(), "expected KEY=value") || !strings.Contains(err.Error(), `"bad"`) {
 		t.Errorf("error = %q, want it to quote the offending line", err)
+	}
+}
+
+func TestParseInject(t *testing.T) {
+	got, err := parseInject("api.github.com | Authorization | Bearer %s\nhooks.example | x-api-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Format != "Bearer %s" || got[1].Header != "x-api-key" || got[1].Format != "" {
+		t.Errorf("parseInject = %+v", got)
+	}
+	for _, bad := range []string{"api.github.com", "| Authorization", "a | b | c | d"} {
+		if _, err := parseInject(bad); err == nil {
+			t.Errorf("parseInject(%q) should be rejected", bad)
+		}
+	}
+	back, err := parseInject(joinInject(got))
+	if err != nil || len(back) != 2 || back[0] != got[0] {
+		t.Errorf("joinInject round trip = %+v, %v", back, err)
 	}
 }

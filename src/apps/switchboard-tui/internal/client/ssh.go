@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -57,6 +58,7 @@ type stdioConn struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	once   sync.Once
+	stderr tailBuffer
 }
 
 func (c *stdioConn) Read(p []byte) (int, error)  { return c.stdout.Read(p) }
@@ -96,11 +98,102 @@ func newStdioConn(cmd *exec.Cmd) (*stdioConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = os.Stderr
+	// Stderr is forwarded for diagnostics AND kept (bounded) so a failed dial can
+	// be classified from ssh's own words (feature 008, startup sign-in).
+	sc := &stdioConn{cmd: cmd, stdin: stdin, stdout: stdout}
+	cmd.Stderr = io.MultiWriter(os.Stderr, &sc.stderr)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
-	return &stdioConn{cmd: cmd, stdin: stdin, stdout: stdout}, nil
+	return sc, nil
+}
+
+// DialErrorKind classifies why an ssh-backed dial failed, from ssh's stderr.
+type DialErrorKind int
+
+const (
+	DialOther       DialErrorKind = iota
+	DialAuthFailed                // ssh rejected the credentials: a password may help
+	DialUnreachable               // the host could not be reached at all
+	DialNoDaemon                  // reached, but sxbd is not installed there
+)
+
+func (k DialErrorKind) String() string {
+	switch k {
+	case DialAuthFailed:
+		return "authentication failed"
+	case DialUnreachable:
+		return "host unreachable"
+	case DialNoDaemon:
+		return "sxbd not found on the host"
+	}
+	return "connection failed"
+}
+
+// DialError wraps a failed ssh-backed dial with its classification and the tail
+// of ssh's stderr, so the TUI can decide whether a password prompt is worth
+// showing (FR-088) and tell the developer why otherwise (FR-089).
+type DialError struct {
+	Kind   DialErrorKind
+	Err    error
+	Stderr string
+}
+
+func (e *DialError) Error() string {
+	msg := e.Kind.String()
+	if line := lastLine(e.Stderr); line != "" {
+		msg += ": " + line
+	}
+	return msg
+}
+
+func (e *DialError) Unwrap() error { return e.Err }
+
+// ClassifyDialStderr maps ssh's stderr to a DialErrorKind.
+func ClassifyDialStderr(stderr string) DialErrorKind {
+	l := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(l, "permission denied") || strings.Contains(l, "publickey") || strings.Contains(l, "password") || strings.Contains(l, "authentication"):
+		return DialAuthFailed
+	case strings.Contains(l, "sxbd: command not found") || strings.Contains(l, "sxbd: not found") || strings.Contains(l, "command not found"):
+		return DialNoDaemon
+	case strings.Contains(l, "connection refused") || strings.Contains(l, "timed out") || strings.Contains(l, "could not resolve") ||
+		strings.Contains(l, "no route to host") || strings.Contains(l, "network is unreachable") || strings.Contains(l, "connection reset"):
+		return DialUnreachable
+	}
+	return DialOther
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// tailBuffer keeps the last few KiB written to it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 4096 {
+		t.buf = t.buf[len(t.buf)-4096:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
 }
 
 // DialCommand dials a daemon over the stdio of cmd (which must bridge to the
@@ -137,7 +230,10 @@ func DialCommand(ctx context.Context, cmd *exec.Cmd) (*Conn, error) {
 	conn, err := handshake(ctx, cc)
 	if err != nil {
 		_ = sc.Close()
-		return nil, err
+		// Give the child a moment to flush its last words before classifying.
+		_ = sc.cmd.Wait()
+		stderr := sc.stderr.String()
+		return nil, &DialError{Kind: ClassifyDialStderr(stderr), Err: err, Stderr: stderr}
 	}
 	return conn, nil
 }

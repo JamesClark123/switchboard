@@ -141,6 +141,10 @@ func main() {
 
 		// Agent kits (feature 004).
 		m = m.WithKits(st.Kits())
+
+		// TUI-persisted settings (feature 008): loaded before Init so the startup
+		// sign-in sequence sees the flag.
+		m = m.WithSettings(st.Settings())
 	}
 
 	// WithMouseCellMotion enables mouse-wheel events so the in-place terminal

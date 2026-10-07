@@ -26,12 +26,14 @@ func sampleKit() *Kit {
 		Name:        "Ruff Lint",
 		DisplayName: "Ruff",
 		Description: "Python linting",
-		Commands: &KitCommands{
+		Version:     "1.0.0",
+		Requires:    &KitRequires{Agent: "claude"},
+		Setup: &KitSetup{
 			Install: []KitInstallCommand{{
 				Command:     `curl -fsSL https://x.dev/i.sh | sh && echo "done: 'quoted'"`,
 				Description: "install ruff",
 			}},
-			InitFiles: []KitInitFile{{
+			Files: []KitInitFile{{
 				Path:    "/home/agent/.local/bin/start.sh",
 				Content: "#!/usr/bin/env bash\nset -euo pipefail\nexec code-server --auth none \"${WORKDIR}\"\n",
 				Mode:    "0755",
@@ -42,10 +44,13 @@ func sampleKit() *Kit {
 				Background: true,
 			}},
 		},
-		Network:      &KitNetwork{AllowedDomains: []string{"code-server.dev"}, DeniedDomains: []string{"evil.example"}},
-		Environment:  &KitEnvironment{Variables: map[string]string{"MODEL": "gemma:4b"}, ProxyManaged: []string{"ANTHROPIC_API_KEY"}},
-		Credentials:  &KitCredentials{Sources: map[string]KitCredentialSource{"github": {Env: []string{"GH_TOKEN"}}}},
-		AgentContext: "## Sandbox\nRuff is preinstalled.",
+		Permissions: &KitPermissions{Network: &KitNetworkPerms{Allow: []string{"code-server.dev"}, Deny: []string{"evil.example"}}},
+		Environment: &KitEnvironment{Variables: map[string]string{"MODEL": "gemma:4b"}},
+		Credentials: []KitCredential{{
+			Service: "github", Required: true,
+			APIKey: &KitAPIKey{Name: "GH_TOKEN", ProxyManaged: true, Inject: []KitInject{{Domain: "api.github.com", Header: "Authorization", Format: "Bearer %s"}}},
+		}},
+		AgentInstructions: &KitAgentInstructions{Content: "## Sandbox\nRuff is preinstalled."},
 	}
 }
 
@@ -54,7 +59,7 @@ func TestSpecYAMLRendersRequiredIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`schemaVersion: "1"`, "kind: mixin", "name: ruff-lint"} {
+	for _, want := range []string{`schemaVersion: "2"`, "kind: mixin", "name: ruff-lint", "version: 1.0.0", "requires:", "agent: claude", "permissions:", "allow:", "setup:", "files:", "agentInstructions:", "credentials:", "service: github", "proxyManaged: true", "inject:"} {
 		if !strings.Contains(y, want) {
 			t.Errorf("spec.yaml missing %q:\n%s", want, y)
 		}
@@ -85,35 +90,41 @@ func TestSpecYAMLRoundTrips(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(y), &back); err != nil {
 		t.Fatalf("rendered spec.yaml does not parse: %v\n%s", err, y)
 	}
-	if got, want := back.Commands.Install[0].Command, src.Commands.Install[0].Command; got != want {
+	if got, want := back.Setup.Install[0].Command, src.Setup.Install[0].Command; got != want {
 		t.Errorf("install command mangled:\n got %q\nwant %q", got, want)
 	}
-	if got, want := back.Commands.InitFiles[0].Content, src.Commands.InitFiles[0].Content; got != want {
-		t.Errorf("initFile content mangled:\n got %q\nwant %q", got, want)
+	if got, want := back.Setup.Files[0].Content, src.Setup.Files[0].Content; got != want {
+		t.Errorf("setup file content mangled:\n got %q\nwant %q", got, want)
 	}
-	if got := back.Commands.Startup[0].Command; len(got) != 3 || got[0] != "sh" {
+	if got := back.Setup.Startup[0].Command; len(got) != 3 || got[0] != "sh" {
 		t.Errorf("startup argv mangled: %v", got)
 	}
-	if !back.Commands.Startup[0].Background {
+	if !back.Setup.Startup[0].Background {
 		t.Error("startup background flag lost")
 	}
 	if back.Environment.Variables["MODEL"] != "gemma:4b" {
 		t.Errorf("env var mangled: %v", back.Environment.Variables)
 	}
-	if back.AgentContext != src.AgentContext {
-		t.Errorf("agentContext mangled: %q", back.AgentContext)
+	if back.AgentInstructions.Content != src.AgentInstructions.Content {
+		t.Errorf("agent instructions mangled: %q", back.AgentInstructions.Content)
+	}
+	if len(back.Credentials) != 1 || back.Credentials[0].APIKey.Inject[0].Header != "Authorization" {
+		t.Errorf("credentials mangled: %+v", back.Credentials)
+	}
+	if back.Permissions.Network.Deny[0] != "evil.example" {
+		t.Errorf("network permissions mangled: %+v", back.Permissions)
 	}
 }
 
 // Empty sections must be omitted entirely rather than rendered as `network: {}`,
 // which sbx would read as an explicit (empty) policy.
 func TestSpecYAMLOmitsEmptySections(t *testing.T) {
-	k := &Kit{Name: "bare", Commands: &KitCommands{}, Network: &KitNetwork{}, Environment: &KitEnvironment{}, Credentials: &KitCredentials{}}
+	k := &Kit{Name: "bare", Setup: &KitSetup{}, Permissions: &KitPermissions{Network: &KitNetworkPerms{}}, Environment: &KitEnvironment{}, AgentInstructions: &KitAgentInstructions{}, Requires: &KitRequires{}}
 	y, err := k.SpecYAML()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, unwanted := range []string{"commands:", "network:", "environment:", "credentials:"} {
+	for _, unwanted := range []string{"setup:", "permissions:", "environment:", "credentials:", "agentInstructions:", "requires:"} {
 		if strings.Contains(y, unwanted) {
 			t.Errorf("empty section %q should be omitted:\n%s", unwanted, y)
 		}
@@ -147,7 +158,7 @@ func TestSaveGetListDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DisplayName != "Ruff" || len(got.Commands.Install) != 1 {
+	if got.DisplayName != "Ruff" || len(got.Setup.Install) != 1 {
 		t.Errorf("round-tripped kit lost data: %+v", got)
 	}
 	list, err := ks.List()

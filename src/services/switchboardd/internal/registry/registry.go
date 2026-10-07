@@ -17,6 +17,15 @@ import (
 
 var sandboxBucket = []byte("sandboxes")
 
+// mcpBucket holds the daemon's MCP gateway settings (feature 008, research R3):
+// one record under mcpSettingsKey — the attach-by-default marks and the default
+// attach mode. Daemon-scoped, not per sandbox; the host runtime owns the
+// registrations themselves.
+var (
+	mcpBucket      = []byte("mcp")
+	mcpSettingsKey = []byte("settings")
+)
+
 // ErrNotFound is returned when a sandbox id is absent from the registry.
 var ErrNotFound = errors.New("sandbox not found")
 
@@ -33,7 +42,10 @@ func Open(dataDir string) (*Registry, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(sandboxBucket)
+		if _, e := tx.CreateBucketIfNotExists(sandboxBucket); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(mcpBucket)
 		return e
 	})
 	if err != nil {
@@ -136,6 +148,51 @@ func (r *Registry) Update(id string, mutate func(*pb.Sandbox) error) (*pb.Sandbo
 		}
 		out = s
 		return b.Put([]byte(id), nb)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetMcpSettings returns the daemon's MCP gateway settings; an absent record reads
+// as the zero value (no marks, UNSPECIFIED mode = additive).
+func (r *Registry) GetMcpSettings() (*pb.McpGatewaySettings, error) {
+	out := &pb.McpGatewaySettings{}
+	err := r.db.View(func(tx *bolt.Tx) error {
+		blob := tx.Bucket(mcpBucket).Get(mcpSettingsKey)
+		if blob == nil {
+			return nil
+		}
+		return proto.Unmarshal(blob, out)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateMcpSettings applies mutate to the stored settings (zero value when absent)
+// and writes the result back in the same transaction.
+func (r *Registry) UpdateMcpSettings(mutate func(*pb.McpGatewaySettings) error) (*pb.McpGatewaySettings, error) {
+	var out *pb.McpGatewaySettings
+	err := r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(mcpBucket)
+		s := &pb.McpGatewaySettings{}
+		if blob := b.Get(mcpSettingsKey); blob != nil {
+			if e := proto.Unmarshal(blob, s); e != nil {
+				return e
+			}
+		}
+		if e := mutate(s); e != nil {
+			return e
+		}
+		nb, e := proto.Marshal(s)
+		if e != nil {
+			return e
+		}
+		out = s
+		return b.Put(mcpSettingsKey, nb)
 	})
 	if err != nil {
 		return nil, err

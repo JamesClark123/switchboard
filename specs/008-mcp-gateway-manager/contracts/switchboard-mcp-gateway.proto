@@ -1,0 +1,163 @@
+// Feature 008 — MCP Gateway Manager & Daemon Screen: ADDITIVE revision to switchboard.proto.
+//
+// This file documents ONLY the additions; the canonical contract remains
+// src/libs/switchboard-proto/proto/switchboard.proto, into which these blocks are
+// merged (then `make proto`). Nothing existing changes shape. New: one enum, six
+// messages, seven RPCs, two Sandbox fields (21–22), four DaemonInfo fields (6–9),
+// one Event arm (6). No new NotificationKind (developer actions are silent, per 006).
+//
+// Daemon-skew behavior: an older daemon answers every new RPC with UNIMPLEMENTED,
+// surfaced as-is; the `u` update fan-out (feature 002) is the remedy. A newer
+// daemon on a host whose runtime lacks the gateway answers them with
+// FAILED_PRECONDITION carrying mcp_gateway_reason (FR-079).
+
+syntax = "proto3";
+
+package switchboard.v1;
+
+// ---------- service Switchboard: new RPCs ----------
+
+service SwitchboardMcpGatewayAdditions {
+  // Lists the host's registered MCP servers decorated with switchboard's marks,
+  // plus the daemon's default attach mode (FR-073). Always the host's truth: the
+  // daemon runs `sbx mcp ls` (+ per-remote `auth status --json`) and reconciles
+  // marks (stale ones are dropped). UNAVAILABLE/FAILED_PRECONDITION when the
+  // gateway cannot be managed on this host (FR-079).
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+
+  // Registers a server WITHOUT authorizing (R2: `--skip-auth`) and optionally
+  // marks it attach-by-default (FR-074/FR-080). Host diagnostics are returned
+  // verbatim in the error (FR-078). Local (host-run) servers require
+  // acknowledge_local_execution = true, else FAILED_PRECONDITION (FR-076).
+  rpc AddMcpServer(AddMcpServerRequest) returns (McpServer);
+
+  // Removes a registration and clears its mark (FR-074). The runtime's notes
+  // about leftover credential material are relayed in `notes`.
+  rpc RemoveMcpServer(RemoveMcpServerRequest) returns (RemoveMcpServerResponse);
+
+  // Runs the host's authorization flow for a registered server (FR-075). Streams
+  // the authorization URL as soon as the runtime prints it, then progress, then a
+  // terminal frame. Bounded at 10 minutes daemon-side; the client cancelling the
+  // stream cancels the wait. The registration is never changed by any outcome.
+  rpc AuthorizeMcpServer(AuthorizeMcpServerRequest) returns (stream McpAuthProgress);
+
+  // Sets or clears the attach-by-default mark for a registered server (FR-080).
+  // NOT_FOUND when the name is not registered on this host.
+  rpc SetMcpServerDefault(SetMcpServerDefaultRequest) returns (McpServer);
+
+  // Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
+  rpc SetMcpAttachMode(SetMcpAttachModeRequest) returns (McpGatewaySettings);
+}
+
+// ---------- enums ----------
+
+// How attach-by-default servers reach a launching sandbox (FR-100, clarified Q1).
+enum McpAttachMode {
+  MCP_ATTACH_MODE_UNSPECIFIED = 0;   // reads as ADDITIVE
+  MCP_ATTACH_MODE_ADDITIVE    = 1;   // dynamic gateway; marked servers loaded after create (default)
+  MCP_ATTACH_MODE_EXCLUSIVE   = 2;   // static pre-load of the marked set; no discovery
+}
+
+enum McpServerKind {
+  MCP_SERVER_KIND_UNSPECIFIED = 0;
+  MCP_SERVER_KIND_REMOTE      = 1;   // remote endpoint URL
+  MCP_SERVER_KIND_LOCAL       = 2;   // host-launched (command or OCI package)
+}
+
+enum McpAuthState {
+  MCP_AUTH_STATE_UNSPECIFIED    = 0;
+  MCP_AUTH_STATE_NOT_APPLICABLE = 1; // local servers
+  MCP_AUTH_STATE_AUTHORIZED     = 2;
+  MCP_AUTH_STATE_UNAUTHORIZED   = 3;
+  MCP_AUTH_STATE_UNKNOWN        = 4; // status query failed; never fails the list
+}
+
+// ---------- messages ----------
+
+message McpServer {
+  string name = 1;
+  McpServerKind kind = 2;
+  string target = 3;                 // URL, or command line as the runtime prints it
+  McpAuthState auth_state = 4;
+  bool attach_by_default = 5;        // switchboard-owned mark (FR-080)
+}
+
+// Persisted per daemon in the registry's `mcp` bucket (R3).
+message McpGatewaySettings {
+  McpAttachMode default_attach_mode = 1;
+  map<string, bool> marks = 2;       // server name -> attach by default
+}
+
+message ListMcpServersRequest {}
+message ListMcpServersResponse {
+  repeated McpServer servers = 1;
+  McpGatewaySettings settings = 2;
+}
+
+message AddMcpServerRequest {
+  string name = 1;
+  oneof definition {
+    string url = 2;                  // remote endpoint
+    LocalCommand command = 3;        // host-run stdio server
+  }
+  bool attach_by_default = 4;
+  bool acknowledge_local_execution = 5;  // required for `command` (FR-076)
+  message LocalCommand {
+    string command = 1;
+    repeated string args = 2;
+    string dir = 3;                  // optional working directory
+  }
+}
+
+message RemoveMcpServerRequest { string name = 1; }
+message RemoveMcpServerResponse { repeated string notes = 1; }
+
+message AuthorizeMcpServerRequest { string name = 1; }
+message McpAuthProgress {
+  oneof event {
+    string url = 1;                  // open where YOU are; never auto-opened on the host
+    string message = 2;              // runtime progress line
+    McpAuthState done = 3;           // terminal: AUTHORIZED, or UNAUTHORIZED on timeout/cancel/failure
+    string error = 4;                // terminal: host diagnostic (registration unchanged)
+  }
+  int64 deadline_unix = 5;           // set on every frame so the client can show time remaining
+}
+
+message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
+message SetMcpAttachModeRequest { McpAttachMode mode = 1; }
+
+// ---------- additions to existing messages ----------
+
+// message Sandbox {
+//   ...
+//   // --- feature 008 ---
+//   // Exactly the servers switchboard attached at launch (post-reconcile) and the
+//   // daemon's attach mode at that moment. Fixed for the sandbox's life (FR-082);
+//   // never re-applied by restart/refresh. Agent self-attachments are not recorded.
+//   repeated string mcp_servers = 21;
+//   McpAttachMode mcp_attach_mode = 22;
+// }
+
+// message DaemonInfo {
+//   ...
+//   // --- feature 008 (FR-096/FR-079) ---
+//   string sbx_min_version = 6;        // the daemon's declared runtime baseline
+//   bool   runtime_baseline_met = 7;   // parsed `sbx --version` >= sbx_min_version
+//   bool   mcp_gateway_available = 8;  // baseline met AND `sbx mcp` usable AND signed in
+//   string mcp_gateway_reason = 9;     // why not, when unavailable
+// }
+
+// message Event {
+//   oneof event {
+//     ...
+//     // feature 008: a daemon's gateway registrations, marks or attach mode changed.
+//     // Clients with that daemon's gateway view open re-list (R10).
+//     McpGatewayChanged mcp_gateway_changed = 6;
+//   }
+//   message McpGatewayChanged { string host_id = 1; }
+// }
+
+// Kit RPCs (ValidateKit, AddSandboxKit, LaunchSandbox with kits) gain one behavior:
+// FAILED_PRECONDITION naming the host's and the minimum runtime version when the
+// baseline is unmet (FR-096). KitSpec.spec_yaml is now always schema version 2
+// (FR-091); the daemon still writes it verbatim.

@@ -15,8 +15,10 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/kit"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -40,6 +42,13 @@ type Server struct {
 	kits          *kit.Materializer
 	escapeHatch   *escapehatch.Service
 	services      *portforward.Supervisor
+	// mcpAvail is the host's runtime baseline + MCP gateway availability probed
+	// at startup (feature 008); advertised in DaemonInfo and checked by every
+	// gateway/kit RPC that depends on it.
+	mcpAvail mcp.Availability
+	// mcp is this daemon's MCP gateway manager (feature 008). MAY be nil (the
+	// gateway RPCs then report FAILED_PRECONDITION and launches attach nothing).
+	mcp *mcp.Manager
 
 	grpc *grpc.Server
 }
@@ -71,6 +80,12 @@ type Config struct {
 	// Services owns the port-forwarding service lifecycle (feature 006). MAY be nil
 	// (the RPCs then report unimplemented and no services are stopped on teardown).
 	Services *portforward.Supervisor
+	// McpAvailability is the startup probe of the host's sandbox CLI: version,
+	// runtime baseline (sbxkit.MinSbxVersion) and whether `sbx mcp` is usable
+	// (feature 008, FR-079/FR-096).
+	McpAvailability mcp.Availability
+	// Mcp is the gateway manager; nil disables the gateway RPCs (FR-079).
+	Mcp *mcp.Manager
 	// Debug, when true, logs every RPC action and error to stderr (serve --debug).
 	Debug bool
 }
@@ -96,6 +111,8 @@ func NewServer(cfg Config) *Server {
 		kits:          &kit.Materializer{Root: cfg.KitRoot},
 		escapeHatch:   cfg.EscapeHatch,
 		services:      cfg.Services,
+		mcpAvail:      cfg.McpAvailability,
+		mcp:           cfg.Mcp,
 	}
 	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
 	// created on first attach from the agent PTY, kept alive across client detach.
@@ -189,6 +206,11 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 		DaemonVersion: s.daemonVersion,
 		SbxVersion:    s.sbxVersion,
 		WorkspaceRoot: s.workspaceRoot,
+		// feature 008 (FR-096 / FR-079)
+		SbxMinVersion:       sbxkit.MinSbxVersion,
+		RuntimeBaselineMet:  s.mcpAvail.BaselineMet,
+		McpGatewayAvailable: s.mcpAvail.Available,
+		McpGatewayReason:    s.mcpAvail.Reason,
 	}, nil
 }
 

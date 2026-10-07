@@ -80,6 +80,10 @@ func (h *Hub) fanout(ev *pb.Event) {
 	}
 }
 
+// Publish fans out an already-built event (feature 008: the MCP gateway manager
+// builds its own Event.mcp_gateway_changed arm).
+func (h *Hub) Publish(ev *pb.Event) { h.fanout(ev) }
+
 // PublishSandbox broadcasts a sandbox state/agent-status change.
 func (h *Hub) PublishSandbox(sb *pb.Sandbox) {
 	if sb == nil {

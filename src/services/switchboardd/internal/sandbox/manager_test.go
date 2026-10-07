@@ -41,6 +41,13 @@ type fakeRunner struct {
 	cloneDests  []string
 	cloneCalls  int
 	failCloneOn int
+	// feature 008: mcpLoads records "<ref> <name>" per LoadMcp (in call order);
+	// failLoad makes LoadMcp fail for those names; lastStaticMcp records the
+	// StaticMcp of the most recent Launch; loadsBeforeRunning is the number of
+	// loads observed when the record was last read as RUNNING (ordering probe).
+	mcpLoads      []string
+	failLoad      map[string]bool
+	lastStaticMcp []string
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
@@ -56,6 +63,7 @@ func (f *fakeRunner) Launch(_ context.Context, spec LaunchSpec, _ func(string)) 
 	f.launches++
 	f.lastKits = spec.KitSources
 	f.lastSources = spec.Sources
+	f.lastStaticMcp = spec.StaticMcp
 	// Mirror the real SbxRunner: the handle is the assigned --name (the human
 	// name), falling back to the id.
 	ref := spec.Name
@@ -379,3 +387,15 @@ func TestLaunchNameUniquenessAndPath(t *testing.T) {
 }
 
 func errContext() error { return context.DeadlineExceeded }
+
+// --- feature 008: MCP attach surface ---
+
+func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpLoads = append(f.mcpLoads, ref+" "+name)
+	if f.failLoad[name] {
+		return errors.New("load failed for " + name)
+	}
+	return nil
+}

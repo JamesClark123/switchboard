@@ -37,6 +37,27 @@ type fakeDaemon struct {
 	updateErr    error
 	updateTarget string
 
+	// feature 008 fakes: runtime baseline + gateway availability + gateway ops
+	sbxVer      string
+	sbxMin      string
+	baselineMet bool
+	mcpAvail    bool
+	mcpReason   string
+	mcpServers  []*pb.McpServer
+	mcpSettings *pb.McpGatewaySettings
+	mcpListErr  error
+	mcpErr      error // returned by add/remove/set/authorize
+	addedMcp    []*pb.AddMcpServerRequest
+	removedMcp  []string
+	mcpNotes    []string
+	mcpAuthed   []string
+	// mcpAuthFrames are replayed to AuthorizeMcpServer's callback; mcpAuthState is
+	// the terminal state it returns; mcpAuthGate, when set, blocks the authorize
+	// call until closed (so a test can cancel a wait in flight).
+	mcpAuthFrames []client.McpAuthUpdate
+	mcpAuthState  pb.McpAuthState
+	mcpAuthGate   chan struct{}
+
 	// feature 006 fakes
 	services        []*pb.SandboxService
 	listServicesErr error
@@ -292,6 +313,11 @@ func (f *fakeDaemon) WorkspaceRoot() string { return f.workspace }
 
 func (f *fakeDaemon) DaemonVersion() string { return f.daemonVer }
 
+func (f *fakeDaemon) SbxVersion() string         { return f.sbxVer }
+func (f *fakeDaemon) SbxMinVersion() string      { return f.sbxMin }
+func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
+func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
+
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {
 	f.mu.Lock()
 	f.updateTarget = target
@@ -471,4 +497,104 @@ func TestLaunchRequiresSelection(t *testing.T) {
 	if list, _ := d.List(context.Background()); len(list) != 0 {
 		t.Fatalf("expected no sandboxes, got %d", len(list))
 	}
+}
+
+// --- feature 008 fakes: MCP gateway ---
+
+func (f *fakeDaemon) ListMcpServers(context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpListErr != nil {
+		return nil, nil, f.mcpListErr
+	}
+	settings := f.mcpSettings
+	if settings == nil {
+		settings = &pb.McpGatewaySettings{DefaultAttachMode: pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE}
+	}
+	return f.mcpServers, settings, nil
+}
+
+func (f *fakeDaemon) AddMcpServer(_ context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpErr != nil {
+		return nil, f.mcpErr
+	}
+	f.addedMcp = append(f.addedMcp, req)
+	srv := &pb.McpServer{Name: req.GetName(), Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, Target: req.GetUrl(), AttachByDefault: req.GetAttachByDefault(), AuthState: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}
+	if req.GetCommand() != nil {
+		srv.Kind, srv.Target, srv.AuthState = pb.McpServerKind_MCP_SERVER_KIND_LOCAL, req.GetCommand().GetCommand(), pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE
+	}
+	f.mcpServers = append(f.mcpServers, srv)
+	return srv, nil
+}
+
+func (f *fakeDaemon) RemoveMcpServer(_ context.Context, name string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpErr != nil {
+		return nil, f.mcpErr
+	}
+	f.removedMcp = append(f.removedMcp, name)
+	kept := f.mcpServers[:0]
+	for _, s := range f.mcpServers {
+		if s.GetName() != name {
+			kept = append(kept, s)
+		}
+	}
+	f.mcpServers = kept
+	return f.mcpNotes, nil
+}
+
+func (f *fakeDaemon) AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error) {
+	f.mu.Lock()
+	frames, gate, state, err := f.mcpAuthFrames, f.mcpAuthGate, f.mcpAuthState, f.mcpErr
+	f.mu.Unlock()
+	if err != nil {
+		return pb.McpAuthState_MCP_AUTH_STATE_UNSPECIFIED, err
+	}
+	for _, fr := range frames {
+		if onUpdate != nil {
+			onUpdate(fr)
+		}
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED, nil
+		}
+	}
+	f.mu.Lock()
+	f.mcpAuthed = append(f.mcpAuthed, name)
+	f.mu.Unlock()
+	return state, nil
+}
+
+func (f *fakeDaemon) SetMcpServerDefault(_ context.Context, name string, on bool) (*pb.McpServer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpErr != nil {
+		return nil, f.mcpErr
+	}
+	for _, s := range f.mcpServers {
+		if s.GetName() == name {
+			s.AttachByDefault = on
+			return s, nil
+		}
+	}
+	return nil, errBoom{}
+}
+
+func (f *fakeDaemon) SetMcpAttachMode(_ context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpErr != nil {
+		return nil, f.mcpErr
+	}
+	if f.mcpSettings == nil {
+		f.mcpSettings = &pb.McpGatewaySettings{}
+	}
+	f.mcpSettings.DefaultAttachMode = mode
+	return f.mcpSettings, nil
 }

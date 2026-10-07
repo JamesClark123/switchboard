@@ -221,7 +221,19 @@ The sandbox list is the home screen. Keys:
 | `S` | Edit the selected sandbox's seeded folders in place: `a` add folders (browse like launch), `space` mark, `d` remove marked (confirmed) — no restart |
 | `l` | Show the `sbx` output of the selected sandbox's last launch / kit attach / refresh / source add — kit install-command output lives here; a failed launch's log stays reachable |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
+| `shift+→` / `shift+←` | Switch between the **sandboxes** screen and the **daemon** screen (see below) |
+| `,` | Settings — TUI-persisted preferences (`settings.toml` in the config dir) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
+
+**Agent kits are schema version 2.** The kit editor (`K`) authors Docker's current kit grammar
+(`permissions.network`, `credentials` services, `setup.install/files/startup`, `agentInstructions`).
+A kit saved by an earlier release (schema 1) opens migrated in place with a banner listing anything
+that had no equivalent (e.g. a credential's host-side source — values are bound on the host now)
+and is rewritten as schema 2 when you save. Attaching a kit to a *running* sandbox (`A`) is
+refused up front when it declares sections `sbx kit add` cannot apply there (files, startup
+commands, network deny, credentials, agent instructions) — launch a new sandbox with it instead.
+Schema 3 kits are listed but neither editable nor attachable (they do not compose with the
+built-in agents).
 
 **Editing seeded folders after launch.** `S` opens the sources overlay for the selected
 sandbox. Adds copy the new folder into the workspace's own `.switchboard/staging/` and rename it
@@ -231,6 +243,48 @@ Neither operation stops or restarts the sandbox — attached terminals, the agen
 running services carry on — and the recorded folder list stays the single source of truth for
 the row, `F` refresh, and relaunch. A sandbox always keeps at least one seeded folder, and a
 removal is refused while a running service's working directory sits inside the folder.
+
+### Daemon screen & MCP gateway
+
+`shift+→` opens the **daemon screen** — every known daemon (one per saved host, local included)
+with its connection state, `sxbd`/`sbx` versions, and whether it meets the runtime baseline
+(`sbx` ≥ 0.36) and can manage its MCP gateway. `c` connects a disconnected daemon (the same
+masked SSH-password prompt as the hosts screen; blank = key/agent auth), `x` disconnects one,
+`enter` opens its management options. `shift+←` returns to the sandbox list with your selection
+intact.
+
+**MCP gateway** is the first option. The host runtime registers MCP servers per host and gives
+every sandbox a gateway to them; switchboard manages those registrations through `sbx mcp` on
+that daemon only:
+
+- `a` registers a server — a remote endpoint URL, or a command the host runs (you must
+  acknowledge that a host-run server executes **outside** sandbox isolation).
+  Registration never waits on a browser: `A` runs the authorization step separately, shows the
+  authorization link **in the TUI** (open it where you are — it is never opened on the daemon's
+  host) and waits up to **10 minutes**; `esc` cancels and the registration is kept as
+  unauthorized. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
+  runtime prints. Secrets (`sbx secret set`) and advanced options (headers, OAuth client IDs,
+  registry-based local servers) are managed on the host directly.
+- `space` marks a server **attach by default**: every sandbox launched on that daemon gets it.
+  `m` toggles the daemon's **default attach mode** — *additive* (default: the sandbox keeps the
+  runtime's dynamic gateway, so the agent can still discover other registered servers) or
+  *exclusive* (`--static-mcp`: the marked set is all the agent gets). Marks and mode apply at
+  launch only; a sandbox's set is fixed for its life and shown as `mcp: …` on its row. A mark
+  whose server was removed on the host is skipped and reported in the launch log (`l`), never a
+  failed launch.
+
+Each daemon declares a **minimum `sbx` version** (0.36, the first with kit schema 2) and reads
+the host's version at startup; kit and gateway operations on a host below it are refused with
+both versions named, while kit-less sandboxes keep working.
+
+### Settings & startup sign-in
+
+`,` opens the settings screen. Its first entry, **automatic host sign-in** (on by default), makes
+`sxb` work through your saved remote hosts as it starts: hosts that accept key/agent auth connect
+silently; a host that needs a password raises a centered prompt (blank retries keys, `esc` skips);
+a host that fails shows why with `r` retry / `esc` skip. Nothing blocks, nothing is stored, and a
+skipped host is still connectable from the hosts screen. Settings live in `settings.toml` under
+the client config dir.
 
 ### Escape Hatch
 

@@ -55,9 +55,16 @@ func stubSbx(t *testing.T) string {
 	script := `#!/usr/bin/env bash
 echo "$*" >> "` + filepath.Join(dir, "sbx.log") + `"
 case "$1" in
-  --version) echo "sbx-e2e 0.0" ;;
+  --version) echo "sbx version 0.46.0" ;;   # >= sbxkit.MinSbxVersion so kit/gateway gates pass
   create) echo "container-$3" ;;
   ls) echo '{"sandboxes":[]}' ;;   # IsRunning parses ls --json
+  mcp)
+    # feature 008: one registered remote server; add/rm/load/auth succeed.
+    case "$2 $3" in
+      "ls ") printf 'NAME    TYPE     URL/COMMAND\nnotion  remote   https://mcp.notion.com/mcp\n' ;;
+      "auth status") echo '{"authorized": false}' ;;
+      *) exit 0 ;;
+    esac ;;
   *) exit 0 ;;
 esac
 `

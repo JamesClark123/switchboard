@@ -147,7 +147,33 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing
+Active feature: `specs/008-mcp-gateway-manager/plan.md` (MCP Gateway Manager & Daemon Screen + kit
+schema v2). Each daemon gets a **gateway manager** — new package `switchboardd/internal/mcp` — that
+drives the host runtime's documented `sbx mcp` verbs (`ls`, `auth status --json`, `add …
+--skip-auth`, `rm`, `auth`, `load --sandbox`, and `create --static-mcp`; **all
+documentation-derived, `sbx` still not installed in dev — quickstart Scenario 0 reconciles every row
+of `contracts/sbx-mcp-cli.md` first**). Registration is always `--skip-auth`; **authorization is a
+separate, 10-min-bounded, killable `sbx mcp auth` stream** whose URL is shown in the TUI (never
+opened on the host). Switchboard owns a per-daemon **attach-by-default mark** + **default attach
+mode** (`McpGatewaySettings` in a new bbolt bucket `mcp`): *additive* (default) = dynamic gateway +
+`mcp load` after `create`, before the agent PTY starts; *exclusive* = `--static-mcp`. Launch records
+`Sandbox.mcp_servers`/`mcp_attach_mode` (fields 21–22), fixed for life; stale/unauthorized marks are
+skipped + logged, never a failed launch. Additive proto: 7 RPCs,
+`McpAttachMode`/`McpServerKind`/`McpAuthState`, `DaemonInfo` 6–9 (`sbx_min_version`,
+`runtime_baseline_met`, `mcp_gateway_available`/`_reason`), `Event.mcp_gateway_changed`. TUI:
+top-level **daemon screen** (`shift+→/←`, cursors preserved; connect/disconnect reuse the hosts
+password flow), **MCP gateway view**, **settings screen** (`,`, `settings.toml`, first toggle
+`auto_connect_hosts`=true), and a **startup sign-in state machine** (keyless attempt → auth failure
+opens a centered masked prompt → retry/skip, 30 s per attempt, never persisted). Kits: `store.Kit`
+re-shaped to **schema v2** (`permissions.network`, `credentials[]` services,
+`setup.{install,files,startup}`, `agentInstructions`), v1 **migrated on load, written on save** with
+a drop report; `AttachBlockers()` refuses `A` before any RPC for sections `sbx kit add` rejects; v3
+refused. `sbxkit.MinSbxVersion = "0.36.0"` checked per host; kit/MCP RPCs answer FAILED_PRECONDITION
+below it; `sbx options --json` dropped (`--help` only); `sbx start`/`ls --json` flagged for
+reconciliation. **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
+`data-model.md`, `contracts/`, `quickstart.md`.
+
+Prior feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing
 sandbox's seeded folder set **editable in place** — add folders (copied/cloned exactly as at launch)
 and remove them, on a **live** sandbox: no container stop/restart/recreate, no interruption to agent
 sessions, terminals, or services, and the sandbox's state is **never** driven by an edit (a failed add

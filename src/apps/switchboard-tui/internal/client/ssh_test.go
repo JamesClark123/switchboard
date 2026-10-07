@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -200,5 +201,41 @@ func TestRunAskpassIfRequested(t *testing.T) {
 	t.Setenv("SWITCHBOARD_SSH_ASKPASS", "1")
 	if !client.RunAskpassIfRequested() {
 		t.Error("should be in askpass mode when the sentinel is set")
+	}
+}
+
+// --- feature 008: dial-failure classification for the startup sign-in ---
+
+func TestClassifyDialStderr(t *testing.T) {
+	cases := map[string]client.DialErrorKind{
+		"me@box: Permission denied (publickey,password).":                client.DialAuthFailed,
+		"ssh: connect to host box port 22: Connection refused":           client.DialUnreachable,
+		"ssh: Could not resolve hostname box: Name or service not known": client.DialUnreachable,
+		"bash: sxbd: command not found":                                  client.DialNoDaemon,
+		"something odd happened":                                         client.DialOther,
+	}
+	for in, want := range cases {
+		if got := client.ClassifyDialStderr(in); got != want {
+			t.Errorf("ClassifyDialStderr(%q) = %v, want %v", in, got, want)
+		}
+	}
+	e := &client.DialError{Kind: client.DialAuthFailed, Stderr: "noise\nme@box: Permission denied (publickey).\n"}
+	if !strings.Contains(e.Error(), "authentication failed") || !strings.Contains(e.Error(), "Permission denied") {
+		t.Errorf("Error() = %q", e.Error())
+	}
+}
+
+// A real failed dial comes back as a DialError carrying ssh's last words.
+func TestDialCommandFailureIsClassified(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "echo 'me@box: Permission denied (publickey).' >&2; exit 255")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := client.DialCommand(ctx, cmd)
+	var de *client.DialError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *client.DialError", err, err)
+	}
+	if de.Kind != client.DialAuthFailed || !strings.Contains(de.Stderr, "Permission denied") {
+		t.Errorf("DialError = kind %v stderr %q", de.Kind, de.Stderr)
 	}
 }

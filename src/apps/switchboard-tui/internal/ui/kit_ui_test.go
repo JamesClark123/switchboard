@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,7 +35,7 @@ func ruffKit() *store.Kit {
 	return &store.Kit{
 		Name:        "ruff",
 		DisplayName: "Ruff",
-		Commands: &store.KitCommands{
+		Setup: &store.KitSetup{
 			Install: []store.KitInstallCommand{{Command: "pip install ruff"}},
 		},
 	}
@@ -85,7 +87,7 @@ func TestEnterOpensKitForUpdatePrefilled(t *testing.T) {
 	if out.kitEditor.editing != "ruff" {
 		t.Errorf("editing = %q, want the existing kit id", out.kitEditor.editing)
 	}
-	if got := out.kitEditor.kit.Commands.Install[0].Command; got != "pip install ruff" {
+	if got := out.kitEditor.kit.Setup.Install[0].Command; got != "pip install ruff" {
 		t.Errorf("editor not prefilled: install[0] = %q", got)
 	}
 	if v := out.View(); !strings.Contains(v, "Edit kit ruff") {
@@ -101,13 +103,13 @@ func TestAbandonedEditDoesNotMutateStoredKit(t *testing.T) {
 	out, _ = update(out, press("enter"))
 
 	out.kitEditor.kit.Name = "clobbered"
-	out.kitEditor.kit.Commands.Install[0].Command = "rm -rf /"
+	out.kitEditor.kit.Setup.Install[0].Command = "rm -rf /"
 
 	stored, err := out.kits.Get("ruff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Name != "ruff" || stored.Commands.Install[0].Command != "pip install ruff" {
+	if stored.Name != "ruff" || stored.Setup.Install[0].Command != "pip install ruff" {
 		t.Errorf("stored kit was mutated by an in-memory edit: %+v", stored)
 	}
 }
@@ -153,7 +155,7 @@ func TestSaveKitRequiresNameThenWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kit not saved under its slug: %v", err)
 	}
-	if saved.Kind != "mixin" || saved.SchemaVersion != "1" {
+	if saved.Kind != "mixin" || saved.SchemaVersion != "2" {
 		t.Errorf("saved kit missing required identity: %+v", saved)
 	}
 }
@@ -275,5 +277,74 @@ func TestKitsWithoutStore(t *testing.T) {
 	}
 	if !strings.Contains(out.status, "no kit store") {
 		t.Errorf("status = %q, want an explanation", out.status)
+	}
+}
+
+// Feature 008 (FR-095): a kit the runtime would reject on an existing sandbox is
+// refused before any RPC, naming the blocking sections and the launch-time path.
+func TestAttachRefusesKitWithStartupCommands(t *testing.T) {
+	d := &fakeDaemon{}
+	k := &store.Kit{Name: "boot", Setup: &store.KitSetup{
+		Install: []store.KitInstallCommand{{Command: "pip install ruff"}},
+		Startup: []store.KitStartupCommand{{Command: []string{"sh", "-c", "echo up"}}},
+	}}
+	m := kitModel(t, d, k)
+	out, cmd := update(m, press("A"))
+	out, _ = update(out, runCmd(cmd))
+	out, cmd = update(out, press("enter"))
+	if cmd != nil {
+		runCmd(cmd)
+	}
+	if out.screen == screenConfirm {
+		t.Fatal("a blocked kit must not reach the attach confirmation")
+	}
+	if !strings.Contains(out.status, "cannot attach boot") || !strings.Contains(out.status, "setup.startup") || !strings.Contains(out.status, "launch a new sandbox") {
+		t.Errorf("status = %q, want the blocking section and the launch-time alternative", out.status)
+	}
+	if d.addKitID != "" {
+		t.Error("no RPC may be made for a refused attach")
+	}
+}
+
+// An env + install + allow-only kit still attaches as before.
+func TestAttachAllowsRunningSandboxCompatibleKit(t *testing.T) {
+	d := &fakeDaemon{}
+	k := &store.Kit{Name: "ok", Setup: &store.KitSetup{Install: []store.KitInstallCommand{{Command: "apt-get install -y jq"}}},
+		Environment: &store.KitEnvironment{Variables: map[string]string{"A": "1"}},
+		Permissions: &store.KitPermissions{Network: &store.KitNetworkPerms{Allow: []string{"pypi.org"}}}}
+	m := kitModel(t, d, k)
+	out, cmd := update(m, press("A"))
+	out, _ = update(out, runCmd(cmd))
+	out, _ = update(out, press("enter"))
+	if out.screen != screenConfirm {
+		t.Fatalf("a compatible kit should reach the confirmation; screen %v status %q", out.screen, out.status)
+	}
+}
+
+// A schema 3 kit is listed as unsupported and refused for edit and attach (FR-099).
+func TestSchema3KitIsListedButRefused(t *testing.T) {
+	d := &fakeDaemon{}
+	m := kitModel(t, d, ruffKit())
+	dir := m.kits.Dir("v3kit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "spec.yaml"), []byte("schemaVersion: \"3\"\nkind: workload\nname: v3kit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, cmd := update(m, press("A"))
+	out, _ = update(out, runCmd(cmd))
+	if v := out.View(); !strings.Contains(v, "v3kit") || !strings.Contains(v, "not editable or attachable") {
+		t.Fatalf("the picker should list the v3 kit as unsupported; got:\n%s", v)
+	}
+	// Select it (kits are listed by name: ruff, v3kit).
+	out, _ = update(out, press("j"))
+	out, _ = update(out, press("enter"))
+	if out.screen == screenConfirm || !strings.Contains(out.status, "schema 3") || d.addKitID != "" {
+		t.Errorf("v3 attach should be refused with the reason; screen %v status %q", out.screen, out.status)
+	}
+	out, _ = update(out, press("e"))
+	if out.screen == screenKitEditor {
+		t.Error("a v3 kit must not open in the editor")
 	}
 }

@@ -69,7 +69,7 @@ func TestKitEditorFormCompletionApplies(t *testing.T) {
 	if out.kitEditor.form != nil {
 		t.Fatal("completing the form should close it")
 	}
-	got := out.kitEditor.kit.Commands.Install
+	got := out.kitEditor.kit.Setup.Install
 	if len(got) != 1 || got[0].Command != "echo hi" {
 		t.Errorf("install = %+v, want the typed command applied on completion", got)
 	}
@@ -174,7 +174,7 @@ func TestKitEditorFormAbort(t *testing.T) {
 	if out.kitEditor.form != nil {
 		t.Error("aborting should close the form")
 	}
-	if out.kitEditor.kit.Commands != nil && len(out.kitEditor.kit.Commands.Install) != 0 {
+	if out.kitEditor.kit.Setup != nil && len(out.kitEditor.kit.Setup.Install) != 0 {
 		t.Error("an aborted form must not apply")
 	}
 }

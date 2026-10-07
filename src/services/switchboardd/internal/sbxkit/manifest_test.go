@@ -19,17 +19,19 @@ func writeSbx(t *testing.T, body string) string {
 	return bin
 }
 
-func TestBuildFromJSONSchema(t *testing.T) {
+func TestBuildParsesHelp(t *testing.T) {
 	body := `
-case "$1 $2" in
-  "--version ") echo "sbx 1.2.3" ;;
-  "options --json")
-    cat <<'JSON'
-[
-  {"key":"network","type":"enum","description":"net mode","enum_values":["host","none"],"default":"host","required":false},
-  {"key":"cpus","type":"int","description":"cpu count","required":true}
-]
-JSON
+case "$1" in
+  "--version") echo "sbx 1.2.3" ;;
+  "--help")
+    cat <<'HELP'
+Usage: sbx [options]
+
+Options:
+  --network <MODE>   network mode for the sandbox
+  --cpus <N>         cpu count
+  --privileged       run privileged
+HELP
     ;;
   *) exit 1 ;;
 esac
@@ -42,23 +44,20 @@ esac
 	if m.GetSbxVersion() != "sbx 1.2.3" {
 		t.Errorf("version = %q", m.GetSbxVersion())
 	}
-	if len(m.GetOptions()) != 2 {
-		t.Fatalf("expected 2 options, got %d", len(m.GetOptions()))
+	if len(m.GetOptions()) != 3 {
+		t.Fatalf("expected 3 options, got %d: %v", len(m.GetOptions()), keysOf(m))
 	}
-	// Sorted: cpus before network.
-	if m.GetOptions()[0].GetKey() != "cpus" || m.GetOptions()[1].GetKey() != "network" {
-		t.Errorf("options not sorted: %v", keysOf(m))
+	// Sorted: cpus, network, privileged.
+	if got := keysOf(m); got[0] != "cpus" || got[1] != "network" || got[2] != "privileged" {
+		t.Errorf("options not sorted: %v", got)
 	}
-	if !m.GetOptions()[0].GetRequired() {
-		t.Error("cpus should be required")
-	}
-	if len(m.GetOptions()[1].GetEnumValues()) != 2 {
-		t.Error("network should carry enum values")
+	if m.GetOptions()[2].GetType() != "bool" {
+		t.Errorf("a flag without an argument should be bool, got %q", m.GetOptions()[2].GetType())
 	}
 }
 
 func TestBuildFallsBackToHelp(t *testing.T) {
-	// No `options --json` support -> help parsing.
+	// An `options` subcommand is never consulted; help parsing is the only source.
 	body := `
 case "$1" in
   "--version") echo "sbx 0.9" ;;

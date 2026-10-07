@@ -236,6 +236,14 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	if showHost && row.hostName != "" {
 		desc += dimStyle.Render("  ·  @" + row.hostName)
 	}
+	// feature 008 (FR-086): which MCP servers switchboard attached at launch.
+	if names := row.sb.GetMcpServers(); len(names) > 0 {
+		mode := "additive"
+		if row.sb.GetMcpAttachMode() == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
+			mode = "exclusive"
+		}
+		desc += dimStyle.Render("  ·  mcp: " + strings.Join(names, ", ") + " (" + mode + ")")
+	}
 	// A still-creating optimistic launch: show a spinner, the "creating" verb, and
 	// the live copy/boot progress in place of the usual state badge.
 	if lf, ok := m.launching[row.sb.GetId()]; ok {
@@ -497,6 +505,10 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case keyIs(msg, m.keys.ScreenNext):
+		return m.enterDaemons()
+	case keyIs(msg, m.keys.Settings):
+		return m.enterSettings(screenList)
 	case keyIs(msg, m.keys.Quit):
 		m.quitting = true
 		return m, tea.Quit

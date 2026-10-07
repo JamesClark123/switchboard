@@ -167,6 +167,40 @@ service Switchboard {
   //
   // Returns the updated Sandbox (its `sources` reflect exactly what remains).
   rpc RemoveSandboxSources(RemoveSandboxSourcesRequest) returns (Sandbox);
+
+  // --- MCP gateway (feature 008, FR-072..FR-100) ---
+  // Each daemon owns ONE gateway manager scoped to its host: every RPC below acts
+  // on this host's `sbx mcp` registrations only. Registrations are the host
+  // runtime's truth (read via `sbx mcp ls` on every list); switchboard owns only
+  // the per-daemon attach-by-default marks and default attach mode
+  // (McpGatewaySettings). All of them answer FAILED_PRECONDITION carrying
+  // DaemonInfo.mcp_gateway_reason when the gateway cannot be managed here
+  // (CLI missing, below the runtime baseline, not signed in — FR-079); an older
+  // daemon answers UNIMPLEMENTED (the `u` update fan-out is the remedy).
+  //
+  // Lists registered servers decorated with marks (stale marks are dropped on
+  // read) plus the daemon's settings (FR-073).
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+  // Registers a server WITHOUT authorizing (always `--skip-auth`; authorization
+  // is the separate AuthorizeMcpServer step, research R2) and optionally marks it
+  // attach-by-default (FR-074/FR-080). A host-run `command` server requires
+  // acknowledge_local_execution = true (FR-076). Host diagnostics travel verbatim
+  // in the error (FR-078).
+  rpc AddMcpServer(AddMcpServerRequest) returns (McpServer);
+  // Removes a registration and clears its mark (FR-074); the runtime's notes
+  // about leftover credential material are relayed in `notes`.
+  rpc RemoveMcpServer(RemoveMcpServerRequest) returns (RemoveMcpServerResponse);
+  // Runs the host's authorization flow for a registered server (FR-075): streams
+  // the authorization URL as soon as the runtime prints it (open it where YOU are;
+  // never auto-opened on the host), then progress, then a terminal frame. Bounded
+  // at 10 minutes daemon-side; cancelling the stream cancels the wait. The
+  // registration is never changed by any outcome.
+  rpc AuthorizeMcpServer(AuthorizeMcpServerRequest) returns (stream McpAuthProgress);
+  // Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
+  // is not registered on this host.
+  rpc SetMcpServerDefault(SetMcpServerDefaultRequest) returns (McpServer);
+  // Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
+  rpc SetMcpAttachMode(SetMcpAttachModeRequest) returns (McpGatewaySettings);
 }
 
 // ---------- Enums ----------
@@ -269,6 +303,29 @@ enum ClientKind {
   CLIENT_KIND_EXTERNAL = 2;  // an `sxb attach` external terminal (US3)
 }
 
+// --- MCP gateway (feature 008) ---
+
+// How attach-by-default servers reach a launching sandbox (FR-100).
+enum McpAttachMode {
+  MCP_ATTACH_MODE_UNSPECIFIED = 0;   // reads as ADDITIVE
+  MCP_ATTACH_MODE_ADDITIVE    = 1;   // dynamic gateway; marked servers loaded after create (default)
+  MCP_ATTACH_MODE_EXCLUSIVE   = 2;   // static pre-load of the marked set; no discovery
+}
+
+enum McpServerKind {
+  MCP_SERVER_KIND_UNSPECIFIED = 0;
+  MCP_SERVER_KIND_REMOTE      = 1;   // remote endpoint URL
+  MCP_SERVER_KIND_LOCAL       = 2;   // host-launched (command or OCI package)
+}
+
+enum McpAuthState {
+  MCP_AUTH_STATE_UNSPECIFIED    = 0;
+  MCP_AUTH_STATE_NOT_APPLICABLE = 1; // local servers
+  MCP_AUTH_STATE_AUTHORIZED     = 2;
+  MCP_AUTH_STATE_UNAUTHORIZED   = 3;
+  MCP_AUTH_STATE_UNKNOWN        = 4; // status query failed; never fails the list
+}
+
 // ---------- Core messages ----------
 
 message AgentSpec {
@@ -336,6 +393,13 @@ message Sandbox {
   // and a container recreate replays it. This — not the opaque `kits` list — is
   // what StartSandboxService validates a name against.
   repeated KitService services = 20;
+  // --- feature 008 ---
+  // Exactly the MCP servers switchboard attached at launch (post-reconcile) and
+  // the daemon's attach mode at that moment. Fixed for the sandbox's life
+  // (FR-082); never re-applied by restart/refresh. Agent self-attachments in
+  // additive mode are not recorded.
+  repeated string mcp_servers = 21;
+  McpAttachMode mcp_attach_mode = 22;
 }
 
 // ---------- Agent kits (feature 004) ----------
@@ -534,6 +598,11 @@ message DaemonInfo {
   string daemon_version = 3;
   string sbx_version = 4;
   string workspace_root = 5;             // controlled folder for duplicates (FR-006)
+  // --- feature 008 (FR-096 / FR-079) ---
+  string sbx_min_version = 6;            // the daemon's declared runtime baseline
+  bool   runtime_baseline_met = 7;       // parsed `sbx --version` >= sbx_min_version
+  bool   mcp_gateway_available = 8;      // baseline met AND `sbx mcp` usable AND signed in
+  string mcp_gateway_reason = 9;         // why not, when unavailable
 }
 
 // UpdateDaemonRequest asks the daemon to self-update to an exact release tag so
@@ -695,8 +764,12 @@ message Event {
     // feature 006: a service instance's state changed. Drives the per-sandbox
     // service list, the sandbox-list running indicator, and the inbox.
     ServiceInstance service_instance = 5;
+    // feature 008: a daemon's gateway registrations, marks or attach mode changed.
+    // Clients with that daemon's gateway view open re-list (research R10).
+    McpGatewayChanged mcp_gateway_changed = 6;
   }
   message SandboxRemoved { string sandbox_id = 1; }
+  message McpGatewayChanged { string host_id = 1; }
 }
 
 message NotificationEvent {
@@ -718,3 +791,57 @@ message VSCodeTarget {
   string workspace_path = 2;             // absolute path inside the container
   string ssh_target = 3;                 // non-empty for remote hosts => DOCKER_HOST=ssh://...
 }
+
+// ---------- MCP gateway (feature 008) ----------
+
+message McpServer {
+  string name = 1;
+  McpServerKind kind = 2;
+  string target = 3;                     // URL, or command line as the runtime prints it
+  McpAuthState auth_state = 4;
+  bool attach_by_default = 5;            // switchboard-owned mark (FR-080)
+}
+
+// Persisted per daemon in the registry's `mcp` bucket (research R3).
+message McpGatewaySettings {
+  McpAttachMode default_attach_mode = 1;
+  map<string, bool> marks = 2;           // server name -> attach by default
+}
+
+message ListMcpServersRequest {}
+message ListMcpServersResponse {
+  repeated McpServer servers = 1;
+  McpGatewaySettings settings = 2;
+}
+
+message AddMcpServerRequest {
+  string name = 1;
+  oneof definition {
+    string url = 2;                      // remote endpoint
+    LocalCommand command = 3;            // host-run stdio server
+  }
+  bool attach_by_default = 4;
+  bool acknowledge_local_execution = 5;  // required for `command` (FR-076)
+  message LocalCommand {
+    string command = 1;
+    repeated string args = 2;
+    string dir = 3;                      // optional working directory
+  }
+}
+
+message RemoveMcpServerRequest { string name = 1; }
+message RemoveMcpServerResponse { repeated string notes = 1; }
+
+message AuthorizeMcpServerRequest { string name = 1; }
+message McpAuthProgress {
+  oneof event {
+    string url = 1;                      // open where YOU are; never auto-opened on the host
+    string message = 2;                  // runtime progress line
+    McpAuthState done = 3;               // terminal: AUTHORIZED, or UNAUTHORIZED on timeout/cancel/failure
+    string error = 4;                    // terminal: host diagnostic (registration unchanged)
+  }
+  int64 deadline_unix = 5;               // on every frame so the client can show time remaining
+}
+
+message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
+message SetMcpAttachModeRequest { McpAttachMode mode = 1; }

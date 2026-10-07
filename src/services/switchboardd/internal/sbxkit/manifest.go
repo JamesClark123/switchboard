@@ -2,15 +2,14 @@
 // the client config editor renders (FR-014), and validates a config's kit options
 // against it at launch (fails loudly on unknown keys).
 //
-// Introspection strategy (research R6): prefer a machine-readable schema if the
-// CLI exposes one (`sbx options --json`); otherwise parse `sbx --help` output.
-// The exact `sbx` surface is unverified in the dev environment, so both paths are
-// implemented defensively and the manifest is version-stamped.
+// Introspection strategy: parse `sbx --help` output. (An `sbx options --json`
+// schema was assumed by 001's research but is not part of the documented CLI —
+// feature 008 R9 — so help parsing is the only source.) The manifest is
+// version-stamped with `sbx --version`.
 package sbxkit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -25,16 +24,6 @@ type Builder struct {
 	Bin string
 }
 
-// jsonOption is the shape expected from `sbx options --json` (R6 preferred path).
-type jsonOption struct {
-	Key         string   `json:"key"`
-	Type        string   `json:"type"`
-	Description string   `json:"description"`
-	EnumValues  []string `json:"enum_values"`
-	Default     string   `json:"default"`
-	Required    bool     `json:"required"`
-}
-
 // run executes the sbx binary with args and returns trimmed stdout.
 func (b *Builder) run(ctx context.Context, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, b.Bin, args...).Output()
@@ -44,49 +33,16 @@ func (b *Builder) run(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Build assembles the manifest, preferring the JSON schema path and falling back
-// to help-parsing. The result is version-stamped via `sbx --version`.
+// Build assembles the manifest from `sbx --help`, version-stamped via
+// `sbx --version`.
 func (b *Builder) Build(ctx context.Context) (*pb.OptionManifest, error) {
 	version, _ := b.run(ctx, "--version") // best-effort; non-fatal
-
-	if opts, err := b.fromJSON(ctx); err == nil && len(opts) > 0 {
-		return &pb.OptionManifest{SbxVersion: version, Options: opts}, nil
-	}
 
 	opts, err := b.fromHelp(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("introspect sbx options: %w", err)
 	}
 	return &pb.OptionManifest{SbxVersion: version, Options: opts}, nil
-}
-
-// fromJSON parses `sbx options --json` into typed options.
-func (b *Builder) fromJSON(ctx context.Context) ([]*pb.OptionManifest_Option, error) {
-	out, err := b.run(ctx, "options", "--json")
-	if err != nil {
-		return nil, err
-	}
-	var raw []jsonOption
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, err
-	}
-	opts := make([]*pb.OptionManifest_Option, 0, len(raw))
-	for _, o := range raw {
-		typ := o.Type
-		if typ == "" {
-			typ = "string"
-		}
-		opts = append(opts, &pb.OptionManifest_Option{
-			Key:          o.Key,
-			Type:         typ,
-			Description:  o.Description,
-			EnumValues:   o.EnumValues,
-			DefaultValue: o.Default,
-			Required:     o.Required,
-		})
-	}
-	sortOptions(opts)
-	return opts, nil
 }
 
 // helpLine matches a `--flag[ <ARG>]   description` line in `sbx --help` output.

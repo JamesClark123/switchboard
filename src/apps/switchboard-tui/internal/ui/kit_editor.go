@@ -27,18 +27,18 @@ import (
 // item list, and editing one item opens a small huh form scoped to just that item.
 // Scalar sections (identity, agent context) open a form directly.
 
-// kitSection identifies a top-level area of the spec.
+// kitSection identifies a top-level area of the spec (kit schema version 2).
 type kitSection int
 
 const (
 	secIdentity kitSection = iota
 	secInstall
 	secStartup
-	secInitFiles
+	secSetupFiles
 	secNetwork
 	secEnvironment
 	secCredentials
-	secAgentContext
+	secAgentInstructions
 	secEscapeHatch
 	secServices
 	secCount
@@ -52,20 +52,20 @@ func (s kitSection) title() string {
 		return "Install commands"
 	case secStartup:
 		return "Startup commands"
-	case secInitFiles:
-		return "Init files"
+	case secSetupFiles:
+		return "Setup files"
 	case secNetwork:
-		return "Network"
+		return "Network permissions"
 	case secEnvironment:
 		return "Environment"
 	case secCredentials:
-		return "Credentials"
-	case secAgentContext:
-		return "Agent context"
+		return "Credential services"
+	case secAgentInstructions:
+		return "Agent instructions"
 	case secEscapeHatch:
 		return "Escape-hatch commands"
 	case secServices:
-		return "Services (port forwarding)"
+		return "Services"
 	}
 	return ""
 }
@@ -73,32 +73,33 @@ func (s kitSection) title() string {
 func (s kitSection) blurb() string {
 	switch s {
 	case secIdentity:
-		return "name, display name, description"
+		return "name, display name, description, version, base agent"
 	case secInstall:
-		return "run once at creation, as sh -c"
+		return "run once at creation (sh -c)"
 	case secStartup:
-		return "run at every start, argv (must be idempotent)"
-	case secInitFiles:
-		return "written at every start; ${WORKDIR} expands"
+		return "run at every start (argv, idempotent)"
+	case secSetupFiles:
+		return "written into the container at every start"
 	case secNetwork:
-		return "allowed / denied domains (deny wins)"
+		return "domains the sandbox may reach / is blocked from"
 	case secEnvironment:
-		return "container env vars + proxy-managed names"
+		return "container variables"
 	case secCredentials:
-		return "service credential sources (host-side, via proxy)"
-	case secAgentContext:
-		return "markdown appended to the agent's memory"
+		return "services the kit needs; values are bound on the host"
+	case secAgentInstructions:
+		return "markdown written to the agent's kit memory"
 	case secEscapeHatch:
-		return "whole commands the agent may run OUTSIDE the sandbox"
+		return "commands the agent may run on the host (switchboard-owned)"
 	case secServices:
-		return "long-running services YOU can start and reach on a local port"
+		return "long-running services you can start + forward (switchboard-owned)"
 	}
 	return ""
 }
 
-// itemized reports whether a section holds a list of items (vs. a single form).
+// itemized reports whether a section is a list of items (each edited in its own
+// form) rather than a single scalar form.
 func (s kitSection) itemized() bool {
-	return s == secInstall || s == secStartup || s == secInitFiles || s == secEscapeHatch || s == secServices
+	return s == secInstall || s == secStartup || s == secSetupFiles || s == secCredentials || s == secEscapeHatch || s == secServices
 }
 
 // kitFormVals holds the values bound into whichever form is open.
@@ -114,11 +115,15 @@ func (s kitSection) itemized() bool {
 // model (&m.field) would target a stale copy after the next Update, but every copy
 // of this pointer refers to the same allocation huh is writing to.
 type kitFormVals struct {
-	name, displayName, description string
-	allowed, denied                string
-	vars, proxied                  string
-	credSources                    string
-	agentContext                   string
+	name, displayName, description, version, requiresAgent string
+	allowed, denied                                        string
+	vars                                                   string
+	agentInstructions                                      string
+
+	// credential item fields (schema 2 `credentials[]`; feature 008). credInject is
+	// one `domain | header | format` line per injection target, parsed on apply.
+	credService, credDesc, credEnvName, credInject string
+	credRequired, credProxyManaged                 bool
 
 	// item-form fields
 	itemCommand, itemUser, itemDesc string
@@ -148,6 +153,9 @@ type kitEditorState struct {
 	// editing is the id of the kit being updated; empty when creating. Kept so a
 	// rename can delete the old directory rather than orphan it.
 	editing string
+	// migration is non-nil when the kit was translated from the legacy schema on
+	// load (feature 008, FR-092); shown as a banner until the kit is saved.
+	migration *store.Migration
 	// section is the highlighted section; inSection is true once drilled in.
 	section   kitSection
 	inSection bool
@@ -173,11 +181,11 @@ const (
 	formIdentity
 	formNetwork
 	formEnvironment
-	formCredentials
-	formAgentContext
+	formAgentInstructions
 	formInstall
 	formStartup
 	formInitFile
+	formCredential
 	formEscapeHatch
 	formService
 )
@@ -186,8 +194,19 @@ const (
 func (m Model) enterKitEditor(k *store.Kit) (tea.Model, tea.Cmd) {
 	st := kitEditorState{formItem: -1}
 	if k != nil {
+		if k.Unsupported != "" {
+			m.status = "cannot edit " + k.Name + ": " + k.Unsupported
+			return m, nil
+		}
 		st.kit = *k // by value: an abandoned edit must not touch the stored kit
 		st.editing = k.ID()
+		// Re-read the stored file to learn whether it was migrated from the legacy
+		// schema, so the editor can say what was carried and dropped (FR-092).
+		if m.kits != nil {
+			if _, mig, err := m.kits.GetWithMigration(k.ID()); err == nil && mig != nil {
+				st.migration = mig
+			}
+		}
 	}
 	m.kitEditor = st
 	m.screen = screenKitEditor
@@ -304,10 +323,8 @@ func (m Model) openKitSection() (tea.Model, tea.Cmd) {
 		return m.openKitForm(formNetwork, m.networkForm())
 	case secEnvironment:
 		return m.openKitForm(formEnvironment, m.environmentForm())
-	case secCredentials:
-		return m.openKitForm(formCredentials, m.credentialsForm())
-	case secAgentContext:
-		return m.openKitForm(formAgentContext, m.agentContextForm())
+	case secAgentInstructions:
+		return m.openKitForm(formAgentInstructions, m.agentInstructionsForm())
 	}
 	return m, nil
 }
@@ -343,25 +360,32 @@ func (m Model) advanceKitForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) identityForm() *huh.Form {
 	v := m.kitEditor.vals
-	v.name, v.displayName, v.description = m.kitEditor.kit.Name, m.kitEditor.kit.DisplayName, m.kitEditor.kit.Description
+	k := m.kitEditor.kit
+	v.name, v.displayName, v.description, v.version = k.Name, k.DisplayName, k.Description, k.Version
+	if k.Requires != nil {
+		v.requiresAgent = k.Requires.Agent
+	}
 	return m.newKitForm(
 		huh.NewInput().Key("name").Title("Name").
 			Description("Kit id — lowercase, hyphens. Also the directory name.").Value(&v.name),
 		huh.NewInput().Key("displayName").Title("Display name").Value(&v.displayName),
 		huh.NewInput().Key("description").Title("Description").Value(&v.description),
+		huh.NewInput().Key("version").Title("Version").Description("Optional kit version, e.g. 1.0.0.").Value(&v.version),
+		huh.NewInput().Key("requiresAgent").Title("Base agent").
+			Description("Optional. Pins the agent this mixin is designed for (e.g. claude).").Value(&v.requiresAgent),
 	)
 }
 
 func (m *Model) networkForm() *huh.Form {
 	v := m.kitEditor.vals
-	if n := m.kitEditor.kit.Network; n != nil {
-		v.allowed = strings.Join(n.AllowedDomains, "\n")
-		v.denied = strings.Join(n.DeniedDomains, "\n")
+	if p := m.kitEditor.kit.Permissions; p != nil && p.Network != nil {
+		v.allowed = strings.Join(p.Network.Allow, "\n")
+		v.denied = strings.Join(p.Network.Deny, "\n")
 	}
 	return m.newKitForm(
-		huh.NewText().Key("allowed").Title("Allowed domains").
-			Description("One per line. Wildcards allowed. The sandbox can reach nothing else.").Value(&v.allowed),
-		huh.NewText().Key("denied").Title("Denied domains").
+		huh.NewText().Key("allowed").Title("Allow").
+			Description("Domains the sandbox may reach, one per line (wildcards allowed). Credential\ninjection domains must be listed here too.").Value(&v.allowed),
+		huh.NewText().Key("denied").Title("Deny").
 			Description("One per line. Deny wins over allow, including across other kits.").Value(&v.denied),
 	)
 }
@@ -370,33 +394,21 @@ func (m *Model) environmentForm() *huh.Form {
 	v := m.kitEditor.vals
 	if e := m.kitEditor.kit.Environment; e != nil {
 		v.vars = joinEnv(e.Variables)
-		v.proxied = strings.Join(e.ProxyManaged, "\n")
 	}
 	return m.newKitForm(
 		huh.NewText().Key("vars").Title("Variables").
 			Description("KEY=value, one per line. Set directly in the container.").Value(&v.vars),
-		huh.NewText().Key("proxied").Title("Proxy-managed").
-			Description("Variable names populated by the proxy at request time. One per line.").Value(&v.proxied),
 	)
 }
 
-func (m *Model) credentialsForm() *huh.Form {
+func (m *Model) agentInstructionsForm() *huh.Form {
 	v := m.kitEditor.vals
-	if c := m.kitEditor.kit.Credentials; c != nil {
-		v.credSources = joinCredentials(c.Sources)
+	if a := m.kitEditor.kit.AgentInstructions; a != nil {
+		v.agentInstructions = a.Content
 	}
 	return m.newKitForm(
-		huh.NewText().Key("sources").Title("Credential sources").
-			Description("service=ENV_VAR[,ENV_VAR], one per line (e.g. github=GH_TOKEN).\nSecrets stay on the host; the proxy injects them.").Value(&v.credSources),
-	)
-}
-
-func (m *Model) agentContextForm() *huh.Form {
-	v := m.kitEditor.vals
-	v.agentContext = m.kitEditor.kit.AgentContext
-	return m.newKitForm(
-		huh.NewText().Key("agentContext").Title("Agent context").
-			Description("Markdown appended to the agent's memory.").Value(&v.agentContext),
+		huh.NewText().Key("agentInstructions").Title("Agent instructions").
+			Description("Markdown the runtime writes into the agent's kit memory.").Value(&v.agentInstructions),
 	)
 }
 
@@ -407,12 +419,12 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 	m.kitEditor.formItem = idx
 	m.kitEditor.vals = &kitFormVals{}
 	v := m.kitEditor.vals
-	cmds := m.kitEditor.kit.Commands
+	setup := m.kitEditor.kit.Setup
 	switch m.kitEditor.section {
 	case secInstall:
 		var it store.KitInstallCommand
-		if cmds != nil && idx >= 0 && idx < len(cmds.Install) {
-			it = cmds.Install[idx]
+		if setup != nil && idx >= 0 && idx < len(setup.Install) {
+			it = setup.Install[idx]
 		}
 		v.itemCommand, v.itemUser, v.itemDesc = it.Command, defaultStr(it.User, "0"), it.Description
 		return m.openKitForm(formInstall, m.newKitForm(
@@ -423,8 +435,8 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 		))
 	case secStartup:
 		var it store.KitStartupCommand
-		if cmds != nil && idx >= 0 && idx < len(cmds.Startup) {
-			it = cmds.Startup[idx]
+		if setup != nil && idx >= 0 && idx < len(setup.Startup) {
+			it = setup.Startup[idx]
 		}
 		v.itemCommand = strings.Join(it.Command, "\n")
 		v.itemUser, v.itemDesc, v.itemBackground = defaultStr(it.User, "1000"), it.Description, it.Background
@@ -435,10 +447,10 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 			huh.NewConfirm().Key("background").Title("Background").Value(&v.itemBackground),
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
 		))
-	case secInitFiles:
+	case secSetupFiles:
 		var it store.KitInitFile
-		if cmds != nil && idx >= 0 && idx < len(cmds.InitFiles) {
-			it = cmds.InitFiles[idx]
+		if setup != nil && idx >= 0 && idx < len(setup.Files) {
+			it = setup.Files[idx]
 		}
 		v.itemPath, v.itemContent = it.Path, it.Content
 		v.itemMode, v.itemOnlyIfMissing, v.itemDesc = defaultStr(it.Mode, "0644"), it.OnlyIfMissing, it.Description
@@ -449,6 +461,31 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 			huh.NewInput().Key("mode").Title("Mode").Description("Octal, e.g. 0755.").Value(&v.itemMode),
 			huh.NewConfirm().Key("onlyIfMissing").Title("Only if missing").Value(&v.itemOnlyIfMissing),
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
+		))
+	case secCredentials:
+		var it store.KitCredential
+		if idx >= 0 && idx < len(m.kitEditor.kit.Credentials) {
+			it = m.kitEditor.kit.Credentials[idx]
+		}
+		v.credService, v.credDesc, v.credRequired = it.Service, it.Description, it.Required
+		if it.APIKey != nil {
+			v.credEnvName, v.credProxyManaged = it.APIKey.Name, it.APIKey.ProxyManaged
+			v.credInject = joinInject(it.APIKey.Inject)
+		}
+		return m.openKitForm(formCredential, m.newKitForm(
+			huh.NewNote().Title("Values stay on the host").
+				Description("A kit declares which credential a service needs and how it is injected.\nThe value itself is supplied and bound on the host (sbx secret set)."),
+			huh.NewInput().Key("service").Title("Service").
+				Description("kebab-case id, e.g. github. Matches the secret stored on the host.").Value(&v.credService),
+			huh.NewInput().Key("description").Title("Description").Value(&v.credDesc),
+			huh.NewConfirm().Key("required").Title("Required").
+				Description("On = the agent cannot do its job without it (the runtime warns when unbound).").Value(&v.credRequired),
+			huh.NewInput().Key("envName").Title("API-key env var").
+				Description("Variable name the agent sees, e.g. GITHUB_TOKEN. Blank = no API-key mechanism.").Value(&v.credEnvName),
+			huh.NewConfirm().Key("proxyManaged").Title("Proxy-managed").
+				Description("On = the container only sees a placeholder; the proxy injects the real value.").Value(&v.credProxyManaged),
+			huh.NewText().Key("inject").Title("Inject into").
+				Description("One target per line: domain | header | format (format has one %s, e.g. Bearer %s).\nEach domain must also be allowed under Network permissions.").Value(&v.credInject),
 		))
 	case secEscapeHatch:
 		var it store.KitEscapeHatchCommand
@@ -532,12 +569,18 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 		k.Name = strings.TrimSpace(v.name)
 		k.DisplayName = strings.TrimSpace(v.displayName)
 		k.Description = strings.TrimSpace(v.description)
+		k.Version = strings.TrimSpace(v.version)
+		if agent := strings.TrimSpace(v.requiresAgent); agent != "" {
+			k.Requires = &store.KitRequires{Agent: agent}
+		} else {
+			k.Requires = nil
+		}
 	case formNetwork:
 		allowed, denied := splitLines(v.allowed), splitLines(v.denied)
 		if len(allowed) == 0 && len(denied) == 0 {
-			k.Network = nil
+			k.Permissions = nil
 		} else {
-			k.Network = &store.KitNetwork{AllowedDomains: allowed, DeniedDomains: denied}
+			k.Permissions = &store.KitPermissions{Network: &store.KitNetworkPerms{Allow: allowed, Deny: denied}}
 		}
 	case formEnvironment:
 		vars, err := parseEnv(v.vars)
@@ -545,25 +588,17 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			m.kitEditor.status = err.Error()
 			return m, nil
 		}
-		proxied := splitLines(v.proxied)
-		if len(vars) == 0 && len(proxied) == 0 {
+		if len(vars) == 0 {
 			k.Environment = nil
 		} else {
-			k.Environment = &store.KitEnvironment{Variables: vars, ProxyManaged: proxied}
+			k.Environment = &store.KitEnvironment{Variables: vars}
 		}
-	case formCredentials:
-		src, err := parseCredentials(v.credSources)
-		if err != nil {
-			m.kitEditor.status = err.Error()
-			return m, nil
-		}
-		if len(src) == 0 {
-			k.Credentials = nil
+	case formAgentInstructions:
+		if content := strings.TrimSpace(v.agentInstructions); content != "" {
+			k.AgentInstructions = &store.KitAgentInstructions{Content: content}
 		} else {
-			k.Credentials = &store.KitCredentials{Sources: src}
+			k.AgentInstructions = nil
 		}
-	case formAgentContext:
-		k.AgentContext = strings.TrimSpace(v.agentContext)
 	case formInstall:
 		cmd := strings.TrimSpace(v.itemCommand)
 		if cmd == "" {
@@ -575,11 +610,11 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			User:        omitDefault(v.itemUser, "0"),
 			Description: strings.TrimSpace(v.itemDesc),
 		}
-		m.ensureCommands()
-		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Commands.Install) {
-			k.Commands.Install[i] = it
+		m.ensureSetup()
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Setup.Install) {
+			k.Setup.Install[i] = it
 		} else {
-			k.Commands.Install = append(k.Commands.Install, it)
+			k.Setup.Install = append(k.Setup.Install, it)
 		}
 	case formStartup:
 		argv := splitLines(v.itemCommand)
@@ -593,11 +628,11 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			Background:  v.itemBackground,
 			Description: strings.TrimSpace(v.itemDesc),
 		}
-		m.ensureCommands()
-		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Commands.Startup) {
-			k.Commands.Startup[i] = it
+		m.ensureSetup()
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Setup.Startup) {
+			k.Setup.Startup[i] = it
 		} else {
-			k.Commands.Startup = append(k.Commands.Startup, it)
+			k.Setup.Startup = append(k.Setup.Startup, it)
 		}
 	case formInitFile:
 		path := strings.TrimSpace(v.itemPath)
@@ -612,11 +647,34 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			OnlyIfMissing: v.itemOnlyIfMissing,
 			Description:   strings.TrimSpace(v.itemDesc),
 		}
-		m.ensureCommands()
-		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Commands.InitFiles) {
-			k.Commands.InitFiles[i] = it
+		m.ensureSetup()
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Setup.Files) {
+			k.Setup.Files[i] = it
 		} else {
-			k.Commands.InitFiles = append(k.Commands.InitFiles, it)
+			k.Setup.Files = append(k.Setup.Files, it)
+		}
+	case formCredential:
+		service := strings.TrimSpace(v.credService)
+		if service == "" {
+			m.kitEditor.status = "service is required"
+			return m, nil
+		}
+		inject, err := parseInject(v.credInject)
+		if err != nil {
+			m.kitEditor.status = err.Error()
+			return m, nil
+		}
+		it := store.KitCredential{Service: service, Description: strings.TrimSpace(v.credDesc), Required: v.credRequired}
+		if env := strings.TrimSpace(v.credEnvName); env != "" {
+			it.APIKey = &store.KitAPIKey{Name: env, ProxyManaged: v.credProxyManaged, Inject: inject}
+		} else if len(inject) > 0 || v.credProxyManaged {
+			m.kitEditor.status = "an API-key env var name is required for proxy-managed or injected credentials"
+			return m, nil
+		}
+		if i := m.kitEditor.formItem; i >= 0 && i < len(k.Credentials) {
+			k.Credentials[i] = it
+		} else {
+			k.Credentials = append(k.Credentials, it)
 		}
 	case formEscapeHatch:
 		name, cmd := strings.TrimSpace(v.ehName), strings.TrimSpace(v.itemCommand)
@@ -695,46 +753,41 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) ensureCommands() {
-	if m.kitEditor.kit.Commands == nil {
-		m.kitEditor.kit.Commands = &store.KitCommands{}
+func (m *Model) ensureSetup() {
+	if m.kitEditor.kit.Setup == nil {
+		m.kitEditor.kit.Setup = &store.KitSetup{}
 	}
 }
 
 func (m *Model) deleteKitItem(idx int) {
-	if m.kitEditor.section == secServices {
-		if idx < len(m.kitEditor.kit.Services) {
-			m.kitEditor.kit.Services = append(m.kitEditor.kit.Services[:idx], m.kitEditor.kit.Services[idx+1:]...)
-		}
-		m.kitEditor.validation = nil
-		return
-	}
-	if m.kitEditor.section == secEscapeHatch {
-		if idx < len(m.kitEditor.kit.EscapeHatch) {
-			m.kitEditor.kit.EscapeHatch = append(m.kitEditor.kit.EscapeHatch[:idx], m.kitEditor.kit.EscapeHatch[idx+1:]...)
-		}
-		m.kitEditor.validation = nil
-		return
-	}
-	c := m.kitEditor.kit.Commands
-	if c == nil {
-		return
-	}
+	k := &m.kitEditor.kit
+	m.kitEditor.validation = nil
 	switch m.kitEditor.section {
+	case secServices:
+		if idx < len(k.Services) {
+			k.Services = append(k.Services[:idx], k.Services[idx+1:]...)
+		}
+	case secEscapeHatch:
+		if idx < len(k.EscapeHatch) {
+			k.EscapeHatch = append(k.EscapeHatch[:idx], k.EscapeHatch[idx+1:]...)
+		}
+	case secCredentials:
+		if idx < len(k.Credentials) {
+			k.Credentials = append(k.Credentials[:idx], k.Credentials[idx+1:]...)
+		}
 	case secInstall:
-		if idx < len(c.Install) {
-			c.Install = append(c.Install[:idx], c.Install[idx+1:]...)
+		if k.Setup != nil && idx < len(k.Setup.Install) {
+			k.Setup.Install = append(k.Setup.Install[:idx], k.Setup.Install[idx+1:]...)
 		}
 	case secStartup:
-		if idx < len(c.Startup) {
-			c.Startup = append(c.Startup[:idx], c.Startup[idx+1:]...)
+		if k.Setup != nil && idx < len(k.Setup.Startup) {
+			k.Setup.Startup = append(k.Setup.Startup[:idx], k.Setup.Startup[idx+1:]...)
 		}
-	case secInitFiles:
-		if idx < len(c.InitFiles) {
-			c.InitFiles = append(c.InitFiles[:idx], c.InitFiles[idx+1:]...)
+	case secSetupFiles:
+		if k.Setup != nil && idx < len(k.Setup.Files) {
+			k.Setup.Files = append(k.Setup.Files[:idx], k.Setup.Files[idx+1:]...)
 		}
 	}
-	m.kitEditor.validation = nil
 }
 
 // ---------- save / validate ----------
@@ -831,6 +884,12 @@ func (m Model) viewKitEditor() string {
 		title = "Edit kit " + m.kitEditor.kit.Name
 	}
 	rows := []string{sectionStyle.Render(title), ""}
+	if mig := m.kitEditor.migration; mig != nil {
+		for _, line := range mig.Summary() {
+			rows = append(rows, statusErrStyle.Render("⚠ "+line))
+		}
+		rows = append(rows, dimStyle.Render("  the file on disk is unchanged until you save (ctrl+s)"), "")
+	}
 	for s := kitSection(0); s < secCount; s++ {
 		cursor := "  "
 		label := s.title()
@@ -840,7 +899,7 @@ func (m Model) viewKitEditor() string {
 		}
 		rows = append(rows, cursor+pad(label, 34)+dimStyle.Render(m.kitSectionCount(s))+"  "+dimStyle.Render(s.blurb()))
 	}
-	rows = append(rows, "", dimStyle.Render("kind: mixin · schemaVersion: 1"))
+	rows = append(rows, "", dimStyle.Render("kind: mixin · schemaVersion: 2"))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...) + m.kitEditorStatusLine()
 }
 
@@ -888,23 +947,25 @@ func (m Model) kitEditorStatusLine() string {
 }
 
 func (m Model) kitSectionLen() int {
-	if m.kitEditor.section == secServices {
-		return len(m.kitEditor.kit.Services)
+	k := m.kitEditor.kit
+	switch m.kitEditor.section {
+	case secServices:
+		return len(k.Services)
+	case secEscapeHatch:
+		return len(k.EscapeHatch)
+	case secCredentials:
+		return len(k.Credentials)
 	}
-	if m.kitEditor.section == secEscapeHatch {
-		return len(m.kitEditor.kit.EscapeHatch)
-	}
-	c := m.kitEditor.kit.Commands
-	if c == nil {
+	if k.Setup == nil {
 		return 0
 	}
 	switch m.kitEditor.section {
 	case secInstall:
-		return len(c.Install)
+		return len(k.Setup.Install)
 	case secStartup:
-		return len(c.Startup)
-	case secInitFiles:
-		return len(c.InitFiles)
+		return len(k.Setup.Startup)
+	case secSetupFiles:
+		return len(k.Setup.Files)
 	}
 	return 0
 }
@@ -915,36 +976,34 @@ func (m Model) kitSectionCount(s kitSection) string {
 	n := 0
 	switch s {
 	case secInstall:
-		if k.Commands != nil {
-			n = len(k.Commands.Install)
+		if k.Setup != nil {
+			n = len(k.Setup.Install)
 		}
 	case secStartup:
-		if k.Commands != nil {
-			n = len(k.Commands.Startup)
+		if k.Setup != nil {
+			n = len(k.Setup.Startup)
 		}
-	case secInitFiles:
-		if k.Commands != nil {
-			n = len(k.Commands.InitFiles)
+	case secSetupFiles:
+		if k.Setup != nil {
+			n = len(k.Setup.Files)
 		}
 	case secNetwork:
-		if k.Network != nil {
-			n = len(k.Network.AllowedDomains) + len(k.Network.DeniedDomains)
+		if k.Permissions != nil && k.Permissions.Network != nil {
+			n = len(k.Permissions.Network.Allow) + len(k.Permissions.Network.Deny)
 		}
 	case secEnvironment:
 		if k.Environment != nil {
-			n = len(k.Environment.Variables) + len(k.Environment.ProxyManaged)
+			n = len(k.Environment.Variables)
 		}
 	case secCredentials:
-		if k.Credentials != nil {
-			n = len(k.Credentials.Sources)
-		}
+		n = len(k.Credentials)
 	case secIdentity:
 		if k.Name != "" {
 			return "✓"
 		}
 		return "—"
-	case secAgentContext:
-		if k.AgentContext != "" {
+	case secAgentInstructions:
+		if k.AgentInstructions != nil && strings.TrimSpace(k.AgentInstructions.Content) != "" {
 			return "✓"
 		}
 		return "—"
@@ -960,45 +1019,64 @@ func (m Model) kitSectionCount(s kitSection) string {
 }
 
 func (m Model) kitItemLabel(s kitSection, i int) string {
-	if s == secServices {
-		if i >= len(m.kitEditor.kit.Services) {
+	k := m.kitEditor.kit
+	switch s {
+	case secServices:
+		if i >= len(k.Services) {
 			return ""
 		}
-		it := m.kitEditor.kit.Services[i]
+		it := k.Services[i]
 		suffix := fmt.Sprintf("  :%d %s", it.ListenPort, it.Location())
 		if it.IsWebsite {
 			suffix += " web"
 		}
 		return truncate(it.Name+": "+it.Command, 48) + dimStyle.Render(suffix)
-	}
-	if s == secEscapeHatch {
-		if i >= len(m.kitEditor.kit.EscapeHatch) {
+	case secEscapeHatch:
+		if i >= len(k.EscapeHatch) {
 			return ""
 		}
-		it := m.kitEditor.kit.EscapeHatch[i]
+		it := k.EscapeHatch[i]
 		gate := " auto"
 		if it.RequiresApproval {
 			gate = " approval"
 		}
 		return truncate(it.Name+": "+it.Command, 56) + dimStyle.Render(gate)
+	case secCredentials:
+		if i >= len(k.Credentials) {
+			return ""
+		}
+		it := k.Credentials[i]
+		label := it.Service
+		if it.APIKey != nil {
+			label += ": " + it.APIKey.Name
+			if it.APIKey.ProxyManaged {
+				label += dimStyle.Render(" proxy")
+			}
+			if n := len(it.APIKey.Inject); n > 0 {
+				label += dimStyle.Render(fmt.Sprintf("  → %d %s", n, plural(n, "target", "targets")))
+			}
+		}
+		if it.Required {
+			label += dimStyle.Render("  required")
+		}
+		return label
 	}
-	c := m.kitEditor.kit.Commands
-	if c == nil {
+	if k.Setup == nil {
 		return ""
 	}
 	switch s {
 	case secInstall:
-		it := c.Install[i]
+		it := k.Setup.Install[i]
 		return truncate(it.Command, 60) + dimStyle.Render(userSuffix(it.User, "0"))
 	case secStartup:
-		it := c.Startup[i]
+		it := k.Setup.Startup[i]
 		label := truncate(strings.Join(it.Command, " "), 60)
 		if it.Background {
 			label += dimStyle.Render(" &")
 		}
 		return label + dimStyle.Render(userSuffix(it.User, "1000"))
-	case secInitFiles:
-		it := c.InitFiles[i]
+	case secSetupFiles:
+		it := k.Setup.Files[i]
 		return truncate(it.Path, 60) + dimStyle.Render("  "+defaultStr(it.Mode, "0644"))
 	}
 	return ""
@@ -1087,35 +1165,34 @@ func joinEnv(m map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
-// parseCredentials reads `service=ENV[,ENV]` lines.
-func parseCredentials(s string) (map[string]store.KitCredentialSource, error) {
-	out := map[string]store.KitCredentialSource{}
+// parseInject reads `domain | header | format` lines (format optional).
+func parseInject(s string) ([]store.KitInject, error) {
+	var out []store.KitInject
 	for _, l := range splitLines(s) {
-		svc, envs, ok := strings.Cut(l, "=")
-		svc = strings.TrimSpace(svc)
-		if !ok || svc == "" || strings.TrimSpace(envs) == "" {
-			return nil, errKitLine("expected service=ENV_VAR", l)
+		parts := strings.Split(l, "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
 		}
-		var list []string
-		for _, e := range strings.Split(envs, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				list = append(list, e)
-			}
+		if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" {
+			return nil, errKitLine("expected domain | header | format", l)
 		}
-		out[svc] = store.KitCredentialSource{Env: list}
+		in := store.KitInject{Domain: parts[0], Header: parts[1]}
+		if len(parts) == 3 {
+			in.Format = parts[2]
+		}
+		out = append(out, in)
 	}
 	return out, nil
 }
 
-func joinCredentials(m map[string]store.KitCredentialSource) string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	lines := make([]string, 0, len(keys))
-	for _, k := range keys {
-		lines = append(lines, k+"="+strings.Join(m[k].Env, ","))
+func joinInject(in []store.KitInject) string {
+	lines := make([]string, 0, len(in))
+	for _, i := range in {
+		line := i.Domain + " | " + i.Header
+		if i.Format != "" {
+			line += " | " + i.Format
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }

@@ -61,6 +61,11 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 	// Materialize any client-authored kits onto this host and resolve external kit
 	// sources, before anything is copied — an unusable kit should fail the launch
 	// up front rather than after a multi-GB duplicate (FR-032).
+	if len(req.GetKits()) > 0 {
+		if err := s.requireKitBaseline(); err != nil {
+			return err
+		}
+	}
 	kitSources, err := s.kits.ResolveAll(req.GetKits())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -79,6 +84,18 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// Feature 008: apply the daemon's attach-by-default MCP servers (FR-081). A
+	// resolution failure is logged and the launch proceeds without MCP — never a
+	// failed launch (FR-083). No gateway on this host ⇒ launch exactly as before.
+	var mcpAttach *sandbox.McpAttach
+	if s.mcp != nil && s.mcpAvail.Available {
+		if att, err := s.mcp.ResolveAttach(ctx); err != nil {
+			onLog("mcp: could not resolve attach-by-default servers (launching without): " + err.Error())
+		} else {
+			mcpAttach = &sandbox.McpAttach{Mode: att.Mode, Servers: att.Servers, Skipped: att.Skipped}
+		}
+	}
+
 	sb, err := s.mgr.Launch(ctx, sandbox.LaunchRequest{
 		Config:              req.GetConfig(),
 		Sources:             req.GetSources(),
@@ -87,6 +104,7 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 		KitSources:          kitSources,
 		EscapeHatchCommands: ehCommands,
 		Services:            services,
+		Mcp:                 mcpAttach,
 	}, onProgress, onLog)
 	if err != nil {
 		return err
@@ -256,7 +274,24 @@ func sourcesStatus(err error) error {
 // ValidateKit materializes a kit and checks it with `sbx kit validate`, so the
 // editor reports the host sbx's own diagnostics rather than a second, drifting
 // implementation of Docker's (experimental) kit schema (feature 004, FR-034).
+// requireKitBaseline refuses kit operations on a host whose sandbox CLI predates
+// kit schema 2 (feature 008, FR-096), naming both versions. Kit-less sandbox
+// operations are untouched.
+//
+// Only a KNOWN version below the baseline refuses; when the probe could not read
+// a version at all (no CLI, unparseable output) the operation proceeds and fails
+// with the CLI's own, more specific error.
+func (s *Server) requireKitBaseline() error {
+	if s.mcpAvail.BaselineMet || s.mcpAvail.SbxVersion == "" {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition, "host sbx %s is below the minimum %s required for kit schema 2 (host %s)", s.mcpAvail.SbxVersion, sbxkit.MinSbxVersion, s.hostID)
+}
+
 func (s *Server) ValidateKit(ctx context.Context, req *pb.ValidateKitRequest) (*pb.ValidateKitResponse, error) {
+	if err := s.requireKitBaseline(); err != nil {
+		return nil, err
+	}
 	dir, err := s.kits.Write(req.GetKit())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -273,6 +308,9 @@ func (s *Server) ValidateKit(ctx context.Context, req *pb.ValidateKitRequest) (*
 // AddSandboxKit attaches a kit to an already-created sandbox (`sbx kit add`,
 // FR-033). sbx restarts the sandbox to apply it; VM state is preserved.
 func (s *Server) AddSandboxKit(req *pb.AddSandboxKitRequest, stream pb.Switchboard_AddSandboxKitServer) error {
+	if err := s.requireKitBaseline(); err != nil {
+		return err
+	}
 	src, err := s.kits.Resolve(req.GetKit())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())

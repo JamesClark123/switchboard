@@ -135,3 +135,30 @@ func workingDirWithinWorkspace(dir string) bool {
 	}
 	return true
 }
+
+// AttachBlockers lists the sections `sbx kit add` rejects on an EXISTING sandbox
+// (feature 008, FR-095): the runtime applies only environment variables, install
+// commands and network allow entries to a running sandbox. A non-empty result
+// means the kit must be applied at launch instead; the client refuses the attach
+// before any RPC rather than silently stripping sections.
+func (kit *Kit) AttachBlockers() []string {
+	var out []string
+	if kit.Permissions != nil && kit.Permissions.Network != nil && len(kit.Permissions.Network.Deny) > 0 {
+		out = append(out, "permissions.network.deny")
+	}
+	if kit.Setup != nil {
+		if len(kit.Setup.Files) > 0 {
+			out = append(out, "setup.files")
+		}
+		if len(kit.Setup.Startup) > 0 {
+			out = append(out, "setup.startup")
+		}
+	}
+	if len(kit.Credentials) > 0 {
+		out = append(out, "credentials")
+	}
+	if kit.AgentInstructions != nil && strings.TrimSpace(kit.AgentInstructions.Content) != "" {
+		out = append(out, "agentInstructions")
+	}
+	return out
+}

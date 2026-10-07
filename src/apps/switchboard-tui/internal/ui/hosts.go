@@ -26,9 +26,28 @@ type hostsState struct {
 	pwInput    textinput.Model
 	pwHostID   string
 	pwTarget   string
-	status     string
-	ready      bool
+	// pwMode says who opened the prompt (feature 008): the hosts screen renders
+	// it inline; the daemon screen and the startup sign-in render it as a
+	// centered modal and route its result differently.
+	pwMode pwMode
+	// pwReason is shown above the prompt by the startup sign-in ("key auth was
+	// refused").
+	pwReason string
+	// lastConnect is the host a daemon-screen connect is in flight for, so the
+	// next hostsMsg can report its outcome in the status line.
+	lastConnect string
+	status      string
+	ready       bool
 }
+
+// pwMode is who opened the SSH-password prompt.
+type pwMode int
+
+const (
+	pwHostsScreen pwMode = iota
+	pwDaemonsScreen
+	pwSignIn
+)
 
 // enterHosts loads known hosts into the manager and shows the hosts screen.
 func (m Model) enterHosts() (tea.Model, tea.Cmd) {
@@ -88,6 +107,33 @@ func (m Model) connectHostCmd(id, password string) tea.Cmd {
 
 func (m Model) applyHosts(msg hostsMsg) (tea.Model, tea.Cmd) {
 	m.hosts.rows = []client.HostSandboxes(msg)
+	// feature 008: a daemon-screen connect reports its outcome in the status line.
+	if id := m.hosts.lastConnect; id != "" {
+		m.hosts.lastConnect = ""
+		for _, row := range msg {
+			if row.Host.Entry.ID != id {
+				continue
+			}
+			switch {
+			case row.Host.State == client.HostConnected:
+				m.status = "connected to " + row.Host.Entry.DisplayName
+			case row.Host.Err != nil:
+				m.status = "could not connect to " + row.Host.Entry.DisplayName + ": " + row.Host.Err.Error()
+			}
+		}
+	}
+	// An open gateway view for a daemon that is no longer connected closes with a
+	// message rather than acting on a dead connection (FR-071).
+	if m.screen == screenMcp {
+		for _, row := range msg {
+			if row.Host.Entry.ID == m.mcpView.host && row.Host.State != client.HostConnected {
+				m.screen = screenDaemons
+				m.daemons.options = false
+				m.status = m.mcpView.hostName + " disconnected — gateway view closed"
+				m.mcpView = mcpState{}
+			}
+		}
+	}
 	if !m.hosts.ready {
 		return m, nil
 	}
@@ -252,9 +298,17 @@ func (m Model) updateHostAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // password is typed into the TUI (never ssh's shared tty); submitting an empty
 // value falls back to key/agent auth.
 func (m Model) enterHostPassword(id, target string) (tea.Model, tea.Cmd) {
+	return m.enterHostPasswordFrom(id, target, pwHostsScreen, "")
+}
+
+// enterHostPasswordFrom opens the prompt on behalf of mode (feature 008): the
+// daemon screen's connect and the startup sign-in share the one prompt.
+func (m Model) enterHostPasswordFrom(id, target string, mode pwMode, reason string) (tea.Model, tea.Cmd) {
 	m.hosts.connecting = true
 	m.hosts.pwHostID = id
 	m.hosts.pwTarget = target
+	m.hosts.pwMode = mode
+	m.hosts.pwReason = reason
 	ti := textinput.New()
 	ti.Prompt = "› "
 	ti.Placeholder = "password (blank = key/agent auth)"
@@ -269,11 +323,20 @@ func (m Model) updateHostPasswordKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.hosts.connecting = false
 		m.hosts.pwInput.Blur()
+		if m.hosts.pwMode == pwSignIn {
+			return m.signInSkip() // a dismissed prompt skips the host, never blocks
+		}
 		return m, nil
 	case tea.KeyEnter:
 		id, password := m.hosts.pwHostID, m.hosts.pwInput.Value()
 		m.hosts.connecting = false
 		m.hosts.pwInput.Blur()
+		switch m.hosts.pwMode {
+		case pwSignIn:
+			return m.signInAttempt(id, password)
+		case pwDaemonsScreen:
+			m.hosts.lastConnect = id
+		}
 		return m, m.connectHostCmd(id, password)
 	}
 	var cmd tea.Cmd
@@ -317,4 +380,19 @@ func entrySummary(e client.HostEntry) string {
 		return "ssh " + e.SSHTarget
 	}
 	return "local " + e.SocketPath
+}
+
+// hostPasswordModal renders the SSH-password prompt as a centered modal for the
+// daemon screen and the startup sign-in (feature 008).
+func (m Model) hostPasswordModal() string {
+	title := "Connect to " + m.hosts.pwTarget
+	if m.hosts.pwMode == pwSignIn {
+		title = "Sign in to " + m.hosts.pwTarget
+	}
+	lines := []string{sectionStyle.Render(title), ""}
+	if m.hosts.pwReason != "" {
+		lines = append(lines, dimStyle.Render(m.hosts.pwReason), "")
+	}
+	lines = append(lines, m.hosts.pwInput.View(), "", helpStyle.Render("enter connect · blank = key/agent auth · esc skip"))
+	return modalStyle.Width(m.modalInnerWidth()).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }

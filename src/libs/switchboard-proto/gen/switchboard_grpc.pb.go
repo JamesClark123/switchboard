@@ -63,6 +63,12 @@ const (
 	Switchboard_ForwardPort_FullMethodName          = "/switchboard.v1.Switchboard/ForwardPort"
 	Switchboard_AddSandboxSources_FullMethodName    = "/switchboard.v1.Switchboard/AddSandboxSources"
 	Switchboard_RemoveSandboxSources_FullMethodName = "/switchboard.v1.Switchboard/RemoveSandboxSources"
+	Switchboard_ListMcpServers_FullMethodName       = "/switchboard.v1.Switchboard/ListMcpServers"
+	Switchboard_AddMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AddMcpServer"
+	Switchboard_RemoveMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/RemoveMcpServer"
+	Switchboard_AuthorizeMcpServer_FullMethodName   = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
+	Switchboard_SetMcpServerDefault_FullMethodName  = "/switchboard.v1.Switchboard/SetMcpServerDefault"
+	Switchboard_SetMcpAttachMode_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpAttachMode"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -204,6 +210,39 @@ type SwitchboardClient interface {
 	//
 	// Returns the updated Sandbox (its `sources` reflect exactly what remains).
 	RemoveSandboxSources(ctx context.Context, in *RemoveSandboxSourcesRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// --- MCP gateway (feature 008, FR-072..FR-100) ---
+	// Each daemon owns ONE gateway manager scoped to its host: every RPC below acts
+	// on this host's `sbx mcp` registrations only. Registrations are the host
+	// runtime's truth (read via `sbx mcp ls` on every list); switchboard owns only
+	// the per-daemon attach-by-default marks and default attach mode
+	// (McpGatewaySettings). All of them answer FAILED_PRECONDITION carrying
+	// DaemonInfo.mcp_gateway_reason when the gateway cannot be managed here
+	// (CLI missing, below the runtime baseline, not signed in — FR-079); an older
+	// daemon answers UNIMPLEMENTED (the `u` update fan-out is the remedy).
+	//
+	// Lists registered servers decorated with marks (stale marks are dropped on
+	// read) plus the daemon's settings (FR-073).
+	ListMcpServers(ctx context.Context, in *ListMcpServersRequest, opts ...grpc.CallOption) (*ListMcpServersResponse, error)
+	// Registers a server WITHOUT authorizing (always `--skip-auth`; authorization
+	// is the separate AuthorizeMcpServer step, research R2) and optionally marks it
+	// attach-by-default (FR-074/FR-080). A host-run `command` server requires
+	// acknowledge_local_execution = true (FR-076). Host diagnostics travel verbatim
+	// in the error (FR-078).
+	AddMcpServer(ctx context.Context, in *AddMcpServerRequest, opts ...grpc.CallOption) (*McpServer, error)
+	// Removes a registration and clears its mark (FR-074); the runtime's notes
+	// about leftover credential material are relayed in `notes`.
+	RemoveMcpServer(ctx context.Context, in *RemoveMcpServerRequest, opts ...grpc.CallOption) (*RemoveMcpServerResponse, error)
+	// Runs the host's authorization flow for a registered server (FR-075): streams
+	// the authorization URL as soon as the runtime prints it (open it where YOU are;
+	// never auto-opened on the host), then progress, then a terminal frame. Bounded
+	// at 10 minutes daemon-side; cancelling the stream cancels the wait. The
+	// registration is never changed by any outcome.
+	AuthorizeMcpServer(ctx context.Context, in *AuthorizeMcpServerRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[McpAuthProgress], error)
+	// Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
+	// is not registered on this host.
+	SetMcpServerDefault(ctx context.Context, in *SetMcpServerDefaultRequest, opts ...grpc.CallOption) (*McpServer, error)
+	// Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
+	SetMcpAttachMode(ctx context.Context, in *SetMcpAttachModeRequest, opts ...grpc.CallOption) (*McpGatewaySettings, error)
 }
 
 type switchboardClient struct {
@@ -573,6 +612,75 @@ func (c *switchboardClient) RemoveSandboxSources(ctx context.Context, in *Remove
 	return out, nil
 }
 
+func (c *switchboardClient) ListMcpServers(ctx context.Context, in *ListMcpServersRequest, opts ...grpc.CallOption) (*ListMcpServersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMcpServersResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListMcpServers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) AddMcpServer(ctx context.Context, in *AddMcpServerRequest, opts ...grpc.CallOption) (*McpServer, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(McpServer)
+	err := c.cc.Invoke(ctx, Switchboard_AddMcpServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RemoveMcpServer(ctx context.Context, in *RemoveMcpServerRequest, opts ...grpc.CallOption) (*RemoveMcpServerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveMcpServerResponse)
+	err := c.cc.Invoke(ctx, Switchboard_RemoveMcpServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) AuthorizeMcpServer(ctx context.Context, in *AuthorizeMcpServerRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[McpAuthProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[9], Switchboard_AuthorizeMcpServer_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AuthorizeMcpServerRequest, McpAuthProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AuthorizeMcpServerClient = grpc.ServerStreamingClient[McpAuthProgress]
+
+func (c *switchboardClient) SetMcpServerDefault(ctx context.Context, in *SetMcpServerDefaultRequest, opts ...grpc.CallOption) (*McpServer, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(McpServer)
+	err := c.cc.Invoke(ctx, Switchboard_SetMcpServerDefault_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SetMcpAttachMode(ctx context.Context, in *SetMcpAttachModeRequest, opts ...grpc.CallOption) (*McpGatewaySettings, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(McpGatewaySettings)
+	err := c.cc.Invoke(ctx, Switchboard_SetMcpAttachMode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -712,6 +820,39 @@ type SwitchboardServer interface {
 	//
 	// Returns the updated Sandbox (its `sources` reflect exactly what remains).
 	RemoveSandboxSources(context.Context, *RemoveSandboxSourcesRequest) (*Sandbox, error)
+	// --- MCP gateway (feature 008, FR-072..FR-100) ---
+	// Each daemon owns ONE gateway manager scoped to its host: every RPC below acts
+	// on this host's `sbx mcp` registrations only. Registrations are the host
+	// runtime's truth (read via `sbx mcp ls` on every list); switchboard owns only
+	// the per-daemon attach-by-default marks and default attach mode
+	// (McpGatewaySettings). All of them answer FAILED_PRECONDITION carrying
+	// DaemonInfo.mcp_gateway_reason when the gateway cannot be managed here
+	// (CLI missing, below the runtime baseline, not signed in — FR-079); an older
+	// daemon answers UNIMPLEMENTED (the `u` update fan-out is the remedy).
+	//
+	// Lists registered servers decorated with marks (stale marks are dropped on
+	// read) plus the daemon's settings (FR-073).
+	ListMcpServers(context.Context, *ListMcpServersRequest) (*ListMcpServersResponse, error)
+	// Registers a server WITHOUT authorizing (always `--skip-auth`; authorization
+	// is the separate AuthorizeMcpServer step, research R2) and optionally marks it
+	// attach-by-default (FR-074/FR-080). A host-run `command` server requires
+	// acknowledge_local_execution = true (FR-076). Host diagnostics travel verbatim
+	// in the error (FR-078).
+	AddMcpServer(context.Context, *AddMcpServerRequest) (*McpServer, error)
+	// Removes a registration and clears its mark (FR-074); the runtime's notes
+	// about leftover credential material are relayed in `notes`.
+	RemoveMcpServer(context.Context, *RemoveMcpServerRequest) (*RemoveMcpServerResponse, error)
+	// Runs the host's authorization flow for a registered server (FR-075): streams
+	// the authorization URL as soon as the runtime prints it (open it where YOU are;
+	// never auto-opened on the host), then progress, then a terminal frame. Bounded
+	// at 10 minutes daemon-side; cancelling the stream cancels the wait. The
+	// registration is never changed by any outcome.
+	AuthorizeMcpServer(*AuthorizeMcpServerRequest, grpc.ServerStreamingServer[McpAuthProgress]) error
+	// Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
+	// is not registered on this host.
+	SetMcpServerDefault(context.Context, *SetMcpServerDefaultRequest) (*McpServer, error)
+	// Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
+	SetMcpAttachMode(context.Context, *SetMcpAttachModeRequest) (*McpGatewaySettings, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -808,6 +949,24 @@ func (UnimplementedSwitchboardServer) AddSandboxSources(*AddSandboxSourcesReques
 }
 func (UnimplementedSwitchboardServer) RemoveSandboxSources(context.Context, *RemoveSandboxSourcesRequest) (*Sandbox, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSandboxSources not implemented")
+}
+func (UnimplementedSwitchboardServer) ListMcpServers(context.Context, *ListMcpServersRequest) (*ListMcpServersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMcpServers not implemented")
+}
+func (UnimplementedSwitchboardServer) AddMcpServer(context.Context, *AddMcpServerRequest) (*McpServer, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) RemoveMcpServer(context.Context, *RemoveMcpServerRequest) (*RemoveMcpServerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) AuthorizeMcpServer(*AuthorizeMcpServerRequest, grpc.ServerStreamingServer[McpAuthProgress]) error {
+	return status.Error(codes.Unimplemented, "method AuthorizeMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) SetMcpServerDefault(context.Context, *SetMcpServerDefaultRequest) (*McpServer, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMcpServerDefault not implemented")
+}
+func (UnimplementedSwitchboardServer) SetMcpAttachMode(context.Context, *SetMcpAttachModeRequest) (*McpGatewaySettings, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMcpAttachMode not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -1281,6 +1440,107 @@ func _Switchboard_RemoveSandboxSources_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_ListMcpServers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMcpServersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListMcpServers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListMcpServers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListMcpServers(ctx, req.(*ListMcpServersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_AddMcpServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddMcpServerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).AddMcpServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_AddMcpServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).AddMcpServer(ctx, req.(*AddMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RemoveMcpServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveMcpServerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RemoveMcpServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RemoveMcpServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RemoveMcpServer(ctx, req.(*RemoveMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_AuthorizeMcpServer_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AuthorizeMcpServerRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).AuthorizeMcpServer(m, &grpc.GenericServerStream[AuthorizeMcpServerRequest, McpAuthProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_AuthorizeMcpServerServer = grpc.ServerStreamingServer[McpAuthProgress]
+
+func _Switchboard_SetMcpServerDefault_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMcpServerDefaultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetMcpServerDefault(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetMcpServerDefault_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetMcpServerDefault(ctx, req.(*SetMcpServerDefaultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SetMcpAttachMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMcpAttachModeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetMcpAttachMode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetMcpAttachMode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetMcpAttachMode(ctx, req.(*SetMcpAttachModeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1368,6 +1628,26 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "RemoveSandboxSources",
 			Handler:    _Switchboard_RemoveSandboxSources_Handler,
 		},
+		{
+			MethodName: "ListMcpServers",
+			Handler:    _Switchboard_ListMcpServers_Handler,
+		},
+		{
+			MethodName: "AddMcpServer",
+			Handler:    _Switchboard_AddMcpServer_Handler,
+		},
+		{
+			MethodName: "RemoveMcpServer",
+			Handler:    _Switchboard_RemoveMcpServer_Handler,
+		},
+		{
+			MethodName: "SetMcpServerDefault",
+			Handler:    _Switchboard_SetMcpServerDefault_Handler,
+		},
+		{
+			MethodName: "SetMcpAttachMode",
+			Handler:    _Switchboard_SetMcpAttachMode_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1415,6 +1695,11 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "AddSandboxSources",
 			Handler:       _Switchboard_AddSandboxSources_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "AuthorizeMcpServer",
+			Handler:       _Switchboard_AuthorizeMcpServer_Handler,
 			ServerStreams: true,
 		},
 	},

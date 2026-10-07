@@ -132,7 +132,7 @@ func TestTUIKitAuthoringE2E(t *testing.T) {
 		t.Fatalf("kit not written to %s: %v", specPath, err)
 	}
 	spec := string(b)
-	for _, want := range []string{`schemaVersion: "1"`, "kind: mixin", "name: e2e-kit", "apt-get install -y jq"} {
+	for _, want := range []string{`schemaVersion: "2"`, "kind: mixin", "name: e2e-kit", "setup:", "apt-get install -y jq"} {
 		if !strings.Contains(spec, want) {
 			t.Errorf("spec.yaml missing %q; got:\n%s", want, spec)
 		}
@@ -149,7 +149,9 @@ func TestTUIKitAttachE2E(t *testing.T) {
 	sock := startDaemon(t, daemon, stubSbx(t))
 	configDir := t.TempDir()
 
-	// Pre-seed a kit rather than re-authoring it through the UI.
+	// Pre-seed a kit rather than re-authoring it through the UI. It is a LEGACY
+	// (schema 1) file on purpose: the client migrates it on load (feature 008) and
+	// an install-only kit has no attach blockers, so the attach must still work.
 	kitDir := filepath.Join(configDir, "kits", "pre-made")
 	if err := os.MkdirAll(kitDir, 0o755); err != nil {
 		t.Fatal(err)

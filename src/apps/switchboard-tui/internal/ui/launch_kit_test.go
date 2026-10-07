@@ -13,7 +13,7 @@ func miseKit() *store.Kit {
 	return &store.Kit{
 		Name:        "mise",
 		DisplayName: "Mise",
-		Commands: &store.KitCommands{
+		Setup: &store.KitSetup{
 			Install: []store.KitInstallCommand{{Command: "curl mise.run | sh"}},
 		},
 	}

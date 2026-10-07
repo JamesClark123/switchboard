@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,35 +29,35 @@ func TestKitEditorNetworkFormApplies(t *testing.T) {
 	out, _ = update(out, tea.KeyMsg{Type: tea.KeyCtrlJ})
 	out = typeIn(out, "pypi.org")
 	out, _ = update(out, ctrlS())
-	n := out.kitEditor.kit.Network
-	if n == nil || len(n.AllowedDomains) != 2 {
-		t.Fatalf("network = %+v, want two allowed domains", n)
+	p := out.kitEditor.kit.Permissions
+	if p == nil || p.Network == nil || len(p.Network.Allow) != 2 {
+		t.Fatalf("permissions = %+v, want two allowed domains", p)
 	}
-	if n.AllowedDomains[0] != "github.com" || n.AllowedDomains[1] != "pypi.org" {
-		t.Errorf("allowed = %v", n.AllowedDomains)
+	if p.Network.Allow[0] != "github.com" || p.Network.Allow[1] != "pypi.org" {
+		t.Errorf("allow = %v", p.Network.Allow)
 	}
 }
 
 // Clearing every domain drops the section rather than rendering `network: {}`,
 // which sbx would read as an explicit empty policy.
 func TestKitEditorClearingNetworkDropsSection(t *testing.T) {
-	k := &store.Kit{Name: "bare", Network: &store.KitNetwork{AllowedDomains: []string{"x.com"}}}
+	k := &store.Kit{Name: "bare", Permissions: &store.KitPermissions{Network: &store.KitNetworkPerms{Allow: []string{"x.com"}}}}
 	out := openSection(t, k, secNetwork)
 	// Clear the prefilled field.
 	for range len("x.com") {
 		out, _ = update(out, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
 	out, _ = update(out, ctrlS())
-	if out.kitEditor.kit.Network != nil {
-		t.Errorf("network = %+v, want nil once emptied", out.kitEditor.kit.Network)
+	if out.kitEditor.kit.Permissions != nil {
+		t.Errorf("permissions = %+v, want nil once emptied", out.kitEditor.kit.Permissions)
 	}
 }
 
 // The network form prefills from the kit, so an edit does not silently drop rules.
 func TestKitEditorNetworkFormPrefills(t *testing.T) {
-	k := &store.Kit{Name: "bare", Network: &store.KitNetwork{
-		AllowedDomains: []string{"a.com"}, DeniedDomains: []string{"b.com"},
-	}}
+	k := &store.Kit{Name: "bare", Permissions: &store.KitPermissions{Network: &store.KitNetworkPerms{
+		Allow: []string{"a.com"}, Deny: []string{"b.com"},
+	}}}
 	out := openSection(t, k, secNetwork)
 	if out.kitEditor.vals.allowed != "a.com" || out.kitEditor.vals.denied != "b.com" {
 		t.Errorf("vals = %+v, want the existing rules prefilled", out.kitEditor.vals)
@@ -87,58 +89,124 @@ func TestKitEditorEnvironmentRejectsBadLine(t *testing.T) {
 
 func TestKitEditorEnvironmentPrefills(t *testing.T) {
 	k := &store.Kit{Name: "bare", Environment: &store.KitEnvironment{
-		Variables: map[string]string{"A": "1"}, ProxyManaged: []string{"TOKEN"},
+		Variables: map[string]string{"A": "1"},
 	}}
 	out := openSection(t, k, secEnvironment)
-	if out.kitEditor.vals.vars != "A=1" || out.kitEditor.vals.proxied != "TOKEN" {
+	if out.kitEditor.vals.vars != "A=1" {
 		t.Errorf("vals = %+v, want the env prefilled", out.kitEditor.vals)
 	}
 }
 
-func TestKitEditorCredentialsFormApplies(t *testing.T) {
+// Credential services are itemized (schema 2 `credentials[]`): the item form
+// declares the service and injection, never a host-side value source.
+func TestKitEditorCredentialItemApplies(t *testing.T) {
 	out := openSection(t, &store.Kit{Name: "bare"}, secCredentials)
-	out = typeIn(out, "github=GH_TOKEN")
+	out = pressCmd(out, "a")
+	if out.kitEditor.form == nil || out.kitEditor.formKind != formCredential {
+		t.Fatalf("a should open the credential form; kind %v", out.kitEditor.formKind)
+	}
+	if v := out.kitEditor.form.View(); !strings.Contains(v, "bound on the host") || strings.Contains(strings.ToLower(v), "source") {
+		t.Errorf("the credential form must explain host-side values and offer no source field; got:\n%s", v)
+	}
+	out.kitEditor.vals.credService = "github"
+	out.kitEditor.vals.credEnvName = "GH_TOKEN"
+	out.kitEditor.vals.credProxyManaged = true
+	out.kitEditor.vals.credRequired = true
+	out.kitEditor.vals.credInject = "api.github.com | Authorization | Bearer %s"
 	out, _ = update(out, ctrlS())
 	c := out.kitEditor.kit.Credentials
-	if c == nil || len(c.Sources["github"].Env) != 1 {
-		t.Fatalf("credentials = %+v, want a github source", c)
+	if len(c) != 1 || c[0].Service != "github" || !c[0].Required || c[0].APIKey == nil || c[0].APIKey.Name != "GH_TOKEN" || !c[0].APIKey.ProxyManaged {
+		t.Fatalf("credentials = %+v", c)
+	}
+	if len(c[0].APIKey.Inject) != 1 || c[0].APIKey.Inject[0].Header != "Authorization" || c[0].APIKey.Inject[0].Format != "Bearer %s" {
+		t.Errorf("inject = %+v", c[0].APIKey.Inject)
+	}
+	// Editing the item prefills the form from the kit.
+	out = pressCmd(out, "enter")
+	if v := out.kitEditor.vals; v.credService != "github" || v.credEnvName != "GH_TOKEN" || !strings.Contains(v.credInject, "api.github.com | Authorization") {
+		t.Errorf("prefill = %+v", v)
 	}
 }
 
-func TestKitEditorCredentialsRejectsBadLine(t *testing.T) {
+func TestKitEditorCredentialItemRejectsBadInput(t *testing.T) {
 	out := openSection(t, &store.Kit{Name: "bare"}, secCredentials)
-	out = typeIn(out, "github")
+	out = pressCmd(out, "a")
+	out.kitEditor.vals.credEnvName = "X"
 	out, _ = update(out, ctrlS())
-	if !strings.Contains(out.kitEditor.status, "service=ENV_VAR") {
-		t.Errorf("status = %q, want a parse error", out.kitEditor.status)
+	if !strings.Contains(out.kitEditor.status, "service is required") || out.kitEditor.form == nil {
+		t.Errorf("status = %q (form open: %v), want a required-service error with the form still open", out.kitEditor.status, out.kitEditor.form != nil)
+	}
+	out.kitEditor.vals.credService = "gh"
+	out.kitEditor.vals.credInject = "just-a-domain"
+	out, _ = update(out, ctrlS())
+	if !strings.Contains(out.kitEditor.status, "domain | header") {
+		t.Errorf("status = %q, want an inject parse error", out.kitEditor.status)
+	}
+	out.kitEditor.vals.credInject = ""
+	out.kitEditor.vals.credEnvName = ""
+	out.kitEditor.vals.credProxyManaged = true
+	out, _ = update(out, ctrlS())
+	if !strings.Contains(out.kitEditor.status, "env var name is required") {
+		t.Errorf("status = %q, want the env-name requirement", out.kitEditor.status)
 	}
 }
 
-func TestKitEditorCredentialsPrefills(t *testing.T) {
-	k := &store.Kit{Name: "bare", Credentials: &store.KitCredentials{
-		Sources: map[string]store.KitCredentialSource{"github": {Env: []string{"GH_TOKEN"}}},
-	}}
-	out := openSection(t, k, secCredentials)
-	if out.kitEditor.vals.credSources != "github=GH_TOKEN" {
-		t.Errorf("vals.credSources = %q, want it prefilled", out.kitEditor.vals.credSources)
-	}
-}
-
-func TestKitEditorAgentContextApplies(t *testing.T) {
-	out := openSection(t, &store.Kit{Name: "bare"}, secAgentContext)
+func TestKitEditorAgentInstructionsApply(t *testing.T) {
+	out := openSection(t, &store.Kit{Name: "bare"}, secAgentInstructions)
 	out = typeIn(out, "Ruff is preinstalled.")
 	out, _ = update(out, ctrlS())
-	if got := out.kitEditor.kit.AgentContext; got != "Ruff is preinstalled." {
-		t.Errorf("agentContext = %q", got)
+	if a := out.kitEditor.kit.AgentInstructions; a == nil || a.Content != "Ruff is preinstalled." {
+		t.Errorf("agent instructions = %+v", a)
+	}
+}
+
+// Identity carries the schema 2 version and base-agent pin.
+func TestKitEditorIdentityVersionAndBaseAgent(t *testing.T) {
+	out := openSection(t, &store.Kit{Name: "bare"}, secIdentity)
+	out.kitEditor.vals.version = "1.2.0"
+	out.kitEditor.vals.requiresAgent = "claude"
+	out, _ = update(out, ctrlS())
+	k := out.kitEditor.kit
+	if k.Version != "1.2.0" || k.Requires == nil || k.Requires.Agent != "claude" {
+		t.Errorf("identity = %+v / %+v", k.Version, k.Requires)
+	}
+}
+
+// A legacy kit opens with a migration banner that clears on save.
+func TestKitEditorShowsMigrationBanner(t *testing.T) {
+	out := editorOn(t, &store.Kit{Name: "legacy"})
+	dir := out.kits.Dir("legacy")
+	if err := os.WriteFile(filepath.Join(dir, "spec.yaml"), []byte("schemaVersion: \"1\"\nkind: mixin\nname: legacy\ncommands:\n  install:\n    - command: echo hi\ncredentials:\n  sources:\n    gh:\n      env: [A, B]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k, err := out.kits.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ = update(out, press("esc")) // back to the picker
+	out, _ = update(out, kitsMsg{k})
+	o, _ := out.enterKitEditor(k)
+	out = o.(Model)
+	v := out.View()
+	if !strings.Contains(v, "migrated from schema 1") || !strings.Contains(v, "dropped credentials.sources.gh.env[B]") {
+		t.Errorf("editor should show the migration banner with drops; got:\n%s", v)
+	}
+	out, _ = update(out, ctrlS())
+	if out.kitEditor.migration != nil && out.screen == screenKitEditor {
+		t.Error("saving should clear the banner")
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "spec.yaml"))
+	if !strings.Contains(string(b), `schemaVersion: "2"`) {
+		t.Errorf("saved kit should be schema 2:\n%s", b)
 	}
 }
 
 // Item labels must describe each entry well enough to pick from the list.
 func TestKitItemLabels(t *testing.T) {
-	k := &store.Kit{Name: "k", Commands: &store.KitCommands{
-		Install:   []store.KitInstallCommand{{Command: "apt-get install jq"}},
-		Startup:   []store.KitStartupCommand{{Command: []string{"sh", "-c", "run"}, Background: true, User: "1000"}},
-		InitFiles: []store.KitInitFile{{Path: "/home/agent/x.sh", Mode: "0755"}},
+	k := &store.Kit{Name: "k", Setup: &store.KitSetup{
+		Install: []store.KitInstallCommand{{Command: "apt-get install jq"}},
+		Startup: []store.KitStartupCommand{{Command: []string{"sh", "-c", "run"}, Background: true, User: "1000"}},
+		Files:   []store.KitInitFile{{Path: "/home/agent/x.sh", Mode: "0755"}},
 	}}
 	out := editorOn(t, k)
 
@@ -151,18 +219,18 @@ func TestKitItemLabels(t *testing.T) {
 	if !strings.Contains(got, "sh -c run") || !strings.Contains(got, "&") || !strings.Contains(got, "agent") {
 		t.Errorf("startup label = %q, want argv, background marker and user", got)
 	}
-	out.kitEditor.section = secInitFiles
-	if got := out.kitItemLabel(secInitFiles, 0); !strings.Contains(got, "/home/agent/x.sh") || !strings.Contains(got, "0755") {
+	out.kitEditor.section = secSetupFiles
+	if got := out.kitItemLabel(secSetupFiles, 0); !strings.Contains(got, "/home/agent/x.sh") || !strings.Contains(got, "0755") {
 		t.Errorf("initFile label = %q, want the path and mode", got)
 	}
 }
 
 // Every itemized section renders its own items.
 func TestKitEditorSectionViewsForEachItemizedSection(t *testing.T) {
-	k := &store.Kit{Name: "k", Commands: &store.KitCommands{
-		Install:   []store.KitInstallCommand{{Command: "apt-get install jq"}},
-		Startup:   []store.KitStartupCommand{{Command: []string{"serve"}}},
-		InitFiles: []store.KitInitFile{{Path: "/etc/x.conf"}},
+	k := &store.Kit{Name: "k", Setup: &store.KitSetup{
+		Install: []store.KitInstallCommand{{Command: "apt-get install jq"}},
+		Startup: []store.KitStartupCommand{{Command: []string{"serve"}}},
+		Files:   []store.KitInitFile{{Path: "/etc/x.conf"}},
 	}}
 	for _, tc := range []struct {
 		sec  kitSection
@@ -170,7 +238,7 @@ func TestKitEditorSectionViewsForEachItemizedSection(t *testing.T) {
 	}{
 		{secInstall, "apt-get install jq"},
 		{secStartup, "serve"},
-		{secInitFiles, "/etc/x.conf"},
+		{secSetupFiles, "/etc/x.conf"},
 	} {
 		out := openSection(t, k, tc.sec)
 		if v := out.View(); !strings.Contains(v, tc.want) {
@@ -182,11 +250,11 @@ func TestKitEditorSectionViewsForEachItemizedSection(t *testing.T) {
 // Deleting items must work in every itemized section, and the cursor must not be
 // left pointing past the end.
 func TestKitEditorDeleteAcrossSections(t *testing.T) {
-	for _, sec := range []kitSection{secInstall, secStartup, secInitFiles} {
-		k := &store.Kit{Name: "k", Commands: &store.KitCommands{
-			Install:   []store.KitInstallCommand{{Command: "a"}, {Command: "b"}},
-			Startup:   []store.KitStartupCommand{{Command: []string{"a"}}, {Command: []string{"b"}}},
-			InitFiles: []store.KitInitFile{{Path: "/a"}, {Path: "/b"}},
+	for _, sec := range []kitSection{secInstall, secStartup, secSetupFiles} {
+		k := &store.Kit{Name: "k", Setup: &store.KitSetup{
+			Install: []store.KitInstallCommand{{Command: "a"}, {Command: "b"}},
+			Startup: []store.KitStartupCommand{{Command: []string{"a"}}, {Command: []string{"b"}}},
+			Files:   []store.KitInitFile{{Path: "/a"}, {Path: "/b"}},
 		}}
 		out := openSection(t, k, sec)
 		out, _ = update(out, press("j")) // move to the last item
@@ -202,7 +270,7 @@ func TestKitEditorDeleteAcrossSections(t *testing.T) {
 
 // The item cursor must not run off either end.
 func TestKitEditorItemCursorBounds(t *testing.T) {
-	k := &store.Kit{Name: "k", Commands: &store.KitCommands{
+	k := &store.Kit{Name: "k", Setup: &store.KitSetup{
 		Install: []store.KitInstallCommand{{Command: "a"}, {Command: "b"}},
 	}}
 	out := openSection(t, k, secInstall)
@@ -247,14 +315,14 @@ func TestSaveKitRenameRemovesOldDir(t *testing.T) {
 func TestKitSectionCounts(t *testing.T) {
 	k := &store.Kit{
 		Name: "k",
-		Commands: &store.KitCommands{
-			Install:   []store.KitInstallCommand{{Command: "a"}, {Command: "b"}},
-			InitFiles: []store.KitInitFile{{Path: "/a"}},
+		Setup: &store.KitSetup{
+			Install: []store.KitInstallCommand{{Command: "a"}, {Command: "b"}},
+			Files:   []store.KitInitFile{{Path: "/a"}},
 		},
-		Network:      &store.KitNetwork{AllowedDomains: []string{"x.com"}},
-		Environment:  &store.KitEnvironment{Variables: map[string]string{"A": "1"}},
-		Credentials:  &store.KitCredentials{Sources: map[string]store.KitCredentialSource{"gh": {Env: []string{"T"}}}},
-		AgentContext: "hi",
+		Permissions:       &store.KitPermissions{Network: &store.KitNetworkPerms{Allow: []string{"x.com"}}},
+		Environment:       &store.KitEnvironment{Variables: map[string]string{"A": "1"}},
+		Credentials:       []store.KitCredential{{Service: "gh", APIKey: &store.KitAPIKey{Name: "T"}}},
+		AgentInstructions: &store.KitAgentInstructions{Content: "hi"},
 	}
 	out := editorOn(t, k)
 	if got := out.kitSectionCount(secInstall); got != "2" {
@@ -266,8 +334,8 @@ func TestKitSectionCounts(t *testing.T) {
 	if got := out.kitSectionCount(secIdentity); got != "✓" {
 		t.Errorf("identity count = %q, want a tick", got)
 	}
-	if got := out.kitSectionCount(secAgentContext); got != "✓" {
-		t.Errorf("agentContext count = %q, want a tick", got)
+	if got := out.kitSectionCount(secAgentInstructions); got != "✓" {
+		t.Errorf("agent instructions count = %q, want a tick", got)
 	}
 	for _, s := range []kitSection{secNetwork, secEnvironment, secCredentials} {
 		if got := out.kitSectionCount(s); got != "1" {
@@ -281,23 +349,24 @@ func TestKitSectionCounts(t *testing.T) {
 	if got := blank.kitSectionCount(secIdentity); got != "—" {
 		t.Errorf("blank identity count = %q, want a dash", got)
 	}
-	if got := blank.kitSectionCount(secAgentContext); got != "—" {
-		t.Errorf("blank agentContext count = %q, want a dash", got)
+	if got := blank.kitSectionCount(secAgentInstructions); got != "—" {
+		t.Errorf("blank agent instructions count = %q, want a dash", got)
 	}
 }
 
 // kitSummary drives the picker rows.
 func TestKitSummary(t *testing.T) {
 	full := kitSummary(&store.Kit{
-		Commands: &store.KitCommands{
-			Install:   []store.KitInstallCommand{{Command: "a"}},
-			Startup:   []store.KitStartupCommand{{Command: []string{"b"}}},
-			InitFiles: []store.KitInitFile{{Path: "/c"}},
+		Setup: &store.KitSetup{
+			Install: []store.KitInstallCommand{{Command: "a"}},
+			Startup: []store.KitStartupCommand{{Command: []string{"b"}}},
+			Files:   []store.KitInitFile{{Path: "/c"}},
 		},
-		Network:     &store.KitNetwork{AllowedDomains: []string{"x.com"}},
+		Permissions: &store.KitPermissions{Network: &store.KitNetworkPerms{Allow: []string{"x.com"}}},
 		Environment: &store.KitEnvironment{Variables: map[string]string{"A": "1"}},
+		Credentials: []store.KitCredential{{Service: "gh"}},
 	})
-	for _, want := range []string{"install", "startup", "file", "domain", "env var"} {
+	for _, want := range []string{"install", "startup", "file", "domain", "env var", "credential"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("summary %q missing %q", full, want)
 		}

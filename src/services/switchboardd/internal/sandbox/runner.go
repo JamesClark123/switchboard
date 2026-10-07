@@ -24,6 +24,10 @@ type LaunchSpec struct {
 	// OCI ref. Only honoured at creation — sbx rejects `--kit` against an existing
 	// sandbox; use AddKit for that.
 	KitSources []string
+	// StaticMcp pre-loads these registered MCP servers as the sandbox's fixed
+	// static set (`--static-mcp a,b`; feature 008 exclusive attach mode, FR-100).
+	// Only honoured at creation; the runtime pins the set for the sandbox's life.
+	StaticMcp []string
 }
 
 // Runner abstracts the host sandbox CLI (`sbx`). The daemon shells out to it; the
@@ -56,6 +60,9 @@ type Runner interface {
 	// Returning the *exec.Cmd lets the caller wire pipes and a process group for a
 	// long-running service, or just call CombinedOutput for a one-shot probe.
 	Exec(ctx context.Context, containerRef string, argv []string) *exec.Cmd
+	// LoadMcp attaches an already-registered MCP server to a created sandbox
+	// (`sbx mcp load <name> --sandbox <ref>`; feature 008 additive attach mode).
+	LoadMcp(ctx context.Context, containerRef, name string, log func(string)) error
 }
 
 // SbxRunner is the production Runner that shells out to the host `sbx` binary.
@@ -155,6 +162,9 @@ func (r *SbxRunner) Launch(ctx context.Context, spec LaunchSpec, log func(string
 	args := []string{"create", "--name", name, "claude", spec.WorkspacePath}
 	args = append(args, flags(spec.KitOptions)...)
 	args = append(args, kitFlags(spec.KitSources)...)
+	if len(spec.StaticMcp) > 0 {
+		args = append(args, "--static-mcp", strings.Join(spec.StaticMcp, ","))
+	}
 	if log != nil {
 		log(fmt.Sprintf("launching sandbox %s with args: %v", name, args))
 	}
@@ -274,6 +284,15 @@ func (r *SbxRunner) UnpublishPort(ctx context.Context, ref string, hostPort, san
 func (r *SbxRunner) Exec(ctx context.Context, ref string, argv []string) *exec.Cmd {
 	args := append([]string{"exec", ref, "--"}, argv...)
 	return exec.CommandContext(ctx, r.Bin, args...)
+}
+
+// LoadMcp maps to `sbx mcp load <name> --sandbox <ref>` (feature 008, research R4):
+// the documented way to attach a registered server to an existing sandbox. It
+// works in both gateway modes and the runtime persists the attachment across
+// restarts, so the daemon never re-applies it.
+func (r *SbxRunner) LoadMcp(ctx context.Context, ref, name string, log func(string)) error {
+	_, err := r.run(ctx, log, "mcp", "load", name, "--sandbox", ref)
+	return err
 }
 
 // AddKit maps to `sbx kit add <sandbox> <kit-source>` (feature 004, FR-033).

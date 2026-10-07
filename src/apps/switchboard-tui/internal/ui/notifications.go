@@ -62,6 +62,17 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		return m.handleEscapeHatchRun(e.EscapeHatchRun)
 	case *pb.Event_ServiceInstance:
 		return m.handleServiceInstance(e.ServiceInstance)
+	case *pb.Event_McpGatewayChanged_:
+		// feature 008: a daemon's registrations/marks/mode changed (here or in
+		// another client). An open gateway view for that host re-lists.
+		var cmd tea.Cmd
+		if m.sub != nil {
+			cmd = m.recvCmd(m.sub)
+		}
+		if m.screen == screenMcp && m.mcpView.host == e.McpGatewayChanged.GetHostId() {
+			cmd = tea.Batch(cmd, m.mcpLoadCmd(m.mcpView.daemon, m.mcpView.host))
+		}
+		return m, cmd
 	}
 	var cmd tea.Cmd
 	if m.sub != nil {

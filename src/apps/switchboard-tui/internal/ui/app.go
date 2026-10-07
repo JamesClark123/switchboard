@@ -75,6 +75,21 @@ type Daemon interface {
 	// launch browser uses it as the starting directory when targeting a remote
 	// host, whose filesystem the client cannot read directly.
 	WorkspaceRoot() string
+	// Feature 008: the host's sandbox CLI version, the daemon's declared runtime
+	// baseline and whether the host meets it (FR-096), and whether the MCP
+	// gateway can be managed there with the reason when not (FR-079).
+	SbxVersion() string
+	SbxMinVersion() string
+	RuntimeBaselineMet() bool
+	McpGateway() (available bool, reason string)
+	// MCP gateway (feature 008, FR-072..FR-100): the host's registrations with
+	// switchboard's marks; register/remove/authorize; marks and attach mode.
+	ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error)
+	AddMcpServer(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error)
+	RemoveMcpServer(ctx context.Context, name string) ([]string, error)
+	AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error)
+	SetMcpServerDefault(ctx context.Context, name string, on bool) (*pb.McpServer, error)
+	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
 	// Edit sandbox sources (feature 007): add folders to an existing sandbox in
 	// place (streaming, with the launch-style low-resource override round-trip)
 	// and remove seeded folders (DESTRUCTIVE — gate it behind a confirmation).
@@ -104,6 +119,9 @@ const (
 	screenServices
 	screenSources
 	screenOpLog
+	screenDaemons
+	screenMcp
+	screenSettings
 )
 
 // Model is the root Bubble Tea model.
@@ -234,6 +252,14 @@ type Model struct {
 	lastOpLogID string
 	opLogView   opLogState
 
+	// --- feature 008: daemon screen, MCP gateway view, settings, startup sign-in ---
+	daemons       daemonsState
+	mcpView       mcpState
+	settingsStore *store.SettingsStore
+	prefs         store.Settings
+	settingsView  settingsState
+	signIn        signInState
+
 	quitting bool
 }
 
@@ -275,6 +301,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},
+		prefs:            store.DefaultSettings(),
 		listLoading:      true, // the first list load is in flight until it arrives
 	}
 	m.help.Width = m.width
@@ -483,7 +510,12 @@ func (m Model) reloadCmd() tea.Cmd {
 // loads the tab-bar data, runs the first release check (and arms the periodic
 // one), and starts the shared spinner.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), checkUpdateCmd(), scheduleUpdateCheck(), m.spinner.Tick)
+	cmds := []tea.Cmd{m.refreshCmd(), m.subscribeCmd(), m.listDataCmd(), checkUpdateCmd(), scheduleUpdateCheck(), m.spinner.Tick}
+	// Feature 008: sign into saved remote hosts as the TUI starts (FR-087).
+	if m.prefs.AutoConnectHosts && m.manager != nil {
+		cmds = append(cmds, signInKickoffCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update routes messages by screen.
@@ -621,6 +653,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sourcesRemovedMsg:
 		return m.handleSourcesRemoved(msg)
 
+	case signInStartMsg:
+		return m.startSignIn()
+	case signInResultMsg:
+		return m.applySignInResult(msg)
+	case mcpLoadedMsg:
+		return m.applyMcpLoaded(msg)
+	case mcpDoneMsg:
+		return m.applyMcpDone(msg)
+	case mcpAuthMsg:
+		return m.applyMcpAuth(msg)
+	case mcpAuthEndMsg:
+		return m.applyMcpAuthEnd(msg)
 	case opStartedMsg:
 		return m.handleOpStarted(msg)
 	case opProgressMsg:
@@ -697,6 +741,20 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case screenNotifications:
 		m.notifyList, cmd = m.notifyList.Update(msg)
+	case screenMcp:
+		if m.mcpView.form != nil {
+			return m.advanceMcpForm(msg)
+		}
+		return m, nil
+	case screenDaemons, screenList:
+		if m.hosts.connecting && m.hosts.pwMode != pwHostsScreen {
+			m.hosts.pwInput, cmd = m.hosts.pwInput.Update(msg)
+			return m, cmd
+		}
+		if m.screen == screenDaemons {
+			return m, nil
+		}
+		m.list, cmd = m.list.Update(msg)
 	case screenUpdate:
 		// The update screen has no interactive component; advance the spinner.
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -707,6 +765,14 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Feature 008: a modal password prompt (daemon screen / startup sign-in) or
+	// the sign-in failure card owns the keyboard while it is showing.
+	if m.hosts.connecting && m.hosts.pwMode != pwHostsScreen {
+		return m.updateHostPasswordKey(msg)
+	}
+	if m.signIn.active && m.signIn.phase == signInFailed {
+		return m.updateSignInKey(msg)
+	}
 	switch m.screen {
 	case screenLaunch:
 		return m.updateLaunchKey(msg)
@@ -744,6 +810,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSourcesKey(msg)
 	case screenOpLog:
 		return m.updateOpLogKey(msg)
+	case screenDaemons:
+		return m.updateDaemonsKey(msg)
+	case screenMcp:
+		return m.updateMcpKey(msg)
+	case screenSettings:
+		return m.updateSettingsKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -788,6 +860,13 @@ func (m Model) View() string {
 		return overlayCenter(bg, m.opLogModal(), m.width, m.height)
 	}
 
+	// The gateway view's authorization wait and host-command warning float over it
+	// (feature 008).
+	if m.screen == screenMcp && (m.mcpView.auth != nil || m.mcpView.pending != nil) {
+		bg := m.chrome(m.viewMcp(), m.mcpHelp())
+		return overlayCenter(bg, m.mcpModal(), m.width, m.height)
+	}
+
 	// The in-place terminal view takes the full body (US2).
 	if m.screen == screenTerminal {
 		return m.chrome(m.viewTerminal(), m.terminalHelp())
@@ -820,10 +899,25 @@ func (m Model) View() string {
 		body, hb = m.viewRuns(), m.runsHelp()
 	case screenServices:
 		body, hb = m.viewServices(), m.servicesHelp()
+	case screenDaemons:
+		body, hb = m.viewDaemons(), m.daemonsHelp()
+	case screenMcp:
+		body, hb = m.viewMcp(), m.mcpHelp()
+	case screenSettings:
+		body, hb = m.viewSettings(), m.settingsHelp()
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
-	return m.chrome(body, hb)
+	out := m.chrome(body, hb)
+	// Feature 008: the shared password prompt (daemon screen / startup sign-in)
+	// and the sign-in failure card float centered over whatever is showing.
+	switch {
+	case m.hosts.connecting && m.hosts.pwMode != pwHostsScreen:
+		return overlayCenter(out, m.hostPasswordModal(), m.width, m.height)
+	case m.signIn.active && m.signIn.phase == signInFailed:
+		return overlayCenter(out, m.signInModal(), m.width, m.height)
+	}
+	return out
 }
 
 // --- chrome (header + body + footer) ---

@@ -32,6 +32,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/daemonctl"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	sbgrpc "github.com/jamesclark123/switchboard/services/switchboardd/internal/grpc"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
@@ -158,6 +159,14 @@ func runServe(cfg *config.Config, debug bool) error {
 		manifest = nil
 	}
 
+	// Feature 008: probe the host's runtime baseline and MCP gateway availability
+	// once (FR-096/FR-079). Advertised in DaemonInfo; never fatal — kit-less
+	// sandbox operation keeps working on a host that fails the probe.
+	mcpAvail := mcp.Probe(ctx, cfg.SbxBin)
+	if !mcpAvail.Available {
+		fmt.Fprintln(os.Stderr, "note: MCP gateway unavailable on this host:", mcpAvail.Reason)
+	}
+
 	// US4: event hub, agent PTY registry, and the hook callback server.
 	hub := agent.NewHub(cfg.HostID)
 	// The PTY factory targets sbx by the sandbox's container_ref (the --name sbx
@@ -221,19 +230,25 @@ func runServe(cfg *config.Config, debug bool) error {
 	}()
 	go func() { <-ctx.Done(); _ = hookHTTP.Close() }()
 
+	// Feature 008: the gateway manager drives `sbx mcp` on this host and owns the
+	// attach-by-default marks; its change events ride the same hub.
+	mcpManager := mcp.NewManager(&mcp.CLI{Bin: cfg.SbxBin}, reg, cfg.HostID, hub.Publish)
+
 	srv := sbgrpc.NewServer(sbgrpc.Config{
-		Manager:       mgr,
-		HostID:        cfg.HostID,
-		DaemonVersion: version,
-		WorkspaceRoot: cfg.WorkspaceRoot,
-		KitRoot:       cfg.KitRoot,
-		PidFile:       cfg.PidFile,
-		Manifest:      manifest,
-		Hub:           hub,
-		Agents:        agents,
-		EscapeHatch:   ehService,
-		Services:      services,
-		Debug:         debug,
+		Manager:         mgr,
+		HostID:          cfg.HostID,
+		DaemonVersion:   version,
+		WorkspaceRoot:   cfg.WorkspaceRoot,
+		KitRoot:         cfg.KitRoot,
+		PidFile:         cfg.PidFile,
+		Manifest:        manifest,
+		Hub:             hub,
+		Agents:          agents,
+		EscapeHatch:     ehService,
+		Services:        services,
+		McpAvailability: mcpAvail,
+		Mcp:             mcpManager,
+		Debug:           debug,
 	})
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)
 	if debug {

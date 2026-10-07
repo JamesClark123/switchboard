@@ -39,6 +39,21 @@ func (c *Conn) DaemonVersion() string { return c.Info.GetDaemonVersion() }
 // (FR-006), advertised at handshake (empty if unknown).
 func (c *Conn) WorkspaceRoot() string { return c.Info.GetWorkspaceRoot() }
 
+// SbxVersion is the host sandbox CLI version the daemon reported at handshake
+// (raw `sbx --version` output; empty if unknown).
+func (c *Conn) SbxVersion() string { return c.Info.GetSbxVersion() }
+
+// SbxMinVersion is the runtime baseline the daemon declares (feature 008,
+// FR-096); RuntimeBaselineMet reports whether its host meets it.
+func (c *Conn) SbxMinVersion() string    { return c.Info.GetSbxMinVersion() }
+func (c *Conn) RuntimeBaselineMet() bool { return c.Info.GetRuntimeBaselineMet() }
+
+// McpGateway reports whether the daemon's host can manage its MCP gateway, with
+// the reason when it cannot (FR-079).
+func (c *Conn) McpGateway() (available bool, reason string) {
+	return c.Info.GetMcpGatewayAvailable(), c.Info.GetMcpGatewayReason()
+}
+
 // UpdateDaemon asks the connected daemon to self-update to target (empty =
 // latest), forwarding each progress message to onProgress. It returns nil once
 // the daemon reports success; the daemon restarts on the new binary immediately

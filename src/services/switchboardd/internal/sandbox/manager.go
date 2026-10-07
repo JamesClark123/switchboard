@@ -113,7 +113,25 @@ type LaunchRequest struct {
 	// calling in. Persisted on the sandbox so the startable set is enforceable and
 	// survives a container recreate.
 	Services []*pb.KitService
+	// Mcp is the daemon's resolved attach-by-default set and mode for this launch
+	// (feature 008, FR-081/FR-100), computed by the gRPC layer from the gateway
+	// manager. nil = no gateway on this host: launch exactly as before.
+	Mcp *McpAttach
 }
+
+// McpAttach is what one launch applies from the daemon's MCP marks (data-model
+// "Launch resolution"): ADDITIVE loads each server after create, before the agent
+// starts; EXCLUSIVE pre-loads the set statically. Skipped names (stale marks) are
+// only reported in the launch log.
+type McpAttach struct {
+	Mode    pb.McpAttachMode
+	Servers []string
+	Skipped []string
+}
+
+// mcpLoadTimeout bounds each `mcp load` at launch (research R11). A package
+// constant, never an env var.
+const mcpLoadTimeout = 60 * time.Second
 
 // List returns all sandboxes on this host, first pruning any whose retained
 // workspace directory has vanished (an unusable, out-of-sync record) so stale
@@ -222,6 +240,10 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	}
 	m.injectEscapeHatchInto(sb, onLog)
 
+	var staticMcp []string
+	if req.Mcp != nil && req.Mcp.Mode == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
+		staticMcp = req.Mcp.Servers
+	}
 	ref, err := m.runner.Launch(ctx, LaunchSpec{
 		SandboxID:     id,
 		Name:          name,
@@ -230,14 +252,23 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		SeedingMode:   req.Config.GetSeedingMode(),
 		Sources:       req.Sources,
 		KitSources:    req.KitSources,
+		StaticMcp:     staticMcp,
 	}, onLog)
 	if err != nil {
 		return m.fail(sb, err)
 	}
 
+	// Feature 008: apply the daemon's attach-by-default servers now — after
+	// create, before the record turns RUNNING and any agent session is started
+	// (research R4). A failed or stale server is logged and skipped, never a
+	// failed launch (FR-083/FR-084).
+	attached, mode := m.applyMcp(ctx, ref, req.Mcp, onLog)
+
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
 		s.ContainerRef = ref
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		s.McpServers = attached
+		s.McpAttachMode = mode
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -379,9 +410,55 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 	return out, nil
 }
 
+// applyMcp attaches the resolved MCP set to a freshly created sandbox and returns
+// what was actually attached plus the mode in effect. Exclusive mode was already
+// pre-loaded by `--static-mcp` on create; additive mode loads each server now.
+// Nothing here can fail the launch.
+func (m *Manager) applyMcp(ctx context.Context, ref string, att *McpAttach, onLog func(string)) ([]string, pb.McpAttachMode) {
+	logf := func(format string, args ...any) {
+		if onLog != nil {
+			onLog(fmt.Sprintf(format, args...))
+		}
+	}
+	if att == nil {
+		return nil, pb.McpAttachMode_MCP_ATTACH_MODE_UNSPECIFIED
+	}
+	for _, name := range att.Skipped {
+		logf("mcp: skipped stale mark %s (no longer registered on this host)", name)
+	}
+	mode := att.Mode
+	if mode == pb.McpAttachMode_MCP_ATTACH_MODE_UNSPECIFIED {
+		mode = pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE
+	}
+	if len(att.Servers) == 0 {
+		return nil, mode
+	}
+	if mode == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
+		logf("mcp: pre-loaded %s (exclusive — the agent gets only these)", strings.Join(att.Servers, ", "))
+		return append([]string(nil), att.Servers...), mode
+	}
+	var attached []string
+	for _, name := range att.Servers {
+		lctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
+		err := m.runner.LoadMcp(lctx, ref, name, onLog)
+		cancel()
+		if err != nil {
+			logf("mcp: skipped %s: %v", name, err)
+			continue
+		}
+		attached = append(attached, name)
+		logf("mcp: attached %s", name)
+	}
+	return attached, mode
+}
+
 // bringUp resumes sb's container and returns the resulting handle, relaunching
 // from the retained workspace copy when sbx cannot resume it. Shared by Restart
 // (FR-012b) and Refresh (FR-030); it neither re-seeds nor writes the record.
+//
+// It deliberately re-applies neither MCP marks nor `--static-mcp` (feature 008,
+// FR-082): the runtime persists a sandbox's loaded/static servers across restarts,
+// and the attached set is fixed at launch.
 //
 // The relaunch path re-passes sb.Kits so kits attached to this sandbox survive a
 // container recreate — `--kit` is only honoured at creation, so a relaunch that

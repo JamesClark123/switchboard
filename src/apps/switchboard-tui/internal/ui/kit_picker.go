@@ -100,20 +100,23 @@ func kitLabel(k *store.Kit) string {
 // kitSummary describes what a kit actually does, so the picker is scannable
 // without opening each one.
 func kitSummary(k *store.Kit) string {
+	if k.Unsupported != "" {
+		return statusErrStyle.Render("schema " + k.SchemaVersion + " — not editable or attachable")
+	}
 	var parts []string
-	if c := k.Commands; c != nil {
+	if c := k.Setup; c != nil {
 		if n := len(c.Install); n > 0 {
 			parts = append(parts, plural(n, "install", "installs"))
 		}
 		if n := len(c.Startup); n > 0 {
 			parts = append(parts, plural(n, "startup", "startups"))
 		}
-		if n := len(c.InitFiles); n > 0 {
+		if n := len(c.Files); n > 0 {
 			parts = append(parts, plural(n, "file", "files"))
 		}
 	}
-	if k.Network != nil {
-		if n := len(k.Network.AllowedDomains) + len(k.Network.DeniedDomains); n > 0 {
+	if k.Permissions != nil && k.Permissions.Network != nil {
+		if n := len(k.Permissions.Network.Allow) + len(k.Permissions.Network.Deny); n > 0 {
 			parts = append(parts, plural(n, "domain", "domains"))
 		}
 	}
@@ -121,6 +124,9 @@ func kitSummary(k *store.Kit) string {
 		if n := len(k.Environment.Variables); n > 0 {
 			parts = append(parts, plural(n, "env var", "env vars"))
 		}
+	}
+	if n := len(k.Credentials); n > 0 {
+		parts = append(parts, plural(n, "credential", "credentials"))
 	}
 	if len(parts) == 0 {
 		return dimStyle.Render("empty kit")
@@ -197,6 +203,17 @@ func (m Model) currentKit() *store.Kit {
 // drops any attached terminal session, and a kit cannot be removed afterwards
 // without destroying the sandbox.
 func (m Model) confirmAttachKit(k *store.Kit) (tea.Model, tea.Cmd) {
+	// Feature 008 (FR-095/FR-099): refuse before any RPC what the runtime would
+	// reject on an existing sandbox, naming the sections and the launch-time path.
+	if k.Unsupported != "" {
+		m.status = "cannot attach " + k.Name + ": " + k.Unsupported
+		return m, nil
+	}
+	if blockers := k.AttachBlockers(); len(blockers) > 0 {
+		m.status = "cannot attach " + k.Name + " to a running sandbox: " + strings.Join(blockers, ", ") +
+			" only apply at creation — launch a new sandbox with this kit instead (n, then K)"
+		return m, nil
+	}
 	ref, err := k.ToRef()
 	if err != nil {
 		m.status = "error: " + err.Error()
