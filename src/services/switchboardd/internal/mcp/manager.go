@@ -196,8 +196,15 @@ func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.Mcp
 		if url == "" {
 			return nil, fmt.Errorf("%w: a remote server needs a URL", ErrInvalidArgs)
 		}
-		argv = argvAddRemote(name, url)
+		headers, err := normalizeHeaders(req.GetHeaders())
+		if err != nil {
+			return nil, err
+		}
+		argv = argvAddRemote(name, url, headers)
 	case *pb.AddMcpServerRequest_Command:
+		if len(req.GetHeaders()) > 0 {
+			return nil, fmt.Errorf("%w: custom headers apply to remote endpoints only", ErrInvalidArgs)
+		}
 		if !req.GetAcknowledgeLocalExecution() {
 			return nil, ErrLocalNotAcknowledged
 		}
@@ -468,4 +475,36 @@ func findServer(servers []*pb.McpServer, name string) *pb.McpServer {
 		}
 	}
 	return nil
+}
+
+// headerNameRe is an HTTP field name (RFC 9110 token).
+var headerNameRe = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
+
+// normalizeHeaders validates "Name: value" entries for `--header` (FR-103):
+// a token name, a colon, a non-empty single-line value; blank entries are
+// dropped, duplicates of a name are refused (the runtime takes each name once).
+func normalizeHeaders(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range in {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(h, ":")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		switch {
+		case !ok || name == "" || value == "":
+			return nil, fmt.Errorf("%w: header %q must be \"Name: value\"", ErrInvalidArgs, h)
+		case !headerNameRe.MatchString(name):
+			return nil, fmt.Errorf("%w: header name %q is not a valid HTTP field name", ErrInvalidArgs, name)
+		case strings.ContainsAny(value, "\r\n"):
+			return nil, fmt.Errorf("%w: header %q must be a single line", ErrInvalidArgs, name)
+		case seen[strings.ToLower(name)]:
+			return nil, fmt.Errorf("%w: header %q is given more than once", ErrInvalidArgs, name)
+		}
+		seen[strings.ToLower(name)] = true
+		out = append(out, name+": "+value)
+	}
+	return out, nil
 }

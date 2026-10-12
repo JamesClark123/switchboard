@@ -187,6 +187,8 @@ quickstart Scenario 0:
 | `sbx stop` / `sbx rm` | ✅ | `sbx stop <N>` prints `Sandbox '<N>' stopped; state preserved. Restart with: sbx run --name <N>` (confirmed 2026-10-12) |
 | `sbx start` | ❌ **confirmed absent 2026-10-12** → replaced | `sbx start <N>` exits 1: `error: sbx: unknown command: sbx start`, so `bringUp` had always fallen back to destroy + relaunch (installed packages and agent history lost on every restart of a stopped sandbox). Confirmed the same day: `sbx exec <N> true` on a stopped sandbox prints `Sandbox <N> started successfully` and runs the command — `SbxRunner.Start` is now that no-op exec (pinned by `TestSbxRunnerStartIsNoopExec`). `sbx run -d --name <N>` also resumes in place but starts a detached agent beside the daemon's PTY agent, so it was not used. This also confirms the `sbx exec <ref> <cmd>` form feature 006 assumed by analogy |
 | `sbx options --json` | ❌ not documented | drop the branch; `--help` parsing (already the fallback) becomes the only source |
+| `sbx mcp add … --header 'Name: value'` (FR-103) | ✅ documented (mcp-gateway: repeat per header, `${placeholder}` + `sbx secret set mcp:<server>:<placeholder>`) | confirm it combines with `--skip-auth` on a real host |
+| `sbx secret ls` / `set <name> [--sandbox N] --force` (stdin) / `rm <name> [--sandbox N] -f` / `rm --registry <host> -f` (FR-104) | ⚠ documentation-derived (configuration/credentials 2026-10-12: table `SCOPE TYPE NAME SECRET`, stdin pipe form, `--sandbox`, `-f` on registry removals) | confirm stdin from a non-TTY, `--force` beside stdin, `-f` on service removals, the installed `ls` columns — see contracts/sbx-secret-cli.md |
 | `sbx version` | ✅ **confirmed** | `sbx version: v0.47.0 <commit>` (no `--version` flag) |
 
 **Rationale**: FR-096/097 make the implicit "whatever is installed" explicit; the inventory is
@@ -213,3 +215,23 @@ socket. TUI: `teatest` for the daemon/MCP/settings screens, the startup sequence
 scripted dial outcomes), and the kit migration/attach pre-check (pure functions). E2E: the TUI
 harness's `stubSbx` gains `mcp` verbs and must report a version ≥ baseline (today it prints
 `sbx-e2e 0.0`, which would now fail the gate). The real-runtime items are all in Scenario 0.
+
+## R13 — Secret store management and gateway headers (FR-103/FR-104; added 2026-10-12)
+
+**Decision**: A second daemon option, **Secrets**, drives the host's `sbx secret` store through a
+new daemon package `internal/secret` (list / set / remove; three additive RPCs; `Event.secrets_changed`),
+and remote MCP registrations accept `headers[]` (`"Name: value"` → one `--header` each) so a
+credential header can reference a `${placeholder}` whose value is the secret `mcp:<server>:<placeholder>`.
+Secret values travel only inside `SetSecretRequest` over the daemon connection and are piped to the
+CLI's stdin (the documented non-interactive form); they are never in argv, logs, errors, responses or
+any store — `ls` relays only the runtime's masked cell. The table parser shared with `mcp ls` moved
+to `internal/sbxtable`.
+
+**Rationale**: the runtime keeps secrets in the host keychain and substitutes header placeholders
+in the gateway, so switchboard needs no secret storage of its own — only a path for the developer
+to put values on the right host without a shell there. Single-line values keep the stdin contract
+unambiguous; multi-line secrets remain a host operation.
+
+**Alternatives considered**: `--token <value>` (rejected: visible in process lists and shell
+history); storing values in switchboard's registry (rejected: duplicates the keychain and widens
+exposure); a free-text "extra flags" field on the register form (rejected: unvalidated argv).

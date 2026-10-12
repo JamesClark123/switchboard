@@ -358,3 +358,37 @@ func TestMcpViewShowsRealColumns(t *testing.T) {
 		}
 	}
 }
+
+// Custom headers (FR-103): one "Name: value" per line reaches the request; a
+// malformed line keeps the form open; a host command refuses them.
+func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpModel(t, d)
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "gh"
+	m.mcpView.vals.url = "https://api.githubcopilot.com/mcp/"
+	m.mcpView.vals.headers = "Authorization: Bearer ${token}\n\nAccept: application/json\n"
+	m, cmd := update(m, ctrlS())
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 1 || strings.Join(d.addedMcp[0].GetHeaders(), "|") != "Authorization: Bearer ${token}|Accept: application/json" {
+		t.Fatalf("added = %+v", d.addedMcp)
+	}
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "bad"
+	m.mcpView.vals.url = "https://x/mcp"
+	m.mcpView.vals.headers = "NoColon"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "must be Name: value") {
+		t.Errorf("malformed header should keep the form open; status %q", m.mcpView.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "pw"
+	m.mcpView.vals.kind = "command"
+	m.mcpView.vals.command = "npx"
+	m.mcpView.vals.headers = "A: b"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "remote endpoints only") {
+		t.Errorf("headers on a host command should be refused; status %q", m.mcpView.status)
+	}
+}

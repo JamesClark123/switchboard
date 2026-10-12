@@ -184,7 +184,12 @@ resumes but leaves a detached agent). Scenario 0 / T003 complete 2026-10-12; onl
 quickstart run) remains. **FR-102 (added 2026-10-12)**: `M` on the sandbox list opens a per-sandbox MCP
 overlay (attached servers + `a` picker of the daemon's other registered servers) backed by one additive
 RPC `AttachMcpServer` → `Manager.AttachMcp` → `sbx mcp load` under the op latch, appending to
-`Sandbox.mcp_servers` (never shrinks; no detach). **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
+`Sandbox.mcp_servers` (never shrinks; no detach). **FR-103/FR-104 (added 2026-10-12)**: remote MCP
+registrations take `headers[]` (`"Name: value"` → one `--header` each, validated in `mcp.normalizeHeaders`;
+credentials as `${placeholder}` ↔ secret `mcp:<server>:<placeholder>`), and each daemon has a **Secrets**
+option (new package `switchboardd/internal/secret` driving `sbx secret ls/set/rm`; values only in
+`SetSecretRequest` → CLI stdin, never argv/logs; `Event.secrets_changed`; gated on the runtime baseline).
+Table parsing shared via `internal/sbxtable`. `sbx secret` argv is documentation-derived — T073 reconciles it. **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 Prior feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing

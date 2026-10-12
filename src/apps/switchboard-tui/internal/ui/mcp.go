@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type mcpState struct {
 
 type mcpFormVals struct {
 	name, kind, url, command, args, dir string
+	headers                             string // one "Name: value" per line (remote only, FR-103)
 	attach                              bool
 }
 
@@ -284,6 +286,8 @@ func (m Model) mcpForm(v *mcpFormVals) *huh.Form {
 		huh.NewSelect[string]().Key("kind").Title("Kind").
 			Options(huh.NewOption("Remote endpoint (URL)", "remote"), huh.NewOption("Host command (runs on the daemon's host)", "command")).Value(&v.kind),
 		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp").Value(&v.url),
+		huh.NewText().Key("headers").Title("Headers (remote only)").Lines(3).
+			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets).").Value(&v.headers),
 		huh.NewInput().Key("command").Title("Command").Description("Host command, e.g. npx").Value(&v.command),
 		huh.NewInput().Key("args").Title("Arguments").Description("Comma-separated, e.g. @playwright/mcp@latest").Value(&v.args),
 		huh.NewInput().Key("dir").Title("Working directory").Description("Optional, host command only.").Value(&v.dir),
@@ -333,6 +337,10 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 			v.status = "a host command is required"
 			return m, nil
 		}
+		if strings.TrimSpace(vals.headers) != "" {
+			v.status = "headers apply to remote endpoints only"
+			return m, nil
+		}
 		var args []string
 		for _, a := range strings.Split(vals.args, ",") {
 			if a = strings.TrimSpace(a); a != "" {
@@ -348,6 +356,17 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			v.status = "a remote endpoint URL (http:// or https://) is required"
 			return m, nil
+		}
+		for _, line := range strings.Split(vals.headers, "\n") {
+			if line = strings.TrimSpace(line); line == "" {
+				continue
+			}
+			name, value, ok := strings.Cut(line, ":")
+			if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+				v.status = "header " + strconv.Quote(line) + " must be Name: value"
+				return m, nil
+			}
+			req.Headers = append(req.Headers, strings.TrimSpace(name)+": "+strings.TrimSpace(value))
 		}
 		req.Definition = &pb.AddMcpServerRequest_Url{Url: url}
 	}

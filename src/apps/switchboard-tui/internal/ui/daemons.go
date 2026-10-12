@@ -34,7 +34,7 @@ type daemonsState struct {
 
 // daemonOptions are the per-daemon management surfaces, in menu order. Adding one
 // here is the only navigation change a future per-daemon feature needs.
-var daemonOptions = []string{"MCP gateway"}
+var daemonOptions = []string{"MCP gateway", "Secrets"}
 
 // daemonRows derives the rows from the host manager (or the single local daemon
 // when there is no manager, as in tests and single-host use).
@@ -128,8 +128,13 @@ func (m Model) updateDaemonsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.daemons.optCursor++
 			}
 		case "enter":
-			if row, ok := m.highlightedDaemon(); ok && row.daemon != nil && m.daemons.optCursor == 0 {
-				return m.enterMcp(row)
+			if row, ok := m.highlightedDaemon(); ok && row.daemon != nil {
+				switch m.daemons.optCursor {
+				case 0:
+					return m.enterMcp(row)
+				case 1:
+					return m.enterSecrets(row)
+				}
 			}
 		}
 		return m, nil

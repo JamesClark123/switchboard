@@ -259,8 +259,16 @@ attached for itself through the gateway's discovery tools are not listed, and th
 with its connection state, `sxbd`/`sbx` versions, and whether it meets the runtime baseline
 (`sbx` ≥ 0.36) and can manage its MCP gateway. `c` connects a disconnected daemon (the same
 masked SSH-password prompt as the hosts screen; blank = key/agent auth), `x` disconnects one,
-`enter` opens its management options. `shift+←` returns to the sandbox list with your selection
-intact.
+`enter` opens its management options — **MCP gateway** and **Secrets**. `shift+←` returns to the
+sandbox list with your selection intact.
+
+**Secrets** is the second option: the host runtime's secret store (`sbx secret`) for that daemon.
+It lists every stored secret with its scope (global or one sandbox), type and the runtime's masked
+value. `a` stores a service secret — the value is typed masked, sent only to that daemon, handed to
+`sbx secret set` on standard input once, and never logged or shown again; an optional sandbox name
+scopes it. `d` removes the highlighted secret behind a confirmation. Custom secrets
+(`sbx secret set-custom`) are listed but managed on the host. Gateway header placeholders are
+secrets named `mcp:<server>:<placeholder>`.
 
 **MCP gateway** is the first option. The host runtime registers MCP servers per host and gives
 every sandbox a gateway to them; switchboard manages those registrations through `sbx mcp` on
@@ -272,8 +280,11 @@ that daemon only:
   authorization link **in the TUI** (open it where you are — it is never opened on the daemon's
   host) and waits up to **10 minutes**; `esc` cancels and the registration is kept as
   unauthorized. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
-  runtime prints. Secrets (`sbx secret set`) and advanced options (headers, OAuth client IDs,
-  registry-based local servers) are managed on the host directly.
+  runtime prints. The register form's **Headers** field takes one `Name: value` per line for a
+  remote endpoint (each becomes a `--header` flag); write a credential as `${placeholder}` and store
+  its value as the secret `mcp:<server>:<placeholder>` under **Secrets** (below) — the gateway fills it
+  in on the host, so no token ever reaches a registration or a log. OAuth client IDs and
+  registry-based local servers are still managed on the host directly.
 - `space` marks a server **attach by default**: every sandbox launched on that daemon gets it.
   `m` toggles the daemon's **default attach mode** — *additive* (default: the sandbox keeps the
   runtime's dynamic gateway, so the agent can still discover other registered servers) or

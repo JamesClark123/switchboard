@@ -19,6 +19,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/secret"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -49,6 +50,9 @@ type Server struct {
 	// mcp is this daemon's MCP gateway manager (feature 008). MAY be nil (the
 	// gateway RPCs then report FAILED_PRECONDITION and launches attach nothing).
 	mcp *mcp.Manager
+	// secrets is this daemon's `sbx secret` manager (feature 008, FR-104). MAY be
+	// nil (the secret RPCs then report FAILED_PRECONDITION).
+	secrets *secret.Manager
 
 	grpc *grpc.Server
 }
@@ -86,6 +90,8 @@ type Config struct {
 	McpAvailability mcp.Availability
 	// Mcp is the gateway manager; nil disables the gateway RPCs (FR-079).
 	Mcp *mcp.Manager
+	// Secrets is the `sbx secret` manager; nil disables the secret RPCs (FR-104).
+	Secrets *secret.Manager
 	// Debug, when true, logs every RPC action and error to stderr (serve --debug).
 	Debug bool
 }
@@ -113,6 +119,7 @@ func NewServer(cfg Config) *Server {
 		services:      cfg.Services,
 		mcpAvail:      cfg.McpAvailability,
 		mcp:           cfg.Mcp,
+		secrets:       cfg.Secrets,
 	}
 	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
 	// created on first attach from the agent PTY, kept alive across client detach.

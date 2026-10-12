@@ -64,6 +64,10 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		return m.handleEscapeHatchRun(e.EscapeHatchRun)
 	case *pb.Event_ServiceInstance:
 		return m.handleServiceInstance(e.ServiceInstance)
+	case *pb.Event_SecretsChanged_:
+		// feature 008 (FR-104): a change made on the host or by another client
+		// reaches an open secrets view.
+		return m.syncSecretsView(e.SecretsChanged.GetHostId())
 	case *pb.Event_McpGatewayChanged_:
 		// feature 008: a daemon's registrations/marks/mode changed (here or in
 		// another client). An open gateway view for that host re-lists.

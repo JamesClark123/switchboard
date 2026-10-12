@@ -92,6 +92,11 @@ type Daemon interface {
 	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
 	// Attaches a registered server to an existing sandbox on this daemon (FR-102).
 	AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
+	// Secrets (feature 008, FR-104): the host's `sbx secret` store, managed per daemon.
+	SecretsAvailable() (available bool, reason string)
+	ListSecrets(ctx context.Context) ([]*pb.Secret, error)
+	SetSecret(ctx context.Context, req *pb.SetSecretRequest) (*pb.Secret, error)
+	RemoveSecret(ctx context.Context, req *pb.RemoveSecretRequest) error
 	// Edit sandbox sources (feature 007): add folders to an existing sandbox in
 	// place (streaming, with the launch-style low-resource override round-trip)
 	// and remove seeded folders (DESTRUCTIVE — gate it behind a confirmation).
@@ -124,6 +129,7 @@ const (
 	screenOpLog
 	screenDaemons
 	screenMcp
+	screenSecrets
 	screenSettings
 )
 
@@ -260,8 +266,10 @@ type Model struct {
 	opLogView   opLogState
 
 	// --- feature 008: daemon screen, MCP gateway view, settings, startup sign-in ---
-	daemons       daemonsState
-	mcpView       mcpState
+	daemons daemonsState
+	mcpView mcpState
+	// secretsView backs the daemon screen's Secrets option (FR-104).
+	secretsView   secretsState
 	settingsStore *store.SettingsStore
 	prefs         store.Settings
 	settingsView  settingsState
@@ -668,6 +676,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.startSignIn()
 	case signInResultMsg:
 		return m.applySignInResult(msg)
+	case secretsLoadedMsg:
+		return m.applySecretsLoaded(msg)
+	case secretsDoneMsg:
+		return m.applySecretsDone(msg)
 	case mcpLoadedMsg:
 		return m.applyMcpLoaded(msg)
 	case mcpDoneMsg:
@@ -757,6 +769,11 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.advanceMcpForm(msg)
 		}
 		return m, nil
+	case screenSecrets:
+		if m.secretsView.form != nil {
+			return m.advanceSecretsForm(msg)
+		}
+		return m, nil
 	case screenDaemons, screenList:
 		if m.hosts.connecting && m.hosts.pwMode != pwHostsScreen {
 			m.hosts.pwInput, cmd = m.hosts.pwInput.Update(msg)
@@ -827,6 +844,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDaemonsKey(msg)
 	case screenMcp:
 		return m.updateMcpKey(msg)
+	case screenSecrets:
+		return m.updateSecretsKey(msg)
 	case screenSettings:
 		return m.updateSettingsKey(msg)
 	default:
@@ -923,6 +942,8 @@ func (m Model) View() string {
 		body, hb = m.viewDaemons(), m.daemonsHelp()
 	case screenMcp:
 		body, hb = m.viewMcp(), m.mcpHelp()
+	case screenSecrets:
+		body, hb = m.viewSecrets(), m.secretsHelp()
 	case screenSettings:
 		body, hb = m.viewSettings(), m.settingsHelp()
 	default:

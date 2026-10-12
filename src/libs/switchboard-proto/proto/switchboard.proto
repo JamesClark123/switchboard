@@ -209,6 +209,19 @@ service Switchboard {
   // FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
   // delivers the new tools live; the agent is never restarted. There is no detach.
   rpc AttachMcpServer(AttachMcpServerRequest) returns (Sandbox);
+
+  // ---------- Secrets (feature 008, FR-104) ----------
+  // The host runtime's secret store (`sbx secret`), managed per daemon like the
+  // gateway. Values travel only inside SetSecretRequest over the daemon
+  // connection (unix socket / SSH tunnel), are written to the CLI's stdin, and
+  // are never logged, stored, or echoed back: `ls` reports masked values only.
+  // Every handler answers FAILED_PRECONDITION with the reason when the host's
+  // `sbx` is missing or below the runtime baseline.
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+  // Stores (or overwrites) a service secret, globally or for one sandbox.
+  rpc SetSecret(SetSecretRequest) returns (Secret);
+  // Removes a stored secret (service by name, or a registry credential by host).
+  rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse);
 }
 
 // ---------- Enums ----------
@@ -775,9 +788,12 @@ message Event {
     // feature 008: a daemon's gateway registrations, marks or attach mode changed.
     // Clients with that daemon's gateway view open re-list (research R10).
     McpGatewayChanged mcp_gateway_changed = 6;
+    // A daemon's secret store changed (set/remove) (FR-104).
+    SecretsChanged secrets_changed = 7;
   }
   message SandboxRemoved { string sandbox_id = 1; }
   message McpGatewayChanged { string host_id = 1; }
+  message SecretsChanged { string host_id = 1; }
 }
 
 message NotificationEvent {
@@ -835,6 +851,10 @@ message AddMcpServerRequest {
   }
   bool attach_by_default = 4;
   bool acknowledge_local_execution = 5;  // required for `command` (FR-076)
+  // Custom HTTP headers for a remote endpoint, each "Name: value" → one
+  // `--header` flag (FR-103). Credential headers use a `${placeholder}` whose
+  // value is the host secret `mcp:<name>:<placeholder>` (see Secrets).
+  repeated string headers = 6;
   message LocalCommand {
     string command = 1;
     repeated string args = 2;
@@ -859,3 +879,23 @@ message McpAuthProgress {
 message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
 message SetMcpAttachModeRequest { McpAttachMode mode = 1; }
 message AttachMcpServerRequest { string sandbox_id = 1; string name = 2; }
+
+// Secret is one row of `sbx secret ls`: scope ("global" or a sandbox name), the
+// runtime's type ("service", "registry", "custom"; "service" when the host's
+// table has no TYPE column), the name (service id, `mcp:<server>:<placeholder>`,
+// or registry host), and the masked value exactly as the runtime prints it.
+message Secret {
+  string scope = 1;
+  string type = 2;
+  string name = 3;
+  string masked_value = 4;
+}
+message ListSecretsRequest {}
+message ListSecretsResponse { repeated Secret secrets = 1; }
+// SetSecretRequest: value is the plaintext (required); sandbox scopes the secret
+// to one sandbox by its runtime name, "" = global.
+message SetSecretRequest { string name = 1; string value = 2; string sandbox = 3; }
+// RemoveSecretRequest: type "registry" removes a registry credential keyed by
+// host; anything else removes a service secret by name.
+message RemoveSecretRequest { string name = 1; string sandbox = 2; string type = 3; }
+message RemoveSecretResponse {}

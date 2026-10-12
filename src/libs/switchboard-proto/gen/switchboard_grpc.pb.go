@@ -70,6 +70,9 @@ const (
 	Switchboard_SetMcpServerDefault_FullMethodName  = "/switchboard.v1.Switchboard/SetMcpServerDefault"
 	Switchboard_SetMcpAttachMode_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpAttachMode"
 	Switchboard_AttachMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AttachMcpServer"
+	Switchboard_ListSecrets_FullMethodName          = "/switchboard.v1.Switchboard/ListSecrets"
+	Switchboard_SetSecret_FullMethodName            = "/switchboard.v1.Switchboard/SetSecret"
+	Switchboard_RemoveSecret_FullMethodName         = "/switchboard.v1.Switchboard/RemoveSecret"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -252,6 +255,18 @@ type SwitchboardClient interface {
 	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
 	// delivers the new tools live; the agent is never restarted. There is no detach.
 	AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// ---------- Secrets (feature 008, FR-104) ----------
+	// The host runtime's secret store (`sbx secret`), managed per daemon like the
+	// gateway. Values travel only inside SetSecretRequest over the daemon
+	// connection (unix socket / SSH tunnel), are written to the CLI's stdin, and
+	// are never logged, stored, or echoed back: `ls` reports masked values only.
+	// Every handler answers FAILED_PRECONDITION with the reason when the host's
+	// `sbx` is missing or below the runtime baseline.
+	ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error)
+	// Stores (or overwrites) a service secret, globally or for one sandbox.
+	SetSecret(ctx context.Context, in *SetSecretRequest, opts ...grpc.CallOption) (*Secret, error)
+	// Removes a stored secret (service by name, or a registry credential by host).
+	RemoveSecret(ctx context.Context, in *RemoveSecretRequest, opts ...grpc.CallOption) (*RemoveSecretResponse, error)
 }
 
 type switchboardClient struct {
@@ -700,6 +715,36 @@ func (c *switchboardClient) AttachMcpServer(ctx context.Context, in *AttachMcpSe
 	return out, nil
 }
 
+func (c *switchboardClient) ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSecretsResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListSecrets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SetSecret(ctx context.Context, in *SetSecretRequest, opts ...grpc.CallOption) (*Secret, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Secret)
+	err := c.cc.Invoke(ctx, Switchboard_SetSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RemoveSecret(ctx context.Context, in *RemoveSecretRequest, opts ...grpc.CallOption) (*RemoveSecretResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveSecretResponse)
+	err := c.cc.Invoke(ctx, Switchboard_RemoveSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -880,6 +925,18 @@ type SwitchboardServer interface {
 	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
 	// delivers the new tools live; the agent is never restarted. There is no detach.
 	AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error)
+	// ---------- Secrets (feature 008, FR-104) ----------
+	// The host runtime's secret store (`sbx secret`), managed per daemon like the
+	// gateway. Values travel only inside SetSecretRequest over the daemon
+	// connection (unix socket / SSH tunnel), are written to the CLI's stdin, and
+	// are never logged, stored, or echoed back: `ls` reports masked values only.
+	// Every handler answers FAILED_PRECONDITION with the reason when the host's
+	// `sbx` is missing or below the runtime baseline.
+	ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error)
+	// Stores (or overwrites) a service secret, globally or for one sandbox.
+	SetSecret(context.Context, *SetSecretRequest) (*Secret, error)
+	// Removes a stored secret (service by name, or a registry credential by host).
+	RemoveSecret(context.Context, *RemoveSecretRequest) (*RemoveSecretResponse, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -997,6 +1054,15 @@ func (UnimplementedSwitchboardServer) SetMcpAttachMode(context.Context, *SetMcpA
 }
 func (UnimplementedSwitchboardServer) AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error) {
 	return nil, status.Error(codes.Unimplemented, "method AttachMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSecrets not implemented")
+}
+func (UnimplementedSwitchboardServer) SetSecret(context.Context, *SetSecretRequest) (*Secret, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSecret not implemented")
+}
+func (UnimplementedSwitchboardServer) RemoveSecret(context.Context, *RemoveSecretRequest) (*RemoveSecretResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveSecret not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -1589,6 +1655,60 @@ func _Switchboard_AttachMcpServer_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_ListSecrets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSecretsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListSecrets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListSecrets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListSecrets(ctx, req.(*ListSecretsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SetSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSecretRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetSecret(ctx, req.(*SetSecretRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RemoveSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveSecretRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RemoveSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RemoveSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RemoveSecret(ctx, req.(*RemoveSecretRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1699,6 +1819,18 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AttachMcpServer",
 			Handler:    _Switchboard_AttachMcpServer_Handler,
+		},
+		{
+			MethodName: "ListSecrets",
+			Handler:    _Switchboard_ListSecrets_Handler,
+		},
+		{
+			MethodName: "SetSecret",
+			Handler:    _Switchboard_SetSecret_Handler,
+		},
+		{
+			MethodName: "RemoveSecret",
+			Handler:    _Switchboard_RemoveSecret_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

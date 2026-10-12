@@ -370,3 +370,37 @@ func TestRemovalNotes(t *testing.T) {
 		}
 	}
 }
+
+// Custom headers (FR-103) become one `--header` flag each on a remote add; a
+// host command refuses them, and malformed entries are refused before any call.
+func TestAddRemoteWithHeaders(t *testing.T) {
+	env := newEnv(t, `
+  "mcp add "*) exit 0 ;;
+  "mcp ls") `+twoServerTable+` ;;
+  "mcp auth status notion --json") echo '[{"server_name":"notion","status":"authorized"}]' ;;`)
+	ctx := context.Background()
+	_, err := env.m.Add(ctx, &pb.AddMcpServerRequest{Name: "gh", Definition: &pb.AddMcpServerRequest_Url{Url: "https://api.githubcopilot.com/mcp/"},
+		Headers: []string{" Authorization: Bearer ${token} ", "", "Accept:application/json"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := readLog(t, env.log)
+	if log[0] != "mcp add gh --url https://api.githubcopilot.com/mcp/ --header Authorization: Bearer ${token} --header Accept: application/json --skip-auth" {
+		t.Errorf("argv = %q", log[0])
+	}
+
+	for _, hs := range [][]string{{"NoColon"}, {": value"}, {"Name:"}, {"Bad Name: v"}, {"A: 1", "a: 2"}, {"X: line1\nline2"}} {
+		_, err := env.m.Add(ctx, &pb.AddMcpServerRequest{Name: "h", Definition: &pb.AddMcpServerRequest_Url{Url: "https://x/mcp"}, Headers: hs})
+		if !errors.Is(err, ErrInvalidArgs) {
+			t.Errorf("headers %q: err = %v, want ErrInvalidArgs", hs, err)
+		}
+	}
+	_, err = env.m.Add(ctx, &pb.AddMcpServerRequest{Name: "pw", AcknowledgeLocalExecution: true,
+		Definition: &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: "npx"}}, Headers: []string{"A: b"}})
+	if !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("command + headers err = %v, want ErrInvalidArgs", err)
+	}
+	if n := len(readLog(t, env.log)); n != 3 { // the one good add + its re-list (ls + auth status)
+		t.Errorf("refused adds must not reach the CLI; log = %v", readLog(t, env.log))
+	}
+}

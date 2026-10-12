@@ -30,6 +30,10 @@ sbx mcp rm probe --force                   # confirmed: prompts (y/N) without --
 sbx start probe-sb                         # confirmed 2026-10-12: does not exist (`unknown command`); the daemon resumes with `sbx exec <N> true`
 sbx ls --json                              # confirmed 2026-10-12: {"sandboxes":[{name,id,agent,status,last_used_at,workspaces[],created_at,workspace_missing?}]}
 sbx exec probe-sb true                     # confirmed 2026-10-12: starts a stopped sandbox (`Sandbox probe-sb started successfully`) — this is `SbxRunner.Start`
+sbx secret ls                              # FR-104: confirm the columns (SCOPE TYPE NAME SECRET vs SCOPE SERVICE SECRET)
+echo 'v' | sbx secret set probe-secret --force          # FR-104: stdin accepted from a pipe? --force accepted beside stdin?
+sbx secret rm probe-secret -f              # FR-104: -f accepted on a service removal? prompt without it?
+sbx mcp add hdr --url https://mcp.acme.com/mcp --header 'Authorization: Bearer ${token}' --skip-auth   # FR-103: combines with --skip-auth?
 sbx kit add probe-sb <dir-with-startup>    # confirmed 2026-10-12: rc 1, `error: kit "<kit>" declares setup.startup, which the kit-add recreate flow does not yet apply; …`; an accepted kit recreates the container under the same name (swap container). Write the kit as
                                            # `schemaVersion: "2"` + `name:` — a `schema:` typo is parsed as v1 and
                                            # rejected with `field permissions not found in type spec.SpecFile`
@@ -118,6 +122,28 @@ and `sbxkit.MinSbxVersion` confirmed as the first schema-2 release.
    is refused.
 5. From the host, `sbx mcp rm <name> --force`; reopen **M**: the row is flagged "no longer
    registered on this host" (the record is not rewritten).
+
+
+## Scenario 7 — Secrets on a daemon (FR-104; added 2026-10-12)
+
+1. On the daemon screen press `enter` on a connected daemon, move to **Secrets**, `enter`: the view
+   lists the host's stored secrets with scope, type and the runtime's masked value.
+2. Press `a`, enter `mcp:github:token`, a masked value, leave the sandbox empty, `ctrl+s`: the view
+   says "stored mcp:github:token globally" and lists the new row masked. On the host,
+   `sbx secret ls` shows it; the daemon log never contains the value.
+3. Store another with a sandbox name: the row's scope is that sandbox.
+4. Highlight a row, `d`, confirm: it is gone from the view and from `sbx secret ls`. A `custom` row
+   is refused with a hint to the host.
+5. On a daemon below the runtime baseline the option opens with the reason and `a`/`d` are inert.
+
+## Scenario 8 — Headers on a remote MCP server (FR-103; added 2026-10-12)
+
+1. In the MCP gateway view press `a`, name `github`, URL `https://api.githubcopilot.com/mcp/`, and in
+   **Headers** enter `Authorization: Bearer ${token}`; `ctrl+s`. The daemon log shows
+   `sbx mcp add github --url … --header "Authorization: Bearer ${token}" --skip-auth`.
+2. Store `mcp:github:token` under Secrets (Scenario 7). Attach `github` to a sandbox: the agent's
+   GitHub tools work; the token appears nowhere in switchboard.
+3. Enter a header without a colon: the form stays open with the message; nothing runs.
 
 
 ## Automated coverage map

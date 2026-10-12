@@ -157,3 +157,18 @@ end → normal operation; nothing persisted
 - **Gateway view**: `{servers []McpServer, default_attach_mode, pending auth (name, url, remaining)}`.
 - **Op log** (existing, feature "sbx output"): launch logs gain the `mcp load`/`--static-mcp` lines
   and skipped-server notes (FR-086).
+
+## Secret (transient; FR-104, added 2026-10-12)
+
+One row of the host's `sbx secret ls`, never persisted by the daemon:
+
+| Field | Type | Notes |
+|---|---|---|
+| `scope` | string | `global` or the sandbox's runtime name |
+| `type` | string | `service` (default when the host prints no TYPE column), `registry`, `custom` |
+| `name` | string | service id, `mcp:<server>:<placeholder>`, or registry host |
+| `masked_value` | string | the runtime's masked cell, relayed verbatim; never a plaintext |
+
+`SetSecretRequest{name, value, sandbox}` is the only message that ever carries a value; it exists
+for the duration of one RPC and the CLI's stdin write. `AddMcpServerRequest.headers[]` (FR-103) carries
+`"Name: value"` strings whose credential values are `${placeholder}` references, not secrets.

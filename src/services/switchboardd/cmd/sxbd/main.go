@@ -37,6 +37,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/secret"
 )
 
 // version/commit/date are overridable at build time via -ldflags (set by
@@ -233,6 +234,9 @@ func runServe(cfg *config.Config, debug bool) error {
 	// Feature 008: the gateway manager drives `sbx mcp` on this host and owns the
 	// attach-by-default marks; its change events ride the same hub.
 	mcpManager := mcp.NewManager(&mcp.CLI{Bin: cfg.SbxBin}, reg, cfg.HostID, hub.Publish)
+	// The secret manager drives `sbx secret` on this host (FR-104); its change
+	// events ride the same hub.
+	secretManager := secret.NewManager(&secret.CLI{Bin: cfg.SbxBin}, cfg.HostID, hub.Publish)
 
 	srv := sbgrpc.NewServer(sbgrpc.Config{
 		Manager:       mgr,
@@ -251,6 +255,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		Services:        services,
 		McpAvailability: mcpAvail,
 		Mcp:             mcpManager,
+		Secrets:         secretManager,
 		Debug:           debug,
 	})
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)

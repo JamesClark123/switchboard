@@ -4248,6 +4248,7 @@ type Event struct {
 	//	*Event_EscapeHatchRun
 	//	*Event_ServiceInstance
 	//	*Event_McpGatewayChanged_
+	//	*Event_SecretsChanged_
 	Event         isEvent_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4344,6 +4345,15 @@ func (x *Event) GetMcpGatewayChanged() *Event_McpGatewayChanged {
 	return nil
 }
 
+func (x *Event) GetSecretsChanged() *Event_SecretsChanged {
+	if x != nil {
+		if x, ok := x.Event.(*Event_SecretsChanged_); ok {
+			return x.SecretsChanged
+		}
+	}
+	return nil
+}
+
 type isEvent_Event interface {
 	isEvent_Event()
 }
@@ -4378,6 +4388,11 @@ type Event_McpGatewayChanged_ struct {
 	McpGatewayChanged *Event_McpGatewayChanged `protobuf:"bytes,6,opt,name=mcp_gateway_changed,json=mcpGatewayChanged,proto3,oneof"`
 }
 
+type Event_SecretsChanged_ struct {
+	// A daemon's secret store changed (set/remove) (FR-104).
+	SecretsChanged *Event_SecretsChanged `protobuf:"bytes,7,opt,name=secrets_changed,json=secretsChanged,proto3,oneof"`
+}
+
 func (*Event_SandboxChanged) isEvent_Event() {}
 
 func (*Event_Notification) isEvent_Event() {}
@@ -4389,6 +4404,8 @@ func (*Event_EscapeHatchRun) isEvent_Event() {}
 func (*Event_ServiceInstance) isEvent_Event() {}
 
 func (*Event_McpGatewayChanged_) isEvent_Event() {}
+
+func (*Event_SecretsChanged_) isEvent_Event() {}
 
 type NotificationEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -4877,8 +4894,12 @@ type AddMcpServerRequest struct {
 	Definition                isAddMcpServerRequest_Definition `protobuf_oneof:"definition"`
 	AttachByDefault           bool                             `protobuf:"varint,4,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"`
 	AcknowledgeLocalExecution bool                             `protobuf:"varint,5,opt,name=acknowledge_local_execution,json=acknowledgeLocalExecution,proto3" json:"acknowledge_local_execution,omitempty"` // required for `command` (FR-076)
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// Custom HTTP headers for a remote endpoint, each "Name: value" → one
+	// `--header` flag (FR-103). Credential headers use a `${placeholder}` whose
+	// value is the host secret `mcp:<name>:<placeholder>` (see Secrets).
+	Headers       []string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AddMcpServerRequest) Reset() {
@@ -4955,6 +4976,13 @@ func (x *AddMcpServerRequest) GetAcknowledgeLocalExecution() bool {
 		return x.AcknowledgeLocalExecution
 	}
 	return false
+}
+
+func (x *AddMcpServerRequest) GetHeaders() []string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
 }
 
 type isAddMcpServerRequest_Definition interface {
@@ -5375,6 +5403,318 @@ func (x *AttachMcpServerRequest) GetName() string {
 	return ""
 }
 
+// Secret is one row of `sbx secret ls`: scope ("global" or a sandbox name), the
+// runtime's type ("service", "registry", "custom"; "service" when the host's
+// table has no TYPE column), the name (service id, `mcp:<server>:<placeholder>`,
+// or registry host), and the masked value exactly as the runtime prints it.
+type Secret struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scope         string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	MaskedValue   string                 `protobuf:"bytes,4,opt,name=masked_value,json=maskedValue,proto3" json:"masked_value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Secret) Reset() {
+	*x = Secret{}
+	mi := &file_switchboard_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Secret) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Secret) ProtoMessage() {}
+
+func (x *Secret) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Secret.ProtoReflect.Descriptor instead.
+func (*Secret) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *Secret) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *Secret) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *Secret) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Secret) GetMaskedValue() string {
+	if x != nil {
+		return x.MaskedValue
+	}
+	return ""
+}
+
+type ListSecretsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSecretsRequest) Reset() {
+	*x = ListSecretsRequest{}
+	mi := &file_switchboard_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSecretsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSecretsRequest) ProtoMessage() {}
+
+func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
+func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{71}
+}
+
+type ListSecretsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Secrets       []*Secret              `protobuf:"bytes,1,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSecretsResponse) Reset() {
+	*x = ListSecretsResponse{}
+	mi := &file_switchboard_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSecretsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSecretsResponse) ProtoMessage() {}
+
+func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
+func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *ListSecretsResponse) GetSecrets() []*Secret {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+// SetSecretRequest: value is the plaintext (required); sandbox scopes the secret
+// to one sandbox by its runtime name, "" = global.
+type SetSecretRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Sandbox       string                 `protobuf:"bytes,3,opt,name=sandbox,proto3" json:"sandbox,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetSecretRequest) Reset() {
+	*x = SetSecretRequest{}
+	mi := &file_switchboard_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetSecretRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetSecretRequest) ProtoMessage() {}
+
+func (x *SetSecretRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetSecretRequest.ProtoReflect.Descriptor instead.
+func (*SetSecretRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *SetSecretRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetSecretRequest) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *SetSecretRequest) GetSandbox() string {
+	if x != nil {
+		return x.Sandbox
+	}
+	return ""
+}
+
+// RemoveSecretRequest: type "registry" removes a registry credential keyed by
+// host; anything else removes a service secret by name.
+type RemoveSecretRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Sandbox       string                 `protobuf:"bytes,2,opt,name=sandbox,proto3" json:"sandbox,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveSecretRequest) Reset() {
+	*x = RemoveSecretRequest{}
+	mi := &file_switchboard_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveSecretRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveSecretRequest) ProtoMessage() {}
+
+func (x *RemoveSecretRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveSecretRequest.ProtoReflect.Descriptor instead.
+func (*RemoveSecretRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{74}
+}
+
+func (x *RemoveSecretRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RemoveSecretRequest) GetSandbox() string {
+	if x != nil {
+		return x.Sandbox
+	}
+	return ""
+}
+
+func (x *RemoveSecretRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+type RemoveSecretResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveSecretResponse) Reset() {
+	*x = RemoveSecretResponse{}
+	mi := &file_switchboard_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveSecretResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveSecretResponse) ProtoMessage() {}
+
+func (x *RemoveSecretResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveSecretResponse.ProtoReflect.Descriptor instead.
+func (*RemoveSecretResponse) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{75}
+}
+
 type PortForwardFrame_Open struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
@@ -5385,7 +5725,7 @@ type PortForwardFrame_Open struct {
 
 func (x *PortForwardFrame_Open) Reset() {
 	*x = PortForwardFrame_Open{}
-	mi := &file_switchboard_proto_msgTypes[71]
+	mi := &file_switchboard_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5397,7 +5737,7 @@ func (x *PortForwardFrame_Open) String() string {
 func (*PortForwardFrame_Open) ProtoMessage() {}
 
 func (x *PortForwardFrame_Open) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[71]
+	mi := &file_switchboard_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5435,7 +5775,7 @@ type PortForwardFrame_Opened struct {
 
 func (x *PortForwardFrame_Opened) Reset() {
 	*x = PortForwardFrame_Opened{}
-	mi := &file_switchboard_proto_msgTypes[72]
+	mi := &file_switchboard_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5447,7 +5787,7 @@ func (x *PortForwardFrame_Opened) String() string {
 func (*PortForwardFrame_Opened) ProtoMessage() {}
 
 func (x *PortForwardFrame_Opened) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[72]
+	mi := &file_switchboard_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5472,7 +5812,7 @@ type PortForwardFrame_Closed struct {
 
 func (x *PortForwardFrame_Closed) Reset() {
 	*x = PortForwardFrame_Closed{}
-	mi := &file_switchboard_proto_msgTypes[73]
+	mi := &file_switchboard_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5484,7 +5824,7 @@ func (x *PortForwardFrame_Closed) String() string {
 func (*PortForwardFrame_Closed) ProtoMessage() {}
 
 func (x *PortForwardFrame_Closed) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[73]
+	mi := &file_switchboard_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5521,7 +5861,7 @@ type OptionManifest_Option struct {
 
 func (x *OptionManifest_Option) Reset() {
 	*x = OptionManifest_Option{}
-	mi := &file_switchboard_proto_msgTypes[74]
+	mi := &file_switchboard_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5533,7 +5873,7 @@ func (x *OptionManifest_Option) String() string {
 func (*OptionManifest_Option) ProtoMessage() {}
 
 func (x *OptionManifest_Option) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[74]
+	mi := &file_switchboard_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5602,7 +5942,7 @@ type LaunchProgress_CopyProgress struct {
 
 func (x *LaunchProgress_CopyProgress) Reset() {
 	*x = LaunchProgress_CopyProgress{}
-	mi := &file_switchboard_proto_msgTypes[75]
+	mi := &file_switchboard_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5614,7 +5954,7 @@ func (x *LaunchProgress_CopyProgress) String() string {
 func (*LaunchProgress_CopyProgress) ProtoMessage() {}
 
 func (x *LaunchProgress_CopyProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[75]
+	mi := &file_switchboard_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5661,7 +6001,7 @@ type AgentInput_Resize struct {
 
 func (x *AgentInput_Resize) Reset() {
 	*x = AgentInput_Resize{}
-	mi := &file_switchboard_proto_msgTypes[76]
+	mi := &file_switchboard_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5673,7 +6013,7 @@ func (x *AgentInput_Resize) String() string {
 func (*AgentInput_Resize) ProtoMessage() {}
 
 func (x *AgentInput_Resize) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[76]
+	mi := &file_switchboard_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5714,7 +6054,7 @@ type AgentInput_AttachInfo struct {
 
 func (x *AgentInput_AttachInfo) Reset() {
 	*x = AgentInput_AttachInfo{}
-	mi := &file_switchboard_proto_msgTypes[77]
+	mi := &file_switchboard_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5726,7 +6066,7 @@ func (x *AgentInput_AttachInfo) String() string {
 func (*AgentInput_AttachInfo) ProtoMessage() {}
 
 func (x *AgentInput_AttachInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[77]
+	mi := &file_switchboard_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5775,7 +6115,7 @@ type AgentOutput_Snapshot struct {
 
 func (x *AgentOutput_Snapshot) Reset() {
 	*x = AgentOutput_Snapshot{}
-	mi := &file_switchboard_proto_msgTypes[78]
+	mi := &file_switchboard_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5787,7 +6127,7 @@ func (x *AgentOutput_Snapshot) String() string {
 func (*AgentOutput_Snapshot) ProtoMessage() {}
 
 func (x *AgentOutput_Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[78]
+	mi := &file_switchboard_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5840,7 +6180,7 @@ type Event_SandboxRemoved struct {
 
 func (x *Event_SandboxRemoved) Reset() {
 	*x = Event_SandboxRemoved{}
-	mi := &file_switchboard_proto_msgTypes[79]
+	mi := &file_switchboard_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5852,7 +6192,7 @@ func (x *Event_SandboxRemoved) String() string {
 func (*Event_SandboxRemoved) ProtoMessage() {}
 
 func (x *Event_SandboxRemoved) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[79]
+	mi := &file_switchboard_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5884,7 +6224,7 @@ type Event_McpGatewayChanged struct {
 
 func (x *Event_McpGatewayChanged) Reset() {
 	*x = Event_McpGatewayChanged{}
-	mi := &file_switchboard_proto_msgTypes[80]
+	mi := &file_switchboard_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5896,7 +6236,7 @@ func (x *Event_McpGatewayChanged) String() string {
 func (*Event_McpGatewayChanged) ProtoMessage() {}
 
 func (x *Event_McpGatewayChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[80]
+	mi := &file_switchboard_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5919,6 +6259,50 @@ func (x *Event_McpGatewayChanged) GetHostId() string {
 	return ""
 }
 
+type Event_SecretsChanged struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Event_SecretsChanged) Reset() {
+	*x = Event_SecretsChanged{}
+	mi := &file_switchboard_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Event_SecretsChanged) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Event_SecretsChanged) ProtoMessage() {}
+
+func (x *Event_SecretsChanged) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Event_SecretsChanged.ProtoReflect.Descriptor instead.
+func (*Event_SecretsChanged) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{53, 2}
+}
+
+func (x *Event_SecretsChanged) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
 type AddMcpServerRequest_LocalCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Command       string                 `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
@@ -5930,7 +6314,7 @@ type AddMcpServerRequest_LocalCommand struct {
 
 func (x *AddMcpServerRequest_LocalCommand) Reset() {
 	*x = AddMcpServerRequest_LocalCommand{}
-	mi := &file_switchboard_proto_msgTypes[82]
+	mi := &file_switchboard_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5942,7 +6326,7 @@ func (x *AddMcpServerRequest_LocalCommand) String() string {
 func (*AddMcpServerRequest_LocalCommand) ProtoMessage() {}
 
 func (x *AddMcpServerRequest_LocalCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[82]
+	mi := &file_switchboard_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6288,18 +6672,21 @@ const file_switchboard_proto_rawDesc = "" +
 	"scrollback\x18\x04 \x01(\fR\n" +
 	"scrollback\"A\n" +
 	"\x10SubscribeRequest\x12-\n" +
-	"\x12replay_undelivered\x18\x01 \x01(\bR\x11replayUndelivered\"\xb3\x04\n" +
+	"\x12replay_undelivered\x18\x01 \x01(\bR\x11replayUndelivered\"\xaf\x05\n" +
 	"\x05Event\x12B\n" +
 	"\x0fsandbox_changed\x18\x01 \x01(\v2\x17.switchboard.v1.SandboxH\x00R\x0esandboxChanged\x12G\n" +
 	"\fnotification\x18\x02 \x01(\v2!.switchboard.v1.NotificationEventH\x00R\fnotification\x12@\n" +
 	"\aremoved\x18\x03 \x01(\v2$.switchboard.v1.Event.SandboxRemovedH\x00R\aremoved\x12J\n" +
 	"\x10escape_hatch_run\x18\x04 \x01(\v2\x1e.switchboard.v1.EscapeHatchRunH\x00R\x0eescapeHatchRun\x12L\n" +
 	"\x10service_instance\x18\x05 \x01(\v2\x1f.switchboard.v1.ServiceInstanceH\x00R\x0fserviceInstance\x12Y\n" +
-	"\x13mcp_gateway_changed\x18\x06 \x01(\v2'.switchboard.v1.Event.McpGatewayChangedH\x00R\x11mcpGatewayChanged\x1a/\n" +
+	"\x13mcp_gateway_changed\x18\x06 \x01(\v2'.switchboard.v1.Event.McpGatewayChangedH\x00R\x11mcpGatewayChanged\x12O\n" +
+	"\x0fsecrets_changed\x18\a \x01(\v2$.switchboard.v1.Event.SecretsChangedH\x00R\x0esecretsChanged\x1a/\n" +
 	"\x0eSandboxRemoved\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x1a,\n" +
 	"\x11McpGatewayChanged\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x1a)\n" +
+	"\x0eSecretsChanged\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostIdB\a\n" +
 	"\x05event\"\xe6\x01\n" +
 	"\x11NotificationEvent\x12\x0e\n" +
@@ -6341,13 +6728,14 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x15ListMcpServersRequest\"\x8d\x01\n" +
 	"\x16ListMcpServersResponse\x123\n" +
 	"\aservers\x18\x01 \x03(\v2\x19.switchboard.v1.McpServerR\aservers\x12>\n" +
-	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\"\xd5\x02\n" +
+	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\"\xef\x02\n" +
 	"\x13AddMcpServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x03url\x18\x02 \x01(\tH\x00R\x03url\x12L\n" +
 	"\acommand\x18\x03 \x01(\v20.switchboard.v1.AddMcpServerRequest.LocalCommandH\x00R\acommand\x12*\n" +
 	"\x11attach_by_default\x18\x04 \x01(\bR\x0fattachByDefault\x12>\n" +
-	"\x1backnowledge_local_execution\x18\x05 \x01(\bR\x19acknowledgeLocalExecution\x1aN\n" +
+	"\x1backnowledge_local_execution\x18\x05 \x01(\bR\x19acknowledgeLocalExecution\x12\x18\n" +
+	"\aheaders\x18\x06 \x03(\tR\aheaders\x1aN\n" +
 	"\fLocalCommand\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
@@ -6375,7 +6763,24 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x16AttachMcpServerRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name*_\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"i\n" +
+	"\x06Secret\x12\x14\n" +
+	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12!\n" +
+	"\fmasked_value\x18\x04 \x01(\tR\vmaskedValue\"\x14\n" +
+	"\x12ListSecretsRequest\"G\n" +
+	"\x13ListSecretsResponse\x120\n" +
+	"\asecrets\x18\x01 \x03(\v2\x16.switchboard.v1.SecretR\asecrets\"V\n" +
+	"\x10SetSecretRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12\x18\n" +
+	"\asandbox\x18\x03 \x01(\tR\asandbox\"W\n" +
+	"\x13RemoveSecretRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\asandbox\x18\x02 \x01(\tR\asandbox\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\"\x16\n" +
+	"\x14RemoveSecretResponse*_\n" +
 	"\vSeedingMode\x12\x1c\n" +
 	"\x18SEEDING_MODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SEEDING_MODE_DUPLICATE\x10\x01\x12\x16\n" +
@@ -6452,7 +6857,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x1dMCP_AUTH_STATE_NOT_APPLICABLE\x10\x01\x12\x1d\n" +
 	"\x19MCP_AUTH_STATE_AUTHORIZED\x10\x02\x12\x1f\n" +
 	"\x1bMCP_AUTH_STATE_UNAUTHORIZED\x10\x03\x12\x1a\n" +
-	"\x16MCP_AUTH_STATE_UNKNOWN\x10\x042\x91\x1a\n" +
+	"\x16MCP_AUTH_STATE_UNKNOWN\x10\x042\x8b\x1c\n" +
 	"\vSwitchboard\x12Q\n" +
 	"\rGetDaemonInfo\x12$.switchboard.v1.GetDaemonInfoRequest\x1a\x1a.switchboard.v1.DaemonInfo\x12]\n" +
 	"\x11GetOptionManifest\x12(.switchboard.v1.GetOptionManifestRequest\x1a\x1e.switchboard.v1.OptionManifest\x12U\n" +
@@ -6489,7 +6894,10 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x12AuthorizeMcpServer\x12).switchboard.v1.AuthorizeMcpServerRequest\x1a\x1f.switchboard.v1.McpAuthProgress0\x01\x12\\\n" +
 	"\x13SetMcpServerDefault\x12*.switchboard.v1.SetMcpServerDefaultRequest\x1a\x19.switchboard.v1.McpServer\x12_\n" +
 	"\x10SetMcpAttachMode\x12'.switchboard.v1.SetMcpAttachModeRequest\x1a\".switchboard.v1.McpGatewaySettings\x12R\n" +
-	"\x0fAttachMcpServer\x12&.switchboard.v1.AttachMcpServerRequest\x1a\x17.switchboard.v1.SandboxBOZMgithub.com/jamesclark123/switchboard/libs/switchboard-proto/gen;switchboardv1b\x06proto3"
+	"\x0fAttachMcpServer\x12&.switchboard.v1.AttachMcpServerRequest\x1a\x17.switchboard.v1.Sandbox\x12V\n" +
+	"\vListSecrets\x12\".switchboard.v1.ListSecretsRequest\x1a#.switchboard.v1.ListSecretsResponse\x12E\n" +
+	"\tSetSecret\x12 .switchboard.v1.SetSecretRequest\x1a\x16.switchboard.v1.Secret\x12Y\n" +
+	"\fRemoveSecret\x12#.switchboard.v1.RemoveSecretRequest\x1a$.switchboard.v1.RemoveSecretResponseBOZMgithub.com/jamesclark123/switchboard/libs/switchboard-proto/gen;switchboardv1b\x06proto3"
 
 var (
 	file_switchboard_proto_rawDescOnce sync.Once
@@ -6504,7 +6912,7 @@ func file_switchboard_proto_rawDescGZIP() []byte {
 }
 
 var file_switchboard_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 83)
+var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 90)
 var file_switchboard_proto_goTypes = []any{
 	(SeedingMode)(0),                         // 0: switchboard.v1.SeedingMode
 	(SandboxState)(0),                        // 1: switchboard.v1.SandboxState
@@ -6589,35 +6997,42 @@ var file_switchboard_proto_goTypes = []any{
 	(*SetMcpServerDefaultRequest)(nil),       // 80: switchboard.v1.SetMcpServerDefaultRequest
 	(*SetMcpAttachModeRequest)(nil),          // 81: switchboard.v1.SetMcpAttachModeRequest
 	(*AttachMcpServerRequest)(nil),           // 82: switchboard.v1.AttachMcpServerRequest
-	nil,                                      // 83: switchboard.v1.ConfigSnapshot.KitOptionsEntry
-	(*PortForwardFrame_Open)(nil),            // 84: switchboard.v1.PortForwardFrame.Open
-	(*PortForwardFrame_Opened)(nil),          // 85: switchboard.v1.PortForwardFrame.Opened
-	(*PortForwardFrame_Closed)(nil),          // 86: switchboard.v1.PortForwardFrame.Closed
-	(*OptionManifest_Option)(nil),            // 87: switchboard.v1.OptionManifest.Option
-	(*LaunchProgress_CopyProgress)(nil),      // 88: switchboard.v1.LaunchProgress.CopyProgress
-	(*AgentInput_Resize)(nil),                // 89: switchboard.v1.AgentInput.Resize
-	(*AgentInput_AttachInfo)(nil),            // 90: switchboard.v1.AgentInput.AttachInfo
-	(*AgentOutput_Snapshot)(nil),             // 91: switchboard.v1.AgentOutput.Snapshot
-	(*Event_SandboxRemoved)(nil),             // 92: switchboard.v1.Event.SandboxRemoved
-	(*Event_McpGatewayChanged)(nil),          // 93: switchboard.v1.Event.McpGatewayChanged
-	nil,                                      // 94: switchboard.v1.McpGatewaySettings.MarksEntry
-	(*AddMcpServerRequest_LocalCommand)(nil), // 95: switchboard.v1.AddMcpServerRequest.LocalCommand
-	(*timestamppb.Timestamp)(nil),            // 96: google.protobuf.Timestamp
+	(*Secret)(nil),                           // 83: switchboard.v1.Secret
+	(*ListSecretsRequest)(nil),               // 84: switchboard.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),              // 85: switchboard.v1.ListSecretsResponse
+	(*SetSecretRequest)(nil),                 // 86: switchboard.v1.SetSecretRequest
+	(*RemoveSecretRequest)(nil),              // 87: switchboard.v1.RemoveSecretRequest
+	(*RemoveSecretResponse)(nil),             // 88: switchboard.v1.RemoveSecretResponse
+	nil,                                      // 89: switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	(*PortForwardFrame_Open)(nil),            // 90: switchboard.v1.PortForwardFrame.Open
+	(*PortForwardFrame_Opened)(nil),          // 91: switchboard.v1.PortForwardFrame.Opened
+	(*PortForwardFrame_Closed)(nil),          // 92: switchboard.v1.PortForwardFrame.Closed
+	(*OptionManifest_Option)(nil),            // 93: switchboard.v1.OptionManifest.Option
+	(*LaunchProgress_CopyProgress)(nil),      // 94: switchboard.v1.LaunchProgress.CopyProgress
+	(*AgentInput_Resize)(nil),                // 95: switchboard.v1.AgentInput.Resize
+	(*AgentInput_AttachInfo)(nil),            // 96: switchboard.v1.AgentInput.AttachInfo
+	(*AgentOutput_Snapshot)(nil),             // 97: switchboard.v1.AgentOutput.Snapshot
+	(*Event_SandboxRemoved)(nil),             // 98: switchboard.v1.Event.SandboxRemoved
+	(*Event_McpGatewayChanged)(nil),          // 99: switchboard.v1.Event.McpGatewayChanged
+	(*Event_SecretsChanged)(nil),             // 100: switchboard.v1.Event.SecretsChanged
+	nil,                                      // 101: switchboard.v1.McpGatewaySettings.MarksEntry
+	(*AddMcpServerRequest_LocalCommand)(nil), // 102: switchboard.v1.AddMcpServerRequest.LocalCommand
+	(*timestamppb.Timestamp)(nil),            // 103: google.protobuf.Timestamp
 }
 var file_switchboard_proto_depIdxs = []int32{
-	83,  // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	89,  // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
 	0,   // 1: switchboard.v1.ConfigSnapshot.seeding_mode:type_name -> switchboard.v1.SeedingMode
 	13,  // 2: switchboard.v1.ConfigSnapshot.agent:type_name -> switchboard.v1.AgentSpec
 	13,  // 3: switchboard.v1.AgentSession.spec:type_name -> switchboard.v1.AgentSpec
 	2,   // 4: switchboard.v1.AgentSession.status:type_name -> switchboard.v1.AgentStatus
-	96,  // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
+	103, // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
 	1,   // 6: switchboard.v1.Sandbox.state:type_name -> switchboard.v1.SandboxState
 	15,  // 7: switchboard.v1.Sandbox.config_snapshot:type_name -> switchboard.v1.ConfigSnapshot
 	14,  // 8: switchboard.v1.Sandbox.sources:type_name -> switchboard.v1.SourceRef
 	0,   // 9: switchboard.v1.Sandbox.seeding_mode:type_name -> switchboard.v1.SeedingMode
 	16,  // 10: switchboard.v1.Sandbox.agent:type_name -> switchboard.v1.AgentSession
-	96,  // 11: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	96,  // 12: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
+	103, // 11: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	103, // 12: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
 	23,  // 13: switchboard.v1.Sandbox.escape_hatch_commands:type_name -> switchboard.v1.EscapeHatchCommand
 	29,  // 14: switchboard.v1.Sandbox.services:type_name -> switchboard.v1.KitService
 	10,  // 15: switchboard.v1.Sandbox.mcp_attach_mode:type_name -> switchboard.v1.McpAttachMode
@@ -6628,135 +7043,143 @@ var file_switchboard_proto_depIdxs = []int32{
 	19,  // 20: switchboard.v1.AddSandboxKitRequest.kit:type_name -> switchboard.v1.KitRef
 	4,   // 21: switchboard.v1.EscapeHatchCommand.consent_mode:type_name -> switchboard.v1.ConsentMode
 	5,   // 22: switchboard.v1.EscapeHatchRun.status:type_name -> switchboard.v1.EscapeHatchRunStatus
-	96,  // 23: switchboard.v1.EscapeHatchRun.started_at:type_name -> google.protobuf.Timestamp
-	96,  // 24: switchboard.v1.EscapeHatchRun.ended_at:type_name -> google.protobuf.Timestamp
+	103, // 23: switchboard.v1.EscapeHatchRun.started_at:type_name -> google.protobuf.Timestamp
+	103, // 24: switchboard.v1.EscapeHatchRun.ended_at:type_name -> google.protobuf.Timestamp
 	5,   // 25: switchboard.v1.DecideEscapeHatchRunResponse.status:type_name -> switchboard.v1.EscapeHatchRunStatus
 	24,  // 26: switchboard.v1.ListEscapeHatchRunsResponse.runs:type_name -> switchboard.v1.EscapeHatchRun
 	6,   // 27: switchboard.v1.KitService.location:type_name -> switchboard.v1.ServiceLocation
 	7,   // 28: switchboard.v1.ServiceInstance.state:type_name -> switchboard.v1.ServiceState
 	8,   // 29: switchboard.v1.ServiceInstance.failure_reason:type_name -> switchboard.v1.ServiceFailureReason
-	96,  // 30: switchboard.v1.ServiceInstance.started_at:type_name -> google.protobuf.Timestamp
-	96,  // 31: switchboard.v1.ServiceInstance.ended_at:type_name -> google.protobuf.Timestamp
+	103, // 30: switchboard.v1.ServiceInstance.started_at:type_name -> google.protobuf.Timestamp
+	103, // 31: switchboard.v1.ServiceInstance.ended_at:type_name -> google.protobuf.Timestamp
 	29,  // 32: switchboard.v1.SandboxService.declared:type_name -> switchboard.v1.KitService
 	30,  // 33: switchboard.v1.SandboxService.instance:type_name -> switchboard.v1.ServiceInstance
 	31,  // 34: switchboard.v1.ListSandboxServicesResponse.services:type_name -> switchboard.v1.SandboxService
 	30,  // 35: switchboard.v1.StartSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
 	30,  // 36: switchboard.v1.StopSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
-	84,  // 37: switchboard.v1.PortForwardFrame.open:type_name -> switchboard.v1.PortForwardFrame.Open
-	85,  // 38: switchboard.v1.PortForwardFrame.opened:type_name -> switchboard.v1.PortForwardFrame.Opened
-	86,  // 39: switchboard.v1.PortForwardFrame.closed:type_name -> switchboard.v1.PortForwardFrame.Closed
-	87,  // 40: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
+	90,  // 37: switchboard.v1.PortForwardFrame.open:type_name -> switchboard.v1.PortForwardFrame.Open
+	91,  // 38: switchboard.v1.PortForwardFrame.opened:type_name -> switchboard.v1.PortForwardFrame.Opened
+	92,  // 39: switchboard.v1.PortForwardFrame.closed:type_name -> switchboard.v1.PortForwardFrame.Closed
+	93,  // 40: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
 	17,  // 41: switchboard.v1.ListSandboxesResponse.sandboxes:type_name -> switchboard.v1.Sandbox
 	15,  // 42: switchboard.v1.LaunchSandboxRequest.config:type_name -> switchboard.v1.ConfigSnapshot
 	14,  // 43: switchboard.v1.LaunchSandboxRequest.sources:type_name -> switchboard.v1.SourceRef
 	13,  // 44: switchboard.v1.LaunchSandboxRequest.agent_override:type_name -> switchboard.v1.AgentSpec
 	19,  // 45: switchboard.v1.LaunchSandboxRequest.kits:type_name -> switchboard.v1.KitRef
-	88,  // 46: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
+	94,  // 46: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
 	17,  // 47: switchboard.v1.LaunchProgress.done:type_name -> switchboard.v1.Sandbox
 	60,  // 48: switchboard.v1.LaunchProgress.blocked:type_name -> switchboard.v1.ResourceReport
 	14,  // 49: switchboard.v1.AddSandboxSourcesRequest.sources:type_name -> switchboard.v1.SourceRef
 	1,   // 50: switchboard.v1.ResolveWorkspaceResponse.state:type_name -> switchboard.v1.SandboxState
 	14,  // 51: switchboard.v1.ListSourceCandidatesResponse.candidates:type_name -> switchboard.v1.SourceRef
 	14,  // 52: switchboard.v1.CheckResourcesRequest.sources:type_name -> switchboard.v1.SourceRef
-	89,  // 53: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
-	90,  // 54: switchboard.v1.AgentInput.attach:type_name -> switchboard.v1.AgentInput.AttachInfo
-	91,  // 55: switchboard.v1.AgentOutput.snapshot:type_name -> switchboard.v1.AgentOutput.Snapshot
+	95,  // 53: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
+	96,  // 54: switchboard.v1.AgentInput.attach:type_name -> switchboard.v1.AgentInput.AttachInfo
+	97,  // 55: switchboard.v1.AgentOutput.snapshot:type_name -> switchboard.v1.AgentOutput.Snapshot
 	17,  // 56: switchboard.v1.Event.sandbox_changed:type_name -> switchboard.v1.Sandbox
 	67,  // 57: switchboard.v1.Event.notification:type_name -> switchboard.v1.NotificationEvent
-	92,  // 58: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
+	98,  // 58: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
 	24,  // 59: switchboard.v1.Event.escape_hatch_run:type_name -> switchboard.v1.EscapeHatchRun
 	30,  // 60: switchboard.v1.Event.service_instance:type_name -> switchboard.v1.ServiceInstance
-	93,  // 61: switchboard.v1.Event.mcp_gateway_changed:type_name -> switchboard.v1.Event.McpGatewayChanged
-	3,   // 62: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
-	96,  // 63: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
-	11,  // 64: switchboard.v1.McpServer.kind:type_name -> switchboard.v1.McpServerKind
-	12,  // 65: switchboard.v1.McpServer.auth_state:type_name -> switchboard.v1.McpAuthState
-	10,  // 66: switchboard.v1.McpGatewaySettings.default_attach_mode:type_name -> switchboard.v1.McpAttachMode
-	94,  // 67: switchboard.v1.McpGatewaySettings.marks:type_name -> switchboard.v1.McpGatewaySettings.MarksEntry
-	71,  // 68: switchboard.v1.ListMcpServersResponse.servers:type_name -> switchboard.v1.McpServer
-	72,  // 69: switchboard.v1.ListMcpServersResponse.settings:type_name -> switchboard.v1.McpGatewaySettings
-	95,  // 70: switchboard.v1.AddMcpServerRequest.command:type_name -> switchboard.v1.AddMcpServerRequest.LocalCommand
-	12,  // 71: switchboard.v1.McpAuthProgress.done:type_name -> switchboard.v1.McpAuthState
-	10,  // 72: switchboard.v1.SetMcpAttachModeRequest.mode:type_name -> switchboard.v1.McpAttachMode
-	9,   // 73: switchboard.v1.AgentInput.AttachInfo.kind:type_name -> switchboard.v1.ClientKind
-	89,  // 74: switchboard.v1.AgentInput.AttachInfo.initial_size:type_name -> switchboard.v1.AgentInput.Resize
-	39,  // 75: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
-	43,  // 76: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
-	41,  // 77: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
-	45,  // 78: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
-	47,  // 79: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
-	49,  // 80: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	49,  // 81: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	49,  // 82: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
-	51,  // 83: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
-	49,  // 84: switchboard.v1.Switchboard.RefreshSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	20,  // 85: switchboard.v1.Switchboard.ValidateKit:input_type -> switchboard.v1.ValidateKitRequest
-	22,  // 86: switchboard.v1.Switchboard.AddSandboxKit:input_type -> switchboard.v1.AddSandboxKitRequest
-	57,  // 87: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
-	59,  // 88: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
-	52,  // 89: switchboard.v1.Switchboard.SetSandboxTag:input_type -> switchboard.v1.SetSandboxTagRequest
-	55,  // 90: switchboard.v1.Switchboard.ResolveWorkspace:input_type -> switchboard.v1.ResolveWorkspaceRequest
-	61,  // 91: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
-	63,  // 92: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
-	65,  // 93: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
-	68,  // 94: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
-	49,  // 95: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
-	25,  // 96: switchboard.v1.Switchboard.DecideEscapeHatchRun:input_type -> switchboard.v1.DecideEscapeHatchRunRequest
-	27,  // 97: switchboard.v1.Switchboard.ListEscapeHatchRuns:input_type -> switchboard.v1.ListEscapeHatchRunsRequest
-	32,  // 98: switchboard.v1.Switchboard.ListSandboxServices:input_type -> switchboard.v1.ListSandboxServicesRequest
-	34,  // 99: switchboard.v1.Switchboard.StartSandboxService:input_type -> switchboard.v1.StartSandboxServiceRequest
-	36,  // 100: switchboard.v1.Switchboard.StopSandboxService:input_type -> switchboard.v1.StopSandboxServiceRequest
-	38,  // 101: switchboard.v1.Switchboard.ForwardPort:input_type -> switchboard.v1.PortForwardFrame
-	53,  // 102: switchboard.v1.Switchboard.AddSandboxSources:input_type -> switchboard.v1.AddSandboxSourcesRequest
-	54,  // 103: switchboard.v1.Switchboard.RemoveSandboxSources:input_type -> switchboard.v1.RemoveSandboxSourcesRequest
-	73,  // 104: switchboard.v1.Switchboard.ListMcpServers:input_type -> switchboard.v1.ListMcpServersRequest
-	75,  // 105: switchboard.v1.Switchboard.AddMcpServer:input_type -> switchboard.v1.AddMcpServerRequest
-	76,  // 106: switchboard.v1.Switchboard.RemoveMcpServer:input_type -> switchboard.v1.RemoveMcpServerRequest
-	78,  // 107: switchboard.v1.Switchboard.AuthorizeMcpServer:input_type -> switchboard.v1.AuthorizeMcpServerRequest
-	80,  // 108: switchboard.v1.Switchboard.SetMcpServerDefault:input_type -> switchboard.v1.SetMcpServerDefaultRequest
-	81,  // 109: switchboard.v1.Switchboard.SetMcpAttachMode:input_type -> switchboard.v1.SetMcpAttachModeRequest
-	82,  // 110: switchboard.v1.Switchboard.AttachMcpServer:input_type -> switchboard.v1.AttachMcpServerRequest
-	40,  // 111: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
-	44,  // 112: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
-	42,  // 113: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
-	46,  // 114: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
-	48,  // 115: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
-	17,  // 116: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
-	48,  // 117: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
-	50,  // 118: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
-	17,  // 119: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
-	48,  // 120: switchboard.v1.Switchboard.RefreshSandbox:output_type -> switchboard.v1.LaunchProgress
-	21,  // 121: switchboard.v1.Switchboard.ValidateKit:output_type -> switchboard.v1.ValidateKitResponse
-	48,  // 122: switchboard.v1.Switchboard.AddSandboxKit:output_type -> switchboard.v1.LaunchProgress
-	58,  // 123: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
-	60,  // 124: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
-	17,  // 125: switchboard.v1.Switchboard.SetSandboxTag:output_type -> switchboard.v1.Sandbox
-	56,  // 126: switchboard.v1.Switchboard.ResolveWorkspace:output_type -> switchboard.v1.ResolveWorkspaceResponse
-	62,  // 127: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
-	64,  // 128: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
-	66,  // 129: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
-	69,  // 130: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
-	70,  // 131: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
-	26,  // 132: switchboard.v1.Switchboard.DecideEscapeHatchRun:output_type -> switchboard.v1.DecideEscapeHatchRunResponse
-	28,  // 133: switchboard.v1.Switchboard.ListEscapeHatchRuns:output_type -> switchboard.v1.ListEscapeHatchRunsResponse
-	33,  // 134: switchboard.v1.Switchboard.ListSandboxServices:output_type -> switchboard.v1.ListSandboxServicesResponse
-	35,  // 135: switchboard.v1.Switchboard.StartSandboxService:output_type -> switchboard.v1.StartSandboxServiceResponse
-	37,  // 136: switchboard.v1.Switchboard.StopSandboxService:output_type -> switchboard.v1.StopSandboxServiceResponse
-	38,  // 137: switchboard.v1.Switchboard.ForwardPort:output_type -> switchboard.v1.PortForwardFrame
-	48,  // 138: switchboard.v1.Switchboard.AddSandboxSources:output_type -> switchboard.v1.LaunchProgress
-	17,  // 139: switchboard.v1.Switchboard.RemoveSandboxSources:output_type -> switchboard.v1.Sandbox
-	74,  // 140: switchboard.v1.Switchboard.ListMcpServers:output_type -> switchboard.v1.ListMcpServersResponse
-	71,  // 141: switchboard.v1.Switchboard.AddMcpServer:output_type -> switchboard.v1.McpServer
-	77,  // 142: switchboard.v1.Switchboard.RemoveMcpServer:output_type -> switchboard.v1.RemoveMcpServerResponse
-	79,  // 143: switchboard.v1.Switchboard.AuthorizeMcpServer:output_type -> switchboard.v1.McpAuthProgress
-	71,  // 144: switchboard.v1.Switchboard.SetMcpServerDefault:output_type -> switchboard.v1.McpServer
-	72,  // 145: switchboard.v1.Switchboard.SetMcpAttachMode:output_type -> switchboard.v1.McpGatewaySettings
-	17,  // 146: switchboard.v1.Switchboard.AttachMcpServer:output_type -> switchboard.v1.Sandbox
-	111, // [111:147] is the sub-list for method output_type
-	75,  // [75:111] is the sub-list for method input_type
-	75,  // [75:75] is the sub-list for extension type_name
-	75,  // [75:75] is the sub-list for extension extendee
-	0,   // [0:75] is the sub-list for field type_name
+	99,  // 61: switchboard.v1.Event.mcp_gateway_changed:type_name -> switchboard.v1.Event.McpGatewayChanged
+	100, // 62: switchboard.v1.Event.secrets_changed:type_name -> switchboard.v1.Event.SecretsChanged
+	3,   // 63: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
+	103, // 64: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
+	11,  // 65: switchboard.v1.McpServer.kind:type_name -> switchboard.v1.McpServerKind
+	12,  // 66: switchboard.v1.McpServer.auth_state:type_name -> switchboard.v1.McpAuthState
+	10,  // 67: switchboard.v1.McpGatewaySettings.default_attach_mode:type_name -> switchboard.v1.McpAttachMode
+	101, // 68: switchboard.v1.McpGatewaySettings.marks:type_name -> switchboard.v1.McpGatewaySettings.MarksEntry
+	71,  // 69: switchboard.v1.ListMcpServersResponse.servers:type_name -> switchboard.v1.McpServer
+	72,  // 70: switchboard.v1.ListMcpServersResponse.settings:type_name -> switchboard.v1.McpGatewaySettings
+	102, // 71: switchboard.v1.AddMcpServerRequest.command:type_name -> switchboard.v1.AddMcpServerRequest.LocalCommand
+	12,  // 72: switchboard.v1.McpAuthProgress.done:type_name -> switchboard.v1.McpAuthState
+	10,  // 73: switchboard.v1.SetMcpAttachModeRequest.mode:type_name -> switchboard.v1.McpAttachMode
+	83,  // 74: switchboard.v1.ListSecretsResponse.secrets:type_name -> switchboard.v1.Secret
+	9,   // 75: switchboard.v1.AgentInput.AttachInfo.kind:type_name -> switchboard.v1.ClientKind
+	95,  // 76: switchboard.v1.AgentInput.AttachInfo.initial_size:type_name -> switchboard.v1.AgentInput.Resize
+	39,  // 77: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
+	43,  // 78: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
+	41,  // 79: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
+	45,  // 80: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
+	47,  // 81: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
+	49,  // 82: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	49,  // 83: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	49,  // 84: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
+	51,  // 85: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
+	49,  // 86: switchboard.v1.Switchboard.RefreshSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	20,  // 87: switchboard.v1.Switchboard.ValidateKit:input_type -> switchboard.v1.ValidateKitRequest
+	22,  // 88: switchboard.v1.Switchboard.AddSandboxKit:input_type -> switchboard.v1.AddSandboxKitRequest
+	57,  // 89: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
+	59,  // 90: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
+	52,  // 91: switchboard.v1.Switchboard.SetSandboxTag:input_type -> switchboard.v1.SetSandboxTagRequest
+	55,  // 92: switchboard.v1.Switchboard.ResolveWorkspace:input_type -> switchboard.v1.ResolveWorkspaceRequest
+	61,  // 93: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
+	63,  // 94: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
+	65,  // 95: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
+	68,  // 96: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
+	49,  // 97: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
+	25,  // 98: switchboard.v1.Switchboard.DecideEscapeHatchRun:input_type -> switchboard.v1.DecideEscapeHatchRunRequest
+	27,  // 99: switchboard.v1.Switchboard.ListEscapeHatchRuns:input_type -> switchboard.v1.ListEscapeHatchRunsRequest
+	32,  // 100: switchboard.v1.Switchboard.ListSandboxServices:input_type -> switchboard.v1.ListSandboxServicesRequest
+	34,  // 101: switchboard.v1.Switchboard.StartSandboxService:input_type -> switchboard.v1.StartSandboxServiceRequest
+	36,  // 102: switchboard.v1.Switchboard.StopSandboxService:input_type -> switchboard.v1.StopSandboxServiceRequest
+	38,  // 103: switchboard.v1.Switchboard.ForwardPort:input_type -> switchboard.v1.PortForwardFrame
+	53,  // 104: switchboard.v1.Switchboard.AddSandboxSources:input_type -> switchboard.v1.AddSandboxSourcesRequest
+	54,  // 105: switchboard.v1.Switchboard.RemoveSandboxSources:input_type -> switchboard.v1.RemoveSandboxSourcesRequest
+	73,  // 106: switchboard.v1.Switchboard.ListMcpServers:input_type -> switchboard.v1.ListMcpServersRequest
+	75,  // 107: switchboard.v1.Switchboard.AddMcpServer:input_type -> switchboard.v1.AddMcpServerRequest
+	76,  // 108: switchboard.v1.Switchboard.RemoveMcpServer:input_type -> switchboard.v1.RemoveMcpServerRequest
+	78,  // 109: switchboard.v1.Switchboard.AuthorizeMcpServer:input_type -> switchboard.v1.AuthorizeMcpServerRequest
+	80,  // 110: switchboard.v1.Switchboard.SetMcpServerDefault:input_type -> switchboard.v1.SetMcpServerDefaultRequest
+	81,  // 111: switchboard.v1.Switchboard.SetMcpAttachMode:input_type -> switchboard.v1.SetMcpAttachModeRequest
+	82,  // 112: switchboard.v1.Switchboard.AttachMcpServer:input_type -> switchboard.v1.AttachMcpServerRequest
+	84,  // 113: switchboard.v1.Switchboard.ListSecrets:input_type -> switchboard.v1.ListSecretsRequest
+	86,  // 114: switchboard.v1.Switchboard.SetSecret:input_type -> switchboard.v1.SetSecretRequest
+	87,  // 115: switchboard.v1.Switchboard.RemoveSecret:input_type -> switchboard.v1.RemoveSecretRequest
+	40,  // 116: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
+	44,  // 117: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
+	42,  // 118: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
+	46,  // 119: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
+	48,  // 120: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
+	17,  // 121: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
+	48,  // 122: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
+	50,  // 123: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
+	17,  // 124: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
+	48,  // 125: switchboard.v1.Switchboard.RefreshSandbox:output_type -> switchboard.v1.LaunchProgress
+	21,  // 126: switchboard.v1.Switchboard.ValidateKit:output_type -> switchboard.v1.ValidateKitResponse
+	48,  // 127: switchboard.v1.Switchboard.AddSandboxKit:output_type -> switchboard.v1.LaunchProgress
+	58,  // 128: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
+	60,  // 129: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
+	17,  // 130: switchboard.v1.Switchboard.SetSandboxTag:output_type -> switchboard.v1.Sandbox
+	56,  // 131: switchboard.v1.Switchboard.ResolveWorkspace:output_type -> switchboard.v1.ResolveWorkspaceResponse
+	62,  // 132: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
+	64,  // 133: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
+	66,  // 134: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
+	69,  // 135: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
+	70,  // 136: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
+	26,  // 137: switchboard.v1.Switchboard.DecideEscapeHatchRun:output_type -> switchboard.v1.DecideEscapeHatchRunResponse
+	28,  // 138: switchboard.v1.Switchboard.ListEscapeHatchRuns:output_type -> switchboard.v1.ListEscapeHatchRunsResponse
+	33,  // 139: switchboard.v1.Switchboard.ListSandboxServices:output_type -> switchboard.v1.ListSandboxServicesResponse
+	35,  // 140: switchboard.v1.Switchboard.StartSandboxService:output_type -> switchboard.v1.StartSandboxServiceResponse
+	37,  // 141: switchboard.v1.Switchboard.StopSandboxService:output_type -> switchboard.v1.StopSandboxServiceResponse
+	38,  // 142: switchboard.v1.Switchboard.ForwardPort:output_type -> switchboard.v1.PortForwardFrame
+	48,  // 143: switchboard.v1.Switchboard.AddSandboxSources:output_type -> switchboard.v1.LaunchProgress
+	17,  // 144: switchboard.v1.Switchboard.RemoveSandboxSources:output_type -> switchboard.v1.Sandbox
+	74,  // 145: switchboard.v1.Switchboard.ListMcpServers:output_type -> switchboard.v1.ListMcpServersResponse
+	71,  // 146: switchboard.v1.Switchboard.AddMcpServer:output_type -> switchboard.v1.McpServer
+	77,  // 147: switchboard.v1.Switchboard.RemoveMcpServer:output_type -> switchboard.v1.RemoveMcpServerResponse
+	79,  // 148: switchboard.v1.Switchboard.AuthorizeMcpServer:output_type -> switchboard.v1.McpAuthProgress
+	71,  // 149: switchboard.v1.Switchboard.SetMcpServerDefault:output_type -> switchboard.v1.McpServer
+	72,  // 150: switchboard.v1.Switchboard.SetMcpAttachMode:output_type -> switchboard.v1.McpGatewaySettings
+	17,  // 151: switchboard.v1.Switchboard.AttachMcpServer:output_type -> switchboard.v1.Sandbox
+	85,  // 152: switchboard.v1.Switchboard.ListSecrets:output_type -> switchboard.v1.ListSecretsResponse
+	83,  // 153: switchboard.v1.Switchboard.SetSecret:output_type -> switchboard.v1.Secret
+	88,  // 154: switchboard.v1.Switchboard.RemoveSecret:output_type -> switchboard.v1.RemoveSecretResponse
+	116, // [116:155] is the sub-list for method output_type
+	77,  // [77:116] is the sub-list for method input_type
+	77,  // [77:77] is the sub-list for extension type_name
+	77,  // [77:77] is the sub-list for extension extendee
+	0,   // [0:77] is the sub-list for field type_name
 }
 
 func init() { file_switchboard_proto_init() }
@@ -6787,6 +7210,7 @@ func file_switchboard_proto_init() {
 		(*Event_EscapeHatchRun)(nil),
 		(*Event_ServiceInstance)(nil),
 		(*Event_McpGatewayChanged_)(nil),
+		(*Event_SecretsChanged_)(nil),
 	}
 	file_switchboard_proto_msgTypes[62].OneofWrappers = []any{
 		(*AddMcpServerRequest_Url)(nil),
@@ -6804,7 +7228,7 @@ func file_switchboard_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_switchboard_proto_rawDesc), len(file_switchboard_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   83,
+			NumMessages:   90,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

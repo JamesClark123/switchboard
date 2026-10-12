@@ -17,6 +17,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/secret"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -40,6 +41,9 @@ case "$1 $2 $3" in
   "mcp rm "*) printf 'No local OAuth token found for MCP server "notion"\nMCP server "notion" removed\n' ;;
   "mcp add "*) exit 0 ;;
   "mcp load "*) echo "MCP server \"$3\" loaded into sandbox \"$5\" (live)" ;;
+  "secret ls ") printf 'SCOPE      TYPE      NAME        SECRET\n(global)   service   github      gho_GCaw4o****...****43qy\nmy-sb      service   anthropic   sk-ant-****\n(global)   registry  ghcr.io     ****\n' ;;
+  "secret set "*) cat > "$(dirname "$0")/secret.stdin"; echo "Secret stored." ;;
+  "secret rm "*) case "$*" in *ghost*) echo 'error: secret "ghost" not found' >&2; exit 1 ;; esac; echo removed ;;
   *) exit 0 ;;
 esac
 `
@@ -74,7 +78,7 @@ func startMcpServer(t *testing.T, avail mcp.Availability) *mcpEnv {
 	manager := mcp.NewManager(&mcp.CLI{Bin: bin}, reg, "host-1", hub.Publish)
 	srv := sbgrpc.NewServer(sbgrpc.Config{
 		Manager: mgr, HostID: "host-1", DaemonVersion: "test", WorkspaceRoot: ws,
-		KitRoot: filepath.Join(dir, "kits"), Hub: hub, McpAvailability: avail, Mcp: manager,
+		KitRoot: filepath.Join(dir, "kits"), Hub: hub, McpAvailability: avail, Mcp: manager, Secrets: secret.NewManager(&secret.CLI{Bin: bin}, "host-1", hub.Publish),
 	})
 	sock := filepath.Join(dir, "d.sock")
 	lis, err := net.Listen("unix", sock)

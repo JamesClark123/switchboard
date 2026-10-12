@@ -139,6 +139,15 @@ action, the sandbox's record names that server, and a sandbox launched on a *dif
     **Then** B is loaded into that sandbox live (no stop or restart), the view and the row name B,
     and B is not offered again; **Given** the load fails, **Then** the record is unchanged and the
     runtime's message is shown (FR-102).
+11. **Given** the register form, **When** the developer enters `Authorization: Bearer ${token}` as a
+    header for a remote server, **Then** the registration runs with `--header "Authorization: Bearer
+    ${token}"` and the form points at storing `mcp:<name>:token` under Secrets; **Given** a header
+    without a colon, **Then** the form keeps it with a message and nothing is sent (FR-103).
+12. **Given** a connected daemon, **When** the developer opens its Secrets option, **Then** every
+    stored secret is listed with scope, type and masked value; **When** they store `mcp:github:token`
+    with a masked value, **Then** the daemon pipes it to `sbx secret set` on stdin, the list shows the
+    new row masked, and the value appears nowhere else; **When** they remove a row and confirm,
+    **Then** `sbx secret rm` runs for that scope (FR-104).
 
 ---
 
@@ -457,6 +466,22 @@ and the toggle is still off.
   Servers the agent attached for itself are not shown, and the view MUST say so. There is no detach
   (the runtime has none). When the daemon's gateway is unavailable the view MUST still show the record
   and name the reason instead of offering an attach.
+- **FR-103** *(added 2026-10-12)*: Registering a remote server MUST accept custom HTTP headers,
+  one `Name: value` entry per header, each passed to the runtime as its own `--header` flag. A
+  credential header MUST be written with a `${placeholder}` whose value is the host secret
+  `mcp:<server>:<placeholder>` (FR-104), so no token ever enters a registration or a daemon log.
+  Malformed entries (no colon, empty name or value, a name that is not an HTTP field name, a repeated
+  name, a multi-line value) MUST be refused before any CLI call; headers on a host-command server
+  MUST be refused. The register form MUST explain the placeholder convention next to the field.
+- **FR-104** *(added 2026-10-12)*: Each daemon MUST offer a **Secrets** management option beside the
+  MCP gateway on the daemon screen that lists the host runtime's stored secrets (scope, type, name,
+  the runtime's masked value — never a plaintext), stores a service secret (name, masked value entry,
+  optional sandbox scope) and removes a stored secret behind a confirmation, all through the host's
+  `sbx secret` CLI on that daemon. A value MUST travel only inside the request to that daemon, be
+  handed to the CLI on standard input once, and never be logged, persisted, echoed or placed in a
+  process argument. Custom secrets (`set-custom`) are listed but not removable from switchboard. The
+  option MUST be unavailable, with the reason, when the host's runtime is missing or below the
+  baseline (FR-096), and changes MUST reach other clients through a daemon event.
 - **FR-088**: When on, the TUI MUST at startup attempt every saved remote host in turn (the local
   daemon excluded, already-connected hosts skipped), connecting without a prompt where no password is
   needed and otherwise showing a masked password prompt centered on screen that names the host.

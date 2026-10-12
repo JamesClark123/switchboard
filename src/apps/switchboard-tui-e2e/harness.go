@@ -68,6 +68,14 @@ case "$1" in
                           *) printf 'Remove MCP server "%s" and its OAuth credential? (y/N): ' "$3"; exit 1 ;; esac ;;
       *) exit 0 ;;
     esac ;;
+  secret)
+    # feature 008 (FR-104): the documented secret-store table; set reads the value from stdin.
+    case "$2" in
+      ls) printf 'SCOPE      TYPE      NAME        SECRET\n(global)   service   github      gho_GCaw4o****...****43qy\n' ;;
+      set) cat > "$(dirname "$0")/secret.stdin"; echo "Secret stored." ;;
+      rm) echo "removed" ;;
+      *) exit 0 ;;
+    esac ;;
   kit)
     # feature 004/008: kit add recreates the container under the same name (real lines, 2026-10-12).
     case "$2" in

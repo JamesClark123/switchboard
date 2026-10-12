@@ -38,9 +38,16 @@ func argvAuthorize(name string) []string { return []string{"mcp", "auth", name} 
 // argvVersion is `sbx version` (confirmed on a real host: it prints
 // "sbx version: v0.47.0 <commit>"); there is no --version flag.
 func argvVersion() []string { return []string{"version"} }
-func argvAddRemote(name, url string) []string {
+func argvAddRemote(name, url string, headers []string) []string {
 	// Always --skip-auth: authorization is the separate Authorize step (R2).
-	return []string{"mcp", "add", name, "--url", url, "--skip-auth"}
+	// Each custom header is one documented `--header 'Name: value'` flag
+	// (FR-103); credential headers carry a `${placeholder}` the gateway fills
+	// from the host secret `mcp:<name>:<placeholder>`.
+	a := []string{"mcp", "add", name, "--url", url}
+	for _, h := range headers {
+		a = append(a, "--header", h)
+	}
+	return append(a, "--skip-auth")
 }
 func argvAddLocal(name, command string, args []string, dir string) []string {
 	out := []string{"mcp", "add", name, "--command", command}

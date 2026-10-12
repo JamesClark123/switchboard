@@ -61,6 +61,12 @@ type fakeDaemon struct {
 	// fails them (FR-102).
 	attachedMcp  map[string][]string
 	attachMcpErr error
+	// secrets fakes (FR-104)
+	secrets        []*pb.Secret
+	secretsErr     error
+	secretsReason  string
+	setSecrets     []*pb.SetSecretRequest
+	removedSecrets []*pb.RemoveSecretRequest
 
 	// feature 006 fakes
 	services        []*pb.SandboxService

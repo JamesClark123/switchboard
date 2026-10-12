@@ -265,7 +265,7 @@ toggle persisted (quickstart Scenario 5).
 - [X] T060 [P] README: document the daemon screen (shift+←/→, `enter`/`c`/`x`), the **MCP gateway** section (register/authorize/remove, attach-by-default marks, additive vs exclusive mode, the 10-minute authorization wait, secrets/advanced options out of scope → `sbx secret set` on the host), the settings screen (`,`, `settings.toml`, `auto_connect_hosts`), startup sign-in behavior, the kit schema-2 move (migration-on-load, attach refusals, minimum `sbx` 0.36), and the key table rows in `README.md`
 - [X] T061 [P] Update `src/services/switchboardd/internal/sbxkit/manifest.go` doc comments and `README.md`'s daemon section to state the manifest comes from `sbx --help` only (T005) and that the daemon reports `sbx_min_version`/baseline in `GetDaemonInfo`
 - [X] T062 Run the full gate from the repo root (`Makefile` targets): `make fmt-check vet lint test cover env-check e2e`; fix any module below the 90% floor via the stub-sbx tests in `src/services/switchboardd/internal/mcp`, `src/services/switchboardd/internal/sbxkit`, `src/apps/switchboard-tui/internal/store`, `src/apps/switchboard-tui/internal/ui`
-- [ ] T063 Run `specs/008-mcp-gateway-manager/quickstart.md` Scenarios 1–6 end-to-end on a real host (after T003 confirmed Scenario 0) and record SC-001..SC-013 results in `specs/008-mcp-gateway-manager/quickstart.md` (a "Results" section)
+- [ ] T063 Run `specs/008-mcp-gateway-manager/quickstart.md` Scenarios 1–8 end-to-end on a real host (after T003 confirmed Scenario 0) and record SC-001..SC-013 results in `specs/008-mcp-gateway-manager/quickstart.md` (a "Results" section)
 
 ---
 
@@ -275,6 +275,17 @@ toggle persisted (quickstart Scenario 5).
 - [X] T065 Daemon: `src/services/switchboardd/internal/sandbox/manager_mcp.go` `Manager.AttachMcp` (op latch `opAttachMcp`, RUNNING/STOPPED only, `ErrMcpAlreadyAttached`, `runner.LoadMcp` via `tryRefs`, append + emit); `internal/grpc/mcp_rpcs.go` `AttachMcpServer` + `attachMcpStatus` (NOT_FOUND via exported `mcp.LooksNotRegistered`); tests in `manager_mcp_test.go` and `mcp_rpcs_test.go` (`testRunner.loadErr`)
 - [X] T066 TUI: `M` on the sandbox list opens `src/apps/switchboard-tui/internal/ui/sandbox_mcp.go` (attached list decorated from `ListMcpServers`, `a` picker of unattached registered servers, `r` reload, gateway-unavailable + list-error paths, `Event.sandbox_changed` sync); `client.Conn.AttachMcpServer`; `Daemon` interface + `fakeDaemon`; tests in `sandbox_mcp_test.go`; README key row + section
 - [X] T067 E2E `TestTUISandboxMcpAttachE2E` in `src/apps/switchboard-tui-e2e/mcp_e2e_test.go`: launch without marks → M → a → enter → `mcp load notion --sandbox` logged, no stop/rm/create, badge `mcp: notion (additive)`
+
+---
+
+## Phase 10: Daemon secret store + MCP headers (FR-103/FR-104; added 2026-10-12)
+
+- [X] T068 Proto: `AddMcpServerRequest.headers = 6`; `Secret`, `ListSecrets`/`SetSecret`/`RemoveSecret` RPCs + messages; `Event.secrets_changed = 7`; contract copy; `make proto`
+- [X] T069 Daemon: `internal/sbxtable` (header-led table parser shared with `mcp ls`); `internal/secret` (`CLI` argv table, `parseList`, `Manager.List/Set/Remove`, stdin value delivery, `LooksNotFound`); `internal/grpc/secret_rpcs.go` (`requireSecrets` on the runtime baseline, `secretStatus`); `server.go` `Config.Secrets`; `cmd/sxbd` wiring; `mcp.argvAddRemote(name, url, headers)` + `normalizeHeaders` in `Manager.Add`; tests (`secret/manager_test.go`, `grpc/secret_rpcs_test.go`, header cases in `mcp/manager_test.go` + argv table)
+- [X] T070 TUI: `client/secret.go` (`SecretsAvailable`, list/set/remove); `Daemon` interface; `ui/secrets.go` (second daemon option, list, masked store form, confirmed removal, `Event.secrets_changed` sync); `ui/mcp.go` headers text field → `req.Headers`; fakes + tests (`secrets_test.go`, header case in `mcp_test.go`)
+- [X] T071 E2E: stub `secret ls/set/rm` in `harness.go` (set captures stdin); `secrets_e2e_test.go` (store via the form → `secret set … --force` with the value only on stdin; remove → `secret rm … -f`)
+- [X] T072 Docs: `contracts/sbx-secret-cli.md`, `sbx-mcp-cli.md` header row, research R9 rows + R13, data-model Secret, quickstart Scenario 0 rows + Scenarios 7–8, README (Secrets option, headers field), CLAUDE.md
+- [ ] T073 Reconcile `contracts/sbx-secret-cli.md` and the `--header`/`--skip-auth` combination on a real host (Scenario 0 rows added 2026-10-12); amend `internal/secret/cli.go` + `TestArgvTable` as needed
 
 ---
 
