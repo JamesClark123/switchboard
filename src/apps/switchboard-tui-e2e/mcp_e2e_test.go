@@ -98,3 +98,48 @@ func TestTUIMcpGatewayE2E(t *testing.T) {
 	}
 	p.send("q")
 }
+
+// TestTUISandboxMcpAttachE2E drives FR-102 through the real binaries: launch a
+// sandbox with no marks, open its MCP overlay (M), attach the stub's registered
+// server from the picker, and assert the daemon ran `mcp load` against that
+// sandbox, the overlay confirms it, and the row badge updates.
+func TestTUISandboxMcpAttachE2E(t *testing.T) {
+	requireLocalTarget(t)
+	tui, daemon := buildBinaries(t)
+	sbxDir := stubSbx(t)
+	sock := startDaemon(t, daemon, sbxDir)
+	p := spawnTUI(t, tui, sock, seedSource(t))
+	launchOne(t, p)
+	before := len(sbxCalls(t, sbxDir))
+
+	p.send("M")
+	p.expect(t, "MCP servers", 10*time.Second)
+	p.expect(t, "none attached", 5*time.Second)
+	m := p.mark()
+	p.send("a")
+	p.expectNew(t, m, "Attach a registered server", 10*time.Second)
+	p.expect(t, "notion", 5*time.Second) // the stub registers one server
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "attached notion", 20*time.Second)
+
+	var sawLoad bool
+	for _, c := range sbxCalls(t, sbxDir)[before:] {
+		if strings.HasPrefix(c, "mcp load notion --sandbox ") {
+			sawLoad = true
+		}
+		if strings.HasPrefix(c, "stop ") || strings.HasPrefix(c, "rm ") || strings.HasPrefix(c, "create ") {
+			t.Errorf("an attach must never stop/recreate the sandbox: %q", c)
+		}
+	}
+	if !sawLoad {
+		t.Fatalf("expected `mcp load notion --sandbox <name>`; calls: %v", sbxCalls(t, sbxDir)[before:])
+	}
+	// The row behind the overlay already repainted with the badge (the renderer
+	// only redraws changed lines, so assert on the transcript, not on new output).
+	p.expect(t, "mcp: notion (additive)", 10*time.Second)
+	m = p.mark()
+	p.send("\x1b") // close the overlay: the list footer repaints with its own keys
+	p.expectNew(t, m, "launch", 10*time.Second)
+	p.send("q")
+}

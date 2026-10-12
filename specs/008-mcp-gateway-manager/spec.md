@@ -134,6 +134,11 @@ action, the sandbox's record names that server, and a sandbox launched on a *dif
    agent has A and cannot discover or attach C.
 9. **Given** the developer changes the daemon's default attach mode, **Then** no existing sandbox
    changes; only sandboxes launched afterwards use the new mode.
+10. **Given** a running sandbox launched before any mark existed, **When** the developer opens its
+    MCP view from the sandbox list, picks server B from the daemon's registered list and confirms,
+    **Then** B is loaded into that sandbox live (no stop or restart), the view and the row name B,
+    and B is not offered again; **Given** the load fails, **Then** the record is unchanged and the
+    runtime's message is shown (FR-102).
 
 ---
 
@@ -400,11 +405,11 @@ and the toggle is still off.
   exact set of servers attached. For now this is the only path by which *switchboard* attaches a server to a
   launching sandbox: launches MUST NOT accept per-launch server selections and kits MUST NOT declare
   servers.
-- **FR-082**: The set switchboard attaches MUST be fixed at launch: later mark or mode changes MUST
-  NOT alter running or stopped sandboxes, and the set MUST survive the sandbox's stop/start and
-  refresh. Servers an agent attaches for itself (additive mode) are the runtime's affair and are not
-  part of switchboard's record. Attaching servers to an existing sandbox from switchboard is out of
-  scope for this feature.
+- **FR-082**: The set switchboard attaches at launch MUST be fixed by the launch: later mark or mode
+  changes MUST NOT alter running or stopped sandboxes, and the set MUST survive the sandbox's
+  stop/start and refresh. Servers an agent attaches for itself (additive mode) are the runtime's
+  affair and are not part of switchboard's record. The only way switchboard's record grows after
+  launch is the developer's explicit per-sandbox attach (FR-102); nothing ever removes from it.
 - **FR-083**: A mark whose server no longer exists on the host MUST NOT fail a launch: the daemon
   MUST reconcile marks against the host's registrations before attaching, skip stale names, drop
   their marks, and record what was skipped in the launch output.
@@ -441,6 +446,17 @@ and the toggle is still off.
   sign-in toggle is the screen's first entry; the screen exists so later settings slot in without
   another navigation change. If the persisted settings cannot be read, defaults MUST apply and the
   screen MUST say so rather than fail.
+- **FR-102** *(added 2026-10-12)*: From the sandbox list, a single documented keystroke on a sandbox
+  MUST open a per-sandbox view of the MCP servers switchboard has attached to it (at launch or
+  later), each decorated with the kind and authorization state its daemon reports, and MUST let the
+  developer attach one more server chosen from that daemon's registered list (servers already on the
+  record are not offered). An attach MUST run the runtime's load against that sandbox without
+  stopping or restarting it, append the name to the sandbox's record on success, and reach other
+  clients through the existing sandbox-changed event; a failed load MUST leave the record untouched
+  and show the runtime's diagnostic. Eligible states are RUNNING and STOPPED, in either attach mode.
+  Servers the agent attached for itself are not shown, and the view MUST say so. There is no detach
+  (the runtime has none). When the daemon's gateway is unavailable the view MUST still show the record
+  and name the reason instead of offering an attach.
 - **FR-088**: When on, the TUI MUST at startup attempt every saved remote host in turn (the local
   daemon excluded, already-connected hosts skipped), connecting without a prompt where no password is
   needed and otherwise showing a masked password prompt centered on screen that names the host.
@@ -568,10 +584,11 @@ and the toggle is still off.
    registrations are per host. There is deliberately no "register everywhere" action in this
    feature; the developer registers on each daemon they want it on, and the daemon screen makes that
    a short trip.
-3. **Attach at launch as a fixed pre-loaded set** — sandboxes receive their default servers before
-   the agent starts and keep that set for life (it survives stop/start and refresh). Hot-attaching to
-   an existing sandbox is a known runtime capability but out of scope here; it is the natural next
-   feature once attach-by-default proves out.
+3. **Attach at launch as a fixed pre-loaded set, grow only by explicit attach** — sandboxes receive
+   their default servers before the agent starts and keep that set across stop/start and refresh.
+   Hot-attaching to an existing sandbox was added 2026-10-12 (FR-102) once the runtime's live
+   `mcp load` was confirmed on a real host: it is developer-initiated per sandbox, additive only,
+   and never re-applies marks.
 4. **Edit = change the mark, or replace the registration** — the runtime has no in-place edit, and
    replacing a registration can discard its authorization. The TUI therefore keeps mark changes
    cheap and side-effect-free and makes registration changes an explicit, warned replace.

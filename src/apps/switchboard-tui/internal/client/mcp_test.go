@@ -47,6 +47,9 @@ func (s *mcpFakeServer) SetMcpAttachMode(_ context.Context, req *pb.SetMcpAttach
 	s.mode = req.GetMode()
 	return &pb.McpGatewaySettings{DefaultAttachMode: s.mode}, nil
 }
+func (s *mcpFakeServer) AttachMcpServer(_ context.Context, req *pb.AttachMcpServerRequest) (*pb.Sandbox, error) {
+	return &pb.Sandbox{Id: req.GetSandboxId(), McpServers: []string{req.GetName()}, McpAttachMode: pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE}, nil
+}
 
 func startMcpFake(t *testing.T) *client.Conn {
 	t.Helper()
@@ -93,6 +96,9 @@ func TestMcpWrappersAndDaemonInfoAccessors(t *testing.T) {
 	}
 	if notes, err := conn.RemoveMcpServer(ctx, "notion"); err != nil || len(notes) != 1 {
 		t.Errorf("remove = %v %v", notes, err)
+	}
+	if sb, err := conn.AttachMcpServer(ctx, "sb-1", "notion"); err != nil || sb.GetId() != "sb-1" || len(sb.GetMcpServers()) != 1 {
+		t.Errorf("attach = %+v %v", sb, err)
 	}
 	var updates []client.McpAuthUpdate
 	state, err := conn.AuthorizeMcpServer(ctx, "notion", func(u client.McpAuthUpdate) { updates = append(updates, u) })

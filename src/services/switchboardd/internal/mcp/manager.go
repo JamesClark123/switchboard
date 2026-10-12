@@ -253,7 +253,7 @@ func (m *Manager) Remove(ctx context.Context, name string) ([]string, error) {
 	defer cancel()
 	out, err := m.cli.run(mctx, argvRemove(name)...)
 	if err != nil {
-		if looksNotRegistered(out) {
+		if LooksNotRegistered(out) {
 			return nil, fmt.Errorf("%w: %s", ErrNotRegistered, name)
 		}
 		return nil, err
@@ -282,7 +282,10 @@ func removalNotes(out string) []string {
 
 var removedLine = regexp.MustCompile(`^MCP server ".*" removed\.?$`)
 
-func looksNotRegistered(out string) bool {
+// LooksNotRegistered reports whether a runtime diagnostic says the named MCP
+// server is unknown on this host (`… MCP server "ghost" is not registered …`).
+// Exported for the gRPC layer, which maps it to NOT_FOUND for attach as well.
+func LooksNotRegistered(out string) bool {
 	l := strings.ToLower(out)
 	return strings.Contains(l, "not registered") || strings.Contains(l, "not found") || strings.Contains(l, "unknown")
 }

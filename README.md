@@ -219,6 +219,7 @@ The sandbox list is the home screen. Keys:
 | `K` | Manage agent kits · `A` attach a kit to the selected sandbox |
 | `E` | Review the selected sandbox's escape-hatch runs (this session) |
 | `S` | Edit the selected sandbox's seeded folders in place: `a` add folders (browse like launch), `space` mark, `d` remove marked (confirmed) — no restart |
+| `M` | Show the MCP servers attached to the selected sandbox and attach another from its daemon's registered list — live, no restart |
 | `l` | Show the `sbx` output of the selected sandbox's last launch / kit attach / refresh / source add — kit install-command output lives here; a failed launch's log stays reachable |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
 | `shift+→` / `shift+←` | Switch between the **sandboxes** screen and the **daemon** screen (see below) |
@@ -243,6 +244,14 @@ Neither operation stops or restarts the sandbox — attached terminals, the agen
 running services carry on — and the recorded folder list stays the single source of truth for
 the row, `F` refresh, and relaunch. A sandbox always keeps at least one seeded folder, and a
 removal is refused while a running service's working directory sits inside the folder.
+
+**MCP servers on an existing sandbox.** `M` opens the selected sandbox's MCP overlay: every
+server switchboard attached to it (at launch via attach-by-default marks, or later), with the
+kind and authorization state its daemon reports. `a` lists that daemon's other registered servers;
+`enter` attaches one with `sbx mcp load`, which the runtime applies live — the agent sees the new
+tools without a stop or restart, in additive and exclusive sandboxes alike. Servers the agent
+attached for itself through the gateway's discovery tools are not listed, and there is no detach
+(the runtime has none). Register and authorize servers on the daemon screen first (`shift+→`).
 
 ### Daemon screen & MCP gateway
 

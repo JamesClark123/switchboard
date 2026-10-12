@@ -25,6 +25,8 @@ type keyMap struct {
 	// capital-letter management surfaces are the house pattern (K/A/E/F); verified
 	// free against every other binding in this map.
 	Sources key.Binding
+	// McpServers opens the per-sandbox MCP overlay (feature 008, FR-102).
+	McpServers key.Binding
 	// ScreenNext/ScreenPrev move between the two top-level screens — the sandbox
 	// list and the daemon screen (feature 008, FR-068). Shift+arrows so plain
 	// arrows keep their list meaning.
@@ -78,6 +80,7 @@ func newKeyMap() keyMap {
 		EscapeHatchRuns: key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "runs")),
 		Services:        key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
 		Sources:         key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sources")),
+		McpServers:      key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "mcp")),
 		Log:             key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "sbx output")),
 		ScreenNext:      key.NewBinding(key.WithKeys("shift+right"), key.WithHelp("shift+→", "daemons")),
 		ScreenPrev:      key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", "sandboxes")),
@@ -125,7 +128,7 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.Log, k.ScreenNext, k.Settings)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.ScreenNext, k.Settings)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

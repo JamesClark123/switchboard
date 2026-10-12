@@ -54,6 +54,8 @@ func (m Model) handleEvent(ev *pb.Event) (tea.Model, tea.Cmd) {
 		// feature 007: an edit made elsewhere (another client, a completed add on
 		// this one) reaches an open sources overlay without a manual reload.
 		m.syncSourcesOverlay(e.SandboxChanged)
+		// feature 008 (FR-102): an attach made elsewhere reaches an open MCP overlay.
+		m.syncSandboxMcpOverlay(e.SandboxChanged)
 	case *pb.Event_Removed:
 		if m.removeSandbox(e.Removed.GetSandboxId()) {
 			m.refreshListItems()

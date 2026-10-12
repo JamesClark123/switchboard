@@ -600,6 +600,11 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.enterSources(sb, m.currentHostID())
 		}
 		return m, nil
+	case keyIs(msg, m.keys.McpServers):
+		if sb := m.actionable(); sb != nil {
+			return m.enterSandboxMcp(sb, m.currentHostID())
+		}
+		return m, nil
 	case keyIs(msg, m.keys.Log):
 		// Deliberately current(), not actionable(): a still-creating placeholder is
 		// exactly the row whose sbx output is worth watching.

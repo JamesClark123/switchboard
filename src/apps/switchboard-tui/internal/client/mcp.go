@@ -88,3 +88,9 @@ func (c *Conn) SetMcpServerDefault(ctx context.Context, name string, on bool) (*
 func (c *Conn) SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error) {
 	return c.api.SetMcpAttachMode(ctx, &pb.SetMcpAttachModeRequest{Mode: mode})
 }
+
+// AttachMcpServer loads a registered server into an existing sandbox on this
+// daemon (FR-102) and returns the updated record. The daemon bounds the load.
+func (c *Conn) AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error) {
+	return c.api.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sandboxID, Name: name})
+}

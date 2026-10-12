@@ -265,7 +265,16 @@ toggle persisted (quickstart Scenario 5).
 - [X] T060 [P] README: document the daemon screen (shift+←/→, `enter`/`c`/`x`), the **MCP gateway** section (register/authorize/remove, attach-by-default marks, additive vs exclusive mode, the 10-minute authorization wait, secrets/advanced options out of scope → `sbx secret set` on the host), the settings screen (`,`, `settings.toml`, `auto_connect_hosts`), startup sign-in behavior, the kit schema-2 move (migration-on-load, attach refusals, minimum `sbx` 0.36), and the key table rows in `README.md`
 - [X] T061 [P] Update `src/services/switchboardd/internal/sbxkit/manifest.go` doc comments and `README.md`'s daemon section to state the manifest comes from `sbx --help` only (T005) and that the daemon reports `sbx_min_version`/baseline in `GetDaemonInfo`
 - [X] T062 Run the full gate from the repo root (`Makefile` targets): `make fmt-check vet lint test cover env-check e2e`; fix any module below the 90% floor via the stub-sbx tests in `src/services/switchboardd/internal/mcp`, `src/services/switchboardd/internal/sbxkit`, `src/apps/switchboard-tui/internal/store`, `src/apps/switchboard-tui/internal/ui`
-- [ ] T063 Run `specs/008-mcp-gateway-manager/quickstart.md` Scenarios 1–5 end-to-end on a real host (after T003 confirmed Scenario 0) and record SC-001..SC-013 results in `specs/008-mcp-gateway-manager/quickstart.md` (a "Results" section)
+- [ ] T063 Run `specs/008-mcp-gateway-manager/quickstart.md` Scenarios 1–6 end-to-end on a real host (after T003 confirmed Scenario 0) and record SC-001..SC-013 results in `specs/008-mcp-gateway-manager/quickstart.md` (a "Results" section)
+
+---
+
+## Phase 9: Per-sandbox MCP attach (FR-102; added 2026-10-12)
+
+- [X] T064 Proto: `rpc AttachMcpServer(AttachMcpServerRequest) returns (Sandbox)` + `AttachMcpServerRequest{sandbox_id, name}` in `src/libs/switchboard-proto/proto/switchboard.proto` and `contracts/switchboard-mcp-gateway.proto`; `make proto`
+- [X] T065 Daemon: `src/services/switchboardd/internal/sandbox/manager_mcp.go` `Manager.AttachMcp` (op latch `opAttachMcp`, RUNNING/STOPPED only, `ErrMcpAlreadyAttached`, `runner.LoadMcp` via `tryRefs`, append + emit); `internal/grpc/mcp_rpcs.go` `AttachMcpServer` + `attachMcpStatus` (NOT_FOUND via exported `mcp.LooksNotRegistered`); tests in `manager_mcp_test.go` and `mcp_rpcs_test.go` (`testRunner.loadErr`)
+- [X] T066 TUI: `M` on the sandbox list opens `src/apps/switchboard-tui/internal/ui/sandbox_mcp.go` (attached list decorated from `ListMcpServers`, `a` picker of unattached registered servers, `r` reload, gateway-unavailable + list-error paths, `Event.sandbox_changed` sync); `client.Conn.AttachMcpServer`; `Daemon` interface + `fakeDaemon`; tests in `sandbox_mcp_test.go`; README key row + section
+- [X] T067 E2E `TestTUISandboxMcpAttachE2E` in `src/apps/switchboard-tui-e2e/mcp_e2e_test.go`: launch without marks → M → a → enter → `mcp load notion --sandbox` logged, no stop/rm/create, badge `mcp: notion (additive)`
 
 ---
 

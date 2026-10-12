@@ -47,6 +47,14 @@ service SwitchboardMcpGatewayAdditions {
 
   // Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
   rpc SetMcpAttachMode(SetMcpAttachModeRequest) returns (McpGatewaySettings);
+  // Attaches a registered server to an EXISTING sandbox (`sbx mcp load <name>
+  // --sandbox <name>`, FR-102): works on RUNNING/STOPPED sandboxes in either
+  // attach mode, appends the name to Sandbox.mcp_servers and emits
+  // Event.sandbox_changed. NOT_FOUND when the server is not registered on this
+  // host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
+  // FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
+  // delivers the new tools live; the agent is never restarted. There is no detach.
+  rpc AttachMcpServer(AttachMcpServerRequest) returns (Sandbox);
 }
 
 // ---------- enums ----------
@@ -130,6 +138,7 @@ message McpAuthProgress {
 
 message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
 message SetMcpAttachModeRequest { McpAttachMode mode = 1; }
+message AttachMcpServerRequest { string sandbox_id = 1; string name = 2; }
 
 // ---------- additions to existing messages ----------
 

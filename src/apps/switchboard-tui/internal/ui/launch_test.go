@@ -57,6 +57,10 @@ type fakeDaemon struct {
 	mcpAuthFrames []client.McpAuthUpdate
 	mcpAuthState  pb.McpAuthState
 	mcpAuthGate   chan struct{}
+	// attachedMcp records AttachMcpServer calls per sandbox id; attachMcpErr
+	// fails them (FR-102).
+	attachedMcp  map[string][]string
+	attachMcpErr error
 
 	// feature 006 fakes
 	services        []*pb.SandboxService

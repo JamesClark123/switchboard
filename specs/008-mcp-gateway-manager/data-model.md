@@ -45,8 +45,8 @@ and `RemoveMcpServer` (clears the mark, FR-074). Every mutation emits `Event.mcp
 
 | Field | # | Type | Set | Notes |
 |---|---|---|---|---|
-| `mcp_servers` | 21 | repeated string | once, at launch | exactly the names switchboard attached (post-reconcile); `[]` when none |
-| `mcp_attach_mode` | 22 | `McpAttachMode` | once, at launch | the daemon's mode at launch time |
+| `mcp_servers` | 21 | repeated string | at launch; appended by `AttachMcpServer` (FR-102) | exactly the names switchboard attached (post-reconcile, plus explicit attaches); `[]` when none; never shrinks |
+| `mcp_attach_mode` | 22 | `McpAttachMode` | once, at launch (an explicit attach on a pre-008 record sets ADDITIVE) | the daemon's mode at launch time |
 
 Invariants: fixed for the sandbox's life (I-S1, FR-082); never re-applied by restart/refresh/bring-up
 (I-S2); agent self-attachments in additive mode are *not* recorded (I-S3).

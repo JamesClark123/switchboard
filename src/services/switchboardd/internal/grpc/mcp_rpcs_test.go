@@ -2,6 +2,7 @@ package grpc_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -274,4 +275,101 @@ func TestKitRPCsGateOnRuntimeBaseline(t *testing.T) {
 		t.Errorf("launch with kits = %v, want FAILED_PRECONDITION", err)
 	}
 	_ = time.Second
+}
+
+// launchViaRPC launches one sandbox through the LaunchSandbox stream and returns
+// its terminal record.
+func launchViaRPC(t *testing.T, env *mcpEnv, name string) *pb.Sandbox {
+	t.Helper()
+	src := filepath.Join(env.dir, "src-"+name)
+	_ = os.MkdirAll(src, 0o755)
+	_ = os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644)
+	stream, err := env.client.LaunchSandbox(context.Background(), &pb.LaunchSandboxRequest{
+		Config: &pb.ConfigSnapshot{Name: name}, Sources: []*pb.SourceRef{{Path: src}}, OverrideResourceWarning: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb *pb.Sandbox
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if d := msg.GetDone(); d != nil {
+			sb = d
+		}
+	}
+	if sb == nil {
+		t.Fatal("launch produced no terminal sandbox")
+	}
+	return sb
+}
+
+// AttachMcpServer (FR-102): loads a registered server into an existing sandbox,
+// appends it to the record, and maps the failure modes to codes.
+func TestAttachMcpServerRPC(t *testing.T) {
+	env := startMcpServer(t, available)
+	ctx := context.Background()
+	sb := launchViaRPC(t, env, "plain")
+	if len(sb.GetMcpServers()) != 0 {
+		t.Fatalf("precondition: launched with servers %v", sb.GetMcpServers())
+	}
+
+	out, err := env.client.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sb.GetId(), Name: "notion"})
+	if err != nil {
+		t.Fatalf("AttachMcpServer: %v", err)
+	}
+	if strings.Join(out.GetMcpServers(), ",") != "notion" || out.GetMcpAttachMode() != pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE {
+		t.Errorf("sandbox = %+v", out)
+	}
+	if len(env.runner.mcpLoads) != 1 || env.runner.mcpLoads[0] != sb.GetContainerRef()+" notion" {
+		t.Errorf("runner loads = %v", env.runner.mcpLoads)
+	}
+	listed, _ := env.client.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
+	var persisted []string
+	for _, x := range listed.GetSandboxes() {
+		if x.GetId() == sb.GetId() {
+			persisted = x.GetMcpServers()
+		}
+	}
+	if strings.Join(persisted, ",") != "notion" {
+		t.Errorf("persisted = %v", persisted)
+	}
+
+	cases := []struct {
+		name string
+		req  *pb.AttachMcpServerRequest
+		code codes.Code
+	}{
+		{"duplicate", &pb.AttachMcpServerRequest{SandboxId: sb.GetId(), Name: "notion"}, codes.AlreadyExists},
+		{"empty name", &pb.AttachMcpServerRequest{SandboxId: sb.GetId(), Name: " "}, codes.InvalidArgument},
+		{"unknown sandbox", &pb.AttachMcpServerRequest{SandboxId: "nope", Name: "notion"}, codes.NotFound},
+	}
+	for _, c := range cases {
+		_, err := env.client.AttachMcpServer(ctx, c.req)
+		if status.Code(err) != c.code {
+			t.Errorf("%s: code = %v (%v), want %v", c.name, status.Code(err), err, c.code)
+		}
+	}
+	if len(env.runner.mcpLoads) != 1 {
+		t.Errorf("refused attaches must not load; loads = %v", env.runner.mcpLoads)
+	}
+
+	// The runtime's "is not registered" diagnostic maps to NOT_FOUND.
+	env.runner.loadErr = map[string]error{"ghost": errors.New(`error: add "ghost" to sandbox "x": add MCP gateway server: request failed: 404 Not Found: MCP server "ghost" is not registered (run 'sbx mcp add ghost ...')`)}
+	_, err = env.client.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sb.GetId(), Name: "ghost"})
+	if status.Code(err) != codes.NotFound || !strings.Contains(err.Error(), "is not registered") {
+		t.Errorf("unregistered: %v", err)
+	}
+
+	// Gateway unavailable on this host ⇒ FAILED_PRECONDITION with the reason.
+	down := startMcpServer(t, mcp.Availability{Available: false, Reason: "sbx mcp is not usable here"})
+	_, err = down.client.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: "x", Name: "notion"})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "not usable") {
+		t.Errorf("unavailable: %v", err)
+	}
 }

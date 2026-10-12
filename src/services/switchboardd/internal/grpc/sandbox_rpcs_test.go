@@ -22,7 +22,8 @@ import (
 
 // testRunner is a no-op Runner for the gRPC integration test.
 type testRunner struct {
-	mcpLoads  []string // feature 008: "<ref> <name>" per LoadMcp
+	mcpLoads  []string         // feature 008: "<ref> <name>" per LoadMcp
+	loadErr   map[string]error // feature 008: LoadMcp fails for these names
 	running   map[string]bool
 	kitAdds   []string // kit sources passed to `sbx kit add`
 	published []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
@@ -51,6 +52,9 @@ func (r *testRunner) Launch(_ context.Context, spec sandbox.LaunchSpec, _ func(s
 }
 func (r *testRunner) Stop(_ context.Context, ref string) error { r.running[ref] = false; return nil }
 func (r *testRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)) error {
+	if err := r.loadErr[name]; err != nil {
+		return err
+	}
 	r.mcpLoads = append(r.mcpLoads, ref+" "+name)
 	return nil
 }

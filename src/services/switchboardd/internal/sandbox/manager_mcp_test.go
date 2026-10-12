@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -120,5 +121,109 @@ func TestRestartAndRefreshNeverReapplyMcp(t *testing.T) {
 	}
 	if strings.Join(got.GetMcpServers(), ",") != "notion" || got.GetMcpAttachMode() != pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE {
 		t.Errorf("record fields must persist unchanged; got %v / %v", got.GetMcpServers(), got.GetMcpAttachMode())
+	}
+}
+
+// --- FR-102: attaching a registered server to an EXISTING sandbox ---
+
+func TestAttachMcpLoadsAppendsRecordAndEmits(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	sb, _ := launchWithMcp(t, m, dir, nil) // launched with no marks: no servers recorded
+	if len(sb.GetMcpServers()) != 0 || len(runner.mcpLoads) != 0 {
+		t.Fatalf("precondition: launch attached %v / loads %v", sb.GetMcpServers(), runner.mcpLoads)
+	}
+	ctx := context.Background()
+	out, err := m.AttachMcp(ctx, sb.GetId(), " notion ", nil)
+	if err != nil {
+		t.Fatalf("AttachMcp: %v", err)
+	}
+	if want := sb.GetContainerRef() + " notion"; len(runner.mcpLoads) != 1 || runner.mcpLoads[0] != want {
+		t.Errorf("loads = %v, want [%s]", runner.mcpLoads, want)
+	}
+	if got := out.GetMcpServers(); len(got) != 1 || got[0] != "notion" {
+		t.Errorf("record mcp_servers = %v, want [notion]", got)
+	}
+	if out.GetMcpAttachMode() != pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE {
+		t.Errorf("mode = %v, want ADDITIVE", out.GetMcpAttachMode())
+	}
+	if out.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("an attach must not change the state; got %v", out.GetState())
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := persisted.GetMcpServers(); len(got) != 1 || got[0] != "notion" {
+		t.Errorf("persisted mcp_servers = %v", got)
+	}
+
+	// A second server appends; the same name again is refused before any load.
+	if _, err := m.AttachMcp(ctx, sb.GetId(), "linear", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AttachMcp(ctx, sb.GetId(), "notion", nil); !errors.Is(err, ErrMcpAlreadyAttached) {
+		t.Errorf("duplicate attach err = %v, want ErrMcpAlreadyAttached", err)
+	}
+	if len(runner.mcpLoads) != 2 {
+		t.Errorf("a refused duplicate must not load; loads = %v", runner.mcpLoads)
+	}
+	persisted, _ = m.Get(sb.GetId())
+	if strings.Join(persisted.GetMcpServers(), ",") != "notion,linear" {
+		t.Errorf("record = %v", persisted.GetMcpServers())
+	}
+}
+
+func TestAttachMcpFailuresLeaveRecordUntouched(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	sb, _ := launchWithMcp(t, m, dir, nil)
+	ctx := context.Background()
+
+	runner.failLoad = map[string]bool{"ghost": true}
+	if _, err := m.AttachMcp(ctx, sb.GetId(), "ghost", nil); err == nil {
+		t.Fatal("a failed load must surface")
+	}
+	if _, err := m.AttachMcp(ctx, sb.GetId(), "", nil); err == nil {
+		t.Error("an empty name must be refused")
+	}
+	if _, err := m.AttachMcp(ctx, "no-such-sandbox", "notion", nil); err == nil {
+		t.Error("an unknown sandbox must be refused")
+	}
+	// Busy: another operation holds the latch.
+	if err := m.ops.acquire(sb.GetId(), opRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AttachMcp(ctx, sb.GetId(), "notion", nil); !errors.Is(err, ErrBusy) {
+		t.Errorf("busy err = %v, want ErrBusy", err)
+	}
+	m.ops.release(sb.GetId())
+	persisted, _ := m.Get(sb.GetId())
+	if len(persisted.GetMcpServers()) != 0 {
+		t.Errorf("failures must not touch the record; got %v", persisted.GetMcpServers())
+	}
+
+	// STOPPED is eligible (the runtime starts the sandbox on demand).
+	if _, err := m.Stop(ctx, sb.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.AttachMcp(ctx, sb.GetId(), "notion", nil)
+	if err != nil {
+		t.Fatalf("attach on a stopped sandbox: %v", err)
+	}
+	if out.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED || len(out.GetMcpServers()) != 1 {
+		t.Errorf("stopped attach: state %v servers %v", out.GetState(), out.GetMcpServers())
+	}
+}
+
+func TestAttachableState(t *testing.T) {
+	for st, ok := range map[pb.SandboxState]bool{
+		pb.SandboxState_SANDBOX_STATE_RUNNING:  true,
+		pb.SandboxState_SANDBOX_STATE_STOPPED:  true,
+		pb.SandboxState_SANDBOX_STATE_CREATING: false,
+		pb.SandboxState_SANDBOX_STATE_ERROR:    false,
+	} {
+		err := attachableState(st)
+		if (err == nil) != ok {
+			t.Errorf("attachableState(%v) = %v, want ok=%v", st, err, ok)
+		}
+		if err != nil && !errors.Is(err, ErrIneligibleState) {
+			t.Errorf("%v: err should wrap ErrIneligibleState: %v", st, err)
+		}
 	}
 }

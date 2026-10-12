@@ -90,6 +90,8 @@ type Daemon interface {
 	AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error)
 	SetMcpServerDefault(ctx context.Context, name string, on bool) (*pb.McpServer, error)
 	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
+	// Attaches a registered server to an existing sandbox on this daemon (FR-102).
+	AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
 	// Edit sandbox sources (feature 007): add folders to an existing sandbox in
 	// place (streaming, with the launch-style low-resource override round-trip)
 	// and remove seeded folders (DESTRUCTIVE — gate it behind a confirmation).
@@ -118,6 +120,7 @@ const (
 	screenRuns
 	screenServices
 	screenSources
+	screenSandboxMcp
 	screenOpLog
 	screenDaemons
 	screenMcp
@@ -244,6 +247,10 @@ type Model struct {
 	// the sandbox itself stays RUNNING/STOPPED (FR-054/FR-055).
 	sourcesView sourcesState
 	sourceAdds  map[string]*sourceAddInFlight
+
+	// --- feature 008 (FR-102): per-sandbox MCP servers ---
+	// sandboxMcpView backs the `M` overlay.
+	sandboxMcpView sandboxMcpState
 
 	// sbx output: the lines the daemon streams while a launch, kit attach,
 	// refresh or source add runs, kept per sandbox for the `l` overlay. It is the
@@ -652,6 +659,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.dispatchAddSources(msg.id, msg.host, msg.sources, true)
 	case sourcesRemovedMsg:
 		return m.handleSourcesRemoved(msg)
+	case sandboxMcpListMsg:
+		return m.handleSandboxMcpList(msg)
+	case sandboxMcpAttachedMsg:
+		return m.handleSandboxMcpAttached(msg)
 
 	case signInStartMsg:
 		return m.startSignIn()
@@ -808,6 +819,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateServicesKey(msg)
 	case screenSources:
 		return m.updateSourcesKey(msg)
+	case screenSandboxMcp:
+		return m.updateSandboxMcpKey(msg)
 	case screenOpLog:
 		return m.updateOpLogKey(msg)
 	case screenDaemons:
@@ -851,6 +864,13 @@ func (m Model) View() string {
 	if m.screen == screenSources {
 		bg := m.chrome(m.viewList(), m.sourcesHelp())
 		return overlayCenter(bg, m.sourcesModal(), m.width, m.height)
+	}
+
+	// The per-sandbox MCP overlay floats over the list as well (feature 008,
+	// FR-102): the row whose servers it shows stays visible.
+	if m.screen == screenSandboxMcp {
+		bg := m.chrome(m.viewList(), m.sandboxMcpHelp())
+		return overlayCenter(bg, m.sandboxMcpModal(), m.width, m.height)
 	}
 
 	// The sbx output viewer floats over the list for the same reason: the row

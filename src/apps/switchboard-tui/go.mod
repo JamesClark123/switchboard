@@ -15,7 +15,6 @@ require (
 
 require (
 	aead.dev/minisign v0.2.0 // indirect
-	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/minio/selfupdate v0.6.0 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
@@ -64,7 +63,7 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.11
 )
 
 replace github.com/jamesclark123/switchboard/libs/switchboard-proto => ../../libs/switchboard-proto

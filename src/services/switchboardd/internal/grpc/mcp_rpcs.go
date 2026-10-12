@@ -3,9 +3,13 @@ package grpc
 import (
 	"context"
 	"errors"
+	"log"
+	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -106,4 +110,44 @@ func (s *Server) SetMcpAttachMode(ctx context.Context, req *pb.SetMcpAttachModeR
 	}
 	out, err := s.mcp.SetMode(ctx, req.GetMode())
 	return out, mcpStatus(err)
+}
+
+// AttachMcpServer loads a registered server into an existing sandbox (FR-102).
+// The gateway must be manageable here, then the sandbox manager does the work
+// under the sandbox's operation latch; the runtime's own diagnostic is passed
+// through on a failed load.
+func (s *Server) AttachMcpServer(ctx context.Context, req *pb.AttachMcpServerRequest) (*pb.Sandbox, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	id := req.GetSandboxId()
+	out, err := s.mgr.AttachMcp(ctx, id, name, func(l string) { log.Printf("[mcp] attach %s to %s: %s", name, id, l) })
+	if err != nil {
+		return nil, attachMcpStatus(err)
+	}
+	return s.withTerminalCounts(out), nil
+}
+
+// attachMcpStatus maps an attach failure to a gRPC code: an unknown sandbox or
+// an unregistered server is NOT_FOUND, a name already on the record is
+// ALREADY_EXISTS, a busy or ineligible sandbox is FAILED_PRECONDITION, and
+// anything else (a runtime diagnostic) travels verbatim.
+func attachMcpStatus(err error) error {
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, registry.ErrNotFound), mcp.LooksNotRegistered(err.Error()):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandbox.ErrMcpAlreadyAttached):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return status.Error(codes.Unknown, err.Error())
+	}
 }

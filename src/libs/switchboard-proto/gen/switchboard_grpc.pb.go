@@ -69,6 +69,7 @@ const (
 	Switchboard_AuthorizeMcpServer_FullMethodName   = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
 	Switchboard_SetMcpServerDefault_FullMethodName  = "/switchboard.v1.Switchboard/SetMcpServerDefault"
 	Switchboard_SetMcpAttachMode_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpAttachMode"
+	Switchboard_AttachMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AttachMcpServer"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -243,6 +244,14 @@ type SwitchboardClient interface {
 	SetMcpServerDefault(ctx context.Context, in *SetMcpServerDefaultRequest, opts ...grpc.CallOption) (*McpServer, error)
 	// Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
 	SetMcpAttachMode(ctx context.Context, in *SetMcpAttachModeRequest, opts ...grpc.CallOption) (*McpGatewaySettings, error)
+	// Attaches a registered server to an EXISTING sandbox (`sbx mcp load <name>
+	// --sandbox <name>`, FR-102): works on RUNNING/STOPPED sandboxes in either
+	// attach mode, appends the name to Sandbox.mcp_servers and emits
+	// Event.sandbox_changed. NOT_FOUND when the server is not registered on this
+	// host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
+	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
+	// delivers the new tools live; the agent is never restarted. There is no detach.
+	AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
 }
 
 type switchboardClient struct {
@@ -681,6 +690,16 @@ func (c *switchboardClient) SetMcpAttachMode(ctx context.Context, in *SetMcpAtta
 	return out, nil
 }
 
+func (c *switchboardClient) AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_AttachMcpServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -853,6 +872,14 @@ type SwitchboardServer interface {
 	SetMcpServerDefault(context.Context, *SetMcpServerDefaultRequest) (*McpServer, error)
 	// Sets the daemon's default attach mode (FR-100). Never touches existing sandboxes.
 	SetMcpAttachMode(context.Context, *SetMcpAttachModeRequest) (*McpGatewaySettings, error)
+	// Attaches a registered server to an EXISTING sandbox (`sbx mcp load <name>
+	// --sandbox <name>`, FR-102): works on RUNNING/STOPPED sandboxes in either
+	// attach mode, appends the name to Sandbox.mcp_servers and emits
+	// Event.sandbox_changed. NOT_FOUND when the server is not registered on this
+	// host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
+	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
+	// delivers the new tools live; the agent is never restarted. There is no detach.
+	AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -967,6 +994,9 @@ func (UnimplementedSwitchboardServer) SetMcpServerDefault(context.Context, *SetM
 }
 func (UnimplementedSwitchboardServer) SetMcpAttachMode(context.Context, *SetMcpAttachModeRequest) (*McpGatewaySettings, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetMcpAttachMode not implemented")
+}
+func (UnimplementedSwitchboardServer) AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method AttachMcpServer not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -1541,6 +1571,24 @@ func _Switchboard_SetMcpAttachMode_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_AttachMcpServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AttachMcpServerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).AttachMcpServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_AttachMcpServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).AttachMcpServer(ctx, req.(*AttachMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1647,6 +1695,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetMcpAttachMode",
 			Handler:    _Switchboard_SetMcpAttachMode_Handler,
+		},
+		{
+			MethodName: "AttachMcpServer",
+			Handler:    _Switchboard_AttachMcpServer_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

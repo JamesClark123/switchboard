@@ -105,6 +105,21 @@ and `sbxkit.MinSbxVersion` confirmed as the first schema-2 release.
 3. Settings → toggle off → restart: zero prompts; `cat ~/.config/switchboard/settings.toml` shows
    `auto_connect_hosts = false`. Delete the file → defaults (on) with a notice on the settings screen.
 
+## Scenario 6 — Attach a server to an existing sandbox (FR-102; added 2026-10-12)
+
+1. With a sandbox launched before any mark existed selected on the list, press **M**: the overlay
+   says no server is attached and that agent-attached servers are not listed.
+2. Press `a`: the picker lists the daemon's registered servers (kind + auth state). Pick one,
+   `enter`: the overlay says "attached <name> — the agent sees its tools now", the row badge shows
+   `mcp: <name> (additive)`, and the daemon log shows `sbx mcp load <name> --sandbox <sandbox>`.
+   No `stop`/`rm`/`create` ran; a terminal attached to the agent stayed connected.
+3. Press `a` again: the attached server is no longer offered; with nothing left the overlay says so.
+4. On a daemon whose gateway is unavailable, **M** still shows the record and names the reason; `a`
+   is refused.
+5. From the host, `sbx mcp rm <name> --force`; reopen **M**: the row is flagged "no longer
+   registered on this host" (the record is not rewritten).
+
+
 ## Automated coverage map
 
 | Layer | Covers |

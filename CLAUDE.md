@@ -181,7 +181,10 @@ recreates the container under the same name and refuses blocked sections with `e
 `sbx start` **does not exist** — `SbxRunner.Start` is now the no-op `sbx exec <N> true`, which starts a
 stopped sandbox in place (`bringUp` had always fallen back to destroy + relaunch; `sbx run -d --name` also
 resumes but leaves a detached agent). Scenario 0 / T003 complete 2026-10-12; only T063 (real-host
-quickstart run) remains. **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
+quickstart run) remains. **FR-102 (added 2026-10-12)**: `M` on the sandbox list opens a per-sandbox MCP
+overlay (attached servers + `a` picker of the daemon's other registered servers) backed by one additive
+RPC `AttachMcpServer` → `Manager.AttachMcp` → `sbx mcp load` under the op latch, appending to
+`Sandbox.mcp_servers` (never shrinks; no detach). **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 Prior feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing
