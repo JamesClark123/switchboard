@@ -16,13 +16,13 @@ operation, each pinned by an argv-asserting test:
 
 | Operation (spec) | argv | Notes |
 |---|---|---|
-| List registrations (FR-073) | `sbx mcp ls` | Table `NAME TYPE URL/COMMAND`; parsed by header column offsets. No documented `--json` → the parser is header-driven and tolerant of extra columns. |
-| Authorization state (FR-073) | `sbx mcp auth status <name> --json` | Documented `--json`. Run per *remote* server after `ls`; failure ⇒ state "unknown", never a list failure. |
-| Register remote (FR-074) | `sbx mcp add <name> --url <url> --skip-auth` | Always `--skip-auth`: registration never waits on a browser (R2). |
+| List registrations (FR-073) | `sbx mcp ls` | **Reconciled 2026-10-10**: the real table is `NAME TRANSPORT STATUS GATEWAY DETAIL` (no URL column); header-driven parse, kind from TRANSPORT (`remote …` ⇒ remote), STATUS (`needs auth`) is the auth fallback, TRANSPORT/STATUS/DETAIL carried verbatim on `McpServer` (fields 6–8). The documented `NAME TYPE URL/COMMAND` shape stays accepted. |
+| Authorization state (FR-073) | `sbx mcp auth status <name> --json` | **Reconciled 2026-10-10**: `[{"server_name":"notion","status":"unauthorized"}]` (an array; the entry for the name decides). Run per *remote* server after `ls`; failure ⇒ the `ls` STATUS column, else "unknown", never a list failure. |
+| Register remote (FR-074) | `sbx mcp add <name> --url <url> --skip-auth` | Always `--skip-auth`: registration never waits on a browser (R2). **Confirmed 2026-10-10.** |
 | Register host command (FR-074/076) | `sbx mcp add <name> --command <cmd> [--args a,b] [--dir <dir>]` | Comma-joined args per docs; `--dir` only with `--command`. |
-| Remove (FR-074) | `sbx mcp rm <name>` | Prints follow-up `sbx secret rm` hints → relayed verbatim (FR-074). 0.45+: errors when not registered. |
-| Authorize (FR-075) | `sbx mcp auth <name>` | Blocks until the browser flow completes; prints `Open this URL to authorize … : <url>` (R2). |
-| Attach to a created sandbox, additive mode (FR-100) | `sbx mcp load <name> --sandbox <sandboxName>` | Works in both gateway modes; persists across restarts; live tool-list update to connected agents. |
+| Remove (FR-074) | `sbx mcp rm <name> --force` | **Reconciled 2026-10-10**: the bare command prompts `(y/N)` for the server and its OAuth credential, so the daemon (no terminal) always passes `--force`. It removes the OAuth credential itself and prints `No local OAuth token found …` / `MCP server "<name>" removed`; informational lines are relayed as `notes` (FR-074). Errors when not registered. |
+| Authorize (FR-075) | `sbx mcp auth <name>` | Blocks until the browser flow completes. **Confirmed 2026-10-10**: prints OAuth scope lines, `Open this URL to authorize MCP server "<name>":`, then the bare URL on the next line (R2). |
+| Attach to a created sandbox, additive mode (FR-100) | `sbx mcp load <name> --sandbox <sandboxName>` | Works in both gateway modes; persists across restarts; live tool-list update to connected agents. **Confirmed 2026-10-12** right after `sbx create` with no agent attached: `MCP server "notion" loaded into sandbox "probe-c" (live)` (rc 0) on a dynamic sandbox and on a `--static-mcp` one; an unregistered name fails rc 1 with `… 404 Not Found: MCP server "ghost" is not registered (run 'sbx mcp add ghost ...')`, which the launch logs as `mcp: skipped ghost: …`. |
 | Pre-load, exclusive mode (FR-100) | `sbx create … --static-mcp a,b` | Appended to the existing `create` argv. Static mode = no discovery tools. |
 
 **Rationale**: these are the only documented verbs; `sbx mcp catalog` was removed in 0.45 and is
@@ -165,7 +165,7 @@ switchboard must never write v1 again (FR-091).
 ## R9 — Runtime baseline and surface reconciliation (FR-096/097)
 
 **Decision**: `sbxkit.MinSbxVersion = "0.36.0"` (first release with schema v2 per the kit
-reference). At startup the daemon parses the first `MAJOR.MINOR.PATCH` in `sbx --version` output;
+reference). At startup the daemon parses the first `MAJOR.MINOR.PATCH` in `sbx version` output (**reconciled 2026-10-10 on a real host**: the command is `sbx version`, not `--version`, and it prints `sbx version: v0.47.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9` — the leading `v` and trailing commit are ignored);
 `DaemonInfo` gains `sbx_min_version`, `runtime_baseline_met`, `mcp_gateway_available`,
 `mcp_gateway_reason`. Kit RPCs (`ValidateKit`, `AddSandboxKit`, launches with kits) return
 `FAILED_PRECONDITION` naming both versions when unmet; MCP RPCs return it with the reason when
@@ -177,16 +177,16 @@ quickstart Scenario 0:
 
 | Daemon uses | In current docs? | Action |
 |---|---|---|
-| `sbx create --name N claude <ws> [--kit …]` | ✅ | confirm `--static-mcp` composes with `--kit` |
+| `sbx create --name N claude <ws> [--kit …]` | ✅ | **Confirmed 2026-10-12 on a real host (sbx 0.47)**: `sbx create --name probe-b claude . --kit ./probe-kit --static-mcp notion` exits 0 and the banner shows both `kit ./probe-kit` and the kit's install/startup commands; `--help` documents `--static-mcp strings` as comma list, repeated flags, or a mix ("all forms accumulate into the same set … chosen once at creation time. Local sandboxes take names registered with 'sbx mcp add'") and `--kit strings` as repeatable mixin references; a `needs auth` server is accepted in the static set. Usage `sbx create [flags] AGENT\|SANDBOX_KIT [PATH...]`. `sbx mcp load` is documented for static *and* dynamic sandboxes with a live tool-list update |
 | `sbx exec …` | ✅ | — |
 | `sbx ports <N> --publish …` | ✅ | — |
 | `sbx policy allow network …` | ✅ | — |
-| `sbx kit add` / `sbx kit validate` | ✅ | confirm v2 rejection message for blocked sections |
-| `sbx ls --json` | ⚠ `ls` ✅, `--json` unconfirmed | confirm or switch `IsRunning` to the documented form |
-| `sbx stop` / `sbx rm` | ✅ | — |
-| `sbx start` | ❌ not documented | confirm; fallback per docs: `sbx run -d --name <N>` re-starts an existing sandbox |
+| `sbx kit add` / `sbx kit validate` | ✅ | **Confirmed 2026-10-12 on a real host (sbx 0.47)**: `sbx kit add probe-c ./probe-kit` (allow + env + install) exits 0 and prints `Recreating sandbox "probe-c" to apply augmented kit list...`, `Swap container probe-c-swap-<hex> started (id=…)`, `Kit "probe-kit" added to sandbox "probe-c"` — a container swap under the same name, so by-name addressing holds. Blocked sections exit 1: `error: kit "blocked-kit" declares setup.startup, which the kit-add recreate flow does not yet apply; recreate the sandbox from scratch via `sbx rm` + `sbx create --kit` to use this kit`; same text for `permissions.network.deny`; only the first offending section is named. `credentials`/`agentInstructions`/`setup.files` alone remain unobserved (each kit stopped at its first blocker) and stay refused per FR-095. (docs 2026-10-10: applies `environment.variables`, `setup.install`, `permissions.network.allow`; "rejects a kit that declares static files, `setup.startup`, or `setup.files`"; `deny`/`credentials`/`agentInstructions` unmentioned — switchboard keeps refusing them per FR-095; the v2 loader is `KnownFields(true)`, so a `schema:` typo falls back to the v1 parser and reports `field permissions not found in type spec.SpecFile`) |
+| `sbx ls --json` | ✅ **confirmed 2026-10-12** | `{"sandboxes":[{"name","id","agent","status":"running"\|"stopped","last_used_at","workspaces":[…],"created_at","workspace_missing"?}]}` — exactly the three keys `IsRunning` reads; the plain `sbx ls` table is `SANDBOX AGENT STATUS PORTS WORKSPACE` |
+| `sbx stop` / `sbx rm` | ✅ | `sbx stop <N>` prints `Sandbox '<N>' stopped; state preserved. Restart with: sbx run --name <N>` (confirmed 2026-10-12) |
+| `sbx start` | ❌ **confirmed absent 2026-10-12** → replaced | `sbx start <N>` exits 1: `error: sbx: unknown command: sbx start`, so `bringUp` had always fallen back to destroy + relaunch (installed packages and agent history lost on every restart of a stopped sandbox). Confirmed the same day: `sbx exec <N> true` on a stopped sandbox prints `Sandbox <N> started successfully` and runs the command — `SbxRunner.Start` is now that no-op exec (pinned by `TestSbxRunnerStartIsNoopExec`). `sbx run -d --name <N>` also resumes in place but starts a detached agent beside the daemon's PTY agent, so it was not used. This also confirms the `sbx exec <ref> <cmd>` form feature 006 assumed by analogy |
 | `sbx options --json` | ❌ not documented | drop the branch; `--help` parsing (already the fallback) becomes the only source |
-| `sbx --version` | ✅ | pin the exact output format |
+| `sbx version` | ✅ **confirmed** | `sbx version: v0.47.0 <commit>` (no `--version` flag) |
 
 **Rationale**: FR-096/097 make the implicit "whatever is installed" explicit; the inventory is
 what planning needs to turn the long-standing "documentation-derived" caveat into checked facts.

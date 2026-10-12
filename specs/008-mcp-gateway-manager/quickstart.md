@@ -19,17 +19,20 @@ and CLI contracts: [contracts/](./contracts/).
 Record each answer in `research.md` before trusting anything below:
 
 ```bash
-sbx --version                              # pin the output format the version parser must match
-sbx mcp ls                                 # confirm the NAME/TYPE/URL-COMMAND header + spacing
-sbx mcp add probe --url https://mcp.notion.com/mcp --skip-auth   # registers without a browser?
-sbx mcp auth status probe --json           # confirm field names → AUTHORIZED/UNAUTHORIZED mapping
-sbx mcp auth probe                         # prints an "Open this URL…" line, then blocks? Ctrl-C: registration intact?
-sbx create --name probe-sb claude . --static-mcp probe           # composes with --kit? gateway static?
-sbx mcp load probe --sandbox probe-sb      # live load on a running sandbox
-sbx mcp rm probe                           # prints `sbx secret rm` hints? error when absent?
-sbx start probe-sb || sbx run -d --name probe-sb                 # which one exists (R9 inventory)
-sbx ls --json ; sbx options --json         # exist? (R9 inventory)
-sbx kit add probe-sb <dir-with-startup>    # exact rejection text for blocked sections (FR-095)
+sbx version                                # confirmed: prints `sbx version: v0.47.0 <commit>` (no --version flag)
+sbx mcp ls                                 # confirmed: NAME TRANSPORT STATUS GATEWAY DETAIL (no URL column)
+sbx mcp add probe --url https://mcp.notion.com/mcp --skip-auth   # confirmed: registers without a browser
+sbx mcp auth status probe --json           # confirmed: [{"server_name":"probe","status":"unauthorized"}]
+sbx mcp auth probe                         # confirmed: scope lines, "Open this URL…:" then the bare URL on the next line; still check Ctrl-C leaves the registration
+sbx create --name probe-sb claude . --kit ./probe-kit --static-mcp probe   # confirmed 2026-10-12: composes with --kit (rc 0; comma list, repeated, or mixed)
+sbx mcp load probe --sandbox probe-sb      # confirmed 2026-10-12: `MCP server "probe" loaded into sandbox "probe-sb" (live)` on dynamic and static sandboxes; unknown name ⇒ rc 1 + 404 "is not registered"
+sbx mcp rm probe --force                   # confirmed: prompts (y/N) without --force; prints the OAuth-token line then "removed"
+sbx start probe-sb                         # confirmed 2026-10-12: does not exist (`unknown command`); the daemon resumes with `sbx exec <N> true`
+sbx ls --json                              # confirmed 2026-10-12: {"sandboxes":[{name,id,agent,status,last_used_at,workspaces[],created_at,workspace_missing?}]}
+sbx exec probe-sb true                     # confirmed 2026-10-12: starts a stopped sandbox (`Sandbox probe-sb started successfully`) — this is `SbxRunner.Start`
+sbx kit add probe-sb <dir-with-startup>    # confirmed 2026-10-12: rc 1, `error: kit "<kit>" declares setup.startup, which the kit-add recreate flow does not yet apply; …`; an accepted kit recreates the container under the same name (swap container). Write the kit as
+                                           # `schemaVersion: "2"` + `name:` — a `schema:` typo is parsed as v1 and
+                                           # rejected with `field permissions not found in type spec.SpecFile`
 ```
 
 Expect: every argv in [contracts/sbx-mcp-cli.md](./contracts/sbx-mcp-cli.md) confirmed or amended,

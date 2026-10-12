@@ -39,7 +39,8 @@ func readLog(t *testing.T, path string) []string {
 	return strings.Split(strings.TrimSpace(string(b)), "\n")
 }
 
-const twoServerTable = `printf 'NAME                 TYPE     URL/COMMAND\nnotion               remote   https://mcp.notion.com/mcp\npw                   command  npx @playwright/mcp@latest\n'`
+// twoServerTable is the real `sbx mcp ls` shape (reconciled 2026-10-10).
+const twoServerTable = `printf 'NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\nnotion   remote http   needs auth   LOCAL, managed by you   sbx mcp auth notion\npw       stdio         ready        LOCAL, managed by you   npx @playwright/mcp@latest\n'`
 
 type testEnv struct {
 	m      *Manager
@@ -83,7 +84,7 @@ func (e *testEnv) mark(t *testing.T, names ...string) {
 func TestListDecoratesAndDropsStaleMarks(t *testing.T) {
 	env := newEnv(t, `
   "mcp ls") `+twoServerTable+` ;;
-  "mcp auth status notion --json") echo '{"authorized": true}' ;;`)
+  "mcp auth status notion --json") echo '[{"server_name":"notion","status":"authorized"}]' ;;`)
 	env.mark(t, "notion", "stale")
 	servers, settings, err := env.m.List(context.Background())
 	if err != nil {
@@ -93,8 +94,13 @@ func TestListDecoratesAndDropsStaleMarks(t *testing.T) {
 		t.Fatalf("servers = %+v", servers)
 	}
 	n, pw := servers[0], servers[1]
-	if n.GetName() != "notion" || n.GetKind() != pb.McpServerKind_MCP_SERVER_KIND_REMOTE || n.GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED || !n.GetAttachByDefault() || n.GetTarget() != "https://mcp.notion.com/mcp" {
+	// Kind follows the TRANSPORT column; `auth status` wins over the STATUS
+	// column ("needs auth"); the runtime's own columns ride along verbatim.
+	if n.GetName() != "notion" || n.GetKind() != pb.McpServerKind_MCP_SERVER_KIND_REMOTE || n.GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED || !n.GetAttachByDefault() {
 		t.Errorf("notion row = %+v", n)
+	}
+	if n.GetTransport() != "remote http" || n.GetStatusText() != "needs auth" || n.GetDetail() != "sbx mcp auth notion" || n.GetTarget() != "" {
+		t.Errorf("notion columns = %+v", n)
 	}
 	if pw.GetKind() != pb.McpServerKind_MCP_SERVER_KIND_LOCAL || pw.GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE || pw.GetAttachByDefault() {
 		t.Errorf("pw row = %+v", pw)
@@ -118,7 +124,9 @@ func TestListDecoratesAndDropsStaleMarks(t *testing.T) {
 	}
 }
 
-func TestListStatusFailureIsUnknownNeverAnError(t *testing.T) {
+// A failed `auth status` is never a list error: the ls STATUS column stands in
+// ("needs auth" ⇒ UNAUTHORIZED), and without one the state is UNKNOWN.
+func TestListStatusFailureFallsBackNeverAnError(t *testing.T) {
 	env := newEnv(t, `
   "mcp ls") `+twoServerTable+` ;;
   "mcp auth status notion --json") echo "boom" >&2; exit 1 ;;`)
@@ -126,8 +134,19 @@ func TestListStatusFailureIsUnknownNeverAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if servers[0].GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN {
-		t.Errorf("auth state = %v, want UNKNOWN", servers[0].GetAuthState())
+	if servers[0].GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED {
+		t.Errorf("auth state = %v, want UNAUTHORIZED from the STATUS column", servers[0].GetAuthState())
+	}
+
+	env = newEnv(t, `
+  "mcp ls") printf 'NAME    TYPE     URL/COMMAND\nnotion  remote   https://mcp.notion.com/mcp\n' ;;
+  "mcp auth status notion --json") echo "boom" >&2; exit 1 ;;`)
+	servers, _, err = env.m.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if servers[0].GetAuthState() != pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN || servers[0].GetTarget() != "https://mcp.notion.com/mcp" {
+		t.Errorf("documented-table row = %+v, want UNKNOWN + target", servers[0])
 	}
 }
 
@@ -144,7 +163,7 @@ func TestAddRemoteArgvMarkAndEvent(t *testing.T) {
 	env := newEnv(t, `
   "mcp add notion --url https://mcp.notion.com/mcp --skip-auth") echo registered ;;
   "mcp ls") `+twoServerTable+` ;;
-  "mcp auth status notion --json") echo '{"status":"unauthorized"}' ;;`)
+  "mcp auth status notion --json") echo '[{"server_name":"notion","status":"unauthorized"}]' ;;`)
 	row, err := env.m.Add(context.Background(), &pb.AddMcpServerRequest{
 		Name: "notion", Definition: &pb.AddMcpServerRequest_Url{Url: "https://mcp.notion.com/mcp"}, AttachByDefault: true,
 	})
@@ -223,21 +242,23 @@ func TestAddHostErrorIsVerbatimAndSilent(t *testing.T) {
 
 func TestRemoveClearsMarkCollectsNotesAndMapsNotFound(t *testing.T) {
 	env := newEnv(t, `
-  "mcp rm notion") printf 'MCP server "notion" removed.\nTo remove its secrets run:\n  sbx secret rm mcp:notion:api-key\n' ;;
-  "mcp rm ghost") echo 'Error: MCP server "ghost" is not registered' >&2; exit 1 ;;`)
+  "mcp rm notion --force") printf 'No local OAuth token found for MCP server "notion"\nMCP server "notion" removed\n' ;;
+  "mcp rm ghost --force") echo 'Error: MCP server "ghost" is not registered' >&2; exit 1 ;;`)
 	env.mark(t, "notion")
 	notes, err := env.m.Remove(context.Background(), "notion")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(notes) != 1 || notes[0] != "sbx secret rm mcp:notion:api-key" {
+	// The real transcript (2026-10-10): the credential line is relayed, the
+	// bare confirmation is not.
+	if len(notes) != 1 || notes[0] != `No local OAuth token found for MCP server "notion"` {
 		t.Errorf("notes = %q", notes)
 	}
 	persisted, _ := env.reg.GetMcpSettings()
 	if persisted.GetMarks()["notion"] {
 		t.Error("remove should clear the mark")
 	}
-	if log := readLog(t, env.log); log[0] != "mcp rm notion" {
+	if log := readLog(t, env.log); log[0] != "mcp rm notion --force" {
 		t.Errorf("argv = %q", log[0])
 	}
 	if env.events != 1 {
@@ -333,4 +354,19 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestRemovalNotes(t *testing.T) {
+	cases := map[string][]string{
+		"No local OAuth token found for MCP server \"notion\"\nMCP server \"notion\" removed\n":            {`No local OAuth token found for MCP server "notion"`},
+		"MCP server \"notion\" removed.\nTo remove its secrets run:\n  sbx secret rm mcp:notion:api-key\n": {"To remove its secrets run:", "sbx secret rm mcp:notion:api-key"},
+		"MCP server \"pw\" removed\n": nil,
+		"":                            nil,
+	}
+	for in, want := range cases {
+		got := removalNotes(in)
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("removalNotes(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

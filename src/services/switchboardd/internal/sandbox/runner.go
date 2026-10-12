@@ -39,7 +39,7 @@ type Runner interface {
 	// underlying container handle (container_ref) used for re-adoption.
 	Launch(ctx context.Context, spec LaunchSpec, log func(string)) (string, error)
 	Stop(ctx context.Context, containerRef string) error
-	Start(ctx context.Context, containerRef string) error // restart from retained copy
+	Start(ctx context.Context, containerRef string) error // resume a stopped sandbox in place
 	Destroy(ctx context.Context, containerRef string) error
 	// AddKit attaches a kit to an existing sandbox (`sbx kit add`). sbx restarts
 	// the sandbox to apply it, preserving VM state.
@@ -198,8 +198,20 @@ func (r *SbxRunner) Stop(ctx context.Context, ref string) error {
 	return err
 }
 
+// Start resumes a stopped sandbox in place by running a no-op command inside
+// it: `sbx exec <ref> true`.
+//
+// Reconciled on a real host (sbx 0.47, 2026-10-12): there is NO `sbx start`
+// (`error: sbx: unknown command: sbx start`), and before this change bringUp
+// always fell through to destroy + relaunch, losing installed packages and agent
+// history on every restart. `sbx exec` on a stopped sandbox prints `Sandbox <N>
+// started successfully` and runs the command, which is exactly the resume the
+// daemon wants — the agent itself is started afterwards under the daemon's own
+// PTY (agent.PTYFactory), so unlike `sbx run -d --name <N>` this leaves no
+// detached second agent behind. Failure (no such sandbox) still routes bringUp
+// to its relaunch fallback.
 func (r *SbxRunner) Start(ctx context.Context, ref string) error {
-	_, err := r.run(ctx, nil, "start", ref)
+	_, err := r.run(ctx, nil, "exec", ref, "true")
 	return err
 }
 
@@ -213,6 +225,11 @@ func (r *SbxRunner) Destroy(ctx context.Context, ref string) error {
 // It queries `sbx ls --json` and matches the ref against each sandbox's name or
 // id. sbx has no `status` subcommand (verified against sbx v0.33.0: `sbx status
 // <ref>` exits non-zero with usage text), so re-adoption must read the list.
+//
+// Shape confirmed on a real host (sbx 0.47, 2026-10-12): `{"sandboxes":[{"name",
+// "id","agent","status":"running"|"stopped","last_used_at","workspaces":[…],
+// "created_at", optional "workspace_missing":true}]}` — the three fields read
+// here are present verbatim; the rest are ignored.
 func (r *SbxRunner) IsRunning(ctx context.Context, ref string) (bool, error) {
 	out, err := r.run(ctx, nil, "ls", "--json")
 	if err != nil {
@@ -306,6 +323,17 @@ func (r *SbxRunner) LoadMcp(ctx context.Context, ref, name string, log func(stri
 // sbx restarts the sandbox to apply the kit; VM state (installed packages, images,
 // volumes, agent history) is preserved across that restart. Kits cannot be removed
 // from a running sandbox — the sandbox must be destroyed and recreated.
+//
+// Confirmed on a real host (sbx 0.47, 2026-10-12): the positional form exits 0 and
+// prints `Recreating sandbox "<name>" to apply augmented kit list...`, a
+// `Swap container <name>-swap-<hex> started (id=…)` line, then `Kit "<kit>" added
+// to sandbox "<name>"` — the container is swapped for a new one under the same
+// name, which is why the daemon addresses sandboxes by name, never by container
+// id. A kit with a section the flow cannot apply exits 1 with `error: kit "<kit>"
+// declares <section>, which the kit-add recreate flow does not yet apply; recreate
+// the sandbox from scratch via `sbx rm` + `sbx create --kit` to use this kit`
+// (seen for setup.startup and permissions.network.deny; only the first offending
+// section is named). The client pre-checks those sections (store.Kit.AttachBlockers).
 func (r *SbxRunner) AddKit(ctx context.Context, ref, kitSource string, log func(string)) error {
 	_, err := r.run(ctx, log, "kit", "add", ref, kitSource)
 	return err

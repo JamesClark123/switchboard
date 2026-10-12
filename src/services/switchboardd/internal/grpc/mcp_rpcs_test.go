@@ -32,12 +32,13 @@ func mcpStubSbx(t *testing.T) (bin, logPath string) {
 	script := `#!/usr/bin/env bash
 echo "$*" >> "` + logPath + `"
 case "$1 $2 $3" in
-  "--version  ") echo "sbx version 0.46.0" ;;
-  "mcp ls ") printf 'NAME    TYPE     URL/COMMAND\nnotion  remote   https://mcp.notion.com/mcp\n' ;;
-  "mcp auth status") echo '{"authorized": true}' ;;
-  "mcp auth "*) echo 'Open this URL to authorize "notion": https://api.notion.com/v1/oauth/authorize?x=1'; echo 'MCP server "notion" authorized' ;;
-  "mcp rm "*) echo 'Removed. To remove its secrets: sbx secret rm mcp:notion:api-key' ;;
-  "mcp add "*|"mcp load "*) exit 0 ;;
+  "version  ") echo "sbx version: v0.46.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9" ;;
+  "mcp ls ") printf 'NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\nnotion   remote http   needs auth   LOCAL, managed by you   sbx mcp auth notion\n' ;;
+  "mcp auth status") echo '[{"server_name":"notion","status":"authorized"}]' ;;
+  "mcp auth "*) echo 'OAuth scopes for MCP server "notion":'; echo 'Open this URL to authorize MCP server "notion":'; echo 'https://api.notion.com/v1/oauth/authorize?x=1'; echo 'MCP server "notion" authorized' ;;
+  "mcp rm "*) printf 'No local OAuth token found for MCP server "notion"\nMCP server "notion" removed\n' ;;
+  "mcp add "*) exit 0 ;;
+  "mcp load "*) echo "MCP server \"$3\" loaded into sandbox \"$5\" (live)" ;;
   *) exit 0 ;;
 esac
 `
@@ -184,13 +185,13 @@ func TestMcpRPCsRoundTrip(t *testing.T) {
 	}
 
 	rm, err := env.client.RemoveMcpServer(ctx, &pb.RemoveMcpServerRequest{Name: "notion"})
-	if err != nil || len(rm.GetNotes()) != 1 || !strings.Contains(rm.GetNotes()[0], "sbx secret rm") {
+	if err != nil || len(rm.GetNotes()) != 1 || !strings.Contains(rm.GetNotes()[0], "No local OAuth token") {
 		t.Errorf("remove = %+v, %v", rm, err)
 	}
 
 	b, _ := os.ReadFile(env.sbxLog)
 	log := string(b)
-	for _, want := range []string{"mcp add linear --url https://mcp.linear.app/mcp --skip-auth", "mcp auth notion", "mcp rm notion"} {
+	for _, want := range []string{"mcp add linear --url https://mcp.linear.app/mcp --skip-auth", "mcp auth notion", "mcp rm notion --force"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("sbx log should contain %q:\n%s", want, log)
 		}

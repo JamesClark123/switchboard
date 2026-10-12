@@ -23,7 +23,7 @@ type Availability struct {
 // probeTimeout bounds each startup probe command.
 const probeTimeout = 10 * time.Second
 
-// Probe checks, in order: the CLI resolves on PATH; `--version` parses and meets
+// Probe checks, in order: the CLI resolves on PATH; `sbx version` parses and meets
 // the baseline; `mcp ls` answers (a sign-in prompt in its output means the host
 // is not logged in). The first failure yields the reason.
 func Probe(ctx context.Context, bin string) Availability {

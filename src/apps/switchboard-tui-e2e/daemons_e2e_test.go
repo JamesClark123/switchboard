@@ -20,7 +20,7 @@ func TestTUIDaemonScreenE2E(t *testing.T) {
 	p.send("\x1b[1;2C") // shift+→
 	p.expect(t, "Daemons", 10*time.Second)
 	p.expect(t, "CONNECTED", 5*time.Second)
-	p.expect(t, "sbx sbx version 0.46.0", 5*time.Second)
+	p.expect(t, "sbx 0.46.0", 5*time.Second) // the daemon reports the parsed version
 	p.send("\r")
 	p.expect(t, "MCP gateway", 5*time.Second)
 	m := p.mark()

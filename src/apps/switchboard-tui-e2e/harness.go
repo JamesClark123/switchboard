@@ -55,14 +55,23 @@ func stubSbx(t *testing.T) string {
 	script := `#!/usr/bin/env bash
 echo "$*" >> "` + filepath.Join(dir, "sbx.log") + `"
 case "$1" in
-  --version) echo "sbx version 0.46.0" ;;   # >= sbxkit.MinSbxVersion so kit/gateway gates pass
+  version) echo "sbx version: v0.46.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9" ;;   # real format; >= sbxkit.MinSbxVersion so kit/gateway gates pass
   create) echo "container-$3" ;;
   ls) echo '{"sandboxes":[]}' ;;   # IsRunning parses ls --json
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.
     case "$2 $3" in
-      "ls ") printf 'NAME    TYPE     URL/COMMAND\nnotion  remote   https://mcp.notion.com/mcp\n' ;;
-      "auth status") echo '{"authorized": false}' ;;
+      "ls ") printf 'NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\nnotion   remote http   needs auth   LOCAL, managed by you   sbx mcp auth notion\n' ;;
+      "auth status") echo '[{"server_name":"notion","status":"unauthorized"}]' ;;
+      "load "*) echo "MCP server \"$3\" loaded into sandbox \"$5\" (live)" ;;   # real success line (2026-10-12)
+      "rm "*) case "$*" in *--force*) printf 'No local OAuth token found for MCP server "%s"\nMCP server "%s" removed\n' "$3" "$3" ;;
+                          *) printf 'Remove MCP server "%s" and its OAuth credential? (y/N): ' "$3"; exit 1 ;; esac ;;
+      *) exit 0 ;;
+    esac ;;
+  kit)
+    # feature 004/008: kit add recreates the container under the same name (real lines, 2026-10-12).
+    case "$2" in
+      add) echo "Recreating sandbox \"$3\" to apply augmented kit list..."; echo "Kit \"$(basename "$4")\" added to sandbox \"$3\"" ;;
       *) exit 0 ;;
     esac ;;
   *) exit 0 ;;

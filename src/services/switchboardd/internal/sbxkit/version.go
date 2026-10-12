@@ -14,8 +14,9 @@ const MinSbxVersion = "0.36.0"
 
 var versionRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
-// ParseVersion extracts the first MAJOR.MINOR.PATCH from `sbx --version` output
-// ("sbx version 0.46.0", "sbx 0.46.0 (abc123)"). ok is false when there is none,
+// ParseVersion extracts the first MAJOR.MINOR.PATCH from `sbx version` output —
+// the real format is "sbx version: v0.47.0 <commit>" (the leading v and the
+// commit hash are ignored). ok is false when there is none,
 // which callers treat as "below baseline" rather than guessing.
 func ParseVersion(output string) (version string, ok bool) {
 	v := versionRe.FindString(output)

@@ -21,7 +21,8 @@ func fakeSbx(t *testing.T) string {
 	script := `#!/usr/bin/env bash
 case "$1" in
   create) echo "layer: Already exists"; echo "Created sandbox '$3'"; echo "  run: sbx run --name $3" ;;
-  stop|start) exit 0 ;;
+  stop) echo "Sandbox '$2' stopped; state preserved. Restart with: sbx run --name $2" ;;
+  exec) echo "Sandbox $2 started successfully" ;;   # Start = no-op exec; there is no sbx start (2026-10-12)
   rm) exit 0 ;;
   ls) echo '{"sandboxes":[{"name":"sb1","id":"id-1","status":"running"}]}' ;;  # IsRunning parses ls --json
   clone) mkdir -p "$3" ;;             # $3 is dest
@@ -187,6 +188,9 @@ func TestIsRunning(t *testing.T) {
 		{"match by id running", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`, "u1", true},
 		{"match but stopped", `{"sandboxes":[{"name":"sb1","id":"u1","status":"stopped"}]}`, "sb1", false},
 		{"no matching ref", `{"sandboxes":[{"name":"other","id":"u2","status":"running"}]}`, "sb1", false},
+		// The real shape (sbx 0.47, 2026-10-12) carries extra fields the parser ignores.
+		{"real listing", `{"sandboxes":[{"name":"probe-c","id":"d9739da9-2db2-48e7-b6ab-dacdbd0efb67","agent":"claude","status":"running","last_used_at":"2026-10-12T02:14:35.3107Z","workspaces":["/Users/x/probe-kit"],"created_at":"2026-10-12T02:08:34Z"},{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspaces":["/Users/x/test"],"workspace_missing":true}]}`, "probe-c", true},
+		{"real listing stopped", `{"sandboxes":[{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspace_missing":true}]}`, "shell-test", false},
 		{"unparseable output", `not json at all`, "sb1", false},
 		{"empty list", `{"sandboxes":[]}`, "sb1", false},
 	}
@@ -250,5 +254,27 @@ func TestFlagsDeterministic(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("flags[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// Start resumes a stopped sandbox with a no-op exec — `sbx start` does not exist
+// (reconciled on a real host, sbx 0.47, 2026-10-12).
+func TestSbxRunnerStartIsNoopExec(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "sbx.log")
+	bin := filepath.Join(dir, "sbx")
+	script := "#!/usr/bin/env bash\necho \"$*\" >> \"" + logPath + "\"\n" +
+		"[ \"$1\" = start ] && { echo 'error: sbx: unknown command: sbx start' >&2; exit 1; }\n" +
+		"echo \"Sandbox $2 started successfully\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &SbxRunner{Bin: bin}
+	if err := r.Start(context.Background(), "sb"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	b, _ := os.ReadFile(logPath)
+	if got := strings.TrimSpace(string(b)); got != "exec sb true" {
+		t.Errorf("argv = %q, want %q", got, "exec sb true")
 	}
 }

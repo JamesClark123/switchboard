@@ -2752,7 +2752,7 @@ type DaemonInfo struct {
 	WorkspaceRoot string                 `protobuf:"bytes,5,opt,name=workspace_root,json=workspaceRoot,proto3" json:"workspace_root,omitempty"` // controlled folder for duplicates (FR-006)
 	// --- feature 008 (FR-096 / FR-079) ---
 	SbxMinVersion       string `protobuf:"bytes,6,opt,name=sbx_min_version,json=sbxMinVersion,proto3" json:"sbx_min_version,omitempty"`                    // the daemon's declared runtime baseline
-	RuntimeBaselineMet  bool   `protobuf:"varint,7,opt,name=runtime_baseline_met,json=runtimeBaselineMet,proto3" json:"runtime_baseline_met,omitempty"`    // parsed `sbx --version` >= sbx_min_version
+	RuntimeBaselineMet  bool   `protobuf:"varint,7,opt,name=runtime_baseline_met,json=runtimeBaselineMet,proto3" json:"runtime_baseline_met,omitempty"`    // parsed `sbx version` >= sbx_min_version
 	McpGatewayAvailable bool   `protobuf:"varint,8,opt,name=mcp_gateway_available,json=mcpGatewayAvailable,proto3" json:"mcp_gateway_available,omitempty"` // baseline met AND `sbx mcp` usable AND signed in
 	McpGatewayReason    string `protobuf:"bytes,9,opt,name=mcp_gateway_reason,json=mcpGatewayReason,proto3" json:"mcp_gateway_reason,omitempty"`           // why not, when unavailable
 	unknownFields       protoimpl.UnknownFields
@@ -4628,11 +4628,16 @@ type McpServer struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Name            string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Kind            McpServerKind          `protobuf:"varint,2,opt,name=kind,proto3,enum=switchboard.v1.McpServerKind" json:"kind,omitempty"`
-	Target          string                 `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"` // URL, or command line as the runtime prints it
+	Target          string                 `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"` // URL / command line when the runtime shows one ("" otherwise)
 	AuthState       McpAuthState           `protobuf:"varint,4,opt,name=auth_state,json=authState,proto3,enum=switchboard.v1.McpAuthState" json:"auth_state,omitempty"`
 	AttachByDefault bool                   `protobuf:"varint,5,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"` // switchboard-owned mark (FR-080)
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Verbatim columns of the real `sbx mcp ls` table (reconciled 2026-10-10:
+	// NAME / TRANSPORT / STATUS / GATEWAY / DETAIL — no URL column):
+	Transport     string `protobuf:"bytes,6,opt,name=transport,proto3" json:"transport,omitempty"`                     // e.g. "remote http"
+	StatusText    string `protobuf:"bytes,7,opt,name=status_text,json=statusText,proto3" json:"status_text,omitempty"` // e.g. "needs auth"
+	Detail        string `protobuf:"bytes,8,opt,name=detail,proto3" json:"detail,omitempty"`                           // e.g. "sbx mcp auth notion"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *McpServer) Reset() {
@@ -4698,6 +4703,27 @@ func (x *McpServer) GetAttachByDefault() bool {
 		return x.AttachByDefault
 	}
 	return false
+}
+
+func (x *McpServer) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *McpServer) GetStatusText() string {
+	if x != nil {
+		return x.StatusText
+	}
+	return ""
+}
+
+func (x *McpServer) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
 }
 
 // Persisted per daemon in the registry's `mcp` bucket (research R3).
@@ -6241,14 +6267,18 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12%\n" +
 	"\x0eworkspace_path\x18\x02 \x01(\tR\rworkspacePath\x12\x1d\n" +
 	"\n" +
-	"ssh_target\x18\x03 \x01(\tR\tsshTarget\"\xd3\x01\n" +
+	"ssh_target\x18\x03 \x01(\tR\tsshTarget\"\xaa\x02\n" +
 	"\tMcpServer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x121\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1d.switchboard.v1.McpServerKindR\x04kind\x12\x16\n" +
 	"\x06target\x18\x03 \x01(\tR\x06target\x12;\n" +
 	"\n" +
 	"auth_state\x18\x04 \x01(\x0e2\x1c.switchboard.v1.McpAuthStateR\tauthState\x12*\n" +
-	"\x11attach_by_default\x18\x05 \x01(\bR\x0fattachByDefault\"\xe2\x01\n" +
+	"\x11attach_by_default\x18\x05 \x01(\bR\x0fattachByDefault\x12\x1c\n" +
+	"\ttransport\x18\x06 \x01(\tR\ttransport\x12\x1f\n" +
+	"\vstatus_text\x18\a \x01(\tR\n" +
+	"statusText\x12\x16\n" +
+	"\x06detail\x18\b \x01(\tR\x06detail\"\xe2\x01\n" +
 	"\x12McpGatewaySettings\x12M\n" +
 	"\x13default_attach_mode\x18\x01 \x01(\x0e2\x1d.switchboard.v1.McpAttachModeR\x11defaultAttachMode\x12C\n" +
 	"\x05marks\x18\x02 \x03(\v2-.switchboard.v1.McpGatewaySettings.MarksEntryR\x05marks\x1a8\n" +

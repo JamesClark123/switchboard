@@ -346,3 +346,15 @@ func TestMcpFormValidationAndLesserStates(t *testing.T) {
 		t.Error("labels")
 	}
 }
+
+// The real `sbx mcp ls` columns are shown verbatim when the daemon carries them.
+func TestMcpViewShowsRealColumns(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{{Name: "notion", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, Transport: "remote http", StatusText: "needs auth", Detail: "sbx mcp auth notion", AuthState: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}}}
+	m := mcpModel(t, d)
+	v := m.View()
+	for _, want := range []string{"remote http", "unauthorized", "sbx mcp auth notion"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("view should show %q; got:\n%s", want, v)
+		}
+	}
+}

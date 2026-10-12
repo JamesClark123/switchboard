@@ -465,11 +465,11 @@ func (m *Manager) applyMcp(ctx context.Context, ref string, att *McpAttach, onLo
 // dropped them would silently return a differently-provisioned sandbox.
 func (m *Manager) bringUp(ctx context.Context, sb *pb.Sandbox, onLog func(string)) (string, error) {
 	if sb.GetContainerRef() != "" {
-		log.Printf("[debug] bring up sandbox %s: start via %v", sb.GetId(), sbxRefs(sb))
+		log.Printf("[debug] bring up sandbox %s: resume via %v", sb.GetId(), sbxRefs(sb))
 		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Start(ctx, r) }); err == nil {
 			return sb.GetContainerRef(), nil
 		} else {
-			// sbx couldn't resume it (no such container, no `start` subcommand,
+			// sbx couldn't resume it (no such container any more, runtime gone,
 			// etc.). Drop any stale container and relaunch from the retained copy.
 			log.Printf("[debug] bring up %s: start failed (%v); relaunching from the retained copy", sb.GetId(), err)
 			_ = tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Destroy(ctx, r) })

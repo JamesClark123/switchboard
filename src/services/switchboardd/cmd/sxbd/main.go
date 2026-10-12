@@ -235,9 +235,12 @@ func runServe(cfg *config.Config, debug bool) error {
 	mcpManager := mcp.NewManager(&mcp.CLI{Bin: cfg.SbxBin}, reg, cfg.HostID, hub.Publish)
 
 	srv := sbgrpc.NewServer(sbgrpc.Config{
-		Manager:         mgr,
-		HostID:          cfg.HostID,
-		DaemonVersion:   version,
+		Manager:       mgr,
+		HostID:        cfg.HostID,
+		DaemonVersion: version,
+		// The parsed sbx version when the probe could read one ("0.47.0"); the
+		// manifest's raw `sbx version` line otherwise.
+		SbxVersion:      mcpAvail.SbxVersion,
 		WorkspaceRoot:   cfg.WorkspaceRoot,
 		KitRoot:         cfg.KitRoot,
 		PidFile:         cfg.PidFile,

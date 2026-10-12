@@ -533,8 +533,18 @@ func (m Model) viewMcp() string {
 		if srv.GetAttachByDefault() {
 			mark = selectedStyle.Render("[x]")
 		}
+		// The runtime's own TRANSPORT column when present ("remote http"), else
+		// the kind; then the auth state, then whatever target/detail it printed.
+		kind := srv.GetTransport()
+		if kind == "" {
+			kind = mcpKindLabel(srv.GetKind())
+		}
+		tail := srv.GetTarget()
+		if tail == "" {
+			tail = srv.GetDetail()
+		}
 		rows = append(rows, fmt.Sprintf("%s%s %s  %s  %s  %s", cursor, mark, pad(srv.GetName(), 18),
-			dimStyle.Render(pad(mcpKindLabel(srv.GetKind()), 9)), mcpAuthLabel(srv.GetAuthState()), dimStyle.Render(truncate(srv.GetTarget(), 48))))
+			dimStyle.Render(pad(kind, 12)), mcpAuthLabel(srv.GetAuthState()), dimStyle.Render(truncate(tail, 48))))
 	}
 	rows = append(rows, "", dimStyle.Render("[x] = attached to every new sandbox on this daemon"))
 	for _, n := range v.notes {

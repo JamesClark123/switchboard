@@ -170,7 +170,18 @@ re-shaped to **schema v2** (`permissions.network`, `credentials[]` services,
 a drop report; `AttachBlockers()` refuses `A` before any RPC for sections `sbx kit add` rejects; v3
 refused. `sbxkit.MinSbxVersion = "0.36.0"` checked per host; kit/MCP RPCs answer FAILED_PRECONDITION
 below it; `sbx options --json` dropped (`--help` only); `sbx start`/`ls --json` flagged for
-reconciliation. **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
+reconciliation. **Reconciled on a real host 2026-10-10**: the version command is `sbx version`
+(`sbx version: v0.47.0 <commit>`), `--skip-auth` registers without a browser, `mcp ls` prints `NAME
+TRANSPORT STATUS GATEWAY DETAIL` (no URL column — kind from TRANSPORT, STATUS/DETAIL carried on
+`McpServer` 6–8), `auth status --json` is a `[{server_name,status}]` array, `mcp auth` prints the URL on its
+own line, `mcp rm` prompts `(y/N)` unless `--force` (always passed), `sbx create … --kit … --static-mcp a,b`
+composes, `mcp load <name> --sandbox <N>` works right after create in both gateway modes, and `sbx kit add`
+recreates the container under the same name and refuses blocked sections with `error: kit "<kit>" declares
+<section>, which the kit-add recreate flow does not yet apply; …`; `sbx ls --json` matches `IsRunning`'s three keys;
+`sbx start` **does not exist** — `SbxRunner.Start` is now the no-op `sbx exec <N> true`, which starts a
+stopped sandbox in place (`bringUp` had always fallen back to destroy + relaunch; `sbx run -d --name` also
+resumes but leaves a detached agent). Scenario 0 / T003 complete 2026-10-12; only T063 (real-host
+quickstart run) remains. **No new env vars** (timeouts + baseline are constants). See `research.md` (R1–R12),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 Prior feature: `specs/007-edit-sandbox-sources/plan.md` (Edit Sandbox Sources). Makes an existing

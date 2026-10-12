@@ -27,7 +27,7 @@ func TestTUIMcpGatewayE2E(t *testing.T) {
 	p.send("\r")
 	p.expect(t, "MCP gateway", 10*time.Second)
 	p.send("\r")
-	p.expect(t, "mcp.notion.com", 10*time.Second)
+	p.expect(t, "remote http", 10*time.Second) // the real ls table has no URL column
 
 	m := p.mark()
 	p.send(" ") // mark notion attach-by-default
@@ -68,7 +68,7 @@ func TestTUIMcpGatewayE2E(t *testing.T) {
 	p.expect(t, "Daemons", 10*time.Second)
 	p.send("\r")
 	p.send("\r")
-	p.expect(t, "mcp.notion.com", 10*time.Second)
+	p.expect(t, "remote http", 10*time.Second) // the real ls table has no URL column
 	m = p.mark()
 	p.send("m")
 	p.expectNew(t, m, "exclusive", 10*time.Second)

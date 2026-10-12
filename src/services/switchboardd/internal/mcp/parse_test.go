@@ -1,16 +1,46 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
+// The real `sbx mcp ls` table as a host printed it on 2026-10-10.
+const realTable = "NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\n" +
+	"notion   remote http   needs auth   LOCAL, managed by you   sbx mcp auth notion\n" +
+	"pw       stdio         ready        LOCAL, managed by you   npx @playwright/mcp@latest\n"
+
+func TestParseListRealTable(t *testing.T) {
+	rows, err := parseList(realTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	want := listRow{name: "notion", transport: "remote http", status: "needs auth", gateway: "LOCAL, managed by you", detail: "sbx mcp auth notion"}
+	if rows[0] != want {
+		t.Errorf("row 0 = %+v, want %+v", rows[0], want)
+	}
+	if rows[1].name != "pw" || rows[1].transport != "stdio" || rows[1].status != "ready" || rows[1].detail != "npx @playwright/mcp@latest" {
+		t.Errorf("row 1 = %+v", rows[1])
+	}
+	if kindOf(rows[0].transport) != pb.McpServerKind_MCP_SERVER_KIND_REMOTE || kindOf(rows[1].transport) != pb.McpServerKind_MCP_SERVER_KIND_LOCAL {
+		t.Error("kind should follow the TRANSPORT column")
+	}
+	if authFromStatus(rows[0].status) != pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED || authFromStatus(rows[1].status) != pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED {
+		t.Error("the STATUS column should map needs auth / ready")
+	}
+}
+
+// The documented shape (with a target column) is still accepted.
 func TestParseListDocumentedTable(t *testing.T) {
 	out := "NAME                 TYPE     URL/COMMAND\n" +
 		"notion               remote   https://mcp.notion.com/mcp\n" +
 		"playwright           command  npx @playwright/mcp@latest\n" +
-		"fetch                oci      ghcr.io/x/fetch:1  extra-col\n"
+		"fetch                oci      ghcr.io/x/fetch:1\n"
 	rows, err := parseList(out)
 	if err != nil {
 		t.Fatal(err)
@@ -18,49 +48,58 @@ func TestParseListDocumentedTable(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v", rows)
 	}
-	if rows[0] != (listRow{"notion", "remote", "https://mcp.notion.com/mcp"}) {
+	if rows[0].name != "notion" || rows[0].transport != "remote" || rows[0].target != "https://mcp.notion.com/mcp" {
 		t.Errorf("row 0 = %+v", rows[0])
 	}
 	if rows[1].target != "npx @playwright/mcp@latest" {
 		t.Errorf("a command line with spaces must survive: %q", rows[1].target)
 	}
-	if rows[2].typ != "oci" {
+	if rows[2].transport != "oci" {
 		t.Errorf("row 2 = %+v", rows[2])
 	}
 }
 
 func TestParseListEmptyAndFallbacks(t *testing.T) {
-	for _, in := range []string{"", "\n", "NAME  TYPE  URL/COMMAND\n", "No MCP servers registered.\n"} {
+	for _, in := range []string{"", "\n", "NAME  TYPE  URL/COMMAND\n", "NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\n", "No MCP servers registered.\n"} {
 		rows, err := parseList(in)
 		if err != nil || len(rows) != 0 {
 			t.Errorf("parseList(%q) = %+v, %v; want empty", in, rows, err)
 		}
 	}
-	// No header at all: whitespace fields.
-	rows, _ := parseList("notion remote https://x/mcp\n----\n")
+	// No header at all: name, type, then the rest.
+	rows, _ := parseList("notion  remote  https://x/mcp\n----\n")
 	if len(rows) != 1 || rows[0].name != "notion" || rows[0].target != "https://x/mcp" {
 		t.Errorf("headerless fallback = %+v", rows)
 	}
-	// Re-flowed line narrower than the header: whitespace fields.
-	rows, _ = parseList("NAME                 TYPE     URL/COMMAND\nn remote https://y\n")
-	if len(rows) != 1 || rows[0] != (listRow{"n", "remote", "https://y"}) {
+	// Re-flowed line narrower than the header: split on 2+ spaces.
+	rows, _ = parseList("NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\nn  remote http  needs auth  LOCAL  sbx mcp auth n\n")
+	if len(rows) != 1 || rows[0].name != "n" || rows[0].transport != "remote http" || rows[0].detail != "sbx mcp auth n" {
 		t.Errorf("reflowed row = %+v", rows)
 	}
 }
 
 func TestKindOf(t *testing.T) {
-	if kindOf("remote") != pb.McpServerKind_MCP_SERVER_KIND_REMOTE || kindOf(" Remote ") != pb.McpServerKind_MCP_SERVER_KIND_REMOTE {
-		t.Error("remote should map to REMOTE")
+	for _, tr := range []string{"remote", " Remote ", "remote http", "remote sse"} {
+		if kindOf(tr) != pb.McpServerKind_MCP_SERVER_KIND_REMOTE {
+			t.Errorf("%q should map to REMOTE", tr)
+		}
 	}
-	for _, typ := range []string{"command", "oci", "local", ""} {
-		if kindOf(typ) != pb.McpServerKind_MCP_SERVER_KIND_LOCAL {
-			t.Errorf("%q should map to LOCAL", typ)
+	for _, tr := range []string{"stdio", "command", "oci", "local", ""} {
+		if kindOf(tr) != pb.McpServerKind_MCP_SERVER_KIND_LOCAL {
+			t.Errorf("%q should map to LOCAL", tr)
 		}
 	}
 }
 
 func TestParseAuthStatus(t *testing.T) {
 	cases := map[string]pb.McpAuthState{
+		// The real shape (2026-10-10): an array keyed by server_name.
+		`[{"server_name":"notion","status":"unauthorized"}]`:                                          pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED,
+		`[{"server_name":"notion","status":"authorized"}]`:                                            pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED,
+		`[{"server_name":"other","status":"authorized"},{"server_name":"notion","status":"expired"}]`: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED,
+		`[{"server_name":"other","status":"authorized"},{"server_name":"x","status":"ok"}]`:           pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
+		`[]`: pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
+		// Earlier-assumed object shapes stay accepted.
 		`{"authorized": true}`:      pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED,
 		`{"authorized": false}`:     pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED,
 		`{"status": "authorized"}`:  pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED,
@@ -68,17 +107,25 @@ func TestParseAuthStatus(t *testing.T) {
 		`{"status": "weird"}`:       pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
 		`not json`:                  pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
 		``:                          pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
-		`{"scopes": ["read"]}`:      pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
 		`{"authorized": "yes"}`:     pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN,
-		` {"status":"valid"} `:      pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED,
 		`{"state":"missing","x":1}`: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED,
 	}
 	for in, want := range cases {
-		if got := parseAuthStatus(in); got != want {
+		if got := parseAuthStatus(in, "notion"); got != want {
 			t.Errorf("parseAuthStatus(%q) = %v, want %v", in, got, want)
 		}
 	}
 }
+
+// The real `sbx mcp auth` transcript: scope lines, the announcement, then the
+// bare URL on its own line.
+const realAuthTranscript = `OAuth scopes for MCP server "notion":
+   requested: default
+              (from the resource's required set; --no-scope requests none)
+    required: default
+  advertised: default
+Open this URL to authorize MCP server "notion":
+https://mcp.notion.com/authorize?client_id=GGHuqOMWx5gcpA8V&code_challenge=9dySPtqVFFoI-n4LKKJc9mCyRCwO5KWn2zuPDskgYbQ&code_challenge_method=S256&redirect_uri=http%3A%2F%2F127.0.0.1%3A64530%2Fcallback&resource=https%3A%2F%2Fmcp.notion.com%2Fmcp&response_type=code&scope=default&state=zhuZ_EUZ9i1cEJAsum378RTknRU2bt5ojqBJDv2aNo8`
 
 func TestFindURL(t *testing.T) {
 	cases := map[string]string{
@@ -92,5 +139,15 @@ func TestFindURL(t *testing.T) {
 		if got := findURL(in); got != want {
 			t.Errorf("findURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+	// Real transcript: exactly one line carries the URL, intact.
+	var found []string
+	for _, l := range strings.Split(realAuthTranscript, "\n") {
+		if u := findURL(l); u != "" {
+			found = append(found, u)
+		}
+	}
+	if len(found) != 1 || !strings.HasPrefix(found[0], "https://mcp.notion.com/authorize?client_id=") || !strings.HasSuffix(found[0], "state=zhuZ_EUZ9i1cEJAsum378RTknRU2bt5ojqBJDv2aNo8") {
+		t.Errorf("real transcript URLs = %q", found)
 	}
 }

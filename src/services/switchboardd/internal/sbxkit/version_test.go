@@ -8,6 +8,7 @@ func TestParseVersion(t *testing.T) {
 		want string
 		ok   bool
 	}{
+		{"sbx version: v0.47.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9", "0.47.0", true},
 		{"sbx version 0.46.0", "0.46.0", true},
 		{"sbx 0.36.0 (abc123)\n", "0.36.0", true},
 		{"sbx-e2e 0.0", "", false},
@@ -27,6 +28,7 @@ func TestAtLeast(t *testing.T) {
 		have, min string
 		want      bool
 	}{
+		{"sbx version: v0.47.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9", MinSbxVersion, true},
 		{"sbx version 0.46.0", MinSbxVersion, true},
 		{"0.36.0", MinSbxVersion, true},
 		{"0.35.9", MinSbxVersion, false},

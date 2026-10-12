@@ -28,9 +28,16 @@ type CLI struct {
 
 func argvList() []string                  { return []string{"mcp", "ls"} }
 func argvAuthStatus(name string) []string { return []string{"mcp", "auth", "status", name, "--json"} }
-func argvRemove(name string) []string     { return []string{"mcp", "rm", name} }
-func argvAuthorize(name string) []string  { return []string{"mcp", "auth", name} }
-func argvVersion() []string               { return []string{"--version"} }
+
+// argvRemove always passes --force: a real host (2026-10-10) prompts
+// `Remove MCP server "<name>" and its OAuth credential? (y/N)` and the daemon
+// runs it with no terminal, so an unflagged rm would abort or hang.
+func argvRemove(name string) []string    { return []string{"mcp", "rm", name, "--force"} }
+func argvAuthorize(name string) []string { return []string{"mcp", "auth", name} }
+
+// argvVersion is `sbx version` (confirmed on a real host: it prints
+// "sbx version: v0.47.0 <commit>"); there is no --version flag.
+func argvVersion() []string { return []string{"version"} }
 func argvAddRemote(name, url string) []string {
 	// Always --skip-auth: authorization is the separate Authorize step (R2).
 	return []string{"mcp", "add", name, "--url", url, "--skip-auth"}

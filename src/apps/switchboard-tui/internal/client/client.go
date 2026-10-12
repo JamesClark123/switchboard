@@ -40,7 +40,8 @@ func (c *Conn) DaemonVersion() string { return c.Info.GetDaemonVersion() }
 func (c *Conn) WorkspaceRoot() string { return c.Info.GetWorkspaceRoot() }
 
 // SbxVersion is the host sandbox CLI version the daemon reported at handshake
-// (raw `sbx --version` output; empty if unknown).
+// (the parsed MAJOR.MINOR.PATCH when the daemon could read `sbx version`, else
+// the raw line; empty if unknown).
 func (c *Conn) SbxVersion() string { return c.Info.GetSbxVersion() }
 
 // SbxMinVersion is the runtime baseline the daemon declares (feature 008,

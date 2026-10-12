@@ -30,6 +30,13 @@ A kit declaring any of the following is **refused before any RPC**, with the sec
 
 `permissions.network.deny` · `setup.files` · `setup.startup` · `credentials` · `agentInstructions`
 
+**Confirmed 2026-10-12** (sbx 0.47): the runtime itself refuses `setup.startup` and
+`permissions.network.deny` with `error: kit "<kit>" declares <section>, which the kit-add recreate
+flow does not yet apply; recreate the sandbox from scratch via `sbx rm` + `sbx create --kit` to use
+this kit` (exit 1, first offending section only). An accepted kit is applied by **recreating** the
+container under the same name (`Recreating sandbox … to apply augmented kit list…`, a swap
+container), then `Kit "<kit>" added to sandbox "<name>"`.
+
 (A bundled `files/` tree is never authored by the editor; a hand-authored kit that has one is
 likewise refused for attach.)
 

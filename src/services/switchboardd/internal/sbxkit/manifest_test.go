@@ -22,7 +22,7 @@ func writeSbx(t *testing.T, body string) string {
 func TestBuildParsesHelp(t *testing.T) {
 	body := `
 case "$1" in
-  "--version") echo "sbx 1.2.3" ;;
+  "version") echo "sbx version: v1.2.3 abc" ;;
   "--help")
     cat <<'HELP'
 Usage: sbx [options]
@@ -41,7 +41,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.GetSbxVersion() != "sbx 1.2.3" {
+	if m.GetSbxVersion() != "sbx version: v1.2.3 abc" {
 		t.Errorf("version = %q", m.GetSbxVersion())
 	}
 	if len(m.GetOptions()) != 3 {
@@ -60,7 +60,7 @@ func TestBuildFallsBackToHelp(t *testing.T) {
 	// An `options` subcommand is never consulted; help parsing is the only source.
 	body := `
 case "$1" in
-  "--version") echo "sbx 0.9" ;;
+  "version") echo "sbx 0.9" ;;
   "options") exit 2 ;;
   "--help")
     cat <<'HELP'

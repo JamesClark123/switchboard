@@ -141,7 +141,7 @@ src/services/switchboardd/
 │   └── *_test.go                         #   stub-sbx tests
 ├── internal/registry/registry.go         # + `mcp` bucket helpers (GetMcpSettings / UpdateMcpSettings)
 ├── internal/sbxkit/
-│   ├── version.go                        # NEW: MinSbxVersion, parse/compare `sbx --version`
+│   ├── version.go                        # NEW: MinSbxVersion, parse/compare `sbx version`
 │   └── manifest.go                       # drop `options --json`; `--help` is the source (R9)
 ├── internal/sandbox/
 │   ├── manager.go                        # Launch takes McpAttach: static list → runner; additive loads after create; record fields
@@ -175,7 +175,7 @@ src/apps/switchboard-tui/
 │   └── app.go                            # screens, Daemon interface (+7), Init → sign-in kick-off, Event arm handling
 └── cmd/sxb/main.go                       # settings store wiring
 
-src/apps/switchboard-tui-e2e/harness.go   # stubSbx: `mcp` verbs + `--version` ≥ baseline
+src/apps/switchboard-tui-e2e/harness.go   # stubSbx: `mcp` verbs + `version` ≥ baseline
 ```
 
 **Structure Decision**: Extend the daemon + TUI in place, like 003–007. The gateway manager is a
@@ -199,7 +199,7 @@ purely additive.
 
 | Risk | Handling |
 |---|---|
-| **Every `sbx mcp` argv and the `--version` format are documentation-derived** (`sbx` absent in dev). | Pinned by argv-asserting tests; quickstart **Scenario 0** reconciles each row of `contracts/sbx-mcp-cli.md` first; R9's inventory also settles `sbx start`, `ls --json`, `options --json`. |
+| **Every `sbx mcp` argv is documentation-derived** (the version command is now confirmed) (`sbx` absent in dev). | Pinned by argv-asserting tests; quickstart **Scenario 0** reconciles each row of `contracts/sbx-mcp-cli.md` first; R9's inventory also settles `sbx start`, `ls --json`, `options --json`. |
 | `sbx mcp add` output/`ls` table layout differs from the docs (column spacing, extra columns). | Header-offset parser tolerant of extra columns; `auth status --json` is the only JSON relied on; parse failure ⇒ `UNKNOWN` state, never a failed list. |
 | The authorize child prints the URL to a TTY-only path or buffers it. | Run under a pty if the pipe path yields no URL within 10 s (fallback documented in `cli.go`); the stream still ends at the 10-min bound either way. |
 | `--static-mcp` does not compose with `--kit` on `create`, or `sbx mcp load` needs the agent running. | Scenario 0 checks both; fallback for exclusive mode is `create` then `load` (R4 additive path) with a logged note that discovery stays on — spec'd behavior degrades, never fails. |

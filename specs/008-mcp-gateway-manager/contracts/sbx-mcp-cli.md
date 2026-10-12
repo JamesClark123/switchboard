@@ -8,15 +8,15 @@ reads back, and the timeout class (research R11).
 
 | Op | argv | Reads | Timeout |
 |---|---|---|---|
-| list | `sbx mcp ls` | table: `NAME  TYPE  URL/COMMAND` (header-offset parse; extra columns ignored) | 60 s |
-| auth state | `sbx mcp auth status <name> --json` | JSON; mapped to AUTHORIZED/UNAUTHORIZED; parse failure ⇒ UNKNOWN | 60 s |
-| add remote | `sbx mcp add <name> --url <url> --skip-auth` | exit status + combined output (verbatim on error) | 2 min |
+| list | `sbx mcp ls` | **Confirmed 2026-10-10**: table `NAME  TRANSPORT  STATUS  GATEWAY  DETAIL` (e.g. `notion  remote http  needs auth  LOCAL, managed by you  sbx mcp auth notion`) — no URL column. Header-driven parse; `TRANSPORT` starting with `remote` ⇒ remote kind; `STATUS` is the auth fallback | 60 s |
+| auth state | `sbx mcp auth status <name> --json` | **Confirmed 2026-10-10**: `[{"server_name":"notion","status":"unauthorized"}]` — a JSON array; the entry for the name decides (`authorized`/`unauthorized`); parse failure ⇒ UNKNOWN, then the `ls` STATUS column | 60 s |
+| add remote | `sbx mcp add <name> --url <url> --skip-auth` | **Confirmed 2026-10-10**: `--skip-auth` registers without opening a browser. exit status + combined output (verbatim on error) | 2 min |
 | add local | `sbx mcp add <name> --command <cmd> [--args a,b,c] [--dir <dir>] --skip-auth` | same | 2 min |
-| remove | `sbx mcp rm <name>` | output lines mentioning `sbx secret rm` → `notes` | 2 min |
-| authorize | `sbx mcp auth <name>` | first `https://…` token → `url`; remaining lines → `message`; exit 0 ⇒ AUTHORIZED | 10 min, killable |
-| load (additive) | `sbx mcp load <name> --sandbox <sandboxName>` | exit status; failure ⇒ skip + launch log line | 60 s per server |
-| pre-load (exclusive) | `sbx create --name <N> claude <ws> [--kit …] --static-mcp a,b` | existing create handling | existing |
-| version | `sbx --version` | first `\d+\.\d+\.\d+` | 10 s |
+| remove | `sbx mcp rm <name> --force` | **Confirmed 2026-10-10**: without `--force` it prompts `Remove MCP server "<name>" and its OAuth credential? (y/N)`, so the daemon always passes `--force`. Output `No local OAuth token found for MCP server "<name>"` + `MCP server "<name>" removed`; every line but the bare confirmation → `notes` | 2 min |
+| authorize | `sbx mcp auth <name>` | **Confirmed 2026-10-10**: prints OAuth scope lines, then `Open this URL to authorize MCP server "<name>":` and the bare URL on the **next** line (every line is scanned); first `https://…` token → `url`; remaining lines → `message`; exit 0 ⇒ AUTHORIZED | 10 min, killable |
+| load (additive) | `sbx mcp load <name> --sandbox <sandboxName>` | **Confirmed 2026-10-12**: on a sandbox fresh from `sbx create` (no agent attached) prints `MCP server "notion" loaded into sandbox "probe-c" (live)`, rc 0 — on a dynamic *and* a `--static-mcp` sandbox alike. Unregistered name: rc 1, `error: add "ghost" to sandbox "probe-c": add MCP gateway server: request failed: 404 Not Found: MCP server "ghost" is not registered (run 'sbx mcp add ghost ...')`. exit status; failure ⇒ skip + launch log line | 60 s per server |
+| pre-load (exclusive) | `sbx create --name <N> claude <ws> [--kit …] --static-mcp a,b` | **Confirmed 2026-10-12** on sbx 0.47: `--static-mcp` composes with `--kit` (rc 0 with both; `--help`: "Accepts a comma-separated list … repeated flags … or a mix; all forms accumulate into the same set. The set is chosen once at creation time. Local sandboxes take names registered with 'sbx mcp add'"). A `needs auth` server is accepted at create. Usage is `sbx create [flags] AGENT\|SANDBOX_KIT [PATH...]`; the banner ends with `To connect to this sandbox, run: sbx run --name <N>` | existing |
+| version | `sbx version` | prints `sbx version: v0.47.0 <commit>`; first `\d+\.\d+\.\d+` is taken (leading `v` ignored). **Confirmed on a real host 2026-10-10** — there is no `--version` flag | 10 s |
 
 Rules:
 
@@ -29,6 +29,11 @@ Rules:
   escaping).
 - The daemon never passes a flag that does not appear in this table.
 
-Known-unknowns to settle in Scenario 0 (research R9): the exact `--version` output format; whether
-`--static-mcp` composes with `--kit`; `sbx mcp ls` column spacing; `auth status --json` field names;
-`sbx start` and `sbx ls --json` and `sbx options --json` existence.
+Scenario 0 is fully reconciled as of 2026-10-12 (research R9): every row above was run on a real
+host. `sbx start` is absent and the daemon resumes a stopped sandbox with `sbx exec <N> true`
+instead. Residual, non-blocking checks: whether a killed `sbx mcp auth` leaves the registration
+intact, and the `kit add` text for a kit whose *only* blocked section is `credentials`,
+`agentInstructions` or `setup.files` (FR-095 refuses them regardless). Settled 2026-10-10: the version command, `--skip-auth`, the `ls` table,
+the `auth status --json` shape, the `auth` transcript, and `rm --force`. Settled 2026-10-12:
+`--static-mcp` composes with `--kit` on `sbx create`; `mcp load` works on a just-created sandbox in
+both gateway modes and names an unregistered server with a 404.

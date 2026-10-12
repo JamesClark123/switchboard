@@ -74,7 +74,7 @@ Concurrency: one wait per `(daemon, server)`; a second request while one is pend
 | Field | # | Type | Notes |
 |---|---|---|---|
 | `sbx_min_version` | 6 | string | `sbxkit.MinSbxVersion` ("0.36.0") |
-| `runtime_baseline_met` | 7 | bool | parsed `sbx --version` ≥ min; false when unparseable |
+| `runtime_baseline_met` | 7 | bool | parsed `sbx version` ≥ min; false when unparseable |
 | `mcp_gateway_available` | 8 | bool | CLI present, baseline met, `sbx mcp` answers, signed in |
 | `mcp_gateway_reason` | 9 | string | human reason when unavailable (FR-079) |
 

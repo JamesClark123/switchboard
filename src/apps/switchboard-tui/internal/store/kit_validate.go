@@ -141,6 +141,12 @@ func workingDirWithinWorkspace(dir string) bool {
 // commands and network allow entries to a running sandbox. A non-empty result
 // means the kit must be applied at launch instead; the client refuses the attach
 // before any RPC rather than silently stripping sections.
+//
+// Confirmed on a real host (sbx 0.47, 2026-10-12) for setup.startup and
+// permissions.network.deny: `sbx kit add` exits 1 with `error: kit "<kit>" declares
+// <section>, which the kit-add recreate flow does not yet apply; recreate the
+// sandbox from scratch via `sbx rm` + `sbx create --kit` to use this kit`, naming
+// only the first offending section. This list names all of them up front.
 func (kit *Kit) AttachBlockers() []string {
 	var out []string
 	if kit.Permissions != nil && kit.Permissions.Network != nil && len(kit.Permissions.Network.Deny) > 0 {

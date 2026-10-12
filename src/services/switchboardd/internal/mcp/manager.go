@@ -149,8 +149,11 @@ func (m *Manager) decorate(ctx context.Context, rows []listRow, settings *pb.Mcp
 	for i, r := range rows {
 		out[i] = &pb.McpServer{
 			Name:            r.name,
-			Kind:            kindOf(r.typ),
+			Kind:            kindOf(r.transport),
 			Target:          r.target,
+			Transport:       r.transport,
+			StatusText:      r.status,
+			Detail:          r.detail,
 			AuthState:       pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE,
 			AttachByDefault: settings.GetMarks()[r.name],
 		}
@@ -158,15 +161,19 @@ func (m *Manager) decorate(ctx context.Context, rows []listRow, settings *pb.Mcp
 			continue
 		}
 		wg.Add(1)
-		go func(i int, name string) {
+		go func(i int, r listRow) {
 			defer wg.Done()
-			res, err := m.cli.run(sctx, argvAuthStatus(name)...)
-			if err != nil {
-				out[i].AuthState = pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN
-				return
+			// The dedicated query decides; the STATUS column ("needs auth") is the
+			// fallback when it fails or says nothing recognisable.
+			st := pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN
+			if res, err := m.cli.run(sctx, argvAuthStatus(r.name)...); err == nil {
+				st = parseAuthStatus(res, r.name)
 			}
-			out[i].AuthState = parseAuthStatus(res)
-		}(i, r.name)
+			if st == pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN {
+				st = authFromStatus(r.status)
+			}
+			out[i].AuthState = st
+		}(i, r)
 	}
 	wg.Wait()
 	return out
@@ -254,15 +261,26 @@ func (m *Manager) Remove(ctx context.Context, name string) ([]string, error) {
 	if err := m.setMark(name, false); err != nil {
 		return nil, err
 	}
+	m.emitChanged()
+	return removalNotes(out), nil
+}
+
+// removalNotes keeps what the runtime says about credential material (a real
+// host prints e.g. `No local OAuth token found for MCP server "notion"`, older
+// docs show `sbx secret rm …` hints) and drops the bare removal confirmation.
+func removalNotes(out string) []string {
 	var notes []string
 	for _, l := range strings.Split(out, "\n") {
-		if strings.Contains(l, "sbx secret rm") {
-			notes = append(notes, strings.TrimSpace(l))
+		l = strings.TrimSpace(l)
+		if l == "" || removedLine.MatchString(l) {
+			continue
 		}
+		notes = append(notes, l)
 	}
-	m.emitChanged()
-	return notes, nil
+	return notes
 }
+
+var removedLine = regexp.MustCompile(`^MCP server ".*" removed\.?$`)
 
 func looksNotRegistered(out string) bool {
 	l := strings.ToLower(out)

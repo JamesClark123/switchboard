@@ -77,9 +77,14 @@ enum McpAuthState {
 message McpServer {
   string name = 1;
   McpServerKind kind = 2;
-  string target = 3;                 // URL, or command line as the runtime prints it
+  string target = 3;                 // URL / command line when the runtime shows one ("" otherwise)
   McpAuthState auth_state = 4;
   bool attach_by_default = 5;        // switchboard-owned mark (FR-080)
+  // Verbatim columns of the real `sbx mcp ls` table (reconciled 2026-10-10:
+  // NAME / TRANSPORT / STATUS / GATEWAY / DETAIL — there is no URL column):
+  string transport = 6;              // e.g. "remote http"
+  string status_text = 7;            // e.g. "needs auth"
+  string detail = 8;                 // e.g. "sbx mcp auth notion"
 }
 
 // Persisted per daemon in the registry's `mcp` bucket (R3).
@@ -142,7 +147,7 @@ message SetMcpAttachModeRequest { McpAttachMode mode = 1; }
 //   ...
 //   // --- feature 008 (FR-096/FR-079) ---
 //   string sbx_min_version = 6;        // the daemon's declared runtime baseline
-//   bool   runtime_baseline_met = 7;   // parsed `sbx --version` >= sbx_min_version
+//   bool   runtime_baseline_met = 7;   // parsed `sbx version` >= sbx_min_version
 //   bool   mcp_gateway_available = 8;  // baseline met AND `sbx mcp` usable AND signed in
 //   string mcp_gateway_reason = 9;     // why not, when unavailable
 // }

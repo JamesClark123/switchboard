@@ -5,7 +5,7 @@
 // Introspection strategy: parse `sbx --help` output. (An `sbx options --json`
 // schema was assumed by 001's research but is not part of the documented CLI —
 // feature 008 R9 — so help parsing is the only source.) The manifest is
-// version-stamped with `sbx --version`.
+// version-stamped with `sbx version`.
 package sbxkit
 
 import (
@@ -34,9 +34,10 @@ func (b *Builder) run(ctx context.Context, args ...string) (string, error) {
 }
 
 // Build assembles the manifest from `sbx --help`, version-stamped via
-// `sbx --version`.
+// `sbx version` (the CLI has no --version flag; it prints
+// "sbx version: v0.47.0 <commit>").
 func (b *Builder) Build(ctx context.Context) (*pb.OptionManifest, error) {
-	version, _ := b.run(ctx, "--version") // best-effort; non-fatal
+	version, _ := b.run(ctx, "version") // best-effort; non-fatal
 
 	opts, err := b.fromHelp(ctx)
 	if err != nil {

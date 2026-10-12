@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// stubSbx writes a fake `sbx` script answering --version and `mcp ls` per the
+// stubSbx writes a fake `sbx` script answering `version` and `mcp ls` per the
 // given bodies (exit status via the ls body's trailing "exit N").
 func stubSbx(t *testing.T, version, lsBody string) string {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "sbx")
-	script := "#!/usr/bin/env bash\ncase \"$1 $2\" in\n  \"--version \") echo \"" + version + "\" ;;\n  \"mcp ls\") " + lsBody + " ;;\n  *) echo \"unknown $*\" >&2; exit 1 ;;\nesac\n"
+	script := "#!/usr/bin/env bash\ncase \"$1 $2\" in\n  \"version \") echo \"" + version + "\" ;;\n  \"mcp ls\") " + lsBody + " ;;\n  *) echo \"unknown $*\" >&2; exit 1 ;;\nesac\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestProbe(t *testing.T) {
 		{"below baseline", stubSbx(t, "sbx version 0.35.0", `echo ok`), false, "below the minimum"},
 		{"not signed in", stubSbx(t, "sbx version 0.46.0", `echo "You are not authenticated to Docker. Run sbx login" >&2; exit 1`), false, "not signed in"},
 		{"mcp unusable", stubSbx(t, "sbx version 0.46.0", `echo "unknown command mcp" >&2; exit 1`), false, "not usable"},
-		{"available", stubSbx(t, "sbx version 0.46.0", `printf 'NAME  TYPE  URL/COMMAND\n'`), true, ""},
+		{"available", stubSbx(t, "sbx version: v0.47.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9", `printf 'NAME  TYPE  URL/COMMAND\n'`), true, ""},
 	}
 	for _, tc := range cases {
 		a := Probe(context.Background(), tc.bin)
@@ -43,8 +43,8 @@ func TestProbe(t *testing.T) {
 		if tc.wantWord != "" && !strings.Contains(a.Reason, tc.wantWord) {
 			t.Errorf("%s: reason %q should mention %q", tc.name, a.Reason, tc.wantWord)
 		}
-		if tc.name == "available" && (a.SbxVersion != "0.46.0" || !a.BaselineMet) {
-			t.Errorf("available probe = %+v, want version 0.46.0 and baseline met", a)
+		if tc.name == "available" && (a.SbxVersion != "0.47.0" || !a.BaselineMet) {
+			t.Errorf("available probe = %+v, want version 0.47.0 and baseline met", a)
 		}
 	}
 }
@@ -56,7 +56,7 @@ func TestArgvTable(t *testing.T) {
 		"mcp add notion --url https://x/mcp --skip-auth":           argvAddRemote("notion", "https://x/mcp"),
 		"mcp add pw --command npx --args a,b --dir /d --skip-auth": argvAddLocal("pw", "npx", []string{"a", "b"}, "/d"),
 		"mcp add pw --command npx --skip-auth":                     argvAddLocal("pw", "npx", nil, ""),
-		"mcp rm notion":                                            argvRemove("notion"),
+		"mcp rm notion --force":                                    argvRemove("notion"),
 		"mcp auth notion":                                          argvAuthorize("notion"),
 		"mcp load notion --sandbox my-sb":                          argvLoad("notion", "my-sb"),
 	}
