@@ -19,23 +19,25 @@ import (
 // fakeDaemon implements the ui.Daemon interface for teatest, simulating a local
 // daemon without any gRPC/Docker/sbx involvement.
 type fakeDaemon struct {
-	mu           sync.Mutex
-	hostID       string // overrides the default "test-host" when set
-	workspace    string // WorkspaceRoot() override
-	sandboxes    []*pb.Sandbox
-	candidates   []*pb.SourceRef
-	manifest     *pb.OptionManifest
-	lastConfig   *pb.ConfigSnapshot
-	lastDisplay  string
-	events       chan *pb.Event
-	promptedID   string
-	promptText   string
-	ackedIDs     []string
-	subscribeErr error
-	vscodeErr    error
-	daemonVer    string
-	updateErr    error
-	updateTarget string
+	mu          sync.Mutex
+	hostID      string // overrides the default "test-host" when set
+	workspace   string // WorkspaceRoot() override
+	sandboxes   []*pb.Sandbox
+	candidates  []*pb.SourceRef
+	manifest    *pb.OptionManifest
+	lastConfig  *pb.ConfigSnapshot
+	lastDisplay string
+	// feature 009: the controller bundle the last launch carried (FR-110).
+	lastController *pb.WorkerBundle
+	events         chan *pb.Event
+	promptedID     string
+	promptText     string
+	ackedIDs       []string
+	subscribeErr   error
+	vscodeErr      error
+	daemonVer      string
+	updateErr      error
+	updateTarget   string
 
 	// feature 008 fakes: runtime baseline + gateway availability + gateway ops
 	sbxVer      string
@@ -100,6 +102,18 @@ type fakeDaemon struct {
 	decidedRuns []decidedRun
 	decideErr   error
 	listRunsErr error
+
+	// feature 009 fakes: the orchestrator surface (see orchestrator_fake_test.go)
+	orchestrators  []*pb.OrchestratorSummary
+	orchDetail     *pb.OrchestratorDetail
+	orchRuns       *pb.ListRunsResponse
+	orchRun        *pb.Run
+	orchBundle     *pb.WorkerBundle
+	orchErr        error
+	orchCalls      []string
+	putActions     []*pb.Action
+	putEvents      []*pb.TimedEvent
+	disabledEvents []string
 
 	// feature 007 fakes: source edits (see sources_test.go)
 	addedSources     map[string][]*pb.SourceRef
@@ -373,6 +387,7 @@ func (f *fakeDaemon) Launch(_ context.Context, req *pb.LaunchSandboxRequest, onU
 	f.sandboxes = append(f.sandboxes, sb)
 	f.lastConfig = req.GetConfig()
 	f.lastDisplay = req.GetDisplayName()
+	f.lastController = req.GetController()
 	f.mu.Unlock()
 	return sb, nil, nil
 }

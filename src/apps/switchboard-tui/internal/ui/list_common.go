@@ -12,12 +12,14 @@ type listItem struct {
 	host    string // owning host id (sandbox rows); empty for other screens
 	title   string
 	desc    string
+	line3   string // feature 009: the sandbox row's third line (list_delegate.go)
 	filter  string
 	payload any
 }
 
 func (i listItem) Title() string       { return i.title }
 func (i listItem) Description() string { return i.desc }
+func (i listItem) third() string       { return i.line3 }
 func (i listItem) FilterValue() string { // used by the "/" fuzzy filter
 	if i.filter != "" {
 		return i.filter

@@ -16,11 +16,13 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/kit"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/orchestrator"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/secret"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/worker"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -53,6 +55,12 @@ type Server struct {
 	// secrets is this daemon's `sbx secret` manager (feature 008, FR-104). MAY be
 	// nil (the secret RPCs then report FAILED_PRECONDITION).
 	secrets *secret.Manager
+	// worker is the worker side every daemon runs for its own sandboxes
+	// (feature 009, research R1/R3); orchestrator is the orchestrator side this
+	// daemon hosts. Either MAY be nil: the corresponding RPCs then answer
+	// UNAVAILABLE "orchestrator support not configured".
+	worker       *worker.Service
+	orchestrator *orchestrator.Service
 
 	grpc *grpc.Server
 }
@@ -92,6 +100,11 @@ type Config struct {
 	Mcp *mcp.Manager
 	// Secrets is the `sbx secret` manager; nil disables the secret RPCs (FR-104).
 	Secrets *secret.Manager
+	// Worker is the worker-side service (feature 009); nil disables the five
+	// worker-side RPCs. Orchestrator is the orchestrator-side service this
+	// daemon hosts; nil disables the nineteen orchestrator-side RPCs.
+	Worker       *worker.Service
+	Orchestrator *orchestrator.Service
 	// Debug, when true, logs every RPC action and error to stderr (serve --debug).
 	Debug bool
 }
@@ -120,6 +133,8 @@ func NewServer(cfg Config) *Server {
 		mcpAvail:      cfg.McpAvailability,
 		mcp:           cfg.Mcp,
 		secrets:       cfg.Secrets,
+		worker:        cfg.Worker,
+		orchestrator:  cfg.Orchestrator,
 	}
 	// Persistent terminal sessions (feature 003): one Broadcaster per sandbox,
 	// created on first attach from the agent PTY, kept alive across client detach.
@@ -174,6 +189,14 @@ func NewServer(cfg Config) *Server {
 	pb.RegisterSwitchboardServer(s.grpc, s)
 	return s
 }
+
+// Terminals exposes the persistent terminal registry (feature 009: the worker
+// side ensures a PTY is drained before delivering a prompt).
+func (s *Server) Terminals() *terminal.Registry { return s.terms }
+
+// SetWorker wires the worker side after construction (it needs the terminal
+// registry this server owns).
+func (s *Server) SetWorker(w *worker.Service) { s.worker = w }
 
 // Serve binds a Unix socket at socketPath and serves until ctx is cancelled. Any
 // stale socket file is removed first; the parent dir is created if needed.

@@ -102,6 +102,30 @@ type Daemon interface {
 	// and remove seeded folders (DESTRUCTIVE — gate it behind a confirmation).
 	AddSources(ctx context.Context, id string, sources []*pb.SourceRef, override bool, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, *pb.ResourceReport, error)
 	RemoveSources(ctx context.Context, id string, paths []string) (*pb.Sandbox, error)
+	// Orchestrator (feature 009, FR-105..FR-157): the nineteen orchestrator-side
+	// calls act on the daemon hosting the orchestrator; DetachController is the
+	// one worker-side call the TUI makes directly, on the sandbox's own daemon,
+	// when the orchestrator is unreachable (FR-112).
+	ListOrchestrators(ctx context.Context) ([]*pb.OrchestratorSummary, error)
+	GetOrchestrator(ctx context.Context, id string) (*pb.OrchestratorDetail, error)
+	CreateOrchestrator(ctx context.Context, name string) (*pb.Orchestrator, error)
+	RenameOrchestrator(ctx context.Context, id, name string) (*pb.Orchestrator, error)
+	RemoveOrchestrator(ctx context.Context, id string) (*pb.RemoveOrchestratorResponse, error)
+	SetOrchestratorHosts(ctx context.Context, id string, hosts []*pb.OrchestratorHost) (*pb.Orchestrator, error)
+	GetWorkerBundle(ctx context.Context, id string) (*pb.WorkerBundle, error)
+	AttachWorker(ctx context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error)
+	DetachWorker(ctx context.Context, id, sandboxID string) error
+	DetachController(ctx context.Context, sandboxID, orchestratorID string, force bool) (*pb.Sandbox, error)
+	MarkWorkerFree(ctx context.Context, id, sandboxID string, failed bool, note string) (*pb.Run, error)
+	PutAction(ctx context.Context, id string, a *pb.Action) (*pb.Action, error)
+	DeleteAction(ctx context.Context, id, name string) ([]string, error)
+	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
+	DeleteTimedEvent(ctx context.Context, id, eventID string) error
+	CallAction(ctx context.Context, id, action string, args map[string]string) (*pb.Run, error)
+	ListRuns(ctx context.Context, id string) (*pb.ListRunsResponse, error)
+	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)
+	CancelRun(ctx context.Context, id, runID string) (*pb.Run, error)
+	RebuildReasoningSandbox(ctx context.Context, id string, setup *pb.ReasoningSetup, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
 }
 
 type screen int
@@ -131,6 +155,12 @@ const (
 	screenMcp
 	screenSecrets
 	screenSettings
+	// feature 009: the third top-level screen in the shift+←/→ cycle, and the
+	// per-orchestrator detail (six views) beneath it.
+	screenOrchestrators
+	screenOrchDetail
+	// the `o` attach picker over the sandbox list (orchestrator_attach.go)
+	screenAttachPick
 )
 
 // Model is the root Bubble Tea model.
@@ -154,6 +184,9 @@ type Model struct {
 	tabIndex   int
 	hostAgg    []client.HostSandboxes // per-host sandboxes across connected hosts
 	userGroups []store.Group
+	// showOrchTab keeps the Orchestrator Sandboxes tab in the bar (feature 009,
+	// FR-115) until another tab is chosen.
+	showOrchTab bool
 
 	// loading feedback on the sandbox list while awaiting the daemon: busy maps a
 	// sandbox id to the in-flight verb (its row shows a spinner); listLoading is a
@@ -166,6 +199,9 @@ type Model struct {
 	// appends them) and are kept separate from sandboxes/hostAgg so a list reload
 	// never wipes them. launchSeq stamps a stable order onto concurrent launches.
 	launching map[string]*launchInFlight
+	// rebuilds are the in-flight reasoning-sandbox rebuilds by orchestrator id
+	// (feature 009, FR-146).
+	rebuilds  map[string]*reasoningRebuild
 	launchSeq int
 
 	// shared chrome components.
@@ -209,12 +245,19 @@ type Model struct {
 	activeHost string
 	hosts      hostsState
 
-	// US4: notifications + live event stream.
+	// US4: notifications + live event stream. sub is the active daemon's stream;
+	// feature 009 (research R13) subscribes to EVERY connected host: subs maps a
+	// host entry id to its open stream, subscribed marks hosts with a
+	// subscription in flight or open, and inboxHosts remembers which host entry
+	// a notification came from so it is acked on the originating daemon.
 	notifier   notify.Notifier
 	inbox      []*pb.NotificationEvent
+	inboxHosts map[string]string
 	notifyList list.Model
 	unread     int
 	sub        client.EventStream
+	subs       map[string]client.EventStream
+	subscribed map[string]bool
 	subErr     error
 
 	// US5: groups + VS Code.
@@ -275,6 +318,14 @@ type Model struct {
 	settingsView  settingsState
 	signIn        signInState
 
+	// --- feature 009: the Orchestrators screen and the open detail ---
+	orch       orchState
+	orchDetail orchDetailState
+	attach     attachState
+	// markFreeFromList is set while the mark-free dialog was opened from the
+	// sandbox list (it returns there instead of the detail).
+	markFreeFromList bool
+
 	quitting bool
 }
 
@@ -318,6 +369,9 @@ func New(daemon Daemon, srcRoot string) Model {
 		opLogs:           map[string]*opLog{},
 		prefs:            store.DefaultSettings(),
 		listLoading:      true, // the first list load is in flight until it arrives
+		inboxHosts:       map[string]string{},
+		subs:             map[string]client.EventStream{},
+		subscribed:       map[string]bool{},
 	}
 	m.help.Width = m.width
 	m.list = newSandboxList(m.bodyWidth(), m.mainListHeight())
@@ -393,9 +447,18 @@ type errMsg struct{ err error }
 type manifestMsg struct{ manifest *pb.OptionManifest }
 type configsMsg []*store.Configuration
 type hostsMsg []client.HostSandboxes
-type subOpenedMsg struct{ stream client.EventStream }
-type eventMsg struct{ ev *pb.Event }
-type eventErrMsg struct{ err error }
+type subOpenedMsg struct {
+	hostID string // host entry id the stream belongs to ("" = the active daemon)
+	stream client.EventStream
+}
+type eventMsg struct {
+	hostID string // host entry id the event arrived from ("" = the active daemon)
+	ev     *pb.Event
+}
+type eventErrMsg struct {
+	hostID string
+	err    error
+}
 type groupsMsg []store.Group
 
 // browseMsg carries one directory listing fetched from a REMOTE target host's
@@ -588,7 +651,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.listLoading = false
 		m.rebuildTabs()
 		m.refreshListItems()
-		return m, nil
+		return m, m.subscribeHostsCmd(msg.hosts)
 
 	case statusMsg:
 		m.status = string(msg)
@@ -632,22 +695,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.listServicesCmd(m.daemonForHost(m.servicesView.host), msg.sandboxID)
 
+	case orchRowsMsg:
+		return m.applyOrchRows(msg)
+	case orchDetailMsg:
+		return m.applyOrchDetail(msg)
+	case orchDoneMsg:
+		return m.applyOrchDone(msg)
+	case reasoningRebuildMsg:
+		return m.startReasoningRebuild(msg)
+	case reasoningProgressMsg:
+		return m.handleReasoningProgress(msg)
+	case reasoningDoneMsg:
+		return m.handleReasoningDone(msg)
+	case orchFormErrMsg:
+		return m.applyOrchFormErr(msg)
+	case runPromptMsg:
+		return m.applyRunPrompt(msg)
+
 	case hostsMsg:
-		return m.applyHosts(msg)
+		out, cmd := m.applyHosts(msg)
+		m = out.(Model)
+		return m, tea.Batch(cmd, m.subscribeHostsCmd([]client.HostSandboxes(msg)))
 
 	case browseMsg:
 		return m.applyBrowse(msg)
 
 	case subOpenedMsg:
-		m.sub = msg.stream
+		host := m.subHostKey(msg.hostID)
+		m.subs[host] = msg.stream
+		m.subscribed[host] = true
+		if msg.hostID == "" || msg.hostID == m.activeHost || m.sub == nil {
+			m.sub = msg.stream
+		}
 		return m, m.recvCmd(msg.stream)
 
 	case eventMsg:
-		return m.handleEvent(msg.ev)
+		return m.handleEvent(msg.hostID, msg.ev)
 
 	case eventErrMsg:
-		// Subscription dropped; surface quietly. A reconnect (US3) re-subscribes.
+		// A subscription dropped: forget it so the next host snapshot (a reload,
+		// a reconnect) re-subscribes that host; the error is surfaced quietly.
 		m.subErr = msg.err
+		host := m.subHostKey(msg.hostID)
+		if m.subs[host] == m.sub {
+			m.sub = nil
+		}
+		delete(m.subs, host)
+		delete(m.subscribed, host)
 		return m, nil
 
 	case groupsMsg:
@@ -774,6 +868,8 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.advanceSecretsForm(msg)
 		}
 		return m, nil
+	case screenOrchestrators, screenOrchDetail:
+		return m.forwardOrchestrators(msg)
 	case screenDaemons, screenList:
 		if m.hosts.connecting && m.hosts.pwMode != pwHostsScreen {
 			m.hosts.pwInput, cmd = m.hosts.pwInput.Update(msg)
@@ -848,6 +944,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSecretsKey(msg)
 	case screenSettings:
 		return m.updateSettingsKey(msg)
+	case screenOrchestrators:
+		return m.updateOrchestratorsKey(msg)
+	case screenOrchDetail:
+		return m.updateOrchDetailKey(msg)
+	case screenAttachPick:
+		return m.updateAttachPickKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -864,10 +966,19 @@ func (m Model) View() string {
 		return overlayCenter(bg, m.launchModal(), m.width, m.height)
 	}
 
-	// The destructive-action gate floats over the list it refers to, so the user can
-	// still see the row they are about to act on (feature 004).
+	// The destructive-action gate floats over the screen it refers to, so the user
+	// can still see the row they are about to act on (feature 004; feature 009's
+	// orchestrator screens use the same gate).
 	if m.screen == screenConfirm {
-		bg := m.chrome(m.viewList(), m.confirmHelp())
+		var bg string
+		switch m.confirm.returnTo {
+		case screenOrchestrators:
+			bg = m.chrome(m.viewOrchestrators(), m.confirmHelp())
+		case screenOrchDetail:
+			bg = m.chrome(m.viewOrchDetail(), m.confirmHelp())
+		default:
+			bg = m.chrome(m.viewList(), m.confirmHelp())
+		}
 		return overlayCenter(bg, m.confirmModal(), m.width, m.height)
 	}
 
@@ -890,6 +1001,13 @@ func (m Model) View() string {
 	if m.screen == screenSandboxMcp {
 		bg := m.chrome(m.viewList(), m.sandboxMcpHelp())
 		return overlayCenter(bg, m.sandboxMcpModal(), m.width, m.height)
+	}
+
+	// The attach picker (feature 009, `o`) floats over the list like the launch
+	// modal: the row being attached stays in view.
+	if m.screen == screenAttachPick {
+		bg := m.chrome(m.viewList(), m.attachPickHelp())
+		return overlayCenter(bg, m.attachModal(), m.width, m.height)
 	}
 
 	// The sbx output viewer floats over the list for the same reason: the row
@@ -946,6 +1064,10 @@ func (m Model) View() string {
 		body, hb = m.viewSecrets(), m.secretsHelp()
 	case screenSettings:
 		body, hb = m.viewSettings(), m.settingsHelp()
+	case screenOrchestrators:
+		body, hb = m.viewOrchestrators(), m.orchestratorsHelp()
+	case screenOrchDetail:
+		body, hb = m.viewOrchDetail(), m.orchDetailHelp()
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
@@ -1028,11 +1150,80 @@ func (m Model) header() string {
 	if m.unread > 0 {
 		right = lipgloss.JoinHorizontal(lipgloss.Top, right, " ", unreadBadgeStyle.Render(fmt.Sprintf("🔔 %d", m.unread)))
 	}
-	gap := m.width - lipgloss.Width(title) - lipgloss.Width(right)
+	// Feature 009 (FR-143): the three top-level screens are named on the header
+	// line itself, the current one highlighted, so the cycle is discoverable
+	// without costing a body line.
+	strip := "   " + m.screenStrip()
+	gap := m.width - lipgloss.Width(title) - lipgloss.Width(strip) - lipgloss.Width(right)
 	if gap < 2 {
-		gap = 2
+		strip = ""
+		gap = m.width - lipgloss.Width(title) - lipgloss.Width(right)
+		if gap < 2 {
+			gap = 2
+		}
 	}
-	return headerBarStyle.Render(title + strings.Repeat(" ", gap) + right)
+	return headerBarStyle.Render(title + strip + strings.Repeat(" ", gap) + right)
+}
+
+// topLevel maps the current screen onto the top-level screen it belongs to.
+func (m Model) topLevel() screen {
+	switch m.screen {
+	case screenDaemons, screenMcp, screenSecrets:
+		return screenDaemons
+	case screenOrchestrators, screenOrchDetail:
+		return screenOrchestrators
+	case screenSettings:
+		return m.settingsView.returnTo
+	case screenConfirm:
+		return m.confirm.returnTo
+	}
+	return screenList
+}
+
+// screenStrip renders `Sandboxes · Daemons · Orchestrators  (shift+←/→)` with the
+// current top-level screen highlighted.
+func (m Model) screenStrip() string {
+	cur := m.topLevel()
+	name := func(sc screen, label string) string {
+		if sc == cur {
+			return selectedStyle.Render(label)
+		}
+		return dimStyle.Render(label)
+	}
+	return name(screenList, "Sandboxes") + dimStyle.Render(" · ") + name(screenDaemons, "Daemons") +
+		dimStyle.Render(" · ") + name(screenOrchestrators, "Orchestrators") + dimStyle.Render("  (shift+←/→)")
+}
+
+// screenNextLabel / screenPrevLabel name the screen shift+→ / shift+← reaches
+// from the current top-level screen (FR-143).
+func (m Model) screenNextLabel() string {
+	switch m.topLevel() {
+	case screenDaemons:
+		return "orchestrators"
+	case screenOrchestrators:
+		return ""
+	}
+	return "daemons"
+}
+
+func (m Model) screenPrevLabel() string {
+	switch m.topLevel() {
+	case screenDaemons:
+		return "sandboxes"
+	case screenOrchestrators:
+		return "daemons"
+	}
+	return ""
+}
+
+// screenNextKey / screenPrevKey are the shift-arrow bindings with the label of
+// the screen they reach, for the help footer.
+func (m Model) screenNextKey() key.Binding {
+	return key.NewBinding(key.WithKeys("shift+right"), key.WithHelp("shift+→", m.screenNextLabel()))
+}
+
+func (m Model) screenPrevKey() key.Binding {
+	return key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", m.screenPrevLabel()))
 }
 
 func (m Model) footer(hb helpBindings) string {

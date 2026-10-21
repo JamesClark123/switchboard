@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 )
 
 // Startup sign-in (feature 008, US5, FR-087..FR-090; research R7): when the
@@ -108,8 +109,8 @@ func (m Model) applySignInResult(msg signInResultMsg) (tea.Model, tea.Cmd) {
 		m.signIn.connected++
 		return m.signInNext()
 	}
-	var de *client.DialError
-	if errors.As(msg.err, &de) && de.Kind == client.DialAuthFailed && !msg.password {
+	var de *dial.DialError
+	if errors.As(msg.err, &de) && de.Kind == dial.DialAuthFailed && !msg.password {
 		// Key/agent auth was refused: this host wants a password (FR-088).
 		return m.enterHostPasswordFrom(host.ID, host.SSHTarget, pwSignIn, "key/agent authentication was refused — enter the password, or leave it blank to retry keys")
 	}

@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/config"
@@ -33,11 +34,14 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	sbgrpc "github.com/jamesclark123/switchboard/services/switchboardd/internal/grpc"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/orchestrator"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxkit"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/secret"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/worker"
 )
 
 // version/commit/date are overridable at build time via -ldflags (set by
@@ -187,6 +191,9 @@ func runServe(cfg *config.Config, debug bool) error {
 		return agent.Target{Ref: ref, Workdir: sb.GetWorkspacePath()}
 	}
 	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
+	// Feature 009 (research R7): an agent that exits on its own is reported as
+	// AGENT_STATUS_EXITED so the orchestrator can fail the run it was on.
+	agents.SetStatusUpdater(mgr)
 	hookServer := agent.NewHookServer(hub, mgr)
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
@@ -210,7 +217,18 @@ func runServe(cfg *config.Config, debug bool) error {
 	// and delivers results back to the agent via the PTY-injection Prompt path. The
 	// wrapper POSTs to /escape-hatch/run (host.docker.internal), a sibling of /hook.
 	ehCallbackURL := fmt.Sprintf("http://host.docker.internal:%s/escape-hatch/run", port)
-	ehService := escapehatch.New(mgr, hub, agents.Prompt)
+	// Feature 009 (research R7): a result pushed into a detached agent first
+	// ensures its persistent terminal session exists, so the PTY is drained and a
+	// long unattended turn never stalls. The registry is the gRPC server's;
+	// it is resolved at call time.
+	var srv *sbgrpc.Server
+	terms := func() *terminal.Registry {
+		if srv == nil {
+			return nil
+		}
+		return srv.Terminals()
+	}
+	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents.Prompt))
 	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
 	})
@@ -238,7 +256,53 @@ func runServe(cfg *config.Config, debug bool) error {
 	// events ride the same hub.
 	secretManager := secret.NewManager(&secret.CLI{Bin: cfg.SbxBin}, cfg.HostID, hub.Publish)
 
-	srv := sbgrpc.NewServer(sbgrpc.Config{
+	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+
+	// Feature 009: the worker side every daemon runs for the sandboxes it owns
+	// (research R1/R3/R4): the controller record, the per-worker gateway
+	// registration + token, the link relay, guarded delivery and the briefing.
+	workerSvc := worker.NewService(worker.Deps{
+		Manager: mgr, Registry: reg, Agents: agents, Hub: hub,
+		CLI: &mcp.CLI{Bin: cfg.SbxBin}, HookPort: port, HostID: cfg.HostID, Version: version, Logf: logf,
+	})
+	mgr.SetOnDestroy(workerSvc.OnDestroy)
+	mgr.SetOnBringUp(workerSvc.OnBringUp)
+	mgr.SetControllerApplier(workerSvc.Apply)
+	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
+	// /orchestrator/w/<token>/mcp. The gateway reaches it on 127.0.0.1:<port>
+	// from the host, so the `localhost:<port>` policy allow above already
+	// covers it; ServeMux registration is safe while the server is serving.
+	mux.Handle(worker.EndpointPrefix, workerSvc.Handler())
+
+	// The orchestrator side this daemon hosts (research R1). It dials worker
+	// machines over SSH exactly as the TUI does (dial.Batch: BatchMode, keys or
+	// agent only — FR-106), reaches its own host in-process, and runs one
+	// runtime per record.
+	orch := orchestrator.NewService(orchestrator.Deps{
+		Store:         reg,
+		Hub:           hub,
+		HostID:        cfg.HostID,
+		Dial:          dial.Batch,
+		Local:         worker.Local(workerSvc, hub),
+		Sandboxes:     mgr,
+		DaemonVersion: version,
+		Logf:          logf,
+		// The reasoning sandbox is created through the gRPC server's launch
+		// path (kits, MCP, controller) — resolved at call time, as the server
+		// is built below; Create only runs once it serves.
+		Launch: func(ctx context.Context, req orchestrator.ReasoningLaunch, onLog func(string)) (*pb.Sandbox, error) {
+			if srv == nil {
+				return nil, fmt.Errorf("daemon still starting")
+			}
+			return srv.LaunchReasoning(ctx, req, onLog)
+		},
+	})
+	if err := orch.Start(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: orchestrators not started:", err)
+	}
+	defer orch.Stop()
+
+	srv = sbgrpc.NewServer(sbgrpc.Config{
 		Manager:       mgr,
 		HostID:        cfg.HostID,
 		DaemonVersion: version,
@@ -256,8 +320,11 @@ func runServe(cfg *config.Config, debug bool) error {
 		McpAvailability: mcpAvail,
 		Mcp:             mcpManager,
 		Secrets:         secretManager,
+		Worker:          workerSvc,
+		Orchestrator:    orch,
 		Debug:           debug,
 	})
+	workerSvc.SetTerminals(srv.Terminals())
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)
 	if debug {
 		fmt.Fprintln(os.Stderr, "sxbd debug logging enabled: every RPC action and error will be logged")

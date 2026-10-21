@@ -13,13 +13,14 @@ import (
 	"time"
 
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc"
 )
 
 // TestMain doubles this test binary as a stdio<->socket bridge when
 // SWB_BRIDGE_SOCK is set, emulating the daemon's `dial-stdio` subcommand so the
-// SSH transport can be exercised end-to-end without a real ssh/daemon.
+// Manager's ssh path can be exercised end-to-end without a real ssh/daemon.
 func TestMain(m *testing.M) {
 	if sock := os.Getenv("SWB_BRIDGE_SOCK"); sock != "" {
 		c, err := net.Dial("unix", sock)
@@ -56,80 +57,10 @@ func bridgeCmd(ctx context.Context, sock string) *exec.Cmd {
 	return cmd
 }
 
-func TestDialCommandTransportEndToEnd(t *testing.T) {
-	sock := startFakeOnSocket(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// The transport itself (stdio bridge, classification, password/askpass wiring)
+// is tested in libs/switchboard-dial. These tests pin this package's forwards.
 
-	conn, err := client.DialCommand(ctx, bridgeCmd(ctx, sock))
-	if err != nil {
-		t.Fatalf("DialCommand: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if conn.HostID() != "host-1" {
-		t.Errorf("host id over stdio = %q", conn.HostID())
-	}
-	// A real RPC flows over the bridged stdio transport.
-	if _, err := conn.ListSources(ctx, "/work", false); err != nil {
-		t.Errorf("ListSources over stdio: %v", err)
-	}
-}
-
-// TestDialCommandSurvivesDialContextCancel is the regression test for the
-// "stdio connection already consumed (child exited?)" failure. connectHostCmd
-// dials with a short-lived ctxTimeout context and cancels it (defer cancel) the
-// moment the connect finishes. The stdio child (and therefore the *Conn's
-// transport) MUST outlive that dial context; if it does not, the next RPC on the
-// stored connection finds the transport dead and gRPC redials into the
-// single-use guard. The bridge child here is built with exec.Command (no context
-// binding), mirroring the fixed SSHCommand.
-func TestDialCommandSurvivesDialContextCancel(t *testing.T) {
-	sock := startFakeOnSocket(t)
-
-	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), "SWB_BRIDGE_SOCK="+sock)
-
-	dialCtx, cancel := context.WithCancel(context.Background())
-	conn, err := client.DialCommand(dialCtx, cmd)
-	if err != nil {
-		t.Fatalf("DialCommand: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	// Cancel the dial context, exactly as connectHostCmd's deferred cancel does
-	// once the connect returns. The established connection must remain usable.
-	cancel()
-
-	if _, err := conn.ListSources(context.Background(), "/work", false); err != nil {
-		t.Errorf("RPC after dial-context cancel: %v", err)
-	}
-}
-
-// TestSSHCommandNotBoundToContext guards the fix at the source: the ssh child
-// must not be created via exec.CommandContext, which would kill it when the dial
-// context is cancelled. exec.Command leaves cmd.Cancel nil; exec.CommandContext
-// sets it to a process-killing func.
-func TestSSHCommandNotBoundToContext(t *testing.T) {
-	cmd := client.SSHCommand("user@build-box", nil, "")
-	if cmd.Cancel != nil {
-		t.Error("ssh child must not be bound to a context (cmd.Cancel should be nil); " +
-			"a context-bound child dies when the dial context is cancelled")
-	}
-}
-
-func TestDialCommandFailsWhenBridgeCannotReachSocket(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// Bridge points at a non-existent socket -> child exits -> handshake fails.
-	cmd := bridgeCmd(ctx, filepath.Join(t.TempDir(), "nope.sock"))
-	if _, err := client.DialCommand(ctx, cmd); err == nil {
-		t.Error("expected DialCommand to fail when the bridge cannot connect")
-	}
-}
-
-func TestSSHCommandArgs(t *testing.T) {
-	// No password: user opts, then hardening, then key/agent-only (BatchMode).
+func TestSSHCommandForwardsToDial(t *testing.T) {
 	cmd := client.SSHCommand("user@build-box", []string{"-i", "/key", "-p", "2222"}, "")
 	want := []string{
 		"ssh", "-i", "/key", "-p", "2222",
@@ -137,105 +68,49 @@ func TestSSHCommandArgs(t *testing.T) {
 		"-o", "BatchMode=yes",
 		"user@build-box", "sxbd", "dial-stdio",
 	}
-	if len(cmd.Args) != len(want) {
+	if strings.Join(cmd.Args, " ") != strings.Join(want, " ") {
 		t.Fatalf("args = %v, want %v", cmd.Args, want)
 	}
-	for i := range want {
-		if cmd.Args[i] != want[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, cmd.Args[i], want[i])
-		}
-	}
-	// The child must be detached from the controlling terminal so ssh cannot
-	// read the TUI's tty for a prompt.
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
-		t.Error("ssh command should start a new session (Setsid) to detach from the tty")
+		t.Error("ssh command should start a new session (Setsid)")
 	}
-}
-
-func TestSSHCommandPasswordMode(t *testing.T) {
-	cmd := client.SSHCommand("user@build-box", nil, "s3cr3t")
-	joined := strings.Join(cmd.Args, " ")
-	// Password retries are capped, but BatchMode must NOT be set (it would
-	// disable password auth entirely).
-	if !strings.Contains(joined, "NumberOfPasswordPrompts=1") {
-		t.Errorf("password-mode args %q missing NumberOfPasswordPrompts=1", joined)
+	if cmd.Cancel != nil {
+		t.Error("ssh child must not be bound to a context")
 	}
-	if strings.Contains(joined, "BatchMode=yes") {
-		t.Error("password mode must not set BatchMode=yes")
-	}
-	// The auth methods MUST NOT be overridden: the user's keys/agent and
-	// ~/.ssh/config must still be honored (the password is only a fallback).
-	// Forcing PreferredAuthentications breaks key-authenticated hosts.
-	if strings.Contains(joined, "PreferredAuthentications") {
-		t.Errorf("password mode must not override PreferredAuthentications: %q", joined)
-	}
-	// The password is wired through SSH_ASKPASS (this binary), not the tty.
-	env := envMap(cmd.Env)
-	if env["SWITCHBOARD_SSH_ASKPASS"] != "1" || env["SWITCHBOARD_SSH_PASSWORD"] != "s3cr3t" {
-		t.Errorf("askpass env not wired: %v", env)
-	}
-	if env["SSH_ASKPASS"] == "" || env["SSH_ASKPASS_REQUIRE"] != "force" {
-		t.Errorf("SSH_ASKPASS not forced: %v", env)
-	}
-	if env["DISPLAY"] == "" {
-		t.Error("DISPLAY should be set so older ssh consults SSH_ASKPASS")
-	}
-}
-
-func envMap(env []string) map[string]string {
-	out := map[string]string{}
-	for _, kv := range env {
-		if i := strings.IndexByte(kv, '='); i >= 0 {
-			out[kv[:i]] = kv[i+1:]
-		}
-	}
-	return out
 }
 
 func TestRunAskpassIfRequested(t *testing.T) {
-	// Not in askpass mode by default.
-	t.Setenv("SWITCHBOARD_SSH_ASKPASS", "")
+	t.Setenv(dial.AskpassSentinelEnv, "")
 	if client.RunAskpassIfRequested() {
 		t.Error("should not be in askpass mode without the sentinel")
 	}
-	t.Setenv("SWITCHBOARD_SSH_ASKPASS", "1")
+	t.Setenv(dial.AskpassSentinelEnv, "1")
 	if !client.RunAskpassIfRequested() {
 		t.Error("should be in askpass mode when the sentinel is set")
 	}
 }
 
-// --- feature 008: dial-failure classification for the startup sign-in ---
-
-func TestClassifyDialStderr(t *testing.T) {
-	cases := map[string]client.DialErrorKind{
-		"me@box: Permission denied (publickey,password).":                client.DialAuthFailed,
-		"ssh: connect to host box port 22: Connection refused":           client.DialUnreachable,
-		"ssh: Could not resolve hostname box: Name or service not known": client.DialUnreachable,
-		"bash: sxbd: command not found":                                  client.DialNoDaemon,
-		"something odd happened":                                         client.DialOther,
-	}
-	for in, want := range cases {
-		if got := client.ClassifyDialStderr(in); got != want {
-			t.Errorf("ClassifyDialStderr(%q) = %v, want %v", in, got, want)
-		}
-	}
-	e := &client.DialError{Kind: client.DialAuthFailed, Stderr: "noise\nme@box: Permission denied (publickey).\n"}
-	if !strings.Contains(e.Error(), "authentication failed") || !strings.Contains(e.Error(), "Permission denied") {
-		t.Errorf("Error() = %q", e.Error())
-	}
-}
-
-// A real failed dial comes back as a DialError carrying ssh's last words.
+// A failed dial through this package's forward is still a *dial.DialError, so
+// the sign-in flow can classify it.
 func TestDialCommandFailureIsClassified(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "echo 'me@box: Permission denied (publickey).' >&2; exit 255")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, err := client.DialCommand(ctx, cmd)
-	var de *client.DialError
+	var de *dial.DialError
 	if !errors.As(err, &de) {
-		t.Fatalf("err = %T %v, want *client.DialError", err, err)
+		t.Fatalf("err = %T %v, want *dial.DialError", err, err)
 	}
-	if de.Kind != client.DialAuthFailed || !strings.Contains(de.Stderr, "Permission denied") {
-		t.Errorf("DialError = kind %v stderr %q", de.Kind, de.Stderr)
+	if de.Kind != dial.DialAuthFailed {
+		t.Errorf("kind = %v", de.Kind)
+	}
+}
+
+func TestDialCommandSuccessWraps(t *testing.T) {
+	// The transport test server lives in client_test.go (fakeServer); a bridge
+	// is not needed here — a plain socket dial exercises wrap() the same way.
+	conn := startFake(t)
+	if conn.Conn == nil || conn.HostID() != "host-1" {
+		t.Fatalf("wrapped conn = %+v", conn)
 	}
 }

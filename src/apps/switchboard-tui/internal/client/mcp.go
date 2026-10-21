@@ -23,7 +23,7 @@ type McpAuthUpdate struct {
 }
 
 func (c *Conn) ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error) {
-	resp, err := c.api.ListMcpServers(ctx, &pb.ListMcpServersRequest{})
+	resp, err := c.API().ListMcpServers(ctx, &pb.ListMcpServersRequest{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -31,11 +31,11 @@ func (c *Conn) ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGate
 }
 
 func (c *Conn) AddMcpServer(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error) {
-	return c.api.AddMcpServer(ctx, req)
+	return c.API().AddMcpServer(ctx, req)
 }
 
 func (c *Conn) RemoveMcpServer(ctx context.Context, name string) ([]string, error) {
-	resp, err := c.api.RemoveMcpServer(ctx, &pb.RemoveMcpServerRequest{Name: name})
+	resp, err := c.API().RemoveMcpServer(ctx, &pb.RemoveMcpServerRequest{Name: name})
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (c *Conn) RemoveMcpServer(ctx context.Context, name string) ([]string, erro
 // AuthorizeMcpServer drains the authorization stream into onUpdate and returns the
 // terminal state. Cancelling ctx cancels the daemon-side wait (FR-075).
 func (c *Conn) AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(McpAuthUpdate)) (pb.McpAuthState, error) {
-	stream, err := c.api.AuthorizeMcpServer(ctx, &pb.AuthorizeMcpServerRequest{Name: name})
+	stream, err := c.API().AuthorizeMcpServer(ctx, &pb.AuthorizeMcpServerRequest{Name: name})
 	if err != nil {
 		return pb.McpAuthState_MCP_AUTH_STATE_UNSPECIFIED, err
 	}
@@ -82,15 +82,15 @@ func (c *Conn) AuthorizeMcpServer(ctx context.Context, name string, onUpdate fun
 }
 
 func (c *Conn) SetMcpServerDefault(ctx context.Context, name string, on bool) (*pb.McpServer, error) {
-	return c.api.SetMcpServerDefault(ctx, &pb.SetMcpServerDefaultRequest{Name: name, AttachByDefault: on})
+	return c.API().SetMcpServerDefault(ctx, &pb.SetMcpServerDefaultRequest{Name: name, AttachByDefault: on})
 }
 
 func (c *Conn) SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error) {
-	return c.api.SetMcpAttachMode(ctx, &pb.SetMcpAttachModeRequest{Mode: mode})
+	return c.API().SetMcpAttachMode(ctx, &pb.SetMcpAttachModeRequest{Mode: mode})
 }
 
 // AttachMcpServer loads a registered server into an existing sandbox on this
 // daemon (FR-102) and returns the updated record. The daemon bounds the load.
 func (c *Conn) AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error) {
-	return c.api.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sandboxID, Name: name})
+	return c.API().AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sandboxID, Name: name})
 }

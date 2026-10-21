@@ -81,8 +81,18 @@ func (h *Hub) fanout(ev *pb.Event) {
 }
 
 // Publish fans out an already-built event (feature 008: the MCP gateway manager
-// builds its own Event.mcp_gateway_changed arm).
-func (h *Hub) Publish(ev *pb.Event) { h.fanout(ev) }
+// builds its own Event.mcp_gateway_changed arm; feature 009: the orchestrator
+// publishes orchestrator_changed continuously). Under the mutex like its
+// siblings — fanout iterates the subscriber map, which Subscribe/Unsubscribe
+// mutate concurrently (research R7).
+func (h *Hub) Publish(ev *pb.Event) {
+	if ev == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fanout(ev)
+}
 
 // PublishSandbox broadcasts a sandbox state/agent-status change.
 func (h *Hub) PublishSandbox(sb *pb.Sandbox) {

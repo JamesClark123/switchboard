@@ -41,7 +41,7 @@ func TestTUIMcpGatewayE2E(t *testing.T) {
 	p.send("\x1b[1;2D")                        // shift+← back to the sandbox list
 	p.expectNew(t, m, "launch", 5*time.Second) // the list footer repaints with its own keys
 	launchOne(t, p)
-	p.expect(t, "mcp: notion (additive)", 15*time.Second)
+	p.expect(t, "mcp: notion", 15*time.Second) // the row's third line; additive is the unmarked default (feature 009)
 
 	calls := sbxCalls(t, sbxDir)
 	var sawCreate, sawLoad bool
@@ -137,7 +137,7 @@ func TestTUISandboxMcpAttachE2E(t *testing.T) {
 	}
 	// The row behind the overlay already repainted with the badge (the renderer
 	// only redraws changed lines, so assert on the transcript, not on new output).
-	p.expect(t, "mcp: notion (additive)", 10*time.Second)
+	p.expect(t, "mcp: notion", 10*time.Second) // third line; additive is the unmarked default (feature 009)
 	m = p.mark()
 	p.send("\x1b") // close the overlay: the list footer repaints with its own keys
 	p.expectNew(t, m, "launch", 10*time.Second)

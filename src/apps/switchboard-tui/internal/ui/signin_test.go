@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -48,7 +49,7 @@ func runSignIn(t *testing.T, m Model, msg tea.Msg) Model {
 	return m
 }
 
-var authFailed = &client.DialError{Kind: client.DialAuthFailed, Err: errors.New("exit 255"), Stderr: "Permission denied (publickey,password)."}
+var authFailed = &dial.DialError{Kind: dial.DialAuthFailed, Err: errors.New("exit 255"), Stderr: "Permission denied (publickey,password)."}
 
 func TestSignInKeyHostConnectsSilentlyPasswordHostPrompts(t *testing.T) {
 	var pwSeen string
@@ -97,7 +98,7 @@ func TestSignInFailureCardRetryAndSkip(t *testing.T) {
 	m := signInModel(t, map[string]func(string) error{
 		"down": func(string) error {
 			calls++
-			return &client.DialError{Kind: client.DialUnreachable, Err: errors.New("exit 255"), Stderr: "ssh: connect to host down port 22: Connection refused"}
+			return &dial.DialError{Kind: dial.DialUnreachable, Err: errors.New("exit 255"), Stderr: "ssh: connect to host down port 22: Connection refused"}
 		},
 		"ok": func(string) error { return nil },
 	}, client.HostEntry{ID: "down", DisplayName: "downhost", Kind: "ssh", SSHTarget: "me@down"},

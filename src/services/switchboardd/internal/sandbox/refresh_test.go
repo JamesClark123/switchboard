@@ -138,9 +138,9 @@ func TestRefreshRefusesWorkspaceOutsideRoot(t *testing.T) {
 	}
 }
 
-// A sandbox with no recorded sources has nothing to re-seed from; refusing beats
-// wiping the workspace and leaving it empty.
-func TestRefreshRequiresSources(t *testing.T) {
+// A sandbox with no recorded sources is an EmptyWorkspace launch (feature 009,
+// research R11): a refresh recreates the empty directory instead of refusing.
+func TestRefreshWithoutSourcesRecreatesEmptyWorkspace(t *testing.T) {
 	ctx := context.Background()
 	m, reg, _, dir := newTestManager(t)
 	sb, _ := launchOne(t, m, dir, "proj")
@@ -151,11 +151,18 @@ func TestRefreshRequiresSources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.Refresh(ctx, sb.GetId(), nil, nil); err == nil {
-		t.Fatal("expected Refresh to refuse a sandbox with no recorded sources")
+	out, err := m.Refresh(ctx, sb.GetId(), nil, nil)
+	if err != nil {
+		t.Fatalf("Refresh of a source-less sandbox should recreate the empty workspace: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(sb.GetWorkspacePath(), "proj", "file.txt")); err != nil {
-		t.Errorf("workspace was wiped despite the refusal: %v", err)
+	if out.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("state = %v", out.GetState())
+	}
+	if _, err := os.Stat(filepath.Join(sb.GetWorkspacePath(), "proj")); !os.IsNotExist(err) {
+		t.Error("the old seeded folder should be gone from the recreated empty workspace")
+	}
+	if _, err := os.Stat(filepath.Join(sb.GetWorkspacePath(), ".switchboard", "session.json")); err != nil {
+		t.Errorf("marker should be re-written into the empty workspace: %v", err)
 	}
 }
 
@@ -227,18 +234,18 @@ func TestRefreshRefusedWhileLatched(t *testing.T) {
 	m.ops.release(sb.GetId())
 
 	// The latch is released on every return path: a normal refresh, and a refused
-	// one (no recorded sources), both leave it free afterwards.
+	// one (workspace outside the controlled folder), both leave it free afterwards.
 	if _, err := m.Refresh(ctx, sb.GetId(), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, held := m.ops.holder(sb.GetId()); held {
 		t.Error("latch still held after a successful refresh")
 	}
-	if _, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.Sources = nil; return nil }); err != nil {
+	if _, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.WorkspacePath = "/elsewhere/proj"; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Refresh(ctx, sb.GetId(), nil, nil); err == nil {
-		t.Fatal("expected refusal without sources")
+		t.Fatal("expected refusal for a workspace outside the controlled folder")
 	}
 	if _, held := m.ops.holder(sb.GetId()); held {
 		t.Error("latch still held after a refused refresh")

@@ -2,11 +2,11 @@ package escapehatch
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/managedblock"
 )
 
 // renderRule builds the marker-delimited managed block injected into the workspace
@@ -45,37 +45,8 @@ func renderRule(commands []*pb.EscapeHatchCommand) string {
 
 // writeRuleBlock injects (or replaces) the managed rule block in the workspace
 // CLAUDE.md, creating the file when absent and preserving any user content around the
-// block.
+// block (the shared managedblock mechanics, feature 009 research R12).
 func writeRuleBlock(workspacePath string, commands []*pb.EscapeHatchCommand) error {
 	path := filepath.Join(workspacePath, claudeMdRelPath)
-	block := renderRule(commands)
-
-	existing, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return os.WriteFile(path, []byte(block+"\n"), 0o644)
-		}
-		return err
-	}
-	// Replace an existing block in place; otherwise append.
-	content := string(existing)
-	var updated string
-	if strings.Contains(content, ruleBeginMarker) && strings.Contains(content, ruleEndMarker) {
-		updated = replaceBlock(content, block)
-	} else {
-		updated = strings.TrimRight(content, "\n") + "\n\n" + block + "\n"
-	}
-	return os.WriteFile(path, []byte(updated), 0o644)
-}
-
-// replaceBlock swaps the existing marker-delimited block for block, leaving the
-// surrounding user content untouched.
-func replaceBlock(content, block string) string {
-	begin := strings.Index(content, ruleBeginMarker)
-	end := strings.Index(content, ruleEndMarker)
-	if begin < 0 || end < 0 {
-		return content
-	}
-	end += len(ruleEndMarker)
-	return content[:begin] + block + content[end:]
+	return managedblock.WriteBlock(path, ruleBeginMarker, ruleEndMarker, renderRule(commands))
 }

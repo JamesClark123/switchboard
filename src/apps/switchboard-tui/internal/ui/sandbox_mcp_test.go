@@ -132,8 +132,9 @@ func TestMcpServersAttachFlow(t *testing.T) {
 		t.Errorf("overlay attached = %v", got)
 	}
 	v := m.View()
-	if !strings.Contains(v, "attached pw") || !strings.Contains(v, "mcp: notion, pw (additive)") {
-		t.Errorf("overlay should confirm and the row badge should update; got:\n%s", v)
+	// feature 009: the attached servers are named on the row's third line.
+	if !strings.Contains(v, "attached pw") || !strings.Contains(v, "mcp: notion, pw") {
+		t.Errorf("overlay should confirm and the row's third line should update; got:\n%s", v)
 	}
 	// Everything registered is attached now: a says so instead of opening a picker.
 	m, _ = update(m, press("a"))

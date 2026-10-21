@@ -3,6 +3,7 @@ go 1.26
 use (
 	./src/apps/switchboard-tui
 	./src/apps/switchboard-tui-e2e
+	./src/libs/switchboard-dial
 	./src/libs/switchboard-proto
 	./src/libs/switchboard-update
 	./src/services/switchboardd

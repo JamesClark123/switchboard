@@ -42,11 +42,12 @@ func Open(dataDir string) (*Registry, error) {
 		return nil, fmt.Errorf("open registry %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		if _, e := tx.CreateBucketIfNotExists(sandboxBucket); e != nil {
-			return e
+		for _, b := range [][]byte{sandboxBucket, mcpBucket, orchestratorsBucket, runsBucket, workerTokensBucket} {
+			if _, e := tx.CreateBucketIfNotExists(b); e != nil {
+				return e
+			}
 		}
-		_, e := tx.CreateBucketIfNotExists(mcpBucket)
-		return e
+		return nil
 	})
 	if err != nil {
 		_ = db.Close()

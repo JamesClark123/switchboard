@@ -73,6 +73,18 @@ type launchState struct {
 	kitOn     map[string]bool // chosen kit ids
 	kitOrder  []string        // selection order — sbx composes stacked kits in order
 
+	// Orchestrator pick (feature 009, FR-110): the new sandbox is a worker of
+	// this orchestrator from before its agent starts (the controller bundle is
+	// fetched at launch and sent as LaunchSandboxRequest.controller).
+	orchestrator *orchRow
+	orchPick     bool
+	orchChoices  []orchRow
+
+	// reasoning (feature 009, FR-146): the browser edits an orchestrator's
+	// reasoning-sandbox setup instead of launching; enter rebuilds.
+	reasoning  *reasoningTarget
+	orchCursor int
+
 	// progress carries a pre-launch validation/kit error shown under the browser
 	// (e.g. "select at least one directory"). Live launch progress no longer lives
 	// here — once a launch starts it detaches to an optimistic list row (see
@@ -343,6 +355,9 @@ func (m Model) launchHelp() helpBindings {
 	if m.launch.hostPick {
 		return helpBindings{hkey("↑/↓", "move"), hkey("enter", "select host"), hkey("esc", "cancel")}
 	}
+	if m.launch.orchPick {
+		return helpBindings{hkey("↑/↓", "move"), hkey("enter", "select orchestrator"), hkey("esc", "cancel")}
+	}
 	return helpBindings{
 		hkey("space", "select"),
 		hkey("→/←", "open/up"),
@@ -350,9 +365,83 @@ func (m Model) launchHelp() helpBindings {
 		hkey("m", "seeding mode"),
 		hkey("K", "kits"),
 		hkey("H", "host"),
+		hkey("O", "orchestrator"),
 		hkey("enter", "launch"),
 		hkey("esc", "cancel"),
 	}
+}
+
+// openLaunchOrchPick enters the orchestrator-selection sub-mode (feature 009,
+// FR-110): every reachable orchestrator whose machine is the launch target or
+// whose host entries include it. The first row clears the choice.
+func (m Model) openLaunchOrchPick() (tea.Model, tea.Cmd) {
+	target := m.daemonHostID(m.launch.targetHost)
+	var choices []orchRow
+	for _, r := range m.orch.rows {
+		if !r.reachable {
+			continue
+		}
+		o := r.summary.GetOrchestrator()
+		if o.GetHostId() == target || orchHasHost(o, target) {
+			choices = append(choices, r)
+		}
+	}
+	if len(choices) == 0 {
+		m.launch.progress = "no reachable orchestrator can reach " + m.launchTargetLabel() + " — add this host to one on the Orchestrators screen"
+		return m, m.orchLoadCmd()
+	}
+	m.launch.orchChoices = choices
+	m.launch.orchPick = true
+	m.launch.orchCursor = 0
+	for i, c := range choices {
+		if m.launch.orchestrator != nil && c.summary.GetOrchestrator().GetId() == m.launch.orchestrator.summary.GetOrchestrator().GetId() {
+			m.launch.orchCursor = i + 1
+		}
+	}
+	m.launch.progress = ""
+	return m, nil
+}
+
+func (m Model) updateLaunchOrchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.launch.orchPick = false
+	case "up", "k":
+		if m.launch.orchCursor > 0 {
+			m.launch.orchCursor--
+		}
+	case "down", "j":
+		if m.launch.orchCursor < len(m.launch.orchChoices) {
+			m.launch.orchCursor++
+		}
+	case "enter":
+		m.launch.orchPick = false
+		if m.launch.orchCursor == 0 {
+			m.launch.orchestrator = nil
+		} else {
+			row := m.launch.orchChoices[m.launch.orchCursor-1]
+			m.launch.orchestrator = &row
+		}
+	}
+	return m, nil
+}
+
+// launchOrchPicker renders the orchestrator chooser: "none" first, then the
+// eligible orchestrators.
+func (m Model) launchOrchPicker() string {
+	rows := []string{dimStyle.Render("Attach the new sandbox to which orchestrator?"), ""}
+	labels := []string{dimStyle.Render("none")}
+	for _, r := range m.launch.orchChoices {
+		labels = append(labels, r.summary.GetOrchestrator().GetName()+dimStyle.Render("  @"+r.hostName))
+	}
+	for i, label := range labels {
+		if i == m.launch.orchCursor {
+			rows = append(rows, cursorBarStyle.Render("▌")+" "+selectedStyle.Render(label))
+			continue
+		}
+		rows = append(rows, "  "+label)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // openLaunchKitPick enters the kit-selection sub-mode, loading the saved kits.
@@ -449,14 +538,34 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.launch.hostPick {
 		return m.updateLaunchHostKey(msg)
 	}
+	if m.launch.orchPick {
+		return m.updateLaunchOrchKey(msg)
+	}
+	reasoning := m.launch.reasoning != nil
 	switch msg.String() {
 	case "esc":
+		if reasoning {
+			m.screen = screenOrchDetail
+			return m, nil
+		}
 		m.screen = screenList
 		return m, nil
+	case "ctrl+s":
+		if reasoning {
+			return m.startReasoningRebuildFromSetup()
+		}
 	case "K":
 		return m.openLaunchKitPick()
 	case "H":
+		if reasoning {
+			return m, nil // the host is the orchestrator's
+		}
 		return m.openLaunchHostPick()
+	case "O":
+		if reasoning {
+			return m, nil
+		}
+		return m.openLaunchOrchPick()
 	case "up", "k":
 		m.launch.moveCursor(-1)
 	case "down", "j":
@@ -470,14 +579,25 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		m.launch.toggle()
 	case "N":
+		if reasoning {
+			return m, nil // the name is fixed: reasoning-<id>
+		}
 		m.launch.naming = true
 		return m, m.launch.name.Focus()
 	case "m":
 		m.launch.cloneMode = !m.launch.cloneMode
 	case "enter":
+		if reasoning {
+			return m.startReasoningRebuildFromSetup()
+		}
 		return m.startLaunch()
 	}
 	return m, nil
+}
+
+// reasoningTarget names the orchestrator whose reasoning setup the browser edits.
+type reasoningTarget struct {
+	id, host, name string
 }
 
 // connectedHostChoices lists the hosts a sandbox can be created on right now:
@@ -628,6 +748,15 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 		DisplayName: name,
 		Kits:        kitRefs,
 	}
+	// feature 009 (FR-110): the controller bundle is fetched from the
+	// orchestrator's daemon inside the launch goroutine, right before the launch.
+	var orchDaemon Daemon
+	var orchID, orchName string
+	if m.launch.orchestrator != nil {
+		orchDaemon = m.daemonForHost(m.launch.orchestrator.host)
+		orchID = m.launch.orchestrator.summary.GetOrchestrator().GetId()
+		orchName = m.launch.orchestrator.summary.GetOrchestrator().GetName()
+	}
 
 	// Register the optimistic placeholder and detach the launch to the background.
 	// It is attributed to the chosen target host so its row lands under the right
@@ -662,6 +791,17 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 
 	d := m.daemonForHost(m.launch.targetHost)
 	go func() {
+		if orchDaemon != nil {
+			bctx, cancel := ctxTimeout()
+			bundle, err := orchDaemon.GetWorkerBundle(bctx, orchID)
+			cancel()
+			if err != nil {
+				ch <- launchResultMsg{id: tempID, err: fmt.Errorf("orchestrator %s: %w", orchName, err)}
+				return
+			}
+			req.Controller = bundle
+			ch <- launchProgressMsg{id: tempID, update: client.LaunchUpdate{LogLine: "orchestrator: launching as a worker of " + orchName}}
+		}
 		sb, blocked, err := d.Launch(context.Background(), req, func(u client.LaunchUpdate) {
 			ch <- launchProgressMsg{id: tempID, update: u}
 		})
@@ -749,6 +889,9 @@ func (m Model) handleLaunchResult(msg launchResultMsg) (tea.Model, tea.Cmd) {
 // launchModal renders the launch layer's modal box (browser or live progress).
 func (m Model) launchModal() string {
 	title := sectionStyle.Render("Launch sandbox") + dimStyle.Render("  ·  host "+m.launchTargetLabel())
+	if rt := m.launch.reasoning; rt != nil {
+		title = sectionStyle.Render("Reasoning sandbox setup") + dimStyle.Render("  ·  "+rt.name+"  ·  host "+m.launchTargetLabel())
+	}
 
 	var content string
 	switch {
@@ -756,15 +899,23 @@ func (m Model) launchModal() string {
 		content = m.launchKitPicker()
 	case m.launch.hostPick:
 		content = m.launchHostPicker()
+	case m.launch.orchPick:
+		content = m.launchOrchPicker()
 	default:
 		content = m.launchBrowser()
+	}
+	if m.launch.orchestrator != nil {
+		title += dimStyle.Render("  ·  orchestrator: " + m.launch.orchestrator.summary.GetOrchestrator().GetName())
 	}
 
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", content)
 	if m.launch.progress != "" {
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(m.launch.progress))
 	}
-	help := "space select · →/← open/up · N name · m mode · K kits · H host · enter launch · esc cancel"
+	help := "space select · →/← open/up · N name · m mode · K kits · H host · O orchestrator · enter launch · esc cancel"
+	if m.launch.reasoning != nil {
+		help = "space select folders (none = empty context) · →/← open/up · m mode · K kits · enter rebuild · esc cancel"
+	}
 	switch {
 	case m.launch.naming:
 		help = "type a name · enter done · esc cancel name"
@@ -772,6 +923,8 @@ func (m Model) launchModal() string {
 		help = "space toggle · ↑/↓ move · enter/esc done"
 	case m.launch.hostPick:
 		help = "↑/↓ move · enter select host · esc cancel"
+	case m.launch.orchPick:
+		help = "↑/↓ move · enter select orchestrator · esc cancel"
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
@@ -840,7 +993,9 @@ func (m Model) launchBrowser() string {
 		mode = "clone"
 	}
 	var nameLine string
-	if l.naming {
+	if l.reasoning != nil {
+		nameLine = "Name: " + selectedStyle.Render("reasoning-"+short(l.reasoning.id)) + dimStyle.Render("  (fixed)")
+	} else if l.naming {
 		nameLine = "Name: " + l.name.View()
 	} else if v := strings.TrimSpace(l.name.Value()); v != "" {
 		nameLine = "Name: " + selectedStyle.Render(v) + dimStyle.Render("  (N to edit)")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -58,6 +59,12 @@ case "$1" in
   version) echo "sbx version: v0.46.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9" ;;   # real format; >= sbxkit.MinSbxVersion so kit/gateway gates pass
   create) echo "container-$3" ;;
   ls) echo '{"sandboxes":[]}' ;;   # IsRunning parses ls --json
+  exec)
+    # feature 009: the daemon's agent PTY runs "sbx exec -it <ref> bash -lc ...";
+    # the stub agent copies everything typed into it to <dir>/agent-<ref>.in so a
+    # test can assert what a delivered run looked like. "sbx exec <ref> true"
+    # (resume) just succeeds.
+    if [ "$2" = "-it" ]; then cat > "` + dir + `/agent-$3.in"; fi ;;
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.
     case "$2 $3" in
@@ -101,16 +108,47 @@ func startDaemon(t *testing.T, daemonBin, sbxDir string) string {
 // startDaemonAt is startDaemon plus the daemon's controlled workspace root, so a
 // test can inspect what a sandbox's workspace copy actually holds on disk.
 func startDaemonAt(t *testing.T, daemonBin, sbxDir string) (sock, workspaceRoot string) {
+	// The hook HTTP port is fixed per daemon; the second daemon (feature 009)
+	// takes the next one so both can run on one machine.
+	return startDaemonWith(t, daemonBin, sbxDir, "e2e-host", fmt.Sprintf("/tmp/sb-e2e-%d.sock", os.Getpid()), "127.0.0.1:18765")
+}
+
+// secondDaemon is the result of startSecondDaemon: everything a test needs to
+// reach the "remote" daemon directly.
+type secondDaemon struct {
+	sock, workspaceRoot, dataDir, hookAddr string
+}
+
+// startSecondDaemon starts a second `sxbd` on its own socket, data dir and
+// workspace root, advertising host id "remote" (feature 009, research R16). It
+// stands in for the worker machine: the TUI reaches it through stubSSH.
+func startSecondDaemon(t *testing.T, daemonBin, sbxDir string) secondDaemon {
+	t.Helper()
+	sock := fmt.Sprintf("/tmp/sb-e2e-r-%d.sock", os.Getpid())
+	s, ws := startDaemonWith(t, daemonBin, sbxDir, "remote", sock, "127.0.0.1:18766")
+	return secondDaemon{sock: s, workspaceRoot: ws, dataDir: filepath.Join(filepath.Dir(ws), "data"), hookAddr: "127.0.0.1:18766"}
+}
+
+// startDaemonWith starts one daemon with an explicit host id, socket and hook
+// address.
+func startDaemonWith(t *testing.T, daemonBin, sbxDir, hostID, sock, hookAddr string) (string, string) {
+	t.Helper()
+	return startDaemonWithPath(t, daemonBin, hostID, sock, hookAddr, sbxDir)
+}
+
+// startDaemonWithPath is startDaemonWith with every PATH-prefix directory the
+// daemon needs (the stub sbx, and the stub ssh when it must reach a second
+// daemon as an orchestrator host).
+func startDaemonWithPath(t *testing.T, daemonBin, hostID, sock, hookAddr string, pathDirs ...string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	workspaceRoot = filepath.Join(dir, "ws")
+	workspaceRoot := filepath.Join(dir, "ws")
 	// Keep the socket path well under the 108-char sun_path limit.
-	sock = fmt.Sprintf("/tmp/sb-e2e-%d.sock", os.Getpid())
 	_ = os.Remove(sock)
 
 	cmd := exec.Command(daemonBin, "serve")
 	cmd.Env = append(os.Environ(),
-		"PATH="+sbxDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+strings.Join(pathDirs, string(os.PathListSeparator))+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"SWITCHBOARDD_SOCKET="+sock,
 		"SWITCHBOARDD_WORKSPACE_ROOT="+workspaceRoot,
 		"SWITCHBOARDD_DATA_DIR="+filepath.Join(dir, "data"),
@@ -121,7 +159,8 @@ func startDaemonAt(t *testing.T, daemonBin, sbxDir string) (sock, workspaceRoot 
 		// never bind its socket.
 		"SWITCHBOARDD_PID_FILE="+filepath.Join(dir, "data", "switchboard.pid"),
 		"SWITCHBOARDD_SBX_BIN=sbx",
-		"SWITCHBOARDD_HOST_ID=e2e-host",
+		"SWITCHBOARDD_HOST_ID="+hostID,
+		"SWITCHBOARDD_HOOK_ADDR="+hookAddr,
 	)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
@@ -147,6 +186,53 @@ func startDaemonAt(t *testing.T, daemonBin, sbxDir string) (sock, workspaceRoot 
 	return "", ""
 }
 
+// stubSSH writes a fake `ssh` onto a PATH-prefix directory. It ignores every
+// argument and execs the second daemon's `sxbd dial-stdio` against remoteSock,
+// so the orchestrator's daemon (and the TUI) reach the "remote" daemon through
+// the real SSH code path without a network (feature 009, research R16). The
+// returned directory also receives a copy of the stub sbx when sbxDir is
+// given, so one PATH prefix serves both.
+func stubSSH(t *testing.T, remoteSock, daemonBin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/usr/bin/env bash\n# stub ssh: every target is the second daemon\nexport SWITCHBOARDD_SOCKET=" + remoteSock + "\nexec " + daemonBin + " dial-stdio\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// withPath prefixes dirs onto the PATH of an environment.
+func withPath(env []string, dirs ...string) []string {
+	path := strings.Join(dirs, string(os.PathListSeparator)) + string(os.PathListSeparator) + os.Getenv("PATH")
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "PATH="+path)
+}
+
+// spawnTUIWithHosts is spawnTUIWithConfig with hosts.toml pre-seeded with the
+// "remote" host (an ssh entry whose target the stub ssh ignores) and the stub
+// ssh on the TUI's PATH, so the daemon screen can connect it.
+func spawnTUIWithHosts(t *testing.T, tuiBin, sock, srcRoot, configDir, sshDir string) *ptyProcess {
+	t.Helper()
+	hosts := "[[hosts]]\nid = \"local\"\ndisplay_name = \"localhost\"\nkind = \"local\"\nsocket_path = \"" + sock + "\"\n\n" +
+		"[[hosts]]\nid = \"remote\"\ndisplay_name = \"remote\"\nkind = \"ssh\"\nssh_target = \"remote\"\n"
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "hosts.toml"), []byte(hosts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Auto sign-in is on by default: the TUI dials the remote host at startup
+	// through the stub ssh (key/agent auth, which the stub accepts).
+	return spawnTUIWithEnv(t, tuiBin, sock, srcRoot, configDir, []string{"PATH=" + sshDir + string(os.PathListSeparator) + os.Getenv("PATH")})
+}
+
 // ptyProcess is a process driven through a PTY.
 type ptyProcess struct {
 	ptmx *os.File
@@ -164,6 +250,12 @@ func spawnTUI(t *testing.T, tuiBin, sock, srcRoot string) *ptyProcess {
 // inspect (or pre-seed) the client-side state the TUI writes — e.g. authored kits
 // under <configDir>/kits/<id>/spec.yaml (feature 004).
 func spawnTUIWithConfig(t *testing.T, tuiBin, sock, srcRoot, configDir string) *ptyProcess {
+	return spawnTUIWithEnv(t, tuiBin, sock, srcRoot, configDir, nil)
+}
+
+// spawnTUIWithEnv is spawnTUIWithConfig with extra environment entries (a PATH
+// carrying the stub ssh, feature 009).
+func spawnTUIWithEnv(t *testing.T, tuiBin, sock, srcRoot, configDir string, extra []string) *ptyProcess {
 	t.Helper()
 	cmd := exec.Command(tuiBin)
 	cmd.Dir = srcRoot
@@ -172,6 +264,7 @@ func spawnTUIWithConfig(t *testing.T, tuiBin, sock, srcRoot, configDir string) *
 		"SWITCHBOARD_CONFIG_DIR="+configDir,
 		"TERM=xterm-256color",
 	)
+	cmd.Env = append(cmd.Env, extra...)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
@@ -190,6 +283,26 @@ func spawnTUIWithConfig(t *testing.T, tuiBin, sock, srcRoot, configDir string) *
 }
 
 func (p *ptyProcess) send(s string) { _, _ = p.ptmx.WriteString(s) }
+
+// tab moves a huh form to its next field and lets the focus change land before
+// the next keystrokes: huh switches fields through a command, so runes sent in
+// the same instant as the tab would still reach the previous field.
+func (p *ptyProcess) tab() {
+	p.send("\t")
+	time.Sleep(300 * time.Millisecond)
+}
+
+// tail returns the end of the captured output with escape sequences removed,
+// for failure messages that need the last screen.
+func (p *ptyProcess) tail(n int) string {
+	s := ansiRe.ReplaceAllString(p.buf.String(), "")
+	if len(s) > n {
+		s = s[len(s)-n:]
+	}
+	return s
+}
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][B0]`)
 
 // expect waits until the captured output contains sub, or fails after timeout.
 //

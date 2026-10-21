@@ -18,6 +18,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -54,6 +55,59 @@ type Manager struct {
 	// RemoveSources (feature 007, FR-066): seed-mutating operations on one
 	// workspace never interleave. See oplock.go.
 	ops opLock
+
+	// --- feature 009 (orchestrator worker side; research R3/R4) ---
+	// onDestroy, when set, is called with the record just before it is deleted
+	// (Destroy, or the vanished-workspace prune in List) so the worker service
+	// can revoke the sandbox's gateway token and registration. MAY be nil.
+	onDestroy func(sb *pb.Sandbox)
+	// onBringUp, when set, is called after Restart/Refresh bring a sandbox back
+	// to RUNNING, so a controlled sandbox's gateway registration can be
+	// re-loaded (the attach-time load is skipped while it is not running). MAY be nil.
+	onBringUp func(sb *pb.Sandbox)
+	// applyController, when set, is called by Launch after create and the MCP
+	// marks and BEFORE the record turns RUNNING (FR-110) with the launching
+	// record (container_ref filled in) and the LaunchRequest's controller +
+	// briefing: the worker service records the controller, mints the token,
+	// registers + loads the gateway server and writes the briefing. A failure is
+	// logged and never fails the launch. MAY be nil (controller ignored).
+	applyController func(ctx context.Context, sb *pb.Sandbox, controller *pb.SandboxController, briefing string) error
+}
+
+// SetOnDestroy registers the destroy observer (feature 009).
+func (m *Manager) SetOnDestroy(fn func(sb *pb.Sandbox)) { m.onDestroy = fn }
+
+// SetOnBringUp registers the bring-up observer (feature 009).
+func (m *Manager) SetOnBringUp(fn func(sb *pb.Sandbox)) { m.onBringUp = fn }
+
+// SetControllerApplier registers the launch-attach step (feature 009, FR-110).
+func (m *Manager) SetControllerApplier(fn func(ctx context.Context, sb *pb.Sandbox, controller *pb.SandboxController, briefing string) error) {
+	m.applyController = fn
+}
+
+// Controller returns the sandbox's recorded controller (nil when it is not a
+// worker), or the registry's error for an unknown id.
+func (m *Manager) Controller(id string) (*pb.SandboxController, error) {
+	sb, err := m.store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	return sb.GetController(), nil
+}
+
+// leaveRunning records a transition OUT of RUNNING. A run recorded on the
+// sandbox cannot survive it (the agent session is gone; the orchestrator folds
+// the status event into a failed run, research R7) — except a run the
+// orchestrator has already handed to the developer for review, which a stop
+// keeps so the review can still be closed (FR-156 edge case).
+func leaveRunning(s *pb.Sandbox, state pb.SandboxState) {
+	s.State = state
+	if state == pb.SandboxState_SANDBOX_STATE_RUNNING {
+		return
+	}
+	if c := s.GetController(); c != nil && c.GetRun() != nil && !c.GetRun().GetNeedsReview() {
+		c.Run = nil
+	}
 }
 
 // SetHookInjector registers a callback invoked after seeding to inject agent
@@ -93,6 +147,11 @@ func (m *Manager) emit(s *pb.Sandbox) {
 	}
 }
 
+// Emit publishes a record another component changed through the registry
+// directly (feature 009: the worker side's controller writes), so it reaches
+// the event stream exactly like the manager's own transitions.
+func (m *Manager) Emit(s *pb.Sandbox) { m.emit(s) }
+
 // LaunchRequest captures everything needed to create a sandbox.
 type LaunchRequest struct {
 	Config        *pb.ConfigSnapshot
@@ -117,6 +176,16 @@ type LaunchRequest struct {
 	// (feature 008, FR-081/FR-100), computed by the gRPC layer from the gateway
 	// manager. nil = no gateway on this host: launch exactly as before.
 	Mcp *McpAttach
+	// EmptyWorkspace (feature 009, research R11) launches with NO seeded folders:
+	// zero sources are accepted, the workspace directory is created empty and
+	// the record carries no sources. The orchestrator's reasoning sandbox uses it.
+	EmptyWorkspace bool
+	// Controller + ControllerBriefing (feature 009, FR-110): when set, the
+	// sandbox is attached to this orchestrator right after create and before the
+	// agent can start, through the registered controller applier. A failure is
+	// logged and never fails the launch.
+	Controller         *pb.SandboxController
+	ControllerBriefing string
 }
 
 // McpAttach is what one launch applies from the daemon's MCP marks (data-model
@@ -144,6 +213,9 @@ func (m *Manager) List() ([]*pb.Sandbox, error) {
 	out := make([]*pb.Sandbox, 0, len(all))
 	for _, sb := range all {
 		if m.workspaceGone(sb) {
+			if m.onDestroy != nil {
+				m.onDestroy(sb)
+			}
 			if delErr := m.store.Delete(sb.GetId()); delErr == nil {
 				m.emit(&pb.Sandbox{Id: sb.GetId(), State: pb.SandboxState_SANDBOX_STATE_DESTROYING})
 			}
@@ -178,7 +250,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	if req.Config == nil {
 		return nil, errors.New("config is required")
 	}
-	if len(req.Sources) == 0 {
+	if len(req.Sources) == 0 && !req.EmptyWorkspace {
 		return nil, errors.New("at least one source is required")
 	}
 
@@ -264,6 +336,24 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	// failed launch (FR-083/FR-084).
 	attached, mode := m.applyMcp(ctx, ref, req.Mcp, onLog)
 
+	// Feature 009 (FR-110): a launch-attached sandbox is a worker before its
+	// agent starts — the controller, token, gateway registration + load and the
+	// briefing are applied here, at the same point additive marks were loaded,
+	// still before the record turns RUNNING. Never a failed launch.
+	if req.Controller != nil && m.applyController != nil {
+		cur := proto.Clone(sb).(*pb.Sandbox)
+		cur.ContainerRef = ref
+		cur.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		if err := m.applyController(ctx, cur, req.Controller, req.ControllerBriefing); err != nil {
+			if onLog != nil {
+				onLog("orchestrator: skipped — " + err.Error())
+			}
+			log.Printf("[warn] launch %s: orchestrator attach skipped: %v", id, err)
+		} else if onLog != nil {
+			onLog("orchestrator: attached to " + req.Controller.GetName())
+		}
+	}
+
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
 		s.ContainerRef = ref
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
@@ -279,8 +369,12 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	return out, nil
 }
 
-// seed performs duplicate or clone into the controlled folder.
+// seed performs duplicate or clone into the controlled folder. A record with no
+// sources (feature 009, an EmptyWorkspace launch) gets an empty directory.
 func (m *Manager) seed(ctx context.Context, sb *pb.Sandbox, onProgress func(duplicate.Progress), onLog func(string)) error {
+	if len(sb.GetSources()) == 0 {
+		return os.MkdirAll(sb.GetWorkspacePath(), 0o755)
+	}
 	if sb.GetSeedingMode() == pb.SeedingMode_SEEDING_MODE_CLONE {
 		if err := os.MkdirAll(sb.GetWorkspacePath(), 0o755); err != nil {
 			return err
@@ -307,7 +401,7 @@ func (m *Manager) seed(ctx context.Context, sb *pb.Sandbox, onProgress func(dupl
 
 func (m *Manager) fail(sb *pb.Sandbox, cause error) (*pb.Sandbox, error) {
 	out, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
-		s.State = pb.SandboxState_SANDBOX_STATE_ERROR
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_ERROR)
 		s.Error = cause.Error()
 		s.UpdatedAt = timestamppb.Now()
 		return nil
@@ -371,7 +465,7 @@ func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 		}
 	}
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		s.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -407,7 +501,15 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 		return nil, err
 	}
 	m.emit(out)
+	m.broughtUp(out)
 	return out, nil
+}
+
+// broughtUp runs the bring-up observer for a controlled sandbox (feature 009).
+func (m *Manager) broughtUp(sb *pb.Sandbox) {
+	if m.onBringUp != nil && sb.GetController() != nil {
+		m.onBringUp(sb)
+	}
 }
 
 // applyMcp attaches the resolved MCP set to a freshly created sandbox and returns
@@ -512,9 +614,8 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	if err != nil {
 		return nil, err
 	}
-	if len(sb.GetSources()) == 0 {
-		return nil, fmt.Errorf("sandbox %s has no recorded sources to re-seed from", id)
-	}
+	// A record with no sources is an EmptyWorkspace launch (feature 009): a
+	// refresh recreates the empty directory rather than refusing.
 	wp := sb.GetWorkspacePath()
 	if wp == "" || !within(m.workspaceRoot, wp) {
 		return nil, fmt.Errorf("refuse to refresh %s: workspace %q is outside the controlled folder %q", id, wp, m.workspaceRoot)
@@ -536,7 +637,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// sit in the workspace we are about to delete, and a stale PTY would hand the
 	// next attach an immediate EOF.
 	stopped, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		s.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -579,6 +680,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 		return nil, err
 	}
 	m.emit(out)
+	m.broughtUp(out)
 	return out, nil
 }
 
@@ -623,7 +725,7 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands 
 	}
 
 	applying, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		s.State = pb.SandboxState_SANDBOX_STATE_CREATING
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_CREATING)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -686,6 +788,9 @@ func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
 			return false, err
 		}
 		deletedWorkspace = true
+	}
+	if m.onDestroy != nil {
+		m.onDestroy(sb)
 	}
 	if err := m.store.Delete(id); err != nil {
 		return false, err
@@ -903,7 +1008,7 @@ func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, 
 		s.DisplayName = newName
 		s.WorkspacePath = newPath
 		s.ContainerRef = "" // recreated from the renamed copy on next start
-		s.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -940,7 +1045,7 @@ func (m *Manager) Readopt(ctx context.Context) error {
 			continue
 		}
 		if _, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
-			s.State = want
+			leaveRunning(s, want)
 			s.UpdatedAt = timestamppb.Now()
 			return nil
 		}); err != nil {

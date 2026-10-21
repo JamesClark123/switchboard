@@ -222,6 +222,114 @@ service Switchboard {
   rpc SetSecret(SetSecretRequest) returns (Secret);
   // Removes a stored secret (service by name, or a registry credential by host).
   rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse);
+
+  // --- Orchestrator (feature 009, FR-105..FR-157) ---
+  // Two sides, two daemons. ORCHESTRATOR-SIDE RPCs are served by the daemon that
+  // hosts the orchestrator (the TUI calls them over its existing connection to
+  // that machine). WORKER-SIDE RPCs are served by EVERY daemon for the sandboxes
+  // it owns and are called by an orchestrator's daemon over the SSH link it
+  // opened (`ssh <host> sxbd dial-stdio`, research R2) or in-process for its own
+  // host; the TUI calls only DetachController directly, and only when the
+  // orchestrator is unreachable (FR-112). An older daemon answers every new RPC
+  // with UNIMPLEMENTED, surfaced as "daemon on <host> is too old"; the `u`
+  // update fan-out is the remedy.
+
+  // ===== Orchestrator-side (served by the hosting daemon; FR-105, FR-142) =====
+
+  // Every orchestrator this daemon hosts, with derived counts (FR-142).
+  rpc ListOrchestrators(ListOrchestratorsRequest) returns (ListOrchestratorsResponse);
+  // One orchestrator with its workers (availability derived, R7) and host
+  // entries (reachability derived from the link state, R2/R6).
+  rpc GetOrchestrator(OrchestratorIdRequest) returns (OrchestratorDetail);
+  // Creates the record, assigns the opaque identity (FR-148), starts the runtime
+  // and launches the default reasoning sandbox asynchronously (R11). ALREADY_EXISTS
+  // when the name is taken on this daemon; the TUI checks every connected daemon
+  // first so the name is unique among the orchestrators it knows.
+  rpc CreateOrchestrator(CreateOrchestratorRequest) returns (Orchestrator);
+  // Changes the label only (FR-148); workers' records and briefings are refreshed
+  // through their links as they are reachable (UpdateWorker).
+  rpc RenameOrchestrator(RenameOrchestratorRequest) returns (Orchestrator);
+  // DESTRUCTIVE (FR-153): detaches every reachable worker (DetachController),
+  // destroys the reasoning sandbox, fails in-flight runs, cancels queued runs,
+  // discards actions/events/history. The CLIENT confirms. Workers on hosts that
+  // are unreachable keep the controller until that daemon is reached again by
+  // this orchestrator's identity (never) or detached by hand.
+  rpc RemoveOrchestrator(OrchestratorIdRequest) returns (RemoveOrchestratorResponse);
+  // Replaces the orchestrator's host entries (FR-106). Removing an entry whose
+  // host still has workers is FAILED_PRECONDITION naming them.
+  rpc SetOrchestratorHosts(SetOrchestratorHostsRequest) returns (Orchestrator);
+
+  // The controller bundle (identity, name, host, briefing) a launching sandbox
+  // carries in LaunchSandboxRequest.controller so it is a worker before its agent
+  // starts (FR-110). The orchestrator adopts the sandbox on its next reconcile or
+  // on an explicit AttachWorker (idempotent for the same controller).
+  rpc GetWorkerBundle(GetWorkerBundleRequest) returns (WorkerBundle);
+  // Attaches an EXISTING sandbox: dials the sandbox's host over the orchestrator's
+  // own entry (FAILED_PRECONDITION "no host entry for <host>" when missing;
+  // UNAVAILABLE with the SSH error when the dial fails), then AttachController on
+  // the owning daemon. ALREADY_EXISTS names the current controller (FR-108).
+  // Never stops, restarts or recreates the sandbox (FR-109).
+  rpc AttachWorker(AttachWorkerRequest) returns (WorkerView);
+  // Detaches a worker. FAILED_PRECONDITION naming the run while one is in flight
+  // on it (FR-111). Refused for the reasoning sandbox (FR-145).
+  rpc DetachWorker(DetachWorkerRequest) returns (DetachWorkerResponse);
+  // Closes the run AWAITING_REVIEW on a worker as COMPLETED (default) or FAILED,
+  // with the developer's note as its summary and closed_by_developer = true, and
+  // frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
+  rpc MarkWorkerFree(MarkWorkerFreeRequest) returns (Run);
+
+  // Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
+  // names the problem). Runs already created are untouched (FR-140).
+  rpc PutAction(PutActionRequest) returns (Action);
+  // Deletes an action; timed events naming it are disabled with that reason;
+  // queued runs keep their composed prompt (edge cases).
+  rpc DeleteAction(DeleteActionRequest) returns (DeleteActionResponse);
+  // Creates or replaces a timed event (interval >= 60 s; the action must exist).
+  rpc PutTimedEvent(PutTimedEventRequest) returns (TimedEvent);
+  rpc DeleteTimedEvent(DeleteTimedEventRequest) returns (DeleteTimedEventResponse);
+
+  // A USER event (FR-129): validates the call, composes the prompt at call time,
+  // queues the run and returns it with its position. INVALID_ARGUMENT names a
+  // missing required argument, an undeclared argument, an oversized value or an
+  // unknown action; nothing is queued on refusal.
+  rpc CallAction(CallActionRequest) returns (Run);
+  // The three Queue-view groups (FR-131): queued in order with positions, in
+  // flight, and history newest first within retention (FR-127).
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+  // One run including its composed prompt.
+  rpc GetRun(GetRunRequest) returns (Run);
+  // Cancels a QUEUED run (FR-126); FAILED_PRECONDITION for any other state.
+  rpc CancelRun(CancelRunRequest) returns (Run);
+  // Rebuilds the reasoning sandbox — destroy + launch with the saved setup, or
+  // with `setup` when given (saved first) (FR-146). Streams LaunchProgress like
+  // LaunchSandbox. FAILED_PRECONDITION while a run is on the sandbox.
+  rpc RebuildReasoningSandbox(RebuildReasoningSandboxRequest) returns (stream LaunchProgress);
+
+  // ===== Worker-side (served by every daemon for sandboxes it owns; R3) =====
+
+  // Records the controller on the sandbox (compare-and-set: ALREADY_EXISTS names
+  // the current controller, FR-108), mints the worker token, registers and loads
+  // the per-worker gateway server (R4) and writes the briefing (R12). Idempotent
+  // for the same controller. Emits Event.sandbox_changed. Works in any sandbox
+  // state; the gateway load is skipped and retried at next bring-up when the
+  // sandbox is not running.
+  rpc AttachController(AttachControllerRequest) returns (Sandbox);
+  // Clears the controller, removes the registration, strips the briefing.
+  // FAILED_PRECONDITION for a reasoning sandbox unless force (orchestrator
+  // removal). Callable by the TUI directly when the orchestrator is unreachable.
+  rpc DetachController(DetachControllerRequest) returns (Sandbox);
+  // Updates the last-known name, the current run (set/clear, needs_review) and/or
+  // the briefing. Emits Event.sandbox_changed. PERMISSION_DENIED when
+  // orchestrator_id is not the recorded controller.
+  rpc UpdateWorker(UpdateWorkerRequest) returns (Sandbox);
+  // Guarded delivery (R7): FAILED_PRECONDITION unless the sandbox is RUNNING, its
+  // agent IDLE, the controller matches and no run is recorded on it. Ensures the
+  // PTY is drained, types the framed prompt through the developer's own prompt
+  // path, records controller.run and emits Event.sandbox_changed.
+  rpc DeliverWorkerPrompt(DeliverWorkerPromptRequest) returns (DeliverWorkerPromptResponse);
+  // The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
+  // MUST be `hello`. See OrchestratorLinkFrame.
+  rpc OrchestratorLink(stream OrchestratorLinkFrame) returns (stream OrchestratorLinkFrame);
 }
 
 // ---------- Enums ----------
@@ -260,6 +368,12 @@ enum NotificationKind {
   // FR-052: a service entered FAILED. Failures only — a successful start and a
   // developer-initiated stop are silent (they are actions the developer just took).
   NOTIFICATION_KIND_SERVICE_FAILED = 5;
+  // --- feature 009 ---
+  // FR-133: raised by the ORCHESTRATOR'S daemon with the worker's sandbox_id /
+  // host_id so the inbox lands on the row. Reported completions are silent.
+  NOTIFICATION_KIND_RUN_FAILED = 6;
+  NOTIFICATION_KIND_RUN_AWAITING_REVIEW = 7;
+  NOTIFICATION_KIND_RUN_NEEDS_INPUT = 8;
 }
 
 // --- Escape hatch (feature 005) ---
@@ -347,6 +461,45 @@ enum McpAuthState {
   MCP_AUTH_STATE_UNKNOWN        = 4; // status query failed; never fails the list
 }
 
+// --- Orchestrator (feature 009) ---
+
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;   // rejected at save
+  ACTION_TYPE_PROMPT      = 1;   // runs on a free worker satisfying the requirements (FR-122)
+  ACTION_TYPE_REASON      = 2;   // runs on the reasoning sandbox (FR-141)
+}
+
+// FR-125. In flight = RUNNING | AWAITING_INPUT | AWAITING_REVIEW.
+enum RunState {
+  RUN_STATE_UNSPECIFIED     = 0;
+  RUN_STATE_QUEUED          = 1;
+  RUN_STATE_RUNNING         = 2;
+  RUN_STATE_AWAITING_INPUT  = 3;
+  RUN_STATE_AWAITING_REVIEW = 4;   // agent idle, no completion report (FR-156)
+  RUN_STATE_COMPLETED       = 5;
+  RUN_STATE_FAILED          = 6;
+  RUN_STATE_CANCELLED       = 7;
+}
+
+// FR-128: who called the action.
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_USER        = 1;   // the developer, via the arguments form
+  EVENT_KIND_TIMED       = 2;   // a timed event; origin = event id
+  EVENT_KIND_TRIGGERED   = 3;   // a worker's or the reasoning sandbox's agent; origin = sandbox id
+}
+
+// Derived, never stored (Key Entities: Sandbox availability).
+enum WorkerAvailability {
+  WORKER_AVAILABILITY_UNSPECIFIED     = 0;
+  WORKER_AVAILABILITY_FREE            = 1;   // running, agent idle, no run recorded
+  WORKER_AVAILABILITY_BUSY            = 2;   // agent working (for the orchestrator or the developer)
+  WORKER_AVAILABILITY_AWAITING_INPUT  = 3;
+  WORKER_AVAILABILITY_AWAITING_REVIEW = 4;
+  WORKER_AVAILABILITY_NOT_RUNNING     = 5;   // stopped, error, creating
+  WORKER_AVAILABILITY_UNREACHABLE     = 6;   // owning daemon's link is down
+}
+
 // ---------- Core messages ----------
 
 message AgentSpec {
@@ -421,6 +574,12 @@ message Sandbox {
   // additive mode are not recorded.
   repeated string mcp_servers = 21;
   McpAttachMode mcp_attach_mode = 22;
+  // --- feature 009 ---
+  // Recorded by this sandbox's OWNING daemon when an orchestrator attaches it as
+  // a worker (or launches it as its reasoning sandbox). Absent => not a worker.
+  // The per-worker gateway token is daemon-local (bucket `worker_tokens`) and
+  // NEVER carried here (I-C4).
+  SandboxController controller = 23;
 }
 
 // ---------- Agent kits (feature 004) ----------
@@ -670,6 +829,11 @@ message LaunchSandboxRequest {
   // per entry. Creation time is the ONLY point `--kit` is accepted by sbx; use
   // AddSandboxKit for a sandbox that already exists.
   repeated KitRef kits = 6;
+  // feature 009 (FR-110): from GetWorkerBundle — the sandbox is a worker of this
+  // orchestrator from before its agent starts (registration + briefing applied
+  // after create, before RUNNING). Applied by the owning daemon; a failure is
+  // logged and never fails the launch.
+  WorkerBundle controller = 7;
 }
 
 message LaunchProgress {
@@ -790,10 +954,15 @@ message Event {
     McpGatewayChanged mcp_gateway_changed = 6;
     // A daemon's secret store changed (set/remove) (FR-104).
     SecretsChanged secrets_changed = 7;
+    // feature 009 (R14): an orchestrator hosted by host_id changed (record,
+    // actions, events, hosts, roster) or one of its runs transitioned. Clients
+    // re-fetch its summary and whichever view is open.
+    OrchestratorChanged orchestrator_changed = 8;
   }
   message SandboxRemoved { string sandbox_id = 1; }
   message McpGatewayChanged { string host_id = 1; }
   message SecretsChanged { string host_id = 1; }
+  message OrchestratorChanged { string host_id = 1; string orchestrator_id = 2; }
 }
 
 message NotificationEvent {
@@ -899,3 +1068,272 @@ message SetSecretRequest { string name = 1; string value = 2; string sandbox = 3
 // host; anything else removes a service secret by name.
 message RemoveSecretRequest { string name = 1; string sandbox = 2; string type = 3; }
 message RemoveSecretResponse {}
+
+// ---------- Orchestrator (feature 009) ----------
+
+// Recorded on the sandbox by its OWNING daemon (Key Decision 5). Absent => not a
+// worker. The TUI hides a sandbox with a controller unless it needs the developer
+// (agent NEEDS_INPUT or run.needs_review), orders those first, and labels rows
+// with `name` (FR-113/114/149).
+message SandboxController {
+  string orchestrator_id = 1;            // stable opaque identity (FR-148)
+  string name = 2;                       // last-known display name; refreshed by UpdateWorker
+  string host_id = 3;                    // the orchestrator's machine (where MarkWorkerFree is called)
+  google.protobuf.Timestamp attached_at = 4;
+  bool reasoning = 5;                    // this sandbox is the orchestrator's reasoning sandbox (FR-145)
+  WorkerRun run = 6;                     // the run currently on the sandbox; unset when none
+}
+message WorkerRun {
+  string id = 1;
+  string action = 2;
+  bool needs_review = 3;                 // set by the orchestrator when the run is AWAITING_REVIEW
+}
+
+message WorkerBundle {
+  SandboxController controller = 1;      // identity, name, host; `run` unset
+  string briefing = 2;                   // the managed CLAUDE.md block body (R12)
+}
+
+// One machine the orchestrator dials (FR-106): the TUI's KnownHost shape minus
+// any password; keyed by the remote daemon's advertised host_id.
+message OrchestratorHost {
+  string host_id = 1;
+  string display_name = 2;
+  string ssh_target = 3;                 // user@host[:port] as `ssh` accepts it
+  repeated string ssh_options = 4;       // extra `-o`/`-i` arguments, verbatim
+  bool reachable = 5;                    // derived: the link is up
+  string error = 6;                      // derived: last dial error when down
+}
+
+message ActionArgument {
+  string name = 1;                       // [A-Za-z_][A-Za-z0-9_]*; unique within the action
+  string description = 2;
+  bool required = 3;
+  string default_value = 4;              // optional arguments only
+}
+
+// A developer-authored recipe (FR-135..FR-141). Validated at save.
+message Action {
+  string name = 1;                       // [a-z0-9][a-z0-9-]* <= 64; unique within the orchestrator
+  string description = 2;
+  ActionType type = 3;
+  string body = 4;                       // non-empty; placeholders are {name} (R8)
+  repeated ActionArgument arguments = 5;
+  string worker_tag = 6;                 // PROMPT only: eligible workers carry this Sandbox.tag
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// FR-130/FR-157. `dedupe_disabled` is stored negated so an absent field means
+// the default: dedupe ON.
+message TimedEvent {
+  string id = 1;                         // tev-<seq>
+  string name = 2;
+  string action = 3;
+  map<string, string> arguments = 4;     // fixed argument values
+  uint32 interval_seconds = 5;           // >= 60
+  bool enabled = 6;
+  bool dedupe_disabled = 7;              // false = skip a firing while a run of this event is queued or in flight
+  google.protobuf.Timestamp next_fire_at = 8;
+  google.protobuf.Timestamp last_fired_at = 9;
+  google.protobuf.Timestamp last_skipped_at = 10;
+  uint32 skipped_count = 11;
+  string disabled_reason = 12;           // e.g. "action review-pr was deleted"
+}
+
+// The reasoning sandbox's setup (FR-146): the launch wizard's own fields. Empty
+// => the default empty context (FR-147).
+message ReasoningSetup {
+  repeated SourceRef sources = 1;
+  ConfigSnapshot config = 2;
+  repeated KitRef kits = 3;
+  repeated string mcp_servers = 4;       // registered names on the orchestrator's host
+}
+
+// Roster entry (persisted on the orchestrator; the owning daemon's record is the
+// authority — the roster is re-derived from it on every reconcile, R6).
+message Worker {
+  string sandbox_id = 1;
+  string host_id = 2;
+  google.protobuf.Timestamp attached_at = 3;
+  bool reasoning = 4;
+}
+
+// Persisted in the registry's `orchestrators` bucket (R9).
+message Orchestrator {
+  string id = 1;                         // uuid; never changes (FR-148)
+  string name = 2;                       // unique among orchestrators on this daemon
+  string host_id = 3;                    // the hosting daemon's host id
+  google.protobuf.Timestamp created_at = 4;
+  repeated OrchestratorHost hosts = 5;
+  repeated Action actions = 6;
+  repeated TimedEvent timed_events = 7;
+  ReasoningSetup reasoning_setup = 8;
+  string reasoning_sandbox_id = 9;       // "" until launched
+  repeated Worker workers = 10;
+}
+
+message OrchestratorSummary {
+  Orchestrator orchestrator = 1;
+  uint32 worker_count = 2;
+  uint32 queued = 3;
+  uint32 in_flight = 4;
+  uint32 awaiting_review = 5;
+  bool reasoning_ready = 6;              // the reasoning sandbox exists on this host
+  string reasoning_error = 7;            // why not, when it does not
+}
+
+// A worker as the Workers view and the Orchestrator Sandboxes tab show it (FR-132/FR-115).
+message WorkerView {
+  string sandbox_id = 1;
+  string host_id = 2;
+  string display_name = 3;
+  string tag = 4;
+  SandboxState state = 5;
+  AgentStatus agent_status = 6;
+  WorkerAvailability availability = 7;
+  string run_id = 8;                     // run on it, when any
+  string run_action = 9;
+  bool reasoning = 10;
+  bool host_reachable = 11;
+}
+
+// One call of an action (FR-125). `prompt` is the composed prompt, frozen at
+// call time; delivery wraps it in the documented run frame (R12), which is not
+// recorded. `position` is derived (1-based) for QUEUED runs.
+message Run {
+  string id = 1;                         // run-<orchestrator8>-<seq>
+  string orchestrator_id = 2;
+  string action = 3;
+  ActionType type = 4;
+  map<string, string> arguments = 5;
+  string prompt = 6;
+  EventKind event_kind = 7;
+  string origin = 8;                     // event id | calling sandbox id | "" for USER
+  string origin_label = 9;               // event name | sandbox display name | ""
+  google.protobuf.Timestamp received_at = 10;
+  google.protobuf.Timestamp started_at = 11;
+  google.protobuf.Timestamp ended_at = 12;
+  RunState state = 13;
+  string sandbox_id = 14;                // the sandbox it ran on, once started
+  string sandbox_host_id = 15;
+  string summary = 16;                   // the completion report's summary, or the developer's note
+  bool closed_by_developer = 17;         // MarkWorkerFree closed it (FR-156)
+  string reason = 18;                    // outcome reason for FAILED/CANCELLED
+  uint32 position = 19;
+}
+
+// OrchestratorLinkFrame is one message on the call relay (research R6). One
+// stream per (orchestrator, host entry), opened by the ORCHESTRATOR'S daemon:
+//
+//   orchestrator daemon (M)                      worker daemon (N)
+//   ──────────────────────────────────────────────────────────────────
+//   hello{orchestrator_id, name}  ───────────►   index link by orchestrator id
+//                                 ◄───────────   call{id, sandbox_id, tool, args_json}
+//                                                 (a worker's gateway call, attributed by N)
+//   result{id, ok, body_json, error} ─────────►   returned to the agent as the tool result
+//   ping{}  ◄──────────────────────────────────►  every 30 s, both ways
+//
+// The first client frame MUST be `hello`; anything else is INVALID_ARGUMENT. A
+// `call` with no `result` within linkCallTimeout (10 s) answers the agent with
+// "orchestrator <name> is unreachable; retry". Only one link per
+// (orchestrator, N) is live; a newer `hello` for the same orchestrator replaces
+// the older stream.
+message OrchestratorLinkFrame {
+  oneof frame {
+    Hello hello = 1;                     // orchestrator -> worker daemon, first frame only
+    Call call = 2;                       // worker daemon -> orchestrator
+    Result result = 3;                   // orchestrator -> worker daemon
+    Ping ping = 4;                       // both directions
+  }
+  message Hello { string orchestrator_id = 1; string name = 2; }
+  message Call {
+    string id = 1;                       // unique per link
+    string sandbox_id = 2;               // the attributed caller (R4)
+    string tool = 3;                     // orchestrator_list_actions | orchestrator_call_action | orchestrator_check_run | orchestrator_report_completion
+    string args_json = 4;                // the tool's input object, JSON
+  }
+  message Result {
+    string id = 1;
+    bool ok = 2;
+    string body_json = 3;                // the tool's output object, JSON (when ok)
+    string error = 4;                    // the refusal reason (when !ok)
+  }
+  message Ping {}
+}
+
+// --- orchestrator-side payloads ---
+
+message ListOrchestratorsRequest {}
+message ListOrchestratorsResponse { repeated OrchestratorSummary orchestrators = 1; }
+message OrchestratorIdRequest { string orchestrator_id = 1; }
+message OrchestratorDetail {
+  OrchestratorSummary summary = 1;
+  repeated WorkerView workers = 2;       // workers and the reasoning sandbox
+  repeated OrchestratorHost hosts = 3;   // with reachability
+}
+message CreateOrchestratorRequest { string name = 1; }
+message RenameOrchestratorRequest { string orchestrator_id = 1; string name = 2; }
+message RemoveOrchestratorResponse { uint32 workers_detached = 1; uint32 runs_failed = 2; uint32 runs_cancelled = 3; }
+message SetOrchestratorHostsRequest { string orchestrator_id = 1; repeated OrchestratorHost hosts = 2; }
+
+message GetWorkerBundleRequest { string orchestrator_id = 1; }
+message AttachWorkerRequest { string orchestrator_id = 1; string host_id = 2; string sandbox_id = 3; }
+message DetachWorkerRequest { string orchestrator_id = 1; string sandbox_id = 2; }
+message DetachWorkerResponse {}
+message MarkWorkerFreeRequest {
+  string orchestrator_id = 1;
+  string sandbox_id = 2;
+  bool failed = 3;                       // false => COMPLETED (the default)
+  string note = 4;                       // optional; recorded as the run's summary
+}
+
+message PutActionRequest { string orchestrator_id = 1; Action action = 2; }
+message DeleteActionRequest { string orchestrator_id = 1; string name = 2; }
+message DeleteActionResponse { repeated string disabled_events = 1; }
+message PutTimedEventRequest { string orchestrator_id = 1; TimedEvent event = 2; }   // empty id => create
+message DeleteTimedEventRequest { string orchestrator_id = 1; string event_id = 2; }
+message DeleteTimedEventResponse {}
+
+message CallActionRequest {
+  string orchestrator_id = 1;
+  string action = 2;
+  map<string, string> arguments = 3;
+}
+message ListRunsRequest { string orchestrator_id = 1; }
+message ListRunsResponse {
+  repeated Run queued = 1;               // in order, with position
+  repeated Run in_flight = 2;            // RUNNING, AWAITING_INPUT, AWAITING_REVIEW
+  repeated Run history = 3;              // COMPLETED, FAILED, CANCELLED; newest first
+}
+message GetRunRequest { string orchestrator_id = 1; string run_id = 2; }
+message CancelRunRequest { string orchestrator_id = 1; string run_id = 2; }
+message RebuildReasoningSandboxRequest {
+  string orchestrator_id = 1;
+  ReasoningSetup setup = 2;              // when set: saved as the new setup first
+}
+
+// --- worker-side payloads ---
+
+message AttachControllerRequest {
+  string sandbox_id = 1;
+  SandboxController controller = 2;      // identity, name, host, reasoning; `run` ignored
+  string briefing = 3;
+}
+message DetachControllerRequest { string sandbox_id = 1; string orchestrator_id = 2; bool force = 3; }
+message UpdateWorkerRequest {
+  string sandbox_id = 1;
+  string orchestrator_id = 2;            // must match the recorded controller
+  optional string name = 3;              // new last-known name
+  bool set_run = 4;                      // when true, `run` replaces controller.run (unset run => clear)
+  WorkerRun run = 5;
+  optional string briefing = 6;          // rewrite the managed block
+}
+message DeliverWorkerPromptRequest {
+  string sandbox_id = 1;
+  string orchestrator_id = 2;
+  string run_id = 3;
+  string action = 4;
+  string prompt = 5;                     // the COMPOSED prompt; the daemon applies the run frame
+}
+message DeliverWorkerPromptResponse { bool accepted = 1; }

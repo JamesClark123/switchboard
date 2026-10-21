@@ -103,7 +103,8 @@ func (m Model) daemonsHelp() helpBindings {
 		hkey("enter", "options"),
 		hkey("c", "connect"),
 		hkey("x", "disconnect"),
-		m.keys.ScreenPrev,
+		m.screenPrevKey(),
+		m.screenNextKey(),
 		m.keys.Settings,
 		m.keys.Quit,
 	}
@@ -114,6 +115,10 @@ func (m Model) updateDaemonsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.daemons.options = false
 		m.screen = screenList
 		return m, nil
+	}
+	if keyIs(msg, m.keys.ScreenNext) {
+		m.daemons.options = false
+		return m.enterOrchestrators()
 	}
 	if m.daemons.options {
 		switch msg.String() {

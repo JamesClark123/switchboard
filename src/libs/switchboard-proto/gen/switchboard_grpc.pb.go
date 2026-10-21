@@ -34,45 +34,69 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Switchboard_GetDaemonInfo_FullMethodName        = "/switchboard.v1.Switchboard/GetDaemonInfo"
-	Switchboard_GetOptionManifest_FullMethodName    = "/switchboard.v1.Switchboard/GetOptionManifest"
-	Switchboard_UpdateDaemon_FullMethodName         = "/switchboard.v1.Switchboard/UpdateDaemon"
-	Switchboard_ListSandboxes_FullMethodName        = "/switchboard.v1.Switchboard/ListSandboxes"
-	Switchboard_LaunchSandbox_FullMethodName        = "/switchboard.v1.Switchboard/LaunchSandbox"
-	Switchboard_StopSandbox_FullMethodName          = "/switchboard.v1.Switchboard/StopSandbox"
-	Switchboard_RestartSandbox_FullMethodName       = "/switchboard.v1.Switchboard/RestartSandbox"
-	Switchboard_DestroySandbox_FullMethodName       = "/switchboard.v1.Switchboard/DestroySandbox"
-	Switchboard_RenameSandbox_FullMethodName        = "/switchboard.v1.Switchboard/RenameSandbox"
-	Switchboard_RefreshSandbox_FullMethodName       = "/switchboard.v1.Switchboard/RefreshSandbox"
-	Switchboard_ValidateKit_FullMethodName          = "/switchboard.v1.Switchboard/ValidateKit"
-	Switchboard_AddSandboxKit_FullMethodName        = "/switchboard.v1.Switchboard/AddSandboxKit"
-	Switchboard_ListSourceCandidates_FullMethodName = "/switchboard.v1.Switchboard/ListSourceCandidates"
-	Switchboard_CheckResources_FullMethodName       = "/switchboard.v1.Switchboard/CheckResources"
-	Switchboard_SetSandboxTag_FullMethodName        = "/switchboard.v1.Switchboard/SetSandboxTag"
-	Switchboard_ResolveWorkspace_FullMethodName     = "/switchboard.v1.Switchboard/ResolveWorkspace"
-	Switchboard_PromptAgent_FullMethodName          = "/switchboard.v1.Switchboard/PromptAgent"
-	Switchboard_AttachAgent_FullMethodName          = "/switchboard.v1.Switchboard/AttachAgent"
-	Switchboard_Subscribe_FullMethodName            = "/switchboard.v1.Switchboard/Subscribe"
-	Switchboard_AckNotification_FullMethodName      = "/switchboard.v1.Switchboard/AckNotification"
-	Switchboard_GetVSCodeTarget_FullMethodName      = "/switchboard.v1.Switchboard/GetVSCodeTarget"
-	Switchboard_DecideEscapeHatchRun_FullMethodName = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
-	Switchboard_ListEscapeHatchRuns_FullMethodName  = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
-	Switchboard_ListSandboxServices_FullMethodName  = "/switchboard.v1.Switchboard/ListSandboxServices"
-	Switchboard_StartSandboxService_FullMethodName  = "/switchboard.v1.Switchboard/StartSandboxService"
-	Switchboard_StopSandboxService_FullMethodName   = "/switchboard.v1.Switchboard/StopSandboxService"
-	Switchboard_ForwardPort_FullMethodName          = "/switchboard.v1.Switchboard/ForwardPort"
-	Switchboard_AddSandboxSources_FullMethodName    = "/switchboard.v1.Switchboard/AddSandboxSources"
-	Switchboard_RemoveSandboxSources_FullMethodName = "/switchboard.v1.Switchboard/RemoveSandboxSources"
-	Switchboard_ListMcpServers_FullMethodName       = "/switchboard.v1.Switchboard/ListMcpServers"
-	Switchboard_AddMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AddMcpServer"
-	Switchboard_RemoveMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/RemoveMcpServer"
-	Switchboard_AuthorizeMcpServer_FullMethodName   = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
-	Switchboard_SetMcpServerDefault_FullMethodName  = "/switchboard.v1.Switchboard/SetMcpServerDefault"
-	Switchboard_SetMcpAttachMode_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpAttachMode"
-	Switchboard_AttachMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AttachMcpServer"
-	Switchboard_ListSecrets_FullMethodName          = "/switchboard.v1.Switchboard/ListSecrets"
-	Switchboard_SetSecret_FullMethodName            = "/switchboard.v1.Switchboard/SetSecret"
-	Switchboard_RemoveSecret_FullMethodName         = "/switchboard.v1.Switchboard/RemoveSecret"
+	Switchboard_GetDaemonInfo_FullMethodName           = "/switchboard.v1.Switchboard/GetDaemonInfo"
+	Switchboard_GetOptionManifest_FullMethodName       = "/switchboard.v1.Switchboard/GetOptionManifest"
+	Switchboard_UpdateDaemon_FullMethodName            = "/switchboard.v1.Switchboard/UpdateDaemon"
+	Switchboard_ListSandboxes_FullMethodName           = "/switchboard.v1.Switchboard/ListSandboxes"
+	Switchboard_LaunchSandbox_FullMethodName           = "/switchboard.v1.Switchboard/LaunchSandbox"
+	Switchboard_StopSandbox_FullMethodName             = "/switchboard.v1.Switchboard/StopSandbox"
+	Switchboard_RestartSandbox_FullMethodName          = "/switchboard.v1.Switchboard/RestartSandbox"
+	Switchboard_DestroySandbox_FullMethodName          = "/switchboard.v1.Switchboard/DestroySandbox"
+	Switchboard_RenameSandbox_FullMethodName           = "/switchboard.v1.Switchboard/RenameSandbox"
+	Switchboard_RefreshSandbox_FullMethodName          = "/switchboard.v1.Switchboard/RefreshSandbox"
+	Switchboard_ValidateKit_FullMethodName             = "/switchboard.v1.Switchboard/ValidateKit"
+	Switchboard_AddSandboxKit_FullMethodName           = "/switchboard.v1.Switchboard/AddSandboxKit"
+	Switchboard_ListSourceCandidates_FullMethodName    = "/switchboard.v1.Switchboard/ListSourceCandidates"
+	Switchboard_CheckResources_FullMethodName          = "/switchboard.v1.Switchboard/CheckResources"
+	Switchboard_SetSandboxTag_FullMethodName           = "/switchboard.v1.Switchboard/SetSandboxTag"
+	Switchboard_ResolveWorkspace_FullMethodName        = "/switchboard.v1.Switchboard/ResolveWorkspace"
+	Switchboard_PromptAgent_FullMethodName             = "/switchboard.v1.Switchboard/PromptAgent"
+	Switchboard_AttachAgent_FullMethodName             = "/switchboard.v1.Switchboard/AttachAgent"
+	Switchboard_Subscribe_FullMethodName               = "/switchboard.v1.Switchboard/Subscribe"
+	Switchboard_AckNotification_FullMethodName         = "/switchboard.v1.Switchboard/AckNotification"
+	Switchboard_GetVSCodeTarget_FullMethodName         = "/switchboard.v1.Switchboard/GetVSCodeTarget"
+	Switchboard_DecideEscapeHatchRun_FullMethodName    = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
+	Switchboard_ListEscapeHatchRuns_FullMethodName     = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
+	Switchboard_ListSandboxServices_FullMethodName     = "/switchboard.v1.Switchboard/ListSandboxServices"
+	Switchboard_StartSandboxService_FullMethodName     = "/switchboard.v1.Switchboard/StartSandboxService"
+	Switchboard_StopSandboxService_FullMethodName      = "/switchboard.v1.Switchboard/StopSandboxService"
+	Switchboard_ForwardPort_FullMethodName             = "/switchboard.v1.Switchboard/ForwardPort"
+	Switchboard_AddSandboxSources_FullMethodName       = "/switchboard.v1.Switchboard/AddSandboxSources"
+	Switchboard_RemoveSandboxSources_FullMethodName    = "/switchboard.v1.Switchboard/RemoveSandboxSources"
+	Switchboard_ListMcpServers_FullMethodName          = "/switchboard.v1.Switchboard/ListMcpServers"
+	Switchboard_AddMcpServer_FullMethodName            = "/switchboard.v1.Switchboard/AddMcpServer"
+	Switchboard_RemoveMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/RemoveMcpServer"
+	Switchboard_AuthorizeMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
+	Switchboard_SetMcpServerDefault_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpServerDefault"
+	Switchboard_SetMcpAttachMode_FullMethodName        = "/switchboard.v1.Switchboard/SetMcpAttachMode"
+	Switchboard_AttachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AttachMcpServer"
+	Switchboard_ListSecrets_FullMethodName             = "/switchboard.v1.Switchboard/ListSecrets"
+	Switchboard_SetSecret_FullMethodName               = "/switchboard.v1.Switchboard/SetSecret"
+	Switchboard_RemoveSecret_FullMethodName            = "/switchboard.v1.Switchboard/RemoveSecret"
+	Switchboard_ListOrchestrators_FullMethodName       = "/switchboard.v1.Switchboard/ListOrchestrators"
+	Switchboard_GetOrchestrator_FullMethodName         = "/switchboard.v1.Switchboard/GetOrchestrator"
+	Switchboard_CreateOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/CreateOrchestrator"
+	Switchboard_RenameOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/RenameOrchestrator"
+	Switchboard_RemoveOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/RemoveOrchestrator"
+	Switchboard_SetOrchestratorHosts_FullMethodName    = "/switchboard.v1.Switchboard/SetOrchestratorHosts"
+	Switchboard_GetWorkerBundle_FullMethodName         = "/switchboard.v1.Switchboard/GetWorkerBundle"
+	Switchboard_AttachWorker_FullMethodName            = "/switchboard.v1.Switchboard/AttachWorker"
+	Switchboard_DetachWorker_FullMethodName            = "/switchboard.v1.Switchboard/DetachWorker"
+	Switchboard_MarkWorkerFree_FullMethodName          = "/switchboard.v1.Switchboard/MarkWorkerFree"
+	Switchboard_PutAction_FullMethodName               = "/switchboard.v1.Switchboard/PutAction"
+	Switchboard_DeleteAction_FullMethodName            = "/switchboard.v1.Switchboard/DeleteAction"
+	Switchboard_PutTimedEvent_FullMethodName           = "/switchboard.v1.Switchboard/PutTimedEvent"
+	Switchboard_DeleteTimedEvent_FullMethodName        = "/switchboard.v1.Switchboard/DeleteTimedEvent"
+	Switchboard_CallAction_FullMethodName              = "/switchboard.v1.Switchboard/CallAction"
+	Switchboard_ListRuns_FullMethodName                = "/switchboard.v1.Switchboard/ListRuns"
+	Switchboard_GetRun_FullMethodName                  = "/switchboard.v1.Switchboard/GetRun"
+	Switchboard_CancelRun_FullMethodName               = "/switchboard.v1.Switchboard/CancelRun"
+	Switchboard_RebuildReasoningSandbox_FullMethodName = "/switchboard.v1.Switchboard/RebuildReasoningSandbox"
+	Switchboard_AttachController_FullMethodName        = "/switchboard.v1.Switchboard/AttachController"
+	Switchboard_DetachController_FullMethodName        = "/switchboard.v1.Switchboard/DetachController"
+	Switchboard_UpdateWorker_FullMethodName            = "/switchboard.v1.Switchboard/UpdateWorker"
+	Switchboard_DeliverWorkerPrompt_FullMethodName     = "/switchboard.v1.Switchboard/DeliverWorkerPrompt"
+	Switchboard_OrchestratorLink_FullMethodName        = "/switchboard.v1.Switchboard/OrchestratorLink"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -267,6 +291,94 @@ type SwitchboardClient interface {
 	SetSecret(ctx context.Context, in *SetSecretRequest, opts ...grpc.CallOption) (*Secret, error)
 	// Removes a stored secret (service by name, or a registry credential by host).
 	RemoveSecret(ctx context.Context, in *RemoveSecretRequest, opts ...grpc.CallOption) (*RemoveSecretResponse, error)
+	// Every orchestrator this daemon hosts, with derived counts (FR-142).
+	ListOrchestrators(ctx context.Context, in *ListOrchestratorsRequest, opts ...grpc.CallOption) (*ListOrchestratorsResponse, error)
+	// One orchestrator with its workers (availability derived, R7) and host
+	// entries (reachability derived from the link state, R2/R6).
+	GetOrchestrator(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*OrchestratorDetail, error)
+	// Creates the record, assigns the opaque identity (FR-148), starts the runtime
+	// and launches the default reasoning sandbox asynchronously (R11). ALREADY_EXISTS
+	// when the name is taken on this daemon; the TUI checks every connected daemon
+	// first so the name is unique among the orchestrators it knows.
+	CreateOrchestrator(ctx context.Context, in *CreateOrchestratorRequest, opts ...grpc.CallOption) (*Orchestrator, error)
+	// Changes the label only (FR-148); workers' records and briefings are refreshed
+	// through their links as they are reachable (UpdateWorker).
+	RenameOrchestrator(ctx context.Context, in *RenameOrchestratorRequest, opts ...grpc.CallOption) (*Orchestrator, error)
+	// DESTRUCTIVE (FR-153): detaches every reachable worker (DetachController),
+	// destroys the reasoning sandbox, fails in-flight runs, cancels queued runs,
+	// discards actions/events/history. The CLIENT confirms. Workers on hosts that
+	// are unreachable keep the controller until that daemon is reached again by
+	// this orchestrator's identity (never) or detached by hand.
+	RemoveOrchestrator(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*RemoveOrchestratorResponse, error)
+	// Replaces the orchestrator's host entries (FR-106). Removing an entry whose
+	// host still has workers is FAILED_PRECONDITION naming them.
+	SetOrchestratorHosts(ctx context.Context, in *SetOrchestratorHostsRequest, opts ...grpc.CallOption) (*Orchestrator, error)
+	// The controller bundle (identity, name, host, briefing) a launching sandbox
+	// carries in LaunchSandboxRequest.controller so it is a worker before its agent
+	// starts (FR-110). The orchestrator adopts the sandbox on its next reconcile or
+	// on an explicit AttachWorker (idempotent for the same controller).
+	GetWorkerBundle(ctx context.Context, in *GetWorkerBundleRequest, opts ...grpc.CallOption) (*WorkerBundle, error)
+	// Attaches an EXISTING sandbox: dials the sandbox's host over the orchestrator's
+	// own entry (FAILED_PRECONDITION "no host entry for <host>" when missing;
+	// UNAVAILABLE with the SSH error when the dial fails), then AttachController on
+	// the owning daemon. ALREADY_EXISTS names the current controller (FR-108).
+	// Never stops, restarts or recreates the sandbox (FR-109).
+	AttachWorker(ctx context.Context, in *AttachWorkerRequest, opts ...grpc.CallOption) (*WorkerView, error)
+	// Detaches a worker. FAILED_PRECONDITION naming the run while one is in flight
+	// on it (FR-111). Refused for the reasoning sandbox (FR-145).
+	DetachWorker(ctx context.Context, in *DetachWorkerRequest, opts ...grpc.CallOption) (*DetachWorkerResponse, error)
+	// Closes the run AWAITING_REVIEW on a worker as COMPLETED (default) or FAILED,
+	// with the developer's note as its summary and closed_by_developer = true, and
+	// frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
+	MarkWorkerFree(ctx context.Context, in *MarkWorkerFreeRequest, opts ...grpc.CallOption) (*Run, error)
+	// Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
+	// names the problem). Runs already created are untouched (FR-140).
+	PutAction(ctx context.Context, in *PutActionRequest, opts ...grpc.CallOption) (*Action, error)
+	// Deletes an action; timed events naming it are disabled with that reason;
+	// queued runs keep their composed prompt (edge cases).
+	DeleteAction(ctx context.Context, in *DeleteActionRequest, opts ...grpc.CallOption) (*DeleteActionResponse, error)
+	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
+	PutTimedEvent(ctx context.Context, in *PutTimedEventRequest, opts ...grpc.CallOption) (*TimedEvent, error)
+	DeleteTimedEvent(ctx context.Context, in *DeleteTimedEventRequest, opts ...grpc.CallOption) (*DeleteTimedEventResponse, error)
+	// A USER event (FR-129): validates the call, composes the prompt at call time,
+	// queues the run and returns it with its position. INVALID_ARGUMENT names a
+	// missing required argument, an undeclared argument, an oversized value or an
+	// unknown action; nothing is queued on refusal.
+	CallAction(ctx context.Context, in *CallActionRequest, opts ...grpc.CallOption) (*Run, error)
+	// The three Queue-view groups (FR-131): queued in order with positions, in
+	// flight, and history newest first within retention (FR-127).
+	ListRuns(ctx context.Context, in *ListRunsRequest, opts ...grpc.CallOption) (*ListRunsResponse, error)
+	// One run including its composed prompt.
+	GetRun(ctx context.Context, in *GetRunRequest, opts ...grpc.CallOption) (*Run, error)
+	// Cancels a QUEUED run (FR-126); FAILED_PRECONDITION for any other state.
+	CancelRun(ctx context.Context, in *CancelRunRequest, opts ...grpc.CallOption) (*Run, error)
+	// Rebuilds the reasoning sandbox — destroy + launch with the saved setup, or
+	// with `setup` when given (saved first) (FR-146). Streams LaunchProgress like
+	// LaunchSandbox. FAILED_PRECONDITION while a run is on the sandbox.
+	RebuildReasoningSandbox(ctx context.Context, in *RebuildReasoningSandboxRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error)
+	// Records the controller on the sandbox (compare-and-set: ALREADY_EXISTS names
+	// the current controller, FR-108), mints the worker token, registers and loads
+	// the per-worker gateway server (R4) and writes the briefing (R12). Idempotent
+	// for the same controller. Emits Event.sandbox_changed. Works in any sandbox
+	// state; the gateway load is skipped and retried at next bring-up when the
+	// sandbox is not running.
+	AttachController(ctx context.Context, in *AttachControllerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// Clears the controller, removes the registration, strips the briefing.
+	// FAILED_PRECONDITION for a reasoning sandbox unless force (orchestrator
+	// removal). Callable by the TUI directly when the orchestrator is unreachable.
+	DetachController(ctx context.Context, in *DetachControllerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// Updates the last-known name, the current run (set/clear, needs_review) and/or
+	// the briefing. Emits Event.sandbox_changed. PERMISSION_DENIED when
+	// orchestrator_id is not the recorded controller.
+	UpdateWorker(ctx context.Context, in *UpdateWorkerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// Guarded delivery (R7): FAILED_PRECONDITION unless the sandbox is RUNNING, its
+	// agent IDLE, the controller matches and no run is recorded on it. Ensures the
+	// PTY is drained, types the framed prompt through the developer's own prompt
+	// path, records controller.run and emits Event.sandbox_changed.
+	DeliverWorkerPrompt(ctx context.Context, in *DeliverWorkerPromptRequest, opts ...grpc.CallOption) (*DeliverWorkerPromptResponse, error)
+	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
+	// MUST be `hello`. See OrchestratorLinkFrame.
+	OrchestratorLink(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame], error)
 }
 
 type switchboardClient struct {
@@ -745,6 +857,258 @@ func (c *switchboardClient) RemoveSecret(ctx context.Context, in *RemoveSecretRe
 	return out, nil
 }
 
+func (c *switchboardClient) ListOrchestrators(ctx context.Context, in *ListOrchestratorsRequest, opts ...grpc.CallOption) (*ListOrchestratorsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOrchestratorsResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListOrchestrators_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) GetOrchestrator(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*OrchestratorDetail, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OrchestratorDetail)
+	err := c.cc.Invoke(ctx, Switchboard_GetOrchestrator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) CreateOrchestrator(ctx context.Context, in *CreateOrchestratorRequest, opts ...grpc.CallOption) (*Orchestrator, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Orchestrator)
+	err := c.cc.Invoke(ctx, Switchboard_CreateOrchestrator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RenameOrchestrator(ctx context.Context, in *RenameOrchestratorRequest, opts ...grpc.CallOption) (*Orchestrator, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Orchestrator)
+	err := c.cc.Invoke(ctx, Switchboard_RenameOrchestrator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RemoveOrchestrator(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*RemoveOrchestratorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveOrchestratorResponse)
+	err := c.cc.Invoke(ctx, Switchboard_RemoveOrchestrator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SetOrchestratorHosts(ctx context.Context, in *SetOrchestratorHostsRequest, opts ...grpc.CallOption) (*Orchestrator, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Orchestrator)
+	err := c.cc.Invoke(ctx, Switchboard_SetOrchestratorHosts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) GetWorkerBundle(ctx context.Context, in *GetWorkerBundleRequest, opts ...grpc.CallOption) (*WorkerBundle, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerBundle)
+	err := c.cc.Invoke(ctx, Switchboard_GetWorkerBundle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) AttachWorker(ctx context.Context, in *AttachWorkerRequest, opts ...grpc.CallOption) (*WorkerView, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerView)
+	err := c.cc.Invoke(ctx, Switchboard_AttachWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DetachWorker(ctx context.Context, in *DetachWorkerRequest, opts ...grpc.CallOption) (*DetachWorkerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DetachWorkerResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DetachWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) MarkWorkerFree(ctx context.Context, in *MarkWorkerFreeRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_MarkWorkerFree_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) PutAction(ctx context.Context, in *PutActionRequest, opts ...grpc.CallOption) (*Action, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Action)
+	err := c.cc.Invoke(ctx, Switchboard_PutAction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DeleteAction(ctx context.Context, in *DeleteActionRequest, opts ...grpc.CallOption) (*DeleteActionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteActionResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DeleteAction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) PutTimedEvent(ctx context.Context, in *PutTimedEventRequest, opts ...grpc.CallOption) (*TimedEvent, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TimedEvent)
+	err := c.cc.Invoke(ctx, Switchboard_PutTimedEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DeleteTimedEvent(ctx context.Context, in *DeleteTimedEventRequest, opts ...grpc.CallOption) (*DeleteTimedEventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTimedEventResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DeleteTimedEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) CallAction(ctx context.Context, in *CallActionRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_CallAction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) ListRuns(ctx context.Context, in *ListRunsRequest, opts ...grpc.CallOption) (*ListRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunsResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ListRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) GetRun(ctx context.Context, in *GetRunRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_GetRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) CancelRun(ctx context.Context, in *CancelRunRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_CancelRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RebuildReasoningSandbox(ctx context.Context, in *RebuildReasoningSandboxRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[10], Switchboard_RebuildReasoningSandbox_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[RebuildReasoningSandboxRequest, LaunchProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_RebuildReasoningSandboxClient = grpc.ServerStreamingClient[LaunchProgress]
+
+func (c *switchboardClient) AttachController(ctx context.Context, in *AttachControllerRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_AttachController_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DetachController(ctx context.Context, in *DetachControllerRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_DetachController_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) UpdateWorker(ctx context.Context, in *UpdateWorkerRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_UpdateWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DeliverWorkerPrompt(ctx context.Context, in *DeliverWorkerPromptRequest, opts ...grpc.CallOption) (*DeliverWorkerPromptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeliverWorkerPromptResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DeliverWorkerPrompt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) OrchestratorLink(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[11], Switchboard_OrchestratorLink_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[OrchestratorLinkFrame, OrchestratorLinkFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_OrchestratorLinkClient = grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame]
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -937,6 +1301,94 @@ type SwitchboardServer interface {
 	SetSecret(context.Context, *SetSecretRequest) (*Secret, error)
 	// Removes a stored secret (service by name, or a registry credential by host).
 	RemoveSecret(context.Context, *RemoveSecretRequest) (*RemoveSecretResponse, error)
+	// Every orchestrator this daemon hosts, with derived counts (FR-142).
+	ListOrchestrators(context.Context, *ListOrchestratorsRequest) (*ListOrchestratorsResponse, error)
+	// One orchestrator with its workers (availability derived, R7) and host
+	// entries (reachability derived from the link state, R2/R6).
+	GetOrchestrator(context.Context, *OrchestratorIdRequest) (*OrchestratorDetail, error)
+	// Creates the record, assigns the opaque identity (FR-148), starts the runtime
+	// and launches the default reasoning sandbox asynchronously (R11). ALREADY_EXISTS
+	// when the name is taken on this daemon; the TUI checks every connected daemon
+	// first so the name is unique among the orchestrators it knows.
+	CreateOrchestrator(context.Context, *CreateOrchestratorRequest) (*Orchestrator, error)
+	// Changes the label only (FR-148); workers' records and briefings are refreshed
+	// through their links as they are reachable (UpdateWorker).
+	RenameOrchestrator(context.Context, *RenameOrchestratorRequest) (*Orchestrator, error)
+	// DESTRUCTIVE (FR-153): detaches every reachable worker (DetachController),
+	// destroys the reasoning sandbox, fails in-flight runs, cancels queued runs,
+	// discards actions/events/history. The CLIENT confirms. Workers on hosts that
+	// are unreachable keep the controller until that daemon is reached again by
+	// this orchestrator's identity (never) or detached by hand.
+	RemoveOrchestrator(context.Context, *OrchestratorIdRequest) (*RemoveOrchestratorResponse, error)
+	// Replaces the orchestrator's host entries (FR-106). Removing an entry whose
+	// host still has workers is FAILED_PRECONDITION naming them.
+	SetOrchestratorHosts(context.Context, *SetOrchestratorHostsRequest) (*Orchestrator, error)
+	// The controller bundle (identity, name, host, briefing) a launching sandbox
+	// carries in LaunchSandboxRequest.controller so it is a worker before its agent
+	// starts (FR-110). The orchestrator adopts the sandbox on its next reconcile or
+	// on an explicit AttachWorker (idempotent for the same controller).
+	GetWorkerBundle(context.Context, *GetWorkerBundleRequest) (*WorkerBundle, error)
+	// Attaches an EXISTING sandbox: dials the sandbox's host over the orchestrator's
+	// own entry (FAILED_PRECONDITION "no host entry for <host>" when missing;
+	// UNAVAILABLE with the SSH error when the dial fails), then AttachController on
+	// the owning daemon. ALREADY_EXISTS names the current controller (FR-108).
+	// Never stops, restarts or recreates the sandbox (FR-109).
+	AttachWorker(context.Context, *AttachWorkerRequest) (*WorkerView, error)
+	// Detaches a worker. FAILED_PRECONDITION naming the run while one is in flight
+	// on it (FR-111). Refused for the reasoning sandbox (FR-145).
+	DetachWorker(context.Context, *DetachWorkerRequest) (*DetachWorkerResponse, error)
+	// Closes the run AWAITING_REVIEW on a worker as COMPLETED (default) or FAILED,
+	// with the developer's note as its summary and closed_by_developer = true, and
+	// frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
+	MarkWorkerFree(context.Context, *MarkWorkerFreeRequest) (*Run, error)
+	// Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
+	// names the problem). Runs already created are untouched (FR-140).
+	PutAction(context.Context, *PutActionRequest) (*Action, error)
+	// Deletes an action; timed events naming it are disabled with that reason;
+	// queued runs keep their composed prompt (edge cases).
+	DeleteAction(context.Context, *DeleteActionRequest) (*DeleteActionResponse, error)
+	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
+	PutTimedEvent(context.Context, *PutTimedEventRequest) (*TimedEvent, error)
+	DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error)
+	// A USER event (FR-129): validates the call, composes the prompt at call time,
+	// queues the run and returns it with its position. INVALID_ARGUMENT names a
+	// missing required argument, an undeclared argument, an oversized value or an
+	// unknown action; nothing is queued on refusal.
+	CallAction(context.Context, *CallActionRequest) (*Run, error)
+	// The three Queue-view groups (FR-131): queued in order with positions, in
+	// flight, and history newest first within retention (FR-127).
+	ListRuns(context.Context, *ListRunsRequest) (*ListRunsResponse, error)
+	// One run including its composed prompt.
+	GetRun(context.Context, *GetRunRequest) (*Run, error)
+	// Cancels a QUEUED run (FR-126); FAILED_PRECONDITION for any other state.
+	CancelRun(context.Context, *CancelRunRequest) (*Run, error)
+	// Rebuilds the reasoning sandbox — destroy + launch with the saved setup, or
+	// with `setup` when given (saved first) (FR-146). Streams LaunchProgress like
+	// LaunchSandbox. FAILED_PRECONDITION while a run is on the sandbox.
+	RebuildReasoningSandbox(*RebuildReasoningSandboxRequest, grpc.ServerStreamingServer[LaunchProgress]) error
+	// Records the controller on the sandbox (compare-and-set: ALREADY_EXISTS names
+	// the current controller, FR-108), mints the worker token, registers and loads
+	// the per-worker gateway server (R4) and writes the briefing (R12). Idempotent
+	// for the same controller. Emits Event.sandbox_changed. Works in any sandbox
+	// state; the gateway load is skipped and retried at next bring-up when the
+	// sandbox is not running.
+	AttachController(context.Context, *AttachControllerRequest) (*Sandbox, error)
+	// Clears the controller, removes the registration, strips the briefing.
+	// FAILED_PRECONDITION for a reasoning sandbox unless force (orchestrator
+	// removal). Callable by the TUI directly when the orchestrator is unreachable.
+	DetachController(context.Context, *DetachControllerRequest) (*Sandbox, error)
+	// Updates the last-known name, the current run (set/clear, needs_review) and/or
+	// the briefing. Emits Event.sandbox_changed. PERMISSION_DENIED when
+	// orchestrator_id is not the recorded controller.
+	UpdateWorker(context.Context, *UpdateWorkerRequest) (*Sandbox, error)
+	// Guarded delivery (R7): FAILED_PRECONDITION unless the sandbox is RUNNING, its
+	// agent IDLE, the controller matches and no run is recorded on it. Ensures the
+	// PTY is drained, types the framed prompt through the developer's own prompt
+	// path, records controller.run and emits Event.sandbox_changed.
+	DeliverWorkerPrompt(context.Context, *DeliverWorkerPromptRequest) (*DeliverWorkerPromptResponse, error)
+	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
+	// MUST be `hello`. See OrchestratorLinkFrame.
+	OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -1063,6 +1515,78 @@ func (UnimplementedSwitchboardServer) SetSecret(context.Context, *SetSecretReque
 }
 func (UnimplementedSwitchboardServer) RemoveSecret(context.Context, *RemoveSecretRequest) (*RemoveSecretResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSecret not implemented")
+}
+func (UnimplementedSwitchboardServer) ListOrchestrators(context.Context, *ListOrchestratorsRequest) (*ListOrchestratorsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListOrchestrators not implemented")
+}
+func (UnimplementedSwitchboardServer) GetOrchestrator(context.Context, *OrchestratorIdRequest) (*OrchestratorDetail, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrchestrator not implemented")
+}
+func (UnimplementedSwitchboardServer) CreateOrchestrator(context.Context, *CreateOrchestratorRequest) (*Orchestrator, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateOrchestrator not implemented")
+}
+func (UnimplementedSwitchboardServer) RenameOrchestrator(context.Context, *RenameOrchestratorRequest) (*Orchestrator, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenameOrchestrator not implemented")
+}
+func (UnimplementedSwitchboardServer) RemoveOrchestrator(context.Context, *OrchestratorIdRequest) (*RemoveOrchestratorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveOrchestrator not implemented")
+}
+func (UnimplementedSwitchboardServer) SetOrchestratorHosts(context.Context, *SetOrchestratorHostsRequest) (*Orchestrator, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetOrchestratorHosts not implemented")
+}
+func (UnimplementedSwitchboardServer) GetWorkerBundle(context.Context, *GetWorkerBundleRequest) (*WorkerBundle, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetWorkerBundle not implemented")
+}
+func (UnimplementedSwitchboardServer) AttachWorker(context.Context, *AttachWorkerRequest) (*WorkerView, error) {
+	return nil, status.Error(codes.Unimplemented, "method AttachWorker not implemented")
+}
+func (UnimplementedSwitchboardServer) DetachWorker(context.Context, *DetachWorkerRequest) (*DetachWorkerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DetachWorker not implemented")
+}
+func (UnimplementedSwitchboardServer) MarkWorkerFree(context.Context, *MarkWorkerFreeRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method MarkWorkerFree not implemented")
+}
+func (UnimplementedSwitchboardServer) PutAction(context.Context, *PutActionRequest) (*Action, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutAction not implemented")
+}
+func (UnimplementedSwitchboardServer) DeleteAction(context.Context, *DeleteActionRequest) (*DeleteActionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteAction not implemented")
+}
+func (UnimplementedSwitchboardServer) PutTimedEvent(context.Context, *PutTimedEventRequest) (*TimedEvent, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutTimedEvent not implemented")
+}
+func (UnimplementedSwitchboardServer) DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteTimedEvent not implemented")
+}
+func (UnimplementedSwitchboardServer) CallAction(context.Context, *CallActionRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method CallAction not implemented")
+}
+func (UnimplementedSwitchboardServer) ListRuns(context.Context, *ListRunsRequest) (*ListRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRuns not implemented")
+}
+func (UnimplementedSwitchboardServer) GetRun(context.Context, *GetRunRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRun not implemented")
+}
+func (UnimplementedSwitchboardServer) CancelRun(context.Context, *CancelRunRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelRun not implemented")
+}
+func (UnimplementedSwitchboardServer) RebuildReasoningSandbox(*RebuildReasoningSandboxRequest, grpc.ServerStreamingServer[LaunchProgress]) error {
+	return status.Error(codes.Unimplemented, "method RebuildReasoningSandbox not implemented")
+}
+func (UnimplementedSwitchboardServer) AttachController(context.Context, *AttachControllerRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method AttachController not implemented")
+}
+func (UnimplementedSwitchboardServer) DetachController(context.Context, *DetachControllerRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method DetachController not implemented")
+}
+func (UnimplementedSwitchboardServer) UpdateWorker(context.Context, *UpdateWorkerRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateWorker not implemented")
+}
+func (UnimplementedSwitchboardServer) DeliverWorkerPrompt(context.Context, *DeliverWorkerPromptRequest) (*DeliverWorkerPromptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeliverWorkerPrompt not implemented")
+}
+func (UnimplementedSwitchboardServer) OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error {
+	return status.Error(codes.Unimplemented, "method OrchestratorLink not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -1709,6 +2233,420 @@ func _Switchboard_RemoveSecret_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_ListOrchestrators_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOrchestratorsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListOrchestrators(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListOrchestrators_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListOrchestrators(ctx, req.(*ListOrchestratorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_GetOrchestrator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OrchestratorIdRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).GetOrchestrator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_GetOrchestrator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).GetOrchestrator(ctx, req.(*OrchestratorIdRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_CreateOrchestrator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateOrchestratorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CreateOrchestrator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CreateOrchestrator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CreateOrchestrator(ctx, req.(*CreateOrchestratorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RenameOrchestrator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenameOrchestratorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RenameOrchestrator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RenameOrchestrator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RenameOrchestrator(ctx, req.(*RenameOrchestratorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RemoveOrchestrator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OrchestratorIdRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RemoveOrchestrator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RemoveOrchestrator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RemoveOrchestrator(ctx, req.(*OrchestratorIdRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SetOrchestratorHosts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetOrchestratorHostsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetOrchestratorHosts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetOrchestratorHosts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetOrchestratorHosts(ctx, req.(*SetOrchestratorHostsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_GetWorkerBundle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWorkerBundleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).GetWorkerBundle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_GetWorkerBundle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).GetWorkerBundle(ctx, req.(*GetWorkerBundleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_AttachWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AttachWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).AttachWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_AttachWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).AttachWorker(ctx, req.(*AttachWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DetachWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DetachWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DetachWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DetachWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DetachWorker(ctx, req.(*DetachWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_MarkWorkerFree_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MarkWorkerFreeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).MarkWorkerFree(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_MarkWorkerFree_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).MarkWorkerFree(ctx, req.(*MarkWorkerFreeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_PutAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).PutAction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_PutAction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).PutAction(ctx, req.(*PutActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DeleteAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DeleteAction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DeleteAction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DeleteAction(ctx, req.(*DeleteActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_PutTimedEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutTimedEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).PutTimedEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_PutTimedEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).PutTimedEvent(ctx, req.(*PutTimedEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DeleteTimedEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteTimedEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DeleteTimedEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DeleteTimedEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DeleteTimedEvent(ctx, req.(*DeleteTimedEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_CallAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CallActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CallAction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CallAction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CallAction(ctx, req.(*CallActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_ListRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ListRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ListRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ListRuns(ctx, req.(*ListRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_GetRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).GetRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_GetRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).GetRun(ctx, req.(*GetRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_CancelRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CancelRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CancelRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CancelRun(ctx, req.(*CancelRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RebuildReasoningSandbox_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(RebuildReasoningSandboxRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SwitchboardServer).RebuildReasoningSandbox(m, &grpc.GenericServerStream[RebuildReasoningSandboxRequest, LaunchProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_RebuildReasoningSandboxServer = grpc.ServerStreamingServer[LaunchProgress]
+
+func _Switchboard_AttachController_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AttachControllerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).AttachController(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_AttachController_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).AttachController(ctx, req.(*AttachControllerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DetachController_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DetachControllerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DetachController(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DetachController_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DetachController(ctx, req.(*DetachControllerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_UpdateWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).UpdateWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_UpdateWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).UpdateWorker(ctx, req.(*UpdateWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DeliverWorkerPrompt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeliverWorkerPromptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DeliverWorkerPrompt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DeliverWorkerPrompt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DeliverWorkerPrompt(ctx, req.(*DeliverWorkerPromptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_OrchestratorLink_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(SwitchboardServer).OrchestratorLink(&grpc.GenericServerStream[OrchestratorLinkFrame, OrchestratorLinkFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Switchboard_OrchestratorLinkServer = grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1832,6 +2770,94 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "RemoveSecret",
 			Handler:    _Switchboard_RemoveSecret_Handler,
 		},
+		{
+			MethodName: "ListOrchestrators",
+			Handler:    _Switchboard_ListOrchestrators_Handler,
+		},
+		{
+			MethodName: "GetOrchestrator",
+			Handler:    _Switchboard_GetOrchestrator_Handler,
+		},
+		{
+			MethodName: "CreateOrchestrator",
+			Handler:    _Switchboard_CreateOrchestrator_Handler,
+		},
+		{
+			MethodName: "RenameOrchestrator",
+			Handler:    _Switchboard_RenameOrchestrator_Handler,
+		},
+		{
+			MethodName: "RemoveOrchestrator",
+			Handler:    _Switchboard_RemoveOrchestrator_Handler,
+		},
+		{
+			MethodName: "SetOrchestratorHosts",
+			Handler:    _Switchboard_SetOrchestratorHosts_Handler,
+		},
+		{
+			MethodName: "GetWorkerBundle",
+			Handler:    _Switchboard_GetWorkerBundle_Handler,
+		},
+		{
+			MethodName: "AttachWorker",
+			Handler:    _Switchboard_AttachWorker_Handler,
+		},
+		{
+			MethodName: "DetachWorker",
+			Handler:    _Switchboard_DetachWorker_Handler,
+		},
+		{
+			MethodName: "MarkWorkerFree",
+			Handler:    _Switchboard_MarkWorkerFree_Handler,
+		},
+		{
+			MethodName: "PutAction",
+			Handler:    _Switchboard_PutAction_Handler,
+		},
+		{
+			MethodName: "DeleteAction",
+			Handler:    _Switchboard_DeleteAction_Handler,
+		},
+		{
+			MethodName: "PutTimedEvent",
+			Handler:    _Switchboard_PutTimedEvent_Handler,
+		},
+		{
+			MethodName: "DeleteTimedEvent",
+			Handler:    _Switchboard_DeleteTimedEvent_Handler,
+		},
+		{
+			MethodName: "CallAction",
+			Handler:    _Switchboard_CallAction_Handler,
+		},
+		{
+			MethodName: "ListRuns",
+			Handler:    _Switchboard_ListRuns_Handler,
+		},
+		{
+			MethodName: "GetRun",
+			Handler:    _Switchboard_GetRun_Handler,
+		},
+		{
+			MethodName: "CancelRun",
+			Handler:    _Switchboard_CancelRun_Handler,
+		},
+		{
+			MethodName: "AttachController",
+			Handler:    _Switchboard_AttachController_Handler,
+		},
+		{
+			MethodName: "DetachController",
+			Handler:    _Switchboard_DetachController_Handler,
+		},
+		{
+			MethodName: "UpdateWorker",
+			Handler:    _Switchboard_UpdateWorker_Handler,
+		},
+		{
+			MethodName: "DeliverWorkerPrompt",
+			Handler:    _Switchboard_DeliverWorkerPrompt_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1885,6 +2911,17 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "AuthorizeMcpServer",
 			Handler:       _Switchboard_AuthorizeMcpServer_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "RebuildReasoningSandbox",
+			Handler:       _Switchboard_RebuildReasoningSandbox_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "OrchestratorLink",
+			Handler:       _Switchboard_OrchestratorLink_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "switchboard.proto",

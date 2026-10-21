@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Timeouts are package constants, never environment variables (plan Constraints;
@@ -17,6 +18,13 @@ const (
 	mutateTimeout = 120 * 1e9 // 2m: `mcp add`/`mcp rm` may fetch metadata
 	loadTimeout   = 60 * 1e9  // 60s per `mcp load` at launch
 )
+
+// WorkerServerPrefix names the per-worker gateway registrations the daemon
+// creates for an orchestrator's workers (feature 009, research R4):
+// `sxb-orch-<sandbox8>`. They are switchboard-internal: hidden from every
+// listing, never marked, never appended to Sandbox.mcp_servers, and a developer
+// cannot register a name with the prefix.
+const WorkerServerPrefix = "sxb-orch-"
 
 // CLI runs the host sandbox CLI. Every argv it produces comes from the documented
 // table in contracts/sbx-mcp-cli.md and nowhere else.
@@ -61,6 +69,36 @@ func argvAddLocal(name, command string, args []string, dir string) []string {
 }
 func argvLoad(name, sandbox string) []string {
 	return []string{"mcp", "load", name, "--sandbox", sandbox}
+}
+
+// --- feature 009: the per-worker registration (research R4) ---
+//
+// The worker side registers one remote server per worker and loads it into the
+// sandbox; these are the only places the three argv rows are spelled, pinned
+// by argv-asserting tests (contracts/orchestrator-mcp.md).
+
+// AddRemote registers a remote endpoint without authorizing it:
+// `sbx mcp add <name> --url <url> --skip-auth`. The combined output is returned
+// so a warning the runtime prints (the loopback SSRF notice) can be logged.
+func (c *CLI) AddRemote(ctx context.Context, name, url string) (string, error) {
+	mctx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
+	defer cancel()
+	return c.run(mctx, argvAddRemote(name, url, nil)...)
+}
+
+// Load attaches a registered server to a sandbox live:
+// `sbx mcp load <name> --sandbox <ref>`.
+func (c *CLI) Load(ctx context.Context, name, sandboxRef string) (string, error) {
+	lctx, cancel := context.WithTimeout(ctx, time.Duration(loadTimeout))
+	defer cancel()
+	return c.run(lctx, argvLoad(name, sandboxRef)...)
+}
+
+// Remove unregisters a server: `sbx mcp rm <name> --force`.
+func (c *CLI) Remove(ctx context.Context, name string) (string, error) {
+	mctx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
+	defer cancel()
+	return c.run(mctx, argvRemove(name)...)
 }
 
 // run executes the CLI and returns its combined output. On failure the error

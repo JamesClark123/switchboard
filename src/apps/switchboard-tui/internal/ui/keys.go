@@ -27,11 +27,21 @@ type keyMap struct {
 	Sources key.Binding
 	// McpServers opens the per-sandbox MCP overlay (feature 008, FR-102).
 	McpServers key.Binding
-	// ScreenNext/ScreenPrev move between the two top-level screens — the sandbox
-	// list and the daemon screen (feature 008, FR-068). Shift+arrows so plain
-	// arrows keep their list meaning.
+	// ScreenNext/ScreenPrev move between the three top-level screens — the
+	// sandbox list, the daemon screen (feature 008, FR-068) and the
+	// Orchestrators screen (feature 009, FR-142). Shift+arrows so plain arrows
+	// keep their list meaning. The help labels are dynamic (Model.screenNextKey /
+	// screenPrevKey name the screen the key reaches).
 	ScreenNext key.Binding
 	ScreenPrev key.Binding
+	// OrchestratorAttach attaches the selected sandbox to an orchestrator, or
+	// detaches a worker (feature 009, FR-107/FR-111). MarkFree closes a run
+	// awaiting review on a worker (FR-156). OrchestratedTab toggles the hidden
+	// Orchestrator Sandboxes tab (FR-115). `o`, `m` and `O` were free against
+	// every other binding in this map.
+	OrchestratorAttach key.Binding
+	MarkFree           key.Binding
+	OrchestratedTab    key.Binding
 	// Settings opens the TUI-persisted settings screen (feature 008, FR-101).
 	// `,` is free against every other binding and reachable from both top-level
 	// screens.
@@ -73,39 +83,42 @@ func newKeyMap() keyMap {
 		Quit:  key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 		// "r" reloads the list; the per-sandbox re-seed is "F" (feature 004). The
 		// help text says "reload" so the two are not confusable in the footer.
-		Refresh:         key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reload")),
-		RefreshSandbox:  key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "refresh repos")),
-		Kits:            key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kits")),
-		AddKit:          key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "add kit")),
-		EscapeHatchRuns: key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "runs")),
-		Services:        key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
-		Sources:         key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sources")),
-		McpServers:      key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "mcp")),
-		Log:             key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "sbx output")),
-		ScreenNext:      key.NewBinding(key.WithKeys("shift+right"), key.WithHelp("shift+→", "daemons")),
-		ScreenPrev:      key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", "sandboxes")),
-		Settings:        key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
-		Launch:          key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
-		NewConfig:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
-		FromConfig:      key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "from config")),
-		Hosts:           key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "hosts")),
-		Groups:          key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "groups")),
-		VSCode:          key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "vscode")),
-		Terminal:        key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "terminal")),
-		Popout:          key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "external terminal")),
-		Inbox:           key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "inbox")),
-		StartStop:       key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start/stop")),
-		Destroy:         key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "destroy")),
-		Rename:          key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
-		Tag:             key.NewBinding(key.WithKeys("#"), key.WithHelp("#", "tag")),
-		Update:          key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "update")),
-		Add:             key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
-		Delete:          key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-		Connect:         key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "connect")),
-		Disconnect:      key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "disconnect")),
-		Toggle:          key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
-		Confirm:         key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
-		Cancel:          key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		Refresh:            key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reload")),
+		RefreshSandbox:     key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "refresh repos")),
+		Kits:               key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kits")),
+		AddKit:             key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "add kit")),
+		EscapeHatchRuns:    key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "runs")),
+		Services:           key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "services")),
+		Sources:            key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "sources")),
+		McpServers:         key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "mcp")),
+		Log:                key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "sbx output")),
+		ScreenNext:         key.NewBinding(key.WithKeys("shift+right"), key.WithHelp("shift+→", "daemons")),
+		ScreenPrev:         key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", "sandboxes")),
+		Settings:           key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
+		OrchestratorAttach: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "attach/detach")),
+		MarkFree:           key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mark free")),
+		OrchestratedTab:    key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "orchestrated")),
+		Launch:             key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
+		NewConfig:          key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
+		FromConfig:         key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "from config")),
+		Hosts:              key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "hosts")),
+		Groups:             key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "groups")),
+		VSCode:             key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "vscode")),
+		Terminal:           key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "terminal")),
+		Popout:             key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "external terminal")),
+		Inbox:              key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "inbox")),
+		StartStop:          key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start/stop")),
+		Destroy:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "destroy")),
+		Rename:             key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rename")),
+		Tag:                key.NewBinding(key.WithKeys("#"), key.WithHelp("#", "tag")),
+		Update:             key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "update")),
+		Add:                key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
+		Delete:             key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		Connect:            key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "connect")),
+		Disconnect:         key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "disconnect")),
+		Toggle:             key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
+		Confirm:            key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
+		Cancel:             key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 	}
 }
 
@@ -128,7 +141,14 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.ScreenNext, k.Settings)
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.OrchestratorAttach)
+	// feature 009: mark free is offered only while the selected worker's run
+	// awaits review (FR-156); every other per-sandbox key works on a worker
+	// wherever it is shown (FR-116).
+	if sb := m.current(); sb != nil && sb.GetController().GetRun().GetNeedsReview() {
+		hb = append(hb, k.MarkFree)
+	}
+	hb = append(hb, k.OrchestratedTab, m.screenNextKey(), k.Settings)
 	// Surface the update key only when a newer release is available.
 	if m.updateBanner != "" {
 		hb = append(hb, k.Update)

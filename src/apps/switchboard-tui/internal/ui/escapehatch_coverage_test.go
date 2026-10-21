@@ -108,7 +108,7 @@ func TestEscapeHatchNotificationEntersInbox(t *testing.T) {
 	ev := &pb.Event{Event: &pb.Event_Notification{Notification: &pb.NotificationEvent{
 		Id: "n1", SandboxId: "sb1", Kind: pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_RUN_COMPLETE, Message: "run finished",
 	}}}
-	tm, _ := m.handleEvent(ev)
+	tm, _ := m.handleEvent("", ev)
 	out := asModel(tm)
 	if len(out.inbox) != 1 || out.unread != 1 {
 		t.Errorf("escape-hatch notification should enter the inbox, inbox=%d unread=%d", len(out.inbox), out.unread)

@@ -105,6 +105,10 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 		EscapeHatchCommands: ehCommands,
 		Services:            services,
 		Mcp:                 mcpAttach,
+		// Feature 009 (FR-110): a launch-attached worker carries its controller
+		// bundle; the manager applies it after create, before RUNNING.
+		Controller:         req.GetController().GetController(),
+		ControllerBriefing: req.GetController().GetBriefing(),
 	}, onProgress, onLog)
 	if err != nil {
 		return err

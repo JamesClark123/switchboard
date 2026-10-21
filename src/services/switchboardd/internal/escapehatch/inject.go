@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/managedblock"
 )
 
 const (
@@ -87,49 +87,14 @@ func removeInjection(workspacePath string) error {
 	return stripRuleBlock(workspacePath)
 }
 
-// stripRuleBlock removes the managed block from CLAUDE.md, leaving user content.
+// stripRuleBlock removes the managed block from CLAUDE.md, leaving user content
+// (the file is deleted when it held only the block).
 func stripRuleBlock(workspacePath string) error {
-	path := filepath.Join(workspacePath, claudeMdRelPath)
-	existing, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	stripped := removeBlock(string(existing))
-	if strings.TrimSpace(stripped) == "" {
-		// The file was only our block — remove it entirely.
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	return os.WriteFile(path, []byte(stripped), 0o644)
+	return managedblock.Strip(filepath.Join(workspacePath, claudeMdRelPath), ruleBeginMarker, ruleEndMarker)
 }
 
 // removeBlock returns content with the marker-delimited block (and its surrounding
 // blank lines) removed. Content without the block is returned unchanged.
 func removeBlock(content string) string {
-	begin := strings.Index(content, ruleBeginMarker)
-	if begin < 0 {
-		return content
-	}
-	end := strings.Index(content, ruleEndMarker)
-	if end < 0 {
-		return content
-	}
-	end += len(ruleEndMarker)
-	before := strings.TrimRight(content[:begin], "\n")
-	after := strings.TrimLeft(content[end:], "\n")
-	switch {
-	case before == "" && after == "":
-		return ""
-	case before == "":
-		return after + "\n"
-	case after == "":
-		return before + "\n"
-	default:
-		return before + "\n\n" + after + "\n"
-	}
+	return managedblock.Remove(content, ruleBeginMarker, ruleEndMarker)
 }

@@ -17,9 +17,10 @@ import (
 type tabKind int
 
 const (
-	tabAll   tabKind = iota // every sandbox across every connected daemon
-	tabHost                 // one connected remote daemon
-	tabGroup                // a user-defined group
+	tabAll          tabKind = iota // every sandbox across every connected daemon
+	tabHost                        // one connected remote daemon
+	tabGroup                       // a user-defined group
+	tabOrchestrated                // feature 009 (FR-115): every orchestrated sandbox, shown on demand (O)
 )
 
 // sandboxTab is one entry in the group tab bar.
@@ -37,9 +38,12 @@ type sandboxRow struct {
 	sb       *pb.Sandbox
 }
 
-// newSandboxList builds the primary sandbox list.
+// newSandboxList builds the primary sandbox list with the three-line delegate
+// (feature 009, FR-149).
 func newSandboxList(w, h int) list.Model {
-	return newItemList("Sandboxes", "sandbox", "sandboxes", w, h)
+	l := newItemList("Sandboxes", "sandbox", "sandboxes", w, h)
+	l.SetDelegate(newSandboxDelegate())
+	return l
 }
 
 // rebuildTabs recomputes the tab bar: "All Sandboxes", one tab per connected
@@ -54,6 +58,12 @@ func (m *Model) rebuildTabs() {
 	}
 	for _, g := range m.userGroups {
 		tabs = append(tabs, sandboxTab{kind: tabGroup, label: g.Name, groupID: g.ID})
+	}
+	// feature 009 (FR-115): the Orchestrator Sandboxes tab exists only while
+	// the developer asked for it (O); it survives rebuilds until another tab is
+	// chosen, even when it is empty.
+	if m.showOrchTab {
+		tabs = append(tabs, sandboxTab{kind: tabOrchestrated, label: "Orchestrator Sandboxes"})
 	}
 	m.tabs = tabs
 	if m.tabIndex >= len(tabs) {
@@ -165,17 +175,73 @@ func (m *Model) insertSandbox(sb *pb.Sandbox, host string) {
 	}
 }
 
-// currentTabRows filters allRows down to the selected tab.
+// needsDeveloper reports whether a sandbox needs the developer right now
+// (data-model I-C3): its agent asks for input, or its run awaits review.
+func needsDeveloper(sb *pb.Sandbox) bool {
+	return sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT || sb.GetController().GetRun().GetNeedsReview()
+}
+
+// hiddenWorker reports whether a controlled sandbox stays out of the everyday
+// tabs (FR-113): it is a worker (or reasoning sandbox) that does not need the
+// developer.
+func hiddenWorker(sb *pb.Sandbox) bool {
+	return sb.GetController() != nil && !needsDeveloper(sb)
+}
+
+// surfaceFirst stable-partitions rows so those that need the developer come
+// first (FR-114); the existing order is kept within each half.
+func surfaceFirst(rows []sandboxRow) []sandboxRow {
+	out := make([]sandboxRow, 0, len(rows))
+	for _, r := range rows {
+		if needsDeveloper(r.sb) {
+			out = append(out, r)
+		}
+	}
+	for _, r := range rows {
+		if !needsDeveloper(r.sb) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// withoutHiddenWorkers drops hidden workers from an everyday tab's rows.
+func withoutHiddenWorkers(rows []sandboxRow) []sandboxRow {
+	out := rows[:0:0]
+	for _, r := range rows {
+		if !hiddenWorker(r.sb) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// currentTabRows filters allRows down to the selected tab: hidden workers leave
+// the All, host and group tabs (their group memberships are untouched), the
+// Orchestrator Sandboxes tab lists every controlled sandbox, and every tab
+// surfaces the rows that need the developer first.
 func (m Model) currentTabRows() []sandboxRow {
+	return surfaceFirst(m.tabRowsUnordered())
+}
+
+func (m Model) tabRowsUnordered() []sandboxRow {
 	all := m.allRows()
 	if len(m.tabs) == 0 {
-		return all
+		return withoutHiddenWorkers(all)
 	}
 	switch tab := m.tabs[m.tabIndex]; tab.kind {
+	case tabOrchestrated:
+		var r []sandboxRow
+		for _, row := range all {
+			if row.sb.GetController() != nil {
+				r = append(r, row)
+			}
+		}
+		return r
 	case tabHost:
 		var r []sandboxRow
 		for _, row := range all {
-			if row.host == tab.hostID {
+			if row.host == tab.hostID && !hiddenWorker(row.sb) {
 				r = append(r, row)
 			}
 		}
@@ -191,13 +257,13 @@ func (m Model) currentTabRows() []sandboxRow {
 		}
 		var r []sandboxRow
 		for _, row := range all {
-			if members[row.host+"\x00"+row.sb.GetId()] {
+			if members[row.host+"\x00"+row.sb.GetId()] && !hiddenWorker(row.sb) {
 				r = append(r, row)
 			}
 		}
 		return r
 	default:
-		return all
+		return withoutHiddenWorkers(all)
 	}
 }
 
@@ -221,14 +287,50 @@ func (m Model) startBusy(id, verb string) Model {
 }
 
 // switchTab moves the active tab by delta (wrapping) and reloads the list.
+// Leaving the Orchestrator Sandboxes tab hides it again (FR-115).
 func (m Model) switchTab(delta int) (tea.Model, tea.Cmd) {
 	if len(m.tabs) <= 1 {
 		return m, nil
 	}
 	m.tabIndex = (m.tabIndex + delta + len(m.tabs)) % len(m.tabs)
+	if m.showOrchTab && m.tabs[m.tabIndex].kind != tabOrchestrated {
+		m.showOrchTab = false
+		m.rebuildTabs()
+	}
 	m.refreshListItems()
 	m.list.Select(0)
 	return m, nil
+}
+
+// toggleOrchTab shows and selects the Orchestrator Sandboxes tab (O); pressing
+// it there hides the tab and returns to All (FR-115).
+func (m Model) toggleOrchTab() (tea.Model, tea.Cmd) {
+	if m.showOrchTab && m.tabs[m.tabIndex].kind == tabOrchestrated {
+		m.showOrchTab = false
+		m.tabIndex = 0
+		m.rebuildTabs()
+		m.refreshListItems()
+		m.list.Select(0)
+		return m, nil
+	}
+	m.showOrchTab = true
+	m.rebuildTabs()
+	m.tabIndex = len(m.tabs) - 1
+	m.refreshListItems()
+	m.list.Select(0)
+	return m, nil
+}
+
+// unreachableOrchestrators names orchestrators the TUI knows to be unreachable
+// (for the Orchestrator Sandboxes tab's status line).
+func (m Model) unreachableOrchestrators() []string {
+	var out []string
+	for _, r := range m.orch.rows {
+		if !r.reachable {
+			out = append(out, r.summary.GetOrchestrator().GetName())
+		}
+	}
+	return out
 }
 
 func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
@@ -236,14 +338,9 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	if showHost && row.hostName != "" {
 		desc += dimStyle.Render("  ·  @" + row.hostName)
 	}
-	// feature 008 (FR-086): which MCP servers switchboard attached at launch.
-	if names := row.sb.GetMcpServers(); len(names) > 0 {
-		mode := "additive"
-		if row.sb.GetMcpAttachMode() == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
-			mode = "exclusive"
-		}
-		desc += dimStyle.Render("  ·  mcp: " + strings.Join(names, ", ") + " (" + mode + ")")
-	}
+	// feature 009 (FR-149): the MCP servers (feature 008) and the orchestrator
+	// are named on the row's third line (list_delegate.go), not here.
+	line3 := dimStyle.Render(thirdLine(row.sb))
 	// A still-creating optimistic launch: show a spinner, the "creating" verb, and
 	// the live copy/boot progress in place of the usual state badge.
 	if lf, ok := m.launching[row.sb.GetId()]; ok {
@@ -255,7 +352,7 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 		if lf.progress != "" {
 			title += "  " + dimStyle.Render(lf.progress)
 		}
-		return listItem{id: row.sb.GetId(), host: row.host, title: title, desc: desc, filter: name, payload: row.sb}
+		return listItem{id: row.sb.GetId(), host: row.host, title: title, desc: desc, line3: line3, filter: name, payload: row.sb}
 	}
 	title := sandboxTitle(row.sb)
 	// A daemon action is in flight for this sandbox: show a spinner + verb in
@@ -284,11 +381,25 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	if add, ok := m.sourceAdds[row.sb.GetId()]; ok {
 		title += "   " + m.spinner.View() + " " + dimStyle.Render(add.progress)
 	}
+	// feature 009 (FR-114): a surfaced worker says why it is here.
+	if c := row.sb.GetController(); c != nil {
+		role := "worker"
+		if c.GetReasoning() {
+			role = "reasoning"
+		}
+		switch {
+		case c.GetRun().GetNeedsReview():
+			title += "   " + agentWaitStyle.Render("⚑ "+role+" · review")
+		case row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+			title += "   " + agentWaitStyle.Render(role+" · needs input")
+		}
+	}
 	return listItem{
 		id:      row.sb.GetId(),
 		host:    row.host,
 		title:   title,
 		desc:    desc,
+		line3:   line3,
 		filter:  row.sb.GetDisplayName(),
 		payload: row.sb,
 	}
@@ -437,7 +548,10 @@ func renderFieldsDiffer(a, b *pb.Sandbox) bool {
 		a.GetTag() != b.GetTag() ||
 		a.GetAttachedTerminals() != b.GetAttachedTerminals() ||
 		a.GetExternalAttached() != b.GetExternalAttached() ||
-		!sameSources(a.GetSources(), b.GetSources())
+		!sameSources(a.GetSources(), b.GetSources()) ||
+		thirdLine(a) != thirdLine(b) ||
+		needsDeveloper(a) != needsDeveloper(b) ||
+		hiddenWorker(a) != hiddenWorker(b)
 }
 
 // sameSources reports whether two recorded source sets list the same paths in
@@ -507,6 +621,8 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keyIs(msg, m.keys.ScreenNext):
 		return m.enterDaemons()
+	case keyIs(msg, m.keys.OrchestratedTab):
+		return m.toggleOrchTab()
 	case keyIs(msg, m.keys.Settings):
 		return m.enterSettings(screenList)
 	case keyIs(msg, m.keys.Quit):
@@ -609,6 +725,17 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Deliberately current(), not actionable(): a still-creating placeholder is
 		// exactly the row whose sbx output is worth watching.
 		return m.enterOpLog(m.current())
+	case keyIs(msg, m.keys.OrchestratorAttach):
+		// feature 009: attach to an orchestrator, or detach a worker (FR-107/FR-111).
+		if sb := m.actionable(); sb != nil {
+			return m.orchestratorKey(sb, m.currentHostID())
+		}
+		return m, nil
+	case keyIs(msg, m.keys.MarkFree):
+		if sb := m.actionable(); sb != nil {
+			return m.markFreeKey(sb, m.currentHostID())
+		}
+		return m, nil
 	}
 
 	// Everything else (navigation, filter start, pagination) goes to the list.
@@ -639,6 +766,13 @@ func (m Model) tabBar() string {
 
 func (m Model) viewList() string {
 	header := m.tabBar()
+	// feature 009 (FR-115): the Orchestrator Sandboxes tab names orchestrators
+	// the TUI knows to be unreachable.
+	if len(m.tabs) > 0 && m.tabs[m.tabIndex].kind == tabOrchestrated {
+		if names := m.unreachableOrchestrators(); len(names) > 0 {
+			header += "   " + statusErrStyle.Render("unreachable: "+strings.Join(names, ", "))
+		}
+	}
 	if m.listLoading {
 		indicator := m.spinner.View() + dimStyle.Render(" refreshing…")
 		if header == "" {

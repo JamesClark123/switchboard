@@ -93,7 +93,19 @@ func (m *Manager) listRows(ctx context.Context) ([]listRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseList(out)
+	rows, err := parseList(out)
+	if err != nil {
+		return nil, err
+	}
+	// Per-worker registrations (feature 009) are hidden everywhere: not listed,
+	// never reconciled against marks, never attach-by-default candidates.
+	kept := rows[:0]
+	for _, r := range rows {
+		if !strings.HasPrefix(r.name, WorkerServerPrefix) {
+			kept = append(kept, r)
+		}
+	}
+	return kept, nil
 }
 
 // reconcile drops marks whose server the host no longer lists (invariant I-M2),
@@ -188,6 +200,9 @@ func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.Mcp
 	name := strings.TrimSpace(req.GetName())
 	if !nameRe.MatchString(name) {
 		return nil, fmt.Errorf("%w: server name %q must contain only letters, digits, dots, hyphens and underscores", ErrInvalidArgs, name)
+	}
+	if strings.HasPrefix(name, WorkerServerPrefix) {
+		return nil, fmt.Errorf("%w: server name %q uses the reserved prefix %q", ErrInvalidArgs, name, WorkerServerPrefix)
 	}
 	var argv []string
 	switch d := req.GetDefinition().(type) {

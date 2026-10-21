@@ -81,7 +81,7 @@ func (c *Conn) AttachAgent(ctx context.Context, opts AttachOptions) (*AttachStre
 	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream, err := c.api.AttachAgent(streamCtx)
+	stream, err := c.API().AttachAgent(streamCtx)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("open AttachAgent: %w", err)

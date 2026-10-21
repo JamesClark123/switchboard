@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260622092256-25656177ba8e
+	github.com/jamesclark123/switchboard/libs/switchboard-dial v0.0.0
 	github.com/jamesclark123/switchboard/libs/switchboard-proto v0.0.0
 	github.com/pelletier/go-toml/v2 v2.2.3
 	golang.org/x/term v0.40.0
@@ -69,3 +70,5 @@ require (
 replace github.com/jamesclark123/switchboard/libs/switchboard-proto => ../../libs/switchboard-proto
 
 replace github.com/jamesclark123/switchboard/libs/switchboard-update => ../../libs/switchboard-update
+
+replace github.com/jamesclark123/switchboard/libs/switchboard-dial => ../../libs/switchboard-dial

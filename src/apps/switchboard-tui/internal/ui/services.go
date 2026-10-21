@@ -332,12 +332,9 @@ func (m Model) handleServiceInstance(inst *pb.ServiceInstance) (tea.Model, tea.C
 	if m.serviceInstances == nil {
 		m.serviceInstances = map[string]*pb.ServiceInstance{}
 	}
-	rearm := func() tea.Cmd {
-		if m.sub != nil {
-			return m.recvCmd(m.sub)
-		}
-		return nil
-	}
+	// handleEvent re-arms the receiver of the stream the event came from
+	// (feature 009: one stream per host); this handler adds no re-arm of its own.
+	rearm := func() tea.Cmd { return nil }
 
 	switch inst.GetState() {
 	case pb.ServiceState_SERVICE_STATE_RUNNING:

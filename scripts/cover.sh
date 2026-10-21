@@ -9,6 +9,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 floor="${COVER_FLOOR:-90}"
 modules=(
   src/libs/switchboard-proto
+  src/libs/switchboard-dial
   src/services/switchboardd
   src/apps/switchboard-tui
 )

@@ -23,32 +23,93 @@ type Session interface {
 // SessionFactory creates a Session for a sandbox's agent.
 type SessionFactory func(sandboxID string, spec *pb.AgentSpec) (Session, error)
 
-// Registry holds one Session per sandbox, created on demand (R8: one PTY per
-// agent serves both programmatic prompting and interactive attach).
-type Registry struct {
-	mu       sync.Mutex
-	sessions map[string]Session
-	factory  SessionFactory
+// Waiter is implemented by a Session whose underlying process can be waited on.
+// The production ptySession waits on its child; the registry uses it to learn
+// when an agent exits on its own (feature 009, research R7).
+type Waiter interface {
+	Wait() error
 }
 
-// NewRegistry constructs a Registry using the given session factory.
+// sessionEntry is one live session plus whether the registry closed it on
+// purpose (so a deliberate Close is never reported as an agent exit).
+type sessionEntry struct {
+	s       Session
+	closing bool
+}
+
+// Registry holds one Session per sandbox, created on demand (R8: one PTY per
+// agent serves both programmatic prompting and interactive attach).
+//
+// When a session's child exits on its own the registry forgets it and reports
+// AGENT_STATUS_EXITED through the StatusUpdater (feature 009, research R7): the
+// status was never set before, and the orchestrator folds it into a failed run.
+// A session the registry closed itself (sandbox stopped, refreshed, destroyed)
+// is forgotten silently. The next Session/Prompt starts a fresh agent either way.
+type Registry struct {
+	mu       sync.Mutex
+	sessions map[string]*sessionEntry
+	factory  SessionFactory
+	status   StatusUpdater
+	now      func() time.Time
+}
+
+// NewRegistry constructs a Registry using the given session factory. Exit
+// reporting is wired with SetStatusUpdater.
 func NewRegistry(factory SessionFactory) *Registry {
-	return &Registry{sessions: map[string]Session{}, factory: factory}
+	return &Registry{sessions: map[string]*sessionEntry{}, factory: factory, now: time.Now}
+}
+
+// SetStatusUpdater registers where an agent's spontaneous exit is reported as
+// AGENT_STATUS_EXITED (nil = not reported).
+func (r *Registry) SetStatusUpdater(status StatusUpdater) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = status
 }
 
 // Session returns the sandbox's session, creating it on first use.
 func (r *Registry) Session(sandboxID string, spec *pb.AgentSpec) (Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.sessions[sandboxID]; ok {
-		return s, nil
+	if e, ok := r.sessions[sandboxID]; ok {
+		return e.s, nil
 	}
 	s, err := r.factory(sandboxID, spec)
 	if err != nil {
 		return nil, err
 	}
-	r.sessions[sandboxID] = s
+	e := &sessionEntry{s: s}
+	r.sessions[sandboxID] = e
+	if w, ok := s.(Waiter); ok {
+		go r.watch(sandboxID, e, w)
+	}
 	return s, nil
+}
+
+// watch waits for the session's child to exit and runs the exit hook.
+func (r *Registry) watch(sandboxID string, e *sessionEntry, w Waiter) {
+	_ = w.Wait()
+	r.onExit(sandboxID, e)
+}
+
+// onExit forgets an exited session (if it is still the current one) and, unless
+// the registry closed it on purpose, reports AGENT_STATUS_EXITED exactly once.
+func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
+	r.mu.Lock()
+	cur, ok := r.sessions[sandboxID]
+	if ok && cur == e {
+		delete(r.sessions, sandboxID)
+	}
+	report := !e.closing && r.status != nil
+	status := r.status
+	now := r.now()
+	r.mu.Unlock()
+	if ok && cur == e {
+		_ = e.s.Close() // release the PTY file; the child is already gone
+	}
+	if report {
+		_, _ = status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_EXITED, now)
+	}
 }
 
 // promptSubmitDelay separates the prompt body from the trailing Enter keystroke.
@@ -80,12 +141,14 @@ func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) err
 	return err
 }
 
-// Close terminates and forgets a sandbox's session.
+// Close terminates and forgets a sandbox's session. A session closed here is
+// never reported as an agent exit.
 func (r *Registry) Close(sandboxID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.sessions[sandboxID]; ok {
-		_ = s.Close()
+	if e, ok := r.sessions[sandboxID]; ok {
+		e.closing = true
+		_ = e.s.Close()
 		delete(r.sessions, sandboxID)
 	}
 }
@@ -109,6 +172,11 @@ func (p *ptySession) Close() error {
 	}
 	return p.f.Close()
 }
+
+// Wait blocks until the agent child exits (Waiter). The registry calls it once
+// per session; Close only kills, it never waits, so the two never race on the
+// process state.
+func (p *ptySession) Wait() error { return p.cmd.Wait() }
 
 // Target describes how the daemon reaches a sandbox's agent through `sbx`.
 type Target struct {

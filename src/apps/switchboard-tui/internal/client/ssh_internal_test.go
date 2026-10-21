@@ -2,30 +2,9 @@ package client
 
 import (
 	"context"
-	"os/exec"
 	"testing"
 	"time"
 )
-
-func TestStdioAddrAndDeadlines(t *testing.T) {
-	if (stdioAddr{}).Network() != "stdio" || (stdioAddr{}).String() != "stdio" {
-		t.Error("stdioAddr should report the stdio network")
-	}
-	c := &stdioConn{}
-	if c.LocalAddr().Network() != "stdio" || c.RemoteAddr().String() != "stdio" {
-		t.Error("conn addrs should be stdio")
-	}
-	// Deadlines are no-ops (the underlying pipe has none).
-	if c.SetDeadline(time.Now()) != nil || c.SetReadDeadline(time.Now()) != nil || c.SetWriteDeadline(time.Now()) != nil {
-		t.Error("deadline setters should be no-ops returning nil")
-	}
-}
-
-func TestNewStdioConnStartError(t *testing.T) {
-	if _, err := newStdioConn(exec.Command("/no/such/binary/switchboard-test")); err == nil {
-		t.Error("expected start error for a missing binary")
-	}
-}
 
 func TestDefaultDialBothKinds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)

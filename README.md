@@ -45,12 +45,13 @@ existing SSH with no new network port or auth system.
 
 ## Repository layout
 
-A Go `go.work` workspace with three modules (plus E2E siblings), placed under the constitution's
+A Go `go.work` workspace with four modules (plus E2E siblings), placed under the constitution's
 category taxonomy:
 
 ```
 src/
 ├── libs/switchboard-proto/      # shared gRPC/protobuf contract + domain helpers
+├── libs/switchboard-dial/       # daemon dialer shared by the TUI and the daemon (local socket, `ssh … sxbd dial-stdio`)
 ├── services/switchboardd/       # the daemon  (cmd/sxbd, internal/…)
 ├── services/switchboardd-e2e/   # daemon E2E (real Docker, gated)
 ├── libs/switchboard-update/     # shared self-update core (release lookup, verify, apply)
@@ -222,7 +223,10 @@ The sandbox list is the home screen. Keys:
 | `M` | Show the MCP servers attached to the selected sandbox and attach another from its daemon's registered list — live, no restart |
 | `l` | Show the `sbx` output of the selected sandbox's last launch / kit attach / refresh / source add — kit install-command output lives here; a failed launch's log stays reachable |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
-| `shift+→` / `shift+←` | Switch between the **sandboxes** screen and the **daemon** screen (see below) |
+| `shift+→` / `shift+←` | Cycle the three top-level screens — **Sandboxes**, **Daemons**, **Orchestrators** — named in the header strip (see below) |
+| `o` | Attach the selected sandbox to an orchestrator as a worker, or detach it (offers to add the sandbox's host to the orchestrator first) |
+| `O` | Show/hide the **Orchestrator Sandboxes** tab: every worker and reasoning sandbox, which the everyday tabs hide unless they need you |
+| `m` | Mark a worker free: close the run it is holding for review (optionally as failed) so the orchestrator can use it again |
 | `,` | Settings — TUI-persisted preferences (`settings.toml` in the config dir) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
 
@@ -297,6 +301,58 @@ Each daemon declares a **minimum `sbx` version** (0.36, the first with kit schem
 the host's version at startup; kit and gateway operations on a host below it are refused with
 both versions named, while kit-less sandboxes keep working.
 
+### Orchestrators
+
+`shift+→` twice (or `shift+←` from the sandbox list) opens the **Orchestrators** screen. An
+orchestrator is a named, persistent prompt queue that lives in a daemon (`n` creates one on the
+chosen host, `R` renames it — its identity never changes — `d` removes it, `enter` opens it). It
+attaches sandboxes anywhere as **workers**, composes prompts from **actions**, queues a **run**
+whenever an **event** calls an action, and delivers runs in order of receipt to free workers.
+The detail has six views (`←`/`→`):
+
+| View | What it shows and does |
+|------|------------------------|
+| Workers | The roster with state and availability (free / busy / needs input / awaiting review); `x` detach, `m` mark free. The reasoning sandbox is listed last, marked `reasoning`. |
+| Actions | `a` add, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and an optional worker tag. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
+| Queue | Queued (in receipt order with positions), in progress and history; `enter` shows a run's composed prompt, `x` cancels a queued run, `m` marks a reviewed run free. |
+| Events | Timed events: `a` add, `e` edit, `d` delete, `space` on/off. An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
+| Reasoning | The orchestrator's **reasoning sandbox** `reasoning-<id>`, created with the orchestrator on its own host from an empty workspace unless you give it a setup: `e` picks folders (and kits, `K`) through the launch browser and rebuilds it, `b` rebuilds it from the saved setup, `l` shows the `sbx` output. `reason` actions run there and their summary is the answer. It is not detachable; a rebuild is refused while a run is on it; if it is destroyed outside switchboard the view says so and `reason` runs fail until you rebuild. |
+| Hosts | The machines the orchestrator can place workers on, with reachability. `a` copies an entry from your saved SSH hosts, `d` removes one (refused while workers live there). |
+
+**Attaching workers.** `o` on a sandbox attaches it to an orchestrator (`o` again detaches; refused
+while a run is in flight on it). The orchestrator's **daemon** dials the worker's machine itself —
+`ssh <target> sxbd dial-stdio`, BatchMode, keys or agent only — so the orchestrator's host must be
+able to reach the worker's host over SSH; when it cannot yet, `o` offers to copy your host entry to
+the orchestrator first. The launch wizard's `O` attaches a new sandbox from before its agent starts.
+A worker's daemon registers one gateway MCP server per worker (`sxb-orch-<id>`, hidden from the
+gateway view) pointing at a loopback endpoint of that daemon's hook server; anything on that host
+holding the token can impersonate the worker to its orchestrator, which is why the endpoint stays on
+loopback and the token is revoked the moment the worker is detached.
+
+**Runs and the review rule.** A run goes to the first free, eligible worker (running, agent idle,
+no run on it, tag matching). It ends only with the agent's **completion report**
+(`orchestrator_report_completion`). A worker that goes idle without reporting is held for
+**review**: the sandbox row surfaces at the top of every tab, the inbox gets a line, and `m` closes
+the run with your note (as completed or failed) and frees the worker. A worker that needs input is
+surfaced the same way — the inbox then carries both the agent's needs-input line and the run's.
+Workers that need nothing from you stay hidden from the everyday tabs; `O` shows them all, and
+every orchestrated row's third line reads `mcp: … · orchestrator: …`.
+
+**What the worker's agent sees.** A managed block in the workspace `CLAUDE.md` (between
+`<!-- switchboard:orchestrator:begin -->` and `…:end -->`, rewritten on rename and action
+changes, removed on detach) briefs it: the run frame it will receive, the completion rule, and
+four MCP tools on the `sxb-orch-…` server — `orchestrator_list_actions`,
+`orchestrator_call_action` (delegate work: a run with the calling sandbox as origin),
+`orchestrator_check_run` and `orchestrator_report_completion`. Every delivered run is typed as
+
+```
+[switchboard orchestrator "<name>" · run <run_id> · action "<action>"]
+
+<composed prompt>
+
+[When this run is finished, call orchestrator_report_completion with a short summary. …]
+```
+
 ### Settings & startup sign-in
 
 `,` opens the settings screen. Its first entry, **automatic host sign-in** (on by default), makes
@@ -368,8 +424,10 @@ make e2e          # end-to-end suites (see below)
 ```
 
 - **Unit + integration** (`make test` / `make cover`): standard `go test`, including gRPC
-  client↔daemon tests over an in-process socket and `teatest` golden/interaction tests for the TUI.
-  Coverage is enforced at **≥90% per module** (libs, daemon, TUI).
+  client↔daemon tests over an in-process socket, two-daemon orchestrator tests (an orchestrator
+  on one in-process daemon driving workers on another over a real link), MCP endpoint tests with
+  the official SDK client, and `teatest` golden/interaction tests for the TUI.
+  Coverage is enforced at **≥90% per module** (proto, dial, daemon, TUI).
 - **End-to-end** (`make e2e`, gated behind the `e2e` build tag):
   - The **TUI E2E** builds the real binaries and drives `sxb` through a PTY against a
     daemon backed by a stub `sbx` — it runs anywhere, no Docker required.

@@ -1,58 +1,40 @@
 // Package client is the TUI's gRPC client to one or more daemons. A Conn wraps a
-// single daemon connection (local Unix socket now; SSH dial-stdio is added in
-// US3) together with the daemon's advertised DaemonInfo.
+// single daemon connection (local Unix socket, or SSH dial-stdio) together with
+// the daemon's advertised DaemonInfo. The transport itself — the stdio bridge,
+// the SSH hardening and the dial-failure classification — lives in the shared
+// libs/switchboard-dial module (feature 009, research R2) so the daemon's
+// orchestrator runtime dials worker machines exactly as the TUI does; this
+// package keeps the typed RPC wrappers, the host Manager and the askpass helper.
 package client
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"net"
-	"time"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Conn is a live connection to one daemon.
+// Conn is a live connection to one daemon: the shared dial.Conn (handshake,
+// cached DaemonInfo accessors, Close) plus this package's typed RPC wrappers.
 type Conn struct {
-	Info *pb.DaemonInfo
-
-	hostID string
-	cc     *grpc.ClientConn
-	api    pb.SwitchboardClient
+	*dial.Conn
 }
 
-// API exposes the raw gRPC stub.
-func (c *Conn) API() pb.SwitchboardClient { return c.api }
+// wrap adopts a dialed connection, passing a dial error through untouched (a
+// *dial.DialError keeps its classification for the sign-in flow).
+func wrap(c *dial.Conn, err error) (*Conn, error) {
+	if err != nil {
+		return nil, err
+	}
+	return &Conn{Conn: c}, nil
+}
 
-// HostID returns the connected daemon's host id (FR-006).
-func (c *Conn) HostID() string { return c.hostID }
-
-// DaemonVersion returns the version advertised by the connected daemon at
-// handshake (empty if unknown).
-func (c *Conn) DaemonVersion() string { return c.Info.GetDaemonVersion() }
-
-// WorkspaceRoot returns the daemon's controlled workspace folder on its host
-// (FR-006), advertised at handshake (empty if unknown).
-func (c *Conn) WorkspaceRoot() string { return c.Info.GetWorkspaceRoot() }
-
-// SbxVersion is the host sandbox CLI version the daemon reported at handshake
-// (the parsed MAJOR.MINOR.PATCH when the daemon could read `sbx version`, else
-// the raw line; empty if unknown).
-func (c *Conn) SbxVersion() string { return c.Info.GetSbxVersion() }
-
-// SbxMinVersion is the runtime baseline the daemon declares (feature 008,
-// FR-096); RuntimeBaselineMet reports whether its host meets it.
-func (c *Conn) SbxMinVersion() string    { return c.Info.GetSbxMinVersion() }
-func (c *Conn) RuntimeBaselineMet() bool { return c.Info.GetRuntimeBaselineMet() }
-
-// McpGateway reports whether the daemon's host can manage its MCP gateway, with
-// the reason when it cannot (FR-079).
-func (c *Conn) McpGateway() (available bool, reason string) {
-	return c.Info.GetMcpGatewayAvailable(), c.Info.GetMcpGatewayReason()
+// DialLocal connects to a daemon over a local Unix domain socket (FR-003) and
+// performs the GetDaemonInfo handshake (FR-006) to learn the host id.
+func DialLocal(ctx context.Context, socketPath string) (*Conn, error) {
+	return wrap(dial.DialLocal(ctx, socketPath))
 }
 
 // UpdateDaemon asks the connected daemon to self-update to target (empty =
@@ -60,7 +42,7 @@ func (c *Conn) McpGateway() (available bool, reason string) {
 // the daemon reports success; the daemon restarts on the new binary immediately
 // after, so this connection becomes unusable and the caller should reconnect.
 func (c *Conn) UpdateDaemon(ctx context.Context, target string, onProgress func(stage, message string)) error {
-	stream, err := c.api.UpdateDaemon(ctx, &pb.UpdateDaemonRequest{TargetVersion: target})
+	stream, err := c.API().UpdateDaemon(ctx, &pb.UpdateDaemonRequest{TargetVersion: target})
 	if err != nil {
 		return err
 	}
@@ -82,41 +64,4 @@ func (c *Conn) UpdateDaemon(ctx context.Context, target string, onProgress func(
 			return nil
 		}
 	}
-}
-
-// Close releases the underlying connection.
-func (c *Conn) Close() error {
-	if c.cc != nil {
-		return c.cc.Close()
-	}
-	return nil
-}
-
-// DialLocal connects to a daemon over a local Unix domain socket (FR-003) and
-// performs the GetDaemonInfo handshake (FR-006) to learn the host id.
-func DialLocal(ctx context.Context, socketPath string) (*Conn, error) {
-	dialer := func(_ context.Context, _ string) (net.Conn, error) {
-		return net.Dial("unix", socketPath)
-	}
-	cc, err := grpc.NewClient("passthrough:///unix",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(dialer),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", socketPath, err)
-	}
-	return handshake(ctx, cc)
-}
-
-// handshake runs GetDaemonInfo to confirm reachability and capture identity.
-func handshake(ctx context.Context, cc *grpc.ClientConn) (*Conn, error) {
-	api := pb.NewSwitchboardClient(cc)
-	hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	info, err := api.GetDaemonInfo(hctx, &pb.GetDaemonInfoRequest{})
-	if err != nil {
-		_ = cc.Close()
-		return nil, fmt.Errorf("daemon handshake failed (is switchboardd running?): %w", err)
-	}
-	return &Conn{hostID: info.GetHostId(), Info: info, cc: cc, api: api}, nil
 }

@@ -24,7 +24,7 @@ func (c *Conn) SecretsAvailable() (available bool, reason string) {
 }
 
 func (c *Conn) ListSecrets(ctx context.Context) ([]*pb.Secret, error) {
-	resp, err := c.api.ListSecrets(ctx, &pb.ListSecretsRequest{})
+	resp, err := c.API().ListSecrets(ctx, &pb.ListSecretsRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +32,10 @@ func (c *Conn) ListSecrets(ctx context.Context) ([]*pb.Secret, error) {
 }
 
 func (c *Conn) SetSecret(ctx context.Context, req *pb.SetSecretRequest) (*pb.Secret, error) {
-	return c.api.SetSecret(ctx, req)
+	return c.API().SetSecret(ctx, req)
 }
 
 func (c *Conn) RemoveSecret(ctx context.Context, req *pb.RemoveSecretRequest) error {
-	_, err := c.api.RemoveSecret(ctx, req)
+	_, err := c.API().RemoveSecret(ctx, req)
 	return err
 }

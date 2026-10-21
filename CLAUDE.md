@@ -147,7 +147,49 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/008-mcp-gateway-manager/plan.md` (MCP Gateway Manager & Daemon Screen + kit
+Active feature: `specs/009-orchestrator/plan.md` (Orchestrator). A new **daemon role**: an
+orchestrator is a named, persistent prompt queue the developer places on a machine (hosted
+in-process by that machine's `switchboardd`, no new binary/process/port), with a stable opaque
+identity and a changeable name. It attaches sandboxes on any reachable machine as **workers**
+(controller recorded on the sandbox by its **owning** daemon — `Sandbox.controller`, field 23 —
+one controller per sandbox, settled in one bbolt write), composes prompts from developer-authored
+**actions** (`{placeholder}` body + declared arguments + `prompt`/`reason` type + optional
+worker-tag requirement; unreferenced supplied arguments are appended `name: value`) whenever an
+**event** calls them (user form, timed event with dedupe-on-by-default, or a worker's agent through
+MCP; webhooks deferred), and delivers each **run** in order of receipt, capacity-aware, through the
+owning daemon's new guarded `DeliverWorkerPrompt` (RUNNING + agent IDLE + no run recorded; ensures
+the PTY broadcaster exists so unattended output is drained). Runs end only with the agent's
+**completion report** (MCP tool `orchestrator_report_completion` with a summary); idle without a
+report ⇒ *awaiting review*, surfaced at the top of the sandbox list with `m` **mark free**. Cross-
+machine: the orchestrator's daemon **dials worker machines over SSH** (`ssh <target> sxbd
+dial-stdio`, BatchMode, per-orchestrator host entries) using the TUI's dialer **moved into a new
+library module `src/libs/switchboard-dial`**, holds `Subscribe` + a bidi `OrchestratorLink` stream
+per host, and reconciles on every reconnect. Workers reach the orchestrator through the host MCP
+gateway: the owning daemon registers one **per-worker** server `sxb-orch-<sandbox8>` →
+`http://127.0.0.1:<hookport>/orchestrator/w/<token>/mcp` (hidden from the gateway view, not in
+`mcp_servers`; **loopback URL documentation-derived — quickstart Scenario 0 first**), served on
+the existing hook HTTP server by the **official Go MCP SDK (`modelcontextprotocol/go-sdk v1.8.0`,
+stateless streamable HTTP — the one new dependency)** with four tools (`orchestrator_list_actions`,
+`_call_action`, `_check_run`, `_report_completion`), calls relayed over the link. Briefing = managed
+`CLAUDE.md` block (shared `managedblock` helper) + a fixed run frame + tool metadata. Each
+orchestrator has a **reasoning sandbox** (`LaunchRequest.EmptyWorkspace`, `reasoning-<id8>`, not
+detachable, rebuilt by destroy+launch). Daemon packages: new `internal/orchestrator` (records in
+bbolt buckets `orchestrators` + receipt-ordered `orchestrator_runs`, dispatch, scheduler, links)
+and `internal/worker` (controller CAS, gateway registration, endpoint, relay, delivery, briefing);
+`internal/agent` now sets `AGENT_STATUS_EXITED` on PTY exit and `Hub.Publish` takes the mutex.
+Additive proto: 24 RPCs (19 orchestrator-side, 5 worker-side), `Event.orchestrator_changed` (8),
+`NotificationKind` 6–8 (`RUN_FAILED`, `RUN_AWAITING_REVIEW`, `RUN_NEEDS_INPUT`; completions
+silent), `LaunchSandboxRequest.controller` (7). TUI: third top-level **Orchestrators** screen in
+the shift+←/→ cycle (views Workers/Actions/Queue/Events/Reasoning/Hosts, `huh` forms), header
+strip naming all three screens, **per-host event streams** (today only the local daemon is
+subscribed), workers hidden from All/host/group tabs unless they need the developer (needs-input
+or review rows ordered first on every tab), `O` toggles the hidden **Orchestrator Sandboxes** tab,
+`o` attach/detach (offers to copy the TUI's host entry), launch wizard `O`, and a 3-line list
+delegate (`Spacing 0`) whose third line is `mcp: … · orchestrator: …`. **No new env vars**; all
+bounds are constants (R15). See `research.md` (R1–R17), `data-model.md`, `contracts/`,
+`quickstart.md`.
+
+Prior feature: `specs/008-mcp-gateway-manager/plan.md` (MCP Gateway Manager & Daemon Screen + kit
 schema v2). Each daemon gets a **gateway manager** — new package `switchboardd/internal/mcp` — that
 drives the host runtime's documented `sbx mcp` verbs (`ls`, `auth status --json`, `add …
 --skip-auth`, `rm`, `auth`, `load --sandbox`, and `create --static-mcp`; **all

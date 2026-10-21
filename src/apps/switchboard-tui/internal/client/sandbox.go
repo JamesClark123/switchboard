@@ -18,12 +18,12 @@ type LaunchUpdate struct {
 
 // OptionManifest returns the host's full sbx option surface (FR-014).
 func (c *Conn) OptionManifest(ctx context.Context) (*pb.OptionManifest, error) {
-	return c.api.GetOptionManifest(ctx, &pb.GetOptionManifestRequest{})
+	return c.API().GetOptionManifest(ctx, &pb.GetOptionManifestRequest{})
 }
 
 // List returns all sandboxes on the connected daemon.
 func (c *Conn) List(ctx context.Context) ([]*pb.Sandbox, error) {
-	resp, err := c.api.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
+	resp, err := c.API().ListSandboxes(ctx, &pb.ListSandboxesRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (c *Conn) List(ctx context.Context) ([]*pb.Sandbox, error) {
 // returns the terminal Sandbox, or a non-nil blocked report if a low-resource
 // gate stopped the launch without override (FR-012f).
 func (c *Conn) Launch(ctx context.Context, req *pb.LaunchSandboxRequest, onUpdate func(LaunchUpdate)) (*pb.Sandbox, *pb.ResourceReport, error) {
-	stream, err := c.api.LaunchSandbox(ctx, req)
+	stream, err := c.API().LaunchSandbox(ctx, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -80,7 +80,7 @@ func consumeGatedStream(stream launchProgressStream, onUpdate func(LaunchUpdate)
 // report returned for the override round-trip (re-send with override=true,
 // FR-057), and the updated Sandbox on `done`.
 func (c *Conn) AddSources(ctx context.Context, id string, sources []*pb.SourceRef, override bool, onUpdate func(LaunchUpdate)) (*pb.Sandbox, *pb.ResourceReport, error) {
-	stream, err := c.api.AddSandboxSources(ctx, &pb.AddSandboxSourcesRequest{
+	stream, err := c.API().AddSandboxSources(ctx, &pb.AddSandboxSourcesRequest{
 		SandboxId: id, Sources: sources, OverrideResourceWarning: override,
 	})
 	if err != nil {
@@ -94,17 +94,17 @@ func (c *Conn) AddSources(ctx context.Context, id string, sources []*pb.SourceRe
 // values. DESTRUCTIVE for the copy — callers MUST confirm with the user first
 // (FR-060). Unary, like Stop.
 func (c *Conn) RemoveSources(ctx context.Context, id string, paths []string) (*pb.Sandbox, error) {
-	return c.api.RemoveSandboxSources(ctx, &pb.RemoveSandboxSourcesRequest{SandboxId: id, SourcePaths: paths})
+	return c.API().RemoveSandboxSources(ctx, &pb.RemoveSandboxSourcesRequest{SandboxId: id, SourcePaths: paths})
 }
 
 // Stop stops a sandbox, retaining its copy (FR-012a).
 func (c *Conn) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
-	return c.api.StopSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
+	return c.API().StopSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
 }
 
 // Restart restarts a stopped sandbox from its retained copy (FR-012b).
 func (c *Conn) Restart(ctx context.Context, id string) (*pb.Sandbox, error) {
-	stream, err := c.api.RestartSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
+	stream, err := c.API().RestartSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (c *Conn) Restart(ctx context.Context, id string) (*pb.Sandbox, error) {
 // is returned; onLog, when non-nil, receives sbx output and copy progress as it
 // arrives so a long re-seed isn't silent.
 func (c *Conn) Refresh(ctx context.Context, id string, onLog func(LaunchUpdate)) (*pb.Sandbox, error) {
-	stream, err := c.api.RefreshSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
+	stream, err := c.API().RefreshSandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (c *Conn) Refresh(ctx context.Context, id string, onLog func(LaunchUpdate))
 // AddKit attaches a kit to an existing sandbox (`sbx kit add`, FR-033). sbx
 // restarts the sandbox to apply it; VM state is preserved.
 func (c *Conn) AddKit(ctx context.Context, id string, ref *pb.KitRef, onLog func(LaunchUpdate)) (*pb.Sandbox, error) {
-	stream, err := c.api.AddSandboxKit(ctx, &pb.AddSandboxKitRequest{SandboxId: id, Kit: ref})
+	stream, err := c.API().AddSandboxKit(ctx, &pb.AddSandboxKitRequest{SandboxId: id, Kit: ref})
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (c *Conn) AddKit(ctx context.Context, id string, ref *pb.KitRef, onLog func
 
 // ValidateKit checks a kit against the host `sbx` (FR-034).
 func (c *Conn) ValidateKit(ctx context.Context, spec *pb.KitSpec) (*pb.ValidateKitResponse, error) {
-	return c.api.ValidateKit(ctx, &pb.ValidateKitRequest{Kit: spec})
+	return c.API().ValidateKit(ctx, &pb.ValidateKitRequest{Kit: spec})
 }
 
 // launchProgressStream is the shape shared by every LaunchProgress-streaming RPC;
@@ -189,7 +189,7 @@ func drainLaunchProgress(stream launchProgressStream, onLog func(LaunchUpdate)) 
 
 // Destroy removes a sandbox and deletes its copy (FR-012c).
 func (c *Conn) Destroy(ctx context.Context, id string) (bool, error) {
-	resp, err := c.api.DestroySandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
+	resp, err := c.API().DestroySandbox(ctx, &pb.SandboxIdRequest{SandboxId: id})
 	if err != nil {
 		return false, err
 	}
@@ -198,18 +198,18 @@ func (c *Conn) Destroy(ctx context.Context, id string) (bool, error) {
 
 // Rename sets a custom display name (FR-012e).
 func (c *Conn) Rename(ctx context.Context, id, name string) (*pb.Sandbox, error) {
-	return c.api.RenameSandbox(ctx, &pb.RenameSandboxRequest{SandboxId: id, DisplayName: name})
+	return c.API().RenameSandbox(ctx, &pb.RenameSandboxRequest{SandboxId: id, DisplayName: name})
 }
 
 // SetTag sets or clears a sandbox's mutable purpose tag (feature 003, FR-021..024).
 func (c *Conn) SetTag(ctx context.Context, id, tag string) (*pb.Sandbox, error) {
-	return c.api.SetSandboxTag(ctx, &pb.SetSandboxTagRequest{SandboxId: id, Tag: tag})
+	return c.API().SetSandboxTag(ctx, &pb.SetSandboxTagRequest{SandboxId: id, Tag: tag})
 }
 
 // ResolveWorkspace asks the daemon which sandbox owns a filesystem path, so `sxb`
 // run inside a workspace can attach to that sandbox's session (feature 003, FR-017/018).
 func (c *Conn) ResolveWorkspace(ctx context.Context, path string) (*pb.ResolveWorkspaceResponse, error) {
-	return c.api.ResolveWorkspace(ctx, &pb.ResolveWorkspaceRequest{Path: path})
+	return c.API().ResolveWorkspace(ctx, &pb.ResolveWorkspaceRequest{Path: path})
 }
 
 // TermSession is the caller's handle to a live persistent terminal attachment.
@@ -242,18 +242,18 @@ type EventStream interface {
 // Subscribe opens the live event stream (sandbox changes + notifications). When
 // replay is set the daemon first replays undelivered notifications (FR-026b).
 func (c *Conn) Subscribe(ctx context.Context, replay bool) (EventStream, error) {
-	return c.api.Subscribe(ctx, &pb.SubscribeRequest{ReplayUndelivered: replay})
+	return c.API().Subscribe(ctx, &pb.SubscribeRequest{ReplayUndelivered: replay})
 }
 
 // VSCodeTarget returns the sandbox's controlled workspace folder on its host, so
 // the client opens that folder in VS Code (locally or over Remote-SSH) (FR-027).
 func (c *Conn) VSCodeTarget(ctx context.Context, sandboxID string) (*pb.VSCodeTarget, error) {
-	return c.api.GetVSCodeTarget(ctx, &pb.SandboxIdRequest{SandboxId: sandboxID})
+	return c.API().GetVSCodeTarget(ctx, &pb.SandboxIdRequest{SandboxId: sandboxID})
 }
 
 // PromptAgent delivers a prompt to a sandbox's agent (FR-022).
 func (c *Conn) PromptAgent(ctx context.Context, sandboxID, prompt string) error {
-	resp, err := c.api.PromptAgent(ctx, &pb.PromptAgentRequest{SandboxId: sandboxID, Prompt: prompt})
+	resp, err := c.API().PromptAgent(ctx, &pb.PromptAgentRequest{SandboxId: sandboxID, Prompt: prompt})
 	if err != nil {
 		return err
 	}
@@ -265,14 +265,14 @@ func (c *Conn) PromptAgent(ctx context.Context, sandboxID, prompt string) error 
 
 // AckNotifications marks notifications delivered so they are not replayed.
 func (c *Conn) AckNotifications(ctx context.Context, ids []string) error {
-	_, err := c.api.AckNotification(ctx, &pb.AckNotificationRequest{NotificationIds: ids})
+	_, err := c.API().AckNotification(ctx, &pb.AckNotificationRequest{NotificationIds: ids})
 	return err
 }
 
 // DecideEscapeHatchRun approves or denies a pending escape-hatch run (feature 005,
 // FR-039).
 func (c *Conn) DecideEscapeHatchRun(ctx context.Context, runID string, approved bool) (pb.EscapeHatchRunStatus, error) {
-	resp, err := c.api.DecideEscapeHatchRun(ctx, &pb.DecideEscapeHatchRunRequest{RunId: runID, Approved: approved})
+	resp, err := c.API().DecideEscapeHatchRun(ctx, &pb.DecideEscapeHatchRunRequest{RunId: runID, Approved: approved})
 	if err != nil {
 		return pb.EscapeHatchRunStatus_ESCAPE_HATCH_RUN_STATUS_UNSPECIFIED, err
 	}
@@ -282,7 +282,7 @@ func (c *Conn) DecideEscapeHatchRun(ctx context.Context, runID string, approved 
 // ListEscapeHatchRuns returns the session's escape-hatch runs for a sandbox (empty
 // id => all sandboxes on this host) (feature 005, FR-042).
 func (c *Conn) ListEscapeHatchRuns(ctx context.Context, sandboxID string) ([]*pb.EscapeHatchRun, error) {
-	resp, err := c.api.ListEscapeHatchRuns(ctx, &pb.ListEscapeHatchRunsRequest{SandboxId: sandboxID})
+	resp, err := c.API().ListEscapeHatchRuns(ctx, &pb.ListEscapeHatchRunsRequest{SandboxId: sandboxID})
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func (c *Conn) ListEscapeHatchRuns(ctx context.Context, sandboxID string) ([]*pb
 
 // ListSources enumerates launch candidates under root (FR-007).
 func (c *Conn) ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error) {
-	resp, err := c.api.ListSourceCandidates(ctx, &pb.ListSourceCandidatesRequest{Root: root, ReposOnly: reposOnly})
+	resp, err := c.API().ListSourceCandidates(ctx, &pb.ListSourceCandidatesRequest{Root: root, ReposOnly: reposOnly})
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +303,7 @@ func (c *Conn) ListSources(ctx context.Context, root string, reposOnly bool) ([]
 // ListServices returns the sandbox's declared services joined with their current
 // instance state (FR-045).
 func (c *Conn) ListServices(ctx context.Context, sandboxID string) ([]*pb.SandboxService, error) {
-	resp, err := c.api.ListSandboxServices(ctx, &pb.ListSandboxServicesRequest{SandboxId: sandboxID})
+	resp, err := c.API().ListSandboxServices(ctx, &pb.ListSandboxServicesRequest{SandboxId: sandboxID})
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +313,7 @@ func (c *Conn) ListServices(ctx context.Context, sandboxID string) ([]*pb.Sandbo
 // StartService starts one declared service by name. It returns as soon as the
 // instance exists (STARTING); readiness arrives on the event stream.
 func (c *Conn) StartService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
-	resp, err := c.api.StartSandboxService(ctx, &pb.StartSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
+	resp, err := c.API().StartSandboxService(ctx, &pb.StartSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func (c *Conn) StartService(ctx context.Context, sandboxID, name string) (*pb.Se
 
 // StopService terminates a running service and releases its ports (FR-048).
 func (c *Conn) StopService(ctx context.Context, sandboxID, name string) (*pb.ServiceInstance, error) {
-	resp, err := c.api.StopSandboxService(ctx, &pb.StopSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
+	resp, err := c.API().StopSandboxService(ctx, &pb.StopSandboxServiceRequest{SandboxId: sandboxID, ServiceName: name})
 	if err != nil {
 		return nil, err
 	}
@@ -332,5 +332,5 @@ func (c *Conn) StopService(ctx context.Context, sandboxID, name string) (*pb.Ser
 // ForwardPort opens one relay stream for a single TCP connection on the developer's
 // machine. The caller sends the initial `open` frame; see internal/forward.
 func (c *Conn) ForwardPort(ctx context.Context) (pb.Switchboard_ForwardPortClient, error) {
-	return c.api.ForwardPort(ctx)
+	return c.API().ForwardPort(ctx)
 }

@@ -6,6 +6,7 @@
 
 MODULES := \
 	src/libs/switchboard-proto \
+	src/libs/switchboard-dial \
 	src/services/switchboardd \
 	src/apps/switchboard-tui
 
