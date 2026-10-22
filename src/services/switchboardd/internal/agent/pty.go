@@ -112,32 +112,52 @@ func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
 	}
 }
 
-// promptSubmitDelay separates the prompt body from the trailing Enter keystroke.
-// A raw-mode agent TUI (Claude Code) coalesces bytes that arrive together into a
-// single "paste" and does NOT treat a newline inside a paste as a submit — so a
-// body-plus-terminator written in one shot lands in the input box unsent, which is
-// why a result required the user to press Enter. Writing the body, pausing past the
-// paste-coalescing window, then sending the Enter as a distinct keystroke makes the
-// agent submit on its own. Package-level so tests can zero it.
+// pasteStart / pasteEnd are the bracketed-paste markers (CSI 200~ / CSI 201~)
+// that wrap every prompt body. A raw-mode agent TUI (Claude Code) that receives
+// a bare run of bytes has to guess where a paste ends: when the Enter lands in
+// the same read as the body, the "\r" is folded into the text and the prompt
+// sits in the input box unsent. Writing the body alone and the Enter 50 ms
+// later only helps while the transport keeps the two writes apart; behind
+// `sbx exec` they evidently arrive together — orchestrator runs were typed into
+// the worker's agent but never started, which is exactly what a merged read
+// reproduces in a plain PTY. Inside the markers the body is one paste by
+// definition, the terminator ends it, and the "\r" that follows is parsed as
+// its own keystroke whether or not it shares a read with the body (verified
+// against Claude Code 2.1.296–2.1.307 in a PTY, merged and unmerged). This is
+// also how Claude Code's own PTY driver feeds a prompt to another claude
+// process.
+const (
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+	submitKey  = "\r"
+)
+
+// promptSubmitDelay separates the paste from the trailing Enter keystroke so
+// the submit is also a distinct read on a transport that does preserve write
+// boundaries. Package-level so tests can zero it.
 var promptSubmitDelay = 50 * time.Millisecond
+
+// Typed is the exact byte sequence Prompt writes for text: the body as one
+// bracketed paste followed by the Enter keystroke. For tests in other packages.
+func Typed(text string) string { return pasteStart + text + pasteEnd + submitKey }
 
 // Prompt types text into the sandbox's agent and submits it (FR-022).
 //
-// Submission uses a carriage return ("\r") — the byte a terminal sends for the
-// Enter key in raw mode — NOT a linefeed ("\n"), which the agent's multiline input
-// inserts as a literal newline rather than submitting. The Enter is a separate
-// write, sent after promptSubmitDelay so it is not swallowed by the agent's paste
-// detection along with the body (see promptSubmitDelay).
+// The body goes out as one bracketed paste (pasteStart/pasteEnd), then — after
+// promptSubmitDelay — the Enter as a separate write. Submission uses a carriage
+// return ("\r"), the byte a terminal sends for the Enter key in raw mode, NOT a
+// linefeed ("\n"), which the agent's multiline input inserts as a literal newline
+// rather than submitting.
 func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) error {
 	s, err := r.Session(sandboxID, spec)
 	if err != nil {
 		return err
 	}
-	if _, err := s.Write([]byte(text)); err != nil {
+	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
 		return err
 	}
 	time.Sleep(promptSubmitDelay)
-	_, err = s.Write([]byte("\r"))
+	_, err = s.Write([]byte(submitKey))
 	return err
 }
 

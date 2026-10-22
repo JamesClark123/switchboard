@@ -83,12 +83,14 @@ func TestRegistryPromptAndReuse(t *testing.T) {
 	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	// The body is submitted with a carriage return (Enter), not a linefeed: a
-	// raw-mode TUI treats "\n" as a literal newline and only "\r" as submit.
+	// The body is typed as one bracketed paste and submitted with a carriage
+	// return (Enter), not a linefeed: a raw-mode TUI treats "\n" as a literal
+	// newline and only "\r" as submit, and only the paste terminator keeps the
+	// Enter a separate keystroke when both land in one read.
 	buf := make([]byte, 64)
 	n, _ := last.Read(buf)
-	if string(buf[:n]) != "hello\r" {
-		t.Errorf("prompt = %q, want hello\\r", string(buf[:n]))
+	if got := string(buf[:n]); got != Typed("hello") {
+		t.Errorf("prompt = %q, want %q", got, Typed("hello"))
 	}
 
 	// A second prompt reuses the same session (created once).

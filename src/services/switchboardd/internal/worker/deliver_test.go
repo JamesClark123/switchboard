@@ -139,11 +139,12 @@ func TestDeliverAcceptsTypesFrameAndDrains(t *testing.T) {
 		t.Error("delivery should emit sandbox_changed")
 	}
 	// The broadcaster exists (the PTY has a reader) and exactly the documented
-	// frame was typed through the developer's prompt path (body, then Enter).
+	// frame was typed through the developer's prompt path (bracketed paste, then
+	// Enter).
 	if n, _ := e.svc.terms.Counts(sb.GetId()); n != 0 || *created != 1 {
 		t.Errorf("terminal session should exist with no attachment: counts %d created %d", n, *created)
 	}
-	want := "[switchboard orchestrator \"review-bot\" · run run-1a2b3c4d-7 · action \"review-pr\"]\n\nReview pull request 412 in acme/web.\n\nfocus: tests\n\n" + runFrameTail + "\r"
+	want := agent.Typed("[switchboard orchestrator \"review-bot\" · run run-1a2b3c4d-7 · action \"review-pr\"]\n\nReview pull request 412 in acme/web.\n\nfocus: tests\n\n" + runFrameTail)
 	deadline := time.Now().Add(2 * time.Second)
 	for sess.typed() != want && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -207,10 +208,10 @@ func TestEnsureDrained(t *testing.T) {
 		t.Error("counts")
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(sess.typed(), "y\r") && time.Now().Before(deadline) {
+	for !strings.Contains(sess.typed(), agent.Typed("y")) && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !strings.Contains(sess.typed(), "x\r") || !strings.Contains(sess.typed(), "y\r") {
+	if !strings.Contains(sess.typed(), agent.Typed("x")) || !strings.Contains(sess.typed(), agent.Typed("y")) {
 		t.Errorf("typed = %q", sess.typed())
 	}
 }

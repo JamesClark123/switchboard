@@ -222,7 +222,10 @@ there first — the run goes back to *queued*), **ensures the terminal broadcast
 attached — today a PTY created by `PromptAgent` alone has **no reader** and a long unattended
 turn would stall on a full buffer; the escape hatch shares the exposure and inherits the fix —
 then types the composed prompt wrapped in the fixed run frame (R12) through `agent.Registry.Prompt`
-(the developer's own path: body, 50 ms, `\r`), records `controller.run{id, action}` and emits
+(the developer's own path: the body as one bracketed paste `ESC[200~ … ESC[201~`, 50 ms, then `\r`
+as a separate write — the paste terminator is what keeps the Enter a distinct keystroke when the
+`sbx exec` transport delivers both writes in one read; a bare body + `\r` in one read leaves the
+prompt sitting unsent in the agent's input box), records `controller.run{id, action}` and emits
 `sandbox_changed`. The run is *running* on acceptance.
 
 **Tracking**: the runtime folds N's `sandbox_changed` events per worker: `NEEDS_INPUT` →
