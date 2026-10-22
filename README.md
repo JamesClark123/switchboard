@@ -335,6 +335,9 @@ no run on it, tag matching). It ends only with the agent's **completion report**
 **review**: the sandbox row surfaces at the top of every tab, the inbox gets a line, and `m` closes
 the run with your note (as completed or failed) and frees the worker. A worker that needs input is
 surfaced the same way — the inbox then carries both the agent's needs-input line and the run's.
+Claude Code's "waiting for your input" nudge after a minute of idleness is not a request for input:
+an idle worker is free. Should a worker still sit at `needs input` with no run on it, `m` sets it
+back to idle so the queue can reach it again.
 Workers that need nothing from you stay hidden from the everyday tabs; `O` shows them all, and
 every orchestrated row's third line reads `mcp: … · orchestrator: …`.
 

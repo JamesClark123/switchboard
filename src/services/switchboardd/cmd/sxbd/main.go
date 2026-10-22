@@ -212,6 +212,10 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetHookInjector(func(sandboxID, workspacePath string) error {
 		return agent.InjectHooks(workspacePath, sandboxID, callbackURL)
 	})
+	// Sandboxes launched by an older daemon carry its hook command; rewrite them
+	// so this daemon's mapping (e.g. Claude Code's idle nudge is IDLE, not
+	// NEEDS_INPUT) applies once their agent restarts.
+	mgr.RefreshHooks(func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 
 	// Escape hatch (feature 005): the service runs allowlisted commands on the host
 	// and delivers results back to the agent via the PTY-injection Prompt path. The

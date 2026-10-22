@@ -228,10 +228,13 @@ func TestMarkFreeFromSandboxListAndWorkersView(t *testing.T) {
 	if m.screen != screenList {
 		t.Error("esc returns to the list")
 	}
-	// Workers view: m only on an AWAITING_REVIEW row.
+	// Workers view: m opens the dialog on an AWAITING_REVIEW row, frees a row
+	// parked awaiting input with no run outright, and is refused elsewhere.
 	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
 		{SandboxId: "w1", DisplayName: "worker-one", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW},
 		{SandboxId: "w2", DisplayName: "worker-two", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE},
+		{SandboxId: "w3", DisplayName: "worker-three", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT},
+		{SandboxId: "w4", DisplayName: "worker-four", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT, RunId: "run-9"},
 	}}
 	m = openDetail(t, m)
 	m, _ = update(m, press("m"))
@@ -244,6 +247,25 @@ func TestMarkFreeFromSandboxListAndWorkersView(t *testing.T) {
 	if m.orchDetail.form != nil || !strings.Contains(m.orchDetail.status, "no run awaiting review") {
 		t.Error("m on a free worker is refused")
 	}
+	m, _ = update(m, press("j"))
+	before := a.orchCallsJoined()
+	m, cmd = update(m, press("m"))
+	if cmd == nil || m.orchDetail.form != nil {
+		t.Fatal("m on a parked worker with no run frees it directly")
+	}
+	if done, ok := runCmd(cmd).(orchDoneMsg); !ok || done.err != nil || !strings.Contains(done.status, "marked worker-three free") {
+		t.Errorf("parked worker result = %+v", done)
+	}
+	if calls := strings.TrimPrefix(a.orchCallsJoined(), before); !strings.Contains(calls, `MarkWorkerFree o-a w3 false ""`) {
+		t.Errorf("calls = %q", calls)
+	}
+	m, _ = update(m, press("j"))
+	m, _ = update(m, press("m"))
+	if m.orchDetail.form != nil || !strings.Contains(m.orchDetail.status, "no run awaiting review") {
+		t.Error("m on a worker awaiting input mid-run is refused (the run owns the wait)")
+	}
+	m, _ = update(m, press("k"))
+	m, _ = update(m, press("k"))
 	// A FAILED_PRECONDITION from the daemon keeps the dialog open verbatim.
 	m, _ = update(m, press("k"))
 	m, _ = update(m, press("m"))

@@ -231,6 +231,18 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 		if req.GetSetRun() {
 			cur.Run = req.GetRun()
 		}
+		if req.GetClearNeedsInput() {
+			// The developer's "mark free" on a worker parked NEEDS_INPUT with
+			// no run on it: the agent is declared free again. A run in flight
+			// is never overridden here (the orchestrator closes it first).
+			if cur.GetRun() != nil {
+				return fmt.Errorf("%w: run %s is still on this sandbox", ErrPrecondition, cur.GetRun().GetId())
+			}
+			if x.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+				x.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+				x.Agent.LastEventAt = timestamppb.New(s.now())
+			}
+		}
 		x.UpdatedAt = timestamppb.New(s.now())
 		return nil
 	})

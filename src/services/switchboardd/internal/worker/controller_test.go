@@ -222,6 +222,35 @@ func TestUpdateWorker(t *testing.T) {
 	if out.GetController().GetRun() != nil {
 		t.Error("set_run without run should clear it")
 	}
+	// clear_needs_input (the developer's mark free on a parked worker) sets a
+	// NEEDS_INPUT agent back to IDLE, leaves any other status alone, and is
+	// refused while a run is on the sandbox.
+	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		if x.Agent == nil {
+			x.Agent = &pb.AgentSession{}
+		}
+		x.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", ClearNeedsInput: true})
+	if err != nil || out.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+		t.Errorf("clear_needs_input = %v / %v", out.GetAgent().GetStatus(), err)
+	}
+	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", ClearNeedsInput: true})
+	if out.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_WORKING {
+		t.Error("clear_needs_input should leave a working agent alone")
+	}
+	if _, err := e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", SetRun: true, Run: &pb.WorkerRun{Id: "run-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", ClearNeedsInput: true}); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("clear_needs_input with a run on the sandbox = %v", err)
+	}
 	if _, err := e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: "nope", OrchestratorId: "orch-1"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update unknown = %v", err)
 	}

@@ -138,6 +138,29 @@ func TestReviewGraceThenMarkFree(t *testing.T) {
 	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) {
 		t.Error("nothing awaits review any more")
 	}
+	// A worker parked NEEDS_INPUT with no run on it is the developer's call
+	// too: mark free sets it back to IDLE on its daemon (an empty run comes
+	// back) and the next queued run goes to it.
+	push(w, "wa", pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	waitFor(t, func() bool {
+		return rt.sandboxRecord("wa").GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	})
+	freed, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, "")
+	if err != nil || freed.GetId() != "" {
+		t.Fatalf("mark free on a parked worker = %+v / %v", freed, err)
+	}
+	if w.get("wa").GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+		t.Error("the parked worker should be IDLE on its daemon")
+	}
+	run3 := call(t, env, o.GetId(), "3")
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run3.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	// With a run in flight the parked agent belongs to that run (awaiting
+	// input), not to mark free.
+	push(w, "wa", pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run3.GetId()) == pb.RunState_RUN_STATE_AWAITING_INPUT })
+	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("mark free while a run awaits input = %v", err)
+	}
 }
 
 func TestFailureEdges(t *testing.T) {

@@ -165,7 +165,10 @@ func (s *Service) CancelRun(id, runID string) (*pb.Run, error) {
 }
 
 // MarkWorkerFree closes the run AWAITING_REVIEW on a worker as COMPLETED
-// (default) or FAILED with the developer's note as summary (FR-156).
+// (default) or FAILED with the developer's note as summary (FR-156). A worker
+// with no run on it whose agent is recorded NEEDS_INPUT is instead set back to
+// IDLE on its owning daemon — the developer's override for an agent parked by a
+// prompt nobody is going to answer — and an empty run is returned.
 func (s *Service) MarkWorkerFree(id, sandboxID string, failed bool, note string) (*pb.Run, error) {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
@@ -173,12 +176,36 @@ func (s *Service) MarkWorkerFree(id, sandboxID string, failed bool, note string)
 	}
 	rt.runs.mu.Lock()
 	run := rt.runOnLocked(sandboxID)
-	if run == nil || run.GetState() != pb.RunState_RUN_STATE_AWAITING_REVIEW {
-		rt.runs.mu.Unlock()
-		return nil, fmt.Errorf("%w: no run awaiting review on sandbox %s", ErrPrecondition, sandboxID)
-	}
 	rt.runs.mu.Unlock()
-	return rt.completeRun(run, note, true, failed)
+	if run != nil && run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
+		return rt.completeRun(run, note, true, failed)
+	}
+	if run == nil {
+		if sb := rt.sandboxRecord(sandboxID); sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT && sb.GetController().GetRun() == nil {
+			return &pb.Run{}, rt.clearNeedsInput(hostOf(rt.record(), sandboxID), sandboxID)
+		}
+	}
+	return nil, fmt.Errorf("%w: no run awaiting review on sandbox %s", ErrPrecondition, sandboxID)
+}
+
+// clearNeedsInput asks a worker's owning daemon to set its parked agent IDLE.
+func (rt *runtime) clearNeedsInput(hostID, sandboxID string) error {
+	api, err := rt.apiFor(hostID)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := rt.callCtx(unaryTimeout)
+	defer cancel()
+	sb, err := api.UpdateWorker(ctx, &pb.UpdateWorkerRequest{SandboxId: sandboxID, OrchestratorId: rt.id, ClearNeedsInput: true})
+	if err != nil {
+		return err
+	}
+	rt.mu.Lock()
+	rt.sbs[sandboxID] = sb
+	rt.mu.Unlock()
+	rt.svc.emitChanged(rt.id)
+	rt.triggerDispatch()
+	return nil
 }
 
 // stateLabel renders a run state in lower snake case ("awaiting_review").

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,44 @@ func TestHookInjectorRunsOnLaunch(t *testing.T) {
 	}
 	if injectedID != sb.GetId() || injectedWS != sb.GetWorkspacePath() {
 		t.Errorf("hook injector got (%q,%q), want (%q,%q)", injectedID, injectedWS, sb.GetId(), sb.GetWorkspacePath())
+	}
+}
+
+func TestRefreshHooksRewritesLiveWorkspaces(t *testing.T) {
+	m, _, _, dir := newTestManager(t)
+	// No injector: nothing happens.
+	m.RefreshHooks(func(string) { t.Error("no log without an injector") })
+	var calls []string
+	failFor := ""
+	m.SetHookInjector(func(id, ws string) error {
+		calls = append(calls, id)
+		if id == failFor {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	one, err := m.Launch(context.Background(), LaunchRequest{Config: &pb.ConfigSnapshot{Name: "one"}, Sources: []*pb.SourceRef{makeSource(t, dir, "p1")}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := m.Launch(context.Background(), LaunchRequest{Config: &pb.ConfigSnapshot{Name: "two"}, Sources: []*pb.SourceRef{makeSource(t, dir, "p2")}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	// A daemon start rewrites every sandbox that still has a workspace; one
+	// whose workspace is gone is skipped, and a failure is logged, not fatal.
+	if err := os.RemoveAll(two.GetWorkspacePath()); err != nil {
+		t.Fatal(err)
+	}
+	failFor = one.GetId()
+	var logged []string
+	m.RefreshHooks(func(s string) { logged = append(logged, s) })
+	if len(calls) != 1 || calls[0] != one.GetId() {
+		t.Errorf("refresh calls = %v, want just %s", calls, one.GetId())
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "disk full") {
+		t.Errorf("logged = %v", logged)
 	}
 }
 

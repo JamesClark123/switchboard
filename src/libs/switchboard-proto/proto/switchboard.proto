@@ -1328,6 +1328,8 @@ message UpdateWorkerRequest {
   bool set_run = 4;                      // when true, `run` replaces controller.run (unset run => clear)
   WorkerRun run = 5;
   optional string briefing = 6;          // rewrite the managed block
+  bool clear_needs_input = 7;            // developer override (mark free): an agent recorded
+                                         // NEEDS_INPUT with no run on it is set back to IDLE
 }
 message DeliverWorkerPromptRequest {
   string sandbox_id = 1;

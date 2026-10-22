@@ -1055,6 +1055,36 @@ func (m *Manager) Readopt(ctx context.Context) error {
 	return nil
 }
 
+// RefreshHooks rewrites the agent hook settings of every sandbox that still has
+// a workspace, so a daemon upgrade's hook changes reach sandboxes launched by an
+// older daemon (effective when their agent next starts; a running Claude Code
+// keeps the hooks it started with). Best effort: a failure is reported through
+// onLog and never stops the daemon.
+func (m *Manager) RefreshHooks(onLog func(string)) {
+	if m.injectHooks == nil {
+		return
+	}
+	all, err := m.store.List()
+	if err != nil {
+		if onLog != nil {
+			onLog("warning: hook refresh skipped: " + err.Error())
+		}
+		return
+	}
+	for _, sb := range all {
+		wp := sb.GetWorkspacePath()
+		if wp == "" {
+			continue
+		}
+		if _, err := os.Stat(wp); err != nil {
+			continue // the workspace is gone (stopped and wiped); a bring-up re-seeds and re-injects
+		}
+		if err := m.injectHooks(sb.GetId(), wp); err != nil && onLog != nil {
+			onLog("warning: hook refresh for " + sb.GetId() + " failed: " + err.Error())
+		}
+	}
+}
+
 // within reports whether path is inside root (defense against deleting outside
 // the controlled folder).
 func within(root, path string) bool {

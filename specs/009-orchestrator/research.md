@@ -239,7 +239,24 @@ the sandbox the run is on → *completed* with the summary, `UpdateWorker{run: n
 free once `IDLE`. A second report, or one from a sandbox with no run, is refused (one summary per
 run). **Mark free** (`MarkWorkerFree{failed?, note?}`) closes an *awaiting review* run as
 completed (default) or failed with `closed_by_developer = true` and the note as summary, then
-`UpdateWorker{run: nil}`.
+`UpdateWorker{run: nil}`. On a worker with **no run** whose agent is recorded `NEEDS_INPUT` it is
+the developer's override instead: `UpdateWorker{clear_needs_input: true}` sets the agent back to
+`IDLE` on its owning daemon and an empty run is returned; with a run in flight the wait belongs to
+the run (*awaiting input*) and the call is refused.
+
+**Idle is free.** Claude Code's `Notification` hook fires for several `notification_type`s;
+`idle_prompt` ("Claude is waiting for your input", after a minute idle with nothing on screen) is
+not a request for input. The daemon's original mapping (every Notification → `NEEDS_INPUT`) parked
+every worker a minute after its run finished, so no queued run could ever reach it and mark free
+had nothing to close. The hook command now forwards Claude Code's hook input (the query names the
+event and sandbox; the body is the stdin JSON) and the daemon maps `idle_prompt` → `IDLE` (a
+developer's own sandbox still gets the needs-prompting nudge; a controlled one is silently
+between runs), `auth_success` → nothing, and `permission_prompt` / `elicitation_dialog` / anything
+else → `NEEDS_INPUT`. A sandbox still running the original hook command forwards no type: a
+Notification that arrives while the agent is recorded `IDLE` can only be the idle nudge (prompts
+for the developer happen mid-turn, after `WORKING`), so it maps to `IDLE` too. The daemon rewrites
+every live workspace's hook settings on start so the new command reaches older sandboxes when
+their agent restarts (a running Claude Code keeps the hooks it started with).
 
 Two gaps in `internal/agent` are closed because the feature depends on them: (1)
 `AGENT_STATUS_EXITED` is **never set today** — the registry now waits on the PTY child and, on
@@ -371,7 +388,8 @@ the proven 005 carrier, and the run frame closes the live-session gap it leaves.
   two-line assumption and every overlay stay as they are (FR-143).
 - **Sandbox list.** `o` = attach (picker over every orchestrator the TUI knows; offers to add the
   sandbox's host to the orchestrator first when missing) or, on a worker, detach (confirm); `m` =
-  mark free, offered only while `controller.run.needs_review`. **`O`** toggles the
+  mark free, offered while `controller.run.needs_review` (the outcome dialog) or when the worker
+  has no run and its agent is `NEEDS_INPUT` (freed outright, no dialog). **`O`** toggles the
   **Orchestrator Sandboxes** tab: a `tabOrchestrated` kind with its own `showOrchTab` flag that
   survives `rebuildTabs()` and is cleared by `switchTab`; it lists every sandbox with a controller
   across hosts, the reasoning ones marked. `currentTabRows()` hides controlled sandboxes on All /

@@ -8765,15 +8765,16 @@ func (x *DetachControllerRequest) GetForce() bool {
 }
 
 type UpdateWorkerRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	SandboxId      string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
-	OrchestratorId string                 `protobuf:"bytes,2,opt,name=orchestrator_id,json=orchestratorId,proto3" json:"orchestrator_id,omitempty"` // must match the recorded controller
-	Name           *string                `protobuf:"bytes,3,opt,name=name,proto3,oneof" json:"name,omitempty"`                                     // new last-known name
-	SetRun         bool                   `protobuf:"varint,4,opt,name=set_run,json=setRun,proto3" json:"set_run,omitempty"`                        // when true, `run` replaces controller.run (unset run => clear)
-	Run            *WorkerRun             `protobuf:"bytes,5,opt,name=run,proto3" json:"run,omitempty"`
-	Briefing       *string                `protobuf:"bytes,6,opt,name=briefing,proto3,oneof" json:"briefing,omitempty"` // rewrite the managed block
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId       string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	OrchestratorId  string                 `protobuf:"bytes,2,opt,name=orchestrator_id,json=orchestratorId,proto3" json:"orchestrator_id,omitempty"` // must match the recorded controller
+	Name            *string                `protobuf:"bytes,3,opt,name=name,proto3,oneof" json:"name,omitempty"`                                     // new last-known name
+	SetRun          bool                   `protobuf:"varint,4,opt,name=set_run,json=setRun,proto3" json:"set_run,omitempty"`                        // when true, `run` replaces controller.run (unset run => clear)
+	Run             *WorkerRun             `protobuf:"bytes,5,opt,name=run,proto3" json:"run,omitempty"`
+	Briefing        *string                `protobuf:"bytes,6,opt,name=briefing,proto3,oneof" json:"briefing,omitempty"`                                   // rewrite the managed block
+	ClearNeedsInput bool                   `protobuf:"varint,7,opt,name=clear_needs_input,json=clearNeedsInput,proto3" json:"clear_needs_input,omitempty"` // developer override (mark free): an agent recorded
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *UpdateWorkerRequest) Reset() {
@@ -8846,6 +8847,13 @@ func (x *UpdateWorkerRequest) GetBriefing() string {
 		return *x.Briefing
 	}
 	return ""
+}
+
+func (x *UpdateWorkerRequest) GetClearNeedsInput() bool {
+	if x != nil {
+		return x.ClearNeedsInput
+	}
+	return false
 }
 
 type DeliverWorkerPromptRequest struct {
@@ -10569,7 +10577,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12'\n" +
 	"\x0forchestrator_id\x18\x02 \x01(\tR\x0eorchestratorId\x12\x14\n" +
-	"\x05force\x18\x03 \x01(\bR\x05force\"\xf3\x01\n" +
+	"\x05force\x18\x03 \x01(\bR\x05force\"\x9f\x02\n" +
 	"\x13UpdateWorkerRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12'\n" +
@@ -10577,7 +10585,8 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
 	"\aset_run\x18\x04 \x01(\bR\x06setRun\x12+\n" +
 	"\x03run\x18\x05 \x01(\v2\x19.switchboard.v1.WorkerRunR\x03run\x12\x1f\n" +
-	"\bbriefing\x18\x06 \x01(\tH\x01R\bbriefing\x88\x01\x01B\a\n" +
+	"\bbriefing\x18\x06 \x01(\tH\x01R\bbriefing\x88\x01\x01\x12*\n" +
+	"\x11clear_needs_input\x18\a \x01(\bR\x0fclearNeedsInputB\a\n" +
 	"\x05_nameB\v\n" +
 	"\t_briefing\"\xab\x01\n" +
 	"\x1aDeliverWorkerPromptRequest\x12\x1d\n" +

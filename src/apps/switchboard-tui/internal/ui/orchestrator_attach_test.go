@@ -189,6 +189,26 @@ func TestDetachWorkerViaOrchestratorOrDirectly(t *testing.T) {
 	if !strings.Contains(m.status, "no run awaiting review") {
 		t.Errorf("m status = %q", m.status)
 	}
+	// A worker parked "needs input" with no run on it is freed outright by m:
+	// MarkWorkerFree goes to the orchestrator's daemon with nothing to close,
+	// no dialog.
+	b.sandboxes[0].Controller = &pb.SandboxController{OrchestratorId: "o-a", Name: "review-bot", HostId: "hosta"}
+	b.sandboxes[0].Agent = &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT}
+	m = feed2(m, m.listDataCmd())
+	m.refreshListItems()
+	m = selectSandbox(m, "sb")
+	before = a.orchCallsJoined()
+	m, cmd = update(m, press("m"))
+	if cmd == nil || m.screen != screenList || m.orchDetail.form != nil {
+		t.Fatalf("m on a parked worker should call the daemon directly: cmd %v screen %v status %q", cmd != nil, m.screen, m.status)
+	}
+	done, ok := runCmd(cmd).(orchDoneMsg)
+	if !ok || done.err != nil || !strings.Contains(done.status, "marked sand-b free") {
+		t.Errorf("parked worker result = %+v", done)
+	}
+	if calls := strings.TrimPrefix(a.orchCallsJoined(), before); !strings.Contains(calls, `MarkWorkerFree o-a sb false ""`) {
+		t.Errorf("calls = %q", calls)
+	}
 }
 
 func TestWorkersViewDetach(t *testing.T) {

@@ -130,8 +130,11 @@ The coding agent inside a sandbox.
 | `pty_attached` | bool | Whether a terminal is attached |
 
 **Rules**: `status` is updated by Claude Code **Stop** hook (→ `idle`/task complete) and
-**Notification** hook (→ `needs_input`), which call back to the daemon (see research.md). Each
-transition to `needs_input` or task-complete emits a NotificationEvent.
+**Notification** hook (`permission_prompt`, `elicitation_dialog` and any unknown type →
+`needs_input`; `idle_prompt`, the "waiting for your input" nudge after a minute idle → `idle`
+with a needs-prompting notification on an uncontrolled sandbox; `auth_success` → nothing), which
+call back to the daemon (see research.md). Each transition to `needs_input` or task-complete emits
+a NotificationEvent.
 
 ### NotificationEvent (FR-024–FR-026b, SC-008)
 | Field | Type | Notes |

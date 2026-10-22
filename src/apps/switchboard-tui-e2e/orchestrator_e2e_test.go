@@ -514,10 +514,12 @@ func TestTUIHiddenWorkersE2E(t *testing.T) {
 		t.Fatalf("the tab should hide after leaving it: %q", bar)
 	}
 
-	// The agent asking for input surfaces the worker at the top, marked.
+	// The agent asking for input surfaces the worker at the top, marked. The
+	// hook posts the way the injected command does: event + sandbox in the
+	// query, Claude Code's hook input (with the notification_type) as the body.
 	id := sandboxIDFromHooks(t, wsRoot)
 	m = p.mark()
-	resp, err := http.Post("http://127.0.0.1:18765/hook", "application/json", strings.NewReader(`{"event":"Notification","sandbox_id":"`+id+`"}`))
+	resp, err := http.Post("http://127.0.0.1:18765/hook?event=Notification&sandbox_id="+id, "application/json", strings.NewReader(`{"hook_event_name":"Notification","notification_type":"permission_prompt"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

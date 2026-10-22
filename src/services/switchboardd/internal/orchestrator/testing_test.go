@@ -334,6 +334,14 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 	if req.GetSetRun() {
 		sb.Controller.Run = req.GetRun()
 	}
+	if req.GetClearNeedsInput() {
+		if sb.Controller.Run != nil {
+			return nil, status.Error(codes.FailedPrecondition, "run still on this sandbox")
+		}
+		if sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+		}
+	}
 	return sb, nil
 }
 

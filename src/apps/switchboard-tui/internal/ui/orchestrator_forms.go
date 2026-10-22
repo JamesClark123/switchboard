@@ -292,11 +292,14 @@ func (m Model) openMarkFreeForm(sandboxID, host, orchID string) (tea.Model, tea.
 	return m, d.form.Init()
 }
 
-// markFreeKey is `m` on a sandbox row: offered only while the worker's run
-// awaits review; the dialog is sent to the controller's daemon.
+// markFreeKey is `m` on a sandbox row: while the worker's run awaits review
+// the outcome dialog is sent to the controller's daemon; a worker parked
+// "needs input" with no run on it is freed outright (its agent set back to
+// idle), no dialog.
 func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	c := sb.GetController()
-	if !c.GetRun().GetNeedsReview() {
+	parked := c.GetRun() == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	if !c.GetRun().GetNeedsReview() && !parked {
 		m.status = "no run awaiting review on this sandbox"
 		return m, nil
 	}
@@ -304,6 +307,9 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	if !ok {
 		m.status = c.GetName() + "'s machine is not connected — mark free needs the orchestrator's daemon"
 		return m, nil
+	}
+	if parked {
+		return m.freeParkedWorker(sb.GetId(), sb.GetDisplayName(), orchHost, c.GetOrchestratorId())
 	}
 	// The dialog lives on the detail state but returns to the list.
 	m.orchDetail.host = orchHost
@@ -315,11 +321,32 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 
 // markFreeFromView is `m` in the Workers view.
 func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
-	if w.GetAvailability() != pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW {
-		m.orchDetail.status = "that worker has no run awaiting review"
-		return m, nil
+	switch {
+	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW:
+		return m.openMarkFreeForm(w.GetSandboxId(), m.orchDetail.host, m.orchDetail.id)
+	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT && w.GetRunId() == "":
+		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
 	}
-	return m.openMarkFreeForm(w.GetSandboxId(), m.orchDetail.host, m.orchDetail.id)
+	m.orchDetail.status = "that worker has no run awaiting review"
+	return m, nil
+}
+
+// freeParkedWorker asks the orchestrator's daemon to set a worker that is
+// parked needs-input with no run back to idle (MarkWorkerFree with nothing to
+// close); the next queued run can then go to it.
+func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model, tea.Cmd) {
+	md := m.daemonForHost(host)
+	if name == "" {
+		name = sandboxID
+	}
+	return m, func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		if _, err := md.MarkWorkerFree(ctx, orchID, sandboxID, false, ""); err != nil {
+			return orchDoneMsg{err: err}
+		}
+		return orchDoneMsg{status: "marked " + name + " free", reload: true}
+	}
 }
 
 // --- Events view (user story 5) ---
@@ -509,6 +536,11 @@ func (m Model) applyOrchDetailForm() (tea.Model, tea.Cmd) {
 			run, err := md.MarkWorkerFree(ctx, orchID, sbID, failed, note)
 			if err != nil {
 				return orchFormErrMsg{err: err}
+			}
+			if run.GetId() == "" {
+				// Nothing was awaiting review after all; the daemon freed the
+				// parked worker instead.
+				return orchDoneMsg{status: "marked the worker free", reload: true, closeForm: true}
 			}
 			return orchDoneMsg{status: fmt.Sprintf("closed %s as %s", run.GetId(), strings.ToLower(strings.TrimPrefix(run.GetState().String(), "RUN_STATE_"))), reload: true, closeForm: true}
 		}
