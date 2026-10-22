@@ -73,8 +73,10 @@ var applyLocalUpdate = func(ctx context.Context, target, execPath string) (versi
 	return ver, false, nil
 }
 
-// selfExecPath resolves the running client's executable path (stubbed in tests).
-var selfExecPath = os.Executable
+// selfExecPath resolves the running client's installed path (stubbed in tests):
+// upd.SelfPath rather than os.Executable, which on Linux names the deleted
+// ".sxb.old" backup once a self-update has swapped the binary.
+var selfExecPath = upd.SelfPath
 
 // scheduleUpdateCheck arms the next periodic release check.
 func scheduleUpdateCheck() tea.Cmd {

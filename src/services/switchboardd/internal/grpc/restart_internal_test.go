@@ -28,10 +28,12 @@ func TestDefaultRestartClearsPidThenExecs(t *testing.T) {
 	restartDelay = 0
 	defer func() { execSelf = origExec; restartDelay = origDelay }()
 
-	if err := defaultRestart(pid); err != nil {
+	// The exe is the path resolved before the swap, never a fresh
+	// os.Executable (which on Linux would name the deleted backup).
+	if err := defaultRestart(pid, "/home/user/.local/bin/sxbd"); err != nil {
 		t.Fatalf("defaultRestart: %v", err)
 	}
-	if gotArgv0 == "" || len(gotArgv) == 0 || gotArgv[0] != gotArgv0 {
+	if gotArgv0 != "/home/user/.local/bin/sxbd" || len(gotArgv) == 0 || gotArgv[0] != gotArgv0 {
 		t.Errorf("execSelf argv0=%q argv=%v", gotArgv0, gotArgv)
 	}
 	if _, err := os.Stat(pid); !os.IsNotExist(err) {

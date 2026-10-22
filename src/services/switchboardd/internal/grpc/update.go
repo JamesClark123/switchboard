@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"syscall"
@@ -22,8 +23,8 @@ var (
 	selfUpdateFetch = func(ctx context.Context, targetVersion string) (newVersion string, binary []byte, err error) {
 		return upd.FetchBinary(ctx, targetVersion, runtime.GOOS, runtime.GOARCH, "sxbd")
 	}
-	selfUpdateApply    = upd.ApplyToSelf
-	selfUpdateExecPath = os.Executable
+	selfUpdateApply    = upd.ApplyToPath
+	selfUpdateExecPath = upd.SelfPath
 	selfUpdateIsBrew   = upd.IsBrewManaged
 	selfUpdateRestart  = defaultRestart
 
@@ -37,10 +38,10 @@ var (
 // UpdateDaemon handler without network access, binary replacement, or re-exec.
 type UpdateHooks struct {
 	Fetch    func(ctx context.Context, targetVersion string) (newVersion string, binary []byte, err error)
-	Apply    func(binary []byte) error
+	Apply    func(binary []byte, execPath string) error
 	ExecPath func() (string, error)
 	IsBrew   func(execPath string) bool
-	Restart  func(pidFile string) error
+	Restart  func(pidFile, execPath string) error
 }
 
 // SetUpdateHooks installs h and returns a function that restores the defaults.
@@ -78,10 +79,16 @@ func (s *Server) UpdateDaemon(req *pb.UpdateDaemonRequest, stream pb.Switchboard
 		return stream.Send(&pb.UpdateProgress{Stage: "error", Error: fmt.Sprintf(format, args...)})
 	}
 
+	// The installed path is resolved once, here, before anything is swapped:
+	// on Linux /proc/self/exe follows the rename ApplyToPath performs, so a
+	// path looked up afterwards names the (deleted) ".sxbd.old" backup — a
+	// re-exec of it fails, the old daemon lives on, and the next update tries
+	// to back up the backup. The same resolved path is applied to and re-exec'd.
 	exe, err := selfUpdateExecPath()
 	if err != nil {
 		return fail("locate executable: %v", err)
 	}
+	exe = upd.InstalledPath(exe)
 	// Never rewrite a Homebrew-managed binary underneath brew.
 	if selfUpdateIsBrew(exe) {
 		return fail("daemon on %s is Homebrew-managed; update it with `brew upgrade switchboard` there", s.hostID)
@@ -99,7 +106,7 @@ func (s *Server) UpdateDaemon(req *pb.UpdateDaemonRequest, stream pb.Switchboard
 	send("downloading", "fetched "+newVersion)
 	send("verifying", "checksum ok")
 	send("applying", "installing "+newVersion)
-	if err := selfUpdateApply(binary); err != nil {
+	if err := selfUpdateApply(binary, exe); err != nil {
 		return fail("apply update: %v", err)
 	}
 
@@ -108,8 +115,14 @@ func (s *Server) UpdateDaemon(req *pb.UpdateDaemonRequest, stream pb.Switchboard
 	_ = stream.Send(&pb.UpdateProgress{Stage: "restarting", Message: "restarting on " + newVersion})
 	_ = stream.Send(&pb.UpdateProgress{Stage: "done", Done: true, NewVersion: newVersion})
 
-	// Restart after the handler returns so the client receives the stream.
-	go func() { _ = selfUpdateRestart(s.pidFile) }()
+	// Restart after the handler returns so the client receives the stream. A
+	// failed re-exec leaves this (old) daemon running: say so in the log,
+	// since the client was already told the update is done.
+	go func() {
+		if err := selfUpdateRestart(s.pidFile, exe); err != nil {
+			log.Printf("[update] installed %s at %s but could not restart on it: %v — restart the daemon by hand", newVersion, exe, err)
+		}
+	}()
 	return nil
 }
 
@@ -120,15 +133,12 @@ func targetLabel(v string) string {
 	return v
 }
 
-// defaultRestart re-execs the daemon in place onto the freshly-installed binary.
-// It clears the pid file first (the re-exec keeps the same PID, which would
-// otherwise trip serve's already-running guard); the listen socket fd is
-// close-on-exec, and serve unlinks any stale socket on startup.
-func defaultRestart(pidFile string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
+// defaultRestart re-execs the daemon in place onto the freshly-installed binary
+// at exe (the path resolved before the swap — never os.Executable here, see
+// UpdateDaemon). It clears the pid file first (the re-exec keeps the same PID,
+// which would otherwise trip serve's already-running guard); the listen socket
+// fd is close-on-exec, and serve unlinks any stale socket on startup.
+func defaultRestart(pidFile, exe string) error {
 	if pidFile != "" {
 		_ = daemonctl.Clear(pidFile)
 	}

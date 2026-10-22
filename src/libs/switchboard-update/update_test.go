@@ -352,6 +352,43 @@ func TestApplyToSelf(t *testing.T) {
 	if err := ApplyToSelf([]byte("NEWBINARY")); err == nil {
 		t.Error("ApplyToSelf must surface an executable-lookup failure")
 	}
+
+	// A process that already swapped itself once names the (deleted) backup on
+	// Linux; the next self-update must still land on the installed binary.
+	selfExecutable = func() (string, error) { return filepath.Join(filepath.Dir(target), ".sxbd.old"), nil }
+	if err := ApplyToSelf([]byte("NEWER")); err != nil {
+		t.Fatalf("ApplyToSelf from the backup name: %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "NEWER" {
+		t.Errorf("after second apply = %q, want NEWER", got)
+	}
+}
+
+func TestInstalledPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home/u/.local/bin/sxbd":                "/home/u/.local/bin/sxbd",
+		"/home/u/.local/bin/.sxbd.old":           "/home/u/.local/bin/sxbd",
+		"/home/u/.local/bin/.sxbd.old (deleted)": "/home/u/.local/bin/sxbd",
+		"/home/u/.local/bin/.sxb.new":            "/home/u/.local/bin/sxb",
+		"/home/u/.local/bin/.old":                "/home/u/.local/bin/.old", // not a backup name
+		"/home/u/.local/bin/.hidden-tool":        "/home/u/.local/bin/.hidden-tool",
+		"/opt/homebrew/bin/sxbd (deleted)":       "/opt/homebrew/bin/sxbd",
+		"/home/u/.local/bin/sxbd.old":            "/home/u/.local/bin/sxbd.old", // no leading dot: a real name
+	} {
+		if got := InstalledPath(in); got != want {
+			t.Errorf("InstalledPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+	prev := selfExecutable
+	t.Cleanup(func() { selfExecutable = prev })
+	selfExecutable = func() (string, error) { return "/x/.sxbd.old", nil }
+	if got, err := SelfPath(); err != nil || got != "/x/sxbd" {
+		t.Errorf("SelfPath = %q / %v", got, err)
+	}
+	selfExecutable = func() (string, error) { return "", errors.New("nope") }
+	if _, err := SelfPath(); err == nil {
+		t.Error("SelfPath must surface the lookup error")
+	}
 }
 
 func TestIsBrewManaged(t *testing.T) {

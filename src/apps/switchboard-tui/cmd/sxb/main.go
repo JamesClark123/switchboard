@@ -17,6 +17,7 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/ui"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	upd "github.com/jamesclark123/switchboard/libs/switchboard-update"
 )
 
 // resolveWorkspaceSandbox asks the daemon whether the current working directory
@@ -157,9 +158,10 @@ func main() {
 	}
 
 	// A completed self-update swaps the sxb binary on disk; re-exec so the user
-	// lands back in the freshly-installed client.
+	// lands back in the freshly-installed client. SelfPath, not os.Executable:
+	// on Linux the latter now names the deleted ".sxb.old" backup.
 	if fm, ok := final.(ui.Model); ok && fm.ShouldReexec() {
-		if exe, err := os.Executable(); err == nil {
+		if exe, err := upd.SelfPath(); err == nil {
 			_ = conn.Close()
 			if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 				fmt.Fprintln(os.Stderr, "updated sxb; restart it to use the new version:", err)

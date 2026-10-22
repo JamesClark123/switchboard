@@ -249,13 +249,45 @@ func ApplyToPath(binaryBytes []byte, path string) error {
 	return err
 }
 
-// ApplyToSelf atomically replaces the currently-running executable.
+// ApplyToSelf atomically replaces the currently-running executable (SelfPath).
 func ApplyToSelf(binaryBytes []byte) error {
-	exe, err := selfExecutable()
+	exe, err := SelfPath()
 	if err != nil {
 		return err
 	}
 	return ApplyToPath(binaryBytes, exe)
+}
+
+// SelfPath is the installed path of the running executable: os.Executable
+// mapped through InstalledPath. Callers that swap a binary and then re-exec
+// MUST resolve this once, before the swap, and re-exec that path.
+func SelfPath() (string, error) {
+	exe, err := selfExecutable()
+	if err != nil {
+		return "", err
+	}
+	return InstalledPath(exe), nil
+}
+
+// InstalledPath maps what os.Executable reports back to the installed binary.
+// On Linux /proc/self/exe follows renames, so once ApplyToPath has swapped a
+// running binary the process names the ".<name>.old" backup — which the swap
+// then deletes. A daemon that re-execs that name fails to restart, keeps
+// running the old build, and its next update tries to back up the backup
+// ("rename .sxbd.old ..sxbd.old.old: no such file"). Such a name is mapped back
+// to "<dir>/<name>"; a " (deleted)" suffix is dropped as well. macOS reports
+// the original path throughout, so there this is the identity.
+func InstalledPath(exe string) string {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	dir, base := filepath.Dir(exe), filepath.Base(exe)
+	if strings.HasPrefix(base, ".") {
+		for _, suffix := range []string{".old", ".new"} {
+			if strings.HasSuffix(base, suffix) && len(base) > len(suffix)+1 {
+				return filepath.Join(dir, strings.TrimSuffix(base[1:], suffix))
+			}
+		}
+	}
+	return exe
 }
 
 // IsBrewManaged reports whether execPath resolves under a Homebrew prefix, in
