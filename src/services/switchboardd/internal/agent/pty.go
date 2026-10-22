@@ -51,6 +51,7 @@ type Registry struct {
 	factory  SessionFactory
 	status   StatusUpdater
 	now      func() time.Time
+	logf     func(format string, args ...any)
 }
 
 // NewRegistry constructs a Registry using the given session factory. Exit
@@ -60,11 +61,29 @@ func NewRegistry(factory SessionFactory) *Registry {
 }
 
 // SetStatusUpdater registers where an agent's spontaneous exit is reported as
-// AGENT_STATUS_EXITED (nil = not reported).
+// AGENT_STATUS_EXITED (nil = not reported). When it can also be read (the
+// sandbox Manager's Get), Prompt verifies that a typed prompt was submitted and
+// presses Enter again while it was not (see ensureSubmitted).
 func (r *Registry) SetStatusUpdater(status StatusUpdater) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.status = status
+}
+
+// SetLogger registers where the registry reports a submit retry (nil = silent).
+func (r *Registry) SetLogger(logf func(format string, args ...any)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logf = logf
+}
+
+func (r *Registry) log(format string, args ...any) {
+	r.mu.Lock()
+	logf := r.logf
+	r.mu.Unlock()
+	if logf != nil {
+		logf(format, args...)
+	}
 }
 
 // Session returns the sandbox's session, creating it on first use.
@@ -130,12 +149,31 @@ const (
 	pasteStart = "\x1b[200~"
 	pasteEnd   = "\x1b[201~"
 	submitKey  = "\r"
+	// keypadEnter is the application-keypad Enter (SS3 M), which the agent's
+	// input parser maps to the same Return key as "\r" — and which a transport
+	// that rewrites a carriage return into a line feed (a line feed only
+	// inserts a newline into the agent's input box) leaves alone.
+	keypadEnter = "\x1bOM"
 )
 
 // promptSubmitDelay separates the paste from the trailing Enter keystroke so
 // the submit is also a distinct read on a transport that does preserve write
 // boundaries. Package-level so tests can zero it.
 var promptSubmitDelay = 50 * time.Millisecond
+
+// A typed prompt is verified, not assumed: an idle agent that received one
+// reports WORKING through its UserPromptSubmit hook within a moment of the
+// submit. While the agent is still idle submitCheckDelay after the Enter, the
+// Enter is pressed again — first as "\r", then as keypadEnter — up to
+// submitRetries times (observed on macOS hosts: the paste landed in the input
+// box but the Enter typed through `sbx exec` never submitted it, while an
+// Enter typed by the developer did). An extra Enter on an agent that did submit
+// is harmless: Enter on an empty input box does nothing. Package-level so tests
+// can shorten them.
+var (
+	submitCheckDelay = 2500 * time.Millisecond
+	submitRetries    = 3
+)
 
 // Typed is the exact byte sequence Prompt writes for text: the body as one
 // bracketed paste followed by the Enter keystroke. For tests in other packages.
@@ -153,12 +191,77 @@ func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) err
 	if err != nil {
 		return err
 	}
+	idleAt, verify := r.idleNow(sandboxID)
 	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
 		return err
 	}
 	time.Sleep(promptSubmitDelay)
-	_, err = s.Write([]byte(submitKey))
-	return err
+	if _, err := s.Write([]byte(submitKey)); err != nil {
+		return err
+	}
+	if verify {
+		go r.ensureSubmitted(sandboxID, s, idleAt)
+	}
+	return nil
+}
+
+// idleNow reports whether the sandbox's agent is recorded IDLE right now (so a
+// submit can be verified through its next hook) and the time of the check.
+func (r *Registry) idleNow(sandboxID string) (time.Time, bool) {
+	r.mu.Lock()
+	g, ok := r.status.(sandboxGetter)
+	now := r.now()
+	r.mu.Unlock()
+	if !ok {
+		return now, false
+	}
+	sb, err := g.Get(sandboxID)
+	return now, err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE
+}
+
+// submitted reports whether the agent has reported anything since the prompt
+// was typed: it is no longer idle, or a hook event arrived after `since`.
+func (r *Registry) submitted(sandboxID string, since time.Time) bool {
+	r.mu.Lock()
+	g, ok := r.status.(sandboxGetter)
+	r.mu.Unlock()
+	if !ok {
+		return true
+	}
+	sb, err := g.Get(sandboxID)
+	if err != nil {
+		return true // the sandbox is gone; nothing to retry on
+	}
+	return sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE ||
+		sb.GetAgent().GetLastEventAt().AsTime().After(since)
+}
+
+// current reports whether s is still the sandbox's live session.
+func (r *Registry) current(sandboxID string, s Session) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.sessions[sandboxID]
+	return ok && e.s == s
+}
+
+// ensureSubmitted presses Enter again while a prompt typed into an idle agent
+// goes unreported (see submitCheckDelay).
+func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time) {
+	for attempt := 1; attempt <= submitRetries; attempt++ {
+		time.Sleep(submitCheckDelay)
+		if !r.current(sandboxID, s) || r.submitted(sandboxID, since) {
+			return
+		}
+		key, how := submitKey, "Enter"
+		if attempt > 1 {
+			key, how = keypadEnter, "keypad Enter"
+		}
+		r.log("[agent] %s: prompt still unsubmitted %s after typing it; pressing %s again (%d/%d)",
+			sandboxID, time.Duration(attempt)*submitCheckDelay, how, attempt, submitRetries)
+		if _, err := s.Write([]byte(key)); err != nil {
+			return
+		}
+	}
 }
 
 // Close terminates and forgets a sandbox's session. A session closed here is

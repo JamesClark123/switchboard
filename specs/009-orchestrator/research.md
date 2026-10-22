@@ -225,7 +225,15 @@ then types the composed prompt wrapped in the fixed run frame (R12) through `age
 (the developer's own path: the body as one bracketed paste `ESC[200~ … ESC[201~`, 50 ms, then `\r`
 as a separate write — the paste terminator is what keeps the Enter a distinct keystroke when the
 `sbx exec` transport delivers both writes in one read; a bare body + `\r` in one read leaves the
-prompt sitting unsent in the agent's input box), records `controller.run{id, action}` and emits
+prompt sitting unsent in the agent's input box). The submit is then **verified, not assumed**: an
+idle agent that received a prompt reports `WORKING` through its `UserPromptSubmit` hook within a
+moment, so while the agent is still recorded idle with no hook event 2.5 s after the Enter, the
+registry presses Enter again — once more as `\r`, then as the keypad Enter `ESC O M`, which the
+agent maps to the same Return key and which a transport that rewrites carriage returns leaves alone
+(a line feed only inserts a newline) — up to three times, logging each retry (seen on macOS hosts:
+the paste landed, the Enter typed through `sbx exec` did not submit, the developer's own Enter
+did). An extra Enter on an agent that did submit is a no-op. The run is recorded
+(`controller.run{id, action}`) on acceptance and the daemon emits
 `sandbox_changed`. The run is *running* on acceptance.
 
 **Tracking**: the runtime folds N's `sandbox_changed` events per worker: `NEEDS_INPUT` →

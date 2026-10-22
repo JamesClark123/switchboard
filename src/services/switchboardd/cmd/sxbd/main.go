@@ -194,6 +194,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	// Feature 009 (research R7): an agent that exits on its own is reported as
 	// AGENT_STATUS_EXITED so the orchestrator can fail the run it was on.
 	agents.SetStatusUpdater(mgr)
+	agents.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	hookServer := agent.NewHookServer(hub, mgr)
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
