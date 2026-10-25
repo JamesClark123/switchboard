@@ -3,10 +3,18 @@ package mcp
 import (
 	"context"
 	"errors"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"unicode"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -402,5 +410,138 @@ func TestAddRemoteWithHeaders(t *testing.T) {
 	}
 	if n := len(readLog(t, env.log)); n != 3 { // the one good add + its re-list (ls + auth status)
 		t.Errorf("refused adds must not reach the CLI; log = %v", readLog(t, env.log))
+	}
+}
+
+func TestCompleteCallbackReplaysOnTheAnnouncedPortOnly(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotQuery = r.URL.RawQuery }))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	m := NewManager(nil, nil, "h", nil)
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:1/cb"); !errors.Is(err, ErrNoCallback) {
+		t.Fatalf("no in-flight auth: err = %v, want ErrNoCallback", err)
+	}
+	m.inflight["notion"] = uint32(port)
+	if p, ok := m.CallbackPort("notion"); !ok || p != uint32(port) {
+		t.Fatalf("CallbackPort = %d, %v", p, ok)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:1/cb"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("wrong port: err = %v, want ErrInvalidArgs", err)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb?code=abc"); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if gotQuery != "code=abc" {
+		t.Errorf("listener saw query %q", gotQuery)
+	}
+}
+
+// Review fixes (PR #1): the replay reports a rejected callback and never follows
+// the listener's redirect to another host.
+func TestCompleteCallbackReportsRejectionAndDoesNotFollowRedirects(t *testing.T) {
+	var elsewhereHit atomic.Bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhereHit.Store(true) }))
+	defer elsewhere.Close()
+
+	status := http.StatusBadRequest
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, elsewhere.URL, http.StatusFound)
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	base := "http://localhost:" + strconv.Itoa(port)
+
+	err := m.CompleteCallback(context.Background(), "notion", base+"/cb?code=bad")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Errorf("a rejected callback must be reported; err = %v", err)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", base+"/redirect"); err != nil {
+		t.Errorf("a 3xx from the listener is acceptance, not an error: %v", err)
+	}
+	if elsewhereHit.Load() {
+		t.Error("the replay must not follow the listener's redirect to another host")
+	}
+	status = http.StatusOK
+	if err := m.CompleteCallback(context.Background(), "notion", base+"/cb?code=ok"); err != nil {
+		t.Errorf("2xx: %v", err)
+	}
+}
+
+// Review (PR #1, run 32): keep-alives are off, an error redirect is a rejection,
+// and the no-redirect_uri warning is logged once per daemon run.
+func TestCallbackClientDisablesKeepAlives(t *testing.T) {
+	tr, ok := callbackClient.Transport.(*http.Transport)
+	if !ok || !tr.DisableKeepAlives || tr.Proxy != nil {
+		t.Errorf("callbackClient transport must have no proxy and no keep-alive: %+v", callbackClient.Transport)
+	}
+}
+
+func TestCompleteCallbackTreatsAnErrorRedirectAsRejection(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://auth.example.com/done?error=access_denied", http.StatusFound)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb?code=x")
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Errorf("an error redirect must be reported; err = %v", err)
+	}
+}
+
+func TestWarnNoCallbackLogsOnce(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	m := NewManager(nil, nil, "h", nil)
+	m.warnNoCallback("a")
+	m.warnNoCallback("b")
+	m.warnNoCallback("a")
+	if n := strings.Count(buf.String(), "no usable loopback redirect_uri"); n != 1 {
+		t.Errorf("warning logged %d times, want 1:\n%s", n, buf.String())
+	}
+}
+
+// Review (PR #1, run 41): listener-controlled text never reaches the terminal raw.
+func TestCompleteCallbackSanitisesTheListenersErrorText(t *testing.T) {
+	evil := "denied\x1b[31m\x9b2J\u202e" + strings.Repeat("x", 500)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/done?error="+url.QueryEscape(evil), http.StatusFound)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb")
+	if err == nil {
+		t.Fatal("an error redirect must be reported")
+	}
+	msg := err.Error()
+	for _, r := range msg {
+		if !unicode.IsPrint(r) {
+			t.Fatalf("non-printable %U in %q", r, msg)
+		}
+	}
+	if len(msg) > 400 || !strings.Contains(msg, "denied") || !strings.Contains(msg, "…") {
+		t.Errorf("text should be kept (printable part) and capped: %d bytes %q", len(msg), msg)
+	}
+}
+
+func TestPrintable(t *testing.T) {
+	if got := printable("ok\n\x1b[0m!", 80); got != "ok[0m!" {
+		t.Errorf("printable = %q", got)
+	}
+	if got := printable("abcdef", 3); got != "abc…" {
+		t.Errorf("cap = %q", got)
 	}
 }

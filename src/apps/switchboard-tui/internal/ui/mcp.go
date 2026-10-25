@@ -2,16 +2,22 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -33,7 +39,11 @@ var mcpNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 type mcpState struct {
 	host     string
 	hostName string
+	target   string   // the ssh target of a remote daemon (for the port-forward hint)
+	sshOpts  []string // that host's saved ssh options, so the hint's command reaches it the same way
+	canSSH   bool     // an ssh host with a target: only then can the hint offer a port forward
 	daemon   Daemon
+	remote   bool // the daemon is on another machine, so its OAuth callback needs relaying
 
 	servers     []*pb.McpServer
 	settings    *pb.McpGatewaySettings
@@ -67,6 +77,25 @@ type mcpAuthWait struct {
 	messages []string
 	ch       chan tea.Msg
 	cancel   context.CancelFunc
+
+	// Remote daemons only: the provider redirects the browser to
+	// http://localhost:<callbackPort>, which is relayed to the host (tunnel) or, if
+	// that port is unavailable here, pasted back by the developer.
+	callbackPort uint32
+	tunnel       bool   // the local relay is listening
+	tunnelErr    string // why it could not be, shown with the paste prompt
+	noCallback   bool   // remote daemon, but the link carried no loopback callback port
+	sshTarget    string // the ssh target for the hint's port-forward command
+	sshOpts      []string
+	canSSH       bool
+	pasting      bool
+	paste        textinput.Model
+	pasteErr     string
+}
+
+type mcpPasteMsg struct {
+	host, name string
+	err        error
 }
 
 // --- messages ---
@@ -101,7 +130,7 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, daemon: row.daemon, loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, canSSH: row.kind == "ssh" && row.target != "", daemon: row.daemon, remote: row.kind != "local", loading: true}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -189,9 +218,37 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	switch {
 	case v.auth != nil:
-		if msg.String() == "esc" {
-			v.auth.cancel() // the daemon kills the wait; the end message follows
-			v.status = "cancelling authorization of " + v.auth.name + "…"
+		w := v.auth
+		if w.pasting {
+			switch msg.String() {
+			case "esc":
+				w.pasting = false
+			case "enter":
+				if url := strings.TrimSpace(w.paste.Value()); url != "" {
+					norm, err := checkPastedCallback(url, w.callbackPort)
+					if err != nil {
+						w.pasteErr = err.Error() // fast feedback before a round trip
+						return m, nil
+					}
+					w.pasteErr = ""
+					return m, m.mcpPasteCmd(v.daemon, v.host, w.name, norm)
+				}
+			default:
+				var cmd tea.Cmd
+				w.paste, cmd = w.paste.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		}
+		switch msg.String() {
+		case "esc":
+			w.cancel() // the daemon kills the wait; the end message follows
+			v.status = "cancelling authorization of " + w.name + "…"
+		case "p":
+			if v.remote && w.callbackPort != 0 {
+				w.pasting = true
+				w.paste.Focus()
+			}
 		}
 		return m, nil
 	case v.pending != nil:
@@ -458,6 +515,40 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 	if u.URL != "" {
 		w.url = u.URL
 	}
+	if u.URL != "" && u.CallbackPort == 0 && m.mcpView.remote {
+		// The relay and paste-back both need that port; say so instead of leaving the
+		// developer to meet a "localhost refused" page unexplained.
+		w.noCallback = true
+		w.sshTarget = m.mcpView.target
+		w.sshOpts = m.mcpView.sshOpts
+		w.canSSH = m.mcpView.canSSH
+	}
+	if u.CallbackPort != 0 && m.mcpView.remote && w.callbackPort == 0 {
+		w.callbackPort = u.CallbackPort
+		w.paste = textinput.New()
+		w.paste.Placeholder = fmt.Sprintf("http://localhost:%d/…", u.CallbackPort)
+		w.paste.CharLimit = 4096
+		w.paste.Width = 60
+		opener, _ := m.mcpView.daemon.(forward.Opener)
+		var err error
+		if opener == nil {
+			err = errors.New("no relay available for this daemon")
+		} else {
+			err = m.forwards.OpenAuth(opener, m.mcpView.host, w.name, u.CallbackPort)
+		}
+		if err != nil {
+			// Only an occupied port gets the friendly explanation; any other failure
+			// (no such address, permission, sandboxed TUI…) shows the real cause.
+			w.tunnelErr = err.Error()
+			if isAddrInUse(err) {
+				w.tunnelErr = fmt.Sprintf("port %d is in use on this machine (another program, or another sxb waiting on the same authorization)", u.CallbackPort)
+			}
+			w.pasting = true // fall back straight to paste-back
+			w.paste.Focus()
+		} else {
+			w.tunnel = true
+		}
+	}
 	if !u.Deadline.IsZero() {
 		w.deadline = u.Deadline
 	}
@@ -472,6 +563,10 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
+	// Release the callback relay first, even if the view has moved on: the wait is
+	// over, and a leaked listener would keep the port bound for the next attempt.
+	// The key includes the host, so this can only ever close this wait's own relay.
+	m.forwards.Close(forward.AuthKey(msg.host, msg.name))
 	if v.auth == nil || v.auth.name != msg.name || v.host != msg.host {
 		return m, nil
 	}
@@ -488,6 +583,118 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.mcpLoadCmd(v.daemon, v.host)
+}
+
+// sshForwardArgs is the hint's port-forward command for a host as its already
+// shell-quoted words, built from the same saved options its daemon connection uses
+// (-p/-i/-J…), so a copy-paste reaches the same machine. -N: forward only, no remote
+// shell (and a busy local port fails loudly instead of leaving an unrelated login
+// open). PORT is left for the developer to fill from the browser's address bar.
+func sshForwardArgs(opts []string, target string) []string {
+	args := []string{"ssh", "-N"}
+	for _, o := range opts {
+		args = append(args, shellQuote(o))
+	}
+	return append(args, "-L", "PORT:localhost:PORT", shellQuote(target))
+}
+
+// sshForwardCommand is sshForwardArgs as one line.
+func sshForwardCommand(opts []string, target string) string {
+	return strings.Join(sshForwardArgs(opts, target), " ")
+}
+
+// wrapArgs packs shell-quoted words into lines of about width characters, each but
+// the last ending in a shell line continuation, so a long command still pastes as
+// one command (the modal would otherwise hard-wrap it in the middle of a word).
+// Each word is atomic — it is never split, whatever quoting it contains — which is
+// why this takes the word list rather than re-parsing a command string.
+func wrapArgs(args []string, width int) string {
+	var lines []string
+	line := ""
+	for _, a := range args {
+		switch {
+		case line == "":
+			line = a
+		case len(line)+1+len(a) > width:
+			lines = append(lines, line+" \\")
+			line = "  " + a
+		default:
+			line += " " + a
+		}
+	}
+	return strings.Join(append(lines, line), "\n")
+}
+
+// indentLines prefixes every line of s.
+func indentLines(s, prefix string) string {
+	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
+}
+
+// shellQuote leaves plain words alone and single-quotes anything a shell would
+// split or interpret, so options with spaces ("-o ProxyCommand=...") stay one word.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_~-") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// isAddrInUse reports whether a listen failure is "the port is already taken",
+// across platforms (Windows reports it with different codes and wording).
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	l := strings.ToLower(err.Error())
+	return strings.Contains(l, "address already in use") || strings.Contains(l, "only one usage of each socket address")
+}
+
+// checkPastedCallback validates a pasted address client-side and returns the form
+// to send: it must be the http(s)://localhost:<port>/… address the browser failed
+// to load. A missing scheme is added (Safari and address-bar copies drop it). The
+// daemon validates again; this only saves a round trip and gives a clearer message.
+func checkPastedCallback(raw string, port uint32) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	u, err := neturl.Parse(raw)
+	// The same loopback rule the daemon applies (libs/switchboard-dial), so the two
+	// can never disagree about what counts as a local callback address.
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !dial.IsLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
+	}
+	switch p := u.Port(); {
+	case p == "":
+		return "", fmt.Errorf("that address has no port; expected http://localhost:%d/…", port)
+	case p != strconv.Itoa(int(port)):
+		return "", fmt.Errorf("that address is for port %s, expected %d", p, port)
+	}
+	return raw, nil
+}
+
+func (m Model) mcpPasteCmd(d Daemon, host, name, url string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpOpTimeout)
+		defer cancel()
+		return mcpPasteMsg{host: host, name: name, err: d.CompleteMcpAuthCallback(ctx, name, url)}
+	}
+}
+
+// applyMcpPaste reports the paste-back outcome; on success the daemon's wait ends
+// on its own and the end message follows.
+func (m Model) applyMcpPaste(msg mcpPasteMsg) (tea.Model, tea.Cmd) {
+	w := m.mcpView.auth
+	if w == nil || w.name != msg.name || m.mcpView.host != msg.host {
+		return m, nil
+	}
+	if msg.err != nil {
+		w.pasteErr = msg.err.Error()
+		return m, nil
+	}
+	w.pasting = false
+	w.messages = append(w.messages, "callback delivered — waiting for the provider to confirm…")
+	return m, nil
 }
 
 // --- rendering ---
@@ -607,6 +814,47 @@ func (m Model) mcpModal() string {
 		}
 		for _, l := range w.messages {
 			lines = append(lines, dimStyle.Render(l))
+		}
+		if w.noCallback {
+			// Two ways out. Forwarding the port needs no cancel: this wait keeps running
+			// the host's own `sbx mcp auth`, so it is the one that can still finish.
+			// The host-side run is the fallback for someone with a browser on the host,
+			// and ONLY after cancelling — a second `sbx mcp auth` alongside the running
+			// one would race it for the credential.
+			lines = append(lines, "",
+				dimStyle.Render("no callback port was reported for this link."),
+				dimStyle.Render("If the browser ends on a ‘localhost:PORT’ error page"),
+				dimStyle.Render("(PORT is in its address bar):"))
+			if w.canSSH {
+				ssh := wrapArgs(sshForwardArgs(w.sshOpts, w.sshTarget), 44)
+				lines = append(lines,
+					dimStyle.Render("  • keep this wait running, forward the port:"),
+					dimStyle.Render(indentLines(ssh, "      ")),
+					dimStyle.Render("    then reload that browser page"),
+					dimStyle.Render("  • or, with a browser on the host:"))
+			} else {
+				lines = append(lines, dimStyle.Render("  • with a browser on the host:"))
+			}
+			lines = append(lines,
+				dimStyle.Render("      esc (cancel this wait), run  sbx mcp auth "+w.name),
+				dimStyle.Render("      there, then r to reload the list"))
+		}
+		switch {
+		case w.pasting:
+			lines = append(lines, "")
+			if w.tunnelErr != "" {
+				lines = append(lines, statusErrStyle.Render("could not relay the callback here: "+w.tunnelErr))
+			}
+			lines = append(lines,
+				"After approving, your browser will fail to load http://localhost:"+fmt.Sprint(w.callbackPort)+"/…",
+				"Paste that full address here:",
+				w.paste.View())
+			if w.pasteErr != "" {
+				lines = append(lines, statusErrStyle.Render(w.pasteErr))
+			}
+			lines = append(lines, helpStyle.Render("enter submit · esc back"))
+		case w.tunnel:
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("callback relayed from localhost:%d to the host · p paste the address instead", w.callbackPort)))
 		}
 		lines = append(lines, "", dimStyle.Render(fmt.Sprintf("time remaining %s · esc cancels (the registration is kept)", remaining)))
 		inner = lipgloss.JoinVertical(lipgloss.Left, lines...)

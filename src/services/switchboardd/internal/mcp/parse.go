@@ -2,8 +2,13 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxtable"
 )
@@ -193,4 +198,56 @@ func findURL(line string) string {
 		}
 	}
 	return ""
+}
+
+// isLoopbackHost is the shared loopback-host rule (libs/switchboard-dial): the
+// TUI's paste check uses the very same function.
+func isLoopbackHost(host string) bool { return dial.IsLoopbackHost(host) }
+
+// minCallbackPort rejects privileged ports: the relay and paste-back must never
+// reach well-known services (ssh, smtp, …) on the daemon host's loopback.
+const minCallbackPort = 1024
+
+// callbackPort extracts the loopback port of the OAuth redirect_uri carried by an
+// authorization URL, or 0 when there is none (no redirect_uri, a non-loopback
+// host, or no explicit port). The runtime's callback listener waits there.
+func callbackPort(authURL string) uint32 {
+	u, err := url.Parse(authURL)
+	if err != nil {
+		return 0
+	}
+	// Exactly one redirect_uri: a second one (e.g. carried by the provider's own
+	// authorization endpoint) makes it ambiguous which the listener serves, and the
+	// first must not be able to steer the relay.
+	vals := u.Query()["redirect_uri"]
+	if len(vals) != 1 {
+		return 0
+	}
+	ru, err := url.Parse(vals[0])
+	if err != nil || !isLoopbackHost(ru.Hostname()) {
+		return 0
+	}
+	p, err := strconv.ParseUint(ru.Port(), 10, 16)
+	if err != nil || p < minCallbackPort {
+		return 0
+	}
+	return uint32(p)
+}
+
+// callbackTarget validates a pasted redirect URL — loopback host, the announced
+// port — and returns the URL to replay on the daemon host's own loopback.
+func callbackTarget(raw string, port uint32) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("not an http redirect URL")
+	}
+	if !isLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("redirect URL host must be localhost")
+	}
+	if u.Port() != strconv.Itoa(int(port)) {
+		return "", fmt.Errorf("redirect URL port must be %d", port)
+	}
+	u.Scheme = "http"
+	u.Host = net.JoinHostPort("localhost", strconv.Itoa(int(port)))
+	return u.String(), nil
 }

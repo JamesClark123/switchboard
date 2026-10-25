@@ -196,6 +196,7 @@ service Switchboard {
   // at 10 minutes daemon-side; cancelling the stream cancels the wait. The
   // registration is never changed by any outcome.
   rpc AuthorizeMcpServer(AuthorizeMcpServerRequest) returns (stream McpAuthProgress);
+  rpc CompleteMcpAuthCallback(CompleteMcpAuthCallbackRequest) returns (CompleteMcpAuthCallbackResponse);
   // Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
   // is not registered on this host.
   rpc SetMcpServerDefault(SetMcpServerDefaultRequest) returns (McpServer);
@@ -764,6 +765,10 @@ message PortForwardFrame {
   message Open {
     string instance_id = 1;
     uint32 local_port = 2;   // the port the client bound on the developer's machine
+    // When set, relay to the OAuth callback listener of the in-flight authorization
+    // for this MCP server instead of a sandbox service; instance_id is ignored and
+    // local_port must equal the announced callback port.
+    string mcp_auth_name = 3;
   }
   message Opened {}
   message Closed { string reason = 1; }  // empty => normal half-close
@@ -1043,7 +1048,19 @@ message McpAuthProgress {
     string error = 4;                    // terminal: host diagnostic (registration unchanged)
   }
   int64 deadline_unix = 5;               // on every frame so the client can show time remaining
+  // Loopback port the host's OAuth callback listener waits on, parsed from the
+  // authorization URL's redirect_uri. Set alongside `url`; 0 when none was found.
+  // A client on a different machine than the daemon relays this port (ForwardPort
+  // with Open.mcp_auth_name) so the browser's redirect reaches the listener.
+  uint32 callback_port = 6;
 }
+
+// CompleteMcpAuthCallback is the paste-back fallback for a remote authorization
+// whose callback port could not be relayed: the developer pastes the browser's
+// failed http://localhost:<port>/... redirect URL and the daemon replays it
+// against the in-flight listener on the host.
+message CompleteMcpAuthCallbackRequest { string name = 1; string callback_url = 2; }
+message CompleteMcpAuthCallbackResponse {}
 
 message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
 message SetMcpAttachModeRequest { McpAttachMode mode = 1; }

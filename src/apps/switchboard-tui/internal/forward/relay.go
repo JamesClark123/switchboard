@@ -44,8 +44,9 @@ func (f *forward) relay(ctx context.Context, opener Opener, conn net.Conn) {
 	}
 	if err := stream.Send(&pb.PortForwardFrame{
 		Frame: &pb.PortForwardFrame_Open_{Open: &pb.PortForwardFrame_Open{
-			InstanceId: f.instanceID,
-			LocalPort:  f.localPort,
+			InstanceId:  f.instanceID,
+			LocalPort:   f.localPort,
+			McpAuthName: f.authName,
 		}},
 	}); err != nil {
 		return
