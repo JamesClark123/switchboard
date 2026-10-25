@@ -99,6 +99,14 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 		return err
 	})
 	if collision != nil {
+		// For a sandbox that already has the clashing server attached there is a
+		// simpler remedy than filtering its tools: detach that server first.
+		for _, c := range mcp.ParseToolCollisions(captured.String() + "\n" + collision.Error()) {
+			if slices.Contains(sb.GetMcpServers(), c.Other) {
+				hint += fmt.Sprintf("; or detach %s from this sandbox first (d in the MCP overlay)", c.Other)
+				break
+			}
+		}
 		return nil, fmt.Errorf("%w: %s (runtime: %v)", ErrMcpToolCollision, hint, collision)
 	}
 	if err != nil {
@@ -162,6 +170,8 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		}
 		return nil, fmt.Errorf("%w: %s", ErrMcpNotAttached, name)
 	}
+	logLine, captured := captureOutput(onLog)
+	var failedOut string
 	if !mcp.SafeArg(name) {
 		// A legacy record (written before names were checked) whose name could be
 		// misread as a flag: it cannot be handed to the CLI, but it must not be
@@ -173,13 +183,22 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
 		uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
 		defer cancel()
-		return m.runner.UnloadMcp(uctx, r, name, onLog)
+		captured.Reset()
+		e := m.runner.UnloadMcp(uctx, r, name, logLine)
+		if e != nil {
+			failedOut = captured.String() // what the last failing attempt printed
+		}
+		return e
 	}); err != nil {
-		inner := innerRefErr(err)
+		// Classify on what sbx PRINTED (the full streamed output of the last failing
+		// attempt), never on the error string: that starts with the command line —
+		// which always contains the server's name — and keeps only the last few lines
+		// of output, so a phrase printed earlier would be missed (same reason attach
+		// builds its collision hint from the captured output).
 		switch {
-		case mcp.LooksNotLoaded(inner.Error()):
+		case mcp.LooksNotLoaded(failedOut):
 			logDetach(onLog, "mcp: %s was not loaded in the sandbox; dropping it from the record", name)
-		case mcp.LooksUnregistered(inner.Error(), name):
+		case mcp.LooksUnregistered(failedOut, name):
 			// Removed from the host while still recorded: the only way to clean the
 			// record. The runtime may still hold the tools, so say so in the log.
 			logDetach(onLog, "mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
@@ -198,17 +217,6 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	}
 	m.emit(out)
 	return out, nil
-}
-
-// innerRefErr is the runtime's own (last) diagnostic out of tryRefs' error, i.e.
-// without its "no sbx sandbox matched any of [...]" prefix. It relies on tryRefs
-// wrapping the last error with %w; when it did not wrap (nothing to peel) the
-// error itself is the diagnostic.
-func innerRefErr(err error) error {
-	if u := errors.Unwrap(err); u != nil {
-		return u
-	}
-	return err
 }
 
 func logDetach(onLog func(string), format string, args ...any) {

@@ -322,6 +322,8 @@ message; nothing is changed on the sandbox. In *exclusive* mode the set is pinne
 a clash fails the launch itself; the launch error names the servers, tools and remedy (additive
 mode would skip the clashing server instead).
 
+**On an existing sandbox the simplest fix is often to detach the other server**: if the server it clashes with is attached to that sandbox, press `d` on it in the same `M` overlay and attach again — the attach error says so ("or detach github from this sandbox first"). Detaching only removes it from that sandbox; it stays registered on the daemon.
+
 **Fix: filter the clashing tools out at one of the servers**, using that server's own filter
 headers in the register form's **Headers** field (one `Name: value` per line). GitHub's remote
 server (`https://api.githubcopilot.com/mcp/`) takes `X-MCP-Toolsets` (comma-separated toolsets)

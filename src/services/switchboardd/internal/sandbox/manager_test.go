@@ -406,12 +406,16 @@ func streamFake(log func(string), out string) {
 
 // --- feature 008: MCP attach surface ---
 
-func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, _ func(string)) error {
+func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, log func(string)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mcpUnloads = append(f.mcpUnloads, ref+" "+name)
 	if msg, ok := f.unloadErr[name]; ok {
-		return errors.New(msg)
+		// Mirror SbxRunner.run exactly: every output line is streamed, and the error
+		// is "<command line>: <exit status>" plus only the LAST few lines of output.
+		// The command line always contains the server's name.
+		streamFake(log, msg)
+		return fmt.Errorf("sbx mcp unload %s --sandbox %s: exit status 1%s", name, ref, outputTail([]byte(msg)))
 	}
 	return nil
 }

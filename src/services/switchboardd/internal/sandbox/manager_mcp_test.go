@@ -492,17 +492,6 @@ func TestDetachToleranceRequiresTheServerNameAndNotLoadedWording(t *testing.T) {
 	}
 }
 
-func TestInnerRefErrPeelsTryRefsWrapperEvenForOneHandle(t *testing.T) {
-	cause := errors.New("gateway unreachable")
-	err := tryRefs([]string{"only"}, func(string) error { return cause })
-	if got := innerRefErr(err); got != cause {
-		t.Errorf("inner = %v, want the runtime's own error", got)
-	}
-	if got := innerRefErr(cause); got != cause {
-		t.Errorf("an unwrapped error is its own diagnostic; got %v", got)
-	}
-}
-
 // SWI-2: the runtime's flat tool namespace refuses a load whose tools clash with
 // a loaded server. Launch and attach turn that into an actionable message and
 // keep the raw runtime text.
@@ -627,5 +616,67 @@ func TestLaunchExclusiveToolCollisionIsNamed(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(logs, "\n"), "mcp: MCP tool name collision: tool name collision with github") {
 		t.Errorf("launch log missing the hint; got:\n%s", strings.Join(logs, "\n"))
+	}
+}
+
+// Review (PR #3, run 72): the tolerance is judged on what sbx PRINTED, not on the
+// runner's error (which starts with the command line — containing the server's
+// name — and keeps only the last few lines).
+func TestDetachUnregisteredAboutSomethingElseIsNotTolerated(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	// The real runner's error contains "notion" via its command line; the output is
+	// about the SANDBOX being unregistered, so the record must stay.
+	runner.unloadErr = map[string]string{"notion": `error: sandbox "x" is not registered`}
+	if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); err == nil {
+		t.Fatal("a 'not registered' about the sandbox must not drop the server's record")
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("record = %q, want notion", got)
+	}
+
+	// The same phrase about the server itself is tolerated (with the warning).
+	runner.unloadErr = map[string]string{"notion": `error: MCP server "notion" is not registered (run 'sbx mcp add notion ...')`}
+	var logs []string
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", func(l string) { logs = append(logs, l) })
+	if err != nil || len(out.GetMcpServers()) != 0 {
+		t.Fatalf("a server that is no longer registered is dropped from the record: %v / %v", out.GetMcpServers(), err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "no longer registered on this host") {
+		t.Errorf("expected the unregistered warning; logs %v", logs)
+	}
+}
+
+func TestDetachNotLoadedPhraseSurvivesTheRunnersTailLimit(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	// "is not loaded" is printed FIRST, followed by more lines than the error's
+	// 5-line tail keeps: only the full captured output still contains it.
+	out := "error: MCP server \"notion\" is not loaded in sandbox \"sb\"\n" +
+		"hint: run `sbx mcp ls --sandbox sb`\nhint: see docs 1\nhint: see docs 2\nhint: see docs 3\nhint: see docs 4\nhint: see docs 5\n"
+	runner.unloadErr = map[string]string{"notion": out}
+	res, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil)
+	if err != nil {
+		t.Fatalf("a not-loaded line pushed out of the error tail must still be tolerated: %v", err)
+	}
+	if len(res.GetMcpServers()) != 0 {
+		t.Errorf("record = %v, want none", res.GetMcpServers())
+	}
+}
+
+// Review (PR #3, run 72): when the clashing server is attached to this sandbox,
+// the attach error also offers the simpler remedy — detach it first.
+func TestAttachCollisionOffersDetachWhenTheOtherServerIsAttached(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "github")
+	runner.loadErr = map[string]string{"linear": toolCollisionText}
+	_, err := m.AttachMcp(context.Background(), sb.GetId(), "linear", nil)
+	if !errors.Is(err, ErrMcpToolCollision) || !strings.Contains(err.Error(), "or detach github from this sandbox first (d in the MCP overlay)") {
+		t.Fatalf("err = %v, want the collision with the detach remedy", err)
+	}
+	// Not attached here (e.g. github clashes only at launch): no detach suggestion.
+	m2, runner2, sb2 := attachedSandbox(t)
+	runner2.loadErr = map[string]string{"linear": toolCollisionText}
+	_, err = m2.AttachMcp(context.Background(), sb2.GetId(), "linear", nil)
+	if !errors.Is(err, ErrMcpToolCollision) || strings.Contains(err.Error(), "or detach ") {
+		t.Errorf("no detach remedy when the other server is not on this sandbox: %v", err)
 	}
 }
