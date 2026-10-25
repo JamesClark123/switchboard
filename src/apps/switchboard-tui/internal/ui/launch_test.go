@@ -65,6 +65,8 @@ type fakeDaemon struct {
 	// fails them (FR-102).
 	attachedMcp  map[string][]string
 	attachMcpErr error
+	detachedMcp  map[string][]string // SWI-3: DetachMcpServer calls per sandbox id
+	detachMcpErr error
 	// secrets fakes (FR-104)
 	secrets        []*pb.Secret
 	secretsErr     error

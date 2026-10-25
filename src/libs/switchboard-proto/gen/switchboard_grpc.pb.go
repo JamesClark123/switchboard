@@ -71,6 +71,7 @@ const (
 	Switchboard_SetMcpServerDefault_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpServerDefault"
 	Switchboard_SetMcpAttachMode_FullMethodName        = "/switchboard.v1.Switchboard/SetMcpAttachMode"
 	Switchboard_AttachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AttachMcpServer"
+	Switchboard_DetachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/DetachMcpServer"
 	Switchboard_ListSecrets_FullMethodName             = "/switchboard.v1.Switchboard/ListSecrets"
 	Switchboard_SetSecret_FullMethodName               = "/switchboard.v1.Switchboard/SetSecret"
 	Switchboard_RemoveSecret_FullMethodName            = "/switchboard.v1.Switchboard/RemoveSecret"
@@ -279,8 +280,14 @@ type SwitchboardClient interface {
 	// Event.sandbox_changed. NOT_FOUND when the server is not registered on this
 	// host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
 	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
-	// delivers the new tools live; the agent is never restarted. There is no detach.
+	// delivers the new tools live; the agent is never restarted.
+	// DetachMcpServer (SWI-3) is the inverse: `sbx mcp unload <name> --sandbox <name>`, drops the name
+	// from Sandbox.mcp_servers, emits Event.sandbox_changed. NOT_FOUND for an unknown sandbox or a
+	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that could be misread as a command-line flag (leading '-', invalid UTF-8, control, line/paragraph-separator or format characters; also enforced on attach — host-registered names outside the register-form rule are otherwise fine),
+	// FAILED_PRECONDITION for an ineligible state or busy sandbox. A server the runtime reports as
+	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	DetachMcpServer(ctx context.Context, in *DetachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
 	// ---------- Secrets (feature 008, FR-104) ----------
 	// The host runtime's secret store (`sbx secret`), managed per daemon like the
 	// gateway. Values travel only inside SetSecretRequest over the daemon
@@ -846,6 +853,16 @@ func (c *switchboardClient) AttachMcpServer(ctx context.Context, in *AttachMcpSe
 	return out, nil
 }
 
+func (c *switchboardClient) DetachMcpServer(ctx context.Context, in *DetachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Sandbox)
+	err := c.cc.Invoke(ctx, Switchboard_DetachMcpServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSecretsResponse)
@@ -1316,8 +1333,14 @@ type SwitchboardServer interface {
 	// Event.sandbox_changed. NOT_FOUND when the server is not registered on this
 	// host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
 	// FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
-	// delivers the new tools live; the agent is never restarted. There is no detach.
+	// delivers the new tools live; the agent is never restarted.
+	// DetachMcpServer (SWI-3) is the inverse: `sbx mcp unload <name> --sandbox <name>`, drops the name
+	// from Sandbox.mcp_servers, emits Event.sandbox_changed. NOT_FOUND for an unknown sandbox or a
+	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that could be misread as a command-line flag (leading '-', invalid UTF-8, control, line/paragraph-separator or format characters; also enforced on attach — host-registered names outside the register-form rule are otherwise fine),
+	// FAILED_PRECONDITION for an ineligible state or busy sandbox. A server the runtime reports as
+	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error)
+	DetachMcpServer(context.Context, *DetachMcpServerRequest) (*Sandbox, error)
 	// ---------- Secrets (feature 008, FR-104) ----------
 	// The host runtime's secret store (`sbx secret`), managed per daemon like the
 	// gateway. Values travel only inside SetSecretRequest over the daemon
@@ -1545,6 +1568,9 @@ func (UnimplementedSwitchboardServer) SetMcpAttachMode(context.Context, *SetMcpA
 }
 func (UnimplementedSwitchboardServer) AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error) {
 	return nil, status.Error(codes.Unimplemented, "method AttachMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) DetachMcpServer(context.Context, *DetachMcpServerRequest) (*Sandbox, error) {
+	return nil, status.Error(codes.Unimplemented, "method DetachMcpServer not implemented")
 }
 func (UnimplementedSwitchboardServer) ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSecrets not implemented")
@@ -2239,6 +2265,24 @@ func _Switchboard_AttachMcpServer_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_DetachMcpServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DetachMcpServerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DetachMcpServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DetachMcpServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DetachMcpServer(ctx, req.(*DetachMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_ListSecrets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListSecretsRequest)
 	if err := dec(in); err != nil {
@@ -2839,6 +2883,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AttachMcpServer",
 			Handler:    _Switchboard_AttachMcpServer_Handler,
+		},
+		{
+			MethodName: "DetachMcpServer",
+			Handler:    _Switchboard_DetachMcpServer_Handler,
 		},
 		{
 			MethodName: "ListSecrets",

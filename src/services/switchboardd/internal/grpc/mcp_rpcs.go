@@ -144,6 +144,44 @@ func (s *Server) AttachMcpServer(ctx context.Context, req *pb.AttachMcpServerReq
 	return s.withTerminalCounts(out), nil
 }
 
+// DetachMcpServer unloads a server from an existing sandbox (SWI-3). The server
+// stays registered on the host.
+func (s *Server) DetachMcpServer(ctx context.Context, req *pb.DetachMcpServerRequest) (*pb.Sandbox, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	id := req.GetSandboxId()
+	out, err := s.mgr.DetachMcp(ctx, id, name, func(l string) { log.Printf("[mcp] detach %s from %s: %s", name, id, l) })
+	if err != nil {
+		return nil, detachMcpStatus(err)
+	}
+	return s.withTerminalCounts(out), nil
+}
+
+// detachMcpStatus maps a detach failure: an unknown sandbox or a server the
+// sandbox does not record is NOT_FOUND, an orchestrator server is
+// INVALID_ARGUMENT, a busy or ineligible sandbox is FAILED_PRECONDITION, and a
+// runtime diagnostic travels verbatim.
+func detachMcpStatus(err error) error {
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, sandbox.ErrMcpNotAttached):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandbox.ErrMcpReserved), errors.Is(err, sandbox.ErrMcpInvalidName):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return status.Error(codes.Unknown, err.Error())
+	}
+}
+
 // attachMcpStatus maps an attach failure to a gRPC code: an unknown sandbox or
 // an unregistered server is NOT_FOUND, a name already on the record is
 // ALREADY_EXISTS, a busy or ineligible sandbox — or a tool-name collision with a loaded server — is FAILED_PRECONDITION, and
@@ -152,14 +190,22 @@ func attachMcpStatus(err error) error {
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
+	// Typed sentinels first: their messages quote user input (a name), so the text
+	// matching below must never get to reinterpret them.
 	switch {
-	case errors.Is(err, registry.ErrNotFound), mcp.LooksNotRegistered(err.Error()):
+	case errors.Is(err, registry.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandbox.ErrMcpInvalidName):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, sandbox.ErrMcpAlreadyAttached):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState), errors.Is(err, sandbox.ErrMcpToolCollision):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	default:
-		return status.Error(codes.Unknown, err.Error())
 	}
+	// Otherwise it is the runtime's own diagnostic: "is not registered" is NOT_FOUND,
+	// anything else travels verbatim.
+	if mcp.LooksNotRegistered(err.Error()) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	return status.Error(codes.Unknown, err.Error())
 }

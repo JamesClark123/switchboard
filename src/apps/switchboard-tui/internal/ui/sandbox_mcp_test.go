@@ -312,3 +312,307 @@ func TestMcpServersOverlayEdgePaths(t *testing.T) {
 		t.Error("the overlay should show the exclusive mode")
 	}
 }
+
+// runDetach runs the start command's batch (detach RPC + spinner tick) and returns
+// the detach outcome it yields.
+func runDetach(t *testing.T, cmd tea.Cmd) sandboxMcpDetachedMsg {
+	t.Helper()
+	msg := runCmd(cmd)
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if r, ok := runCmd(c).(sandboxMcpDetachedMsg); ok {
+				return r
+			}
+		}
+	}
+	if r, ok := msg.(sandboxMcpDetachedMsg); ok {
+		return r
+	}
+	t.Fatalf("expected sandboxMcpDetachedMsg, got %T", msg)
+	return sandboxMcpDetachedMsg{}
+}
+
+func (f *fakeDaemon) DetachMcpServer(_ context.Context, id, name string) (*pb.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.detachMcpErr != nil {
+		return nil, f.detachMcpErr
+	}
+	if f.detachedMcp == nil {
+		f.detachedMcp = map[string][]string{}
+	}
+	f.detachedMcp[id] = append(f.detachedMcp[id], name)
+	for _, sb := range f.sandboxes {
+		if sb.GetId() == id {
+			var keep []string
+			for _, n := range sb.McpServers {
+				if n != name {
+					keep = append(keep, n)
+				}
+			}
+			sb.McpServers = keep
+			return proto.Clone(sb).(*pb.Sandbox), nil
+		}
+	}
+	return &pb.Sandbox{Id: id}, nil
+}
+
+// SWI-3: `d` asks for confirmation, then detaches the highlighted server; the
+// record and the row update and the overlay returns.
+func TestMcpServersDetachFlow(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, cmd := update(m, press("d"))
+	if m.screen != screenConfirm || cmd != nil {
+		t.Fatalf("d should open the confirm dialog; screen %v", m.screen)
+	}
+	if v := m.View(); !strings.Contains(v, "Detach notion?") || !strings.Contains(v, "stays registered") {
+		t.Errorf("confirm should name the server and say it stays registered; got:\n%s", v)
+	}
+	// Cancelling returns to the overlay and detaches nothing.
+	m2, _ := update(m, press("n"))
+	if m2.screen != screenSandboxMcp || len(d.detachedMcp) != 0 {
+		t.Fatalf("cancel: screen %v, detaches %v", m2.screen, d.detachedMcp)
+	}
+
+	m, cmd = update(m, press("y"))
+	if m.screen != screenSandboxMcp || cmd == nil {
+		t.Fatalf("accept should return to the overlay and dispatch; screen %v", m.screen)
+	}
+	m, cmd = update(m, runCmd(cmd)) // the confirmation announces the start
+	if m.sandboxMcpView.busy != "notion" || m.sandboxMcpView.busyKind != "detach" || !strings.Contains(m.View(), "detaching notion") {
+		t.Fatalf("detach should mark the overlay busy with a spinner line; busy %q kind %q", m.sandboxMcpView.busy, m.sandboxMcpView.busyKind)
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if got := d.detachedMcp["sb-1"]; len(got) != 1 || got[0] != "notion" {
+		t.Errorf("daemon detach calls = %v, want [notion]", got)
+	}
+	if len(m.sandboxMcpView.attached) != 0 {
+		t.Errorf("overlay attached = %v, want none", m.sandboxMcpView.attached)
+	}
+	v := m.View()
+	if !strings.Contains(v, "detached notion") || !strings.Contains(v, "none attached") {
+		t.Errorf("overlay should confirm and show an empty list; got:\n%s", v)
+	}
+	// Nothing left to detach.
+	m, _ = update(m, press("d"))
+	if m.screen != screenSandboxMcp || !strings.Contains(m.sandboxMcpView.status, "nothing to detach") {
+		t.Errorf("d on an empty list: screen %v status %q", m.screen, m.sandboxMcpView.status)
+	}
+}
+
+func TestMcpServersDetachFailureKeepsRecordAndShowsDiagnostic(t *testing.T) {
+	d := &fakeDaemon{detachMcpErr: errors.New("gateway unreachable")}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, _ = update(m, runDetach(t, cmd))
+	if got := m.sandboxMcpView.attached; strings.Join(got, ",") != "notion" {
+		t.Errorf("a failed detach must keep the record; attached = %v", got)
+	}
+	if v := m.View(); !strings.Contains(v, "detach notion failed: gateway unreachable") {
+		t.Errorf("overlay should show the diagnostic; got:\n%s", v)
+	}
+}
+
+// PR #3 review: confirm text is neutral (not a red "keeps running"), and a detach
+// in progress blocks a second d, a, and the picker's enter.
+func TestMcpServersDetachConfirmIsNeutralAndGuardsReentrancy(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	v := m.View()
+	if strings.Contains(v, "keeps running") || strings.Contains(v, "cannot be undone") || !strings.Contains(v, "not restarted") {
+		t.Errorf("confirm should carry the neutral notice only; got:\n%s", v)
+	}
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	if cmd == nil || m.sandboxMcpView.busyKind != "detach" {
+		t.Fatal("precondition: detach in flight")
+	}
+	// While it runs: d and a are refused with the right wording and dispatch nothing.
+	for _, key := range []string{"d", "a"} {
+		var c tea.Cmd
+		m, c = update(m, press(key))
+		if c != nil || m.screen != screenSandboxMcp || m.sandboxMcpView.status != "a detach is already in progress" {
+			t.Errorf("%s while detaching: cmd %v screen %v status %q", key, c != nil, m.screen, m.sandboxMcpView.status)
+		}
+	}
+	// A late second confirmation is also ignored.
+	m, c := update(m, sandboxMcpDetachStartMsg{id: "sb-1", host: m.sandboxMcpView.host, name: "notion"})
+	if c != nil || len(d.detachedMcp["sb-1"]) != 0 {
+		t.Error("a second start while busy must not dispatch")
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if m.sandboxMcpView.busy != "" || m.sandboxMcpView.busyKind != "" {
+		t.Error("busy must clear when the reply arrives")
+	}
+	if len(d.detachedMcp["sb-1"]) != 1 {
+		t.Errorf("exactly one detach expected; got %v", d.detachedMcp)
+	}
+}
+
+// A reply for a server that is no longer registered says so instead of claiming
+// it is still registered; a reply after the overlay closed lands on the footer.
+func TestMcpServersDetachStatusVariants(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{{Name: "pw", Kind: pb.McpServerKind_MCP_SERVER_KIND_LOCAL, Transport: "stdio"}}}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d)) // notion attached but NOT registered
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	m, _ = update(m, runCmd(reload)) // the wording waits for the refreshed list
+	if st := m.sandboxMcpView.status; !strings.Contains(st, "no longer registered") || !strings.Contains(st, "may still have its tools loaded") || strings.Contains(st, "still registered") {
+		t.Errorf("status = %q", st)
+	}
+
+	d2 := &fakeDaemon{}
+	m2 := openMcpOverlay(t, mcpOverlayModel(t, d2))
+	m2, _ = update(m2, press("d"))
+	m2, cmd2 := update(m2, press("y"))
+	m2, cmd2 = update(m2, runCmd(cmd2))
+	m2, _ = update(m2, tea.KeyMsg{Type: tea.KeyEsc}) // close the overlay while the detach runs
+	if m2.screen != screenList {
+		t.Fatalf("overlay should have closed; screen %v", m2.screen)
+	}
+	m2, _ = update(m2, runDetach(t, cmd2))
+	if !strings.Contains(m2.status, "detached notion from") {
+		t.Errorf("late reply should land on the footer; status %q", m2.status)
+	}
+}
+
+// Review (PR #3, run 34): in-flight calls live on the model, so closing and
+// reopening the overlay mid-detach still shows it busy and refuses a second call.
+func TestMcpServersReopenedOverlayStillShowsADetachInFlight(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd)) // detach dispatched, RPC not yet answered
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != screenList {
+		t.Fatalf("overlay should have closed; screen %v", m.screen)
+	}
+	m = openMcpOverlay(t, m)
+	if m.sandboxMcpView.busy != "notion" || m.sandboxMcpView.busyKind != "detach" || !strings.Contains(m.View(), "detaching notion") {
+		t.Fatalf("a reopened overlay must still show the detach; busy %q kind %q", m.sandboxMcpView.busy, m.sandboxMcpView.busyKind)
+	}
+	m, c := update(m, press("d"))
+	if c != nil || m.screen != screenSandboxMcp || m.sandboxMcpView.status != "a detach is already in progress" {
+		t.Errorf("d on a reopened busy overlay: cmd %v screen %v status %q", c != nil, m.screen, m.sandboxMcpView.status)
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if m.sandboxMcpView.busy != "" || len(m.sandboxMcpOps) != 0 {
+		t.Errorf("the reply must clear the busy state and the in-flight record; ops %v", m.sandboxMcpOps)
+	}
+}
+
+// After a detach the daemon's list is refreshed, and nothing is claimed about
+// registration when that list was never loaded.
+func TestMcpServersDetachRefreshesTheListAndStaysNeutralWhenItIsUnknown(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	if reload == nil || !m.sandboxMcpView.loading {
+		t.Error("a detach should refresh the daemon's list")
+	}
+
+	m2 := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m2.sandboxMcpView.registered = nil // the list never loaded
+	m2, _ = update(m2, press("d"))
+	m2, cmd2 := update(m2, press("y"))
+	m2, cmd2 = update(m2, runCmd(cmd2))
+	m2, _ = update(m2, runDetach(t, cmd2))
+	if st := m2.sandboxMcpView.status; st != "detached notion" {
+		t.Errorf("with an unknown list the status must claim nothing about registration; got %q", st)
+	}
+}
+
+// Review (PR #3, run 42): the registration claim comes from the list refreshed
+// AFTER the detach, not the one loaded before it.
+func TestMcpServersDetachStatusUsesTheRefreshedList(t *testing.T) {
+	d := &fakeDaemon{} // notion registered when the overlay opens
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	if st := m.sandboxMcpView.status; st != "detached notion" {
+		t.Errorf("before the refreshed list the status must claim nothing; got %q", st)
+	}
+	d.mcpServers = d.mcpServers[1:] // notion was removed from the host meanwhile
+	m, _ = update(m, runCmd(reload))
+	if st := m.sandboxMcpView.status; !strings.Contains(st, "no longer registered") {
+		t.Errorf("status = %q, want the refreshed list's answer", st)
+	}
+
+	m2 := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m2, _ = update(m2, press("d"))
+	m2, cmd2 := update(m2, press("y"))
+	m2, cmd2 = update(m2, runCmd(cmd2))
+	m2, reload2 := update(m2, runDetach(t, cmd2))
+	m2, _ = update(m2, runCmd(reload2))
+	if st := m2.sandboxMcpView.status; !strings.Contains(st, "still registered on the daemon") {
+		t.Errorf("status = %q, want still registered", st)
+	}
+}
+
+// Review (PR #3, run 42): an attach/detach in flight is named on the sandbox's
+// row, so a closed overlay does not hide why the daemon refuses other actions.
+func TestMcpOpInFlightIsNamedOnTheSandboxRow(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if v := m.View(); !strings.Contains(v, "mcp detaching notion…") {
+		t.Errorf("the row should name the detach in flight; got:\n%s", v)
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if v := m.View(); strings.Contains(v, "mcp detaching") {
+		t.Errorf("the marker must clear with the reply; got:\n%s", v)
+	}
+}
+
+// Review (PR #3, run 42): the in-flight map is per sandbox — one sandbox's reply
+// never clears another's call — and setMcpOp creates the map on first use.
+func TestMcpOpsArePerSandbox(t *testing.T) {
+	m := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m.sandboxMcpOps = nil
+	m.setMcpOp("sb-2", sandboxMcpOp{kind: "attach", name: "pw"})
+	m, _ = update(m, sandboxMcpDetachedMsg{id: "sb-1", name: "notion", err: errors.New("gateway unreachable")})
+	if op, ok := m.sandboxMcpOps["sb-2"]; !ok || op.name != "pw" {
+		t.Errorf("sb-2's attach must survive sb-1's failed detach; ops %v", m.sandboxMcpOps)
+	}
+}
+
+// Review (PR #3, run 50): a list that lands while the detach confirm is up is
+// not dropped, so `loading` clears and the post-detach wording resolves.
+func TestMcpServersListLandingWhileConfirmIsOpenIsKept(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpOverlayModel(t, d)
+	d.sandboxes[0].McpServers = []string{"notion", "pw"}
+	m = openMcpOverlay(t, withSandboxes(m, d.sandboxes))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	m, _ = update(m, press("d")) // confirm for pw opens before the refreshed list lands
+	if m.screen != screenConfirm {
+		t.Fatalf("screen = %v, want the confirm", m.screen)
+	}
+	m, _ = update(m, runCmd(reload))
+	m, _ = update(m, press("n"))
+	v := m.sandboxMcpView
+	if v.loading || v.detached != "" || !strings.Contains(v.status, "detached notion — still registered") {
+		t.Errorf("loading %v detached %q status %q, want the list applied", v.loading, v.detached, v.status)
+	}
+	if _, c := update(m, press("r")); c == nil {
+		t.Error("r must reload again once the list landed")
+	}
+}

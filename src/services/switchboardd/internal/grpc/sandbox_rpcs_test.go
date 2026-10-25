@@ -22,11 +22,12 @@ import (
 
 // testRunner is a no-op Runner for the gRPC integration test.
 type testRunner struct {
-	mcpLoads  []string         // feature 008: "<ref> <name>" per LoadMcp
-	loadErr   map[string]error // feature 008: LoadMcp fails for these names
-	running   map[string]bool
-	kitAdds   []string // kit sources passed to `sbx kit add`
-	published []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
+	mcpLoads   []string         // feature 008: "<ref> <name>" per LoadMcp
+	mcpUnloads []string         // SWI-3: "<ref> <name>" per UnloadMcp
+	loadErr    map[string]error // feature 008: LoadMcp fails for these names
+	running    map[string]bool
+	kitAdds    []string // kit sources passed to `sbx kit add`
+	published  []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
 	// feature 007: when set, CloneRepo signals cloneEntered on entry and then
 	// waits for the current gate (see setCloneGate) to close, so a test can hold
 	// an add mid-flight.
@@ -51,6 +52,11 @@ func (r *testRunner) Launch(_ context.Context, spec sandbox.LaunchSpec, _ func(s
 	return ref, nil
 }
 func (r *testRunner) Stop(_ context.Context, ref string) error { r.running[ref] = false; return nil }
+func (r *testRunner) UnloadMcp(_ context.Context, ref, name string, _ func(string)) error {
+	r.mcpUnloads = append(r.mcpUnloads, ref+" "+name)
+	return nil
+}
+
 func (r *testRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)) error {
 	if err := r.loadErr[name]; err != nil {
 		return err

@@ -54,8 +54,14 @@ service SwitchboardMcpGatewayAdditions {
   // Event.sandbox_changed. NOT_FOUND when the server is not registered on this
   // host, ALREADY_EXISTS when switchboard already recorded it on the sandbox,
   // FAILED_PRECONDITION for an ineligible state or a busy sandbox. The gateway
-  // delivers the new tools live; the agent is never restarted. There is no detach.
+  // delivers the new tools live; the agent is never restarted.
+  // DetachMcpServer (SWI-3) is the inverse: `sbx mcp unload <name> --sandbox <name>`, drops the name
+  // from Sandbox.mcp_servers, emits Event.sandbox_changed. NOT_FOUND for an unknown sandbox or a
+  // name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that could be misread as a command-line flag (leading '-', invalid UTF-8, control, line/paragraph-separator or format characters; also enforced on attach — host-registered names outside the register-form rule are otherwise fine),
+  // FAILED_PRECONDITION for an ineligible state or busy sandbox. A server the runtime reports as
+  // not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
   rpc AttachMcpServer(AttachMcpServerRequest) returns (Sandbox);
+  rpc DetachMcpServer(DetachMcpServerRequest) returns (Sandbox);
 
   // ---------- Secrets (feature 008, FR-104) ----------
   // The host runtime's secret store (`sbx secret`), managed per daemon like the
@@ -161,6 +167,7 @@ message CompleteMcpAuthCallbackResponse {}
 message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
 message SetMcpAttachModeRequest { McpAttachMode mode = 1; }
 message AttachMcpServerRequest { string sandbox_id = 1; string name = 2; }
+message DetachMcpServerRequest { string sandbox_id = 1; string name = 2; }
 
 // Secret is one row of `sbx secret ls`: scope ("global" or a sandbox name), the
 // runtime's type ("service", "registry", "custom"; "service" when the host's

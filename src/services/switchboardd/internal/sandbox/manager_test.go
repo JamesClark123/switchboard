@@ -47,6 +47,9 @@ type fakeRunner struct {
 	// loads observed when the record was last read as RUNNING (ordering probe).
 	mcpLoads      []string
 	failLoad      map[string]bool
+	mcpUnloads    []string          // "<ref> <name>" per UnloadMcp
+	unloadErr     map[string]string // UnloadMcp fails with exactly this text for these names
+	unloadErrRef  map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
 	loadErr       map[string]string // LoadMcp streams this output and fails like SbxRunner (tail only in the error) for these names
 	loadErrRef    map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
 	launchOut     string            // with failNext: Launch streams this output before failing
@@ -403,6 +406,24 @@ func streamFake(log func(string), out string) {
 }
 
 // --- feature 008: MCP attach surface ---
+
+func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, log func(string)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpUnloads = append(f.mcpUnloads, ref+" "+name)
+	msg, ok := f.unloadErrRef[ref+" "+name]
+	if !ok {
+		msg, ok = f.unloadErr[name]
+	}
+	if ok {
+		// Mirror SbxRunner.run exactly: every output line is streamed, and the error
+		// is "<command line>: <exit status>" plus only the LAST few lines of output.
+		// The command line always contains the server's name.
+		streamFake(log, msg)
+		return fmt.Errorf("sbx mcp unload %s --sandbox %s: exit status 1%s", name, ref, outputTail([]byte(msg)))
+	}
+	return nil
+}
 
 func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, log func(string)) error {
 	f.mu.Lock()

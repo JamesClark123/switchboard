@@ -95,6 +95,8 @@ type Daemon interface {
 	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
 	// Attaches a registered server to an existing sandbox on this daemon (FR-102).
 	AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
+	// Detaches a server from an existing sandbox on this daemon (SWI-3); it stays registered.
+	DetachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
 	// Secrets (feature 008, FR-104): the host's `sbx secret` store, managed per daemon.
 	SecretsAvailable() (available bool, reason string)
 	ListSecrets(ctx context.Context) ([]*pb.Secret, error)
@@ -305,6 +307,10 @@ type Model struct {
 	// --- feature 008 (FR-102): per-sandbox MCP servers ---
 	// sandboxMcpView backs the `M` overlay.
 	sandboxMcpView sandboxMcpState
+	// sandboxMcpOps are the attach/detach calls in flight, by sandbox id. Kept on
+	// the model (a shared map) rather than on the overlay so closing and reopening
+	// the overlay mid-call still shows it busy.
+	sandboxMcpOps map[string]sandboxMcpOp
 
 	// sbx output: the lines the daemon streams while a launch, kit attach,
 	// refresh or source add runs, kept per sandbox for the `l` overlay. It is the
@@ -373,6 +379,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		// feature 006: the client owns every listener on this machine.
 		serviceInstances: map[string]*pb.ServiceInstance{},
 		forwards:         forward.NewManager(),
+		sandboxMcpOps:    map[string]sandboxMcpOp{},
 		orchFires:        map[string]uint64{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
@@ -780,6 +787,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSourcesRemoved(msg)
 	case sandboxMcpListMsg:
 		return m.handleSandboxMcpList(msg)
+	case sandboxMcpDetachStartMsg:
+		return m.startSandboxMcpDetach(msg)
+	case sandboxMcpDetachedMsg:
+		return m.handleSandboxMcpDetached(msg)
 	case sandboxMcpAttachedMsg:
 		return m.handleSandboxMcpAttached(msg)
 

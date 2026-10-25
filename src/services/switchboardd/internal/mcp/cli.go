@@ -71,6 +71,12 @@ func argvLoad(name, sandbox string) []string {
 	return []string{"mcp", "load", name, "--sandbox", sandbox}
 }
 
+// argvUnload detaches a loaded server from a sandbox (SWI-3): the server stays
+// registered on the host. Mirrors argvLoad.
+func argvUnload(name, sandbox string) []string {
+	return []string{"mcp", "unload", name, "--sandbox", sandbox}
+}
+
 // --- feature 009: the per-worker registration (research R4) ---
 //
 // The worker side registers one remote server per worker and loads it into the

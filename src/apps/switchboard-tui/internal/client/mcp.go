@@ -101,6 +101,12 @@ func (c *Conn) SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb
 
 // AttachMcpServer loads a registered server into an existing sandbox on this
 // daemon (FR-102) and returns the updated record. The daemon bounds the load.
+// DetachMcpServer unloads a server from an existing sandbox on this daemon
+// (SWI-3) and returns the updated record. The registration is untouched.
+func (c *Conn) DetachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error) {
+	return c.API().DetachMcpServer(ctx, &pb.DetachMcpServerRequest{SandboxId: sandboxID, Name: name})
+}
+
 func (c *Conn) AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error) {
 	return c.API().AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sandboxID, Name: name})
 }

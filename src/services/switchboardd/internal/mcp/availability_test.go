@@ -60,6 +60,7 @@ func TestArgvTable(t *testing.T) {
 		"mcp rm notion --force":                                                                                                argvRemove("notion"),
 		"mcp auth notion":                                                                                                      argvAuthorize("notion"),
 		"mcp load notion --sandbox my-sb":                                                                                      argvLoad("notion", "my-sb"),
+		"mcp unload notion --sandbox my-sb":                                                                                    argvUnload("notion", "my-sb"),
 	}
 	for want, got := range cases {
 		if strings.Join(got, " ") != want {

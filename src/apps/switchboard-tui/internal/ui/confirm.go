@@ -28,6 +28,9 @@ type confirmState struct {
 	// in front of a risky-but-reversible step (the feature-007 low-resource
 	// override) should not claim irreversibility.
 	warning string
+	// notice, when set, replaces the red warning with a plain dim line — for a
+	// reassurance ("not restarted") rather than a danger.
+	notice string
 	// returnTo is the screen shown after the dialog closes (accept or cancel).
 	// The zero value is the sandbox list; the sources overlay sets itself so a
 	// removal lands the user back on the editor (feature 007).
@@ -79,9 +82,13 @@ func (m Model) confirmModal() string {
 	if warning == "" {
 		warning = "This cannot be undone."
 	}
+	line := dangerStyle.Render(warning)
+	if m.confirm.notice != "" {
+		line = dimStyle.Render(m.confirm.notice)
+	}
 	rows = append(rows,
 		"",
-		dangerStyle.Render(warning),
+		line,
 		"",
 		dimStyle.Render("y/enter confirm · n/esc cancel"),
 	)

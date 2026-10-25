@@ -254,8 +254,15 @@ server switchboard attached to it (at launch via attach-by-default marks, or lat
 kind and authorization state its daemon reports. `a` lists that daemon's other registered servers;
 `enter` attaches one with `sbx mcp load`, which the runtime applies live — the agent sees the new
 tools without a stop or restart, in additive and exclusive sandboxes alike. Servers the agent
-attached for itself through the gateway's discovery tools are not listed, and there is no detach
-(the runtime has none). Register and authorize servers on the daemon screen first (`shift+→`).
+attached for itself through the gateway's discovery tools are not listed. `d` detaches the
+highlighted server (after a confirmation) with `sbx mcp unload`: its tools leave the sandbox at once,
+nothing stops or restarts, and the server stays registered on the daemon so `a` can attach it again.
+If the runtime says the server is no longer loaded, the sandbox record simply drops it. The
+orchestrator's own per-worker server is never listed or detachable. Attach and detach accept any
+name the host registered; only a name that could be read as a command-line flag (leading `-`), is
+invalid UTF-8, or contains control, line/paragraph-separator or format characters (bidi
+overrides, zero-width joiners) is refused. Closing the overlay while a call runs does not lose it —
+reopening shows it still in progress. Register and authorize servers on the daemon screen first (`shift+→`).
 
 ### Daemon screen & MCP gateway
 
@@ -318,6 +325,8 @@ runtime text follows on the next line), and attaching from the `M` overlay fails
 message; nothing is changed on the sandbox. In *exclusive* mode the set is pinned at create, so
 a clash fails the launch itself; the launch error names the servers, tools and remedy (additive
 mode would skip the clashing server instead).
+
+**On an existing sandbox the simplest fix is often to detach the other server**: if the server it clashes with is attached to that sandbox, press `d` on it in the same `M` overlay and attach again — the attach error says so ("or detach github from this sandbox first"). Detaching only removes it from that sandbox; it stays registered on the daemon.
 
 **Fix: filter the clashing tools out at one of the servers**, using that server's own filter
 headers in the register form's **Headers** field (one `Name: value` per line). GitHub's remote

@@ -413,6 +413,73 @@ func TestAddRemoteWithHeaders(t *testing.T) {
 	}
 }
 
+func TestLooksNotLoaded(t *testing.T) {
+	for _, yes := range []string{`MCP server "notion" is not loaded in sandbox "x"`, "server isn't loaded", "not currently loaded"} {
+		if !LooksNotLoaded(yes) {
+			t.Errorf("%q should be tolerated", yes)
+		}
+	}
+	// "not registered" is handled separately (LooksNotRegistered) and must not be
+	// mistaken for "not loaded".
+	for _, no := range []string{"", "gateway unreachable", "permission denied", `MCP server "n" is not registered`, "terminal is not attached", "client not attached"} {
+		if LooksNotLoaded(no) {
+			t.Errorf("%q must not be tolerated", no)
+		}
+	}
+}
+
+func TestValidName(t *testing.T) {
+	for _, ok := range []string{"notion", "a.b_c-d", "X1"} {
+		if !ValidName(ok) {
+			t.Errorf("%q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "-h", "--sandbox", "a b", "a/b", "a;b"} {
+		if ValidName(bad) {
+			t.Errorf("%q should be invalid", bad)
+		}
+	}
+}
+
+func TestLooksUnregisteredIsStrict(t *testing.T) {
+	if !LooksUnregistered(`MCP server "n" is not registered (run 'sbx mcp add n ...')`, "n") {
+		t.Error("not registered, naming the server, should match")
+	}
+	for _, no := range []struct{ out, name string }{
+		{"unknown flag --x", "n"},
+		{"sandbox not found", "n"},
+		{"gateway unreachable", "n"},
+		{`sandbox "other" is not registered`, "n"}, // not registered, but about something else
+		{`project is not registered`, "notion"},    // ditto
+		{`MCP server "n" is not registered`, ""},   // no name to anchor on
+	} {
+		if LooksUnregistered(no.out, no.name) {
+			t.Errorf("LooksUnregistered(%q, %q) must not match", no.out, no.name)
+		}
+	}
+}
+
+func TestSafeArg(t *testing.T) {
+	for _, ok := range []string{"notion", "a.b_c-d", "io.github/foo", "scope:name@1", "a b", "café", "日本"} {
+		if !SafeArg(ok) {
+			t.Errorf("%q should be a safe argument (host-registered names are not limited to the register rule)", ok)
+		}
+	}
+	for _, bad := range []string{"", "-h", "--sandbox", "a\nb", "a\x00b", "a\x7fb", strings.Repeat("x", 257),
+		"a\u009bb", // C1 control (8-bit CSI)
+		"a\u2028b", // line separator
+		"a\u2029b", // paragraph separator
+		"a\u202eb", // bidi override (format character)
+		"a\u200db", // zero-width joiner
+		"\ufeffa",  // BOM
+		"a\xffb",   // invalid UTF-8
+	} {
+		if SafeArg(bad) {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
 func TestCompleteCallbackReplaysOnTheAnnouncedPortOnly(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotQuery = r.URL.RawQuery }))
