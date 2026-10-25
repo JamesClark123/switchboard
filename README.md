@@ -290,7 +290,11 @@ that daemon only:
   Registration never waits on a browser: `A` runs the authorization step separately, shows the
   authorization link **in the TUI** (open it where you are — it is never opened on the daemon's
   host) and waits up to **10 minutes**; `esc` cancels and the registration is kept as
-  unauthorized. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
+  unauthorized. On a **remote** daemon the provider redirects your browser to
+  `http://localhost:<port>`, which is the host's callback listener; the TUI binds that same port
+  on your machine and relays it to the host for the duration of the wait, so it just works. If the
+  port is busy locally (or press `p`), paste the address your browser failed to load and the
+  daemon replays it on the host. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
   runtime prints. The register form's **Headers** field takes one `Name: value` per line for a
   remote endpoint (each becomes a `--header` flag); write a credential as `${placeholder}` and store
   its value as the secret `mcp:<server>:<placeholder>` under **Secrets** (below) — the gateway fills it
@@ -368,7 +372,7 @@ The detail has six views (`←`/`→`):
 | Workers | The roster with state and availability (free / busy / needs input / awaiting review); `x` detach, `m` mark free. The reasoning sandbox is listed last, marked `reasoning`. |
 | Actions | `a` add, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and an optional worker tag. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
 | Queue | Queued (in receipt order with positions), in progress and history; `enter` shows a run's composed prompt, `x` cancels a queued run, `m` marks a reviewed run free. |
-| Events | Timed events: `a` add, `e` edit, `d` delete, `space` on/off. An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
+| Events | Timed events: `a` add, `e` edit, `d` delete, `space` on/off, `n` **enqueue now** (queues one run of the event immediately without touching its schedule; refused while a run of it is already queued or in flight when dedupe is on; with dedupe off it asks first only if a run of the event is already open; a repeat press within half a second of a successful enqueue is ignored, with a hint). An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
 | Reasoning | The orchestrator's **reasoning sandbox** `reasoning-<id>`, created with the orchestrator on its own host from an empty workspace unless you give it a setup: `e` picks folders (and kits, `K`) through the launch browser and rebuilds it, `b` rebuilds it from the saved setup, `l` shows the `sbx` output. `reason` actions run there and their summary is the answer. It is not detachable; a rebuild is refused while a run is on it; if it is destroyed outside switchboard the view says so and `reason` runs fail until you rebuild. |
 | Hosts | The machines the orchestrator can place workers on, with reachability. `a` copies an entry from your saved SSH hosts, `d` removes one (refused while workers live there). |
 

@@ -25,6 +25,7 @@ var ErrNoLocalPort = errors.New("no free port available on this machine")
 // forward is one live local listener and the connections it has accepted.
 type forward struct {
 	instanceID string
+	authName   string // non-empty: relays to this MCP server's OAuth callback listener
 	sandboxID  string
 	localPort  uint32
 	listener   net.Listener
@@ -98,6 +99,50 @@ func (m *Manager) Open(opener Opener, sandboxID, instanceID string) (uint32, err
 
 	go f.accept(ctx, opener)
 	return port, nil
+}
+
+// AuthKey is the forward key for an MCP server's OAuth callback relay on one host.
+// The host is part of the key so the same server name authorized on two daemons
+// can never share (or inherit) a relay and its opener.
+func AuthKey(host, name string) string { return "mcp-auth:" + host + ":" + name }
+
+// OpenAuth binds 127.0.0.1:port on the developer's machine and relays accepted
+// connections to the OAuth callback listener of the in-flight authorization for
+// name on the daemon's host. It exists for remote daemons: the provider redirects
+// the browser to http://localhost:<port>, and without this relay that address is
+// the developer's own machine rather than the host running `sbx mcp auth`.
+//
+// Unlike Open the port is dictated (it is baked into the redirect_uri), so a port
+// already in use is an error the caller answers with the paste-back fallback.
+// Close it with Close(AuthKey(host, name)).
+func (m *Manager) OpenAuth(opener Opener, host, name string, port uint32) error {
+	key := AuthKey(host, name)
+	m.mu.Lock()
+	if _, ok := m.forwards[key]; ok {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return fmt.Errorf("%w: port %d: %w", ErrNoLocalPort, port, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &forward{instanceID: key, authName: name, localPort: port, listener: ln, cancel: cancel}
+
+	m.mu.Lock()
+	if _, ok := m.forwards[key]; ok {
+		m.mu.Unlock()
+		cancel()
+		_ = ln.Close()
+		return nil
+	}
+	m.forwards[key] = f
+	m.mu.Unlock()
+
+	go f.accept(ctx, opener)
+	return nil
 }
 
 // Close tears down an instance's forward. Closing the listener also ends every

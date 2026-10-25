@@ -34,6 +34,13 @@ rejected: those are agent-facing, dynamic-mode only, and bypass the host's regis
 
 ## R2 — Authorization flow: register first, authorize separately, bounded, URL surfaced
 
+> **Remote daemons (SWI-1)**: `sbx mcp auth` listens for the OAuth callback on the host's loopback; the URL's
+> `redirect_uri` is `http://localhost:<port>`. The daemon parses that port into `McpAuthProgress.callback_port`;
+> a remote client relays it (`forward.Manager.OpenAuth` → `ForwardPort` `mcp_auth_name`) or falls back to
+> pasting the redirect URL (`CompleteMcpAuthCallback`). **Unverified against a real host**: the exact
+> `redirect_uri` shape `sbx` prints — confirm with `sbx mcp auth <name>` on a host; if no port is found the
+> flow degrades to the previous behaviour.
+
 **Decision**: Every registration uses `--skip-auth`; authorization is always its own step
 (`sbx mcp auth <name>`) run by the daemon as a child process in its own process group with a
 **10-minute** deadline (`mcpAuthTimeout`, package constant — the clarified bound). The daemon scans

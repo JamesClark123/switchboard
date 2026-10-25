@@ -122,6 +122,77 @@ func (s *Service) DeleteTimedEvent(id, eventID string) error {
 	return nil
 }
 
+// FireTimedEvent enqueues one run of a timed event now (SWI-4), as that event:
+// EVENT_KIND_TIMED with origin = the event id, so it counts in the event's
+// waiting column and is attributed to it in the queue and history.
+//
+// The schedule is untouched — next_fire_at, last_fired_at, last_skipped_at and
+// skipped_count do not move (last_fired_at drives the phase math after a restart).
+// With dedupe on (the default) a run of this event that is queued or in flight
+// refuses the call with ErrPrecondition naming that run, keeping FR-157's "never
+// more than one run anywhere at a time"; with dedupe off it always enqueues. A
+// disabled event can be fired; one whose action was deleted fails with callAction's
+// not-found error. A scheduled firing that comes due while this run is still open
+// (dedupe on) is skipped and recorded as usual.
+//
+// The event is read under fireMu. PutTimedEvent/DeleteTimedEvent do not take that
+// lock, so an edit racing this call is simply ordered before or after it; what the
+// lock rules out is this call using a definition that was already replaced or
+// deleted BEFORE it got the lock (the case when the event was read first). Each
+// manual fire is logged so it can be told apart from scheduled ones in the daemon
+// log.
+func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
+	rt, err := s.runtimeFor(id)
+	if err != nil {
+		return nil, err
+	}
+	run, name, err := rt.fireTimedEvent(eventID)
+	if err == nil {
+		// Logged after the lock is released (a slow Logf must not hold up the
+		// scheduler), with %q so an event name cannot forge a log line.
+		s.logf("[orchestrator %s] manual fire of timed event %q: run %s", rt.name(), name, run.GetId())
+	}
+	return run, err
+}
+
+// fireTimedEvent does the locked part of FireTimedEvent and returns the event's name
+// for the caller's log line.
+func (rt *runtime) fireTimedEvent(eventID string) (*pb.Run, string, error) {
+	// Take the lock first and read the event under it, as tick() does, so a
+	// definition replaced or deleted before we got the lock is never used.
+	if h := rt.beforeFireLock; h != nil {
+		h()
+	}
+	rt.fireMu.Lock()
+	defer rt.fireMu.Unlock()
+	var ev *pb.TimedEvent
+	for _, e := range rt.record().GetTimedEvents() {
+		if e.GetId() == eventID {
+			ev = e
+			break
+		}
+	}
+	if ev == nil {
+		return nil, "", fmt.Errorf("%w: event %s", ErrNotFound, eventID)
+	}
+	if !ev.GetDedupeDisabled() {
+		if open := rt.openRunFor(ev.GetId()); open != nil {
+			hint := ""
+			if open.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
+				hint = " (mark the worker free in the Queue view to clear it)"
+			}
+			return nil, "", fmt.Errorf("%w: run %s of %s is already %s%s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()), hint)
+		}
+	}
+	run, err := rt.callAction(ev.GetAction(), ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, ev.GetId(), ev.GetName())
+	return run, ev.GetName(), err
+}
+
+// runStateLabel is a run state in plain words for an error message.
+func runStateLabel(st pb.RunState) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(st.String(), "RUN_STATE_"), "_", " "))
+}
+
 // startScheduler restores every event's phase after a (re)start and arms the timer.
 func (rt *runtime) startScheduler() {
 	rt.sched = &scheduler{}
@@ -208,6 +279,8 @@ func (rt *runtime) tick() {
 	if rt.ctx.Err() != nil {
 		return
 	}
+	rt.fireMu.Lock()
+	defer rt.fireMu.Unlock()
 	now := rt.svc.clock.Now()
 	type firing struct {
 		ev   *pb.TimedEvent
@@ -257,15 +330,18 @@ func (rt *runtime) tick() {
 }
 
 // hasOpenRun reports whether a run with this origin is queued or in flight.
-func (rt *runtime) hasOpenRun(origin string) bool {
+func (rt *runtime) hasOpenRun(origin string) bool { return rt.openRunFor(origin) != nil }
+
+// openRunFor returns a run with this origin that is queued or in flight, or nil.
+func (rt *runtime) openRunFor(origin string) *pb.Run {
 	runs, err := rt.svc.reg.ListRuns(rt.id)
 	if err != nil {
-		return false
+		return nil
 	}
 	for _, r := range runs {
 		if r.GetOrigin() == origin && (r.GetState() == pb.RunState_RUN_STATE_QUEUED || inFlight(r)) {
-			return true
+			return r
 		}
 	}
-	return false
+	return nil
 }

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -41,6 +42,10 @@ type orchDetailState struct {
 	cursors        [orchViewCount]int
 	loading        bool
 	status         string
+	firing         bool      // an Enqueue now is in flight (refuses key-repeat / double presses)
+	fireToken      uint64    // identifies that in-flight fire; its reply echoes it (0 = none)
+	lastFireAt     time.Time // when the last Enqueue now started, for the repeat debounce
+	lastFireEv     string
 	// Hosts view: the copy-from-my-hosts picker.
 	hostPick    bool
 	hostChoices []store.KnownHost
@@ -65,6 +70,11 @@ type orchDetailMsg struct {
 func (m Model) enterOrchDetail(row orchRow) (tea.Model, tea.Cmd) {
 	o := row.summary.GetOrchestrator()
 	m.orchDetail = orchDetailState{host: row.host, hostName: row.hostName, id: o.GetId(), name: o.GetName(), loading: true, view: m.orchDetail.view}
+	if tok := m.orchFires[o.GetId()]; tok != 0 {
+		// An Enqueue now for this orchestrator is still in flight from before the detail
+		// was left: keep refusing a second one, and let its reply count as current.
+		m.orchDetail.firing, m.orchDetail.fireToken = true, tok
+	}
 	m.screen = screenOrchDetail
 	return m, m.orchDetailLoadCmd()
 }
@@ -154,7 +164,7 @@ func (m Model) orchDetailHelp() helpBindings {
 	case viewQueue:
 		hb = append(hb, hkey("enter", "prompt"), hkey("x", "cancel"), hkey("m", "mark free"))
 	case viewEvents:
-		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"))
+		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"), hkey("n", "enqueue now"))
 	case viewReasoning:
 		hb = append(hb, hkey("e", "edit setup"), hkey("b", "rebuild"), hkey("l", "output"))
 	case viewHosts:

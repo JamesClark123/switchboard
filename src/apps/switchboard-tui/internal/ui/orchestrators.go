@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -71,6 +72,21 @@ type orchDoneMsg struct {
 	reload bool
 	// closeForm closes the detail's open form (a successful submission).
 	closeForm bool
+	// fire marks the reply to an Enqueue now, the only reply that releases its
+	// in-flight guard (an unrelated mutation finishing must not).
+	fire bool
+	// fireEvent is the timed event a successful Enqueue now was for; it starts the
+	// repeat window (a refused or failed fire must not, so an immediate retry works).
+	fireEvent string
+	// fireToken identifies the Enqueue now this reply belongs to. Only the reply
+	// whose token is the open detail's in-flight one may release its guard or start
+	// its repeat window: the orchestrator id cannot tell apart two fires of the same
+	// orchestrator when the detail was left and re-opened in between.
+	fireToken uint64
+	// fireOrchID / fireOrchName say which orchestrator the fire was for: the id releases
+	// the model's in-flight record, the name labels a late (stale) reply's footer.
+	fireOrchID   string
+	fireOrchName string
 }
 
 // enterOrchestrators switches to the screen and (re)loads its rows.
@@ -176,9 +192,33 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
+	// The call is over whichever detail is open: release the model's in-flight record.
+	if msg.fire && m.orchFires[msg.fireOrchID] == msg.fireToken {
+		delete(m.orchFires, msg.fireOrchID)
+	}
+	// A fire reply is "current" only if it is the one the open detail is waiting for.
+	current := msg.fire && msg.fireToken != 0 && msg.fireToken == m.orchDetail.fireToken
+	if current {
+		m.orchDetail.firing = false
+		m.orchDetail.fireToken = 0
+		if msg.err == nil {
+			m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), msg.fireEvent
+			// The success is on the footer; a double tap's in-progress refusal is stale now.
+			if m.orchDetail.status == enqueueInProgressText {
+				m.orchDetail.status = ""
+			}
+		}
+	}
 	if msg.err != nil {
 		m.status = "error: " + msg.err.Error()
 		m.err = msg.err
+		if msg.fire && !current {
+			// A late refusal of a fire the open detail is no longer waiting for (another
+			// orchestrator, or this one re-opened since): footer only, named, so it is
+			// not read as a refusal of whatever the detail shows now.
+			m.status = "error: enqueue on " + msg.fireOrchName + ": " + msg.err.Error()
+			return m, nil
+		}
 		if m.screen == screenOrchDetail {
 			m.orchDetail.status = msg.err.Error()
 		}

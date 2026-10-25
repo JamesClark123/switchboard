@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -53,13 +55,14 @@ type Manager struct {
 	hostID string
 	emit   func(*pb.Event) // nil-safe; Event.mcp_gateway_changed after every change
 
-	mu       sync.Mutex
-	inflight map[string]struct{} // names with an authorization wait running
+	mu               sync.Mutex
+	warnedNoCallback bool              // warnNoCallback has logged
+	inflight         map[string]uint32 // names with an authorization wait running -> its OAuth callback port (0 until announced)
 }
 
 // NewManager wires a Manager; emit may be nil.
 func NewManager(cli *CLI, reg *registry.Registry, hostID string, emit func(*pb.Event)) *Manager {
-	return &Manager{cli: cli, reg: reg, hostID: hostID, emit: emit, inflight: map[string]struct{}{}}
+	return &Manager{cli: cli, reg: reg, hostID: hostID, emit: emit, inflight: map[string]uint32{}}
 }
 
 // Attach is what a launch applies (data-model "Launch resolution"): the mode,
@@ -387,7 +390,7 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrAuthInProgress, name)
 	}
-	m.inflight[name] = struct{}{}
+	m.inflight[name] = 0
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -409,7 +412,16 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		if !urlSent {
 			if u := findURL(line); u != "" {
 				urlSent = true
-				frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Url{Url: u}})
+				port := callbackPort(u)
+				if port == 0 {
+					m.warnNoCallback(name)
+				}
+				if port != 0 {
+					m.mu.Lock()
+					m.inflight[name] = port
+					m.mu.Unlock()
+				}
+				frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Url{Url: u}, CallbackPort: port})
 				return
 			}
 		}
@@ -436,6 +448,104 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Done{Done: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}})
 		return nil
 	}
+}
+
+// warnNoCallback logs, once per daemon run, that an authorization link carried no
+// usable loopback redirect_uri (remote callback relay/paste-back unavailable).
+// Local daemons legitimately hit this on every authorization, so it must not
+// repeat; the exact redirect_uri shape sbx prints is unverified (research R2).
+func (m *Manager) warnNoCallback(name string) {
+	m.mu.Lock()
+	first := !m.warnedNoCallback
+	m.warnedNoCallback = true
+	m.mu.Unlock()
+	if first {
+		log.Printf("[mcp] authorize %s: link has no usable loopback redirect_uri; remote callback relay/paste-back unavailable (logged once)", name)
+	}
+}
+
+// CallbackPort returns the OAuth callback port of the in-flight authorization for
+// name. ok is false when none is running or its URL announced no loopback port, so
+// a relay can only ever reach a listener an authorization started.
+func (m *Manager) CallbackPort(name string) (uint32, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	port := m.inflight[name]
+	return port, port != 0
+}
+
+// ErrNoCallback: no in-flight authorization is waiting on a callback for the name
+// → FAILED_PRECONDITION.
+var ErrNoCallback = errors.New("no authorization is waiting for a callback")
+
+// CompleteCallback is the paste-back path: it replays the browser's failed
+// redirect (http://localhost:<port>/...) against the host's callback listener.
+// The URL must be loopback and on the announced port, so it cannot be used to
+// reach anything else.
+func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) error {
+	port, ok := m.CallbackPort(name)
+	if !ok {
+		return ErrNoCallback
+	}
+	target, err := callbackTarget(rawURL, port)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
+	}
+	resp, err := callbackClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("replay callback: %w", err)
+	}
+	_ = resp.Body.Close()
+	// A redirect to the provider-style error page (…?error=access_denied) is a
+	// rejection too, not a delivery.
+	if loc, lerr := resp.Location(); lerr == nil {
+		if e := loc.Query().Get("error"); e != "" {
+			return fmt.Errorf("the callback was answered with an authorization error (%s) — the provider rejected the sign-in", printable(e, 80))
+		}
+	}
+	if resp.StatusCode >= 400 {
+		// The listener rejected it (state mismatch, expired code, …): say so rather
+		// than let the developer wait out the 10-minute timeout.
+		return fmt.Errorf("the host's callback listener answered HTTP %d — the redirect was not accepted (copy the full, latest address from the browser)", resp.StatusCode)
+	}
+	return nil
+}
+
+// printable makes listener-controlled text safe to show in a terminal: control and
+// non-printable characters are dropped and the result is capped at limit runes.
+func printable(s string, limit int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			continue
+		}
+		if n == limit {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// callbackClient replays a pasted redirect on the host's loopback only: it never
+// follows a redirect (the listener answers with one to its "success" page, which
+// must not become a request to another host) and never uses a proxy.
+var callbackClient = &http.Client{
+	// No proxy, and no keep-alive: the listener is one-shot, so an idle pooled
+	// connection to it would only linger (IdleConnTimeout 0 = forever).
+	Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // SetDefault sets or clears the attach-by-default mark for a registered server

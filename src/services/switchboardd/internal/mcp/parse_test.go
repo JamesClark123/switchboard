@@ -151,3 +151,70 @@ func TestFindURL(t *testing.T) {
 		t.Errorf("real transcript URLs = %q", found)
 	}
 }
+
+func TestCallbackPort(t *testing.T) {
+	cases := map[string]uint32{
+		"https://auth.example.com/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcallback":                             34567,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb":                                                8080,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A9000%2Fcb":                                            9000,
+		"https://auth.example.com/authorize?client_id=x":                                                                                    0, // no redirect_uri
+		"https://auth.example.com/authorize?redirect_uri=https%3A%2F%2Fexample.com%3A443%2Fcb":                                              0, // not loopback
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%2Fcb":                                                       0, // no port
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A22%2Fcb":                                                  0, // privileged port
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A22%2Fcb&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcb": 0, // ambiguous: two redirect_uri
+		"::not a url": 0,
+	}
+	for in, want := range cases {
+		if got := callbackPort(in); got != want {
+			t.Errorf("callbackPort(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestCallbackTarget(t *testing.T) {
+	got, err := callbackTarget(" http://localhost:34567/callback?code=abc&state=s ", 34567)
+	if err != nil || got != "http://localhost:34567/callback?code=abc&state=s" {
+		t.Errorf("got %q, %v", got, err)
+	}
+	for _, bad := range []string{
+		"http://evil.example.com:34567/cb", // not loopback
+		"http://localhost:1/cb",            // not the announced port
+		"ftp://localhost:34567/cb",         // not http
+		"nonsense",
+	} {
+		if _, err := callbackTarget(bad, 34567); err == nil {
+			t.Errorf("callbackTarget(%q) should be rejected", bad)
+		}
+	}
+}
+
+// Review (PR #1, run 41): URL hosts are case-insensitive.
+func TestLocalhostSubdomainsAndTrailingDotAreLoopback(t *testing.T) {
+	for _, h := range []string{"localhost", "LOCALHOST", "localhost.", "app.localhost", "App.LocalHost.", "127.0.0.1", "::1"} {
+		if !isLoopbackHost(h) {
+			t.Errorf("%q should be loopback", h)
+		}
+	}
+	for _, h := range []string{"", "example.com", "localhost.example.com", "notlocalhost", "10.0.0.1", "evil.com.localhost.evil.com"} {
+		if isLoopbackHost(h) {
+			t.Errorf("%q must not be loopback", h)
+		}
+	}
+	if got := callbackPort("https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Fapp.localhost%3A34567%2Fcb"); got != 34567 {
+		t.Errorf("callbackPort for *.localhost = %d, want 34567", got)
+	}
+	// The replay always goes to the fixed host, whatever loopback spelling was pasted.
+	if got, err := callbackTarget("http://app.localhost:34567/cb?c=1", 34567); err != nil || got != "http://localhost:34567/cb?c=1" {
+		t.Errorf("callbackTarget = %q, %v", got, err)
+	}
+}
+
+func TestLoopbackHostsAreCaseInsensitive(t *testing.T) {
+	if got := callbackPort("https://auth.example.com/authorize?redirect_uri=http%3A%2F%2FLOCALHOST%3A34567%2Fcb"); got != 34567 {
+		t.Errorf("callbackPort with an upper-case host = %d, want 34567", got)
+	}
+	got, err := callbackTarget("http://LocalHost:34567/cb?code=x", 34567)
+	if err != nil || got != "http://localhost:34567/cb?code=x" {
+		t.Errorf("callbackTarget = %q, %v", got, err)
+	}
+}

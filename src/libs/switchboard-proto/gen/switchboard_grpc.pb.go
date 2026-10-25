@@ -67,6 +67,7 @@ const (
 	Switchboard_AddMcpServer_FullMethodName            = "/switchboard.v1.Switchboard/AddMcpServer"
 	Switchboard_RemoveMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/RemoveMcpServer"
 	Switchboard_AuthorizeMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
+	Switchboard_CompleteMcpAuthCallback_FullMethodName = "/switchboard.v1.Switchboard/CompleteMcpAuthCallback"
 	Switchboard_SetMcpServerDefault_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpServerDefault"
 	Switchboard_SetMcpAttachMode_FullMethodName        = "/switchboard.v1.Switchboard/SetMcpAttachMode"
 	Switchboard_AttachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AttachMcpServer"
@@ -88,6 +89,7 @@ const (
 	Switchboard_DeleteAction_FullMethodName            = "/switchboard.v1.Switchboard/DeleteAction"
 	Switchboard_PutTimedEvent_FullMethodName           = "/switchboard.v1.Switchboard/PutTimedEvent"
 	Switchboard_DeleteTimedEvent_FullMethodName        = "/switchboard.v1.Switchboard/DeleteTimedEvent"
+	Switchboard_FireTimedEvent_FullMethodName          = "/switchboard.v1.Switchboard/FireTimedEvent"
 	Switchboard_CallAction_FullMethodName              = "/switchboard.v1.Switchboard/CallAction"
 	Switchboard_ListRuns_FullMethodName                = "/switchboard.v1.Switchboard/ListRuns"
 	Switchboard_GetRun_FullMethodName                  = "/switchboard.v1.Switchboard/GetRun"
@@ -266,6 +268,7 @@ type SwitchboardClient interface {
 	// at 10 minutes daemon-side; cancelling the stream cancels the wait. The
 	// registration is never changed by any outcome.
 	AuthorizeMcpServer(ctx context.Context, in *AuthorizeMcpServerRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[McpAuthProgress], error)
+	CompleteMcpAuthCallback(ctx context.Context, in *CompleteMcpAuthCallbackRequest, opts ...grpc.CallOption) (*CompleteMcpAuthCallbackResponse, error)
 	// Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
 	// is not registered on this host.
 	SetMcpServerDefault(ctx context.Context, in *SetMcpServerDefaultRequest, opts ...grpc.CallOption) (*McpServer, error)
@@ -346,6 +349,13 @@ type SwitchboardClient interface {
 	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
 	PutTimedEvent(ctx context.Context, in *PutTimedEventRequest, opts ...grpc.CallOption) (*TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, in *DeleteTimedEventRequest, opts ...grpc.CallOption) (*DeleteTimedEventResponse, error)
+	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
+	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
+	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
+	FireTimedEvent(ctx context.Context, in *FireTimedEventRequest, opts ...grpc.CallOption) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a
 	// missing required argument, an undeclared argument, an oversized value or an
@@ -803,6 +813,16 @@ func (c *switchboardClient) AuthorizeMcpServer(ctx context.Context, in *Authoriz
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_AuthorizeMcpServerClient = grpc.ServerStreamingClient[McpAuthProgress]
 
+func (c *switchboardClient) CompleteMcpAuthCallback(ctx context.Context, in *CompleteMcpAuthCallbackRequest, opts ...grpc.CallOption) (*CompleteMcpAuthCallbackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompleteMcpAuthCallbackResponse)
+	err := c.cc.Invoke(ctx, Switchboard_CompleteMcpAuthCallback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) SetMcpServerDefault(ctx context.Context, in *SetMcpServerDefaultRequest, opts ...grpc.CallOption) (*McpServer, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(McpServer)
@@ -1007,6 +1027,16 @@ func (c *switchboardClient) DeleteTimedEvent(ctx context.Context, in *DeleteTime
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteTimedEventResponse)
 	err := c.cc.Invoke(ctx, Switchboard_DeleteTimedEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) FireTimedEvent(ctx context.Context, in *FireTimedEventRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_FireTimedEvent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1291,6 +1321,7 @@ type SwitchboardServer interface {
 	// at 10 minutes daemon-side; cancelling the stream cancels the wait. The
 	// registration is never changed by any outcome.
 	AuthorizeMcpServer(*AuthorizeMcpServerRequest, grpc.ServerStreamingServer[McpAuthProgress]) error
+	CompleteMcpAuthCallback(context.Context, *CompleteMcpAuthCallbackRequest) (*CompleteMcpAuthCallbackResponse, error)
 	// Sets or clears the attach-by-default mark (FR-080). NOT_FOUND when the name
 	// is not registered on this host.
 	SetMcpServerDefault(context.Context, *SetMcpServerDefaultRequest) (*McpServer, error)
@@ -1371,6 +1402,13 @@ type SwitchboardServer interface {
 	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
 	PutTimedEvent(context.Context, *PutTimedEventRequest) (*TimedEvent, error)
 	DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error)
+	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
+	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
+	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
+	FireTimedEvent(context.Context, *FireTimedEventRequest) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a
 	// missing required argument, an undeclared argument, an oversized value or an
@@ -1519,6 +1557,9 @@ func (UnimplementedSwitchboardServer) RemoveMcpServer(context.Context, *RemoveMc
 func (UnimplementedSwitchboardServer) AuthorizeMcpServer(*AuthorizeMcpServerRequest, grpc.ServerStreamingServer[McpAuthProgress]) error {
 	return status.Error(codes.Unimplemented, "method AuthorizeMcpServer not implemented")
 }
+func (UnimplementedSwitchboardServer) CompleteMcpAuthCallback(context.Context, *CompleteMcpAuthCallbackRequest) (*CompleteMcpAuthCallbackResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteMcpAuthCallback not implemented")
+}
 func (UnimplementedSwitchboardServer) SetMcpServerDefault(context.Context, *SetMcpServerDefaultRequest) (*McpServer, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetMcpServerDefault not implemented")
 }
@@ -1581,6 +1622,9 @@ func (UnimplementedSwitchboardServer) PutTimedEvent(context.Context, *PutTimedEv
 }
 func (UnimplementedSwitchboardServer) DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTimedEvent not implemented")
+}
+func (UnimplementedSwitchboardServer) FireTimedEvent(context.Context, *FireTimedEventRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method FireTimedEvent not implemented")
 }
 func (UnimplementedSwitchboardServer) CallAction(context.Context, *CallActionRequest) (*Run, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallAction not implemented")
@@ -2149,6 +2193,24 @@ func _Switchboard_AuthorizeMcpServer_Handler(srv interface{}, stream grpc.Server
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_AuthorizeMcpServerServer = grpc.ServerStreamingServer[McpAuthProgress]
 
+func _Switchboard_CompleteMcpAuthCallback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteMcpAuthCallbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CompleteMcpAuthCallback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CompleteMcpAuthCallback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CompleteMcpAuthCallback(ctx, req.(*CompleteMcpAuthCallbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_SetMcpServerDefault_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetMcpServerDefaultRequest)
 	if err := dec(in); err != nil {
@@ -2527,6 +2589,24 @@ func _Switchboard_DeleteTimedEvent_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_FireTimedEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FireTimedEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).FireTimedEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_FireTimedEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).FireTimedEvent(ctx, req.(*FireTimedEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_CallAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CallActionRequest)
 	if err := dec(in); err != nil {
@@ -2789,6 +2869,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Switchboard_RemoveMcpServer_Handler,
 		},
 		{
+			MethodName: "CompleteMcpAuthCallback",
+			Handler:    _Switchboard_CompleteMcpAuthCallback_Handler,
+		},
+		{
 			MethodName: "SetMcpServerDefault",
 			Handler:    _Switchboard_SetMcpServerDefault_Handler,
 		},
@@ -2871,6 +2955,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteTimedEvent",
 			Handler:    _Switchboard_DeleteTimedEvent_Handler,
+		},
+		{
+			MethodName: "FireTimedEvent",
+			Handler:    _Switchboard_FireTimedEvent_Handler,
 		},
 		{
 			MethodName: "CallAction",

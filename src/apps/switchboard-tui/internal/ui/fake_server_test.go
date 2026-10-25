@@ -112,6 +112,10 @@ func (s *fakeDaemonServer) DeleteTimedEvent(ctx context.Context, r *pb.DeleteTim
 	return &pb.DeleteTimedEventResponse{}, s.d.DeleteTimedEvent(ctx, r.GetOrchestratorId(), r.GetEventId())
 }
 
+func (s *fakeDaemonServer) FireTimedEvent(ctx context.Context, r *pb.FireTimedEventRequest) (*pb.Run, error) {
+	return s.d.FireTimedEvent(ctx, r.GetOrchestratorId(), r.GetEventId())
+}
+
 func (s *fakeDaemonServer) CallAction(ctx context.Context, r *pb.CallActionRequest) (*pb.Run, error) {
 	return s.d.CallAction(ctx, r.GetOrchestratorId(), r.GetAction(), r.GetArguments())
 }

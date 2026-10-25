@@ -125,6 +125,13 @@ func (c *Conn) DeleteTimedEvent(ctx context.Context, id, eventID string) error {
 	return c.orchErr(err)
 }
 
+// FireTimedEvent enqueues one run of a timed event now, as that event (SWI-4);
+// the event's schedule is untouched.
+func (c *Conn) FireTimedEvent(ctx context.Context, id, eventID string) (*pb.Run, error) {
+	out, err := c.API().FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: id, EventId: eventID})
+	return out, c.orchErr(err)
+}
+
 func (c *Conn) CallAction(ctx context.Context, id, action string, args map[string]string) (*pb.Run, error) {
 	out, err := c.API().CallAction(ctx, &pb.CallActionRequest{OrchestratorId: id, Action: action, Arguments: args})
 	return out, c.orchErr(err)

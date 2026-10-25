@@ -1,12 +1,18 @@
 package ui
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -390,5 +396,361 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	m, _ = update(m, ctrlS())
 	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "remote endpoints only") {
 		t.Errorf("headers on a host command should be refused; status %q", m.mcpView.status)
+	}
+}
+
+// openerDaemon lets a fakeDaemon satisfy forward.Opener; its streams never carry
+// traffic here, the tests only observe whether the callback listener exists.
+type openerDaemon struct{ *fakeDaemon }
+
+func (openerDaemon) ForwardPort(context.Context) (pb.Switchboard_ForwardPortClient, error) {
+	return nil, errors.New("not connected")
+}
+
+func authFrameModel(t *testing.T, remote bool, port uint32, d Daemon) (Model, *fakeDaemon) {
+	t.Helper()
+	fd := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize", CallbackPort: port}}}
+	m := mcpModel(t, fd)
+	m.mcpView.remote = remote
+	if remote { // as if the row were an ssh host with a target
+		m.mcpView.canSSH, m.mcpView.target = true, "dev-box"
+	}
+	if d == nil {
+		d = fd
+	} else if od, ok := d.(openerDaemon); ok {
+		od.fakeDaemon = fd
+		d = od
+	}
+	m.mcpView.daemon = d
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	return m, fd
+}
+
+func TestMcpAuthRemoteRelaysTheCallbackPort(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Port(forward.AuthKey(m.mcpView.host, "notion")) != port || !m.mcpView.auth.tunnel {
+		t.Fatalf("a remote authorization should listen on the callback port; port %d", m.forwards.Port(forward.AuthKey(m.mcpView.host, "notion")))
+	}
+	if !strings.Contains(m.View(), "relayed") {
+		t.Errorf("modal should say the callback is relayed:\n%s", m.View())
+	}
+	m, _ = update(m, press("esc")) // cancel; the end message tears the relay down
+	m = drainMcp(m, func() tea.Msg { return mcpAuthEndMsg{host: m.mcpView.host, name: "notion"} })
+	if m.forwards.Count() != 0 {
+		t.Error("the relay must close when the wait ends")
+	}
+}
+
+func TestMcpAuthLocalDaemonOpensNoRelay(t *testing.T) {
+	m, fd := authFrameModel(t, false, 45678, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Count() != 0 || m.mcpView.auth.callbackPort != 0 {
+		t.Error("a local daemon's callback is already on this machine; no relay")
+	}
+}
+
+func TestMcpAuthBusyPortFallsBackToPasteBack(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer func() { _ = ln.Close() }()
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	w := m.mcpView.auth
+	if w.tunnel || !w.pasting || w.tunnelErr == "" {
+		t.Fatalf("a busy port should open the paste prompt; tunnel %v pasting %v err %q", w.tunnel, w.pasting, w.tunnelErr)
+	}
+	// A wrong paste is rejected client-side with a clear message, before any RPC.
+	for _, r := range "http://localhost:1/cb?code=abc" {
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, cmd := update(m, press("enter"))
+	if cmd != nil || len(fd.mcpPasted) != 0 || !strings.Contains(m.mcpView.auth.pasteErr, "expected") {
+		t.Fatalf("a wrong-port paste must be refused locally; pasteErr %q pasted %v", m.mcpView.auth.pasteErr, fd.mcpPasted)
+	}
+	good := fmt.Sprintf("http://localhost:%d/cb?code=abc", port)
+	m.mcpView.auth.paste.SetValue(good)
+	m, cmd = update(m, press("enter"))
+	m, _ = update(m, runCmd(cmd))
+	if len(fd.mcpPasted) != 1 || fd.mcpPasted[0] != good {
+		t.Errorf("pasted = %v", fd.mcpPasted)
+	}
+	if m.mcpView.auth.pasting {
+		t.Error("a delivered callback should leave the paste prompt")
+	}
+}
+
+func TestMcpAuthPKeyOffersPasteBackOnlyWhenRemote(t *testing.T) {
+	m, fd := authFrameModel(t, false, 0, nil)
+	defer close(fd.mcpAuthGate)
+	m, _ = update(m, press("p"))
+	if m.mcpView.auth.pasting {
+		t.Error("p must do nothing for a local daemon")
+	}
+}
+
+func TestCheckPastedCallback(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://localhost:4000/cb?code=x": "http://localhost:4000/cb?code=x",
+		"https://127.0.0.1:4000/":         "https://127.0.0.1:4000/",
+		"http://[::1]:4000/cb":            "http://[::1]:4000/cb",
+		"localhost:4000/cb?code=x":        "http://localhost:4000/cb?code=x", // browsers that drop the scheme
+		"  127.0.0.1:4000/cb  ":           "http://127.0.0.1:4000/cb",
+		"HTTP://LOCALHOST:4000/cb":        "HTTP://LOCALHOST:4000/cb",     // hosts are case-insensitive
+		"http://localhost.:4000/cb":       "http://localhost.:4000/cb",    // trailing-dot form
+		"http://app.localhost:4000/cb":    "http://app.localhost:4000/cb", // RFC 6761 *.localhost
+		"http://127.0.0.2:4000/cb":        "http://127.0.0.2:4000/cb",     // any loopback IP, as on the daemon (shared rule)
+	} {
+		got, err := checkPastedCallback(in, 4000)
+		if err != nil || got != want {
+			t.Errorf("%q: got %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "nonsense", "ftp://localhost:4000/", "http://evil.example.com:4000/", "http://localhost:4001/cb"} {
+		if _, err := checkPastedCallback(bad, 4000); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+	// No port: say so instead of printing 'port , expected N'.
+	if _, err := checkPastedCallback("http://localhost/cb", 4000); err == nil || strings.Contains(err.Error(), "port ,") || !strings.Contains(err.Error(), "no port") {
+		t.Errorf("empty port message = %v", err)
+	}
+}
+
+// The relay is released when the wait ends even if the view no longer shows it.
+func TestMcpAuthEndClosesRelayEvenWhenViewMovedOn(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Count() != 1 {
+		t.Fatal("precondition: relay open")
+	}
+	m.mcpView.auth = nil // the view was reset under the running wait
+	m, _ = update(m, mcpAuthEndMsg{host: m.mcpView.host, name: "notion"})
+	if m.forwards.Count() != 0 {
+		t.Error("the relay must close when the wait ends")
+	}
+}
+
+func TestIsAddrInUse(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer func() { _ = ln.Close() }()
+	_, err := net.Listen("tcp", ln.Addr().String())
+	if !isAddrInUse(err) {
+		t.Errorf("a real EADDRINUSE must match: %v", err)
+	}
+	for _, e := range []error{errors.New("listen tcp 127.0.0.1:80: bind: permission denied"), errors.New("cannot assign requested address")} {
+		if isAddrInUse(e) {
+			t.Errorf("%v must not match", e)
+		}
+	}
+	if !isAddrInUse(errors.New("Only one usage of each socket address (protocol/network address/port) is normally permitted")) {
+		t.Error("the Windows wording must match")
+	}
+}
+
+// The busy-port text is only for a port that is actually taken; any other failure
+// shows its real cause. Port 70000 is out of range, so the bind fails the same way
+// everywhere (never EADDRINUSE, whoever runs the test).
+func TestMcpAuthOtherListenFailuresShowTheRealCause(t *testing.T) {
+	m, fd := authFrameModel(t, true, 70000, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	w := m.mcpView.auth
+	if w.tunnel || !w.pasting {
+		t.Fatalf("a failed bind must fall back to paste-back; tunnel %v pasting %v", w.tunnel, w.pasting)
+	}
+	if strings.Contains(w.tunnelErr, "is in use") || !strings.Contains(w.tunnelErr, "70000") {
+		t.Errorf("a non-EADDRINUSE failure must show the real error; tunnelErr = %q", w.tunnelErr)
+	}
+}
+
+// A remote daemon whose link carries no loopback callback port tells the developer
+// what to do; a local daemon does not.
+func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
+	m, fd := authFrameModel(t, true, 0, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if !m.mcpView.auth.noCallback {
+		t.Fatal("remote + url without a port should set noCallback")
+	}
+	// The ssh target comes from the daemon row; fall back to its name.
+	if got := m.mcpView.auth.sshTarget; got == "" {
+		t.Fatalf("the hint needs something to ssh to; got %q", got)
+	}
+	v := m.View()
+	for _, want := range []string{
+		"no callback port was reported for this link",
+		"ssh -N -L PORT:localhost:PORT " + m.mcpView.auth.sshTarget,
+		"keep this wait running",
+		"esc (cancel this wait)",
+		"sbx mcp auth notion",
+		"then r to reload the list",
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("hint missing %q in:\n%s", want, v)
+		}
+	}
+	// The forward needs no cancel, so it comes first; esc belongs to the host-side fallback.
+	if strings.Index(v, "ssh -N") > strings.Index(v, "esc (cancel") || strings.Index(v, "esc (cancel") > strings.Index(v, "sbx mcp auth notion") {
+		t.Error("order must be: forward the port, then (fallback) esc before the host command")
+	}
+
+	ml, fdl := authFrameModel(t, false, 0, openerDaemon{})
+	defer close(fdl.mcpAuthGate)
+	if ml.mcpView.auth.noCallback || strings.Contains(ml.View(), "no callback port was reported") {
+		t.Error("a local daemon needs no relay, so no hint")
+	}
+}
+
+// With an ssh target on the view, the hint names it.
+func TestMcpAuthHintUsesTheDaemonsSSHTarget(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+	defer close(d.mcpAuthGate)
+	m := mcpModel(t, d)
+	m.mcpView.remote, m.mcpView.target, m.mcpView.canSSH = true, "dev@build-box", true
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	if v := m.View(); !strings.Contains(v, "ssh -N -L PORT:localhost:PORT dev@build-box") {
+		t.Errorf("the hint should name the ssh target; got:\n%s", v)
+	}
+}
+
+// Review (PR #1, run 65): the suggested command carries the host's saved ssh
+// options, so a copy-paste reaches the same machine the daemon connection does.
+func TestSSHForwardCommandCarriesSavedOptions(t *testing.T) {
+	cases := []struct {
+		opts   []string
+		target string
+		want   string
+	}{
+		{nil, "dev@build-box", "ssh -N -L PORT:localhost:PORT dev@build-box"},
+		{[]string{"-p", "2222", "-i", "~/.ssh/build_key", "-J", "jump@bastion"}, "dev@build-box",
+			"ssh -N -p 2222 -i ~/.ssh/build_key -J jump@bastion -L PORT:localhost:PORT dev@build-box"},
+		{[]string{"-o", "ProxyCommand=ssh -W %h:%p jump"}, "build-box",
+			"ssh -N -o 'ProxyCommand=ssh -W %h:%p jump' -L PORT:localhost:PORT build-box"},
+		{[]string{"-o", "Note=it's"}, "h", `ssh -N -o 'Note=it'\''s' -L PORT:localhost:PORT h`},
+	}
+	for _, c := range cases {
+		if got := sshForwardCommand(c.opts, c.target); got != c.want {
+			t.Errorf("sshForwardCommand(%q, %q)\n got %s\nwant %s", c.opts, c.target, got, c.want)
+		}
+	}
+}
+
+// The options travel from the daemon row to the hint in the modal.
+func TestMcpAuthHintShowsTheHostsSavedSSHOptions(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+	defer close(d.mcpAuthGate)
+	m := mcpModel(t, d)
+	m.mcpView.remote, m.mcpView.target, m.mcpView.canSSH, m.mcpView.sshOpts = true, "dev@build-box", true, []string{"-p", "2222", "-J", "jump"}
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	// Long commands are broken at argument boundaries with shell continuations, so
+	// undo those (and the box borders) before comparing.
+	norm := regexp.MustCompile(`\s*\\\s*[│\x1b\[0-9;m]*\s*`).ReplaceAllString(stripBox(m.View()), " ")
+	if !strings.Contains(norm, "ssh -N -p 2222 -J jump -L PORT:localhost:PORT dev@build-box") {
+		t.Errorf("the hint should include the saved ssh options; got:\n%s\nnormalised: %s", m.View(), norm)
+	}
+	if strings.Contains(m.View(), "build-\n") {
+		t.Error("the command must not be hard-wrapped in the middle of a word")
+	}
+}
+
+// stripBox drops the modal's border characters and ANSI escapes so wrapped text can
+// be compared as a whole.
+func stripBox(s string) string {
+	s = regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(s, "")
+	return strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(s)
+}
+
+func TestWrapArgsBreaksAtArgumentsAndStaysOneCommand(t *testing.T) {
+	args := sshForwardArgs([]string{"-p", "2222", "-o", "ProxyCommand=ssh -W %h:%p jump", "-i", "~/.ssh/build_key"}, "dev@build-box")
+	cmd := strings.Join(args, " ")
+	out := wrapArgs(args, 44)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("a long command should be broken: %q", out)
+	}
+	for i, l := range lines {
+		if i < len(lines)-1 && !strings.HasSuffix(l, " \\") {
+			t.Errorf("line %d must end in a shell continuation: %q", i, l)
+		}
+		if len(strings.TrimSuffix(l, " \\")) > 44+10 { // a single long argument may overrun
+			t.Errorf("line %d is too long: %q", i, l)
+		}
+	}
+	// Rejoining the continuations gives back the original command exactly.
+	rejoined := strings.Join(strings.Fields(strings.ReplaceAll(out, " \\\n", " ")), " ")
+	if rejoined != strings.Join(strings.Fields(cmd), " ") {
+		t.Errorf("the wrapped command must be the same command:\n got %s\nwant %s", rejoined, cmd)
+	}
+	// A quoted argument is never split.
+	if !strings.Contains(strings.ReplaceAll(out, " \\\n  ", " "), "'ProxyCommand=ssh -W %h:%p jump'") {
+		t.Errorf("a quoted argument must stay whole: %q", out)
+	}
+	if short := wrapArgs(sshForwardArgs(nil, "h"), 44); strings.Contains(short, "\n") {
+		t.Errorf("a short command stays on one line: %q", short)
+	}
+}
+
+// Regression (PR #1 round 7): an option holding BOTH an apostrophe and spaces used to
+// be split mid-argument, because the wrapper re-parsed the already-quoted string and
+// the escaped quote ('\”) flipped its in-quote state. Arguments are atomic now.
+func TestWrapArgsNeverSplitsAnArgumentWithAnApostropheAndSpaces(t *testing.T) {
+	arg := "Banner=it's a banner text here"
+	args := sshForwardArgs([]string{"-o", arg}, "dev@build-box")
+	want := shellQuote(arg)
+	if want != `'Banner=it'\''s a banner text here'` {
+		t.Fatalf("precondition: quoting = %s", want)
+	}
+	for _, width := range []int{10, 20, 30, 44, 80} {
+		out := wrapArgs(args, width)
+		if !strings.Contains(strings.ReplaceAll(out, " \\\n  ", " "), " "+want+" ") {
+			t.Errorf("width %d: the quoted argument was split:\n%s", width, out)
+		}
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Count(strings.ReplaceAll(l, `'\''`, ""), "'")%2 != 0 {
+				t.Errorf("width %d: a line leaves a quote open (a continuation inside quotes is literal):\n%s", width, l)
+			}
+		}
+	}
+}
+
+// The forward option is only offered for an ssh row with a target; otherwise only the
+// host-side fallback is shown (never "ssh -N -L … ”" or a socket path as a host).
+func TestMcpAuthHintOffersThePortForwardOnlyForSSHRows(t *testing.T) {
+	m, fd := authFrameModel(t, true, 0, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if v := m.View(); !strings.Contains(v, "ssh -N -L PORT:localhost:PORT dev-box") {
+		t.Fatalf("an ssh row with a target gets the forward:\n%s", v)
+	}
+
+	// A remote daemon that is not an ssh host (or has no target): fallback only.
+	for name, setup := range map[string]func(*mcpState){
+		"not ssh":      func(v *mcpState) { v.remote, v.target, v.canSSH = true, "/run/sock", false },
+		"empty target": func(v *mcpState) { v.remote, v.target, v.canSSH = true, "", false },
+	} {
+		d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+			mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+		mm := mcpModel(t, d)
+		setup(&mm.mcpView)
+		mm, cmd := update(mm, press("A"))
+		mm, _ = update(mm, runCmd(cmd))
+		v := mm.View()
+		if strings.Contains(v, "ssh -N") || strings.Contains(v, "keep this wait running") || strings.Contains(v, "''") {
+			t.Errorf("%s: no port-forward option expected:\n%s", name, v)
+		}
+		if !strings.Contains(v, "with a browser on the host") || !strings.Contains(v, "sbx mcp auth notion") {
+			t.Errorf("%s: the host-side fallback must remain:\n%s", name, v)
+		}
+		close(d.mcpAuthGate)
 	}
 }

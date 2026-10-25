@@ -264,6 +264,18 @@ func (f *fakeDaemon) DeleteTimedEvent(_ context.Context, id, eventID string) err
 	return nil
 }
 
+func (f *fakeDaemon) FireTimedEvent(_ context.Context, id, eventID string) (*pb.Run, error) {
+	if err := f.orchCall("FireTimedEvent %s %s", id, eventID); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.orchRun != nil {
+		return f.orchRun, nil
+	}
+	return &pb.Run{Id: "run-9", OrchestratorId: id, Origin: eventID, EventKind: pb.EventKind_EVENT_KIND_TIMED, State: pb.RunState_RUN_STATE_QUEUED, Position: 2}, nil
+}
+
 func (f *fakeDaemon) CallAction(_ context.Context, id, action string, args map[string]string) (*pb.Run, error) {
 	keys := make([]string, 0, len(args))
 	for k := range args {

@@ -3,6 +3,9 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,5 +211,260 @@ func TestSchedulerRestartResumesOnPhaseWithoutReplay(t *testing.T) {
 	ev = eventOf(t, env, o.GetId(), "tev-2")
 	if !ev.GetEnabled() || ev.GetSkippedCount() != 0 || !ev.GetLastFiredAt().AsTime().Equal(start.Add(5*time.Minute)) {
 		t.Errorf("second event = %+v", ev)
+	}
+}
+
+// --- SWI-4: Enqueue now ---
+
+func TestFireTimedEventQueuesAsTheEventAndKeepsTheSchedule(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false) // no worker: the run stays queued
+	ev, err := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := eventOf(t, env, o.GetId(), ev.GetId())
+	env.clock.Advance(20 * time.Second) // not due yet
+
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatalf("FireTimedEvent: %v", err)
+	}
+	if run.GetEventKind() != pb.EventKind_EVENT_KIND_TIMED || run.GetOrigin() != ev.GetId() || run.GetOriginLabel() != "poll" ||
+		run.GetArguments()["number"] != "1" || run.GetState() != pb.RunState_RUN_STATE_QUEUED || run.GetPosition() != 1 {
+		t.Fatalf("run = %+v", run)
+	}
+	after := eventOf(t, env, o.GetId(), ev.GetId())
+	if !after.GetNextFireAt().AsTime().Equal(before.GetNextFireAt().AsTime()) || after.GetLastFiredAt() != nil ||
+		after.GetLastSkippedAt() != nil || after.GetSkippedCount() != 0 {
+		t.Errorf("a manual fire must not touch the schedule: before %+v after %+v", before, after)
+	}
+
+	// Dedupe on: the open (queued) run refuses a second one and names it.
+	_, err = env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), run.GetId()) || !strings.Contains(err.Error(), "poll") || !strings.Contains(err.Error(), "queued") {
+		t.Errorf("dedupe refusal = %v", err)
+	}
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("a refused fire must queue nothing: %d runs", n)
+	}
+
+	// The next scheduled firing, still with that run open, is skipped and recorded.
+	env.clock.Advance(40 * time.Second)
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("scheduled firing should be skipped: %d runs", n)
+	}
+	if got := eventOf(t, env, o.GetId(), ev.GetId()); got.GetSkippedCount() != 1 {
+		t.Errorf("skipped_count = %d, want 1", got.GetSkippedCount())
+	}
+}
+
+func TestFireTimedEventRefusedWhileARunIsInFlightButNotWithDedupeOff(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 1, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	first, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle(rt)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), first.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "running") {
+		t.Errorf("in-flight refusal = %v", err)
+	}
+
+	upd := pollEvent()
+	upd.Id, upd.DedupeDisabled = ev.GetId(), true
+	if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err != nil {
+		t.Errorf("dedupe off should always enqueue: %v", err)
+	}
+	if n := runCount(t, env, o.GetId()); n != 2 {
+		t.Errorf("runs = %d, want 2", n)
+	}
+}
+
+func TestFireTimedEventWorksWhenDisabledAndReportsMissingThings(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	disabled := pollEvent()
+	disabled.Enabled, disabled.DedupeDisabled = false, true
+	ev, err := env.svc.PutTimedEvent(o.GetId(), disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err != nil {
+		t.Errorf("a disabled event can be fired by hand: %v", err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), "tev-404"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown event = %v", err)
+	}
+	if _, err := env.svc.FireTimedEvent("o-none", ev.GetId()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown orchestrator = %v", err)
+	}
+	// Deleting the action disables the event; firing it reports the missing action.
+	if _, err := env.svc.DeleteAction(o.GetId(), "review-pr"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "action review-pr") {
+		t.Errorf("deleted action = %v", err)
+	}
+}
+
+// --- PR #4 review fixes ---
+
+// The event is read under the lock: a definition replaced or deleted before the
+// fire got the lock is never used. Deterministic: the test holds fireMu, parks the
+// fire at the seam just before its Lock(), changes the event, then releases.
+func TestFireTimedEventUsesTheCurrentDefinitionAndNotADeletedOne(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+
+	type result struct {
+		run *pb.Run
+		err error
+	}
+	fireAfter := func(change func()) result {
+		reached := make(chan struct{})
+		rt.fireMu.Lock()
+		rt.beforeFireLock = func() { close(reached) }
+		done := make(chan result, 1)
+		go func() {
+			run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+			done <- result{run, err}
+		}()
+		<-reached // the fire is at the seam; it cannot proceed past Lock() while we hold it
+		change()
+		rt.beforeFireLock = nil
+		rt.fireMu.Unlock()
+		return <-done
+	}
+
+	// An edit that lands before the fire gets the lock is what the fire uses.
+	r := fireAfter(func() {
+		upd := pollEvent()
+		upd.Id = ev.GetId()
+		upd.Arguments = map[string]string{"number": "99", "repo": "acme/web"}
+		if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if r.err != nil || r.run.GetArguments()["number"] != "99" {
+		t.Fatalf("the fire must use the definition current at lock time: %+v / %v", r.run, r.err)
+	}
+
+	// A delete before the lock makes the fire fail NotFound and queue nothing.
+	before := runCount(t, env, o.GetId())
+	r = fireAfter(func() {
+		if err := env.svc.DeleteTimedEvent(o.GetId(), ev.GetId()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !errors.Is(r.err, ErrNotFound) {
+		t.Errorf("a deleted event must not fire; run %+v err %v", r.run, r.err)
+	}
+	if n := runCount(t, env, o.GetId()); n != before {
+		t.Errorf("a deleted event queued a run: %d -> %d", before, n)
+	}
+}
+
+// Dedupe holds across concurrent manual fires and a scheduled tick: exactly one
+// run is queued.
+func TestFireTimedEventConcurrentWithTickQueuesOne(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var ok, refused atomic.Int32
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err == nil {
+				ok.Add(1)
+			} else if errors.Is(err, ErrPrecondition) {
+				refused.Add(1)
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); <-start; env.clock.Advance(time.Minute) }() // the scheduled slot comes due too
+	close(start)
+	wg.Wait()
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("dedupe must hold under concurrency: %d runs (ok %d, refused %d)", n, ok.Load(), refused.Load())
+	}
+}
+
+func TestFireTimedEventAwaitingReviewRefusalSaysHowToClearIt(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := env.reg.GetRun(o.GetId(), run.GetId())
+	stored.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
+	if err := env.reg.PutRun(stored); err != nil {
+		t.Fatal(err)
+	}
+	_, err = env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "awaiting review") || !strings.Contains(err.Error(), "mark the worker free") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The position is where the run queued (>= 1), even when a free worker takes it
+// immediately.
+func TestFireTimedEventPositionIsNeverZeroWithAFreeWorker(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 1, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil || run.GetPosition() != 1 {
+		t.Errorf("position = %d, err %v; want 1", run.GetPosition(), err)
+	}
+}
+
+// Review (PR #4, run 43): a manual fire is logged with the name quoted (a newline
+// in an event name cannot forge a second line) and AFTER fireMu is released (a slow
+// Logf must not hold up the scheduler).
+func TestFireTimedEventLogsQuotedNameOutsideTheLock(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 0, false)
+	ev := pollEvent()
+	ev.Name = "poll\nforged line"
+	saved, err := env.svc.PutTimedEvent(o.GetId(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Background goroutines (links, the scheduler) log too, so the hook guards its
+	// state and probes fireMu only for the manual-fire line itself (tick() may
+	// legitimately log under fireMu).
+	var mu sync.Mutex
+	var manual []string
+	lockedWhileLogging := false
+	env.setLogHook(func(line string) {
+		if !strings.Contains(line, "manual fire") {
+			return
+		}
+		locked := !rt.fireMu.TryLock()
+		if !locked {
+			rt.fireMu.Unlock()
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		manual = append(manual, line)
+		lockedWhileLogging = lockedWhileLogging || locked
+	})
+	t.Cleanup(func() { env.setLogHook(nil) })
+	if _, err := env.svc.FireTimedEvent(o.GetId(), saved.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(manual) != 1 || strings.Contains(manual[0], "\n") || !strings.Contains(manual[0], `"poll\nforged line"`) {
+		t.Errorf("want one single-line log with the quoted name; got %q", manual)
+	}
+	if lockedWhileLogging {
+		t.Error("the log call must happen after fireMu is released")
 	}
 }

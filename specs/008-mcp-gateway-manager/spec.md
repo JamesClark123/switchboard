@@ -389,7 +389,16 @@ and the toggle is still off.
   **10 minutes** (a package constant, like the existing operation timeouts) and MUST be cancellable
   by the developer at any time; the TUI MUST show the time remaining while it waits. On timeout or
   cancel the registration MUST be kept and reported as unauthorized — never dropped — and MUST be
-  authorizable later from the list.
+  authorizable later from the list. **Remote daemons**: the provider redirects the browser to
+  `http://localhost:<port>` (the `redirect_uri` in the link), a listener that `sbx mcp auth` runs on
+  the *daemon's host*. The daemon MUST announce that loopback port with the link
+  (`McpAuthProgress.callback_port`), and for a daemon on another machine the TUI MUST bind the same
+  port on the developer's machine and relay it to the host over the existing daemon connection
+  (`ForwardPort` with `Open.mcp_auth_name`) for the duration of the wait; the relay MUST reach only
+  the port the in-flight authorization announced, on loopback. If that port is unavailable locally,
+  the TUI MUST offer a paste-back of the browser's failed redirect URL
+  (`CompleteMcpAuthCallback`), which the daemon replays against the same listener. A local daemon
+  opens no relay.
 - **FR-076**: Registering a host-launched local server MUST warn, before anything is registered,
   that such a server runs on the daemon's host outside sandbox isolation, and MUST proceed only on
   explicit acceptance.
