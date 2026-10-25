@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"slices"
 	"strings"
 
@@ -15,6 +16,10 @@ import (
 // into an existing sandbox, so the load can never interleave with a refresh or a
 // source edit that may be recreating the container (feature 008, FR-102).
 const opAttachMcp = "attach mcp server"
+
+// ErrMcpToolCollision: loading the server would put a tool in the gateway's flat
+// namespace that another loaded server already provides → FAILED_PRECONDITION.
+var ErrMcpToolCollision = errors.New("MCP tool name collision")
 
 // ErrMcpAlreadyAttached: switchboard already records the server on the sandbox.
 var ErrMcpAlreadyAttached = errors.New("MCP server already attached to this sandbox")
@@ -59,7 +64,27 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 
 	lctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
 	defer cancel()
-	if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.LoadMcp(lctx, r, name, onLog) }); err != nil {
+	logLine, captured := captureOutput(onLog)
+	var collision error
+	var hint string
+	err = tryRefs(sbxRefs(sb), func(r string) error {
+		captured.Reset()
+		err := m.runner.LoadMcp(lctx, r, name, logLine)
+		if err == nil {
+			return nil
+		}
+		if hint = collisionHint(err, captured); hint != "" {
+			// A clash is about the server, not the handle: trying the next ref
+			// would only replace this diagnostic with an unrelated one.
+			collision = err
+			return nil
+		}
+		return err
+	})
+	if collision != nil {
+		return nil, fmt.Errorf("%w: %s (runtime: %v)", ErrMcpToolCollision, hint, collision)
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -78,6 +103,27 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// captureOutput returns a log callback that forwards each line to next (which
+// may be nil) and also keeps it. A runner's error carries only a bounded tail
+// of the output (outputTail), so building the collision hint from that alone
+// would drop the earliest clashing tools (SWI-2).
+func captureOutput(next func(string)) (func(string), *strings.Builder) {
+	var buf strings.Builder
+	return func(line string) {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+		if next != nil {
+			next(line)
+		}
+	}, &buf
+}
+
+// collisionHint is mcp.CollisionHint over the full captured output plus the
+// error text ("" when neither is a tool-name collision).
+func collisionHint(err error, captured *strings.Builder) string {
+	return mcp.CollisionHint(captured.String() + "\n" + err.Error())
 }
 
 // attachableState mirrors editableState for MCP attach: RUNNING or STOPPED only.

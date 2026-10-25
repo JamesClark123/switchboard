@@ -287,7 +287,7 @@ func (m Model) mcpForm(v *mcpFormVals) *huh.Form {
 			Options(huh.NewOption("Remote endpoint (URL)", "remote"), huh.NewOption("Host command (runs on the daemon's host)", "command")).Value(&v.kind),
 		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp").Value(&v.url),
 		huh.NewText().Key("headers").Title("Headers (remote only)").Lines(3).
-			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets).").Value(&v.headers),
+			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets). Tool-name collisions between servers (e.g. list_issues in both GitHub and Linear) are avoided with the server's own tool-filter headers, e.g. GitHub X-MCP-Toolsets / X-MCP-Tools.").Value(&v.headers),
 		huh.NewInput().Key("command").Title("Command").Description("Host command, e.g. npx").Value(&v.command),
 		huh.NewInput().Key("args").Title("Arguments").Description("Comma-separated, e.g. @playwright/mcp@latest").Value(&v.args),
 		huh.NewInput().Key("dir").Title("Working directory").Description("Optional, host command only.").Value(&v.dir),

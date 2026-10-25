@@ -134,7 +134,7 @@ func (s *Server) AttachMcpServer(ctx context.Context, req *pb.AttachMcpServerReq
 
 // attachMcpStatus maps an attach failure to a gRPC code: an unknown sandbox or
 // an unregistered server is NOT_FOUND, a name already on the record is
-// ALREADY_EXISTS, a busy or ineligible sandbox is FAILED_PRECONDITION, and
+// ALREADY_EXISTS, a busy or ineligible sandbox — or a tool-name collision with a loaded server — is FAILED_PRECONDITION, and
 // anything else (a runtime diagnostic) travels verbatim.
 func attachMcpStatus(err error) error {
 	if _, ok := status.FromError(err); ok {
@@ -145,7 +145,7 @@ func attachMcpStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, sandbox.ErrMcpAlreadyAttached):
 		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):
+	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState), errors.Is(err, sandbox.ErrMcpToolCollision):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Unknown, err.Error())
