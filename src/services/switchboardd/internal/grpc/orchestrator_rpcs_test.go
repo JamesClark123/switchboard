@@ -33,6 +33,7 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 		"DeleteAction":         func() error { _, e := client.DeleteAction(ctx, &pb.DeleteActionRequest{}); return e },
 		"PutTimedEvent":        func() error { _, e := client.PutTimedEvent(ctx, &pb.PutTimedEventRequest{}); return e },
 		"DeleteTimedEvent":     func() error { _, e := client.DeleteTimedEvent(ctx, &pb.DeleteTimedEventRequest{}); return e },
+		"FireTimedEvent":       func() error { _, e := client.FireTimedEvent(ctx, &pb.FireTimedEventRequest{}); return e },
 		"CallAction":           func() error { _, e := client.CallAction(ctx, &pb.CallActionRequest{}); return e },
 		"ListRuns":             func() error { _, e := client.ListRuns(ctx, &pb.ListRunsRequest{}); return e },
 		"GetRun":               func() error { _, e := client.GetRun(ctx, &pb.GetRunRequest{}); return e },
@@ -58,8 +59,8 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			return e
 		},
 	}
-	if len(calls) != 24 {
-		t.Fatalf("expected the 24 feature-009 RPCs, have %d", len(calls))
+	if len(calls) != 25 { // 24 from feature 009 + FireTimedEvent (SWI-4)
+		t.Fatalf("expected the 25 orchestrator RPCs, have %d", len(calls))
 	}
 	for name, call := range calls {
 		err := call()

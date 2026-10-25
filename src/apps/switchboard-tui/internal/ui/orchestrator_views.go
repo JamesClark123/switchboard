@@ -154,7 +154,7 @@ func (m Model) orchDetailHelp() helpBindings {
 	case viewQueue:
 		hb = append(hb, hkey("enter", "prompt"), hkey("x", "cancel"), hkey("m", "mark free"))
 	case viewEvents:
-		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"))
+		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"), hkey("n", "enqueue now"))
 	case viewReasoning:
 		hb = append(hb, hkey("e", "edit setup"), hkey("b", "rebuild"), hkey("l", "output"))
 	case viewHosts:

@@ -27,6 +27,9 @@ type runtime struct {
 
 	// user story 3+: dispatch, review timers, scheduler (dispatch.go, runs.go,
 	// scheduler.go) hang their state here.
+	// fireMu makes "is a run of this event open? → queue one" atomic between the
+	// scheduler's tick and a manual FireTimedEvent, so dedupe holds for both.
+	fireMu          sync.Mutex
 	dispatchMu      sync.Mutex
 	dispatchPending bool
 	dispatching     bool

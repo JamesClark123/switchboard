@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -378,5 +379,46 @@ func TestEventFormAndView(t *testing.T) {
 	m, _ = update(m, press("a"))
 	if m.orchDetail.form != nil || !strings.Contains(m.orchDetail.status, "add an action first") {
 		t.Error("no actions ⇒ no event form")
+	}
+}
+
+// SWI-4: `n` on the Events view enqueues the selected event now.
+func TestEventsViewEnqueueNow(t *testing.T) {
+	ev := &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host", Actions: []*pb.Action{reviewAction()}, TimedEvents: []*pb.TimedEvent{ev}}}}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	m.orchDetail.view = viewEvents
+	if !strings.Contains(m.View(), "n enqueue now") {
+		t.Error("the Events view hints should include n enqueue now")
+	}
+	m, cmd := update(m, press("n"))
+	if m.screen == screenConfirm {
+		t.Fatal("enqueue now needs no confirmation")
+	}
+	m = feed2(m, cmd)
+	if !strings.Contains(a.orchCallsJoined(), "FireTimedEvent o-a tev-1") {
+		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+	if !strings.Contains(m.status, "enqueued poll (run-9, position 2)") {
+		t.Errorf("status = %q", m.status)
+	}
+
+	// The daemon's dedupe refusal is shown as is.
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, cmd = update(m, press("n"))
+	m = feed2(m, cmd)
+	if !strings.Contains(m.orchDetail.status, "run run-1 of poll is already queued") {
+		t.Errorf("error status = %q", m.orchDetail.status)
+	}
+}
+
+func TestEventsViewEnqueueNowWithNoEventsDoesNothing(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host"}}}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	m.orchDetail.view = viewEvents
+	if _, cmd := update(m, press("n")); cmd != nil {
+		t.Error("n with no events must do nothing")
 	}
 }

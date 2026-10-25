@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +209,101 @@ func TestSchedulerRestartResumesOnPhaseWithoutReplay(t *testing.T) {
 	ev = eventOf(t, env, o.GetId(), "tev-2")
 	if !ev.GetEnabled() || ev.GetSkippedCount() != 0 || !ev.GetLastFiredAt().AsTime().Equal(start.Add(5*time.Minute)) {
 		t.Errorf("second event = %+v", ev)
+	}
+}
+
+// --- SWI-4: Enqueue now ---
+
+func TestFireTimedEventQueuesAsTheEventAndKeepsTheSchedule(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false) // no worker: the run stays queued
+	ev, err := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := eventOf(t, env, o.GetId(), ev.GetId())
+	env.clock.Advance(20 * time.Second) // not due yet
+
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatalf("FireTimedEvent: %v", err)
+	}
+	if run.GetEventKind() != pb.EventKind_EVENT_KIND_TIMED || run.GetOrigin() != ev.GetId() || run.GetOriginLabel() != "poll" ||
+		run.GetArguments()["number"] != "1" || run.GetState() != pb.RunState_RUN_STATE_QUEUED || run.GetPosition() != 1 {
+		t.Fatalf("run = %+v", run)
+	}
+	after := eventOf(t, env, o.GetId(), ev.GetId())
+	if !after.GetNextFireAt().AsTime().Equal(before.GetNextFireAt().AsTime()) || after.GetLastFiredAt() != nil ||
+		after.GetLastSkippedAt() != nil || after.GetSkippedCount() != 0 {
+		t.Errorf("a manual fire must not touch the schedule: before %+v after %+v", before, after)
+	}
+
+	// Dedupe on: the open (queued) run refuses a second one and names it.
+	_, err = env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), run.GetId()) || !strings.Contains(err.Error(), "poll") || !strings.Contains(err.Error(), "queued") {
+		t.Errorf("dedupe refusal = %v", err)
+	}
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("a refused fire must queue nothing: %d runs", n)
+	}
+
+	// The next scheduled firing, still with that run open, is skipped and recorded.
+	env.clock.Advance(40 * time.Second)
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("scheduled firing should be skipped: %d runs", n)
+	}
+	if got := eventOf(t, env, o.GetId(), ev.GetId()); got.GetSkippedCount() != 1 {
+		t.Errorf("skipped_count = %d, want 1", got.GetSkippedCount())
+	}
+}
+
+func TestFireTimedEventRefusedWhileARunIsInFlightButNotWithDedupeOff(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 1, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	first, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle(rt)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), first.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "running") {
+		t.Errorf("in-flight refusal = %v", err)
+	}
+
+	upd := pollEvent()
+	upd.Id, upd.DedupeDisabled = ev.GetId(), true
+	if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err != nil {
+		t.Errorf("dedupe off should always enqueue: %v", err)
+	}
+	if n := runCount(t, env, o.GetId()); n != 2 {
+		t.Errorf("runs = %d, want 2", n)
+	}
+}
+
+func TestFireTimedEventWorksWhenDisabledAndReportsMissingThings(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	disabled := pollEvent()
+	disabled.Enabled, disabled.DedupeDisabled = false, true
+	ev, err := env.svc.PutTimedEvent(o.GetId(), disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err != nil {
+		t.Errorf("a disabled event can be fired by hand: %v", err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), "tev-404"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown event = %v", err)
+	}
+	if _, err := env.svc.FireTimedEvent("o-none", ev.GetId()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown orchestrator = %v", err)
+	}
+	// Deleting the action disables the event; firing it reports the missing action.
+	if _, err := env.svc.DeleteAction(o.GetId(), "review-pr"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "action review-pr") {
+		t.Errorf("deleted action = %v", err)
 	}
 }

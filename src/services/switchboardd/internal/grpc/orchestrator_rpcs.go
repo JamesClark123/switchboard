@@ -178,6 +178,15 @@ func (s *Server) DeleteTimedEvent(_ context.Context, req *pb.DeleteTimedEventReq
 	return &pb.DeleteTimedEventResponse{}, nil
 }
 
+// FireTimedEvent enqueues one run of a timed event now (SWI-4).
+func (s *Server) FireTimedEvent(_ context.Context, req *pb.FireTimedEventRequest) (*pb.Run, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.FireTimedEvent(req.GetOrchestratorId(), req.GetEventId())
+	return out, orchStatus(err)
+}
+
 func (s *Server) CallAction(_ context.Context, req *pb.CallActionRequest) (*pb.Run, error) {
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator

@@ -124,6 +124,8 @@ type Daemon interface {
 	DeleteAction(ctx context.Context, id, name string) ([]string, error)
 	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, id, eventID string) error
+	// FireTimedEvent enqueues one run of a timed event now, as that event (SWI-4).
+	FireTimedEvent(ctx context.Context, id, eventID string) (*pb.Run, error)
 	CallAction(ctx context.Context, id, action string, args map[string]string) (*pb.Run, error)
 	ListRuns(ctx context.Context, id string) (*pb.ListRunsResponse, error)
 	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)

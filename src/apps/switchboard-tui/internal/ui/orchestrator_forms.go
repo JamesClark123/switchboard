@@ -384,6 +384,23 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return orchDoneMsg{status: "deleted " + name, reload: true}
 			},
 		})
+	case "n":
+		// Enqueue now (SWI-4): one run as this event, schedule untouched. No confirm:
+		// it only queues work, and dedupe refuses a duplicate.
+		if cur == nil {
+			return m, nil
+		}
+		od := m.daemonForHost(d.host)
+		id, evID, name := d.id, cur.GetId(), cur.GetName()
+		return m, func() tea.Msg {
+			ctx, cancel := ctxTimeout()
+			defer cancel()
+			run, err := od.FireTimedEvent(ctx, id, evID)
+			if err != nil {
+				return orchDoneMsg{err: err}
+			}
+			return orchDoneMsg{status: fmt.Sprintf("enqueued %s (%s, position %d)", name, run.GetId(), run.GetPosition()), reload: true}
+		}
 	case " ":
 		if cur == nil {
 			return m, nil
