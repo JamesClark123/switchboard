@@ -392,15 +392,85 @@ func TestDetachMcpWorksOnAStoppedSandbox(t *testing.T) {
 
 func TestAttachAndDetachRefuseNamesThatCouldBeFlags(t *testing.T) {
 	m, runner, sb := attachedSandbox(t, "notion")
-	for _, bad := range []string{"--help", "-x", "a b", "a;b"} {
+	for _, bad := range []string{"--help", "-x", "a\nb"} {
 		if _, err := m.AttachMcp(context.Background(), sb.GetId(), bad, nil); !errors.Is(err, ErrMcpInvalidName) {
 			t.Errorf("attach %q err = %v, want ErrMcpInvalidName", bad, err)
 		}
 		if _, err := m.DetachMcp(context.Background(), sb.GetId(), bad, nil); !errors.Is(err, ErrMcpInvalidName) {
-			t.Errorf("detach %q err = %v, want ErrMcpInvalidName", bad, err)
+			t.Errorf("detach %q (not recorded) err = %v, want ErrMcpInvalidName", bad, err)
 		}
 	}
 	if len(runner.mcpUnloads) != 0 {
 		t.Errorf("invalid names must not reach the CLI; unloads = %v", runner.mcpUnloads)
+	}
+}
+
+// Review (PR #3, run 34): attach/detach act on servers the HOST registered, so a
+// name the register form would refuse (scope/slash/colon/space) is still usable.
+func TestAttachAndDetachAcceptHostRegisteredNamesOutsideTheRegisterRule(t *testing.T) {
+	m, runner, sb := attachedSandbox(t)
+	for _, name := range []string{"io.github/foo", "scope:name@1", "my server"} {
+		if _, err := m.AttachMcp(context.Background(), sb.GetId(), name, nil); err != nil {
+			t.Fatalf("attach %q: %v", name, err)
+		}
+		if _, err := m.DetachMcp(context.Background(), sb.GetId(), name, nil); err != nil {
+			t.Fatalf("detach %q: %v", name, err)
+		}
+	}
+	if len(runner.mcpUnloads) != 3 {
+		t.Errorf("unloads = %v", runner.mcpUnloads)
+	}
+}
+
+// A legacy record whose name could be misread as a flag must not be stuck: it is
+// dropped from the record without ever reaching the CLI.
+func TestDetachDropsALegacyUnsafeRecordWithoutCallingTheCLI(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	if _, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+		s.McpServers = append(s.McpServers, "--legacy")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), "--legacy", func(l string) { logs = append(logs, l) })
+	if err != nil {
+		t.Fatalf("a recorded legacy name must be removable: %v", err)
+	}
+	if got := strings.Join(out.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("record = %q, want notion", got)
+	}
+	if len(runner.mcpUnloads) != 0 {
+		t.Errorf("an unsafe name must never reach the CLI; unloads = %v", runner.mcpUnloads)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "dropping it from the record only") {
+		t.Errorf("the log should say it was record-only; got %v", logs)
+	}
+}
+
+// The unregistered case needs the server's own name in the diagnostic, and
+// "not attached" is no longer a tolerated phrase.
+func TestDetachToleranceRequiresTheServerNameAndNotLoadedWording(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	for _, msg := range []string{`sandbox "x" is not registered`, "terminal is not attached", "client not attached to gateway"} {
+		runner.unloadErr = map[string]string{"notion": msg}
+		if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); err == nil {
+			t.Errorf("%q must not be tolerated", msg)
+		}
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("record = %q", got)
+	}
+}
+
+func TestInnerRefErrPeelsTryRefsWrapperEvenForOneHandle(t *testing.T) {
+	cause := errors.New("gateway unreachable")
+	err := tryRefs([]string{"only"}, func(string) error { return cause })
+	if got := innerRefErr(err); got != cause {
+		t.Errorf("inner = %v, want the runtime's own error", got)
+	}
+	if got := innerRefErr(cause); got != cause {
+		t.Errorf("an unwrapped error is its own diagnostic; got %v", got)
 	}
 }

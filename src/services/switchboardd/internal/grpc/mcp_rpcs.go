@@ -178,8 +178,10 @@ func attachMcpStatus(err error) error {
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
+	// Typed sentinels first: their messages quote user input (a name), so the text
+	// matching below must never get to reinterpret them.
 	switch {
-	case errors.Is(err, registry.ErrNotFound), mcp.LooksNotRegistered(err.Error()):
+	case errors.Is(err, registry.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, sandbox.ErrMcpInvalidName):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -187,7 +189,11 @@ func attachMcpStatus(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	default:
-		return status.Error(codes.Unknown, err.Error())
 	}
+	// Otherwise it is the runtime's own diagnostic: "is not registered" is NOT_FOUND,
+	// anything else travels verbatim.
+	if mcp.LooksNotRegistered(err.Error()) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	return status.Error(codes.Unknown, err.Error())
 }

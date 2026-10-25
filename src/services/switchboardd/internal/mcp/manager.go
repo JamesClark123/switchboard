@@ -198,8 +198,8 @@ func (m *Manager) decorate(ctx context.Context, rows []listRow, settings *pb.Mcp
 // diagnostics travel verbatim in the error (FR-078).
 func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error) {
 	name := strings.TrimSpace(req.GetName())
-	if !nameRe.MatchString(name) {
-		return nil, fmt.Errorf("%w: server name %q must contain only letters, digits, dots, hyphens and underscores", ErrInvalidArgs, name)
+	if !ValidName(name) {
+		return nil, fmt.Errorf("%w: server name %q must contain only letters, digits, dots, hyphens and underscores, and not start with a hyphen", ErrInvalidArgs, name)
 	}
 	if strings.HasPrefix(name, WorkerServerPrefix) {
 		return nil, fmt.Errorf("%w: server name %q uses the reserved prefix %q", ErrInvalidArgs, name, WorkerServerPrefix)
@@ -312,18 +312,44 @@ func LooksNotRegistered(out string) bool {
 	return strings.Contains(l, "not registered") || strings.Contains(l, "not found") || strings.Contains(l, "unknown")
 }
 
-// ValidName reports whether name is acceptable as a server name on an `sbx mcp`
-// command line: the runtime's name rule, and never a leading '-' (which the CLI
-// would parse as a flag).
+// ValidName is the rule for registering a server: the runtime's name rule, and
+// never a leading '-' (which the CLI would parse as a flag).
 func ValidName(name string) bool {
 	return nameRe.MatchString(name) && !strings.HasPrefix(name, "-")
 }
 
-// LooksUnregistered reports whether a diagnostic says, specifically, that the
-// server is "not registered" on the host. Stricter than LooksNotRegistered, which
-// also matches "not found"/"unknown" and so must not gate record changes.
-func LooksUnregistered(out string) bool {
-	return strings.Contains(strings.ToLower(out), "not registered")
+// SafeArg reports whether name can be passed as a single `sbx mcp` argument
+// without being misread: non-empty, no leading '-' (a flag), no control
+// characters. It is deliberately looser than ValidName — attach/detach act on
+// servers the HOST registered (any name the runtime accepted, including ones
+// registered with the sbx CLI directly), so only what could change the meaning
+// of the argv is refused.
+func SafeArg(name string) bool {
+	if name == "" || strings.HasPrefix(name, "-") || len(name) > 256 {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// LooksUnregistered reports whether a diagnostic says the SERVER NAME is "not
+// registered" on the host. Stricter than LooksNotRegistered (which also matches
+// "not found"/"unknown" and so must not gate record changes): the phrase must
+// appear and the diagnostic must mention the server's name, so a "not registered"
+// about something else (a sandbox, a project) cannot drop a live server's record.
+func LooksUnregistered(out, name string) bool {
+	l := strings.ToLower(out)
+	if name == "" || !strings.Contains(l, "not registered") {
+		return false
+	}
+	// The name as a whole token (not a fragment of another word, which a short name
+	// would otherwise match everywhere).
+	re, err := regexp.Compile(`(^|[^a-z0-9._-])` + regexp.QuoteMeta(strings.ToLower(name)) + `($|[^a-z0-9._-])`)
+	return err == nil && re.MatchString(l)
 }
 
 // LooksNotLoaded reports whether an `sbx mcp unload` diagnostic says the server
@@ -332,7 +358,7 @@ func LooksUnregistered(out string) bool {
 // (SWI-3), so the match is tolerant but limited to "not loaded" phrasings.
 func LooksNotLoaded(out string) bool {
 	l := strings.ToLower(out)
-	for _, s := range []string{"not loaded", "isn't loaded", "not currently loaded", "not attached"} {
+	for _, s := range []string{"not loaded", "isn't loaded", "not currently loaded"} {
 		if strings.Contains(l, s) {
 			return true
 		}

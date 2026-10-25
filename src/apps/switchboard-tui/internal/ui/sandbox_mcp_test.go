@@ -480,3 +480,53 @@ func TestMcpServersDetachStatusVariants(t *testing.T) {
 		t.Errorf("late reply should land on the footer; status %q", m2.status)
 	}
 }
+
+// Review (PR #3, run 34): in-flight calls live on the model, so closing and
+// reopening the overlay mid-detach still shows it busy and refuses a second call.
+func TestMcpServersReopenedOverlayStillShowsADetachInFlight(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd)) // detach dispatched, RPC not yet answered
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != screenList {
+		t.Fatalf("overlay should have closed; screen %v", m.screen)
+	}
+	m = openMcpOverlay(t, m)
+	if m.sandboxMcpView.busy != "notion" || m.sandboxMcpView.busyKind != "detach" || !strings.Contains(m.View(), "detaching notion") {
+		t.Fatalf("a reopened overlay must still show the detach; busy %q kind %q", m.sandboxMcpView.busy, m.sandboxMcpView.busyKind)
+	}
+	m, c := update(m, press("d"))
+	if c != nil || m.screen != screenSandboxMcp || m.sandboxMcpView.status != "a detach is already in progress" {
+		t.Errorf("d on a reopened busy overlay: cmd %v screen %v status %q", c != nil, m.screen, m.sandboxMcpView.status)
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if m.sandboxMcpView.busy != "" || len(m.sandboxMcpOps) != 0 {
+		t.Errorf("the reply must clear the busy state and the in-flight record; ops %v", m.sandboxMcpOps)
+	}
+}
+
+// After a detach the daemon's list is refreshed, and nothing is claimed about
+// registration when that list was never loaded.
+func TestMcpServersDetachRefreshesTheListAndStaysNeutralWhenItIsUnknown(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	if reload == nil || !m.sandboxMcpView.loading {
+		t.Error("a detach should refresh the daemon's list")
+	}
+
+	m2 := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m2.sandboxMcpView.registered = nil // the list never loaded
+	m2, _ = update(m2, press("d"))
+	m2, cmd2 := update(m2, press("y"))
+	m2, cmd2 = update(m2, runCmd(cmd2))
+	m2, _ = update(m2, runDetach(t, cmd2))
+	if st := m2.sandboxMcpView.status; st != "detached notion" {
+		t.Errorf("with an unknown list the status must claim nothing about registration; got %q", st)
+	}
+}

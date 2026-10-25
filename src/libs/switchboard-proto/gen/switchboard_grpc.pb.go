@@ -280,7 +280,7 @@ type SwitchboardClient interface {
 	// delivers the new tools live; the agent is never restarted.
 	// DetachMcpServer (SWI-3) is the inverse: `sbx mcp unload <name> --sandbox <name>`, drops the name
 	// from Sandbox.mcp_servers, emits Event.sandbox_changed. NOT_FOUND for an unknown sandbox or a
-	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that is not a valid server name (also enforced on attach),
+	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that could be misread as a command-line flag (leading '-', control characters; also enforced on attach — host-registered names outside the register-form rule are otherwise fine),
 	// FAILED_PRECONDITION for an ineligible state or busy sandbox. A server the runtime reports as
 	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
@@ -1305,7 +1305,7 @@ type SwitchboardServer interface {
 	// delivers the new tools live; the agent is never restarted.
 	// DetachMcpServer (SWI-3) is the inverse: `sbx mcp unload <name> --sandbox <name>`, drops the name
 	// from Sandbox.mcp_servers, emits Event.sandbox_changed. NOT_FOUND for an unknown sandbox or a
-	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that is not a valid server name (also enforced on attach),
+	// name the sandbox does not record, INVALID_ARGUMENT for the orchestrator's `sxb-orch-*` server or a name that could be misread as a command-line flag (leading '-', control characters; also enforced on attach — host-registered names outside the register-form rule are otherwise fine),
 	// FAILED_PRECONDITION for an ineligible state or busy sandbox. A server the runtime reports as
 	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error)

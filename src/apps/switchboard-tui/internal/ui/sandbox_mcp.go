@@ -58,6 +58,9 @@ type sandboxMcpAttachedMsg struct {
 	err  error
 }
 
+// sandboxMcpOp is one attach/detach call in flight for a sandbox.
+type sandboxMcpOp struct{ kind, name string }
+
 // sandboxMcpDetachStartMsg is the accepted confirmation: mark busy, then detach.
 type sandboxMcpDetachStartMsg struct {
 	id, host, name string
@@ -74,14 +77,17 @@ func (v sandboxMcpState) busyStatus() string {
 // startSandboxMcpDetach runs after the confirmation: it marks the overlay busy so
 // `a`, `d` and the picker are refused until the reply, then dispatches the RPC.
 func (m Model) startSandboxMcpDetach(msg sandboxMcpDetachStartMsg) (tea.Model, tea.Cmd) {
+	if _, inFlight := m.sandboxMcpOps[msg.id]; inFlight {
+		if m.mcpOverlayFor(msg.id) {
+			m.sandboxMcpView.status = m.sandboxMcpView.busyStatus()
+		}
+		return m, nil
+	}
+	m.sandboxMcpOps[msg.id] = sandboxMcpOp{kind: "detach", name: msg.name}
 	if !m.mcpOverlayFor(msg.id) {
 		return m, m.detachMcpCmd(msg.host, msg.id, msg.name)
 	}
 	v := &m.sandboxMcpView
-	if v.busy != "" {
-		v.status = v.busyStatus()
-		return m, nil
-	}
 	v.busy, v.busyKind = msg.name, "detach"
 	v.status = "detaching " + msg.name + "…"
 	return m, tea.Batch(m.detachMcpCmd(msg.host, msg.id, msg.name), m.spinner.Tick)
@@ -104,6 +110,9 @@ func (m Model) enterSandboxMcp(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd)
 		host:      host,
 		mode:      sb.GetMcpAttachMode(),
 		attached:  append([]string(nil), sb.GetMcpServers()...),
+	}
+	if op, ok := m.sandboxMcpOps[sb.GetId()]; ok {
+		v.busy, v.busyKind = op.name, op.kind // a call started before the overlay was closed
 	}
 	m.screen = screenSandboxMcp
 	d := m.daemonForHost(host)
@@ -215,6 +224,7 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			name := cands[v.pickCursor].GetName()
 			v.busy, v.busyKind = name, "attach"
+			m.sandboxMcpOps[v.sandboxID] = sandboxMcpOp{kind: "attach", name: name}
 			v.status = "attaching " + name + "…"
 			return m, tea.Batch(m.attachMcpCmd(v.host, v.sandboxID, name), m.spinner.Tick)
 		}
@@ -316,10 +326,12 @@ func (m Model) detachMcpCmd(host, id, name string) tea.Cmd {
 // handleSandboxMcpDetached merges the updated record into the row and the
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, tea.Cmd) {
-	registered := true
+	delete(m.sandboxMcpOps, msg.id)
+	registered, known := true, false
 	if m.mcpOverlayFor(msg.id) {
 		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
 		if v := m.sandboxMcpView; v.registered != nil {
+			known = true
 			registered = false
 			for _, s := range v.registered {
 				if s.GetName() == msg.name {
@@ -342,10 +354,19 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 		m.syncSandboxMcpOverlay(msg.sb)
 	}
 	if m.mcpOverlayFor(msg.id) {
-		if registered {
+		switch {
+		case !known:
+			m.sandboxMcpView.status = "detached " + msg.name // the daemon's list is not loaded: say nothing about registration
+		case registered:
 			m.sandboxMcpView.status = "detached " + msg.name + " — still registered on the daemon (a re-attaches it)"
-		} else {
+		default:
 			m.sandboxMcpView.status = "detached " + msg.name + " — it is no longer registered on this daemon"
+		}
+		// Refresh the daemon's list so the picker and the registration decoration
+		// are current after the change.
+		if v := &m.sandboxMcpView; v.gatewayErr == "" && !v.loading {
+			v.loading = true
+			return m, m.sandboxMcpListCmd(v.host, v.sandboxID)
 		}
 	} else {
 		m.status = "detached " + msg.name + " from " + m.sandboxName(msg.id)
@@ -356,6 +377,7 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 // handleSandboxMcpAttached merges the updated record into the row and the
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpAttached(msg sandboxMcpAttachedMsg) (tea.Model, tea.Cmd) {
+	delete(m.sandboxMcpOps, msg.id)
 	if m.mcpOverlayFor(msg.id) {
 		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
 		m.sandboxMcpView.picking = false

@@ -24,6 +24,10 @@ func TestDetachAndAttachMcpStatusMapping(t *testing.T) {
 		{"reserved", fmt.Errorf("%w: sxb-orch-x", sandbox.ErrMcpReserved), codes.InvalidArgument, codes.Unknown},
 		{"invalid name", fmt.Errorf("%w: \"-x\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},
 		{"runtime text", errors.New("gateway unreachable"), codes.Unknown, codes.Unknown},
+		// The sentinel's message quotes the name; text matching must not reinterpret it.
+		{"invalid name quoting 'unknown'", fmt.Errorf("%w: \"-unknown server\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},
+		{"invalid name quoting 'not found'", fmt.Errorf("%w: \"-not found\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},
+		{"runtime 'is not registered'", errors.New(`MCP server "x" is not registered`), codes.Unknown, codes.NotFound},
 	}
 	for _, c := range cases {
 		if got := status.Code(detachMcpStatus(c.err)); got != c.detach {

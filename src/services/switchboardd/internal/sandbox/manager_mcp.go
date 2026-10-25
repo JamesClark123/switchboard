@@ -53,8 +53,8 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	if name == "" {
 		return nil, errors.New("MCP server name is required")
 	}
-	if !mcp.ValidName(name) {
-		return nil, fmt.Errorf("%w: %q", ErrMcpInvalidName, name)
+	if !mcp.SafeArg(name) {
+		return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control characters)", ErrMcpInvalidName, name)
 	}
 	if err := m.ops.acquire(id, opAttachMcp); err != nil {
 		return nil, err
@@ -118,9 +118,6 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	if strings.HasPrefix(name, mcp.WorkerServerPrefix) {
 		return nil, fmt.Errorf("%w: %s", ErrMcpReserved, name)
 	}
-	if !mcp.ValidName(name) {
-		return nil, fmt.Errorf("%w: %q", ErrMcpInvalidName, name)
-	}
 	if err := m.ops.acquire(id, opDetachMcp); err != nil {
 		return nil, err
 	}
@@ -133,29 +130,34 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	if err := attachableState(sb.GetState()); err != nil {
 		return nil, err
 	}
+	// The record gates everything below: a name switchboard never recorded is
+	// refused (as invalid if it could not even be an argument, else not-attached).
 	if !slices.Contains(sb.GetMcpServers(), name) {
+		if !mcp.SafeArg(name) {
+			return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control characters)", ErrMcpInvalidName, name)
+		}
 		return nil, fmt.Errorf("%w: %s", ErrMcpNotAttached, name)
 	}
 	if sb.GetContainerRef() == "" {
 		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
 	}
 
-	// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
-	if err := tryRefs(sbxRefs(sb), func(r string) error {
+	if !mcp.SafeArg(name) {
+		// A legacy record (written before names were checked) whose name could be
+		// misread as a flag: it cannot be handed to the CLI, but it must not be
+		// stuck in the record either.
+		logDetach(onLog, "mcp: %q cannot be passed to sbx safely; dropping it from the record only (unload it from the sandbox with the sbx CLI if it is still loaded)", name)
+	} else if err := tryRefs(sbxRefs(sb), func(r string) error {
+		// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
 		uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
 		defer cancel()
 		return m.runner.UnloadMcp(uctx, r, name, onLog)
 	}); err != nil {
-		// Judge only the runtime's own (last) diagnostic, not tryRefs' "matched any of
-		// [...]" prefix, so nothing but the unload failure itself can be tolerated.
-		inner := err
-		if u := errors.Unwrap(err); u != nil {
-			inner = u
-		}
+		inner := innerRefErr(err)
 		switch {
 		case mcp.LooksNotLoaded(inner.Error()):
 			logDetach(onLog, "mcp: %s was not loaded in the sandbox; dropping it from the record", name)
-		case mcp.LooksUnregistered(inner.Error()):
+		case mcp.LooksUnregistered(inner.Error(), name):
 			// Removed from the host while still recorded: the only way to clean the
 			// record. The runtime may still hold the tools, so say so in the log.
 			logDetach(onLog, "mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
@@ -174,6 +176,17 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// innerRefErr is the runtime's own (last) diagnostic out of tryRefs' error, i.e.
+// without its "no sbx sandbox matched any of [...]" prefix. It relies on tryRefs
+// wrapping the last error with %w; when it did not wrap (nothing to peel) the
+// error itself is the diagnostic.
+func innerRefErr(err error) error {
+	if u := errors.Unwrap(err); u != nil {
+		return u
+	}
+	return err
 }
 
 func logDetach(onLog func(string), format string, args ...any) {

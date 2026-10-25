@@ -413,7 +413,7 @@ func TestLooksNotLoaded(t *testing.T) {
 	}
 	// "not registered" is handled separately (LooksNotRegistered) and must not be
 	// mistaken for "not loaded".
-	for _, no := range []string{"", "gateway unreachable", "permission denied", `MCP server "n" is not registered`} {
+	for _, no := range []string{"", "gateway unreachable", "permission denied", `MCP server "n" is not registered`, "terminal is not attached", "client not attached"} {
 		if LooksNotLoaded(no) {
 			t.Errorf("%q must not be tolerated", no)
 		}
@@ -434,12 +434,32 @@ func TestValidName(t *testing.T) {
 }
 
 func TestLooksUnregisteredIsStrict(t *testing.T) {
-	if !LooksUnregistered(`MCP server "n" is not registered (run 'sbx mcp add n ...')`) {
-		t.Error("not registered should match")
+	if !LooksUnregistered(`MCP server "n" is not registered (run 'sbx mcp add n ...')`, "n") {
+		t.Error("not registered, naming the server, should match")
 	}
-	for _, no := range []string{"unknown flag --x", "sandbox not found", "gateway unreachable"} {
-		if LooksUnregistered(no) {
-			t.Errorf("%q must not match", no)
+	for _, no := range []struct{ out, name string }{
+		{"unknown flag --x", "n"},
+		{"sandbox not found", "n"},
+		{"gateway unreachable", "n"},
+		{`sandbox "other" is not registered`, "n"}, // not registered, but about something else
+		{`project is not registered`, "notion"},    // ditto
+		{`MCP server "n" is not registered`, ""},   // no name to anchor on
+	} {
+		if LooksUnregistered(no.out, no.name) {
+			t.Errorf("LooksUnregistered(%q, %q) must not match", no.out, no.name)
+		}
+	}
+}
+
+func TestSafeArg(t *testing.T) {
+	for _, ok := range []string{"notion", "a.b_c-d", "io.github/foo", "scope:name@1", "a b"} {
+		if !SafeArg(ok) {
+			t.Errorf("%q should be a safe argument (host-registered names are not limited to the register rule)", ok)
+		}
+	}
+	for _, bad := range []string{"", "-h", "--sandbox", "a\nb", "a\x00b", "a\x7fb", strings.Repeat("x", 257)} {
+		if SafeArg(bad) {
+			t.Errorf("%q must be refused", bad)
 		}
 	}
 }

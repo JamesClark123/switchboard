@@ -302,6 +302,10 @@ type Model struct {
 	// --- feature 008 (FR-102): per-sandbox MCP servers ---
 	// sandboxMcpView backs the `M` overlay.
 	sandboxMcpView sandboxMcpState
+	// sandboxMcpOps are the attach/detach calls in flight, by sandbox id. Kept on
+	// the model (a shared map) rather than on the overlay so closing and reopening
+	// the overlay mid-call still shows it busy.
+	sandboxMcpOps map[string]sandboxMcpOp
 
 	// sbx output: the lines the daemon streams while a launch, kit attach,
 	// refresh or source add runs, kept per sandbox for the `l` overlay. It is the
@@ -366,6 +370,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		// feature 006: the client owns every listener on this machine.
 		serviceInstances: map[string]*pb.ServiceInstance{},
 		forwards:         forward.NewManager(),
+		sandboxMcpOps:    map[string]sandboxMcpOp{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},

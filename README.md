@@ -258,7 +258,10 @@ attached for itself through the gateway's discovery tools are not listed. `d` de
 highlighted server (after a confirmation) with `sbx mcp unload`: its tools leave the sandbox at once,
 nothing stops or restarts, and the server stays registered on the daemon so `a` can attach it again.
 If the runtime says the server is no longer loaded, the sandbox record simply drops it. The
-orchestrator's own per-worker server is never listed or detachable. Register and authorize servers on the daemon screen first (`shift+→`).
+orchestrator's own per-worker server is never listed or detachable. Attach and detach accept any
+name the host registered; only a name that could be read as a command-line flag (leading `-`) or
+contains control characters is refused. Closing the overlay while a call runs does not lose it —
+reopening shows it still in progress. Register and authorize servers on the daemon screen first (`shift+→`).
 
 ### Daemon screen & MCP gateway
 
