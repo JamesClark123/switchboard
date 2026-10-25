@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"log"
 	"os"
 	"path/filepath"
@@ -317,6 +316,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	if req.Mcp != nil && req.Mcp.Mode == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
 		staticMcp = req.Mcp.Servers
 	}
+	launchLog, captured := captureOutput(onLog)
 	ref, err := m.runner.Launch(ctx, LaunchSpec{
 		SandboxID:     id,
 		Name:          name,
@@ -326,8 +326,16 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		Sources:       req.Sources,
 		KitSources:    req.KitSources,
 		StaticMcp:     staticMcp,
-	}, onLog)
+	}, launchLog)
 	if err != nil {
+		// Exclusive mode pins the set at create, so a tool-name clash fails the
+		// create itself; name it and the remedy instead of only the raw text.
+		if hint := collisionHint(err, captured); len(staticMcp) > 0 && hint != "" {
+			err = fmt.Errorf("%w: %s; additive mode skips the clashing server instead (runtime: %v)", ErrMcpToolCollision, hint, err)
+			if onLog != nil {
+				onLog("mcp: " + err.Error())
+			}
+		}
 		return m.fail(sb, err)
 	}
 
@@ -543,10 +551,11 @@ func (m *Manager) applyMcp(ctx context.Context, ref string, att *McpAttach, onLo
 	var attached []string
 	for _, name := range att.Servers {
 		lctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
-		err := m.runner.LoadMcp(lctx, ref, name, onLog)
+		logLine, captured := captureOutput(onLog)
+		err := m.runner.LoadMcp(lctx, ref, name, logLine)
 		cancel()
 		if err != nil {
-			if hint := mcp.CollisionHint(err.Error()); hint != "" {
+			if hint := collisionHint(err, captured); hint != "" {
 				// Actionable line first; the raw runtime text stays in the log.
 				logf("mcp: skipped %s: %s", name, hint)
 				logf("mcp: runtime said: %v", err)

@@ -251,10 +251,14 @@ header exists) — and make the failure actionable: `mcp.LooksLikeToolCollision`
 `ParseToolCollisions` / `CollisionHint` recognise the diagnostic; the launch log shows
 `mcp: skipped <name>: tool name collision with <other> (<tools>); …` followed by the raw runtime
 text; `AttachMcp` returns `ErrMcpToolCollision` (gRPC `FAILED_PRECONDITION`) carrying the hint and
-the runtime text. No new `sbx` flag, no proto change.
+the runtime text; an exclusive-mode (`--static-mcp`) launch whose create fails on a clash fails with
+`ErrMcpToolCollision` carrying the same hint. The hint is built from the command's full streamed
+output, not its error (which keeps only a bounded tail), and attach stops at the first handle that
+reports a clash. No new `sbx` flag, no proto change.
 
 **Unverified (needs a real host)**: that the documented GitHub header set lets `github` and `linear`
-load together in additive, exclusive and dynamic `mcp-add` modes; the toolset of `list_releases`;
+load together in additive, exclusive and dynamic `mcp-add` modes (`list_releases` is in `repos`
+per the GitHub MCP server README, 2026-10-25); that an exclusive-mode clash fails `sbx create`;
 whether Linear's remote MCP has any filter; whether `sbx mcp add` accepts re-adding an existing
 name (today: `rm` — which deletes the OAuth credential — then `add`, then re-authorize).
 

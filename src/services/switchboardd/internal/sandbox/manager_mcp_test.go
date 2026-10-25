@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -268,5 +269,89 @@ func TestAttachMcpToolCollisionIsAFailedPreconditionWithHint(t *testing.T) {
 	persisted, _ := m.Get(sb.GetId())
 	if len(persisted.GetMcpServers()) != 0 {
 		t.Errorf("a collision must leave the record untouched; got %v", persisted.GetMcpServers())
+	}
+}
+
+// manyCollisions is the diagnostic for n clashing tools — long enough that the
+// runner's error keeps only its tail (outputTail), as for large toolsets.
+func manyCollisions(n int) (string, []string) {
+	var lines, tools []string
+	for i := 0; i < n; i++ {
+		tool := fmt.Sprintf("tool_%02d", i)
+		tools = append(tools, tool)
+		lines = append(lines, `tool "`+tool+`" from server "gitlab" collides with an existing tool already registered for server "github"`)
+	}
+	return strings.Join(lines, "\n"), tools
+}
+
+// SWI-2 review: the hint is built from the full streamed output, not the
+// truncated error, so every clashing tool is named.
+func TestToolCollisionHintNamesEveryToolDespiteTruncatedError(t *testing.T) {
+	text, tools := manyCollisions(8)
+	m, _, runner, dir := newTestManager(t)
+	runner.loadErr = map[string]string{"gitlab": text}
+	_, logs := launchWithMcp(t, m, dir, &McpAttach{Mode: pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE, Servers: []string{"github", "gitlab"}})
+	joined := strings.Join(logs, "\n")
+	want := "tool name collision with github (" + strings.Join(tools, ", ") + ")"
+	if !strings.Contains(joined, "mcp: skipped gitlab: "+want) {
+		t.Errorf("launch log missing %q; got:\n%s", want, joined)
+	}
+
+	sb, _ := launchWithMcp(t, m, dir, nil)
+	_, err := m.AttachMcp(context.Background(), sb.GetId(), "gitlab", nil)
+	if !errors.Is(err, ErrMcpToolCollision) || !strings.Contains(err.Error(), want) {
+		t.Errorf("attach err = %v, want ErrMcpToolCollision naming %q", err, want)
+	}
+}
+
+// SWI-2 review: a collision on the first handle is reported as is; the next
+// handle is not tried (its unrelated failure would mask the collision).
+func TestAttachMcpToolCollisionIsNotMaskedByTheNextRef(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	sb, _ := launchWithMcp(t, m, dir, nil)
+	refs := sbxRefs(sb)
+	if len(refs) != 2 {
+		t.Fatalf("want a sandbox with a display name and an id; refs = %v", refs)
+	}
+	runner.loadErrRef = map[string]string{
+		refs[0] + " linear": toolCollisionText,
+		refs[1] + " linear": "no such sandbox " + refs[1],
+	}
+	runner.mcpLoads = nil
+	_, err := m.AttachMcp(context.Background(), sb.GetId(), "linear", nil)
+	if !errors.Is(err, ErrMcpToolCollision) || !strings.Contains(err.Error(), "collision with github (list_issues, list_releases)") {
+		t.Fatalf("err = %v, want ErrMcpToolCollision with the hint", err)
+	}
+	if len(runner.mcpLoads) != 1 {
+		t.Errorf("loads = %v, want only the first ref tried", runner.mcpLoads)
+	}
+}
+
+// SWI-2 review: in exclusive mode the clash fails `sbx create`; the launch
+// error and log name it and the remedy.
+func TestLaunchExclusiveToolCollisionIsNamed(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	runner.failNext = fmt.Errorf("sbx create: exit status 1%s", outputTail([]byte(toolCollisionText)))
+	runner.launchOut = toolCollisionText
+	src := makeSource(t, dir, "proj-exclusive")
+	var logs []string
+	sb, err := m.Launch(context.Background(), LaunchRequest{
+		Config:  &pb.ConfigSnapshot{Name: "mcp-exclusive"},
+		Sources: []*pb.SourceRef{src},
+		Mcp:     &McpAttach{Mode: pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE, Servers: []string{"github", "linear"}},
+	}, nil, func(l string) { logs = append(logs, l) })
+	if !errors.Is(err, ErrMcpToolCollision) {
+		t.Fatalf("err = %v, want ErrMcpToolCollision", err)
+	}
+	for _, want := range []string{"collision with github (list_issues, list_releases)", "additive mode skips the clashing server instead", "runtime:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_ERROR || !strings.Contains(sb.GetError(), "collision with github") {
+		t.Errorf("record = %v / %q, want ERROR carrying the hint", sb.GetState(), sb.GetError())
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "mcp: MCP tool name collision: tool name collision with github") {
+		t.Errorf("launch log missing the hint; got:\n%s", strings.Join(logs, "\n"))
 	}
 }

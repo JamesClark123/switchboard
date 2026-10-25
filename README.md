@@ -311,25 +311,29 @@ tool "list_issues" from server "linear" collides with an existing tool already r
 namespace them for you. When a collision happens a launch skips the server and logs
 `mcp: skipped linear: tool name collision with github (list_issues, list_releases); …` (the raw
 runtime text follows on the next line), and attaching from the `M` overlay fails with the same
-message; nothing is changed on the sandbox.
+message; nothing is changed on the sandbox. In *exclusive* mode the set is pinned at create, so
+a clash fails the launch itself; the launch error names the servers, tools and remedy (additive
+mode would skip the clashing server instead).
 
 **Fix: filter the clashing tools out at one of the servers**, using that server's own filter
 headers in the register form's **Headers** field (one `Name: value` per line). GitHub's remote
 server (`https://api.githubcopilot.com/mcp/`) takes `X-MCP-Toolsets` (comma-separated toolsets)
 and `X-MCP-Tools` (individual tools, additive with toolsets). It has no *exclude* header, so
 build an allowlist: leave out the toolset that holds the clashing tool and add back, by exact
-name, the tools you still want from it. For example, to drop GitHub's `list_issues` (toolset
-`issues`):
+name, the tools you still want from it. For example, to drop both of GitHub's clashes with Linear,
+`list_issues` (toolset `issues`) and `list_releases` (toolset `repos`), leave both toolsets out
+and add back every other tool they hold:
 
 ```
-X-MCP-Toolsets: context,repos,pull_requests,users
-X-MCP-Tools: issue_read,issue_write,search_issues,add_issue_comment
+X-MCP-Toolsets: context,pull_requests,users
+X-MCP-Tools: add_issue_comment,get_label,issue_read,issue_write,list_issue_fields,list_issue_types,search_issues,sub_issue_write,update_issue_comment,create_branch,create_or_update_file,create_repository,delete_file,delete_repository,fork_repository,get_commit,get_file_contents,get_latest_release,get_release_by_tag,get_tag,list_branches,list_commits,list_repository_collaborators,list_tags,push_files,search_code,search_commits,search_repositories
 ```
 
-(`list_releases` is most likely in `repos` — check the
-[GitHub MCP server docs](https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md)
-for current toolset membership. An invalid tool name stops the GitHub server from starting, so
-copy names exactly.) The filtered tools are no longer available from that server; use the other
+(Toolset membership is from the
+[GitHub MCP server README](https://github.com/github/github-mcp-server#tools) as of 2026-10-25
+and changes over time; re-check it, and trim the list to the tools you actually use. An invalid
+tool name stops the GitHub server from starting, so copy names exactly.) The filtered tools are no
+longer available from that server; use the other
 server's tool of the same name. Registration headers can't be edited in place: remove the server
 (`d`, which also deletes its OAuth credential) and register it again, then authorize (`A`). For
 other servers, use whatever tool-filter option they document.
