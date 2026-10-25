@@ -92,8 +92,8 @@ Shows action, `orchestrator @ host`, state, end time, then the full reported res
 ### Empty / partial states
 
 - No orchestrators: "No orchestrators yet — create one under Daemons › <daemon> › Orchestrators."
-- Unreachable daemons: a dim line "could not read: <host>, <host>, <orchestrator> @ <host> (runs)" above the content, on every tab — daemons that are connecting or whose connection failed or dropped, daemons whose listing failed, and orchestrators whose runs failed to load. Daemons you disconnected or never connected are not listed, and their rows are not shown (FR-004). A dropped daemon's rows stay, dimmed; acting on them shows "<host> is not connected" (FR-030).
-- Still loading: a dim "loading: <host>" while a daemon has not answered; other daemons' rows are already shown and navigable (SC-007).
+- Unreachable daemons: a dim line "could not read: <host> (<error>), <orchestrator> @ <host> (runs: <error>)" above the content, on every tab — daemons whose connection failed or was lost (event stream ended, `Unavailable`), daemons whose listing failed, and orchestrators whose runs failed to load. Errors are sanitised single lines, truncated by display width (FR-029). Daemons you disconnected or never connected are not listed, and their rows are not shown (FR-004). A lost daemon's rows stay, dimmed; acting on them shows "<host> is not connected" or "<host>: connection lost" (FR-030).
+- Still loading: a dim "connecting: <host>" / "loading: <host>" while a daemon is connecting or has not answered; other daemons' rows are already shown and navigable (SC-007).
 
 ## Daemons › Orchestrators
 

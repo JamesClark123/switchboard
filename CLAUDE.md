@@ -159,7 +159,7 @@ filter, `]`/`[` pages of 25. Orchestrator admin (create/rename/remove; Workers/R
 `Event.orchestrator_changed` reloads one orchestrator); operations refactored onto an explicit `orchTarget`
 hosted by a per-screen `orchSurface` (R1). Rules: agent/remote text sanitised before display (`sanitize.go`, R10,
 FR-029); cursors keyed by item identity (R11); operations only via `connectedDaemon(host)`, never the
-`daemonForHost` fallback (R12, FR-030); reloads per orchestrator, generation-ordered (host loads share the generations; NotFound = removed),
+`daemonForHost` fallback (R12, FR-030); reloads per orchestrator, ordered by one process-wide call sequence (`jobsSeq`, stamped as each call is issued; NotFound = removed); lost hosts = event stream ended or `Unavailable`,
 coalesced, only while Jobs is visible (R3); worker names from the aggregated sandbox list (R4). No proto/daemon/env change. See `research.md` (R1–R12), `data-model.md`, `contracts/jobs-ui.md`, `quickstart.md`.
 
 Prior feature: `specs/009-orchestrator/plan.md` (Orchestrator). A new **daemon role**: an

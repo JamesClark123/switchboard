@@ -38,8 +38,8 @@ One per hosting screen: Jobs and the orchestrator detail (R1).
 | runs | `ListRunsResponse` (queued, in_flight, history newest first) |
 | err | load error for this orchestrator, if its runs could not be read (named on every tab: R3) |
 | reachable | false while its host is disconnected; rows stay, dimmed, and operations are refused (R3, R12) |
-| gen | latest load generation issued, by an event reload **or** a host load's `ListRuns` for it; replies (or a host reply's part for this orchestrator) with an older generation are dropped (R3, FR-005) |
-| inFlight, dirty | coalescing: one reload in flight; `dirty` asks for one more when it lands (R3) |
+| appliedSeq | stamp of the newest load part applied for it; parts stamped older (from the process-wide `jobsSeq`, taken when each call is issued) are dropped (R3, FR-005) |
+| inFlight, dirty | coalescing of event reloads: one in flight; `dirty` asks for one more when it lands (R3) |
 | stale | an event arrived while Jobs wasn't visible; reloaded on entering Jobs (R3) |
 
 ## jobsState
@@ -48,8 +48,8 @@ One per hosting screen: Jobs and the orchestrator detail (R1).
 |-------|---------|
 | tab | `overview` \| `actions` \| `events` \| `queue` (order fixed: FR-002) |
 | orchs | loaded orchestrators, ordered by host display name, then orchestrator name, ties by host entry id (deterministic group and filter order: FR-019, FR-015) |
-| hosts | per host: `loading` (load in flight), `gen` (host load generation), `err` (could not be listed) |
-| unreachable | derived: display names of hosts that are connecting, whose connection failed or dropped, or whose listing failed, plus `name @ host (runs)` for orchestrators with `err`; hosts the developer disconnected or never connected are not listed (FR-004) |
+| hosts | per host: `loading` (load in flight), `listSeq` (stamp of the last applied `ListOrchestrators`), `err` (could not be listed), `lost` (event stream ended or `Unavailable`, with the error; cleared by the next successful load) |
+| unreachable | derived: `host (error)` for hosts whose connection failed or was lost or whose listing failed, plus `name @ host (runs: error)` for orchestrators with `err`; errors through `sanitizeLine`; hosts the developer disconnected or never connected are not listed, and connecting hosts are shown on the `connecting:` line instead (FR-004, FR-029) |
 | rev | data revision, bumped whenever a load is applied; derived rows are cached per `rev` (R4) |
 | cursors | one per tab: `{index, key}`, where `key` is the selected item's identity (R11) |
 | surface | the Jobs `orchSurface` (R1) |
@@ -98,9 +98,10 @@ Every action on a row of an unreachable orchestrator is refused with `<host> is 
 ## State transitions
 
 - Enter Jobs → first time: full load (every connected host, one command per host, results applied as each arrives); later: reload `stale` orchestrators and hosts not yet loaded.
-- `Event.orchestrator_changed(host, id)` while Jobs is visible → reload that orchestrator (`GetOrchestrator` + `ListRuns`, new `gen`, coalesced) → re-derive; a **NotFound** reply means the orchestrator was removed: it disappears from every tab (other errors set its `err`); if it was the queue filter, the filter resets to all with a status note. While Jobs isn't visible → mark it `stale`.
-- Host load → bumps and records each orchestrator's `gen` as it issues that `ListRuns`; each orchestrator's part of the reply applies only if its `gen` is still the recorded one; orchestrators no longer listed are dropped.
+- `Event.orchestrator_changed(host, id)` while Jobs is visible → reload that orchestrator (`GetOrchestrator` + `ListRuns`, stamped from `jobsSeq`, coalesced) → re-derive; a **NotFound** reply means the orchestrator was removed: it disappears from every tab (other errors set its `err`); if it was the queue filter, the filter resets to all with a status note. While Jobs isn't visible → mark it `stale`.
+- Host load → each `ListRuns` (and the `ListOrchestrators`) is stamped from `jobsSeq` as the Cmd issues it; each orchestrator's part applies only if its stamp is newer than its `appliedSeq`; orchestrators missing from a newer list are dropped.
 - Host connects or reconnects (including before the first load completes) → load that host's orchestrators and merge; it leaves `unreachable`.
-- Host connection lost or failing (connecting, or disconnected with an error) → its orchestrators stay as last known with `reachable = false`, dimmed, listed in `unreachable`; operations on them are refused.
+- Host lost or failing (event stream ended, a call failed with `Unavailable`, or `HostDisconnected` with a dial error) → its orchestrators stay as last known with `reachable = false`, dimmed, listed in `unreachable` with the error; operations on them are refused. Cleared by the next successful load of that host.
+- Host connecting → shown on the `connecting:` line; listed as unreachable only if the attempt fails.
 - Host disconnected by the developer (no error) or removed → its orchestrators are dropped; not listed in `unreachable`.
-- Reply with `gen` older than the latest issued for that orchestrator (or host) → dropped.
+- Reply part stamped older than that orchestrator's `appliedSeq` (or a list older than the host's `listSeq`) → dropped.
