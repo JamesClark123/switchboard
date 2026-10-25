@@ -21,7 +21,7 @@ func renderRule(commands []*pb.EscapeHatchCommand) string {
 	b.WriteString("These commands run on the HOST, OUTSIDE this sandbox, in this sandbox's workspace. ")
 	b.WriteString("Invoke one by name with the wrapper below; do NOT try to run its equivalent inside the sandbox. ")
 	b.WriteString("Execution is asynchronous: the wrapper returns immediately and the result is delivered back to you as a follow-up message when the command finishes.\n\n")
-	b.WriteString(fmt.Sprintf("Invoke with: `%s <command-name> [--workspace <dir>] [-- <args...>]`\n", wrapperRelPath))
+	fmt.Fprintf(&b, "Invoke with: `%s <command-name> [--workspace <dir>] [-- <args...>]`\n", wrapperRelPath)
 	b.WriteString("Only pass `--workspace` / `-- <args>` to a command that lists workspaces / subcommands below; the daemon rejects anything not listed.\n\n")
 	for _, c := range commands {
 		gate := "auto-run"

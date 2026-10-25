@@ -64,7 +64,11 @@ func TestServeOnSocketBindsAndStops(t *testing.T) {
 
 	cancel()
 	select {
-	case <-errc:
+	case err := <-errc:
+		// GracefulStop makes grpc.Serve return nil; anything else is a real failure.
+		if err != nil {
+			t.Fatalf("Serve returned %v after context cancel", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Serve did not return after context cancel")
 	}

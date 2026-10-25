@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"slices"
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
