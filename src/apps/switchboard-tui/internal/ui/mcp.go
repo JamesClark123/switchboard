@@ -80,6 +80,7 @@ type mcpAuthWait struct {
 	callbackPort uint32
 	tunnel       bool   // the local relay is listening
 	tunnelErr    string // why it could not be, shown with the paste prompt
+	noCallback   bool   // remote daemon, but the link carried no loopback callback port
 	pasting      bool
 	paste        textinput.Model
 	pasteErr     string
@@ -507,6 +508,11 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 	if u.URL != "" {
 		w.url = u.URL
 	}
+	if u.URL != "" && u.CallbackPort == 0 && m.mcpView.remote {
+		// The relay and paste-back both need that port; say so instead of leaving the
+		// developer to meet a "localhost refused" page unexplained.
+		w.noCallback = true
+	}
 	if u.CallbackPort != 0 && m.mcpView.remote && w.callbackPort == 0 {
 		w.callbackPort = u.CallbackPort
 		w.paste = textinput.New()
@@ -593,6 +599,7 @@ func checkPastedCallback(raw string, port uint32) (string, error) {
 	if err == nil {
 		host = u.Hostname()
 	}
+	host = strings.ToLower(host) // URL hosts are case-insensitive
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
 		return "", fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
 	}
@@ -746,6 +753,9 @@ func (m Model) mcpModal() string {
 		}
 		for _, l := range w.messages {
 			lines = append(lines, dimStyle.Render(l))
+		}
+		if w.noCallback {
+			lines = append(lines, "", dimStyle.Render("no callback port was found in this link — if the browser ends on a ‘localhost’ error page,"), dimStyle.Render("authorize on the daemon's host instead: sbx mcp auth "+w.name))
 		}
 		switch {
 		case w.pasting:

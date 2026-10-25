@@ -187,3 +187,14 @@ func TestCallbackTarget(t *testing.T) {
 		}
 	}
 }
+
+// Review (PR #1, run 41): URL hosts are case-insensitive.
+func TestLoopbackHostsAreCaseInsensitive(t *testing.T) {
+	if got := callbackPort("https://auth.example.com/authorize?redirect_uri=http%3A%2F%2FLOCALHOST%3A34567%2Fcb"); got != 34567 {
+		t.Errorf("callbackPort with an upper-case host = %d, want 34567", got)
+	}
+	got, err := callbackTarget("http://LocalHost:34567/cb?code=x", 34567)
+	if err != nil || got != "http://localhost:34567/cb?code=x" {
+		t.Errorf("callbackTarget = %q, %v", got, err)
+	}
+}

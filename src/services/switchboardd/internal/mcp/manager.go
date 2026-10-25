@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -443,7 +444,7 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 	// rejection too, not a delivery.
 	if loc, lerr := resp.Location(); lerr == nil {
 		if e := loc.Query().Get("error"); e != "" {
-			return fmt.Errorf("the callback was answered with an authorization error (%s) — the provider rejected the sign-in", e)
+			return fmt.Errorf("the callback was answered with an authorization error (%s) — the provider rejected the sign-in", printable(e, 80))
 		}
 	}
 	if resp.StatusCode >= 400 {
@@ -452,6 +453,25 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 		return fmt.Errorf("the host's callback listener answered HTTP %d — the redirect was not accepted (copy the full, latest address from the browser)", resp.StatusCode)
 	}
 	return nil
+}
+
+// printable makes listener-controlled text safe to show in a terminal: control and
+// non-printable characters are dropped and the result is capped at max runes.
+func printable(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			continue
+		}
+		if n == max {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // callbackClient replays a pasted redirect on the host's loopback only: it never

@@ -448,7 +448,7 @@ func TestMcpAuthCallbackRelayAndPasteBackOverGRPC(t *testing.T) {
 	bin := filepath.Join(dir, "sbx")
 	script := "#!/usr/bin/env bash\ncase \"$1 $2\" in\n  \"mcp auth\")\n    echo 'Open this URL to authorize MCP server \"notion\":'\n" +
 		fmt.Sprintf("    echo 'https://auth.example.com/authorize?client_id=x&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A%d%%2Fcb'\n", port) +
-		"    sleep 30 ;;\n  *) exit 0 ;;\nesac\n"
+		"    exec sleep 30 ;;\n  *) exit 0 ;;\nesac\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

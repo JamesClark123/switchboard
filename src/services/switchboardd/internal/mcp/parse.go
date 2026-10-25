@@ -201,6 +201,7 @@ func findURL(line string) string {
 
 // isLoopbackHost reports whether host is a loopback name or address.
 func isLoopbackHost(host string) bool {
+	host = strings.ToLower(host) // URL hosts are case-insensitive
 	if host == "localhost" {
 		return true
 	}

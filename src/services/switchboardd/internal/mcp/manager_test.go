@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -507,5 +509,39 @@ func TestWarnNoCallbackLogsOnce(t *testing.T) {
 	m.warnNoCallback("a")
 	if n := strings.Count(buf.String(), "no usable loopback redirect_uri"); n != 1 {
 		t.Errorf("warning logged %d times, want 1:\n%s", n, buf.String())
+	}
+}
+
+// Review (PR #1, run 41): listener-controlled text never reaches the terminal raw.
+func TestCompleteCallbackSanitisesTheListenersErrorText(t *testing.T) {
+	evil := "denied\x1b[31m\x9b2J\u202e" + strings.Repeat("x", 500)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/done?error="+url.QueryEscape(evil), http.StatusFound)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb")
+	if err == nil {
+		t.Fatal("an error redirect must be reported")
+	}
+	msg := err.Error()
+	for _, r := range msg {
+		if !unicode.IsPrint(r) {
+			t.Fatalf("non-printable %U in %q", r, msg)
+		}
+	}
+	if len(msg) > 400 || !strings.Contains(msg, "denied") || !strings.Contains(msg, "…") {
+		t.Errorf("text should be kept (printable part) and capped: %d bytes %q", len(msg), msg)
+	}
+}
+
+func TestPrintable(t *testing.T) {
+	if got := printable("ok\n\x1b[0m!", 80); got != "ok[0m!" {
+		t.Errorf("printable = %q", got)
+	}
+	if got := printable("abcdef", 3); got != "abc…" {
+		t.Errorf("cap = %q", got)
 	}
 }

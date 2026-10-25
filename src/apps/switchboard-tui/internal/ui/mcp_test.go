@@ -497,6 +497,7 @@ func TestCheckPastedCallback(t *testing.T) {
 		"http://[::1]:4000/cb":            "http://[::1]:4000/cb",
 		"localhost:4000/cb?code=x":        "http://localhost:4000/cb?code=x", // browsers that drop the scheme
 		"  127.0.0.1:4000/cb  ":           "http://127.0.0.1:4000/cb",
+		"HTTP://LOCALHOST:4000/cb":        "HTTP://LOCALHOST:4000/cb", // hosts are case-insensitive
 	} {
 		got, err := checkPastedCallback(in, 4000)
 		if err != nil || got != want {
@@ -549,15 +550,35 @@ func TestIsAddrInUse(t *testing.T) {
 }
 
 // The busy-port text is only for a port that is actually taken; any other failure
-// shows its real cause.
+// shows its real cause. Port 70000 is out of range, so the bind fails the same way
+// everywhere (never EADDRINUSE, whoever runs the test).
 func TestMcpAuthOtherListenFailuresShowTheRealCause(t *testing.T) {
-	m, fd := authFrameModel(t, true, 1, openerDaemon{}) // port 1: privileged, the bind fails (EACCES) unless root
+	m, fd := authFrameModel(t, true, 70000, openerDaemon{})
 	defer close(fd.mcpAuthGate)
 	w := m.mcpView.auth
-	if w.tunnel {
-		t.Skip("running as a user that can bind port 1")
+	if w.tunnel || !w.pasting {
+		t.Fatalf("a failed bind must fall back to paste-back; tunnel %v pasting %v", w.tunnel, w.pasting)
 	}
-	if strings.Contains(w.tunnelErr, "is in use") || w.tunnelErr == "" {
+	if strings.Contains(w.tunnelErr, "is in use") || !strings.Contains(w.tunnelErr, "70000") {
 		t.Errorf("a non-EADDRINUSE failure must show the real error; tunnelErr = %q", w.tunnelErr)
+	}
+}
+
+// A remote daemon whose link carries no loopback callback port tells the developer
+// what to do; a local daemon does not.
+func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
+	m, fd := authFrameModel(t, true, 0, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if !m.mcpView.auth.noCallback {
+		t.Fatal("remote + url without a port should set noCallback")
+	}
+	if v := m.View(); !strings.Contains(v, "no callback port was found") || !strings.Contains(v, "sbx mcp auth notion") {
+		t.Errorf("the modal should explain the degraded path; got:\n%s", v)
+	}
+
+	ml, fdl := authFrameModel(t, false, 0, openerDaemon{})
+	defer close(fdl.mcpAuthGate)
+	if ml.mcpView.auth.noCallback || strings.Contains(ml.View(), "no callback port was found") {
+		t.Error("a local daemon needs no relay, so no hint")
 	}
 }
