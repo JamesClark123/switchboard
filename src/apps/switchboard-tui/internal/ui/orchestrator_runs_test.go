@@ -571,7 +571,7 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 	}
 	// The hint lasts only as long as its window (review run 51). The expiry
 	// message is built directly rather than waiting out the real tick.
-	if m, _ = update(m, orchHintExpiredMsg{text: enqueueRepeatText}); m.orchDetail.status != "" {
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "" {
 		t.Errorf("the repeat hint must clear when its window ends; detail %q", m.orchDetail.status)
 	}
 	// A deliberate second press after the window goes through.
@@ -648,7 +648,7 @@ func TestEnqueueNowSuccessClearsTheInProgressHint(t *testing.T) {
 		t.Errorf("a successful fire must clear the stale in-progress hint; detail %q", m.orchDetail.status)
 	}
 	m.orchDetail.status = "something newer"
-	if m, _ = update(m, orchHintExpiredMsg{text: enqueueRepeatText}); m.orchDetail.status != "something newer" {
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "something newer" {
 		t.Errorf("an expiring hint must not clear other text; detail %q", m.orchDetail.status)
 	}
 }
@@ -692,5 +692,75 @@ func TestEnqueueNowLateRefusalStaysOffAnotherOrchestratorsDetail(t *testing.T) {
 	}
 	if !strings.Contains(m.status, "enqueue on alpha-bot: run run-1 of poll is already queued") {
 		t.Errorf("footer = %q, want the refusal naming alpha-bot", m.status)
+	}
+}
+
+// Review (PR #4, run 66): a hint timer scheduled for orchestrator A must not clear
+// the identical hint now shown on orchestrator B's detail.
+func TestHintExpiryOnlyClearsTheOrchestratorItWasScheduledFor(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m.orchDetail.status = enqueueRepeatText // B's own, identical hint
+	if m, _ = update(m, orchHintExpiredMsg{orch: "o-other", text: enqueueRepeatText}); m.orchDetail.status != enqueueRepeatText {
+		t.Errorf("another orchestrator's timer must not clear this hint; detail %q", m.orchDetail.status)
+	}
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "" {
+		t.Errorf("this orchestrator's own timer still clears it; detail %q", m.orchDetail.status)
+	}
+}
+
+// Review (PR #4, run 66): leaving a detail and re-opening the SAME orchestrator while
+// a fire is in flight must not let the first fire's reply release the newer fire's
+// guard. Replies are matched by a per-fire token, not by orchestrator id.
+func TestEnqueueNowReplyOfAnOlderFireDoesNotReleaseTheNewerOne(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	m, fire1 := update(m, press("n"))
+	reply1, ok := runCmd(fire1).(orchDoneMsg)
+	if !ok || reply1.fireToken == 0 {
+		t.Fatalf("the first fire should reply with a token; got %#v", reply1)
+	}
+	// Re-open the same orchestrator: orchDetail is replaced (guard and window reset).
+	d := m.orchDetail
+	m.orchDetail = orchDetailState{host: d.host, hostName: d.hostName, id: d.id, name: d.name, detail: d.detail, runs: d.runs, view: viewEvents}
+	m, fire2 := update(m, press("n"))
+	reply2, ok := runCmd(fire2).(orchDoneMsg)
+	if !ok || !m.orchDetail.firing || reply2.fireToken == reply1.fireToken {
+		t.Fatalf("the second fire is in flight with its own token (%d vs %d); firing %v", reply2.fireToken, reply1.fireToken, m.orchDetail.firing)
+	}
+
+	m, _ = update(m, reply1) // the OLD fire answers first
+	if !m.orchDetail.firing {
+		t.Fatal("the older fire's reply must not release the newer fire's guard")
+	}
+	if !m.orchDetail.lastFireAt.IsZero() {
+		t.Error("the older fire's reply must not start the repeat window of the new detail")
+	}
+	if _, c := update(m, press("n")); c != nil {
+		t.Error("a further press must still be refused while the newer fire is in flight")
+	}
+
+	m, _ = update(m, reply2) // now the current one
+	if m.orchDetail.firing || m.orchDetail.fireToken != 0 || m.orchDetail.lastFireAt.IsZero() {
+		t.Errorf("the current fire's reply releases the guard and starts the window; firing %v token %d", m.orchDetail.firing, m.orchDetail.fireToken)
+	}
+}
+
+// A refusal from the older fire is footer-only (named) and never lands on the new
+// detail's line, even for the same orchestrator.
+func TestEnqueueNowStaleRefusalForTheSameOrchestratorStaysOffTheDetail(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, fire1 := update(m, press("n"))
+	reply1, _ := runCmd(fire1).(orchDoneMsg)
+	d := m.orchDetail
+	m.orchDetail = orchDetailState{host: d.host, id: d.id, name: d.name, detail: d.detail, view: viewEvents, status: "new detail's own line"}
+	m, _ = update(m, reply1)
+	if m.orchDetail.status != "new detail's own line" {
+		t.Errorf("a stale refusal must not land on the re-opened detail; detail %q", m.orchDetail.status)
+	}
+	if !strings.Contains(m.status, "enqueue on alpha-bot: run run-1 of poll is already queued") {
+		t.Errorf("footer = %q", m.status)
 	}
 }

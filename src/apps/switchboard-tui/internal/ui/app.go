@@ -707,7 +707,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case orchFireStartMsg:
 		return m.startOrchFire(msg)
 	case orchHintExpiredMsg:
-		if m.orchDetail.status == msg.text {
+		if m.orchDetail.id == msg.orch && m.orchDetail.status == msg.text {
 			m.orchDetail.status = ""
 		}
 		return m, nil

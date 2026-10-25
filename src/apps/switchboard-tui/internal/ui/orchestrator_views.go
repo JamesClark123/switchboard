@@ -43,6 +43,7 @@ type orchDetailState struct {
 	loading        bool
 	status         string
 	firing         bool      // an Enqueue now is in flight (refuses key-repeat / double presses)
+	fireToken      uint64    // identifies that in-flight fire; its reply echoes it (0 = none)
 	lastFireAt     time.Time // when the last Enqueue now started, for the repeat debounce
 	lastFireEv     string
 	// Hosts view: the copy-from-my-hosts picker.
