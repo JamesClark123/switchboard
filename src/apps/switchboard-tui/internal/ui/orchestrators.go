@@ -80,7 +80,8 @@ type orchDoneMsg struct {
 	fireEvent string
 	// fireOrch is the orchestrator the Enqueue now was for: a reply that lands
 	// after the developer opened another orchestrator's detail leaves that one alone.
-	fireOrch string
+	fireOrch     string
+	fireOrchName string
 }
 
 // enterOrchestrators switches to the screen and (re)loads its rows.
@@ -199,6 +200,12 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.status = "error: " + msg.err.Error()
 		m.err = msg.err
+		if msg.fire && msg.fireOrch != m.orchDetail.id {
+			// A late refusal for an orchestrator no longer open: footer only, named,
+			// so it is not read as a refusal of the open detail's event.
+			m.status = "error: enqueue on " + msg.fireOrchName + ": " + msg.err.Error()
+			return m, nil
+		}
 		if m.screen == screenOrchDetail {
 			m.orchDetail.status = msg.err.Error()
 		}

@@ -399,11 +399,15 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// by a dedupe refusal, and a dedupe-off event cannot be flooded by a held key.
 		// The hint goes on the detail's own status line, which does not overwrite it.
 		if left := enqueueRepeatWindow - time.Since(d.lastFireAt); d.lastFireEv == cur.GetId() && left > 0 {
-			// The hint lasts only as long as the window it describes.
+			// The hint lasts only as long as the window it describes; the first
+			// dropped press owns the expiry timer (a held key schedules one, not many).
+			if d.status == enqueueRepeatText {
+				return m, nil
+			}
 			d.status = enqueueRepeatText
 			return m, tea.Tick(left, func(time.Time) tea.Msg { return orchHintExpiredMsg{text: enqueueRepeatText} })
 		}
-		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), disabled: !cur.GetEnabled()}
+		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), orch: m.orchRec().GetName(), disabled: !cur.GetEnabled()}
 		if open := m.openRunOfEvent(cur.GetId()); cur.GetDedupeDisabled() && open != nil {
 			// Dedupe is off and a run of this event is already open: this really would
 			// double up, so ask first.
@@ -447,6 +451,7 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // confirmation): mark the Events view busy, then call the daemon.
 type orchFireStartMsg struct {
 	id, host, evID, name string
+	orch                 string // the orchestrator's name, for the outcome text
 	disabled             bool
 }
 
@@ -494,7 +499,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		defer cancel()
 		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
 		if err != nil {
-			return orchDoneMsg{err: err, fire: true, fireOrch: f.id}
+			return orchDoneMsg{err: err, fire: true, fireOrch: f.id, fireOrchName: f.orch}
 		}
 		// The position is where the run queued (the daemon reads it before dispatch),
 		// not a live one: a free worker may already be starting it.
@@ -502,11 +507,11 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		if run.GetPosition() > 0 {
 			detail = fmt.Sprintf("%s, queued at position %d", run.GetId(), run.GetPosition())
 		}
-		status := fmt.Sprintf("enqueued %s (%s)", f.name, detail)
+		status := fmt.Sprintf("enqueued %s on %s (%s)", f.name, f.orch, detail)
 		if f.disabled {
 			status += " — the event is disabled; its schedule is unchanged"
 		}
-		return orchDoneMsg{status: status, reload: true, fire: true, fireOrch: f.id, fireEvent: f.evID}
+		return orchDoneMsg{status: status, reload: true, fire: true, fireOrch: f.id, fireOrchName: f.orch, fireEvent: f.evID}
 	}
 }
 

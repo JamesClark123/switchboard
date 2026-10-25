@@ -401,7 +401,7 @@ func TestEventsViewEnqueueNow(t *testing.T) {
 	if !strings.Contains(a.orchCallsJoined(), "FireTimedEvent o-a tev-1") {
 		t.Errorf("calls = %q", a.orchCallsJoined())
 	}
-	if !strings.Contains(m.status, "enqueued poll (run-9, queued at position 2)") {
+	if !strings.Contains(m.status, "enqueued poll on alpha-bot (run-9, queued at position 2)") {
 		t.Errorf("status = %q", m.status)
 	}
 
@@ -548,9 +548,17 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 		t.Fatalf("precondition: success shown, guard clear; status %q", m.status)
 	}
 	good := m.status
-	var expire tea.Cmd
-	for i := 0; i < 5; i++ { // a held key: only the hint's expiry tick comes back (no call; counted below)
-		m, expire = update(m, press("n"))
+	// A held key: the first dropped press schedules the hint's expiry, the rest
+	// schedule nothing (and none calls the daemon; counted below).
+	m, expire := update(m, press("n"))
+	if expire == nil {
+		t.Fatal("the first dropped repeat should schedule the hint's expiry")
+	}
+	for i := 0; i < 4; i++ {
+		var c tea.Cmd
+		if m, c = update(m, press("n")); c != nil {
+			t.Fatal("later repeats must not schedule another timer")
+		}
 	}
 	if m.status != good {
 		t.Errorf("the success message must stay in the footer; status %q", m.status)
@@ -561,10 +569,9 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
 		t.Errorf("one call expected; %q", a.orchCallsJoined())
 	}
-	// The hint lasts only as long as its window (review run 51).
-	if msg, ok := runCmd(expire).(orchHintExpiredMsg); !ok {
-		t.Fatalf("a dropped repeat should schedule the hint's expiry; got %T", msg)
-	} else if m, _ = update(m, msg); m.orchDetail.status != "" {
+	// The hint lasts only as long as its window (review run 51). The expiry
+	// message is built directly rather than waiting out the real tick.
+	if m, _ = update(m, orchHintExpiredMsg{text: enqueueRepeatText}); m.orchDetail.status != "" {
 		t.Errorf("the repeat hint must clear when its window ends; detail %q", m.orchDetail.status)
 	}
 	// A deliberate second press after the window goes through.
@@ -579,7 +586,7 @@ func TestEnqueueNowStatusWording(t *testing.T) {
 	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: false}, a)
 	m, cmd := update(m, press("n"))
 	m = feed2(m, cmd)
-	for _, want := range []string{"enqueued poll (run-9, queued at position 3)", "the event is disabled"} {
+	for _, want := range []string{"enqueued poll on alpha-bot (run-9, queued at position 3)", "the event is disabled"} {
 		if !strings.Contains(m.status, want) {
 			t.Errorf("status %q missing %q", m.status, want)
 		}
@@ -589,7 +596,7 @@ func TestEnqueueNowStatusWording(t *testing.T) {
 	m2 := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a2)
 	m2, cmd2 := update(m2, press("n"))
 	m2 = feed2(m2, cmd2)
-	if !strings.Contains(m2.status, "enqueued poll (run-9)") || strings.Contains(m2.status, "position 0") {
+	if !strings.Contains(m2.status, "enqueued poll on alpha-bot (run-9)") || strings.Contains(m2.status, "position 0") {
 		t.Errorf("status = %q", m2.status)
 	}
 }
@@ -652,7 +659,10 @@ func TestEnqueueNowLateReplyLeavesAnotherOrchestratorAlone(t *testing.T) {
 	a := &fakeDaemon{}
 	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
 	m, fire := update(m, press("n"))
-	reply := runCmd(fire).(orchDoneMsg)
+	reply, ok := runCmd(fire).(orchDoneMsg)
+	if !ok {
+		t.Fatal("the fire should reply with an orchDoneMsg")
+	}
 	// The developer moved on to orchestrator B (same event id) with its own fire in flight.
 	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, firing: true}
 	m, _ = update(m, reply)
@@ -661,5 +671,26 @@ func TestEnqueueNowLateReplyLeavesAnotherOrchestratorAlone(t *testing.T) {
 	}
 	if !m.orchDetail.firing {
 		t.Error("A's reply must not clear B's in-flight guard")
+	}
+}
+
+// Review (PR #4, run 59): a late REFUSAL for orchestrator A goes to the footer,
+// naming A, and never onto B's open detail line.
+func TestEnqueueNowLateRefusalStaysOffAnotherOrchestratorsDetail(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, fire := update(m, press("n"))
+	reply, ok := runCmd(fire).(orchDoneMsg)
+	if !ok || reply.err == nil {
+		t.Fatalf("want a refused fire reply; got %#v", reply)
+	}
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, status: "b's own line"}
+	m, _ = update(m, reply)
+	if m.orchDetail.status != "b's own line" {
+		t.Errorf("A's refusal must not land on B's detail; detail %q", m.orchDetail.status)
+	}
+	if !strings.Contains(m.status, "enqueue on alpha-bot: run run-1 of poll is already queued") {
+		t.Errorf("footer = %q, want the refusal naming alpha-bot", m.status)
 	}
 }
