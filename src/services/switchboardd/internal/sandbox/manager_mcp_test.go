@@ -342,3 +342,65 @@ func TestDetachMcpRefusedWhenSandboxIsNotRunningOrStopped(t *testing.T) {
 		t.Error("an ineligible sandbox must not reach the CLI")
 	}
 }
+
+// PR #3 review: the tolerated cases are narrow, visible in the log, and the
+// sandbox may be stopped.
+func TestDetachMcpUnregisteredIsDroppedWithAWarning(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	runner.unloadErr = map[string]string{"notion": `MCP server "notion" is not registered (run 'sbx mcp add notion ...')`}
+	var logs []string
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", func(l string) { logs = append(logs, l) })
+	if err != nil {
+		t.Fatalf("a server removed from the host must be detachable from the record: %v", err)
+	}
+	if len(out.GetMcpServers()) != 0 {
+		t.Errorf("record = %v", out.GetMcpServers())
+	}
+	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "no longer registered on this host") || !strings.Contains(joined, "may still have it loaded") {
+		t.Errorf("the unregistered case must be warned about; logs:\n%s", joined)
+	}
+}
+
+func TestDetachMcpOtherErrorsAreNotTolerated(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	// "unknown"/"not found" wording is NOT a not-loaded signal.
+	for _, msg := range []string{"unknown flag: --sandbox", "sandbox not found", "gateway unreachable"} {
+		runner.unloadErr = map[string]string{"notion": msg}
+		if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("%q must surface; err = %v", msg, err)
+		}
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("failed detaches must keep the record; got %q", got)
+	}
+}
+
+func TestDetachMcpWorksOnAStoppedSandbox(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	if _, err := m.Stop(context.Background(), sb.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil)
+	if err != nil {
+		t.Fatalf("detach on a STOPPED sandbox: %v", err)
+	}
+	if len(out.GetMcpServers()) != 0 || out.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED || len(runner.mcpUnloads) != 1 {
+		t.Errorf("record %v state %v unloads %v", out.GetMcpServers(), out.GetState(), runner.mcpUnloads)
+	}
+}
+
+func TestAttachAndDetachRefuseNamesThatCouldBeFlags(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	for _, bad := range []string{"--help", "-x", "a b", "a;b"} {
+		if _, err := m.AttachMcp(context.Background(), sb.GetId(), bad, nil); !errors.Is(err, ErrMcpInvalidName) {
+			t.Errorf("attach %q err = %v, want ErrMcpInvalidName", bad, err)
+		}
+		if _, err := m.DetachMcp(context.Background(), sb.GetId(), bad, nil); !errors.Is(err, ErrMcpInvalidName) {
+			t.Errorf("detach %q err = %v, want ErrMcpInvalidName", bad, err)
+		}
+	}
+	if len(runner.mcpUnloads) != 0 {
+		t.Errorf("invalid names must not reach the CLI; unloads = %v", runner.mcpUnloads)
+	}
+}

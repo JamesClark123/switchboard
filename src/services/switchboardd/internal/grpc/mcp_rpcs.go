@@ -161,7 +161,7 @@ func detachMcpStatus(err error) error {
 	switch {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, sandbox.ErrMcpNotAttached):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, sandbox.ErrMcpReserved):
+	case errors.Is(err, sandbox.ErrMcpReserved), errors.Is(err, sandbox.ErrMcpInvalidName):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):
 		return status.Error(codes.FailedPrecondition, err.Error())
@@ -181,6 +181,8 @@ func attachMcpStatus(err error) error {
 	switch {
 	case errors.Is(err, registry.ErrNotFound), mcp.LooksNotRegistered(err.Error()):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandbox.ErrMcpInvalidName):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, sandbox.ErrMcpAlreadyAttached):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, sandbox.ErrBusy), errors.Is(err, sandbox.ErrIneligibleState):

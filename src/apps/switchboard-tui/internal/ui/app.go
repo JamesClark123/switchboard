@@ -765,6 +765,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSourcesRemoved(msg)
 	case sandboxMcpListMsg:
 		return m.handleSandboxMcpList(msg)
+	case sandboxMcpDetachStartMsg:
+		return m.startSandboxMcpDetach(msg)
 	case sandboxMcpDetachedMsg:
 		return m.handleSandboxMcpDetached(msg)
 	case sandboxMcpAttachedMsg:

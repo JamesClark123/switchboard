@@ -20,6 +20,10 @@ const opAttachMcp = "attach mcp server"
 // opDetachMcp labels the latch while a server is unloaded (SWI-3).
 const opDetachMcp = "detach mcp server"
 
+// ErrMcpInvalidName: the name cannot be a server name on the `sbx mcp` command line
+// (bad characters, or a leading '-' the CLI would parse as a flag) → INVALID_ARGUMENT.
+var ErrMcpInvalidName = errors.New("invalid MCP server name")
+
 // ErrMcpNotAttached: switchboard does not record the server on the sandbox.
 var ErrMcpNotAttached = errors.New("MCP server is not attached to this sandbox")
 
@@ -48,6 +52,9 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("MCP server name is required")
+	}
+	if !mcp.ValidName(name) {
+		return nil, fmt.Errorf("%w: %q", ErrMcpInvalidName, name)
 	}
 	if err := m.ops.acquire(id, opAttachMcp); err != nil {
 		return nil, err
@@ -106,8 +113,13 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	if name == "" {
 		return nil, errors.New("MCP server name is required")
 	}
+	// Case-sensitive prefix on the trimmed name: a server a developer registered
+	// under this reserved prefix cannot be detached (the prefix is switchboard's).
 	if strings.HasPrefix(name, mcp.WorkerServerPrefix) {
 		return nil, fmt.Errorf("%w: %s", ErrMcpReserved, name)
+	}
+	if !mcp.ValidName(name) {
+		return nil, fmt.Errorf("%w: %q", ErrMcpInvalidName, name)
 	}
 	if err := m.ops.acquire(id, opDetachMcp); err != nil {
 		return nil, err
@@ -128,14 +140,27 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
 	}
 
-	lctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
-	defer cancel()
-	if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.UnloadMcp(lctx, r, name, onLog) }); err != nil {
-		if !mcp.LooksNotLoaded(err.Error()) {
-			return nil, err
+	// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
+	if err := tryRefs(sbxRefs(sb), func(r string) error {
+		uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
+		defer cancel()
+		return m.runner.UnloadMcp(uctx, r, name, onLog)
+	}); err != nil {
+		// Judge only the runtime's own (last) diagnostic, not tryRefs' "matched any of
+		// [...]" prefix, so nothing but the unload failure itself can be tolerated.
+		inner := err
+		if u := errors.Unwrap(err); u != nil {
+			inner = u
 		}
-		if onLog != nil {
-			onLog(fmt.Sprintf("mcp: %s was not loaded in the sandbox; dropping it from the record", name))
+		switch {
+		case mcp.LooksNotLoaded(inner.Error()):
+			logDetach(onLog, "mcp: %s was not loaded in the sandbox; dropping it from the record", name)
+		case mcp.LooksUnregistered(inner.Error()):
+			// Removed from the host while still recorded: the only way to clean the
+			// record. The runtime may still hold the tools, so say so in the log.
+			logDetach(onLog, "mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
+		default:
+			return nil, err
 		}
 	}
 
@@ -149,6 +174,12 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	}
 	m.emit(out)
 	return out, nil
+}
+
+func logDetach(onLog func(string), format string, args ...any) {
+	if onLog != nil {
+		onLog(fmt.Sprintf(format, args...))
+	}
 }
 
 // attachableState mirrors editableState for MCP attach: RUNNING or STOPPED only.

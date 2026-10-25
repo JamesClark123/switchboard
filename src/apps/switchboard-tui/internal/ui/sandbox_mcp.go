@@ -38,7 +38,8 @@ type sandboxMcpState struct {
 	cursor     int
 	picking    bool // the add sub-mode (pick a registered server)
 	pickCursor int
-	busy       string // name being attached, "" when idle
+	busy       string // name being attached/detached, "" when idle
+	busyKind   string // "attach" or "detach" while busy
 	status     string
 }
 
@@ -55,6 +56,35 @@ type sandboxMcpAttachedMsg struct {
 	name string
 	sb   *pb.Sandbox
 	err  error
+}
+
+// sandboxMcpDetachStartMsg is the accepted confirmation: mark busy, then detach.
+type sandboxMcpDetachStartMsg struct {
+	id, host, name string
+}
+
+// busyStatus words the refusal of a second operation while one is running.
+func (v sandboxMcpState) busyStatus() string {
+	if v.busyKind == "detach" {
+		return "a detach is already in progress"
+	}
+	return "an attach is already in progress"
+}
+
+// startSandboxMcpDetach runs after the confirmation: it marks the overlay busy so
+// `a`, `d` and the picker are refused until the reply, then dispatches the RPC.
+func (m Model) startSandboxMcpDetach(msg sandboxMcpDetachStartMsg) (tea.Model, tea.Cmd) {
+	if !m.mcpOverlayFor(msg.id) {
+		return m, m.detachMcpCmd(msg.host, msg.id, msg.name)
+	}
+	v := &m.sandboxMcpView
+	if v.busy != "" {
+		v.status = v.busyStatus()
+		return m, nil
+	}
+	v.busy, v.busyKind = msg.name, "detach"
+	v.status = "detaching " + msg.name + "…"
+	return m, tea.Batch(m.detachMcpCmd(msg.host, msg.id, msg.name), m.spinner.Tick)
 }
 
 // sandboxMcpDetachedMsg is the outcome of one detach.
@@ -177,14 +207,14 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if v.busy != "" {
-				v.status = "an attach is already in progress"
+				v.status = v.busyStatus()
 				return m, nil
 			}
 			if v.pickCursor < 0 || v.pickCursor >= len(cands) {
 				return m, nil
 			}
 			name := cands[v.pickCursor].GetName()
-			v.busy = name
+			v.busy, v.busyKind = name, "attach"
 			v.status = "attaching " + name + "…"
 			return m, tea.Batch(m.attachMcpCmd(v.host, v.sandboxID, name), m.spinner.Tick)
 		}
@@ -213,7 +243,7 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case v.gatewayErr != "":
 			v.status = "cannot detach: " + v.gatewayErr
 		case v.busy != "":
-			v.status = "an attach is already in progress"
+			v.status = v.busyStatus()
 		case v.cursor < 0 || v.cursor >= len(v.attached):
 			v.status = "nothing to detach"
 		default:
@@ -226,8 +256,10 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					"The agent loses its tools at once; the server stays registered",
 					"on the daemon and can be attached again.",
 				},
-				warning:   "The sandbox keeps running.",
-				onConfirm: m.detachMcpCmd(host, id, name),
+				notice: "The sandbox is not restarted.",
+				// The confirmation only announces the start; the model marks the overlay
+				// busy (spinner, re-entrancy guard) before the RPC is dispatched.
+				onConfirm: func() tea.Msg { return sandboxMcpDetachStartMsg{id: id, host: host, name: name} },
 				returnTo:  screenSandboxMcp,
 			})
 		}
@@ -240,7 +272,7 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case v.listErr != "":
 			v.status = "cannot attach: " + v.listErr + " (r to retry)"
 		case v.busy != "":
-			v.status = "an attach is already in progress"
+			v.status = v.busyStatus()
 		case len(v.mcpCandidates()) == 0:
 			v.status = "every server registered on this daemon is already attached — register more on the daemon screen (shift+→)"
 		default:
@@ -263,6 +295,13 @@ func (m Model) attachMcpCmd(host, id, name string) tea.Cmd {
 	}
 }
 
+func busyVerb(kind string) string {
+	if kind == "detach" {
+		return "detaching"
+	}
+	return "attaching"
+}
+
 // detachMcpCmd runs the detach against the owning daemon.
 func (m Model) detachMcpCmd(host, id, name string) tea.Cmd {
 	d := m.daemonForHost(host)
@@ -277,6 +316,18 @@ func (m Model) detachMcpCmd(host, id, name string) tea.Cmd {
 // handleSandboxMcpDetached merges the updated record into the row and the
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, tea.Cmd) {
+	registered := true
+	if m.mcpOverlayFor(msg.id) {
+		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
+		if v := m.sandboxMcpView; v.registered != nil {
+			registered = false
+			for _, s := range v.registered {
+				if s.GetName() == msg.name {
+					registered = true
+				}
+			}
+		}
+	}
 	if msg.err != nil {
 		if m.mcpOverlayFor(msg.id) {
 			m.sandboxMcpView.status = "detach " + msg.name + " failed: " + msg.err.Error()
@@ -291,7 +342,11 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 		m.syncSandboxMcpOverlay(msg.sb)
 	}
 	if m.mcpOverlayFor(msg.id) {
-		m.sandboxMcpView.status = "detached " + msg.name + " — still registered on the daemon (a re-attaches it)"
+		if registered {
+			m.sandboxMcpView.status = "detached " + msg.name + " — still registered on the daemon (a re-attaches it)"
+		} else {
+			m.sandboxMcpView.status = "detached " + msg.name + " — it is no longer registered on this daemon"
+		}
 	} else {
 		m.status = "detached " + msg.name + " from " + m.sandboxName(msg.id)
 	}
@@ -302,7 +357,7 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpAttached(msg sandboxMcpAttachedMsg) (tea.Model, tea.Cmd) {
 	if m.mcpOverlayFor(msg.id) {
-		m.sandboxMcpView.busy = ""
+		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
 		m.sandboxMcpView.picking = false
 	}
 	if msg.err != nil {
@@ -402,7 +457,7 @@ func (m Model) sandboxMcpModal() string {
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(v.listErr))
 	}
 	if v.busy != "" {
-		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", m.spinner.View()+" "+selectedStyle.Render("attaching "+v.busy+"…"))
+		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", m.spinner.View()+" "+selectedStyle.Render(busyVerb(v.busyKind)+" "+v.busy+"…"))
 	} else if v.status != "" {
 		style := dimStyle
 		if strings.Contains(v.status, "failed") || strings.HasPrefix(v.status, "cannot") {

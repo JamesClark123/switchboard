@@ -406,14 +406,40 @@ func TestAddRemoteWithHeaders(t *testing.T) {
 }
 
 func TestLooksNotLoaded(t *testing.T) {
-	for _, yes := range []string{`MCP server "notion" is not loaded in sandbox "x"`, "server isn't loaded", `MCP server "n" is not registered`, "not currently loaded"} {
+	for _, yes := range []string{`MCP server "notion" is not loaded in sandbox "x"`, "server isn't loaded", "not currently loaded"} {
 		if !LooksNotLoaded(yes) {
 			t.Errorf("%q should be tolerated", yes)
 		}
 	}
-	for _, no := range []string{"", "gateway unreachable", "permission denied"} {
+	// "not registered" is handled separately (LooksNotRegistered) and must not be
+	// mistaken for "not loaded".
+	for _, no := range []string{"", "gateway unreachable", "permission denied", `MCP server "n" is not registered`} {
 		if LooksNotLoaded(no) {
 			t.Errorf("%q must not be tolerated", no)
+		}
+	}
+}
+
+func TestValidName(t *testing.T) {
+	for _, ok := range []string{"notion", "a.b_c-d", "X1"} {
+		if !ValidName(ok) {
+			t.Errorf("%q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "-h", "--sandbox", "a b", "a/b", "a;b"} {
+		if ValidName(bad) {
+			t.Errorf("%q should be invalid", bad)
+		}
+	}
+}
+
+func TestLooksUnregisteredIsStrict(t *testing.T) {
+	if !LooksUnregistered(`MCP server "n" is not registered (run 'sbx mcp add n ...')`) {
+		t.Error("not registered should match")
+	}
+	for _, no := range []string{"unknown flag --x", "sandbox not found", "gateway unreachable"} {
+		if LooksUnregistered(no) {
+			t.Errorf("%q must not match", no)
 		}
 	}
 }

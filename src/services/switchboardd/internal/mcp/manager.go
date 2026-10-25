@@ -312,13 +312,27 @@ func LooksNotRegistered(out string) bool {
 	return strings.Contains(l, "not registered") || strings.Contains(l, "not found") || strings.Contains(l, "unknown")
 }
 
+// ValidName reports whether name is acceptable as a server name on an `sbx mcp`
+// command line: the runtime's name rule, and never a leading '-' (which the CLI
+// would parse as a flag).
+func ValidName(name string) bool {
+	return nameRe.MatchString(name) && !strings.HasPrefix(name, "-")
+}
+
+// LooksUnregistered reports whether a diagnostic says, specifically, that the
+// server is "not registered" on the host. Stricter than LooksNotRegistered, which
+// also matches "not found"/"unknown" and so must not gate record changes.
+func LooksUnregistered(out string) bool {
+	return strings.Contains(strings.ToLower(out), "not registered")
+}
+
 // LooksNotLoaded reports whether an `sbx mcp unload` diagnostic says the server
-// is not loaded in that sandbox (or is no longer registered on the host), i.e.
-// there is nothing left to unload and the sandbox record should simply drop it.
-// The exact runtime wording is unverified (SWI-3), so the match is tolerant.
+// is not loaded in that sandbox, i.e. there is nothing left to unload and the
+// sandbox record should simply drop it. The exact runtime wording is unverified
+// (SWI-3), so the match is tolerant but limited to "not loaded" phrasings.
 func LooksNotLoaded(out string) bool {
 	l := strings.ToLower(out)
-	for _, s := range []string{"not loaded", "isn't loaded", "not currently loaded", "not attached", "not registered"} {
+	for _, s := range []string{"not loaded", "isn't loaded", "not currently loaded", "not attached"} {
 		if strings.Contains(l, s) {
 			return true
 		}
