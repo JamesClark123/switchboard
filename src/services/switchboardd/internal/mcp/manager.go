@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -319,8 +321,11 @@ func ValidName(name string) bool {
 }
 
 // SafeArg reports whether name can be passed as a single `sbx mcp` argument
-// without being misread: non-empty, no leading '-' (a flag), no control
-// characters. It is deliberately looser than ValidName — attach/detach act on
+// without being misread or mis-rendered: non-empty, valid UTF-8, no leading '-'
+// (a flag), and no non-printable characters — C0/C1 controls, line/paragraph
+// separators, or format characters such as bidi overrides and zero-width
+// joiners, which could break a row or log line or spoof another name. It is
+// deliberately looser than ValidName — attach/detach act on
 // servers the HOST registered (any name the runtime accepted, including ones
 // registered with the sbx CLI directly), so only what could change the meaning
 // of the argv is refused.
@@ -328,8 +333,11 @@ func SafeArg(name string) bool {
 	if name == "" || strings.HasPrefix(name, "-") || len(name) > 256 {
 		return false
 	}
+	if !utf8.ValidString(name) {
+		return false
+	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return false
 		}
 	}

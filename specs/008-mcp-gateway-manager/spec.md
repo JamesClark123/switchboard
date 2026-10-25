@@ -469,7 +469,10 @@ and the toggle is still off.
   stopped or restarted, the record drops the name and the change reaches other clients through the
   same sandbox-changed event, the registration on the host is untouched, a failed unload leaves the
   record untouched and shows the runtime's diagnostic, a server the runtime reports as not loaded is
-  still dropped from the record, and the orchestrator's per-worker server is never offered. When the daemon's gateway is unavailable the view MUST still show the record
+  still dropped from the record, and the orchestrator's per-worker server is never offered. Attach
+  and detach MUST refuse a name that is not a safe single CLI argument (`mcp.SafeArg`: empty, a
+  leading `-`, invalid UTF-8, or a control, line/paragraph-separator or format character); a
+  legacy record holding such a name is dropped from the record without calling the CLI. When the daemon's gateway is unavailable the view MUST still show the record
   and name the reason instead of offering an attach.
 - **FR-103** *(added 2026-10-12)*: Registering a remote server MUST accept custom HTTP headers,
   one `Name: value` entry per header, each passed to the runtime as its own `--header` flag. A

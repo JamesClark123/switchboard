@@ -461,8 +461,9 @@ func TestMcpServersDetachStatusVariants(t *testing.T) {
 	m, cmd := update(m, press("d"))
 	m, cmd = update(m, press("y"))
 	m, cmd = update(m, runCmd(cmd))
-	m, _ = update(m, runDetach(t, cmd))
-	if st := m.sandboxMcpView.status; !strings.Contains(st, "no longer registered") || strings.Contains(st, "still registered") {
+	m, reload := update(m, runDetach(t, cmd))
+	m, _ = update(m, runCmd(reload)) // the wording waits for the refreshed list
+	if st := m.sandboxMcpView.status; !strings.Contains(st, "no longer registered") || !strings.Contains(st, "may still have its tools loaded") || strings.Contains(st, "still registered") {
 		t.Errorf("status = %q", st)
 	}
 
@@ -528,5 +529,64 @@ func TestMcpServersDetachRefreshesTheListAndStaysNeutralWhenItIsUnknown(t *testi
 	m2, _ = update(m2, runDetach(t, cmd2))
 	if st := m2.sandboxMcpView.status; st != "detached notion" {
 		t.Errorf("with an unknown list the status must claim nothing about registration; got %q", st)
+	}
+}
+
+// Review (PR #3, run 42): the registration claim comes from the list refreshed
+// AFTER the detach, not the one loaded before it.
+func TestMcpServersDetachStatusUsesTheRefreshedList(t *testing.T) {
+	d := &fakeDaemon{} // notion registered when the overlay opens
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	if st := m.sandboxMcpView.status; st != "detached notion" {
+		t.Errorf("before the refreshed list the status must claim nothing; got %q", st)
+	}
+	d.mcpServers = d.mcpServers[1:] // notion was removed from the host meanwhile
+	m, _ = update(m, runCmd(reload))
+	if st := m.sandboxMcpView.status; !strings.Contains(st, "no longer registered") {
+		t.Errorf("status = %q, want the refreshed list's answer", st)
+	}
+
+	m2 := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m2, _ = update(m2, press("d"))
+	m2, cmd2 := update(m2, press("y"))
+	m2, cmd2 = update(m2, runCmd(cmd2))
+	m2, reload2 := update(m2, runDetach(t, cmd2))
+	m2, _ = update(m2, runCmd(reload2))
+	if st := m2.sandboxMcpView.status; !strings.Contains(st, "still registered on the daemon") {
+		t.Errorf("status = %q, want still registered", st)
+	}
+}
+
+// Review (PR #3, run 42): an attach/detach in flight is named on the sandbox's
+// row, so a closed overlay does not hide why the daemon refuses other actions.
+func TestMcpOpInFlightIsNamedOnTheSandboxRow(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if v := m.View(); !strings.Contains(v, "mcp detaching notion…") {
+		t.Errorf("the row should name the detach in flight; got:\n%s", v)
+	}
+	m, _ = update(m, runDetach(t, cmd))
+	if v := m.View(); strings.Contains(v, "mcp detaching") {
+		t.Errorf("the marker must clear with the reply; got:\n%s", v)
+	}
+}
+
+// Review (PR #3, run 42): the in-flight map is per sandbox — one sandbox's reply
+// never clears another's call — and setMcpOp creates the map on first use.
+func TestMcpOpsArePerSandbox(t *testing.T) {
+	m := openMcpOverlay(t, mcpOverlayModel(t, &fakeDaemon{}))
+	m.sandboxMcpOps = nil
+	m.setMcpOp("sb-2", sandboxMcpOp{kind: "attach", name: "pw"})
+	m, _ = update(m, sandboxMcpDetachedMsg{id: "sb-1", name: "notion", err: errors.New("gateway unreachable")})
+	if op, ok := m.sandboxMcpOps["sb-2"]; !ok || op.name != "pw" {
+		t.Errorf("sb-2's attach must survive sb-1's failed detach; ops %v", m.sandboxMcpOps)
 	}
 }

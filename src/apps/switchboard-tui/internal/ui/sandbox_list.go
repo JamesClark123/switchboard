@@ -340,7 +340,16 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 	}
 	// feature 009 (FR-149): the MCP servers (feature 008) and the orchestrator
 	// are named on the row's third line (list_delegate.go), not here.
-	line3 := dimStyle.Render(thirdLine(row.sb))
+	third := thirdLine(row.sb)
+	// SWI-3: an attach/detach still in flight (its overlay may be closed) is
+	// named on the row, so the daemon's "busy" refusal of other actions has a cause.
+	if op, ok := m.sandboxMcpOps[row.sb.GetId()]; ok {
+		if third != "" {
+			third += " · "
+		}
+		third += "mcp " + busyVerb(op.kind) + " " + op.name + "…"
+	}
+	line3 := dimStyle.Render(third)
 	// A still-creating optimistic launch: show a spinner, the "creating" verb, and
 	// the live copy/boot progress in place of the usual state badge.
 	if lf, ok := m.launching[row.sb.GetId()]; ok {

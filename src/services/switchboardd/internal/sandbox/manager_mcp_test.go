@@ -448,6 +448,33 @@ func TestDetachDropsALegacyUnsafeRecordWithoutCallingTheCLI(t *testing.T) {
 	}
 }
 
+// The record-only branch runs before the container check, so a legacy unsafe
+// name is removable even from a sandbox with no container; a safe name there is
+// still refused, since it would need the CLI.
+func TestDetachDropsALegacyUnsafeRecordWithoutAContainer(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	if _, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+		s.McpServers = append(s.McpServers, "--legacy")
+		s.ContainerRef = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), "--legacy", nil)
+	if err != nil {
+		t.Fatalf("a recorded legacy name must be removable without a container: %v", err)
+	}
+	if got := strings.Join(out.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("record = %q, want notion", got)
+	}
+	if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); err == nil || !strings.Contains(err.Error(), "no container") {
+		t.Errorf("a safe name without a container err = %v, want the no-container refusal", err)
+	}
+	if len(runner.mcpUnloads) != 0 {
+		t.Errorf("nothing may reach the CLI; unloads = %v", runner.mcpUnloads)
+	}
+}
+
 // The unregistered case needs the server's own name in the diagnostic, and
 // "not attached" is no longer a tolerated phrase.
 func TestDetachToleranceRequiresTheServerNameAndNotLoadedWording(t *testing.T) {

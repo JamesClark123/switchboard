@@ -41,6 +41,9 @@ type sandboxMcpState struct {
 	busy       string // name being attached/detached, "" when idle
 	busyKind   string // "attach" or "detach" while busy
 	status     string
+	// detached is the server just detached, until the refreshed gateway list says
+	// whether it is still registered (the status wording waits for that list).
+	detached string
 }
 
 // sandboxMcpListMsg carries the daemon's gateway list for the overlay.
@@ -66,6 +69,22 @@ type sandboxMcpDetachStartMsg struct {
 	id, host, name string
 }
 
+// setMcpOp records an attach/detach in flight for sandbox id (creating the map
+// on first use) and redraws the list so the row shows it.
+func (m *Model) setMcpOp(id string, op sandboxMcpOp) {
+	if m.sandboxMcpOps == nil {
+		m.sandboxMcpOps = map[string]sandboxMcpOp{}
+	}
+	m.sandboxMcpOps[id] = op
+	m.refreshListItems()
+}
+
+// clearMcpOp forgets sandbox id's in-flight attach/detach and redraws the list.
+func (m *Model) clearMcpOp(id string) {
+	delete(m.sandboxMcpOps, id)
+	m.refreshListItems()
+}
+
 // busyStatus words the refusal of a second operation while one is running.
 func (v sandboxMcpState) busyStatus() string {
 	if v.busyKind == "detach" {
@@ -83,14 +102,14 @@ func (m Model) startSandboxMcpDetach(msg sandboxMcpDetachStartMsg) (tea.Model, t
 		}
 		return m, nil
 	}
-	m.sandboxMcpOps[msg.id] = sandboxMcpOp{kind: "detach", name: msg.name}
+	m.setMcpOp(msg.id, sandboxMcpOp{kind: "detach", name: msg.name})
 	if !m.mcpOverlayFor(msg.id) {
 		return m, m.detachMcpCmd(msg.host, msg.id, msg.name)
 	}
 	v := &m.sandboxMcpView
 	v.busy, v.busyKind = msg.name, "detach"
 	v.status = "detaching " + msg.name + "…"
-	return m, tea.Batch(m.detachMcpCmd(msg.host, msg.id, msg.name), m.spinner.Tick)
+	return m, m.detachMcpCmd(msg.host, msg.id, msg.name)
 }
 
 // sandboxMcpDetachedMsg is the outcome of one detach.
@@ -147,11 +166,27 @@ func (m Model) handleSandboxMcpList(msg sandboxMcpListMsg) (tea.Model, tea.Cmd) 
 	m.sandboxMcpView.loading = false
 	if msg.err != nil {
 		m.sandboxMcpView.listErr = "could not list the daemon's servers: " + msg.err.Error()
+		m.sandboxMcpView.detached = "" // the status stays a plain "detached <name>"
 		return m, nil
 	}
 	m.sandboxMcpView.listErr = ""
 	m.sandboxMcpView.registered = msg.servers
+	if name := m.sandboxMcpView.detached; name != "" {
+		m.sandboxMcpView.detached = ""
+		m.sandboxMcpView.status = detachedStatus(name, msg.servers)
+	}
 	return m, nil
+}
+
+// detachedStatus words a finished detach from the daemon's list as refreshed
+// after it, so the registration claim is current.
+func detachedStatus(name string, registered []*pb.McpServer) string {
+	for _, s := range registered {
+		if s.GetName() == name {
+			return "detached " + name + " — still registered on the daemon (a re-attaches it)"
+		}
+	}
+	return "detached " + name + " — it is no longer registered on this daemon (the sandbox may still have its tools loaded)"
 }
 
 // mcpOverlayFor reports whether the overlay is open for sandbox id.
@@ -224,9 +259,9 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			name := cands[v.pickCursor].GetName()
 			v.busy, v.busyKind = name, "attach"
-			m.sandboxMcpOps[v.sandboxID] = sandboxMcpOp{kind: "attach", name: name}
+			m.setMcpOp(v.sandboxID, sandboxMcpOp{kind: "attach", name: name})
 			v.status = "attaching " + name + "…"
-			return m, tea.Batch(m.attachMcpCmd(v.host, v.sandboxID, name), m.spinner.Tick)
+			return m, m.attachMcpCmd(v.host, v.sandboxID, name)
 		}
 		return m, nil
 	}
@@ -326,19 +361,9 @@ func (m Model) detachMcpCmd(host, id, name string) tea.Cmd {
 // handleSandboxMcpDetached merges the updated record into the row and the
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, tea.Cmd) {
-	delete(m.sandboxMcpOps, msg.id)
-	registered, known := true, false
+	m.clearMcpOp(msg.id)
 	if m.mcpOverlayFor(msg.id) {
 		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
-		if v := m.sandboxMcpView; v.registered != nil {
-			known = true
-			registered = false
-			for _, s := range v.registered {
-				if s.GetName() == msg.name {
-					registered = true
-				}
-			}
-		}
 	}
 	if msg.err != nil {
 		if m.mcpOverlayFor(msg.id) {
@@ -354,19 +379,17 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 		m.syncSandboxMcpOverlay(msg.sb)
 	}
 	if m.mcpOverlayFor(msg.id) {
-		switch {
-		case !known:
-			m.sandboxMcpView.status = "detached " + msg.name // the daemon's list is not loaded: say nothing about registration
-		case registered:
-			m.sandboxMcpView.status = "detached " + msg.name + " — still registered on the daemon (a re-attaches it)"
-		default:
-			m.sandboxMcpView.status = "detached " + msg.name + " — it is no longer registered on this daemon"
-		}
-		// Refresh the daemon's list so the picker and the registration decoration
-		// are current after the change.
-		if v := &m.sandboxMcpView; v.gatewayErr == "" && !v.loading {
-			v.loading = true
-			return m, m.sandboxMcpListCmd(v.host, v.sandboxID)
+		// Say nothing about registration until the refreshed list arrives
+		// (handleSandboxMcpList words it then); the picker and the decoration
+		// are refreshed by the same list. A list already loading answers too.
+		v := &m.sandboxMcpView
+		v.status = "detached " + msg.name
+		if v.gatewayErr == "" {
+			v.detached = msg.name
+			if !v.loading {
+				v.loading = true
+				return m, m.sandboxMcpListCmd(v.host, v.sandboxID)
+			}
 		}
 	} else {
 		m.status = "detached " + msg.name + " from " + m.sandboxName(msg.id)
@@ -377,7 +400,7 @@ func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, t
 // handleSandboxMcpAttached merges the updated record into the row and the
 // overlay, or surfaces the daemon's diagnostic.
 func (m Model) handleSandboxMcpAttached(msg sandboxMcpAttachedMsg) (tea.Model, tea.Cmd) {
-	delete(m.sandboxMcpOps, msg.id)
+	m.clearMcpOp(msg.id)
 	if m.mcpOverlayFor(msg.id) {
 		m.sandboxMcpView.busy, m.sandboxMcpView.busyKind = "", ""
 		m.sandboxMcpView.picking = false

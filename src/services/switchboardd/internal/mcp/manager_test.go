@@ -452,12 +452,20 @@ func TestLooksUnregisteredIsStrict(t *testing.T) {
 }
 
 func TestSafeArg(t *testing.T) {
-	for _, ok := range []string{"notion", "a.b_c-d", "io.github/foo", "scope:name@1", "a b"} {
+	for _, ok := range []string{"notion", "a.b_c-d", "io.github/foo", "scope:name@1", "a b", "café", "日本"} {
 		if !SafeArg(ok) {
 			t.Errorf("%q should be a safe argument (host-registered names are not limited to the register rule)", ok)
 		}
 	}
-	for _, bad := range []string{"", "-h", "--sandbox", "a\nb", "a\x00b", "a\x7fb", strings.Repeat("x", 257)} {
+	for _, bad := range []string{"", "-h", "--sandbox", "a\nb", "a\x00b", "a\x7fb", strings.Repeat("x", 257),
+		"a\u009bb", // C1 control (8-bit CSI)
+		"a\u2028b", // line separator
+		"a\u2029b", // paragraph separator
+		"a\u202eb", // bidi override (format character)
+		"a\u200db", // zero-width joiner
+		"\ufeffa",  // BOM
+		"a\xffb",   // invalid UTF-8
+	} {
 		if SafeArg(bad) {
 			t.Errorf("%q must be refused", bad)
 		}

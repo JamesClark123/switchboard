@@ -54,7 +54,7 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 		return nil, errors.New("MCP server name is required")
 	}
 	if !mcp.SafeArg(name) {
-		return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control characters)", ErrMcpInvalidName, name)
+		return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control or other non-printable characters)", ErrMcpInvalidName, name)
 	}
 	if err := m.ops.acquire(id, opAttachMcp); err != nil {
 		return nil, err
@@ -134,19 +134,17 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 	// refused (as invalid if it could not even be an argument, else not-attached).
 	if !slices.Contains(sb.GetMcpServers(), name) {
 		if !mcp.SafeArg(name) {
-			return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control characters)", ErrMcpInvalidName, name)
+			return nil, fmt.Errorf("%w: %q (names may not start with '-' or contain control or other non-printable characters)", ErrMcpInvalidName, name)
 		}
 		return nil, fmt.Errorf("%w: %s", ErrMcpNotAttached, name)
 	}
-	if sb.GetContainerRef() == "" {
-		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
-	}
-
 	if !mcp.SafeArg(name) {
 		// A legacy record (written before names were checked) whose name could be
 		// misread as a flag: it cannot be handed to the CLI, but it must not be
-		// stuck in the record either.
+		// stuck in the record either — even on a sandbox with no container.
 		logDetach(onLog, "mcp: %q cannot be passed to sbx safely; dropping it from the record only (unload it from the sandbox with the sbx CLI if it is still loaded)", name)
+	} else if sb.GetContainerRef() == "" {
+		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
 	} else if err := tryRefs(sbxRefs(sb), func(r string) error {
 		// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
 		uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
