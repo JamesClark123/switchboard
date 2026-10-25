@@ -14,7 +14,7 @@ make fmt-check vet test     # unit + TUI tests (fake daemons) for the new screen
 make cover                  # ≥90% per module
 ```
 
-The TUI tests drive two fake hosts with orchestrators in every run state and assert the Overview sections, the 15-item history cap, the Queue filter/pagination, grouped Actions/Events, the Daemons › Orchestrators flow and the removed top-level screen.
+The TUI tests drive two fake hosts with orchestrators in every run state and assert the Overview sections, the 15-item history cap, the Queue filter/pagination, grouped Actions/Events, the Daemons › Orchestrators flow and the removed top-level screen, plus the review-driven rules: sanitised rows and overlay (FR-029), operations refused on a disconnected host (FR-030), identity-anchored cursors, dropped out-of-order replies, coalesced reloads, a slow host not blocking others, and the results overlay fitting the terminal.
 
 ## Manual scenarios
 
@@ -24,4 +24,7 @@ The TUI tests drive two fake hosts with orchestrators in every run state and ass
 4. **Queue tab** — with more than 25 runs, page with `]`/`[`; `f` filters to one orchestrator; `F` clears it.
 5. **Actions / Events tabs** — groups per orchestrator; add an action to the second orchestrator (`a` with the cursor in its group), call it (`enter`); toggle an event (`space`).
 6. **Daemons › Orchestrators** — Daemons → a daemon → Orchestrators: create, rename, open; the detail shows Workers, Reasoning, Hosts only; attach a worker, rebuild the reasoning sandbox, add a host.
-7. **Partial availability** — disconnect the remote daemon: Jobs still shows the local orchestrators and names the unreachable host.
+7. **Partial availability** — disconnect the remote daemon: Jobs still shows the local orchestrators and names the unreachable host; its rows stay dimmed and `x`/`n` on them say it is not connected (nothing reaches the local daemon). Reconnect it with Jobs open: its rows return without `r`. With Daemons › <remote> › Orchestrators open, disconnect it: the screen returns to Daemons.
+8. **Escape sequences** — have a worker report a summary containing `\x1b]52;c;aGVsbG8=\x07`, `\x1b[2J` and `\r`: the History row and Open results show plain text; the screen, title and clipboard are unchanged.
+9. **Cursor stability** — highlight an Upcoming event, let another event fire (the list re-sorts): the highlight stays on the same event and `n` enqueues it.
+10. **Key behaviour** — on Jobs, `esc` goes to Sandboxes and `q` quits; shift+→ on Jobs wraps to Sandboxes.

@@ -6,7 +6,7 @@
 
 ## Summary
 
-Replace the **Orchestrators** top-level screen with a **Jobs** screen whose four tabs — Overview, Actions, Events, Queue — aggregate every orchestrator on every connected daemon, and move orchestrator administration (create/rename/remove; Workers, Reasoning, Hosts) to a new **Orchestrators** option under each daemon on the **Daemons** screen. The change is **TUI-only**: the existing per-host RPCs (`ListOrchestrators`, which already carries each orchestrator's actions and timed events; `ListRuns`; `CancelRun`; `MarkWorkerFree`; `FireTimedEvent`; action/event CRUD) and the existing per-host `Event.orchestrator_changed` stream provide everything; the client fans out per host and merges. No proto, daemon, storage or environment change. Today's per-orchestrator Actions/Queue/Events code is refactored to act on an explicit target orchestrator so the Jobs tabs and the remaining detail views share one implementation (research R1–R9).
+Replace the **Orchestrators** top-level screen with a **Jobs** screen whose four tabs — Overview, Actions, Events, Queue — aggregate every orchestrator on every connected daemon, and move orchestrator administration (create/rename/remove; Workers, Reasoning, Hosts) to a new **Orchestrators** option under each daemon on the **Daemons** screen. The change is **TUI-only**: the existing per-host RPCs (`ListOrchestrators`, which already carries each orchestrator's actions and timed events; `ListRuns`; `CancelRun`; `MarkWorkerFree`; `FireTimedEvent`; action/event CRUD) and the existing per-host `Event.orchestrator_changed` stream provide everything; the client fans out per host and merges. No proto, daemon, storage or environment change. Today's per-orchestrator Actions/Queue/Events code is refactored to act on an explicit target orchestrator so the Jobs tabs and the remaining detail views share one implementation, hosted per screen; untrusted text is sanitised, operations never fall back to another daemon, and live updates are ordered and coalesced (research R1–R12).
 
 ## Technical Context
 
@@ -22,11 +22,14 @@ Replace the **Orchestrators** top-level screen with a **Jobs** screen whose four
 
 **Project Type**: CLI/TUI client (single Go module change)
 
-**Performance Goals**: Jobs refresh after an `orchestrator_changed` event reloads only that orchestrator (one `ListRuns` + its summary), not every orchestrator; a full Jobs load is one `ListOrchestrators` per connected host plus one `ListRuns` per orchestrator, issued concurrently per host
+**Performance Goals** (SC-007):
+- **Event reload.** An `orchestrator_changed` event reloads only that orchestrator (`GetOrchestrator` + `ListRuns`), not every orchestrator. Reloads are ordered by a per-orchestrator generation (stale replies dropped), coalesced to one in flight per orchestrator, and issued only while Jobs is visible; otherwise the orchestrator is marked stale and reloaded on entry (R3).
+- **Full load.** One command per connected host, hosts in parallel, each with its own timeout: `ListOrchestrators`, then `ListRuns` per orchestrator, at most `jobsRunsParallel = 4` at a time. Each host's result is applied as it arrives, and a per-host in-flight guard stops loads stacking (R2).
+- **Rendering.** Derived rows are cached per data revision, so cursor moves and tab switches never wait on a daemon or re-sort thousands of runs per frame (R4).
 
-**Constraints**: No proto/daemon change; no new env vars (page size, history cap and refresh bounds are package constants); remote hosts reached only over the existing connections; daemon run retention unchanged (200 finished runs per orchestrator — spec FR-018)
+**Constraints**: All agent- or remote-supplied text is sanitised before display (FR-029, R10); operations go only to the hosting daemon and are refused when it isn't connected (FR-030, R12). No proto/daemon change; no new env vars (page size, history cap and refresh bounds are package constants); remote hosts reached only over the existing connections; daemon run retention unchanged (200 finished runs per orchestrator — spec FR-018)
 
-**Scale/Scope**: Tens of orchestrators × up to ~200 retained runs each (a few thousand runs in the Queue tab, paginated)
+**Scale/Scope**: Tens of orchestrators × up to ~200 retained runs each (a few thousand runs in the Queue tab, paginated). `ListRuns` returns each run's composed prompt, so a full load can be several MB; the gRPC 4 MB default receive limit per `ListRuns` reply is a known ceiling, recorded and not changed here (R2)
 
 ## Constitution Check
 
@@ -54,7 +57,7 @@ The constitution mandates a TypeScript/pnpm/Biome/Vitest/Storybook/Playwright/MS
 ```text
 specs/010-jobs-screen/
 ├── plan.md              # This file
-├── research.md          # Phase 0 — R1..R9 decisions
+├── research.md          # Phase 0 — R1..R12 decisions
 ├── data-model.md        # Phase 1 — client-side view model (rows, tabs, ordering, pagination)
 ├── quickstart.md        # Phase 1 — validation guide
 ├── contracts/
@@ -73,13 +76,15 @@ src/apps/switchboard-tui/internal/ui/
 ├── jobs_queue.go             # NEW: Queue tab — flattened runs, orchestrator filter, pagination
 ├── jobs_groups.go            # NEW: Actions & Events tabs grouped by orchestrator (cursor → target orchestrator)
 ├── run_results.go            # NEW: Open results overlay (scrollable viewport over Run.summary/reason)
-├── run_actions.go            # NEW (extracted): prompt / cancel / mark free / Enqueue now on an explicit target
+├── run_actions.go            # NEW (extracted): orchTarget, orchSurface, connectedDaemon; prompt / cancel / mark free / Enqueue now on an explicit target
+├── sanitize.go               # NEW: sanitizeTerminalText / sanitizeLine (strip control & escape sequences; display-width truncation) — R10
 ├── daemon_orchestrators.go   # NEW: Daemons › Orchestrators list (create/rename/remove/open) for one daemon
-├── daemons.go                # daemonOptions gains "Orchestrators"
+├── daemons.go                # daemonOptions gains "Orchestrators" (connected daemons only)
 ├── orchestrators.go          # list loader kept (reused by Jobs + Daemons › Orchestrators); old screen code removed
 ├── orchestrator_views.go     # detail reduced to Workers / Reasoning / Hosts
 ├── orchestrator_forms.go     # action/event/call forms take an explicit orchTarget instead of m.orchDetail
-├── notifications.go          # orchestrator_changed → also refresh Jobs; entry points retargeted (R8)
+├── notifications.go          # orchestrator_changed → reload one Jobs orchestrator (or mark stale); entry points retargeted (R8)
+├── hosts.go                  # host connect/disconnect → Jobs per-host load / keep-as-unreachable; leave Daemons › Orchestrators on disconnect
 └── *_test.go                 # tests per file above
 README.md                     # Jobs screen + Daemons › Orchestrators docs; Orchestrators screen section replaced
 CLAUDE.md                     # agent context: active feature 010
