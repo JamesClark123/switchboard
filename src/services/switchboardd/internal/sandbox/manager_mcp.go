@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"slices"
 	"strings"
 
@@ -15,6 +16,10 @@ import (
 // into an existing sandbox, so the load can never interleave with a refresh or a
 // source edit that may be recreating the container (feature 008, FR-102).
 const opAttachMcp = "attach mcp server"
+
+// ErrMcpToolCollision: loading the server would put a tool in the gateway's flat
+// namespace that another loaded server already provides → FAILED_PRECONDITION.
+var ErrMcpToolCollision = errors.New("MCP tool name collision")
 
 // ErrMcpAlreadyAttached: switchboard already records the server on the sandbox.
 var ErrMcpAlreadyAttached = errors.New("MCP server already attached to this sandbox")
@@ -60,6 +65,9 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	lctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
 	defer cancel()
 	if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.LoadMcp(lctx, r, name, onLog) }); err != nil {
+		if hint := mcp.CollisionHint(err.Error()); hint != "" {
+			return nil, fmt.Errorf("%w: %s (runtime: %v)", ErrMcpToolCollision, hint, err)
+		}
 		return nil, err
 	}
 

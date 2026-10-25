@@ -227,3 +227,46 @@ func TestAttachableState(t *testing.T) {
 		}
 	}
 }
+
+// SWI-2: the runtime's flat tool namespace refuses a load whose tools clash with
+// a loaded server. Launch and attach turn that into an actionable message and
+// keep the raw runtime text.
+const toolCollisionText = `tool "list_issues" from server "linear" collides with an existing tool already registered for server "github"
+tool "list_releases" from server "linear" collides with an existing tool already registered for server "github"`
+
+func TestLaunchLogsActionableToolCollisionHint(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	runner.loadErr = map[string]string{"linear": toolCollisionText}
+	sb, logs := launchWithMcp(t, m, dir, &McpAttach{Mode: pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE, Servers: []string{"github", "linear"}})
+	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Fatalf("a collision must not fail the launch; state = %v", sb.GetState())
+	}
+	if got := sb.GetMcpServers(); len(got) != 1 || got[0] != "github" {
+		t.Errorf("record = %v, want [github]", got)
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{"mcp: skipped linear: tool name collision with github (list_issues, list_releases)", "README › MCP tool collisions", "mcp: runtime said:", `collides with an existing tool`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("log missing %q; got:\n%s", want, joined)
+		}
+	}
+}
+
+func TestAttachMcpToolCollisionIsAFailedPreconditionWithHint(t *testing.T) {
+	m, _, runner, dir := newTestManager(t)
+	sb, _ := launchWithMcp(t, m, dir, nil)
+	runner.loadErr = map[string]string{"linear": toolCollisionText}
+	_, err := m.AttachMcp(context.Background(), sb.GetId(), "linear", nil)
+	if !errors.Is(err, ErrMcpToolCollision) {
+		t.Fatalf("err = %v, want ErrMcpToolCollision", err)
+	}
+	for _, want := range []string{"collision with github (list_issues, list_releases)", "runtime:", "collides with an existing tool"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if len(persisted.GetMcpServers()) != 0 {
+		t.Errorf("a collision must leave the record untouched; got %v", persisted.GetMcpServers())
+	}
+}

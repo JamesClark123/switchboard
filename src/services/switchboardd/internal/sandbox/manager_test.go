@@ -47,6 +47,7 @@ type fakeRunner struct {
 	// loads observed when the record was last read as RUNNING (ordering probe).
 	mcpLoads      []string
 	failLoad      map[string]bool
+	loadErr       map[string]string // LoadMcp fails with exactly this text for these names
 	lastStaticMcp []string
 }
 
@@ -394,6 +395,9 @@ func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mcpLoads = append(f.mcpLoads, ref+" "+name)
+	if msg, ok := f.loadErr[name]; ok {
+		return errors.New(msg)
+	}
 	if f.failLoad[name] {
 		return errors.New("load failed for " + name)
 	}

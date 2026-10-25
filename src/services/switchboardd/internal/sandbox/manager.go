@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"log"
 	"os"
 	"path/filepath"
@@ -545,6 +546,12 @@ func (m *Manager) applyMcp(ctx context.Context, ref string, att *McpAttach, onLo
 		err := m.runner.LoadMcp(lctx, ref, name, onLog)
 		cancel()
 		if err != nil {
+			if hint := mcp.CollisionHint(err.Error()); hint != "" {
+				// Actionable line first; the raw runtime text stays in the log.
+				logf("mcp: skipped %s: %s", name, hint)
+				logf("mcp: runtime said: %v", err)
+				continue
+			}
 			logf("mcp: skipped %s: %v", name, err)
 			continue
 		}

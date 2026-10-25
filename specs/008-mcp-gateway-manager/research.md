@@ -235,3 +235,29 @@ unambiguous; multi-line secrets remain a host operation.
 **Alternatives considered**: `--token <value>` (rejected: visible in process lists and shell
 history); storing values in switchboard's registry (rejected: duplicates the keychain and widens
 exposure); a free-text "extra flags" field on the register form (rejected: unvalidated argv).
+
+## R14 — Tool-name collisions across loaded servers (SWI-2; added 2026-10-25)
+
+**Finding**: the runtime's gateway keeps every loaded server's tools in one flat namespace and
+refuses a load whose tool names clash with an already-loaded server (`tool "list_issues" from server
+"linear" collides with an existing tool already registered for server "github"`). This applies to
+`sbx mcp load`, `--static-mcp` and the agent's in-sandbox `mcp-add`. No documented `sbx mcp
+add|load|unload` flag can prefix, rename or filter tools, and Cedar policies block calls, not
+namespace entries.
+
+**Decision**: mitigate by filtering at the server through the existing per-registration
+`--header` support (FR-103) — e.g. GitHub's `X-MCP-Toolsets` / `X-MCP-Tools` allowlist (no exclude
+header exists) — and make the failure actionable: `mcp.LooksLikeToolCollision` /
+`ParseToolCollisions` / `CollisionHint` recognise the diagnostic; the launch log shows
+`mcp: skipped <name>: tool name collision with <other> (<tools>); …` followed by the raw runtime
+text; `AttachMcp` returns `ErrMcpToolCollision` (gRPC `FAILED_PRECONDITION`) carrying the hint and
+the runtime text. No new `sbx` flag, no proto change.
+
+**Unverified (needs a real host)**: that the documented GitHub header set lets `github` and `linear`
+load together in additive, exclusive and dynamic `mcp-add` modes; the toolset of `list_releases`;
+whether Linear's remote MCP has any filter; whether `sbx mcp add` accepts re-adding an existing
+name (today: `rm` — which deletes the OAuth credential — then `add`, then re-authorize).
+
+**Alternatives considered**: a switchboard-side prefixing proxy, detect-and-warn only, and an
+upstream feature request to the runtime (all out of scope for SWI-2); an "edit headers" action on
+an existing registration (deferred — follow-up if `rm` + `add` proves annoying).
