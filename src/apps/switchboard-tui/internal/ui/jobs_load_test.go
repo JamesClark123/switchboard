@@ -1,0 +1,506 @@
+package ui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// changedOrch delivers Event.orchestrator_changed for t and applies the replies.
+func changedOrch(m Model, t orchTarget) Model {
+	mm, cmd := m.syncOrchestratorChanged(t.host, t.id)
+	return feed(mm.(Model), cmd)
+}
+
+// twoOrchs is one daemon hosting alpha-bot and beta-bot, each with one event.
+func twoOrchs() *fakeDaemon {
+	return &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{
+		{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", Actions: []*pb.Action{reviewAction()},
+			TimedEvents: []*pb.TimedEvent{{Id: "ev-a", Name: "poll-a", Action: "review-pr", IntervalSeconds: 300, Enabled: true, NextFireAt: at(time.Minute)}}}},
+		{Orchestrator: &pb.Orchestrator{Id: "o-b", Name: "beta-bot", Actions: []*pb.Action{reviewAction()},
+			TimedEvents: []*pb.TimedEvent{{Id: "ev-b", Name: "poll-b", Action: "review-pr", IntervalSeconds: 300, Enabled: true, NextFireAt: at(2 * time.Minute)}}}},
+	}}
+}
+
+// The highlight stays on its item when a reload inserts or reorders rows, and an
+// operation acts on that item (FR-031, review item 2).
+func TestJobsCursorFollowsItsItem(t *testing.T) {
+	d := twoOrchs()
+	m := openJobs(sized(New(d, "/work")))
+	m.jobs.tab = jobsEvents
+	m, _ = update(m, press("j")) // beta's poll-b
+	alpha := m.jobs.orchs[0].target
+	d.orchestrators[0].Orchestrator.TimedEvents = append(d.orchestrators[0].Orchestrator.TimedEvents,
+		&pb.TimedEvent{Id: "ev-a2", Name: "poll-a2", Action: "review-pr", IntervalSeconds: 300, Enabled: true})
+	m = changedOrch(m, alpha)
+	if o, item, _ := m.groupCurrent(jobsEvents); o.target.id != "o-b" || item != 0 || m.jobs.cursors[jobsEvents] != 2 {
+		t.Fatalf("the cursor should stay on beta's poll-b: %s item %d index %d", o.target.label(), item, m.jobs.cursors[jobsEvents])
+	}
+	d.orchCalls = nil
+	m, cmd := update(m, press(" "))
+	m = feed2(m, cmd) // the toggle, then the reload it asks for
+	if calls := d.orchCallsJoined(); !strings.Contains(calls, "PutTimedEvent o-b poll-b") {
+		t.Errorf("space toggles the highlighted event: %q", calls)
+	}
+
+	// Upcoming re-sorts when a firing time moves; the highlight follows.
+	d.orchestrators[1].Orchestrator.TimedEvents[0].Enabled = true
+	d.orchestrators[1].Orchestrator.TimedEvents[0].NextFireAt = at(2 * time.Minute)
+	m = changedOrch(m, m.jobs.orchs[1].target)
+	m.jobs.tab = jobsOverview
+	m = overviewAt(t, m, "poll-b")
+	m, _ = update(m, press("k"))
+	m, _ = update(m, press("j")) // recorded by a key
+	d.orchestrators[1].Orchestrator.TimedEvents[0].NextFireAt = at(30 * time.Second)
+	m = changedOrch(m, m.jobs.orchs[1].target)
+	if it, _ := m.overviewCurrent(); it.ev == nil || it.ev.event.GetId() != "ev-b" || m.jobs.cursors[jobsOverview] != 0 {
+		t.Fatalf("the Overview cursor follows poll-b to the top: %+v index %d", it.ev, m.jobs.cursors[jobsOverview])
+	}
+	// Gone: the nearest neighbour in the same place.
+	d.orchestrators[1].Orchestrator.TimedEvents = nil
+	m = changedOrch(m, m.jobs.orchs[1].target)
+	if it, ok := m.overviewCurrent(); !ok || it.ev == nil || it.ev.event.GetId() != "ev-a" {
+		t.Errorf("a removed item's cursor goes to its neighbour: %+v", it.ev)
+	}
+}
+
+// On the Queue tab the page follows the highlighted run when newer runs push it
+// to another page (FR-031).
+func TestJobsQueuePageFollowsRun(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}, orchRuns: &pb.ListRunsResponse{History: finished("a", 40, 0)}}
+	m := openJobs(sized(New(d, "/work")))
+	m.jobs.tab = jobsQueue
+	for i := 0; i < 3; i++ {
+		m, _ = update(m, press("j"))
+	}
+	var queued []*pb.Run
+	for i := 0; i < 30; i++ {
+		queued = append(queued, &pb.Run{Id: fmt.Sprintf("q%02d", i), Action: "triage", State: pb.RunState_RUN_STATE_QUEUED, Position: uint32(i + 1), ReceivedAt: at(time.Duration(i) * time.Second)})
+	}
+	d.orchRuns = &pb.ListRunsResponse{Queued: queued, History: finished("a", 40, 0)}
+	m = changedOrch(m, m.jobs.orchs[0].target)
+	rows, page, _, _ := m.queuePageRows()
+	if page != 1 || rows[m.jobs.cursors[jobsQueue]].run.GetId() != "a03" {
+		t.Errorf("page %d cursor %d: the highlighted run a03 should stay highlighted", page, m.jobs.cursors[jobsQueue])
+	}
+	// A filter change keeps it too when it is still listed.
+	m, _ = update(m, press("f"))
+	if rows, _, _, _ := m.queuePageRows(); rows[m.jobs.cursors[jobsQueue]].run.GetId() != "a03" {
+		t.Error("the filter keeps the highlighted run")
+	}
+}
+
+// An older reply never overwrites a newer one: a host load started after an
+// orchestrator reload wins even if the reload's reply lands last (FR-005, review
+// item 3).
+func TestJobsOlderReplyIsDropped(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	target := m.jobs.orchs[0].target
+	queued := &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "r1", Action: "triage", State: pb.RunState_RUN_STATE_QUEUED, Position: 1}}}
+	running := &pb.ListRunsResponse{InFlight: []*pb.Run{{Id: "r1", Action: "triage", State: pb.RunState_RUN_STATE_RUNNING}}}
+
+	d.orchRuns = queued
+	mm, older := m.syncOrchestratorChanged(target.host, target.id)
+	m = mm.(Model)
+	olderMsg := older() // read while the run was queued
+	d.orchRuns = running
+	newer := m.jobsLoadAll()
+	m = feed(m, newer)
+	m, _ = update(m, olderMsg)
+	if runs := m.jobs.orchs[0].runs; len(runs.GetInFlight()) != 1 || len(runs.GetQueued()) != 0 {
+		t.Fatalf("the older reply must not put the run back in the queue: %v", runs)
+	}
+	// A host reply older than the latest host load is dropped too.
+	gen := m.jobs.hosts[target.host].gen
+	m, _ = update(m, jobsHostMsg{host: target.host, gen: gen - 1})
+	if len(m.jobs.orchs) != 1 {
+		t.Error("an older host reply is dropped")
+	}
+}
+
+// Events during a reload are coalesced into one more reload; events during a
+// host load wait for it (R3, review item 6).
+func TestJobsReloadsAreCoalesced(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	target := m.jobs.orchs[0].target
+	d.orchCalls = nil
+	mm, first := m.syncOrchestratorChanged(target.host, target.id)
+	m = mm.(Model)
+	for i := 0; i < 3; i++ {
+		var c tea.Cmd
+		mm, c = m.syncOrchestratorChanged(target.host, target.id)
+		m = mm.(Model)
+		if c != nil {
+			t.Fatal("a reload in flight absorbs further events")
+		}
+	}
+	m, again := update(m, first())
+	if again == nil {
+		t.Fatal("one more reload follows the burst")
+	}
+	m, last := update(m, again())
+	if last != nil || strings.Count(d.orchCallsJoined(), "GetOrchestrator o-a") != 2 {
+		t.Errorf("a burst costs two reloads: %q", d.orchCallsJoined())
+	}
+	// During a host load the event waits for the host's reply, then reloads once.
+	load := m.jobsLoadAll()
+	mm, c := m.syncOrchestratorChanged(target.host, target.id)
+	m = mm.(Model)
+	if c != nil {
+		t.Fatal("an event during a host load waits for it")
+	}
+	if again := m.jobsLoadAll(); again != nil {
+		t.Error("r while a host load runs does not stack another")
+	}
+	m, follow := update(m, runAll(load)[0])
+	if follow == nil {
+		t.Error("the waiting event reloads once the host has answered")
+	}
+}
+
+// While Jobs is not on screen nothing is fetched; it catches up when shown,
+// reloading only what changed (R3, SC-007, review item 6).
+func TestJobsReloadsOnlyWhileVisible(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot"), orchSummary("o-b", "beta-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	d.orchCalls = nil
+	target := m.jobs.orchs[0].target
+	mm, cmd := m.syncOrchestratorChanged(target.host, target.id)
+	m = mm.(Model)
+	if cmd != nil || d.orchCallsJoined() != "" {
+		t.Fatalf("no fetch while Jobs is hidden: %q", d.orchCallsJoined())
+	}
+	// An operation's success elsewhere does not fetch either.
+	mm, cmd = m.applyOrchDone(orchDoneMsg{status: "ok", reload: true, target: target})
+	m = mm.(Model)
+	m = feed(m, cmd)
+	if strings.Contains(d.orchCallsJoined(), "ListRuns") {
+		t.Errorf("no Jobs fetch while hidden: %q", d.orchCallsJoined())
+	}
+	d.orchCalls = nil
+	m = openJobs(m)
+	calls := d.orchCallsJoined()
+	if !strings.Contains(calls, "GetOrchestrator o-a") || strings.Contains(calls, "GetOrchestrator o-b") {
+		t.Errorf("entering reloads the stale orchestrator only: %q", calls)
+	}
+}
+
+// A NotFound on ListRuns also means the orchestrator was removed (R3).
+func TestJobsNotFoundRunsRemoves(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	target := m.jobs.orchs[0].target
+	gen := m.jobs.metaOf(target.host, target.id).gen
+	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, gen: gen, gone: true, err: status.Error(codes.NotFound, "no such orchestrator")})
+	if len(m.jobs.orchs) != 0 {
+		t.Error("NotFound removes it from every tab")
+	}
+}
+
+// Each host is loaded by its own command and shown as it answers; one still
+// loading is named and does not hold back the others (R2, SC-007).
+func TestJobsHostsLoadIndependently(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	mm, cmd := m.enterJobs(screenList)
+	m = mm.(Model)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("one command per connected host, got %T", cmd())
+	}
+	m.jobs.tab = jobsActions
+	m, _ = update(m, batch[0]())
+	v := m.View()
+	if len(m.jobs.orchs) != 1 || !strings.Contains(v, "loading: beta") || !strings.Contains(v, "alpha-bot @ alpha") {
+		t.Errorf("alpha is shown while beta loads:\n%s", v)
+	}
+	m, _ = update(m, batch[1]())
+	if len(m.jobs.orchs) != 2 || strings.Contains(m.View(), "loading:") {
+		t.Errorf("beta joins when it answers: %v", jobsLabels(m))
+	}
+}
+
+// A host that connects while the first load is running is loaded too (review
+// item 12).
+func TestJobsHostConnectingDuringFirstLoad(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, mgr, _ := twoFakeHosts(t, a, b)
+	mgr.Disconnect("hostb")
+	mm, first := m.enterJobs(screenList)
+	m = mm.(Model)
+	if err := mgr.Connect(context.Background(), "hostb"); err != nil {
+		t.Fatal(err)
+	}
+	m = feed2(m, m.hostsCmd())
+	m = feed(m, first)
+	if got := strings.Join(jobsLabels(m), ","); got != "alpha-bot @ alpha,beta-bot @ beta" {
+		t.Errorf("beta connected during the first load and is shown: %q", got)
+	}
+}
+
+// Operations never fall back to the active daemon: a create submitted after the
+// daemon dropped is refused with the form kept, nothing is created anywhere, and
+// the section closes on the host snapshot (FR-030, review item 1).
+func TestDaemonOrchsRefuseAfterDisconnect(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
+	m := twoHostModel(t, d)
+	m = openDaemonOrchs(t, m, "local")
+	m, _ = update(m, press("n"))
+	if m.orch.form == nil {
+		t.Fatal("n opens the create form")
+	}
+	m.orch.vals.name = "new-bot"
+	m.manager.Disconnect("local")
+	m, cmd := update(m, ctrlS())
+	m = feed(m, cmd)
+	if strings.Contains(d.orchCallsJoined(), "CreateOrchestrator") {
+		t.Fatalf("nothing is created on the active daemon: %q", d.orchCallsJoined())
+	}
+	if m.orch.form == nil || !strings.Contains(m.status, "laptop is not connected") {
+		t.Errorf("the form stays open with the refusal: %q", m.status)
+	}
+	m, _ = update(m, hostsMsg{{Host: client.HostConn{Entry: client.HostEntry{ID: "local", DisplayName: "laptop"}, State: client.HostDisconnected}}})
+	if m.screen != screenDaemons || !strings.Contains(m.status, "laptop disconnected — orchestrators closed") || m.orch.form != nil {
+		t.Errorf("the section closes on disconnect: screen %v status %q", m.screen, m.status)
+	}
+	// The other entry points refuse a disconnected daemon outright.
+	for name, try := range map[string]func(Model) (tea.Model, tea.Cmd){
+		"create": func(m Model) (tea.Model, tea.Cmd) { return m.openOrchCreateForm("box", "build-box") },
+		"open":   func(m Model) (tea.Model, tea.Cmd) { return m.enterDaemonOrchs(daemonRow{id: "box", name: "build-box"}) },
+		"detail": func(m Model) (tea.Model, tea.Cmd) {
+			return m.enterOrchDetail(orchRow{host: "box", hostName: "build-box", summary: orchSummary("o9", "x")})
+		},
+		"remove": func(m Model) (tea.Model, tea.Cmd) {
+			return m.confirmOrchRemove(orchRow{host: "box", hostName: "build-box", summary: orchSummary("o9", "x")})
+		},
+	} {
+		mm, c := try(m)
+		if c != nil || !strings.Contains(mm.(Model).status, "build-box is not connected") {
+			t.Errorf("%s on a disconnected daemon: status %q", name, mm.(Model).status)
+		}
+	}
+	if _, err := m.connectedDaemon("nope"); err == nil {
+		t.Error("an unknown host is not connected")
+	}
+}
+
+// Daemons › Orchestrators keeps the screen cycle and settings keys (review item 9).
+func TestDaemonOrchsCycleAndSettings(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
+	m := openDaemonOrchs(t, twoHostModel(t, d), "local")
+	if h := m.renderHelp(m.daemonOrchsHelp()); !strings.Contains(h, "shift+→") || !strings.Contains(h, "settings") {
+		t.Errorf("help lists the cycle and settings: %q", h)
+	}
+	if s, _ := update(m, press(",")); s.screen != screenSettings || s.topLevel() != screenDaemons {
+		t.Error(", opens settings")
+	}
+	if s, _ := update(m, shiftLeft()); s.screen != screenList {
+		t.Error("shift+← goes to Sandboxes")
+	}
+	if s, _ := update(m, shiftRight()); s.screen != screenJobs {
+		t.Error("shift+→ goes to Jobs")
+	}
+}
+
+// An Enqueue now failure while a Jobs form is open goes to the footer, not under
+// the form (review item 11).
+func TestFireErrorUnderFormGoesToFooter(t *testing.T) {
+	d := twoOrchs()
+	m := openJobs(sized(New(d, "/work")))
+	m.jobs.form = huh.NewForm(huh.NewGroup(huh.NewInput()))
+	mm, _ := m.applyOrchDone(orchDoneMsg{fire: true, err: errBoom{}, sink: surfaceJobs, fireLabel: "beta-bot @ test-host"})
+	m = mm.(Model)
+	if m.jobs.status != "" || !strings.Contains(m.status, "enqueue on beta-bot @ test-host: boom") {
+		t.Errorf("form line %q footer %q", m.jobs.status, m.status)
+	}
+}
+
+// Agent-written text on the main Jobs rows, in the prompt view and in
+// notifications cannot reach the terminal (FR-029, review item 5).
+func TestJobsRowsAreSanitised(t *testing.T) {
+	hostile := "ok\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED‮txt.exe\x9b31m"
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}, orchRuns: &pb.ListRunsResponse{
+		Queued:  []*pb.Run{{Id: "q1", Action: "triage\x1b[31m", State: pb.RunState_RUN_STATE_QUEUED, EventKind: pb.EventKind_EVENT_KIND_TRIGGERED, OriginLabel: "w\x1b]0;t\x07"}},
+		History: []*pb.Run{{Id: "h1", Action: "review-pr", State: pb.RunState_RUN_STATE_FAILED, Summary: hostile, Reason: "tab\there", EndedAt: at(0)}},
+	}}
+	m := openJobs(sized(New(d, "/work")))
+	for tab := jobsTab(0); tab < jobsTabCount; tab++ {
+		m.jobs.tab = tab
+		v := m.View()
+		for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "‮", "\x07", "\x9b", "\t", "\x1b[31mm"} {
+			if strings.Contains(v, bad) {
+				t.Errorf("tab %s shows %q", jobsTabNames[tab], bad)
+			}
+		}
+	}
+	m.jobs.tab = jobsOverview
+	if !strings.Contains(m.View(), "ok PWNEDtxt.exe") {
+		t.Errorf("the text is kept, minus the controls:\n%s", m.View())
+	}
+	if v := m.promptView(&pb.Run{Id: "p", Prompt: "do\x1b]52;c;x\x07 it\r\nnow"}); strings.Contains(v, "\x1b]52") || !strings.Contains(v, "do it") {
+		t.Errorf("prompt view: %q", v)
+	}
+	n := &pb.NotificationEvent{Id: "n1", Message: "run failed: \x1b]52;c;x\x07bad‮"}
+	m.inbox = []*pb.NotificationEvent{n}
+	m.inboxHosts = map[string]string{}
+	mm, _ := m.enterNotifications()
+	if v := mm.(Model).View(); strings.Contains(v, "\x1b]52") || strings.Contains(v, "‮") {
+		t.Errorf("notification list: %q", v)
+	}
+}
+
+// The results overlay fits the terminal with a long report, keeps its scroll
+// position and hint visible, and re-fits on resize (review item 4).
+func TestRunResultsOverlayFitsLongReport(t *testing.T) {
+	long := strings.Repeat("Reviewed the change and left comments on several files. ", 40)
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}, orchRuns: &pb.ListRunsResponse{
+		History: []*pb.Run{{Id: "h1", Action: "review-pr", State: pb.RunState_RUN_STATE_COMPLETED, Summary: long, EndedAt: at(0)}},
+	}}
+	m := openJobs(sized(New(d, "/work")))
+	m = overviewAt(t, m, "h1")
+	m, _ = update(m, press("o"))
+	if m.jobs.results == nil {
+		t.Fatal("o opens the overlay")
+	}
+	check := func(m Model, w, h int) {
+		t.Helper()
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) > h {
+			t.Errorf("%dx%d: the view has %d lines", w, h, len(lines))
+		}
+		for _, l := range lines {
+			if lw := lipgloss.Width(l); lw > w {
+				t.Errorf("%dx%d: a line is %d wide", w, h, lw)
+				break
+			}
+		}
+		v := m.View()
+		if !strings.Contains(v, "esc close") || !strings.Contains(v, "% scrolled") {
+			t.Errorf("%dx%d: the hint and scroll position stay visible:\n%s", w, h, v)
+		}
+	}
+	check(m, 100, 40)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyPgDown})
+	y := m.jobs.results.vp.YOffset
+	m, _ = update(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	check(m, 80, 24)
+	if m.jobs.results.vp.YOffset == 0 && y != 0 {
+		t.Error("the scroll position survives a resize")
+	}
+}
+
+// SC-007: with 3 daemons × 10 orchestrators × 200 finished runs, moving the
+// cursor or switching tabs (with the redraw) responds within 100 ms.
+func TestJobsResponsivenessBudget(t *testing.T) {
+	m := sized(New(&fakeDaemon{}, "/work"))
+	m.screen = screenJobs
+	m.jobs.started = true
+	for h := 0; h < 3; h++ {
+		for o := 0; o < 10; o++ {
+			var ev []*pb.TimedEvent
+			for e := 0; e < 3; e++ {
+				ev = append(ev, &pb.TimedEvent{Id: fmt.Sprintf("e%d", e), Name: fmt.Sprintf("poll-%d", e), Action: "review-pr", Enabled: true, NextFireAt: at(time.Duration(h*100+o*3+e) * time.Second)})
+			}
+			runs := &pb.ListRunsResponse{History: finished(fmt.Sprintf("h%d-o%d-", h, o), 200, time.Duration(h*10+o)*time.Second)}
+			o := jo("", fmt.Sprintf("bot-%d-%d", h, o), ev, runs)
+			o.target.hostName = fmt.Sprintf("host-%d", h)
+			m.jobs.orchs = append(m.jobs.orchs, o)
+		}
+	}
+	m.jobsChanged()
+	if n := len(m.jobsRows().queue); n != 6000 {
+		t.Fatalf("queue = %d runs", n)
+	}
+	budget := 100 * time.Millisecond
+	time1 := func(name string, f func()) {
+		start := time.Now()
+		f()
+		if el := time.Since(start); el > budget {
+			t.Errorf("%s took %v (budget %v)", name, el, budget)
+		}
+	}
+	for _, tab := range []jobsTab{jobsOverview, jobsActions, jobsEvents, jobsQueue} {
+		m.jobs.tab = tab
+		_ = m.View()
+		time1("cursor move on "+jobsTabNames[tab], func() { m, _ = update(m, press("j")); _ = m.View() })
+		time1("tab switch from "+jobsTabNames[tab], func() { m, _ = update(m, tea.KeyMsg{Type: tea.KeyRight}); _ = m.View() })
+	}
+	time1("an orchestrator's reply", func() {
+		o := m.jobs.orchs[5]
+		md := m.jobs.metaOf(o.target.host, o.target.id)
+		m.jobs.seq++
+		md.gen = m.jobs.seq
+		m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, gen: md.gen, orch: &o})
+		_ = m.View()
+	})
+}
+
+// In-progress rows name the worker sandbox from the sandbox list (falling back
+// to its short id), and an Upcoming firing dedupe would skip says so (R4).
+func TestJobsWorkerNameAndSkipNote(t *testing.T) {
+	m := sized(New(&fakeDaemon{}, "/work"))
+	m.sandboxes = []*pb.Sandbox{{Id: "sb-1", DisplayName: "worker-wa"}}
+	m.hostAgg = []client.HostSandboxes{{Host: client.HostConn{Entry: client.HostEntry{ID: "h1"}}, Sandboxes: []*pb.Sandbox{{Id: "sb-2", DisplayName: "worker-wb"}}}}
+	for id, want := range map[string]string{"sb-1": "worker-wa", "sb-2": "worker-wb", "sb-unknown-123": short("sb-unknown-123")} {
+		if got := m.workerName(&pb.Run{SandboxId: id}); got != want {
+			t.Errorf("workerName(%s) = %q, want %q", id, got, want)
+		}
+	}
+	ev := &pb.TimedEvent{Id: "ev-1", Name: "nightly", Action: "triage", Enabled: true, NextFireAt: at(time.Hour)}
+	open := &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "r", EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "ev-1"}}}
+	rows := jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, open)})
+	if len(rows) != 1 || !rows[0].willSkip || !strings.Contains(upcomingLine(rows[0]), "next firing skipped — run open") {
+		t.Errorf("dedupe on and a run open ⇒ the skip note: %+v", rows)
+	}
+	ev.DedupeDisabled = true
+	if rows := jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, open)}); rows[0].willSkip {
+		t.Error("dedupe off ⇒ no skip note")
+	}
+}
+
+// Operations on a dropped host report the refusal as their outcome, and an
+// operation's success reloads what it touched only while Jobs is shown.
+func TestJobsRefusalsAndAfterChange(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
+	m := twoHostModel(t, d)
+	m = openJobs(m)
+	box := orchTarget{host: "box", hostName: "build-box", id: "o9", name: "x", rec: &pb.Orchestrator{}}
+	msg := m.toggleEventCmd(surfaceJobs, box, &pb.TimedEvent{Id: "e"})()
+	if done, ok := msg.(orchDoneMsg); !ok || done.err == nil || !strings.Contains(done.err.Error(), "build-box is not connected") {
+		t.Errorf("toggle on a dropped host: %#v", msg)
+	}
+	if done, ok := m.runPromptCmd(surfaceJobs, box, "r1")().(orchDoneMsg); !ok || done.err == nil || !strings.Contains(done.err.Error(), "not connected") {
+		t.Errorf("prompt on a dropped host: %v", done.err)
+	}
+	// No target: every host reloads while shown, or is marked to when shown.
+	d.orchCalls = nil
+	m = feed(m, m.jobsAfterChange(orchTarget{}))
+	if !strings.Contains(d.orchCallsJoined(), "ListOrchestrators") {
+		t.Errorf("a create/rename/remove reloads the hosts: %q", d.orchCallsJoined())
+	}
+	m.screen = screenList
+	if c := m.jobsAfterChange(orchTarget{}); c != nil || !m.jobs.hosts["local"].stale {
+		t.Error("hidden ⇒ the hosts are marked stale")
+	}
+	// A host the developer removed drops out with its bookkeeping.
+	m.screen = screenJobs
+	m.manager.Remove("local")
+	if m.jobsSyncHosts(); len(m.jobs.orchs) != 0 || m.jobs.hasHost("local") {
+		t.Errorf("a removed host is forgotten: %v", jobsLabels(m))
+	}
+}

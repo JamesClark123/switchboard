@@ -208,9 +208,14 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 		m.status = "error: " + msg.err.Error()
 		m.err = msg.err
 		if msg.fire {
-			// Named, so a refusal is not read as one for whatever row is highlighted now.
-			op.status = "enqueue on " + msg.fireLabel + ": " + msg.err.Error()
-			m.status = "error: " + op.status
+			// Named, so a refusal is not read as one for whatever row is highlighted
+			// now; and only on the footer while a form is open, so it is not read as
+			// that form's refusal.
+			text := "enqueue on " + msg.fireLabel + ": " + msg.err.Error()
+			m.status = "error: " + text
+			if op.form == nil {
+				op.status = text
+			}
 			return m, nil
 		}
 		if m.onSurface(msg.sink) {
@@ -240,13 +245,8 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenOrchDetail {
 		cmds = append(cmds, m.orchDetailLoadCmd())
 	}
-	if m.jobs.loaded {
-		if c := m.jobsReloadOrchCmd(msg.target.host, msg.target.id); msg.target.id != "" && c != nil {
-			cmds = append(cmds, c)
-		} else {
-			m.jobs.loading = true
-			cmds = append(cmds, m.jobsLoadCmd())
-		}
+	if m.jobs.started {
+		cmds = append(cmds, m.jobsAfterChange(msg.target))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -288,10 +288,8 @@ func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd)
 	if m.screen == screenOrchDetail && m.orchDetail.id == orchID {
 		cmds = append(cmds, m.orchDetailLoadCmd())
 	}
-	if m.jobs.loaded {
-		if c := m.jobsReloadOrchCmd(host, orchID); c != nil {
-			cmds = append(cmds, c)
-		}
+	if m.jobs.started {
+		cmds = append(cmds, m.jobsReloadOrch(host, orchID))
 	}
 	if len(cmds) == 0 {
 		return m, nil
@@ -317,6 +315,10 @@ func (m Model) forwardOrchestrators(msg tea.Msg) (tea.Model, tea.Cmd) {
 // openOrchCreateForm opens the create form for an orchestrator on host (the
 // daemon whose Orchestrators section is open).
 func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
+	if _, err := m.connectedDaemon(host); err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	v := &orchFormVals{host: host}
 	m.orch.vals = v
 	m.orch.formKind = orchFormCreate
@@ -396,8 +398,14 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 	if kind == orchFormRename {
 		host = m.orch.formHost
 	}
+	// Only the daemon the form was opened for, and only while it is connected:
+	// never the active daemon in its place (FR-030).
+	d, err := m.connectedDaemon(host)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-	d := m.daemonForHost(host)
 	hostName := m.hostDisplayName(host)
 	if kind == orchFormCreate {
 		return m, func() tea.Msg {
@@ -424,7 +432,11 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 // confirmOrchRemove gates removal behind the FR-153 consequences.
 func (m Model) confirmOrchRemove(row orchRow) (tea.Model, tea.Cmd) {
 	o := row.summary.GetOrchestrator()
-	d := m.daemonForHost(row.host)
+	d, err := m.connectedDaemon(row.host)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	id, name := o.GetId(), o.GetName()
 	return m.enterConfirm(confirmState{
 		title: "Remove orchestrator " + name + "?",

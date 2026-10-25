@@ -91,7 +91,10 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.
 func (m Model) confirmDeleteAction(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
-	od := m.daemonForHost(t.host)
+	od, ok := m.requireDaemon(s, t.host)
+	if !ok {
+		return m, nil
+	}
 	id, name := t.id, a.GetName()
 	return m.enterConfirm(confirmState{
 		title:    "Delete action " + name + "?",
@@ -189,7 +192,10 @@ func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mode
 
 // confirmDeleteEvent gates deleting a timed event of the target orchestrator.
 func (m Model) confirmDeleteEvent(s orchSurface, t orchTarget, ev *pb.TimedEvent) (tea.Model, tea.Cmd) {
-	od := m.daemonForHost(t.host)
+	od, ok := m.requireDaemon(s, t.host)
+	if !ok {
+		return m, nil
+	}
 	id, evID, name := t.id, ev.GetId(), ev.GetName()
 	return m.enterConfirm(confirmState{
 		title:    "Delete event " + name + "?",
@@ -208,7 +214,10 @@ func (m Model) confirmDeleteEvent(s orchSurface, t orchTarget, ev *pb.TimedEvent
 
 // toggleEventCmd flips a timed event's enabled flag on the target orchestrator.
 func (m Model) toggleEventCmd(s orchSurface, t orchTarget, cur *pb.TimedEvent) tea.Cmd {
-	od := m.daemonForHost(t.host)
+	od, err := m.connectedDaemon(t.host)
+	if err != nil {
+		return errCmd(s, err)
+	}
 	id := t.id
 	ev := cloneEvent(cur)
 	ev.Enabled = !ev.GetEnabled()
@@ -325,10 +334,13 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		op.status = enqueueInProgressText
 		return m, nil
 	}
+	od, ok := m.requireDaemon(f.sink, f.target.host)
+	if !ok {
+		return m, nil
+	}
 	tok := fireTokens.Add(1)
 	m.orchFires[key] = tok
 	op.status = ""
-	od := m.daemonForHost(f.target.host)
 	t := f.target
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -443,7 +455,13 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	t := op.formTarget
-	od := m.daemonForHost(t.host)
+	// Re-checked on submit: the daemon can drop while the form is open, and the
+	// form stays open with the refusal rather than going elsewhere (FR-030).
+	od, err := m.connectedDaemon(t.host)
+	if err != nil {
+		op.status = err.Error()
+		return m, nil
+	}
 	id := t.id
 	switch v := op.formVals.(type) {
 	case *actionFormVals:
@@ -488,7 +506,11 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			return orchDoneMsg{status: fmt.Sprintf("queued %s at position %d", run.GetId(), run.GetPosition()), reload: true, closeForm: true, sink: s, target: t}
 		}
 	case *markFreeVals:
-		md := m.daemonForHost(v.host)
+		md, err := m.connectedDaemon(v.host)
+		if err != nil {
+			op.status = err.Error()
+			return m, nil
+		}
 		failed := v.outcome == "failed"
 		note, sbID, orchID := strings.TrimSpace(v.note), v.sandboxID, v.orchID
 		return m, func() tea.Msg {
@@ -544,16 +566,16 @@ func actionLine(a *pb.Action) string {
 	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON {
 		kind = "reason"
 	}
-	line := selectedStyle.Render(a.GetName()) + dimStyle.Render(" ("+kind+")")
+	line := selectedStyle.Render(sanitizeLine(a.GetName(), 0)) + dimStyle.Render(" ("+kind+")")
 	if a.GetDescription() != "" {
-		line += "  " + a.GetDescription()
+		line += "  " + sanitizeLine(a.GetDescription(), 60)
 	}
 	if a.GetWorkerTag() != "" {
-		line += "  " + tagBadgeStyle.Render("#"+a.GetWorkerTag())
+		line += "  " + tagBadgeStyle.Render("#"+sanitizeLine(a.GetWorkerTag(), 0))
 	}
 	var args []string
 	for _, arg := range a.GetArguments() {
-		n := arg.GetName()
+		n := sanitizeLine(arg.GetName(), 0)
 		if arg.GetRequired() {
 			n += "*"
 		}
@@ -573,14 +595,14 @@ func eventLine(ev *pb.TimedEvent, waiting int) string {
 	if !ev.GetEnabled() {
 		onOff = dimStyle.Render("[off]")
 	}
-	line := fmt.Sprintf("%s  %s  %s  %s  %s  %s", onOff, selectedStyle.Render(ev.GetName()), dimStyle.Render("→ "+ev.GetAction()),
+	line := fmt.Sprintf("%s  %s  %s  %s  %s  %s", onOff, selectedStyle.Render(sanitizeLine(ev.GetName(), 0)), dimStyle.Render("→ "+sanitizeLine(ev.GetAction(), 0)),
 		dimStyle.Render(fmt.Sprintf("every %dm", ev.GetIntervalSeconds()/60)), dimStyle.Render("next "+nextFire(ev)),
 		dimStyle.Render(fmt.Sprintf("waiting %d · skipped %d", waiting, ev.GetSkippedCount())))
 	if !ev.GetDedupeDisabled() {
 		line += "  " + tagBadgeStyle.Render("dedupe")
 	}
 	if ev.GetDisabledReason() != "" {
-		line += "  " + statusErrStyle.Render("disabled: "+ev.GetDisabledReason())
+		line += "  " + statusErrStyle.Render("disabled: "+sanitizeLine(ev.GetDisabledReason(), 80))
 	}
 	return line
 }
@@ -590,9 +612,9 @@ func eventLine(ev *pb.TimedEvent, waiting int) string {
 func runOrigin(r *pb.Run) string {
 	switch r.GetEventKind() {
 	case pb.EventKind_EVENT_KIND_TIMED:
-		return "timed " + r.GetOriginLabel()
+		return "timed " + sanitizeLine(r.GetOriginLabel(), 0)
 	case pb.EventKind_EVENT_KIND_TRIGGERED:
-		return "triggered by " + r.GetOriginLabel()
+		return "triggered by " + sanitizeLine(r.GetOriginLabel(), 0)
 	}
 	return "user"
 }

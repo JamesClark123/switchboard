@@ -177,7 +177,12 @@ func (m Model) startReasoningRebuild(msg reasoningRebuildMsg) (tea.Model, tea.Cm
 		m.orchDetail.status = "a rebuild is already in progress"
 		return m, nil
 	}
-	od := m.daemonForHost(msg.host)
+	od, err := m.connectedDaemon(msg.host)
+	if err != nil {
+		m.orchDetail.status = err.Error()
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	key := reasoningLogKey(msg.id)
 	ch := make(chan tea.Msg, 32)
 	m.rebuilds[msg.id] = &reasoningRebuild{id: msg.id, name: msg.name, latest: "starting…", ch: ch}
@@ -213,8 +218,10 @@ func (m Model) handleReasoningProgress(msg reasoningProgressMsg) (tea.Model, tea
 		rb.latest = fmt.Sprintf("copying %d%% %s", pct, filepath.Base(msg.update.Copy.GetCurrentPath()))
 		m.setOpLatest(key, rb.latest)
 	case msg.update.LogLine != "":
-		rb.latest = msg.update.LogLine
-		m.appendOpLog(key, msg.update.LogLine)
+		// The rebuild's output is the sandbox runtime's, drawn as text (FR-029).
+		line := sanitizeLine(msg.update.LogLine, 0)
+		rb.latest = line
+		m.appendOpLog(key, line)
 	}
 	if m.screen == screenOrchDetail && m.orchDetail.id == msg.id {
 		m.orchDetail.status = "rebuilding… " + rb.latest
@@ -260,11 +267,11 @@ func (m Model) renderReasoningView() []string {
 	case w != nil && sum.GetReasoningReady():
 		line := name + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
 		if w.GetRunAction() != "" {
-			line += dimStyle.Render("  (" + w.GetRunAction() + " · run " + w.GetRunId() + ")")
+			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + " · run " + sanitizeLine(w.GetRunId(), 0) + ")")
 		}
 		lines = append(lines, line)
 	case sum.GetReasoningError() != "":
-		lines = append(lines, name+"  "+statusErrStyle.Render("error: "+sum.GetReasoningError()), dimStyle.Render("b rebuilds it"))
+		lines = append(lines, name+"  "+statusErrStyle.Render("error: "+sanitizeLine(sum.GetReasoningError(), m.bodyWidth()-20)), dimStyle.Render("b rebuilds it"))
 	default:
 		lines = append(lines, name+"  "+agentWorkStyle.Render("coming up…"))
 	}

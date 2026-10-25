@@ -121,7 +121,7 @@ func TestJobsEventsGroupedAcrossHosts(t *testing.T) {
 	}
 	// After beta gains an action, a adds an event to beta.
 	b.orchestrators[0].Orchestrator.Actions = []*pb.Action{reviewAction()}
-	m = feed(m, m.jobsLoadCmd())
+	m = reloadJobs(m)
 	m.jobs.cursors[jobsEvents] = 1
 	m, _ = update(m, press("a"))
 	if m.jobs.form == nil || m.jobs.formTarget.id != "o-b" {

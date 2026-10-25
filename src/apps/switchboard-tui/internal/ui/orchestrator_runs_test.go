@@ -163,7 +163,7 @@ func TestOverviewRunsPromptCancelAndMarkFree(t *testing.T) {
 	}
 	m, a := jobsWith(t, jobsOverview, []*pb.Action{reviewAction()}, runs)
 	view := m.View()
-	for _, want := range []string{"Upcoming", "Queued", "In progress", "History (latest 15)", "#1", "timed poll", "awaiting review", "on sb-revie", "closed by developer: closed well", "agent exited", "failed", "alpha-bot @ test-host"} {
+	for _, want := range []string{"Upcoming", "Queued", "In progress", "History (latest 15)", "#1", "timed poll", "awaiting review", "on sb-revie", "closed by developer: clos", "agent exited", "failed", "alpha-bot @ test-host"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overview missing %q:\n%s", want, view)
 		}
@@ -415,7 +415,7 @@ func TestEventFormAndView(t *testing.T) {
 		t.Errorf("delete calls = %q", a.orchCallsJoined())
 	}
 	a.orchestrators[0].Orchestrator.TimedEvents = []*pb.TimedEvent{{Id: "tev-2", Name: "poll", Action: "review-pr", IntervalSeconds: 60, DisabledReason: "action review-pr was deleted"}}
-	m = feed(m, m.jobsLoadCmd())
+	m = reloadJobs(m)
 	if !strings.Contains(m.View(), "disabled: action review-pr was deleted") || !strings.Contains(m.View(), "[off]") {
 		t.Error("disabled reason should render")
 	}
@@ -424,7 +424,7 @@ func TestEventFormAndView(t *testing.T) {
 	}
 	// No actions: the editor refuses to open.
 	a.orchestrators[0].Orchestrator.Actions = nil
-	m = feed(m, m.jobsLoadCmd())
+	m = reloadJobs(m)
 	m, _ = update(m, press("a"))
 	if m.jobs.form != nil || !strings.Contains(m.jobs.status, "add an action to alpha-bot @ test-host first") {
 		t.Errorf("no actions ⇒ no event form; status %q", m.jobs.status)

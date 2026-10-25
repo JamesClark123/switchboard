@@ -24,6 +24,10 @@ func (m Model) enterDaemonOrchs(row daemonRow) (tea.Model, tea.Cmd) {
 		// Without a host manager the rows are keyed by the active host entry.
 		host = m.activeHost
 	}
+	if _, err := m.connectedDaemon(host); err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	if m.daemonOrchs.host != host {
 		m.orch.cursor = 0
 	}
@@ -67,6 +71,7 @@ func (m Model) daemonOrchsHelp() helpBindings {
 		hkey("enter", "open"),
 		hkey("r", "reload"),
 		hkey("esc", "daemons"),
+		m.screenPrevKey(), m.screenNextKey(), m.keys.Settings,
 		m.keys.Quit,
 	}
 }
@@ -81,6 +86,18 @@ func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.applyOrchForm()
 		}
 		return m.advanceOrchForm(msg)
+	}
+	// The screen cycle and settings work here as on the old Orchestrators screen (R8).
+	switch {
+	case keyIs(msg, m.keys.ScreenPrev):
+		m.daemons.options = false
+		m.screen = screenList
+		return m, nil
+	case keyIs(msg, m.keys.ScreenNext):
+		m.daemons.options = false
+		return m.enterJobs(screenDaemons)
+	case keyIs(msg, m.keys.Settings):
+		return m.enterSettings(screenDaemonOrchs)
 	}
 	switch msg.String() {
 	case "esc":

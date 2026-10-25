@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -35,6 +37,37 @@ func (t orchTarget) label() string { return t.name + " @ " + t.hostName }
 
 // key is the target's identity as a map key (the same id on two hosts differs).
 func (t orchTarget) key() string { return t.host + "/" + t.id }
+
+// connectedDaemon is the daemon an orchestrator operation on host must go to
+// (FR-030, research R12): that host's connection, or a refusal naming it when it
+// is not connected. Unlike daemonForHost it never falls back to the active
+// daemon, which would send the operation to a different machine.
+func (m Model) connectedDaemon(host string) (Daemon, error) {
+	if m.manager == nil {
+		return m.daemon, nil
+	}
+	if hc, ok := m.manager.Get(host); ok && hc.State == client.HostConnected {
+		return m.daemonForHost(host), nil
+	}
+	return nil, fmt.Errorf("%s is not connected", m.hostDisplayName(host))
+}
+
+// requireDaemon is connectedDaemon for an operation started on a surface: a
+// refusal goes to the surface's line and the footer.
+func (m *Model) requireDaemon(s orchSurface, host string) (Daemon, bool) {
+	d, err := m.connectedDaemon(host)
+	if err != nil {
+		m.opState(s).status = err.Error()
+		m.status = "error: " + err.Error()
+		return nil, false
+	}
+	return d, true
+}
+
+// errCmd reports an error as an operation's outcome on a surface.
+func errCmd(s orchSurface, err error) tea.Cmd {
+	return func() tea.Msg { return orchDoneMsg{err: err, sink: s} }
+}
 
 // orchSurface is the screen an orchestrator operation was started from: where its
 // form opens, its refusals land and its confirm dialog returns to.
@@ -158,7 +191,10 @@ func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) 
 
 // runPromptCmd fetches a run (its composed prompt) for the read-only overlay.
 func (m Model) runPromptCmd(s orchSurface, t orchTarget, runID string) tea.Cmd {
-	od := m.daemonForHost(t.host)
+	od, err := m.connectedDaemon(t.host)
+	if err != nil {
+		return errCmd(s, err)
+	}
 	id := t.id
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -173,7 +209,10 @@ func (m Model) runPromptCmd(s orchSurface, t orchTarget, runID string) tea.Cmd {
 
 // confirmCancelRun gates cancelling a queued run on its orchestrator.
 func (m Model) confirmCancelRun(s orchSurface, t orchTarget, runID string) (tea.Model, tea.Cmd) {
-	od := m.daemonForHost(t.host)
+	od, ok := m.requireDaemon(s, t.host)
+	if !ok {
+		return m, nil
+	}
 	id := t.id
 	return m.enterConfirm(confirmState{
 		title:    "Cancel run " + runID + "?",
@@ -196,6 +235,9 @@ func (m Model) confirmCancelRun(s orchSurface, t orchTarget, runID string) (tea.
 // openMarkFreeForm opens the outcome + note dialog for a worker's reviewed run on
 // the target orchestrator.
 func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID string) (tea.Model, tea.Cmd) {
+	if _, ok := m.requireDaemon(s, t.host); !ok {
+		return m, nil
+	}
 	v := &markFreeVals{outcome: "completed", sandboxID: sandboxID, host: t.host, orchID: t.id}
 	form := m.newOrchForm(
 		huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
@@ -249,7 +291,11 @@ func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 // parked needs-input with no run back to idle (MarkWorkerFree with nothing to
 // close); the next queued run can then go to it.
 func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model, tea.Cmd) {
-	md := m.daemonForHost(host)
+	md, err := m.connectedDaemon(host)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	if name == "" {
 		name = sandboxID
 	}
@@ -265,6 +311,7 @@ func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model
 
 // promptView renders the read-only prompt overlay of a run.
 func (m Model) promptView(r *pb.Run) string {
-	return sectionStyle.Render("Run "+r.GetId()) + dimStyle.Render("  "+r.GetAction()+" · "+runState(r)) + "\n\n" +
-		panelStyle.Width(m.bodyWidth()-2).Render(r.GetPrompt())
+	// The composed prompt carries arguments other sandboxes supplied (FR-029).
+	return sectionStyle.Render("Run "+sanitizeLine(r.GetId(), 0)) + dimStyle.Render("  "+sanitizeLine(r.GetAction(), 0)+" · "+runState(r)) + "\n\n" +
+		panelStyle.Width(m.bodyWidth()-2).Render(sanitizeTerminalText(r.GetPrompt()))
 }

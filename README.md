@@ -370,7 +370,8 @@ the daemon that hosts it; the day-to-day work of every orchestrator lives on the
 **Daemons › Orchestrators.** On the daemon screen, `enter` on a connected daemon and choose
 **Orchestrators**: that daemon's orchestrators with their reachability, worker count and queue
 depths. `n` creates one on this daemon, `R` renames it (its identity never changes), `d` removes it
-(confirmed), `enter` opens it, `esc` returns to the daemon screen. An opened orchestrator has three
+(confirmed), `enter` opens it, `esc` returns to the daemon screen. Everything here goes to that
+daemon only: if it disconnects the section closes, and nothing is ever sent to another daemon instead. An opened orchestrator has three
 views (`←`/`→`; `esc` back to the list):
 
 | View | What it shows and does |
@@ -381,9 +382,14 @@ views (`←`/`→`; `esc` back to the list):
 
 **Jobs.** `shift+→` twice (or `shift+←` from the sandbox list) opens the **Jobs** screen: every
 orchestrator on every connected daemon, every row labelled `orchestrator @ host`. A daemon that
-cannot be read is named above the content (`could not read: …`) and the others still show; the
-screen follows changes live. Four tabs, switched with `←`/`→` (the last one is remembered); `r`
-reloads, `esc`/`q` leave:
+is connecting, whose connection failed or dropped, or whose orchestrators could not be read is named
+above the content with its error (`could not read: …`); its rows stay, dimmed, and refuse operations
+(`<host> is not connected`) while the others still show — a daemon you disconnected yourself just
+drops out. Each daemon's rows appear as soon as it answers. The screen follows changes live, one
+orchestrator at a time and only while it is on screen (it catches up when shown again); the
+highlight stays on its item when rows re-sort. Text written by agents (reports, reasons, prompts) is
+shown without terminal control sequences. Four tabs, switched with `←`/`→` (the last one is
+remembered); `r` reloads, `esc` goes back to Sandboxes and `q` quits:
 
 | Tab | What it shows and does |
 |-----|------------------------|

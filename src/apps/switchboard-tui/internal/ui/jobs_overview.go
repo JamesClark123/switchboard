@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -23,10 +24,12 @@ type jobsRunRow struct {
 	run    *pb.Run
 }
 
-// jobsEventRow is one timed event with the orchestrator it belongs to.
+// jobsEventRow is one timed event with the orchestrator it belongs to; willSkip
+// says dedupe would skip its next firing because a run of it is open (FR-007).
 type jobsEventRow struct {
-	target orchTarget
-	event  *pb.TimedEvent
+	target   orchTarget
+	event    *pb.TimedEvent
+	willSkip bool
 }
 
 // tsTime is a timestamp as a time (the zero time when unset), for ordering.
@@ -52,7 +55,8 @@ func jobsUpcoming(orchs []jobsOrch) []jobsEventRow {
 	for _, o := range orchs {
 		for _, ev := range o.target.rec.GetTimedEvents() {
 			if ev.GetEnabled() && ev.GetNextFireAt() != nil {
-				out = append(out, jobsEventRow{target: o.target, event: ev})
+				skip := !ev.GetDedupeDisabled() && openRunOfEvent(o.runs, ev.GetId()) != nil
+				out = append(out, jobsEventRow{target: o.target, event: ev, willSkip: skip})
 			}
 		}
 	}
@@ -116,24 +120,68 @@ type overviewItem struct {
 	run     *jobsRunRow
 }
 
-// overviewItems lists the Overview's rows in display order.
-func (m Model) overviewItems() []overviewItem {
-	var out []overviewItem
-	for _, e := range jobsUpcoming(m.jobs.orchs) {
-		e := e
-		out = append(out, overviewItem{section: sectionUpcoming, ev: &e})
+// itemTarget is the orchestrator an Overview item belongs to.
+func itemTarget(it overviewItem) orchTarget {
+	if it.ev != nil {
+		return it.ev.target
 	}
+	return it.run.target
+}
+
+// key is the item's identity (R11).
+func (it overviewItem) key() string {
+	if it.ev != nil {
+		return eventKey(it.ev.target, it.ev.event)
+	}
+	return runKey(it.run.target, it.run.run)
+}
+
+// Item identities (R11): a run, an event, an action, and a group heading or
+// empty line, each qualified by host and orchestrator id.
+func runKey(t orchTarget, r *pb.Run) string           { return "r|" + t.key() + "|" + r.GetId() }
+func eventKey(t orchTarget, ev *pb.TimedEvent) string { return "e|" + t.key() + "|" + ev.GetId() }
+func actionKey(t orchTarget, a *pb.Action) string     { return "a|" + t.key() + "|" + a.GetName() }
+func groupKey(t orchTarget) string                    { return "g|" + t.key() }
+
+// jobsDerived is the rows computed from the loaded data, once per data
+// revision rather than per frame (R4).
+type jobsDerived struct {
+	rev      uint64
+	overview []overviewItem
+	queue    []jobsRunRow // queued ++ in progress ++ all history (the Queue tab)
+}
+
+// deriveJobs computes the Overview items and the Queue tab's runs.
+func deriveJobs(orchs []jobsOrch, rev uint64) *jobsDerived {
+	d := &jobsDerived{rev: rev}
+	for _, e := range jobsUpcoming(orchs) {
+		e := e
+		d.overview = append(d.overview, overviewItem{section: sectionUpcoming, ev: &e})
+	}
+	queued, inProgress, history := jobsQueued(orchs), jobsInProgress(orchs), jobsHistory(orchs, 0)
 	add := func(section int, rows []jobsRunRow) {
 		for _, r := range rows {
 			r := r
-			out = append(out, overviewItem{section: section, run: &r})
+			d.overview = append(d.overview, overviewItem{section: section, run: &r})
 		}
 	}
-	add(sectionQueued, jobsQueued(m.jobs.orchs))
-	add(sectionInProgress, jobsInProgress(m.jobs.orchs))
-	add(sectionHistory, jobsHistory(m.jobs.orchs, jobsOverviewHistory))
-	return out
+	add(sectionQueued, queued)
+	add(sectionInProgress, inProgress)
+	add(sectionHistory, history[:min(len(history), jobsOverviewHistory)])
+	d.queue = append(append(append(d.queue, queued...), inProgress...), history...)
+	return d
 }
+
+// jobsRows is the derived rows of the current data.
+func (m Model) jobsRows() *jobsDerived {
+	if d := m.jobs.derived; d != nil && d.rev == m.jobs.rev {
+		return d
+	}
+	return deriveJobs(m.jobs.orchs, m.jobs.rev)
+}
+
+// overviewItems lists the Overview's rows in display order.
+func (m Model) overviewItems() []overviewItem { return m.jobsRows().overview }
 
 // overviewCurrent is the Overview row under the cursor.
 func (m Model) overviewCurrent() (overviewItem, bool) {
@@ -186,30 +234,38 @@ func (m Model) overviewRowHelp() helpBindings {
 
 // --- rendering ---
 
-// upcomingLine renders an Upcoming row: name → action · orchestrator @ host · next in …
+// upcomingLine renders an Upcoming row: name → action · orchestrator @ host ·
+// next in … (· next firing skipped — run open). Columns are cut and padded to
+// fixed display widths (contracts/jobs-ui.md).
 func upcomingLine(e jobsEventRow) string {
-	return selectedStyle.Render(pad(e.event.GetName(), 14)) + " " + dimStyle.Render(pad("→ "+e.event.GetAction(), 16)) + " " +
-		pad(e.target.label(), 24) + "  " + dimStyle.Render("next "+nextFire(e.event))
+	line := selectedStyle.Render(fitCol(e.event.GetName(), 14)) + " " + dimStyle.Render(fitCol("→ "+e.event.GetAction(), 16)) + " " +
+		fitCol(e.target.label(), 24) + "  " + dimStyle.Render("next "+nextFire(e.event))
+	if e.willSkip {
+		line += dimStyle.Render(" · next firing skipped — run open")
+	}
+	return line
 }
 
 // jobsRunLine renders a run row of the Overview and the Queue tab, labelled with
-// its orchestrator and host (FR-003; contracts/jobs-ui.md row formats).
-func jobsRunLine(r jobsRunRow) string {
+// its orchestrator and host (FR-003; contracts/jobs-ui.md row formats). Every
+// daemon- or agent-supplied text is a sanitised single line (FR-029); a finished
+// run's result snippet takes the rest of the width.
+func (m Model) jobsRunLine(r jobsRunRow) string {
 	run := r.run
-	label := pad(r.target.label(), 24)
+	label := fitCol(r.target.label(), 24)
 	switch run.GetState() {
 	case pb.RunState_RUN_STATE_QUEUED:
-		return dimStyle.Render(pad(fmt.Sprintf("#%d", run.GetPosition()), 4)) + selectedStyle.Render(pad(run.GetAction(), 14)) + " " +
-			dimStyle.Render(pad(runOrigin(run), 16)) + " " + label + "  " + dimStyle.Render("received "+ago(run.GetReceivedAt()))
+		return dimStyle.Render(fitCol(fmt.Sprintf("#%d", run.GetPosition()), 4)) + selectedStyle.Render(fitCol(run.GetAction(), 14)) + " " +
+			dimStyle.Render(fitCol(runOrigin(run), 16)) + " " + label + "  " + dimStyle.Render("received "+ago(run.GetReceivedAt()))
 	case pb.RunState_RUN_STATE_RUNNING, pb.RunState_RUN_STATE_AWAITING_INPUT, pb.RunState_RUN_STATE_AWAITING_REVIEW:
 		style := agentWorkStyle
 		if run.GetState() != pb.RunState_RUN_STATE_RUNNING {
 			style = agentWaitStyle
 		}
-		line := selectedStyle.Render(pad(run.GetAction(), 18)) + " " + style.Render(pad(runState(run), 16)) + " " + label + "  " +
-			dimStyle.Render("on "+short(run.GetSandboxId())+" · started "+ago(run.GetStartedAt()))
+		line := selectedStyle.Render(fitCol(run.GetAction(), 18)) + " " + style.Render(fitCol(runState(run), 16)) + " " + label + "  " +
+			dimStyle.Render("on "+sanitizeLine(m.workerName(run), 24)+" · started "+ago(run.GetStartedAt()))
 		if run.GetEventKind() != pb.EventKind_EVENT_KIND_USER {
-			line += "  " + dimStyle.Render(runOrigin(run))
+			line += "  " + dimStyle.Render(sanitizeLine(runOrigin(run), 24))
 		}
 		return line
 	}
@@ -217,12 +273,38 @@ func jobsRunLine(r jobsRunRow) string {
 	if run.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		style = statusErrStyle
 	}
-	line := selectedStyle.Render(pad(run.GetAction(), 18)) + " " + style.Render(pad(runState(run), 16)) + " " + label + "  " +
+	line := selectedStyle.Render(fitCol(run.GetAction(), 18)) + " " + style.Render(fitCol(runState(run), 16)) + " " + label + "  " +
 		dimStyle.Render("ended "+ago(run.GetEndedAt()))
 	if detail := runResultLine(run); detail != "" {
-		line += dimStyle.Render(" — " + truncate(detail, 60))
+		// The snippet takes what is left of the row (the cursor column is 2 wide).
+		if room := m.bodyWidth() - 2 - lipgloss.Width(line) - 3; room > 0 {
+			line += dimStyle.Render(" — " + sanitizeLine(detail, room))
+		}
 	}
 	return line
+}
+
+// workerName is the display name of the sandbox a run is on, from the TUI's
+// aggregated sandbox list (the orchestrator record carries none, R4); the short
+// sandbox id when it is not listed.
+func (m Model) workerName(r *pb.Run) string {
+	entry, _ := m.entryForDaemonHost(r.GetSandboxHostId())
+	for _, hs := range m.hostAgg {
+		if entry != "" && hs.Host.Entry.ID != entry {
+			continue
+		}
+		for _, sb := range hs.Sandboxes {
+			if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
+				return sb.GetDisplayName()
+			}
+		}
+	}
+	for _, sb := range m.sandboxes {
+		if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
+			return sb.GetDisplayName()
+		}
+	}
+	return short(r.GetSandboxId())
 }
 
 // renderOverview renders the four sections; focus is the cursor's line.
@@ -245,9 +327,9 @@ func (m Model) renderOverview() (lines []string, focus int) {
 			if items[i].ev != nil {
 				line = upcomingLine(*items[i].ev)
 			} else {
-				line = jobsRunLine(*items[i].run)
+				line = m.jobsRunLine(*items[i].run)
 			}
-			lines = append(lines, cursorMark(i == cur)+line)
+			lines = append(lines, cursorMark(i == cur)+m.jobsRowStyle(itemTarget(items[i]).host, line))
 			n++
 		}
 		if n == 0 {

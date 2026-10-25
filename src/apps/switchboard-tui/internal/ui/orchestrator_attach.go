@@ -116,7 +116,11 @@ func (m Model) updateAttachPickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) attachTo(row orchRow, sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	o := row.summary.GetOrchestrator()
 	sbHost := m.daemonHostID(host)
-	od := m.daemonForHost(row.host)
+	od, err := m.connectedDaemon(row.host)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	attachCmd := m.attachWorkerCmd(od, o.GetId(), o.GetName(), sbHost, sb)
 	if sbHost == o.GetHostId() {
 		return m.startBusy(sb.GetId(), "attaching"), attachCmd
@@ -265,7 +269,11 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			d.status = "reasoning sandbox — not detachable"
 			return m, nil
 		}
-		od := m.daemonForHost(d.host)
+		od, err := m.connectedDaemon(d.host)
+		if err != nil {
+			d.status = err.Error()
+			return m, nil
+		}
 		id, name, sbID, sbName := d.id, d.name, w.GetSandboxId(), w.GetDisplayName()
 		return m.enterConfirm(confirmState{
 			title:    fmt.Sprintf("Detach %s from %s?", sbName, name),
@@ -302,7 +310,7 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		}
 		line := cursor(i) + name + dimStyle.Render("  @"+w.GetHostId()) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
 		if w.GetRunAction() != "" {
-			line += dimStyle.Render("  (" + w.GetRunAction() + ")")
+			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + ")")
 		}
 		if w.GetReasoning() {
 			line += "  " + tagBadgeStyle.Render("reasoning")

@@ -13,13 +13,6 @@ import (
 // of jobsQueuePageSize runs are turned with `]`/`[` (research R6). Runs keep the
 // Overview's per-run keys.
 
-// queueAll flattens every run: queued ++ in progress ++ all history.
-func queueAll(orchs []jobsOrch) []jobsRunRow {
-	out := jobsQueued(orchs)
-	out = append(out, jobsInProgress(orchs)...)
-	return append(out, jobsHistory(orchs, 0)...)
-}
-
 // filterRuns keeps the runs of one orchestrator (key "" keeps all).
 func filterRuns(rows []jobsRunRow, key string) []jobsRunRow {
 	if key == "" {
@@ -61,23 +54,26 @@ func pageOf(rows []jobsRunRow, p int) ([]jobsRunRow, int) {
 // queuePageRows is the current page of the filtered list, its 0-based index, the
 // page count and the filtered total.
 func (m Model) queuePageRows() (rows []jobsRunRow, page, pages, total int) {
-	all := filterRuns(queueAll(m.jobs.orchs), m.jobs.queueFilter)
+	all := m.queueFiltered()
 	rows, page = pageOf(all, m.jobs.queuePage)
 	return rows, page, pageCount(len(all)), len(all)
 }
 
-// clampQueue resets a filter whose orchestrator is gone (saying so) and moves a
-// page beyond the end to the last page (spec edge cases).
-func (m *Model) clampQueue() {
+// queueFiltered is every run the Queue tab lists under the current filter.
+func (m Model) queueFiltered() []jobsRunRow {
+	return filterRuns(m.jobsRows().queue, m.jobs.queueFilter)
+}
+
+// clampQueueFilter resets a filter whose orchestrator is gone, saying so (spec
+// edge case); the page follows the highlighted run (anchorJobsCursors).
+func (m *Model) clampQueueFilter() {
 	j := &m.jobs
 	if j.queueFilter != "" {
 		if _, ok := m.jobsOrchByKey(j.queueFilter); !ok {
-			j.status = "filter reset to all orchestrators — " + j.queueFilterLabel + " is no longer available"
+			j.status = "filter reset to all orchestrators — " + sanitizeLine(j.queueFilterLabel, 0) + " is no longer available"
 			j.queueFilter, j.queueFilterLabel = "", ""
 		}
 	}
-	_, page, _, _ := m.queuePageRows()
-	j.queuePage = page
 }
 
 // queueFilterLabelText names the filter: "all" or `name @ host` (FR-015).
@@ -104,6 +100,19 @@ func (m *Model) cycleQueueFilter() {
 	} else {
 		j.queueFilter, j.queueFilterLabel = j.orchs[next].target.key(), j.orchs[next].target.label()
 	}
+	m.refilterQueue()
+}
+
+// refilterQueue keeps the highlighted run highlighted when the filter changes
+// and it is still listed, else starts at the top (FR-031).
+func (m *Model) refilterQueue() {
+	j := &m.jobs
+	for i, r := range m.queueFiltered() {
+		if runKey(r.target, r.run) == j.cursorKeys[jobsQueue] {
+			j.queuePage, j.cursors[jobsQueue] = i/jobsQueuePageSize, i%jobsQueuePageSize
+			return
+		}
+	}
 	j.queuePage, j.cursors[jobsQueue] = 0, 0
 }
 
@@ -117,7 +126,7 @@ func (m Model) updateJobsQueueKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "F":
 		j.queueFilter, j.queueFilterLabel = "", ""
-		j.queuePage, j.cursors[jobsQueue] = 0, 0
+		m.refilterQueue()
 		j.status = ""
 		return m, nil
 	case "]", "pgdown":
@@ -162,7 +171,7 @@ func (m Model) renderJobsQueue() (lines []string, focus int) {
 		if i == cur {
 			focus = len(lines)
 		}
-		lines = append(lines, cursorMark(i == cur)+jobsRunLine(r))
+		lines = append(lines, cursorMark(i == cur)+m.jobsRowStyle(r.target.host, m.jobsRunLine(r)))
 	}
 	return lines, focus
 }

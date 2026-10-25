@@ -56,6 +56,10 @@ type orchDetailMsg struct {
 // enterOrchDetail opens a row's detail; esc returns to that daemon's
 // Orchestrators list.
 func (m Model) enterOrchDetail(row orchRow) (tea.Model, tea.Cmd) {
+	if _, err := m.connectedDaemon(row.host); err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	o := row.summary.GetOrchestrator()
 	m.orchDetail = orchDetailState{host: row.host, hostName: row.hostName, id: o.GetId(), name: o.GetName(), loading: true, view: m.orchDetail.view}
 	m.daemonOrchs.host, m.daemonOrchs.hostName = row.host, row.hostName
@@ -65,8 +69,11 @@ func (m Model) enterOrchDetail(row orchRow) (tea.Model, tea.Cmd) {
 
 // orchDetailLoadCmd fetches the detail.
 func (m Model) orchDetailLoadCmd() tea.Cmd {
-	d := m.daemonForHost(m.orchDetail.host)
 	id := m.orchDetail.id
+	d, err := m.connectedDaemon(m.orchDetail.host)
+	if err != nil {
+		return func() tea.Msg { return orchDetailMsg{id: id, err: err} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
@@ -296,7 +303,10 @@ func knownHostEntry(h store.KnownHost) *pb.OrchestratorHost {
 // setOrchHostsCmd sends the edited host list; the daemon's refusal text is
 // shown verbatim.
 func (m Model) setOrchHostsCmd(hosts []*pb.OrchestratorHost, status string) tea.Cmd {
-	d := m.daemonForHost(m.orchDetail.host)
+	d, err := m.connectedDaemon(m.orchDetail.host)
+	if err != nil {
+		return errCmd(surfaceDetail, err)
+	}
 	id := m.orchDetail.id
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -398,7 +408,7 @@ func (m Model) renderOrchView() []string {
 			if !h.GetReachable() {
 				reach = statusErrStyle.Render("unreachable")
 				if h.GetError() != "" {
-					reach += dimStyle.Render(": " + h.GetError())
+					reach += dimStyle.Render(": " + sanitizeLine(h.GetError(), 80))
 				}
 			}
 			lines = append(lines, cursor(i)+hostLabel(h)+dimStyle.Render("  ·  "+h.GetSshTarget())+"  ·  "+reach)

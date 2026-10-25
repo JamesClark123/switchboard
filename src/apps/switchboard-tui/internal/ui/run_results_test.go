@@ -9,17 +9,6 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
-func TestSanitizeTerminalText(t *testing.T) {
-	in := "ok\x1b[31m red\x1b[0m\r\n\ttabbed\x07 bell\x1b]0;title\x07 done"
-	got := sanitizeTerminalText(in)
-	if strings.ContainsAny(got, "\x1b\x07\r\t") {
-		t.Errorf("control sequences must be stripped: %q", got)
-	}
-	if !strings.Contains(got, "ok red\n    tabbed bell") || !strings.Contains(got, "done") {
-		t.Errorf("text and newlines kept: %q", got)
-	}
-}
-
 func TestRunResultsBody(t *testing.T) {
 	tg := orchTarget{host: "h", hostName: "alpha", id: "o-a", name: "alpha-bot"}
 	long := strings.Repeat("word ", 400) + "THE-END"

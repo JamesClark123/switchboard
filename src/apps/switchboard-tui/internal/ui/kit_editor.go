@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"sort"
 	"strconv"
 	"strings"
@@ -1227,12 +1228,10 @@ func userSuffix(user, def string) string {
 	return "  uid " + u
 }
 
+// truncate is s on one line, cut to n display columns with an ellipsis — never
+// mid-character (untrusted text goes through sanitizeLine instead).
 func truncate(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
+	return ansi.Truncate(strings.ReplaceAll(s, "\n", " "), n, "…")
 }
 
 func errKitLine(what, line string) error {

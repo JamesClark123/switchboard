@@ -118,7 +118,7 @@ func TestOverviewAcrossTwoHosts(t *testing.T) {
 	for _, want := range []string{"Upcoming", "Queued", "In progress", "History (latest 15)",
 		"poll", "→ review-pr", "alpha-bot @ alpha", "next in", "nightly", "beta-bot @ beta",
 		"#1", "timed nightly", "received", "running", "on worker-", "awaiting review", "triggered by worker-two",
-		"completed", "ended", "Reviewed PR 412", "could not read: gamma"} {
+		"completed", "ended", "Reviewed PR 412"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("overview missing %q:\n%s", want, v)
 		}

@@ -1,16 +1,12 @@
 package ui
 
 import (
-	"context"
-	"sort"
 	"strings"
-	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // The Jobs screen (feature 010, FR-001..FR-005) is the third top-level screen in
@@ -44,12 +40,14 @@ const (
 
 var jobsTabNames = [jobsTabCount]string{"Overview", "Actions", "Events", "Queue"}
 
-// jobsOrch is one loaded orchestrator (data-model "jobsOrch").
+// jobsOrch is one loaded orchestrator (data-model "jobsOrch"). Whether its host
+// is reachable is not stored: it is the host's connection state now
+// (jobsReachable), so rows of a dropped host dim and refuse at once.
 type jobsOrch struct {
 	target  orchTarget
 	summary *pb.OrchestratorSummary
-	runs    *pb.ListRunsResponse // never nil; empty when err is set
-	err     error                // its runs could not be read
+	runs    *pb.ListRunsResponse // never nil
+	err     error                // its runs (or record) could not be read
 }
 
 // jobsState backs the screen (data-model "jobsState"). It survives leaving the
@@ -58,16 +56,27 @@ type jobsState struct {
 	// orchOpState carries the open form, the Jobs status line, the prompt overlay
 	// and the Enqueue now repeat window (run_actions.go).
 	orchOpState
-	tab     jobsTab
-	orchs   []jobsOrch // ordered by host display name, then orchestrator name
-	cursors [jobsTabCount]int
-	loading bool
-	loaded  bool
-	// down maps the host entry ids that could not be read to their display names
-	// (FR-004); connected records which hosts were connected at their last load,
-	// so a connect or disconnect reloads that host only.
-	down      map[string]string
+	tab   jobsTab
+	orchs []jobsOrch // ordered by host display name, then orchestrator name
+	// cursors are the tabs' row indexes; cursorKeys the identity of each tab's
+	// highlighted item, which the index follows after every data change (R11).
+	cursors    [jobsTabCount]int
+	cursorKeys [jobsTabCount]string
+	// cursorSection is the Overview cursor's section, for its nearest neighbour.
+	cursorSection int
+	// The load bookkeeping (jobs_load.go): started once Jobs first loads; seq is
+	// the generation counter shared by host and orchestrator loads; hosts and
+	// meta are per host and per orchestrator (keyed by target key); connected
+	// records which hosts were connected at the last host snapshot.
+	started   bool
+	seq       uint64
+	hosts     map[string]*jobsHostLoad
+	meta      map[string]*jobsOrchMeta
 	connected map[string]bool
+	// rev counts applied data changes; derived holds the rows computed from it
+	// (computed once per change, not per frame: R4).
+	rev     uint64
+	derived *jobsDerived
 	// queueFilter is "" (all orchestrators) or a target key; its label is kept so
 	// a vanished filter can be named when it resets (jobs_queue.go).
 	queueFilter      string
@@ -75,220 +84,6 @@ type jobsState struct {
 	queuePage        int
 	// results is the open Open results overlay (run_results.go).
 	results *runResultsState
-	// returnTo is the top-level screen esc/q go back to.
-	returnTo screen
-}
-
-// jobsHostResult is one host's share of a load.
-type jobsHostResult struct {
-	host  orchHost
-	orchs []jobsOrch
-	down  bool
-}
-
-// jobsLoadedMsg carries a full load; jobsHostMsg one host's reload; jobsOrchMsg
-// one orchestrator's reload (gone when it no longer exists).
-type jobsLoadedMsg struct{ hosts []jobsHostResult }
-
-type jobsHostMsg struct{ res jobsHostResult }
-
-type jobsOrchMsg struct {
-	host, id string
-	orch     *jobsOrch
-	gone     bool
-	err      error
-}
-
-// enterJobs switches to the screen from a top-level screen and (re)loads it.
-func (m Model) enterJobs(from screen) (tea.Model, tea.Cmd) {
-	m.screen = screenJobs
-	m.jobs.returnTo = from
-	m.jobs.loading = true
-	return m, m.jobsLoadCmd()
-}
-
-// loadJobsHost lists one host's orchestrators and their runs. A disconnected or
-// failing host contributes nothing and is named as down; an orchestrator whose
-// runs cannot be read is still listed (its actions and events are known).
-func loadJobsHost(ctx context.Context, h orchHost) jobsHostResult {
-	res := jobsHostResult{host: h}
-	if h.d == nil {
-		res.down = true
-		return res
-	}
-	list, err := h.d.ListOrchestrators(ctx)
-	if err != nil {
-		res.down = true
-		return res
-	}
-	for _, s := range list {
-		o := s.GetOrchestrator()
-		runs, err := h.d.ListRuns(ctx, o.GetId())
-		if runs == nil {
-			runs = &pb.ListRunsResponse{}
-		}
-		res.orchs = append(res.orchs, jobsOrch{target: targetOf(h.id, h.name, o), summary: s, runs: runs, err: err})
-	}
-	return res
-}
-
-// jobsLoadCmd loads every host the TUI knows, concurrently per host.
-func (m Model) jobsLoadCmd() tea.Cmd {
-	hosts := m.orchHosts()
-	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
-		res := make([]jobsHostResult, len(hosts))
-		var wg sync.WaitGroup
-		for i, h := range hosts {
-			wg.Add(1)
-			go func(i int, h orchHost) {
-				defer wg.Done()
-				res[i] = loadJobsHost(ctx, h)
-			}(i, h)
-		}
-		wg.Wait()
-		return jobsLoadedMsg{hosts: res}
-	}
-}
-
-// jobsHostLoadCmd reloads one host (it connected or disconnected).
-func (m Model) jobsHostLoadCmd(h orchHost) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
-		return jobsHostMsg{res: loadJobsHost(ctx, h)}
-	}
-}
-
-// jobsReloadOrchCmd reloads one orchestrator's record and runs (research R3).
-// It is nil when the host is not connected (its host reload covers it).
-func (m Model) jobsReloadOrchCmd(host, id string) tea.Cmd {
-	if id == "" {
-		return nil
-	}
-	var h orchHost
-	found := false
-	for _, x := range m.orchHosts() {
-		if x.id == host && x.d != nil {
-			h, found = x, true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
-		det, err := h.d.GetOrchestrator(ctx, id)
-		if err != nil {
-			return jobsOrchMsg{host: host, id: id, gone: status.Code(err) == codes.NotFound, err: err}
-		}
-		runs, rerr := h.d.ListRuns(ctx, id)
-		if runs == nil {
-			runs = &pb.ListRunsResponse{}
-		}
-		s := det.GetSummary()
-		return jobsOrchMsg{host: host, id: id, orch: &jobsOrch{target: targetOf(h.id, h.name, s.GetOrchestrator()), summary: s, runs: runs, err: rerr}}
-	}
-}
-
-// jobsSyncHostsCmd reloads each host whose connection changed since Jobs last
-// read it (a host snapshot arrived: a reconnect, a disconnect, a reload). Nothing
-// happens until Jobs has loaded once.
-func (m Model) jobsSyncHostsCmd() tea.Cmd {
-	if !m.jobs.loaded {
-		return nil
-	}
-	var cmds []tea.Cmd
-	for _, h := range m.orchHosts() {
-		conn := h.d != nil
-		if was, ok := m.jobs.connected[h.id]; ok && was == conn {
-			continue
-		}
-		m.jobs.connected[h.id] = conn // the map is shared: a second snapshot does not re-issue
-		cmds = append(cmds, m.jobsHostLoadCmd(h))
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
-}
-
-// putHost replaces one host's orchestrators and reachability in the state.
-func (j *jobsState) putHost(res jobsHostResult) {
-	kept := j.orchs[:0:0]
-	for _, o := range j.orchs {
-		if o.target.host != res.host.id {
-			kept = append(kept, o)
-		}
-	}
-	j.orchs = append(kept, res.orchs...)
-	if res.down {
-		j.down[res.host.id] = res.host.name
-	} else {
-		delete(j.down, res.host.id)
-	}
-	j.connected[res.host.id] = res.host.d != nil
-}
-
-// sortJobs orders the orchestrators by host display name, then name (a stable
-// group order, FR-019).
-func (j *jobsState) sortJobs() {
-	sort.SliceStable(j.orchs, func(a, b int) bool {
-		x, y := j.orchs[a].target, j.orchs[b].target
-		if x.hostName != y.hostName {
-			return x.hostName < y.hostName
-		}
-		if x.name != y.name {
-			return x.name < y.name
-		}
-		return x.key() < y.key()
-	})
-}
-
-func (m Model) applyJobsLoaded(msg jobsLoadedMsg) (tea.Model, tea.Cmd) {
-	j := &m.jobs
-	j.orchs, j.down, j.connected = nil, map[string]string{}, map[string]bool{}
-	for _, res := range msg.hosts {
-		j.putHost(res)
-	}
-	j.loading, j.loaded = false, true
-	j.sortJobs()
-	m.clampJobs()
-	return m, nil
-}
-
-func (m Model) applyJobsHost(msg jobsHostMsg) (tea.Model, tea.Cmd) {
-	if !m.jobs.loaded {
-		return m, nil
-	}
-	m.jobs.putHost(msg.res)
-	m.jobs.sortJobs()
-	m.clampJobs()
-	return m, nil
-}
-
-func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
-	j := &m.jobs
-	if !j.loaded || (msg.err != nil && !msg.gone) {
-		// A transient failure keeps what was last read.
-		return m, nil
-	}
-	key := msg.host + "/" + msg.id
-	kept := j.orchs[:0:0]
-	for _, o := range j.orchs {
-		if o.target.key() != key {
-			kept = append(kept, o)
-		}
-	}
-	if msg.orch != nil {
-		kept = append(kept, *msg.orch)
-	}
-	j.orchs = kept
-	j.sortJobs()
-	m.clampJobs()
-	return m, nil
 }
 
 // jobsOrchByKey finds a loaded orchestrator by its target key.
@@ -315,30 +110,129 @@ func (m Model) jobsRowCount(t jobsTab) int {
 	return 0
 }
 
-// clampJobs keeps the filter, the page and every cursor valid after the data
-// changed (a removed orchestrator, trimmed history).
-func (m *Model) clampJobs() {
-	m.clampQueue()
-	for t := jobsTab(0); t < jobsTabCount; t++ {
-		if n := m.jobsRowCount(t); m.jobs.cursors[t] >= n {
-			m.jobs.cursors[t] = max(n-1, 0)
+// --- cursors keyed by identity (R11, FR-031) ---
+
+// jobsTabKeys lists a tab's item identities in display order (the Queue tab:
+// every run under the filter, across pages) and, for the Overview, each item's
+// section.
+func (m Model) jobsTabKeys(t jobsTab) (keys []string, sections []int) {
+	switch t {
+	case jobsOverview:
+		for _, it := range m.overviewItems() {
+			keys, sections = append(keys, it.key()), append(sections, it.section)
+		}
+	case jobsActions, jobsEvents:
+		for _, p := range m.groupPositions(t) {
+			keys = append(keys, m.groupPosKey(t, p))
+		}
+	case jobsQueue:
+		for _, r := range m.queueFiltered() {
+			keys = append(keys, runKey(r.target, r.run))
+		}
+	}
+	return keys, sections
+}
+
+// groupPosKey is a grouped tab position's identity.
+func (m Model) groupPosKey(t jobsTab, p groupPos) string {
+	o := m.jobs.orchs[p.orch]
+	switch {
+	case p.item < 0:
+		return groupKey(o.target)
+	case t == jobsEvents:
+		return eventKey(o.target, o.target.rec.GetTimedEvents()[p.item])
+	}
+	return actionKey(o.target, o.target.rec.GetActions()[p.item])
+}
+
+// jobsCursorAbs is a tab's cursor as an index into jobsTabKeys.
+func (m Model) jobsCursorAbs(t jobsTab) int {
+	if t == jobsQueue {
+		return m.jobs.queuePage*jobsQueuePageSize + m.jobs.cursors[t]
+	}
+	return m.jobs.cursors[t]
+}
+
+// setJobsCursor moves a tab's cursor to an index into jobsTabKeys (the Queue
+// tab turns to that run's page) and, with record, remembers the item there.
+func (m *Model) setJobsCursor(t jobsTab, idx int, keys []string, sections []int, record bool) {
+	j := &m.jobs
+	if idx >= len(keys) {
+		idx = len(keys) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if t == jobsQueue {
+		j.queuePage, j.cursors[t] = idx/jobsQueuePageSize, idx%jobsQueuePageSize
+	} else {
+		j.cursors[t] = idx
+	}
+	if !record {
+		return
+	}
+	j.cursorKeys[t] = ""
+	if idx < len(keys) {
+		j.cursorKeys[t] = keys[idx]
+		if sections != nil {
+			j.cursorSection = sections[idx]
 		}
 	}
 }
 
-// unreachableHosts names the hosts that could not be read, sorted.
-func (m Model) unreachableHosts() []string {
-	names := make([]string, 0, len(m.jobs.down))
-	for _, n := range m.jobs.down {
-		names = append(names, n)
+// anchorJobsCursors moves every tab's cursor back onto its item after the data
+// changed. When the item is gone (removed, filtered out, past the History cap)
+// it takes the row now at its old position in the same section, else the row
+// before it. A tab the developer has not used yet stays at its index (the top),
+// so rows arriving from a slower daemon do not carry its cursor away.
+func (m *Model) anchorJobsCursors() {
+	for t := jobsTab(0); t < jobsTabCount; t++ {
+		keys, sections := m.jobsTabKeys(t)
+		if m.jobs.cursorKeys[t] == "" {
+			m.setJobsCursor(t, m.jobsCursorAbs(t), keys, sections, false)
+			continue
+		}
+		idx := -1
+		for i, k := range keys {
+			if k == m.jobs.cursorKeys[t] && k != "" {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			idx = min(m.jobsCursorAbs(t), len(keys)-1)
+			if sections != nil && idx > 0 && sections[idx] != m.jobs.cursorSection {
+				idx--
+			}
+		}
+		m.setJobsCursor(t, idx, keys, sections, true)
 	}
-	sort.Strings(names)
-	return names
+}
+
+// rememberJobsCursor records the item under a tab's cursor after the developer
+// moved it.
+func (m *Model) rememberJobsCursor(t jobsTab) {
+	keys, sections := m.jobsTabKeys(t)
+	m.setJobsCursor(t, m.jobsCursorAbs(t), keys, sections, true)
 }
 
 // --- keys ---
 
+// updateJobsKey handles a key, then records the item the cursor is on, so the
+// next data change keeps it there (R11).
 func (m Model) updateJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.jobs.results == nil && m.jobs.prompt == nil && m.jobs.form == nil {
+		m.rememberJobsCursor(m.jobs.tab)
+	}
+	out, cmd := m.handleJobsKey(msg)
+	if mm, ok := out.(Model); ok && mm.screen == screenJobs && mm.jobs.results == nil && mm.jobs.prompt == nil && mm.jobs.form == nil {
+		mm.rememberJobsCursor(mm.jobs.tab)
+		return mm, cmd
+	}
+	return out, cmd
+}
+
+func (m Model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	j := &m.jobs
 	if j.results != nil {
 		return m.updateRunResultsKey(msg)
@@ -371,13 +265,11 @@ func (m Model) updateJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enterSettings(screenJobs)
 	}
 	switch msg.String() {
-	case "esc", "q":
-		if j.returnTo == screenDaemons {
-			return m.enterDaemons()
-		}
+	case "esc":
+		// Back to Sandboxes, as on every top-level screen (R8).
 		m.screen = screenList
 		return m, nil
-	case "ctrl+c":
+	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
 	case "left":
@@ -389,8 +281,7 @@ func (m Model) updateJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		j.status = ""
 		return m, nil
 	case "r":
-		j.loading = true
-		return m, m.jobsLoadCmd()
+		return m, m.jobsLoadAll()
 	case "up", "k":
 		if j.cursors[j.tab] > 0 {
 			j.cursors[j.tab]--
@@ -487,18 +378,21 @@ func (m Model) viewJobs() string {
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 	header := m.jobsTabBar()
-	if j.loading && j.loaded {
+	if m.jobsRefreshing() && !m.jobsWaiting() {
 		header += "   " + m.spinner.View() + dimStyle.Render(" refreshing…")
 	}
 	top := []string{header}
-	if names := m.unreachableHosts(); len(names) > 0 {
-		top = append(top, dimStyle.Render("could not read: "+strings.Join(names, ", ")))
+	if names := m.jobsUnreadable(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("could not read: "+joinNames(names))))
+	}
+	if names := m.jobsLoadingHosts(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("loading: "+joinNames(names))))
 	}
 	top = append(top, "")
 	var body []string
 	focus := 0
 	switch {
-	case j.loading && !j.loaded:
+	case m.jobsWaiting():
 		body = []string{m.spinner.View() + dimStyle.Render(" loading…")}
 	case len(j.orchs) == 0:
 		body = []string{dimStyle.Render(jobsEmptyText)}
@@ -519,6 +413,18 @@ func (m Model) viewJobs() string {
 	avail := m.bodyHeight() - len(top) - len(bottom) - (m.helpLineCount(m.jobsHelp()) - 1)
 	lines := append(top, windowLines(body, focus, avail)...)
 	return lipgloss.JoinVertical(lipgloss.Left, append(lines, bottom...)...)
+}
+
+// fitLine cuts a rendered line to the body width.
+func (m Model) fitLine(s string) string { return ansi.Truncate(s, m.bodyWidth(), "…") }
+
+// jobsRowStyle dims a row of a host that is not connected now: it stays as last
+// read, and operations on it are refused (R3, R12).
+func (m Model) jobsRowStyle(host, line string) string {
+	if m.jobsReachable(host) {
+		return line
+	}
+	return dimStyle.Render(ansi.Strip(line))
 }
 
 // windowLines keeps a long body within avail lines, scrolled so the focus line

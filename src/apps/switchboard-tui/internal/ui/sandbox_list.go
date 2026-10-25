@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/charmbracelet/x/ansi"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -801,9 +802,11 @@ func (m Model) viewList() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+// pad right-pads s to n display columns (it never cuts; see fitCol).
 func pad(s string, n int) string {
-	if len(s) >= n {
+	w := ansi.StringWidth(s)
+	if w >= n {
 		return s
 	}
-	return s + strings.Repeat(" ", n-len(s))
+	return s + strings.Repeat(" ", n-w)
 }

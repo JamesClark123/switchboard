@@ -15,7 +15,7 @@ func TestQueueDerivation(t *testing.T) {
 		jo("alpha", "a-bot", nil, &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "q"}}, InFlight: []*pb.Run{{Id: "i"}}, History: finished("a", 30, 0)}),
 		jo("beta", "b-bot", nil, &pb.ListRunsResponse{History: finished("b", 30, 30*time.Second)}),
 	}
-	all := queueAll(orchs)
+	all := deriveJobs(orchs, 1).queue
 	if len(all) != 62 || all[0].run.GetId() != "q" || all[1].run.GetId() != "i" || all[2].run.GetId() != "a00" || all[3].run.GetId() != "b00" {
 		t.Fatalf("queued ++ in progress ++ all history newest first: %d %s", len(all), runIDs(all[:4]))
 	}
@@ -133,7 +133,7 @@ func TestQueueTabVanishedFilterAndClamp(t *testing.T) {
 	m, _ = update(m, press("f"))
 	m, _ = update(m, press("f")) // beta
 	m.jobs.queuePage = 5
-	m.clampJobs()
+	m.jobsChanged()
 	if m.jobs.queuePage != 0 {
 		t.Errorf("a page beyond the end clamps, got %d", m.jobs.queuePage)
 	}
@@ -150,6 +150,7 @@ func TestQueueTabVanishedFilterAndClamp(t *testing.T) {
 	// A filter on an orchestrator with no runs says so.
 	m, _ = update(m, press("f"))
 	m.jobs.orchs[0].runs = &pb.ListRunsResponse{}
+	m.jobsChanged()
 	if !strings.Contains(m.View(), "(no runs)") || !strings.Contains(m.View(), fmt.Sprintf("page 1 of 1 (%s)", plural(0, "run", "runs"))) {
 		t.Errorf("empty filtered list:\n%s", m.View())
 	}

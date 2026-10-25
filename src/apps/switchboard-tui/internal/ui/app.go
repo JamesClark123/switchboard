@@ -631,6 +631,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenTerminal {
 			m.resizeTerminal()
 		}
+		m.fitRunResults()
 		return m, nil
 
 	case termOpenedMsg:
@@ -676,7 +677,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.listLoading = false
 		m.rebuildTabs()
 		m.refreshListItems()
-		return m, tea.Batch(m.subscribeHostsCmd(msg.hosts), m.jobsSyncHostsCmd())
+		sync := m.jobsSyncHosts()
+		return m, tea.Batch(m.subscribeHostsCmd(msg.hosts), sync)
 
 	case statusMsg:
 		m.status = string(msg)
@@ -731,8 +733,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			op.status = ""
 		}
 		return m, nil
-	case jobsLoadedMsg:
-		return m.applyJobsLoaded(msg)
 	case jobsHostMsg:
 		return m.applyJobsHost(msg)
 	case jobsOrchMsg:
@@ -753,7 +753,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hostsMsg:
 		out, cmd := m.applyHosts(msg)
 		m = out.(Model)
-		return m, tea.Batch(cmd, m.subscribeHostsCmd([]client.HostSandboxes(msg)), m.jobsSyncHostsCmd())
+		sync := m.jobsSyncHosts()
+		return m, tea.Batch(cmd, m.subscribeHostsCmd([]client.HostSandboxes(msg)), sync)
 
 	case browseMsg:
 		return m.applyBrowse(msg)

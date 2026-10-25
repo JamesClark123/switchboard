@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,43 +16,27 @@ import (
 // orchestrator and host, the state and end time, then the whole Run.summary (the
 // developer's note when closed by hand) and, for a failed or cancelled run, the
 // reason it ended. Nothing is truncated: the text is wrapped to the overlay and
-// scrolled with ↑/↓/pgup/pgdown. The text comes from an agent, so terminal
-// control sequences are stripped before it is drawn.
+// scrolled with ↑/↓/pgup/pgdown. The text comes from an agent, so it is drawn
+// through sanitizeTerminalText (FR-029). The viewport is sized to the modal's
+// content area (inside its padding) and re-fitted when the terminal is resized,
+// so the whole modal, scroll position and hint included, stays on screen.
 
 // runResultsState backs the open overlay.
 type runResultsState struct {
-	title string
-	vp    viewport.Model
+	title  string
+	target orchTarget
+	run    *pb.Run
+	vp     viewport.Model
 }
 
 // noResultText is shown when a finished run reported nothing.
 const noResultText = "no result was reported"
 
-// sanitizeTerminalText strips escape sequences and control characters from text
-// that came from an agent, keeping newlines; tabs become spaces.
-func sanitizeTerminalText(s string) string {
-	s = ansi.Strip(s)
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '\n':
-			b.WriteRune(r)
-		case r == '\t':
-			b.WriteString("    ")
-		case unicode.IsControl(r):
-			// dropped (\r, bell, a stray ESC …)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
 // runResultsBody is the overlay's text for a run, wrapped to width.
 func runResultsBody(t orchTarget, r *pb.Run, width int) string {
 	head := []string{
-		dimStyle.Render("action        ") + r.GetAction(),
-		dimStyle.Render("orchestrator  ") + t.label(),
+		dimStyle.Render("action        ") + sanitizeLine(r.GetAction(), 0),
+		dimStyle.Render("orchestrator  ") + sanitizeLine(t.label(), 0),
 		dimStyle.Render("state         ") + runState(r),
 		dimStyle.Render("ended         ") + ago(r.GetEndedAt()),
 		"",
@@ -76,17 +59,44 @@ func runResultsBody(t orchTarget, r *pb.Run, width int) string {
 		body = append(body, dimStyle.Render(noResultText))
 	}
 	wrapped := ansi.Wrap(strings.Join(body, "\n"), max(width, 10), "")
-	return strings.Join(head, "\n") + wrapped
+	return strings.Join(head, "\n") + "\n" + wrapped
+}
+
+// runResultsChrome is the modal's height beyond the viewport: border (2),
+// padding (2), title and gap (2), scroll position and gap (2), hint and gap (2).
+const runResultsChrome = 10
+
+// runResultsSize is the viewport's width and height: the modal's content area
+// (its width minus modalStyle's horizontal padding), and the terminal height less
+// the modal's chrome and a line of margin above and below.
+func (m Model) runResultsSize() (int, int) {
+	w := m.modalInnerWidth() - modalStyle.GetHorizontalPadding()
+	h := max(m.height-runResultsChrome-2, 3)
+	return w, h
 }
 
 // openRunResults opens the overlay for a finished run.
 func (m Model) openRunResults(t orchTarget, r *pb.Run) (tea.Model, tea.Cmd) {
-	w := m.modalInnerWidth()
-	h := max(m.height-14, 5)
-	vp := viewport.New(w, h)
-	vp.SetContent(runResultsBody(t, r, w))
-	m.jobs.results = &runResultsState{title: "Results · run " + r.GetId(), vp: vp}
+	m.jobs.results = &runResultsState{title: "Results · run " + sanitizeLine(r.GetId(), 0), target: t, run: r}
+	m.fitRunResults()
 	return m, nil
+}
+
+// fitRunResults (re)builds the overlay's viewport for the current terminal size,
+// keeping the scroll position (clamped) across a resize.
+func (m *Model) fitRunResults() {
+	rs := m.jobs.results
+	if rs == nil {
+		return
+	}
+	w, h := m.runResultsSize()
+	y := rs.vp.YOffset
+	vp := viewport.New(w, h)
+	vp.SetContent(runResultsBody(rs.target, rs.run, w))
+	vp.SetYOffset(y)
+	next := *rs
+	next.vp = vp
+	m.jobs.results = &next
 }
 
 func (m Model) updateRunResultsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

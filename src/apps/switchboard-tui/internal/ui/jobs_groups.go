@@ -141,9 +141,9 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 		if i > 0 {
 			lines = append(lines, "")
 		}
-		heading := sectionStyle.Render(o.target.label())
-		if o.err != nil && t == jobsEvents {
-			heading += "  " + dimStyle.Render("(runs could not be read: "+o.err.Error()+")")
+		heading := sectionStyle.Render(sanitizeLine(o.target.label(), 0))
+		if !m.jobsReachable(o.target.host) {
+			heading = dimStyle.Render(sanitizeLine(o.target.label(), 0) + "  (not connected)")
 		}
 		lines = append(lines, heading)
 		waiting := map[string]int{}
@@ -170,7 +170,7 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 			default:
 				line = actionLine(o.target.rec.GetActions()[pos[p].item])
 			}
-			lines = append(lines, cursorMark(p == cur)+line)
+			lines = append(lines, cursorMark(p == cur)+m.jobsRowStyle(o.target.host, line))
 		}
 	}
 	return lines, focus

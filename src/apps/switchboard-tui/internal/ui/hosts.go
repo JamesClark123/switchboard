@@ -134,6 +134,19 @@ func (m Model) applyHosts(msg hostsMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	// Daemons › Orchestrators and the detail opened from it act on one daemon
+	// only; when it drops they close rather than reach any other (FR-030).
+	if (m.screen == screenDaemonOrchs || m.screen == screenOrchDetail) && m.daemonOrchs.host != "" {
+		for _, row := range msg {
+			if row.Host.Entry.ID == m.daemonOrchs.host && row.Host.State != client.HostConnected {
+				m.screen = screenDaemons
+				m.daemons.options = false
+				m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+				m.orchDetail.form = nil
+				m.status = m.daemonOrchs.hostName + " disconnected — orchestrators closed"
+			}
+		}
+	}
 	if !m.hosts.ready {
 		return m, nil
 	}
