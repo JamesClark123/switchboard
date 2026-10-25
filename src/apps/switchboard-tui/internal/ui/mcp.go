@@ -41,6 +41,7 @@ type mcpState struct {
 	hostName string
 	target   string   // the ssh target of a remote daemon (for the port-forward hint)
 	sshOpts  []string // that host's saved ssh options, so the hint's command reaches it the same way
+	canSSH   bool     // an ssh host with a target: only then can the hint offer a port forward
 	daemon   Daemon
 	remote   bool // the daemon is on another machine, so its OAuth callback needs relaying
 
@@ -86,6 +87,7 @@ type mcpAuthWait struct {
 	noCallback   bool   // remote daemon, but the link carried no loopback callback port
 	sshTarget    string // the ssh target for the hint's port-forward command
 	sshOpts      []string
+	canSSH       bool
 	pasting      bool
 	paste        textinput.Model
 	pasteErr     string
@@ -128,7 +130,7 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, daemon: row.daemon, remote: row.kind != "local", loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, canSSH: row.kind == "ssh" && row.target != "", daemon: row.daemon, remote: row.kind != "local", loading: true}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -519,9 +521,7 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 		w.noCallback = true
 		w.sshTarget = m.mcpView.target
 		w.sshOpts = m.mcpView.sshOpts
-		if w.sshTarget == "" {
-			w.sshTarget = m.mcpView.hostName
-		}
+		w.canSSH = m.mcpView.canSSH
 	}
 	if u.CallbackPort != 0 && m.mcpView.remote && w.callbackPort == 0 {
 		w.callbackPort = u.CallbackPort
@@ -585,62 +585,44 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 	return m, m.mcpLoadCmd(v.daemon, v.host)
 }
 
-// sshForwardCommand is the hint's port-forward command for a host, built from the
-// same saved options its daemon connection uses (-p/-i/-J…), so a copy-paste reaches
-// the same machine. -N: forward only, no remote shell (and a busy local port fails
-// loudly instead of leaving an unrelated login open). PORT is left for the developer
-// to fill from the browser's address bar.
-func sshForwardCommand(opts []string, target string) string {
-	parts := []string{"ssh", "-N"}
+// sshForwardArgs is the hint's port-forward command for a host as its already
+// shell-quoted words, built from the same saved options its daemon connection uses
+// (-p/-i/-J…), so a copy-paste reaches the same machine. -N: forward only, no remote
+// shell (and a busy local port fails loudly instead of leaving an unrelated login
+// open). PORT is left for the developer to fill from the browser's address bar.
+func sshForwardArgs(opts []string, target string) []string {
+	args := []string{"ssh", "-N"}
 	for _, o := range opts {
-		parts = append(parts, shellQuote(o))
+		args = append(args, shellQuote(o))
 	}
-	parts = append(parts, "-L", "PORT:localhost:PORT", shellQuote(target))
-	return strings.Join(parts, " ")
+	return append(args, "-L", "PORT:localhost:PORT", shellQuote(target))
 }
 
-// wrapCommand breaks a command at argument boundaries into lines of about width
-// characters, each but the last ending in a shell line continuation, so a long
-// command still pastes as one command (the modal would otherwise hard-wrap it in
-// the middle of a word).
-func wrapCommand(cmd string, width int) string {
-	// Split on spaces outside single quotes, so a quoted argument stays whole.
-	var words []string
-	var cur strings.Builder
-	inQuote := false
-	for _, r := range cmd {
-		switch {
-		case r == '\'':
-			inQuote = !inQuote
-			cur.WriteRune(r)
-		case r == ' ' && !inQuote:
-			if cur.Len() > 0 {
-				words = append(words, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteRune(r)
-		}
-	}
-	if cur.Len() > 0 {
-		words = append(words, cur.String())
-	}
+// sshForwardCommand is sshForwardArgs as one line.
+func sshForwardCommand(opts []string, target string) string {
+	return strings.Join(sshForwardArgs(opts, target), " ")
+}
+
+// wrapArgs packs shell-quoted words into lines of about width characters, each but
+// the last ending in a shell line continuation, so a long command still pastes as
+// one command (the modal would otherwise hard-wrap it in the middle of a word).
+// Each word is atomic — it is never split, whatever quoting it contains — which is
+// why this takes the word list rather than re-parsing a command string.
+func wrapArgs(args []string, width int) string {
 	var lines []string
 	line := ""
-	for _, w := range words {
-		if line != "" && len(line)+1+len(w) > width {
+	for _, a := range args {
+		switch {
+		case line == "":
+			line = a
+		case len(line)+1+len(a) > width:
 			lines = append(lines, line+" \\")
-			line = "  " + w
-			continue
-		}
-		if line == "" {
-			line = w
-		} else {
-			line += " " + w
+			line = "  " + a
+		default:
+			line += " " + a
 		}
 	}
-	lines = append(lines, line)
-	return strings.Join(lines, "\n")
+	return strings.Join(append(lines, line), "\n")
 }
 
 // indentLines prefixes every line of s.
@@ -839,15 +821,21 @@ func (m Model) mcpModal() string {
 			// The host-side run is the fallback for someone with a browser on the host,
 			// and ONLY after cancelling — a second `sbx mcp auth` alongside the running
 			// one would race it for the credential.
-			ssh := wrapCommand(sshForwardCommand(w.sshOpts, w.sshTarget), 44)
 			lines = append(lines, "",
 				dimStyle.Render("no callback port was reported for this link."),
 				dimStyle.Render("If the browser ends on a ‘localhost:PORT’ error page"),
-				dimStyle.Render("(PORT is in its address bar):"),
-				dimStyle.Render("  • keep this wait running, forward the port:"),
-				dimStyle.Render(indentLines(ssh, "      ")),
-				dimStyle.Render("    then reload that browser page"),
-				dimStyle.Render("  • or, with a browser on the host:"),
+				dimStyle.Render("(PORT is in its address bar):"))
+			if w.canSSH {
+				ssh := wrapArgs(sshForwardArgs(w.sshOpts, w.sshTarget), 44)
+				lines = append(lines,
+					dimStyle.Render("  • keep this wait running, forward the port:"),
+					dimStyle.Render(indentLines(ssh, "      ")),
+					dimStyle.Render("    then reload that browser page"),
+					dimStyle.Render("  • or, with a browser on the host:"))
+			} else {
+				lines = append(lines, dimStyle.Render("  • with a browser on the host:"))
+			}
+			lines = append(lines,
 				dimStyle.Render("      esc (cancel this wait), run  sbx mcp auth "+w.name),
 				dimStyle.Render("      there, then r to reload the list"))
 		}

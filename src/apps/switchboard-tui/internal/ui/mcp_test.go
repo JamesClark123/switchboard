@@ -413,6 +413,9 @@ func authFrameModel(t *testing.T, remote bool, port uint32, d Daemon) (Model, *f
 		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize", CallbackPort: port}}}
 	m := mcpModel(t, fd)
 	m.mcpView.remote = remote
+	if remote { // as if the row were an ssh host with a target
+		m.mcpView.canSSH, m.mcpView.target = true, "dev-box"
+	}
 	if d == nil {
 		d = fd
 	} else if od, ok := d.(openerDaemon); ok {
@@ -611,7 +614,7 @@ func TestMcpAuthHintUsesTheDaemonsSSHTarget(t *testing.T) {
 		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
 	defer close(d.mcpAuthGate)
 	m := mcpModel(t, d)
-	m.mcpView.remote, m.mcpView.target = true, "dev@build-box"
+	m.mcpView.remote, m.mcpView.target, m.mcpView.canSSH = true, "dev@build-box", true
 	m, cmd := update(m, press("A"))
 	m, _ = update(m, runCmd(cmd))
 	if v := m.View(); !strings.Contains(v, "ssh -N -L PORT:localhost:PORT dev@build-box") {
@@ -647,7 +650,7 @@ func TestMcpAuthHintShowsTheHostsSavedSSHOptions(t *testing.T) {
 		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
 	defer close(d.mcpAuthGate)
 	m := mcpModel(t, d)
-	m.mcpView.remote, m.mcpView.target, m.mcpView.sshOpts = true, "dev@build-box", []string{"-p", "2222", "-J", "jump"}
+	m.mcpView.remote, m.mcpView.target, m.mcpView.canSSH, m.mcpView.sshOpts = true, "dev@build-box", true, []string{"-p", "2222", "-J", "jump"}
 	m, cmd := update(m, press("A"))
 	m, _ = update(m, runCmd(cmd))
 	// Long commands are broken at argument boundaries with shell continuations, so
@@ -668,9 +671,10 @@ func stripBox(s string) string {
 	return strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(s)
 }
 
-func TestWrapCommandBreaksAtArgumentsAndStaysOneCommand(t *testing.T) {
-	cmd := sshForwardCommand([]string{"-p", "2222", "-o", "ProxyCommand=ssh -W %h:%p jump", "-i", "~/.ssh/build_key"}, "dev@build-box")
-	out := wrapCommand(cmd, 44)
+func TestWrapArgsBreaksAtArgumentsAndStaysOneCommand(t *testing.T) {
+	args := sshForwardArgs([]string{"-p", "2222", "-o", "ProxyCommand=ssh -W %h:%p jump", "-i", "~/.ssh/build_key"}, "dev@build-box")
+	cmd := strings.Join(args, " ")
+	out := wrapArgs(args, 44)
 	lines := strings.Split(out, "\n")
 	if len(lines) < 2 {
 		t.Fatalf("a long command should be broken: %q", out)
@@ -692,7 +696,61 @@ func TestWrapCommandBreaksAtArgumentsAndStaysOneCommand(t *testing.T) {
 	if !strings.Contains(strings.ReplaceAll(out, " \\\n  ", " "), "'ProxyCommand=ssh -W %h:%p jump'") {
 		t.Errorf("a quoted argument must stay whole: %q", out)
 	}
-	if short := wrapCommand("ssh -N -L PORT:localhost:PORT h", 44); strings.Contains(short, "\n") {
+	if short := wrapArgs(sshForwardArgs(nil, "h"), 44); strings.Contains(short, "\n") {
 		t.Errorf("a short command stays on one line: %q", short)
+	}
+}
+
+// Regression (PR #1 round 7): an option holding BOTH an apostrophe and spaces used to
+// be split mid-argument, because the wrapper re-parsed the already-quoted string and
+// the escaped quote ('\”) flipped its in-quote state. Arguments are atomic now.
+func TestWrapArgsNeverSplitsAnArgumentWithAnApostropheAndSpaces(t *testing.T) {
+	arg := "Banner=it's a banner text here"
+	args := sshForwardArgs([]string{"-o", arg}, "dev@build-box")
+	want := shellQuote(arg)
+	if want != `'Banner=it'\''s a banner text here'` {
+		t.Fatalf("precondition: quoting = %s", want)
+	}
+	for _, width := range []int{10, 20, 30, 44, 80} {
+		out := wrapArgs(args, width)
+		if !strings.Contains(strings.ReplaceAll(out, " \\\n  ", " "), " "+want+" ") {
+			t.Errorf("width %d: the quoted argument was split:\n%s", width, out)
+		}
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Count(strings.ReplaceAll(l, `'\''`, ""), "'")%2 != 0 {
+				t.Errorf("width %d: a line leaves a quote open (a continuation inside quotes is literal):\n%s", width, l)
+			}
+		}
+	}
+}
+
+// The forward option is only offered for an ssh row with a target; otherwise only the
+// host-side fallback is shown (never "ssh -N -L … ”" or a socket path as a host).
+func TestMcpAuthHintOffersThePortForwardOnlyForSSHRows(t *testing.T) {
+	m, fd := authFrameModel(t, true, 0, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if v := m.View(); !strings.Contains(v, "ssh -N -L PORT:localhost:PORT dev-box") {
+		t.Fatalf("an ssh row with a target gets the forward:\n%s", v)
+	}
+
+	// A remote daemon that is not an ssh host (or has no target): fallback only.
+	for name, setup := range map[string]func(*mcpState){
+		"not ssh":      func(v *mcpState) { v.remote, v.target, v.canSSH = true, "/run/sock", false },
+		"empty target": func(v *mcpState) { v.remote, v.target, v.canSSH = true, "", false },
+	} {
+		d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+			mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+		mm := mcpModel(t, d)
+		setup(&mm.mcpView)
+		mm, cmd := update(mm, press("A"))
+		mm, _ = update(mm, runCmd(cmd))
+		v := mm.View()
+		if strings.Contains(v, "ssh -N") || strings.Contains(v, "keep this wait running") || strings.Contains(v, "''") {
+			t.Errorf("%s: no port-forward option expected:\n%s", name, v)
+		}
+		if !strings.Contains(v, "with a browser on the host") || !strings.Contains(v, "sbx mcp auth notion") {
+			t.Errorf("%s: the host-side fallback must remain:\n%s", name, v)
+		}
+		close(d.mcpAuthGate)
 	}
 }
