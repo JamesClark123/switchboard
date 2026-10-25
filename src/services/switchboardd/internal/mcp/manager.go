@@ -324,8 +324,9 @@ func ValidName(name string) bool {
 // without being misread or mis-rendered: non-empty, valid UTF-8, no leading '-'
 // (a flag), and no non-printable characters — C0/C1 controls, line/paragraph
 // separators, or format characters such as bidi overrides and zero-width
-// joiners, which could break a row or log line or spoof another name. It is
-// deliberately looser than ValidName — attach/detach act on
+// joiners, which could break a row or log line or reorder/hide text (bidi and
+// zero-width tricks). It does not catch look-alike characters (homoglyphs) or
+// combining marks. It is deliberately looser than ValidName — attach/detach act on
 // servers the HOST registered (any name the runtime accepted, including ones
 // registered with the sbx CLI directly), so only what could change the meaning
 // of the argv is refused.

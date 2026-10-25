@@ -590,3 +590,29 @@ func TestMcpOpsArePerSandbox(t *testing.T) {
 		t.Errorf("sb-2's attach must survive sb-1's failed detach; ops %v", m.sandboxMcpOps)
 	}
 }
+
+// Review (PR #3, run 50): a list that lands while the detach confirm is up is
+// not dropped, so `loading` clears and the post-detach wording resolves.
+func TestMcpServersListLandingWhileConfirmIsOpenIsKept(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpOverlayModel(t, d)
+	d.sandboxes[0].McpServers = []string{"notion", "pw"}
+	m = openMcpOverlay(t, withSandboxes(m, d.sandboxes))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	m, reload := update(m, runDetach(t, cmd))
+	m, _ = update(m, press("d")) // confirm for pw opens before the refreshed list lands
+	if m.screen != screenConfirm {
+		t.Fatalf("screen = %v, want the confirm", m.screen)
+	}
+	m, _ = update(m, runCmd(reload))
+	m, _ = update(m, press("n"))
+	v := m.sandboxMcpView
+	if v.loading || v.detached != "" || !strings.Contains(v.status, "detached notion — still registered") {
+		t.Errorf("loading %v detached %q status %q, want the list applied", v.loading, v.detached, v.status)
+	}
+	if _, c := update(m, press("r")); c == nil {
+		t.Error("r must reload again once the list landed")
+	}
+}

@@ -160,7 +160,10 @@ func (m Model) sandboxMcpListCmd(host, id string) tea.Cmd {
 }
 
 func (m Model) handleSandboxMcpList(msg sandboxMcpListMsg) (tea.Model, tea.Cmd) {
-	if m.screen != screenSandboxMcp || m.sandboxMcpView.sandboxID != msg.id {
+	// Closing the overlay resets its state, so the id alone says it moved on. No
+	// screen check: a list landing while the detach confirm is up must still
+	// clear `loading` and resolve the post-detach wording.
+	if m.sandboxMcpView.sandboxID != msg.id {
 		return m, nil // overlay closed or moved on; drop a late list
 	}
 	m.sandboxMcpView.loading = false
