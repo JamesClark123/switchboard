@@ -208,6 +208,10 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// minCallbackPort rejects privileged ports: the relay and paste-back must never
+// reach well-known services (ssh, smtp, …) on the daemon host's loopback.
+const minCallbackPort = 1024
+
 // callbackPort extracts the loopback port of the OAuth redirect_uri carried by an
 // authorization URL, or 0 when there is none (no redirect_uri, a non-loopback
 // host, or no explicit port). The runtime's callback listener waits there.
@@ -216,12 +220,19 @@ func callbackPort(authURL string) uint32 {
 	if err != nil {
 		return 0
 	}
-	ru, err := url.Parse(u.Query().Get("redirect_uri"))
+	// Exactly one redirect_uri: a second one (e.g. carried by the provider's own
+	// authorization endpoint) makes it ambiguous which the listener serves, and the
+	// first must not be able to steer the relay.
+	vals := u.Query()["redirect_uri"]
+	if len(vals) != 1 {
+		return 0
+	}
+	ru, err := url.Parse(vals[0])
 	if err != nil || !isLoopbackHost(ru.Hostname()) {
 		return 0
 	}
 	p, err := strconv.ParseUint(ru.Port(), 10, 16)
-	if err != nil {
+	if err != nil || p < minCallbackPort {
 		return 0
 	}
 	return uint32(p)

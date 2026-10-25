@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -460,12 +461,19 @@ func TestMcpAuthBusyPortFallsBackToPasteBack(t *testing.T) {
 	if w.tunnel || !w.pasting || w.tunnelErr == "" {
 		t.Fatalf("a busy port should open the paste prompt; tunnel %v pasting %v err %q", w.tunnel, w.pasting, w.tunnelErr)
 	}
+	// A wrong paste is rejected client-side with a clear message, before any RPC.
 	for _, r := range "http://localhost:1/cb?code=abc" {
 		m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, cmd := update(m, press("enter"))
+	if cmd != nil || len(fd.mcpPasted) != 0 || !strings.Contains(m.mcpView.auth.pasteErr, "expected") {
+		t.Fatalf("a wrong-port paste must be refused locally; pasteErr %q pasted %v", m.mcpView.auth.pasteErr, fd.mcpPasted)
+	}
+	good := fmt.Sprintf("http://localhost:%d/cb?code=abc", port)
+	m.mcpView.auth.paste.SetValue(good)
+	m, cmd = update(m, press("enter"))
 	m, _ = update(m, runCmd(cmd))
-	if len(fd.mcpPasted) != 1 || fd.mcpPasted[0] != "http://localhost:1/cb?code=abc" {
+	if len(fd.mcpPasted) != 1 || fd.mcpPasted[0] != good {
 		t.Errorf("pasted = %v", fd.mcpPasted)
 	}
 	if m.mcpView.auth.pasting {
@@ -479,5 +487,35 @@ func TestMcpAuthPKeyOffersPasteBackOnlyWhenRemote(t *testing.T) {
 	m, _ = update(m, press("p"))
 	if m.mcpView.auth.pasting {
 		t.Error("p must do nothing for a local daemon")
+	}
+}
+
+func TestCheckPastedCallback(t *testing.T) {
+	for _, ok := range []string{"http://localhost:4000/cb?code=x", "https://127.0.0.1:4000/", "http://[::1]:4000/cb"} {
+		if err := checkPastedCallback(ok, 4000); err != nil {
+			t.Errorf("%q should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "nonsense", "ftp://localhost:4000/", "http://evil.example.com:4000/", "http://localhost:4001/cb", "http://localhost/cb"} {
+		if err := checkPastedCallback(bad, 4000); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}
+
+// The relay is released when the wait ends even if the view no longer shows it.
+func TestMcpAuthEndClosesRelayEvenWhenViewMovedOn(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Count() != 1 {
+		t.Fatal("precondition: relay open")
+	}
+	m.mcpView.auth = nil // the view was reset under the running wait
+	m, _ = update(m, mcpAuthEndMsg{host: m.mcpView.host, name: "notion"})
+	if m.forwards.Count() != 0 {
+		t.Error("the relay must close when the wait ends")
 	}
 }

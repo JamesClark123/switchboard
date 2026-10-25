@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -348,6 +349,11 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 			if u := findURL(line); u != "" {
 				urlSent = true
 				port := callbackPort(u)
+				if port == 0 {
+					// Remote callback relaying degrades to the old behaviour; make that
+					// diagnosable (the exact redirect_uri shape sbx prints is unverified).
+					log.Printf("[mcp] authorize %s: link has no usable loopback redirect_uri; remote callback relay/paste-back unavailable", name)
+				}
 				if port != 0 {
 					m.mu.Lock()
 					m.inflight[name] = port
@@ -415,12 +421,27 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := callbackClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("replay callback: %w", err)
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// The listener rejected it (state mismatch, expired code, …): say so rather
+		// than let the developer wait out the 10-minute timeout.
+		return fmt.Errorf("the host's callback listener answered HTTP %d — the redirect was not accepted (copy the full, latest address from the browser)", resp.StatusCode)
+	}
 	return nil
+}
+
+// callbackClient replays a pasted redirect on the host's loopback only: it never
+// follows a redirect (the listener answers with one to its "success" page, which
+// must not become a request to another host) and never uses a proxy.
+var callbackClient = &http.Client{
+	Transport: &http.Transport{Proxy: nil},
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // SetDefault sets or clears the attach-by-default mark for a registered server

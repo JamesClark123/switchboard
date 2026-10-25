@@ -433,3 +433,41 @@ func TestCompleteCallbackReplaysOnTheAnnouncedPortOnly(t *testing.T) {
 		t.Errorf("listener saw query %q", gotQuery)
 	}
 }
+
+// Review fixes (PR #1): the replay reports a rejected callback and never follows
+// the listener's redirect to another host.
+func TestCompleteCallbackReportsRejectionAndDoesNotFollowRedirects(t *testing.T) {
+	var elsewhereHit bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhereHit = true }))
+	defer elsewhere.Close()
+
+	status := http.StatusBadRequest
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, elsewhere.URL, http.StatusFound)
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	base := "http://localhost:" + strconv.Itoa(port)
+
+	err := m.CompleteCallback(context.Background(), "notion", base+"/cb?code=bad")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Errorf("a rejected callback must be reported; err = %v", err)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", base+"/redirect"); err != nil {
+		t.Errorf("a 3xx from the listener is acceptance, not an error: %v", err)
+	}
+	if elsewhereHit {
+		t.Error("the replay must not follow the listener's redirect to another host")
+	}
+	status = http.StatusOK
+	if err := m.CompleteCallback(context.Background(), "notion", base+"/cb?code=ok"); err != nil {
+		t.Errorf("2xx: %v", err)
+	}
+}

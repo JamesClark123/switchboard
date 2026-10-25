@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -215,6 +216,10 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				w.pasting = false
 			case "enter":
 				if url := strings.TrimSpace(w.paste.Value()); url != "" {
+					if err := checkPastedCallback(url, w.callbackPort); err != nil {
+						w.pasteErr = err.Error() // fast feedback before a round trip
+						return m, nil
+					}
 					w.pasteErr = ""
 					return m, m.mcpPasteCmd(v.daemon, v.host, w.name, url)
 				}
@@ -514,7 +519,10 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 			err = m.forwards.OpenAuth(opener, w.name, u.CallbackPort)
 		}
 		if err != nil {
-			w.tunnelErr = err.Error()
+			w.tunnelErr = fmt.Sprintf("port %d is in use on this machine (another program, or another sxb waiting on the same authorization)", u.CallbackPort)
+			if opener == nil {
+				w.tunnelErr = err.Error()
+			}
 			w.pasting = true // fall back straight to paste-back
 			w.paste.Focus()
 		} else {
@@ -535,11 +543,15 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
+	// Release the callback relay first, even if the view has moved on: the wait is
+	// over, and a leaked listener would keep the port bound for the next attempt.
+	if v.host == msg.host || v.auth == nil {
+		m.forwards.Close(forward.AuthKey(msg.name))
+	}
 	if v.auth == nil || v.auth.name != msg.name || v.host != msg.host {
 		return m, nil
 	}
 	v.auth = nil
-	m.forwards.Close(forward.AuthKey(msg.name))
 	switch {
 	case msg.err != nil:
 		v.status = "error: " + msg.err.Error()
@@ -552,6 +564,24 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.mcpLoadCmd(v.daemon, v.host)
+}
+
+// checkPastedCallback rejects an obviously wrong paste client-side: it must be the
+// http(s)://localhost:<port>/… address the browser failed to load. The daemon
+// validates again; this only saves a round trip and gives a clearer message.
+func checkPastedCallback(raw string, port uint32) error {
+	u, err := neturl.Parse(raw)
+	host := ""
+	if err == nil {
+		host = u.Hostname()
+	}
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
+		return fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
+	}
+	if u.Port() != strconv.Itoa(int(port)) {
+		return fmt.Errorf("that address is for port %s, expected %d", u.Port(), port)
+	}
+	return nil
 }
 
 func (m Model) mcpPasteCmd(d Daemon, host, name, url string) tea.Cmd {

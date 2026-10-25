@@ -154,12 +154,14 @@ func TestFindURL(t *testing.T) {
 
 func TestCallbackPort(t *testing.T) {
 	cases := map[string]uint32{
-		"https://auth.example.com/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcallback": 34567,
-		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb":                    8080,
-		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A9000%2Fcb":                9000,
-		"https://auth.example.com/authorize?client_id=x":                                                        0, // no redirect_uri
-		"https://auth.example.com/authorize?redirect_uri=https%3A%2F%2Fexample.com%3A443%2Fcb":                  0, // not loopback
-		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%2Fcb":                           0, // no port
+		"https://auth.example.com/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcallback":                             34567,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb":                                                8080,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A9000%2Fcb":                                            9000,
+		"https://auth.example.com/authorize?client_id=x":                                                                                    0, // no redirect_uri
+		"https://auth.example.com/authorize?redirect_uri=https%3A%2F%2Fexample.com%3A443%2Fcb":                                              0, // not loopback
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%2Fcb":                                                       0, // no port
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A22%2Fcb":                                                  0, // privileged port
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A22%2Fcb&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcb": 0, // ambiguous: two redirect_uri
 		"::not a url": 0,
 	}
 	for in, want := range cases {
