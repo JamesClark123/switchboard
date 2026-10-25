@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -74,6 +75,9 @@ type orchDoneMsg struct {
 	// fire marks the reply to an Enqueue now, the only reply that releases its
 	// in-flight guard (an unrelated mutation finishing must not).
 	fire bool
+	// fireEvent is the timed event a successful Enqueue now was for; it starts the
+	// repeat window (a refused or failed fire must not, so an immediate retry works).
+	fireEvent string
 }
 
 // enterOrchestrators switches to the screen and (re)loads its rows.
@@ -181,6 +185,9 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.fire {
 		m.orchDetail.firing = false
+		if msg.err == nil {
+			m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), msg.fireEvent
+		}
 	}
 	if msg.err != nil {
 		m.status = "error: " + msg.err.Error()

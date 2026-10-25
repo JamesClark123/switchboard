@@ -394,10 +394,12 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			d.status = "an enqueue is already in progress"
 			return m, nil
 		}
-		// Terminal auto-repeat (or a double tap) right after a fire is dropped
-		// silently: the success message stays instead of being replaced by a dedupe
-		// refusal, and a dedupe-off event cannot be flooded by a held key.
+		// Terminal auto-repeat (or a double tap) right after a SUCCESSFUL fire is
+		// dropped: the success message in the footer stays instead of being replaced
+		// by a dedupe refusal, and a dedupe-off event cannot be flooded by a held key.
+		// The hint goes on the detail's own status line, which does not overwrite it.
 		if d.lastFireEv == cur.GetId() && time.Since(d.lastFireAt) < enqueueRepeatWindow {
+			d.status = "repeat ignored — press n again in a moment to queue another"
 			return m, nil
 		}
 		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), disabled: !cur.GetEnabled()}
@@ -454,7 +456,8 @@ const enqueueRepeatWindow = 500 * time.Millisecond
 
 // openRunOfEvent is a queued or in-flight run created by this timed event, as last
 // loaded into the view (nil when none is known). The daemon stays the authority —
-// this only decides whether to ask first.
+// this only decides whether to ask first. The list can lag a moment behind other
+// clients, and the run it names may have just finished; both only affect the prompt.
 func (m Model) openRunOfEvent(eventID string) *pb.Run {
 	r := m.orchDetail.runs
 	for _, group := range [][]*pb.Run{r.GetQueued(), r.GetInFlight()} {
@@ -473,7 +476,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.orchDetail.firing = true
-	m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), f.evID
+	m.orchDetail.status = ""
 	od := m.daemonForHost(f.host)
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -492,7 +495,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		if f.disabled {
 			status += " — the event is disabled; its schedule is unchanged"
 		}
-		return orchDoneMsg{status: status, reload: true, fire: true}
+		return orchDoneMsg{status: status, reload: true, fire: true, fireEvent: f.evID}
 	}
 }
 

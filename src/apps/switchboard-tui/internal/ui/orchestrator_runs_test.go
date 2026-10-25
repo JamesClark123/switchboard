@@ -555,8 +555,11 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 			t.Fatal("a repeat inside the window must not dispatch")
 		}
 	}
-	if m.status != good || m.orchDetail.status != "" {
-		t.Errorf("the success message must stay; status %q detail %q", m.status, m.orchDetail.status)
+	if m.status != good {
+		t.Errorf("the success message must stay in the footer; status %q", m.status)
+	}
+	if !strings.Contains(m.orchDetail.status, "repeat ignored") {
+		t.Errorf("the dropped repeat should say so on the detail's own line; detail %q", m.orchDetail.status)
 	}
 	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
 		t.Errorf("one call expected; %q", a.orchCallsJoined())
@@ -585,5 +588,37 @@ func TestEnqueueNowStatusWording(t *testing.T) {
 	m2 = feed2(m2, cmd2)
 	if !strings.Contains(m2.status, "enqueued poll (run-9)") || strings.Contains(m2.status, "position 0") {
 		t.Errorf("status = %q", m2.status)
+	}
+}
+
+// Review (PR #4, run 43): only a SUCCESSFUL fire starts the repeat window, so a
+// deliberate retry right after a refusal goes through; a different event is never
+// held back by another event's window.
+func TestEnqueueNowRetryAfterAFailedFireIsNotDebounced(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	a.orchErr = errors.New("run run-1 of poll is already queued") // set after the view loaded: every call fails
+	m, cmd := update(m, press("n"))
+	m = feed2(m, cmd)
+	if !m.orchDetail.lastFireAt.IsZero() {
+		t.Fatal("a refused fire must not start the repeat window")
+	}
+	a.orchErr = nil
+	m, retry := update(m, press("n"))
+	if retry == nil {
+		t.Fatal("an immediate retry after a refusal must dispatch")
+	}
+	m = feed2(m, retry)
+	if m.orchDetail.lastFireAt.IsZero() || !strings.Contains(m.status, "enqueued poll") {
+		t.Errorf("a successful fire should start the window; status %q", m.status)
+	}
+}
+
+func TestEnqueueNowWindowIsPerEvent(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), "tev-other" // another event fired just now
+	if _, cmd := update(m, press("n")); cmd == nil {
+		t.Error("another event's window must not block this event")
 	}
 }

@@ -146,6 +146,18 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	run, name, err := rt.fireTimedEvent(eventID)
+	if err == nil {
+		// Logged after the lock is released (a slow Logf must not hold up the
+		// scheduler), with %q so an event name cannot forge a log line.
+		s.logf("[orchestrator %s] manual fire of timed event %q: run %s", rt.name(), name, run.GetId())
+	}
+	return run, err
+}
+
+// fireTimedEvent does the locked part of FireTimedEvent and returns the event's name
+// for the caller's log line.
+func (rt *runtime) fireTimedEvent(eventID string) (*pb.Run, string, error) {
 	// Take the lock first and read the event under it, as tick() does, so a
 	// definition replaced or deleted before we got the lock is never used.
 	if h := rt.beforeFireLock; h != nil {
@@ -161,7 +173,7 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 		}
 	}
 	if ev == nil {
-		return nil, fmt.Errorf("%w: event %s", ErrNotFound, eventID)
+		return nil, "", fmt.Errorf("%w: event %s", ErrNotFound, eventID)
 	}
 	if !ev.GetDedupeDisabled() {
 		if open := rt.openRunFor(ev.GetId()); open != nil {
@@ -169,14 +181,11 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 			if open.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
 				hint = " (mark the worker free in the Queue view to clear it)"
 			}
-			return nil, fmt.Errorf("%w: run %s of %s is already %s%s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()), hint)
+			return nil, "", fmt.Errorf("%w: run %s of %s is already %s%s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()), hint)
 		}
 	}
 	run, err := rt.callAction(ev.GetAction(), ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, ev.GetId(), ev.GetName())
-	if err == nil {
-		s.logf("[orchestrator %s] manual fire of timed event %s: run %s", rt.name(), ev.GetName(), run.GetId())
-	}
-	return run, err
+	return run, ev.GetName(), err
 }
 
 // runStateLabel is a run state in plain words for an error message.

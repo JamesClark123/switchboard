@@ -779,8 +779,10 @@ placed on, so "the orchestrator restarts" means that daemon restarts.
   firings, show their next firing time and how many of their runs are waiting, and are created,
   edited, enabled, disabled and deleted in the orchestrator's **Events** view. An event whose
   action is deleted MUST be disabled with that reason. **Enqueue now (SWI-4)**: the Events view
-  MUST also let the developer queue one run of the selected event immediately (`n`, no
-  confirmation) via `FireTimedEvent`; the run is created exactly as a scheduled firing would be
+  MUST also let the developer queue one run of the selected event immediately (`n`) via
+  `FireTimedEvent`, asking for confirmation only when the event's dedupe is off and a run of it is
+  already open, and ignoring a repeat press for the same event within half a second of a
+  successful one; the run is created exactly as a scheduled firing would be
   (timed kind, origin = the event, the event's fixed arguments) and counts in its waiting column.
   It is subject to the event's dedupe (FR-157) — refused with the existing run named while one is
   queued or in flight — works on a disabled event, and MUST NOT change the event's next firing

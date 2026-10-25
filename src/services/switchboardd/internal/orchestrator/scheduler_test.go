@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -422,5 +423,44 @@ func TestFireTimedEventPositionIsNeverZeroWithAFreeWorker(t *testing.T) {
 	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
 	if err != nil || run.GetPosition() != 1 {
 		t.Errorf("position = %d, err %v; want 1", run.GetPosition(), err)
+	}
+}
+
+// Review (PR #4, run 43): a manual fire is logged with the name quoted (a newline
+// in an event name cannot forge a second line) and AFTER fireMu is released (a slow
+// Logf must not hold up the scheduler).
+func TestFireTimedEventLogsQuotedNameOutsideTheLock(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 0, false)
+	var lines []string
+	lockedWhileLogging := false
+	env.svc.logf = func(format string, args ...any) {
+		if rt.fireMu.TryLock() {
+			rt.fireMu.Unlock()
+		} else {
+			lockedWhileLogging = true
+		}
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	ev := pollEvent()
+	ev.Name = "poll\nforged line"
+	saved, err := env.svc.PutTimedEvent(o.GetId(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines = nil
+	if _, err := env.svc.FireTimedEvent(o.GetId(), saved.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	var manual []string
+	for _, l := range lines {
+		if strings.Contains(l, "manual fire") {
+			manual = append(manual, l)
+		}
+	}
+	if len(manual) != 1 || strings.Contains(manual[0], "\n") || !strings.Contains(manual[0], `"poll\nforged line"`) {
+		t.Errorf("want one single-line log with the quoted name; got %q", manual)
+	}
+	if lockedWhileLogging {
+		t.Error("the log call must happen after fireMu is released")
 	}
 }
