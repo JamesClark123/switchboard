@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -431,32 +430,37 @@ func TestFireTimedEventPositionIsNeverZeroWithAFreeWorker(t *testing.T) {
 // Logf must not hold up the scheduler).
 func TestFireTimedEventLogsQuotedNameOutsideTheLock(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 0, false)
-	var lines []string
-	lockedWhileLogging := false
-	env.svc.logf = func(format string, args ...any) {
-		if rt.fireMu.TryLock() {
-			rt.fireMu.Unlock()
-		} else {
-			lockedWhileLogging = true
-		}
-		lines = append(lines, fmt.Sprintf(format, args...))
-	}
 	ev := pollEvent()
 	ev.Name = "poll\nforged line"
 	saved, err := env.svc.PutTimedEvent(o.GetId(), ev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines = nil
+	// Background goroutines (links, the scheduler) log too, so the hook guards its
+	// state and probes fireMu only for the manual-fire line itself (tick() may
+	// legitimately log under fireMu).
+	var mu sync.Mutex
+	var manual []string
+	lockedWhileLogging := false
+	env.setLogHook(func(line string) {
+		if !strings.Contains(line, "manual fire") {
+			return
+		}
+		locked := !rt.fireMu.TryLock()
+		if !locked {
+			rt.fireMu.Unlock()
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		manual = append(manual, line)
+		lockedWhileLogging = lockedWhileLogging || locked
+	})
+	t.Cleanup(func() { env.setLogHook(nil) })
 	if _, err := env.svc.FireTimedEvent(o.GetId(), saved.GetId()); err != nil {
 		t.Fatal(err)
 	}
-	var manual []string
-	for _, l := range lines {
-		if strings.Contains(l, "manual fire") {
-			manual = append(manual, l)
-		}
-	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(manual) != 1 || strings.Contains(manual[0], "\n") || !strings.Contains(manual[0], `"poll\nforged line"`) {
 		t.Errorf("want one single-line log with the quoted name; got %q", manual)
 	}

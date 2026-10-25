@@ -548,12 +548,9 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 		t.Fatalf("precondition: success shown, guard clear; status %q", m.status)
 	}
 	good := m.status
-	for i := 0; i < 5; i++ { // a held key
-		var c tea.Cmd
-		m, c = update(m, press("n"))
-		if c != nil {
-			t.Fatal("a repeat inside the window must not dispatch")
-		}
+	var expire tea.Cmd
+	for i := 0; i < 5; i++ { // a held key: only the hint's expiry tick comes back (no call; counted below)
+		m, expire = update(m, press("n"))
 	}
 	if m.status != good {
 		t.Errorf("the success message must stay in the footer; status %q", m.status)
@@ -563,6 +560,12 @@ func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
 	}
 	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
 		t.Errorf("one call expected; %q", a.orchCallsJoined())
+	}
+	// The hint lasts only as long as its window (review run 51).
+	if msg, ok := runCmd(expire).(orchHintExpiredMsg); !ok {
+		t.Fatalf("a dropped repeat should schedule the hint's expiry; got %T", msg)
+	} else if m, _ = update(m, msg); m.orchDetail.status != "" {
+		t.Errorf("the repeat hint must clear when its window ends; detail %q", m.orchDetail.status)
 	}
 	// A deliberate second press after the window goes through.
 	m.orchDetail.lastFireAt = time.Now().Add(-2 * enqueueRepeatWindow)
@@ -620,5 +623,43 @@ func TestEnqueueNowWindowIsPerEvent(t *testing.T) {
 	m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), "tev-other" // another event fired just now
 	if _, cmd := update(m, press("n")); cmd == nil {
 		t.Error("another event's window must not block this event")
+	}
+}
+
+// Review (PR #4, run 51): the double tap's "already in progress" clears when the
+// fire succeeds, and an expiring hint never clears text that replaced it.
+func TestEnqueueNowSuccessClearsTheInProgressHint(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, first := update(m, press("n"))
+	m, _ = update(m, press("n"))
+	if m.orchDetail.status != enqueueInProgressText {
+		t.Fatalf("precondition: in-progress hint; detail %q", m.orchDetail.status)
+	}
+	m = feed2(m, first)
+	if m.orchDetail.status != "" {
+		t.Errorf("a successful fire must clear the stale in-progress hint; detail %q", m.orchDetail.status)
+	}
+	m.orchDetail.status = "something newer"
+	if m, _ = update(m, orchHintExpiredMsg{text: enqueueRepeatText}); m.orchDetail.status != "something newer" {
+		t.Errorf("an expiring hint must not clear other text; detail %q", m.orchDetail.status)
+	}
+}
+
+// Review (PR #4, run 51): a reply for orchestrator A that lands after the
+// developer opened B's detail neither stamps B's repeat window nor clears B's guard.
+func TestEnqueueNowLateReplyLeavesAnotherOrchestratorAlone(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, fire := update(m, press("n"))
+	reply := runCmd(fire).(orchDoneMsg)
+	// The developer moved on to orchestrator B (same event id) with its own fire in flight.
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, firing: true}
+	m, _ = update(m, reply)
+	if !m.orchDetail.lastFireAt.IsZero() || m.orchDetail.lastFireEv != "" {
+		t.Errorf("A's reply must not stamp B's repeat window; %v %q", m.orchDetail.lastFireAt, m.orchDetail.lastFireEv)
+	}
+	if !m.orchDetail.firing {
+		t.Error("A's reply must not clear B's in-flight guard")
 	}
 }

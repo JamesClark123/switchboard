@@ -391,16 +391,17 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if d.firing {
-			d.status = "an enqueue is already in progress"
+			d.status = enqueueInProgressText
 			return m, nil
 		}
 		// Terminal auto-repeat (or a double tap) right after a SUCCESSFUL fire is
 		// dropped: the success message in the footer stays instead of being replaced
 		// by a dedupe refusal, and a dedupe-off event cannot be flooded by a held key.
 		// The hint goes on the detail's own status line, which does not overwrite it.
-		if d.lastFireEv == cur.GetId() && time.Since(d.lastFireAt) < enqueueRepeatWindow {
-			d.status = "repeat ignored — press n again in a moment to queue another"
-			return m, nil
+		if left := enqueueRepeatWindow - time.Since(d.lastFireAt); d.lastFireEv == cur.GetId() && left > 0 {
+			// The hint lasts only as long as the window it describes.
+			d.status = enqueueRepeatText
+			return m, tea.Tick(left, func(time.Time) tea.Msg { return orchHintExpiredMsg{text: enqueueRepeatText} })
 		}
 		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), disabled: !cur.GetEnabled()}
 		if open := m.openRunOfEvent(cur.GetId()); cur.GetDedupeDisabled() && open != nil {
@@ -454,6 +455,16 @@ type orchFireStartMsg struct {
 // slower). A package constant, never an env var.
 const enqueueRepeatWindow = 500 * time.Millisecond
 
+// The Enqueue now hints on the detail's status line; both are transient.
+const (
+	enqueueInProgressText = "an enqueue is already in progress"
+	enqueueRepeatText     = "repeat ignored — press n again in a moment to queue another"
+)
+
+// orchHintExpiredMsg clears a transient detail-line hint once it no longer
+// applies, unless something else has replaced it meanwhile.
+type orchHintExpiredMsg struct{ text string }
+
 // openRunOfEvent is a queued or in-flight run created by this timed event, as last
 // loaded into the view (nil when none is known). The daemon stays the authority —
 // this only decides whether to ask first. The list can lag a moment behind other
@@ -472,7 +483,7 @@ func (m Model) openRunOfEvent(eventID string) *pb.Run {
 
 func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 	if m.orchDetail.firing {
-		m.orchDetail.status = "an enqueue is already in progress"
+		m.orchDetail.status = enqueueInProgressText
 		return m, nil
 	}
 	m.orchDetail.firing = true
@@ -483,7 +494,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		defer cancel()
 		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
 		if err != nil {
-			return orchDoneMsg{err: err, fire: true}
+			return orchDoneMsg{err: err, fire: true, fireOrch: f.id}
 		}
 		// The position is where the run queued (the daemon reads it before dispatch),
 		// not a live one: a free worker may already be starting it.
@@ -495,7 +506,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		if f.disabled {
 			status += " — the event is disabled; its schedule is unchanged"
 		}
-		return orchDoneMsg{status: status, reload: true, fire: true, fireEvent: f.evID}
+		return orchDoneMsg{status: status, reload: true, fire: true, fireOrch: f.id, fireEvent: f.evID}
 	}
 }
 

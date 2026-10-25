@@ -78,6 +78,9 @@ type orchDoneMsg struct {
 	// fireEvent is the timed event a successful Enqueue now was for; it starts the
 	// repeat window (a refused or failed fire must not, so an immediate retry works).
 	fireEvent string
+	// fireOrch is the orchestrator the Enqueue now was for: a reply that lands
+	// after the developer opened another orchestrator's detail leaves that one alone.
+	fireOrch string
 }
 
 // enterOrchestrators switches to the screen and (re)loads its rows.
@@ -183,10 +186,14 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
-	if msg.fire {
+	if msg.fire && msg.fireOrch == m.orchDetail.id {
 		m.orchDetail.firing = false
 		if msg.err == nil {
 			m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), msg.fireEvent
+			// The success is on the footer; a double tap's in-progress refusal is stale now.
+			if m.orchDetail.status == enqueueInProgressText {
+				m.orchDetail.status = ""
+			}
 		}
 	}
 	if msg.err != nil {

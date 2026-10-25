@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"path/filepath"
 	"sort"
@@ -137,6 +138,18 @@ type testEnv struct {
 	hub   *fakeHub
 	clock *fakeClock
 	dials *dialRecorder
+	// logHook, when set, also receives every service log line. It is installed
+	// through the logger given at construction (never by reassigning svc.logf
+	// while background goroutines read it) and is read under logMu.
+	logMu   sync.Mutex
+	logHook func(line string)
+}
+
+// setLogHook installs (or, with nil, removes) the per-test log hook.
+func (e *testEnv) setLogHook(h func(line string)) {
+	e.logMu.Lock()
+	defer e.logMu.Unlock()
+	e.logHook = h
 }
 
 // dialRecorder is a dial.Func that counts calls and dials a scripted socket (or
@@ -177,7 +190,16 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { _ = reg.Close() })
 	env := &testEnv{reg: reg, hub: &fakeHub{}, clock: newFakeClock(), dials: &dialRecorder{socks: map[string]string{}}}
-	env.svc = NewService(Deps{Store: reg, Hub: env.hub, HostID: "host-m", Dial: env.dials.dial, Clock: env.clock, Logf: t.Logf, DaemonVersion: "test"})
+	logf := func(format string, args ...any) {
+		env.logMu.Lock()
+		h := env.logHook
+		env.logMu.Unlock()
+		if h != nil {
+			h(fmt.Sprintf(format, args...))
+		}
+		t.Logf(format, args...)
+	}
+	env.svc = NewService(Deps{Store: reg, Hub: env.hub, HostID: "host-m", Dial: env.dials.dial, Clock: env.clock, Logf: logf, DaemonVersion: "test"})
 	if err := env.svc.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

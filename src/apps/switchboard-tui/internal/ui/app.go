@@ -706,6 +706,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyOrchDetail(msg)
 	case orchFireStartMsg:
 		return m.startOrchFire(msg)
+	case orchHintExpiredMsg:
+		if m.orchDetail.status == msg.text {
+			m.orchDetail.status = ""
+		}
+		return m, nil
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
 	case reasoningRebuildMsg:
