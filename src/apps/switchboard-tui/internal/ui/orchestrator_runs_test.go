@@ -709,58 +709,98 @@ func TestHintExpiryOnlyClearsTheOrchestratorItWasScheduledFor(t *testing.T) {
 	}
 }
 
-// Review (PR #4, run 66): leaving a detail and re-opening the SAME orchestrator while
-// a fire is in flight must not let the first fire's reply release the newer fire's
-// guard. Replies are matched by a per-fire token, not by orchestrator id.
-func TestEnqueueNowReplyOfAnOlderFireDoesNotReleaseTheNewerOne(t *testing.T) {
+// Review (PR #4, runs 66 + 74): leaving a detail and re-opening the SAME orchestrator
+// while its fire is in flight must not allow a second fire: the in-flight call lives on
+// the model, so the re-opened detail is restored as busy and the first reply is the
+// current one for it.
+func TestEnqueueNowReopenedDetailKeepsRefusingAndItsReplyIsCurrent(t *testing.T) {
 	a := &fakeDaemon{}
 	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	row := m.orch.rows[0]
 	m, fire1 := update(m, press("n"))
-	reply1, ok := runCmd(fire1).(orchDoneMsg)
-	if !ok || reply1.fireToken == 0 {
-		t.Fatalf("the first fire should reply with a token; got %#v", reply1)
+	tok := m.orchDetail.fireToken
+	if tok == 0 || m.orchFires[m.orchDetail.id] != tok {
+		t.Fatalf("the fire is recorded on the model: detail token %d, model %v", tok, m.orchFires)
 	}
-	// Re-open the same orchestrator: orchDetail is replaced (guard and window reset).
-	d := m.orchDetail
-	m.orchDetail = orchDetailState{host: d.host, hostName: d.hostName, id: d.id, name: d.name, detail: d.detail, runs: d.runs, view: viewEvents}
-	m, fire2 := update(m, press("n"))
-	reply2, ok := runCmd(fire2).(orchDoneMsg)
-	if !ok || !m.orchDetail.firing || reply2.fireToken == reply1.fireToken {
-		t.Fatalf("the second fire is in flight with its own token (%d vs %d); firing %v", reply2.fireToken, reply1.fireToken, m.orchDetail.firing)
+	// Re-open the same orchestrator: orchDetail is replaced, the guard is restored.
+	mm, _ := m.enterOrchDetail(row)
+	m = mm.(Model)
+	if !m.orchDetail.firing || m.orchDetail.fireToken != tok {
+		t.Fatalf("a re-opened detail must be restored as busy with the same token; firing %v token %d", m.orchDetail.firing, m.orchDetail.fireToken)
 	}
-
-	m, _ = update(m, reply1) // the OLD fire answers first
-	if !m.orchDetail.firing {
-		t.Fatal("the older fire's reply must not release the newer fire's guard")
+	// A second fire for the orchestrator is refused (dedupe is off, so the daemon would not).
+	start := orchFireStartMsg{id: m.orchDetail.id, host: m.orchDetail.host, evID: "tev-1", name: "poll", orch: "alpha-bot"}
+	m2, c := m.startOrchFire(start)
+	if c != nil || m2.(Model).orchDetail.status != enqueueInProgressText {
+		t.Fatalf("a second fire must be refused while the first is in flight; cmd %v status %q", c != nil, m2.(Model).orchDetail.status)
 	}
-	if !m.orchDetail.lastFireAt.IsZero() {
-		t.Error("the older fire's reply must not start the repeat window of the new detail")
-	}
-	if _, c := update(m, press("n")); c != nil {
-		t.Error("a further press must still be refused while the newer fire is in flight")
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 0 {
+		// (the first fire's RPC has not run yet: its command was never executed)
+		t.Errorf("no RPC expected yet; %q", a.orchCallsJoined())
 	}
 
-	m, _ = update(m, reply2) // now the current one
-	if m.orchDetail.firing || m.orchDetail.fireToken != 0 || m.orchDetail.lastFireAt.IsZero() {
-		t.Errorf("the current fire's reply releases the guard and starts the window; firing %v token %d", m.orchDetail.firing, m.orchDetail.fireToken)
+	reply, ok := runCmd(fire1).(orchDoneMsg)
+	if !ok || reply.fireToken != tok {
+		t.Fatalf("the first fire replies with its token; got %#v", reply)
+	}
+	m, _ = update(m, reply)
+	if m.orchDetail.firing || m.orchDetail.fireToken != 0 || m.orchDetail.lastFireAt.IsZero() || len(m.orchFires) != 0 {
+		t.Errorf("the first reply is current for the re-opened detail: firing %v token %d window %v inflight %v",
+			m.orchDetail.firing, m.orchDetail.fireToken, m.orchDetail.lastFireAt, m.orchFires)
 	}
 }
 
-// A refusal from the older fire is footer-only (named) and never lands on the new
-// detail's line, even for the same orchestrator.
-func TestEnqueueNowStaleRefusalForTheSameOrchestratorStaysOffTheDetail(t *testing.T) {
+// A reply that arrives after the developer left for ANOTHER orchestrator still releases
+// the model's record for the one it belonged to, without touching the open detail.
+func TestEnqueueNowLateReplyReleasesItsOrchestratorsRecordOnly(t *testing.T) {
 	a := &fakeDaemon{}
 	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
-	a.orchErr = errors.New("run run-1 of poll is already queued")
-	m, fire1 := update(m, press("n"))
-	reply1, _ := runCmd(fire1).(orchDoneMsg)
-	d := m.orchDetail
-	m.orchDetail = orchDetailState{host: d.host, id: d.id, name: d.name, detail: d.detail, view: viewEvents, status: "new detail's own line"}
-	m, _ = update(m, reply1)
-	if m.orchDetail.status != "new detail's own line" {
-		t.Errorf("a stale refusal must not land on the re-opened detail; detail %q", m.orchDetail.status)
+	m, fire := update(m, press("n"))
+	reply, _ := runCmd(fire).(orchDoneMsg)
+	m.orchFires["o-b"] = 77 // B has its own call in flight
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, firing: true, fireToken: 77}
+	m, _ = update(m, reply)
+	if _, still := m.orchFires["o-a"]; still {
+		t.Error("A's record must be released when A's reply lands")
 	}
-	if !strings.Contains(m.status, "enqueue on alpha-bot: run run-1 of poll is already queued") {
-		t.Errorf("footer = %q", m.status)
+	if m.orchFires["o-b"] != 77 || !m.orchDetail.firing {
+		t.Error("B's call and guard must be untouched")
+	}
+}
+
+// A refusal for the re-opened SAME orchestrator is that detail's own: it is shown on
+// its line (it is the current fire), not hidden in the footer.
+func TestEnqueueNowRefusalAfterReopenLandsOnTheDetail(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	row := m.orch.rows[0]
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, fire := update(m, press("n"))
+	mm, _ := m.enterOrchDetail(row)
+	m = mm.(Model)
+	reply, _ := runCmd(fire).(orchDoneMsg)
+	m, _ = update(m, reply)
+	if m.orchDetail.status != "run run-1 of poll is already queued" || m.orchDetail.firing {
+		t.Errorf("detail %q firing %v", m.orchDetail.status, m.orchDetail.firing)
+	}
+}
+
+// The confirm path (dedupe off + a known open run) goes through a message hop; it must
+// take a token and its reply must release the guard like a direct fire.
+func TestEnqueueNowConfirmPathTakesAndReleasesAToken(t *testing.T) {
+	a := &fakeDaemon{orchRuns: &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "run-q", EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "tev-1"}}}}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	m, cmd := update(m, press("n"))
+	if m.screen != screenConfirm || cmd != nil {
+		t.Fatalf("expected the confirm dialog; screen %v", m.screen)
+	}
+	m, cmd = update(m, press("y"))
+	m, fire := update(m, runCmd(cmd)) // orchFireStartMsg -> startOrchFire
+	if fire == nil || !m.orchDetail.firing || m.orchDetail.fireToken == 0 || m.orchFires[m.orchDetail.id] != m.orchDetail.fireToken {
+		t.Fatalf("the confirmed fire must take a token; firing %v token %d inflight %v", m.orchDetail.firing, m.orchDetail.fireToken, m.orchFires)
+	}
+	m = feed2(m, fire)
+	if m.orchDetail.firing || len(m.orchFires) != 0 || m.orchDetail.lastFireAt.IsZero() {
+		t.Errorf("the reply must release the guard and the record; firing %v inflight %v", m.orchDetail.firing, m.orchFires)
 	}
 }

@@ -326,7 +326,11 @@ type Model struct {
 	// --- feature 009: the Orchestrators screen and the open detail ---
 	orch       orchState
 	orchDetail orchDetailState
-	attach     attachState
+	// orchFires are the Enqueue now calls in flight, by orchestrator id -> the call's
+	// token. On the model (a shared map), not on orchDetail, because opening a detail
+	// replaces orchDetail: re-opening mid-call must still see the call and refuse a second.
+	orchFires map[string]uint64
+	attach    attachState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -369,6 +373,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		// feature 006: the client owns every listener on this machine.
 		serviceInstances: map[string]*pb.ServiceInstance{},
 		forwards:         forward.NewManager(),
+		orchFires:        map[string]uint64{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},

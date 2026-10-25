@@ -406,7 +406,8 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			d.status = enqueueRepeatText
-			return m, tea.Tick(left, func(time.Time) tea.Msg { return orchHintExpiredMsg{orch: d.id, text: enqueueRepeatText} })
+			orchID := d.id // the value, not d: the timer must not read through a pointer into this handler's copy of the model
+			return m, tea.Tick(left, func(time.Time) tea.Msg { return orchHintExpiredMsg{orch: orchID, text: enqueueRepeatText} })
 		}
 		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), orch: m.orchRec().GetName(), disabled: !cur.GetEnabled()}
 		if open := m.openRunOfEvent(cur.GetId()); cur.GetDedupeDisabled() && open != nil {
@@ -474,7 +475,8 @@ const (
 type orchHintExpiredMsg struct{ orch, text string }
 
 // fireTokens hands out the per-fire tokens. Process-wide (not on orchDetail, which
-// is replaced whenever a detail is opened) so a token is never reused.
+// is replaced whenever a detail is opened) so a token is never reused. Only
+// uniqueness matters: nothing may depend on a token's value or order.
 var fireTokens atomic.Uint64
 
 // openRunOfEvent is a queued or in-flight run created by this timed event, as last
@@ -494,11 +496,12 @@ func (m Model) openRunOfEvent(eventID string) *pb.Run {
 }
 
 func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
-	if m.orchDetail.firing {
+	if m.orchDetail.firing || m.orchFires[f.id] != 0 {
 		m.orchDetail.status = enqueueInProgressText
 		return m, nil
 	}
 	tok := fireTokens.Add(1)
+	m.orchFires[f.id] = tok
 	m.orchDetail.firing = true
 	m.orchDetail.fireToken = tok
 	m.orchDetail.status = ""
@@ -508,7 +511,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		defer cancel()
 		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
 		if err != nil {
-			return orchDoneMsg{err: err, fire: true, fireToken: tok, fireOrchName: f.orch}
+			return orchDoneMsg{err: err, fire: true, fireToken: tok, fireOrchID: f.id, fireOrchName: f.orch}
 		}
 		// The position is where the run queued (the daemon reads it before dispatch),
 		// not a live one: a free worker may already be starting it.
@@ -520,7 +523,7 @@ func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 		if f.disabled {
 			status += " — the event is disabled; its schedule is unchanged"
 		}
-		return orchDoneMsg{status: status, reload: true, fire: true, fireToken: tok, fireOrchName: f.orch, fireEvent: f.evID}
+		return orchDoneMsg{status: status, reload: true, fire: true, fireToken: tok, fireOrchID: f.id, fireOrchName: f.orch, fireEvent: f.evID}
 	}
 }
 

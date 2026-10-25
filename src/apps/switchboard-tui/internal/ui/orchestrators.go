@@ -83,7 +83,9 @@ type orchDoneMsg struct {
 	// its repeat window: the orchestrator id cannot tell apart two fires of the same
 	// orchestrator when the detail was left and re-opened in between.
 	fireToken uint64
-	// fireOrchName names the orchestrator in a late (stale) reply's footer.
+	// fireOrchID / fireOrchName say which orchestrator the fire was for: the id releases
+	// the model's in-flight record, the name labels a late (stale) reply's footer.
+	fireOrchID   string
 	fireOrchName string
 }
 
@@ -190,6 +192,10 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
+	// The call is over whichever detail is open: release the model's in-flight record.
+	if msg.fire && m.orchFires[msg.fireOrchID] == msg.fireToken {
+		delete(m.orchFires, msg.fireOrchID)
+	}
 	// A fire reply is "current" only if it is the one the open detail is waiting for.
 	current := msg.fire && msg.fireToken != 0 && msg.fireToken == m.orchDetail.fireToken
 	if current {

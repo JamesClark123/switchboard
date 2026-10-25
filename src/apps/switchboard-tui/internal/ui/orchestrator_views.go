@@ -70,6 +70,11 @@ type orchDetailMsg struct {
 func (m Model) enterOrchDetail(row orchRow) (tea.Model, tea.Cmd) {
 	o := row.summary.GetOrchestrator()
 	m.orchDetail = orchDetailState{host: row.host, hostName: row.hostName, id: o.GetId(), name: o.GetName(), loading: true, view: m.orchDetail.view}
+	if tok := m.orchFires[o.GetId()]; tok != 0 {
+		// An Enqueue now for this orchestrator is still in flight from before the detail
+		// was left: keep refusing a second one, and let its reply count as current.
+		m.orchDetail.firing, m.orchDetail.fireToken = true, tok
+	}
 	m.screen = screenOrchDetail
 	return m, m.orchDetailLoadCmd()
 }
