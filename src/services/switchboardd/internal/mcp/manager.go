@@ -456,15 +456,15 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 }
 
 // printable makes listener-controlled text safe to show in a terminal: control and
-// non-printable characters are dropped and the result is capped at max runes.
-func printable(s string, max int) string {
+// non-printable characters are dropped and the result is capped at limit runes.
+func printable(s string, limit int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
 		if !unicode.IsPrint(r) {
 			continue
 		}
-		if n == max {
+		if n == limit {
 			b.WriteString("…")
 			break
 		}

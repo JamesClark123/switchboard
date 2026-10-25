@@ -497,7 +497,9 @@ func TestCheckPastedCallback(t *testing.T) {
 		"http://[::1]:4000/cb":            "http://[::1]:4000/cb",
 		"localhost:4000/cb?code=x":        "http://localhost:4000/cb?code=x", // browsers that drop the scheme
 		"  127.0.0.1:4000/cb  ":           "http://127.0.0.1:4000/cb",
-		"HTTP://LOCALHOST:4000/cb":        "HTTP://LOCALHOST:4000/cb", // hosts are case-insensitive
+		"HTTP://LOCALHOST:4000/cb":        "HTTP://LOCALHOST:4000/cb",     // hosts are case-insensitive
+		"http://localhost.:4000/cb":       "http://localhost.:4000/cb",    // trailing-dot form
+		"http://app.localhost:4000/cb":    "http://app.localhost:4000/cb", // RFC 6761 *.localhost
 	} {
 		got, err := checkPastedCallback(in, 4000)
 		if err != nil || got != want {
@@ -572,8 +574,15 @@ func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
 	if !m.mcpView.auth.noCallback {
 		t.Fatal("remote + url without a port should set noCallback")
 	}
-	if v := m.View(); !strings.Contains(v, "no callback port was found") || !strings.Contains(v, "sbx mcp auth notion") {
-		t.Errorf("the modal should explain the degraded path; got:\n%s", v)
+	v := m.View()
+	for _, want := range []string{"no callback port was found", "1. press esc to cancel this wait", "2. run  sbx mcp auth notion", "3. press r to reload"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the hint must give the safe order (cancel, run on the host, reload); missing %q in:\n%s", want, v)
+		}
+	}
+	// esc first: it cancels the wait (that is what makes the host-side run safe).
+	if strings.Index(v, "press esc") > strings.Index(v, "sbx mcp auth notion") {
+		t.Error("esc must come before the host command in the hint")
 	}
 
 	ml, fdl := authFrameModel(t, false, 0, openerDaemon{})

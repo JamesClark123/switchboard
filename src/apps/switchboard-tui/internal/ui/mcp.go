@@ -599,8 +599,8 @@ func checkPastedCallback(raw string, port uint32) (string, error) {
 	if err == nil {
 		host = u.Hostname()
 	}
-	host = strings.ToLower(host) // URL hosts are case-insensitive
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
+	host = strings.TrimSuffix(strings.ToLower(host), ".") // URL hosts are case-insensitive; "localhost." is the same host
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && !strings.HasSuffix(host, ".localhost") && host != "127.0.0.1" && host != "::1") {
 		return "", fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
 	}
 	switch p := u.Port(); {
@@ -755,7 +755,14 @@ func (m Model) mcpModal() string {
 			lines = append(lines, dimStyle.Render(l))
 		}
 		if w.noCallback {
-			lines = append(lines, "", dimStyle.Render("no callback port was found in this link — if the browser ends on a ‘localhost’ error page,"), dimStyle.Render("authorize on the daemon's host instead: sbx mcp auth "+w.name))
+			// Order matters: this wait is still running the host's own `sbx mcp auth`, and
+			// a second one started alongside it would race it for the credential.
+			lines = append(lines, "",
+				dimStyle.Render("no callback port was found in this link. If the browser ends on a"),
+				dimStyle.Render("‘localhost’ error page:"),
+				dimStyle.Render("  1. press esc to cancel this wait"),
+				dimStyle.Render("  2. run  sbx mcp auth "+w.name+"  on the daemon's host"),
+				dimStyle.Render("  3. press r to reload the list"))
 		}
 		switch {
 		case w.pasting:
