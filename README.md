@@ -70,8 +70,10 @@ each module's `README.md`.
 - **SSH** access (key/agent auth) to any remote host you want to connect to.
 - **VS Code** for the open-in-VS-Code feature — it opens the sandbox's controlled workspace folder
   (the copied files); add `ms-vscode-remote.remote-ssh` to open that folder on a remote host.
-- For development only: `golangci-lint`, and `protoc` + `protoc-gen-go`/`protoc-gen-go-grpc` if you
-  regenerate the gRPC stubs (the generated code is committed, so this is not needed just to build).
+- For development only: `golangci-lint` at the version CI uses (`make lint-version` prints it; any
+  build made with Go ≥ 1.26 works, an older one fails with `can't load config: … lower than the
+  targeted Go version`), and `protoc` + `protoc-gen-go`/`protoc-gen-go-grpc` if you regenerate the
+  gRPC stubs (the generated code is committed, so this is not needed just to build).
 
 ## Install
 

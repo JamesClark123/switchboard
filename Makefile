@@ -38,8 +38,11 @@ fmt-check:
 vet:
 	@for m in $(MODULES); do echo ">> vet $$m"; (cd $$m && go vet ./...) || exit 1; done
 
+# On failure, name the version CI uses: an older local build fails with
+# "can't load config: the Go language version … is lower than the targeted Go version".
 lint:
-	@for m in $(MODULES); do echo ">> lint $$m"; (cd $$m && golangci-lint run ./...) || exit 1; done
+	@for m in $(MODULES); do echo ">> lint $$m"; (cd $$m && golangci-lint run ./...) || { \
+		echo "lint failed; CI uses golangci-lint $(GOLANGCI_LINT_VERSION) (yours: $$(golangci-lint version 2>&1 | head -1))"; exit 1; }; done
 
 lint-version:
 	@echo $(GOLANGCI_LINT_VERSION)
