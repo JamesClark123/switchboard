@@ -134,13 +134,23 @@ func (s *Service) DeleteTimedEvent(id, eventID string) error {
 // disabled event can be fired; one whose action was deleted fails with callAction's
 // not-found error. A scheduled firing that comes due while this run is still open
 // (dedupe on) is skipped and recorded as usual.
+//
+// The event is read under fireMu. PutTimedEvent/DeleteTimedEvent do not take that
+// lock, so an edit racing this call is simply ordered before or after it; what the
+// lock rules out is this call using a definition that was already replaced or
+// deleted BEFORE it got the lock (the case when the event was read first). Each
+// manual fire is logged so it can be told apart from scheduled ones in the daemon
+// log.
 func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
 		return nil, err
 	}
-	// Take the lock first and read the event under it, as tick() does, so an edit
-	// or delete racing this call can never queue a stale or just-deleted definition.
+	// Take the lock first and read the event under it, as tick() does, so a
+	// definition replaced or deleted before we got the lock is never used.
+	if h := rt.beforeFireLock; h != nil {
+		h()
+	}
 	rt.fireMu.Lock()
 	defer rt.fireMu.Unlock()
 	var ev *pb.TimedEvent
@@ -162,7 +172,11 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 			return nil, fmt.Errorf("%w: run %s of %s is already %s%s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()), hint)
 		}
 	}
-	return rt.callAction(ev.GetAction(), ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, ev.GetId(), ev.GetName())
+	run, err := rt.callAction(ev.GetAction(), ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, ev.GetId(), ev.GetName())
+	if err == nil {
+		s.logf("[orchestrator %s] manual fire of timed event %s: run %s", rt.name(), ev.GetName(), run.GetId())
+	}
+	return run, err
 }
 
 // runStateLabel is a run state in plain words for an error message.

@@ -312,49 +312,54 @@ func TestFireTimedEventWorksWhenDisabledAndReportsMissingThings(t *testing.T) {
 
 // --- PR #4 review fixes ---
 
-// The event is read under the lock: an edit or delete that wins the lock first is
-// what FireTimedEvent sees, never a stale copy.
+// The event is read under the lock: a definition replaced or deleted before the
+// fire got the lock is never used. Deterministic: the test holds fireMu, parks the
+// fire at the seam just before its Lock(), changes the event, then releases.
 func TestFireTimedEventUsesTheCurrentDefinitionAndNotADeletedOne(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 0, false)
 	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
 
-	// Hold the lock the way tick() does while an edit lands, then let the fire in.
-	rt.fireMu.Lock()
 	type result struct {
 		run *pb.Run
 		err error
 	}
-	done := make(chan result, 1)
-	go func() {
-		run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
-		done <- result{run, err}
-	}()
-	time.Sleep(20 * time.Millisecond) // let it block on fireMu
-	upd := pollEvent()
-	upd.Id = ev.GetId()
-	upd.Arguments = map[string]string{"number": "99", "repo": "acme/web"}
-	if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
-		t.Fatal(err)
+	fireAfter := func(change func()) result {
+		reached := make(chan struct{})
+		rt.fireMu.Lock()
+		rt.beforeFireLock = func() { close(reached) }
+		done := make(chan result, 1)
+		go func() {
+			run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+			done <- result{run, err}
+		}()
+		<-reached // the fire is at the seam; it cannot proceed past Lock() while we hold it
+		change()
+		rt.beforeFireLock = nil
+		rt.fireMu.Unlock()
+		return <-done
 	}
-	rt.fireMu.Unlock()
-	r := <-done
+
+	// An edit that lands before the fire gets the lock is what the fire uses.
+	r := fireAfter(func() {
+		upd := pollEvent()
+		upd.Id = ev.GetId()
+		upd.Arguments = map[string]string{"number": "99", "repo": "acme/web"}
+		if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if r.err != nil || r.run.GetArguments()["number"] != "99" {
 		t.Fatalf("the fire must use the definition current at lock time: %+v / %v", r.run, r.err)
 	}
 
-	// A delete that wins the lock first makes the fire fail NotFound, not queue.
-	rt.fireMu.Lock()
-	go func() {
-		run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
-		done <- result{run, err}
-	}()
-	time.Sleep(20 * time.Millisecond)
-	if err := env.svc.DeleteTimedEvent(o.GetId(), ev.GetId()); err != nil {
-		t.Fatal(err)
-	}
+	// A delete before the lock makes the fire fail NotFound and queue nothing.
 	before := runCount(t, env, o.GetId())
-	rt.fireMu.Unlock()
-	if r := <-done; !errors.Is(r.err, ErrNotFound) {
+	r = fireAfter(func() {
+		if err := env.svc.DeleteTimedEvent(o.GetId(), ev.GetId()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !errors.Is(r.err, ErrNotFound) {
 		t.Errorf("a deleted event must not fire; run %+v err %v", r.run, r.err)
 	}
 	if n := runCount(t, env, o.GetId()); n != before {

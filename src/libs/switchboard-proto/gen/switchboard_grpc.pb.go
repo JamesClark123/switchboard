@@ -345,7 +345,9 @@ type SwitchboardClient interface {
 	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
 	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
 	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
-	// for an unknown event or action.
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
 	FireTimedEvent(ctx context.Context, in *FireTimedEventRequest, opts ...grpc.CallOption) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a
@@ -1380,7 +1382,9 @@ type SwitchboardServer interface {
 	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
 	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
 	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
-	// for an unknown event or action.
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
 	FireTimedEvent(context.Context, *FireTimedEventRequest) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a

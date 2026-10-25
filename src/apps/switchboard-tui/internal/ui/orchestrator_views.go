@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -41,7 +42,9 @@ type orchDetailState struct {
 	cursors        [orchViewCount]int
 	loading        bool
 	status         string
-	firing         bool // an Enqueue now is in flight (refuses key-repeat / double presses)
+	firing         bool      // an Enqueue now is in flight (refuses key-repeat / double presses)
+	lastFireAt     time.Time // when the last Enqueue now started, for the repeat debounce
+	lastFireEv     string
 	// Hosts view: the copy-from-my-hosts picker.
 	hostPick    bool
 	hostChoices []store.KnownHost

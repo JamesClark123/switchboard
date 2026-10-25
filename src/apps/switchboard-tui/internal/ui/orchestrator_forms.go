@@ -394,13 +394,19 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			d.status = "an enqueue is already in progress"
 			return m, nil
 		}
+		// Terminal auto-repeat (or a double tap) right after a fire is dropped
+		// silently: the success message stays instead of being replaced by a dedupe
+		// refusal, and a dedupe-off event cannot be flooded by a held key.
+		if d.lastFireEv == cur.GetId() && time.Since(d.lastFireAt) < enqueueRepeatWindow {
+			return m, nil
+		}
 		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), disabled: !cur.GetEnabled()}
-		if cur.GetDedupeDisabled() {
-			// Dedupe is off, so nothing else stops a repeat: confirm, which also makes a
-			// held-down key harmless.
+		if open := m.openRunOfEvent(cur.GetId()); cur.GetDedupeDisabled() && open != nil {
+			// Dedupe is off and a run of this event is already open: this really would
+			// double up, so ask first.
 			return m.enterConfirm(confirmState{
 				title:     "Enqueue " + fire.name + " now?",
-				body:      []string{"Dedupe is off for this event, so this queues another run", "even if one of its runs is already queued or running."},
+				body:      []string{"Dedupe is off and run " + open.GetId() + " of this event is still open,", "so this queues another one alongside it."},
 				warning:   "Another run will be queued; the schedule is not changed.",
 				returnTo:  screenOrchDetail,
 				onConfirm: func() tea.Msg { return fire },
@@ -441,29 +447,52 @@ type orchFireStartMsg struct {
 	disabled             bool
 }
 
+// enqueueRepeatWindow drops a repeat Enqueue now for the same event this soon
+// after one started (terminal auto-repeat is ~30 ms; a deliberate second press is
+// slower). A package constant, never an env var.
+const enqueueRepeatWindow = 500 * time.Millisecond
+
+// openRunOfEvent is a queued or in-flight run created by this timed event, as last
+// loaded into the view (nil when none is known). The daemon stays the authority —
+// this only decides whether to ask first.
+func (m Model) openRunOfEvent(eventID string) *pb.Run {
+	r := m.orchDetail.runs
+	for _, group := range [][]*pb.Run{r.GetQueued(), r.GetInFlight()} {
+		for _, run := range group {
+			if run.GetEventKind() == pb.EventKind_EVENT_KIND_TIMED && run.GetOrigin() == eventID {
+				return run
+			}
+		}
+	}
+	return nil
+}
+
 func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
 	if m.orchDetail.firing {
 		m.orchDetail.status = "an enqueue is already in progress"
 		return m, nil
 	}
 	m.orchDetail.firing = true
+	m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), f.evID
 	od := m.daemonForHost(f.host)
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
 		if err != nil {
-			return orchDoneMsg{err: err}
+			return orchDoneMsg{err: err, fire: true}
 		}
-		where := "starting now"
+		// The position is where the run queued (the daemon reads it before dispatch),
+		// not a live one: a free worker may already be starting it.
+		detail := run.GetId()
 		if run.GetPosition() > 0 {
-			where = fmt.Sprintf("position %d", run.GetPosition())
+			detail = fmt.Sprintf("%s, queued at position %d", run.GetId(), run.GetPosition())
 		}
-		status := fmt.Sprintf("enqueued %s (%s, %s)", f.name, run.GetId(), where)
+		status := fmt.Sprintf("enqueued %s (%s)", f.name, detail)
 		if f.disabled {
 			status += " — the event is disabled; its schedule is unchanged"
 		}
-		return orchDoneMsg{status: status, reload: true}
+		return orchDoneMsg{status: status, reload: true, fire: true}
 	}
 }
 
