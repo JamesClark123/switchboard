@@ -500,6 +500,7 @@ func TestCheckPastedCallback(t *testing.T) {
 		"HTTP://LOCALHOST:4000/cb":        "HTTP://LOCALHOST:4000/cb",     // hosts are case-insensitive
 		"http://localhost.:4000/cb":       "http://localhost.:4000/cb",    // trailing-dot form
 		"http://app.localhost:4000/cb":    "http://app.localhost:4000/cb", // RFC 6761 *.localhost
+		"http://127.0.0.2:4000/cb":        "http://127.0.0.2:4000/cb",     // any loopback IP, as on the daemon (shared rule)
 	} {
 		got, err := checkPastedCallback(in, 4000)
 		if err != nil || got != want {
@@ -574,20 +575,45 @@ func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
 	if !m.mcpView.auth.noCallback {
 		t.Fatal("remote + url without a port should set noCallback")
 	}
+	// The ssh target comes from the daemon row; fall back to its name.
+	if got := m.mcpView.auth.sshTarget; got == "" {
+		t.Fatalf("the hint needs something to ssh to; got %q", got)
+	}
 	v := m.View()
-	for _, want := range []string{"no callback port was found", "1. press esc to cancel this wait", "2. run  sbx mcp auth notion", "3. press r to reload"} {
+	for _, want := range []string{
+		"no callback port was reported for this link",
+		"ssh -L PORT:localhost:PORT " + m.mcpView.auth.sshTarget,
+		"keep this wait running",
+		"esc (cancel this wait)",
+		"sbx mcp auth notion",
+		"then r to reload the list",
+	} {
 		if !strings.Contains(v, want) {
-			t.Errorf("the hint must give the safe order (cancel, run on the host, reload); missing %q in:\n%s", want, v)
+			t.Errorf("hint missing %q in:\n%s", want, v)
 		}
 	}
-	// esc first: it cancels the wait (that is what makes the host-side run safe).
-	if strings.Index(v, "press esc") > strings.Index(v, "sbx mcp auth notion") {
-		t.Error("esc must come before the host command in the hint")
+	// The forward needs no cancel, so it comes first; esc belongs to the host-side fallback.
+	if strings.Index(v, "ssh -L") > strings.Index(v, "esc (cancel") || strings.Index(v, "esc (cancel") > strings.Index(v, "sbx mcp auth notion") {
+		t.Error("order must be: forward the port, then (fallback) esc before the host command")
 	}
 
 	ml, fdl := authFrameModel(t, false, 0, openerDaemon{})
 	defer close(fdl.mcpAuthGate)
-	if ml.mcpView.auth.noCallback || strings.Contains(ml.View(), "no callback port was found") {
+	if ml.mcpView.auth.noCallback || strings.Contains(ml.View(), "no callback port was reported") {
 		t.Error("a local daemon needs no relay, so no hint")
+	}
+}
+
+// With an ssh target on the view, the hint names it.
+func TestMcpAuthHintUsesTheDaemonsSSHTarget(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+	defer close(d.mcpAuthGate)
+	m := mcpModel(t, d)
+	m.mcpView.remote, m.mcpView.target = true, "dev@build-box"
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	if v := m.View(); !strings.Contains(v, "ssh -L PORT:localhost:PORT dev@build-box") {
+		t.Errorf("the hint should name the ssh target; got:\n%s", v)
 	}
 }

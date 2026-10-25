@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sbxtable"
 )
@@ -199,16 +200,9 @@ func findURL(line string) string {
 	return ""
 }
 
-// isLoopbackHost reports whether host is a loopback name or address.
-func isLoopbackHost(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(host), ".") // case-insensitive; "localhost." is the same host
-	// "localhost" and, per RFC 6761, every "*.localhost" name resolve to loopback.
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
+// isLoopbackHost is the shared loopback-host rule (libs/switchboard-dial): the
+// TUI's paste check uses the very same function.
+func isLoopbackHost(host string) bool { return dial.IsLoopbackHost(host) }
 
 // minCallbackPort rejects privileged ports: the relay and paste-back must never
 // reach well-known services (ssh, smtp, …) on the daemon host's loopback.

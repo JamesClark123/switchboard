@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -38,6 +39,7 @@ var mcpNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 type mcpState struct {
 	host     string
 	hostName string
+	target   string // the ssh target of a remote daemon (for the port-forward hint)
 	daemon   Daemon
 	remote   bool // the daemon is on another machine, so its OAuth callback needs relaying
 
@@ -81,6 +83,7 @@ type mcpAuthWait struct {
 	tunnel       bool   // the local relay is listening
 	tunnelErr    string // why it could not be, shown with the paste prompt
 	noCallback   bool   // remote daemon, but the link carried no loopback callback port
+	sshTarget    string // what to put after `ssh -L PORT:localhost:PORT` in the hint
 	pasting      bool
 	paste        textinput.Model
 	pasteErr     string
@@ -123,7 +126,7 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, daemon: row.daemon, remote: row.kind != "local", loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, daemon: row.daemon, remote: row.kind != "local", loading: true}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -512,6 +515,10 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 		// The relay and paste-back both need that port; say so instead of leaving the
 		// developer to meet a "localhost refused" page unexplained.
 		w.noCallback = true
+		w.sshTarget = m.mcpView.target
+		if w.sshTarget == "" {
+			w.sshTarget = m.mcpView.hostName
+		}
 	}
 	if u.CallbackPort != 0 && m.mcpView.remote && w.callbackPort == 0 {
 		w.callbackPort = u.CallbackPort
@@ -595,12 +602,9 @@ func checkPastedCallback(raw string, port uint32) (string, error) {
 		raw = "http://" + raw
 	}
 	u, err := neturl.Parse(raw)
-	host := ""
-	if err == nil {
-		host = u.Hostname()
-	}
-	host = strings.TrimSuffix(strings.ToLower(host), ".") // URL hosts are case-insensitive; "localhost." is the same host
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && !strings.HasSuffix(host, ".localhost") && host != "127.0.0.1" && host != "::1") {
+	// The same loopback rule the daemon applies (libs/switchboard-dial), so the two
+	// can never disagree about what counts as a local callback address.
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !dial.IsLoopbackHost(u.Hostname()) {
 		return "", fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
 	}
 	switch p := u.Port(); {
@@ -755,14 +759,22 @@ func (m Model) mcpModal() string {
 			lines = append(lines, dimStyle.Render(l))
 		}
 		if w.noCallback {
-			// Order matters: this wait is still running the host's own `sbx mcp auth`, and
-			// a second one started alongside it would race it for the credential.
+			// Two ways out. Forwarding the port needs no cancel: this wait keeps running
+			// the host's own `sbx mcp auth`, so it is the one that can still finish.
+			// The host-side run is the fallback for someone with a browser on the host,
+			// and ONLY after cancelling — a second `sbx mcp auth` alongside the running
+			// one would race it for the credential.
+			ssh := w.sshTarget
 			lines = append(lines, "",
-				dimStyle.Render("no callback port was found in this link. If the browser ends on a"),
-				dimStyle.Render("‘localhost’ error page:"),
-				dimStyle.Render("  1. press esc to cancel this wait"),
-				dimStyle.Render("  2. run  sbx mcp auth "+w.name+"  on the daemon's host"),
-				dimStyle.Render("  3. press r to reload the list"))
+				dimStyle.Render("no callback port was reported for this link."),
+				dimStyle.Render("If the browser ends on a ‘localhost:PORT’ error page"),
+				dimStyle.Render("(PORT is in its address bar):"),
+				dimStyle.Render("  • keep this wait running, forward the port:"),
+				dimStyle.Render("      ssh -L PORT:localhost:PORT "+ssh),
+				dimStyle.Render("    then reload that browser page"),
+				dimStyle.Render("  • or, with a browser on the host:"),
+				dimStyle.Render("      esc (cancel this wait), run  sbx mcp auth "+w.name),
+				dimStyle.Render("      there, then r to reload the list"))
 		}
 		switch {
 		case w.pasting:
