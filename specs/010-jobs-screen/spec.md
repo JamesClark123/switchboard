@@ -6,7 +6,20 @@
 
 **Status**: Draft
 
-**Input**: User description (Linear SWI-5, "Feature - Updates to Orchestrator UI"): "We want to make some updates to how Orchestrators and their queues show in the sandbox UI. 1. Add a `Jobs` tab to the top bar of the UI (the section navigated with shift + arrow keys). This jobs tab will hold much of the functional behaviour of the orchestrators. It should have its own tab groups shown in a similar UI to the `Sandboxes` tab: `Overview`, `Actions`, `Events` and `Queue`. `Overview` (first) is very similar to the Queue tab: it shows the history, in-progress and queued actions across ALL orchestrators, each entry showing which host & orchestrator it is on, plus an `upcoming` section of upcoming scheduled events. Its entries keep the current Queue actions; `upcoming` entries get `Enqueue now` (same behaviour as the Events tab's Enqueue now); completed entries get `Open results` to see the agent's full report (currently cut off when long); its history is capped at 15. `Actions` (second) is the current Actions section grouped by orchestrator. `Events` (next) is the current Events tab grouped by orchestrator. `Queue` (last) lists everything with a filter by orchestrator, no cap, paginated if necessary. 2. `Workers`, `Reasoning` and `Hosts` move from the `Orchestrators` top tab to a section under `Daemons` named `Orchestrators`, which behaves essentially like the previous Orchestrators top tab with only those three sections. The old Orchestrators top tab is deleted."
+**Input**: User description (Linear SWI-5, "Feature - Updates to Orchestrator UI"), quoted verbatim; the tab-order inconsistency in item 1 is resolved in Clarifications (Q3):
+
+> We want to make some updates to how Orchestrators and their queues show in the sandbox UI. Here are the requirements:
+>
+> 1. We want to add a `Jobs` tab to the top bar of the UI (this is the section we use shift + arrow keys to navigate between). This jobs tab will hold much of the functional behavior of the orchestrators. It should have it's own tab groups shown in a similar UI to how it works for the `Sandboxes` tab. The options for these tabs should be: `Overview` `Action` `Queue` and `Events`
+>    1. `Overview` should be the first tab. This tab should be very similar to the Queue tab. It should show the history, in progress, and queued actions across ALL orchestrators. The inline UI for each event should be updated to show which host & orchestrator it is on. In addition to the three states of the queue it should also show an `upcoming` section where it shows the upcoming scheduled events.
+>       1. The user actions available on each element should be the same as they are for the current Queue list
+>       2. The `upcoming` section should get a new user action to `Enqueue now` behaving the same was as the new `Enqueue now` feature that was added for the events tab
+>       3. There should be an additional action for all completed actions to `Open results` to see the full results reported from the agent. Currently they are cut off if the report is to long
+>       4. The history section of the queue on this page should be capped at 15 events.
+>    2. `Actions` should be the second tab. It should show the current actions. It should be essentially the same as the current Actions section but now we will need to have actions grouped by orchestrator since we will be showing all of the actions
+>    3. `Events` should be the next tab. It should be the same as the current events tab but grouped by orchestrator, same as for the actions tab
+>    4. `Queue` should be the last tab and it should show a list of all events with the option to filter by orchestrator. The list should not have a cap and be paginated if necessary.
+> 2. The remaining sections of `Workers` `Reasoning` and `Hosts` will be moved from the `Orchestrators` top tab to a section under `Daemons` named `Orchestrators`. The Orchestrator section under the Daemon top tab will behave essentially the same as the previous Orchestrator top tab (but with only the three sections listed above). The old Orchestrator top tab should be deleted from the UI.
 
 ## Clarifications
 
@@ -37,6 +50,7 @@ A developer running several orchestrators across several machines opens a single
 3. **Given** an enabled timed event with a next firing time, **When** the Overview is shown, **Then** the Upcoming section lists that event with its orchestrator, host, action and next firing time; a disabled event is not listed.
 4. **Given** a daemon that is disconnected or unreachable, **When** the Overview is shown, **Then** the runs of the reachable daemons are still shown and the view says which daemon could not be read.
 5. **Given** the Overview is open, **When** a run changes state on any orchestrator (for example it starts or completes), **Then** the Overview reflects the change without the developer reopening it.
+6. **Given** the Overview is open and a daemon connects (or reconnects) afterwards, **When** its connection completes, **Then** that daemon's orchestrators and their runs appear without a manual reload, and it is no longer named as unreadable.
 
 ---
 
@@ -52,9 +66,11 @@ From the Overview, the developer can do to any run what they can do in an orches
 
 1. **Given** a queued run in the Overview, **When** the developer cancels it, **Then** it is cancelled on its own orchestrator exactly as from that orchestrator's Queue view, and the Overview updates.
 2. **Given** a run awaiting review, **When** the developer marks its worker free from the Overview, **Then** the worker is freed exactly as from the orchestrator's Queue view.
-3. **Given** an entry in the Upcoming section, **When** the developer chooses Enqueue now, **Then** one run of that event is queued on its orchestrator with the same rules as the Events view's Enqueue now (dedupe, schedule unchanged, confirmation when dedupe is off and a run is already open, repeat presses ignored briefly), and the outcome is reported.
-4. **Given** a completed run whose reported result is longer than the line it is shown on, **When** the developer chooses Open results, **Then** the complete report is shown in a view they can scroll through and close, with nothing cut off.
-5. **Given** a failed or cancelled run, **When** the developer chooses Open results, **Then** whatever the run reported (or the reason it ended) is shown; when there is nothing reported, the view says so.
+3. **Given** an upcoming event whose dedupe is on and which already has an open run, **When** the Overview is shown, **Then** its Upcoming entry says the next firing will be skipped because a run is still open.
+4. **Given** an entry in the Upcoming section, **When** the developer chooses Enqueue now, **Then** one run of that event is queued on its orchestrator with the same rules as the Events view's Enqueue now (dedupe, schedule unchanged, confirmation when dedupe is off and a run is already open, repeat presses ignored briefly), and the outcome is reported.
+5. **Given** a completed run whose reported result is longer than the line it is shown on, **When** the developer chooses Open results, **Then** the complete report is shown in a view they can scroll through and close, with nothing cut off.
+6. **Given** a failed or cancelled run, **When** the developer chooses Open results, **Then** whatever the run reported (or the reason it ended) is shown; when there is nothing reported, the view says so.
+7. **Given** a finished run whose report contains terminal control or escape sequences, **When** the developer opens its results (or sees it in a list row), **Then** the text is shown with those sequences removed or made inert, and the terminal's state (screen, cursor, colours, title, clipboard) is unchanged.
 
 ---
 
@@ -85,7 +101,7 @@ In **Jobs › Actions** and **Jobs › Events**, the developer sees the actions 
 
 **Acceptance Scenarios**:
 
-1. **Given** two orchestrators with actions, **When** the developer opens Jobs › Actions, **Then** actions are listed under a heading per orchestrator (with its host), in a stable order.
+1. **Given** two orchestrators with actions, **When** the developer opens Jobs › Actions, **Then** actions are listed under a heading per orchestrator (with its host), in a stable order (by host name, then orchestrator name) that does not change when the data refreshes.
 2. **Given** the cursor is within an orchestrator's group, **When** the developer adds an action, **Then** the new action is created on that orchestrator; editing, deleting and calling act on the highlighted action's orchestrator.
 3. **Given** two orchestrators with timed events, **When** the developer opens Jobs › Events, **Then** events are listed under a heading per orchestrator, and add, edit, delete, enable/disable and Enqueue now act on that orchestrator exactly as the current Events view does.
 4. **Given** an orchestrator with no actions (or no events), **When** the corresponding tab is shown, **Then** its group still appears with an empty-state line, so a first action or event can be added to it.
@@ -113,7 +129,11 @@ Orchestrator administration — creating, renaming and removing orchestrators, a
 ### Edge Cases
 
 - **No orchestrators anywhere**: every Jobs tab shows an empty state that explains orchestrators are created under Daemons › Orchestrators.
-- **Only some daemons reachable**: Jobs tabs show what the reachable daemons return and name the unreachable ones; actions on entries of a daemon that disconnects meanwhile fail with a clear message.
+- **Only some daemons reachable**: Jobs tabs show what the reachable daemons return and name the unreachable ones; actions on entries of a daemon that disconnects meanwhile fail with a clear message (they are never sent to a different daemon).
+- **Daemon connects after Jobs is open** (first connection or reconnection): its orchestrators appear without a manual reload and it is no longer named as unreadable.
+- **Slow daemon**: data from daemons that have answered is shown and navigable while a slower daemon is still loading.
+- **Report containing escape sequences**: an agent-reported result (or a run's prompt or reason) containing terminal control or escape sequences is shown as plain text and cannot alter the terminal.
+- **Upcoming firing that dedupe will skip**: the entry says it will be skipped while a run of that event is still open.
 - **Same orchestrator name on two daemons**: entries and group headings always include the host, so they stay distinguishable.
 - **Orchestrator removed while shown**: its entries and group disappear on the next refresh; a pending action on it reports that it no longer exists.
 - **Filter selection disappears** (the filtered orchestrator is removed or its daemon disconnects): the filter falls back to "all orchestrators" and says so.
@@ -131,18 +151,18 @@ Orchestrator administration — creating, renaming and removing orchestrators, a
 - **FR-001**: The top-level screens MUST be **Sandboxes**, **Daemons** and **Jobs**, cycled in that order with shift+←/→; the **Orchestrators** top-level screen MUST be removed.
 - **FR-002**: The Jobs screen MUST have four tabs, switched the same way as the Sandboxes screen's tabs (←/→, with the active tab shown): **Overview**, **Actions**, **Events**, **Queue**, in that order, with Overview selected the first time Jobs is opened.
 - **FR-003**: Every Jobs tab MUST cover all orchestrators on all connected daemons, and every run, action, event and group heading MUST show its host (daemon) and orchestrator.
-- **FR-004**: Jobs tabs MUST keep showing data from reachable daemons when others are unreachable, and MUST name the daemons that could not be read.
-- **FR-005**: Jobs tabs MUST update when runs, actions or events change on any covered orchestrator, without the developer reopening them.
+- **FR-004**: Jobs tabs MUST keep showing data from reachable daemons when others are unreachable, and MUST name the daemons that could not be read. A daemon that connects or reconnects while Jobs is open MUST have its orchestrators added without a manual reload.
+- **FR-005**: Jobs tabs MUST update when runs, actions or events change on any covered orchestrator, without the developer reopening them; a change on one orchestrator MUST be reflected without re-reading the others.
 
 **Overview**
 
 - **FR-006**: The Overview MUST show four sections: **Upcoming**, **Queued**, **In progress** and **History**.
-- **FR-007**: Upcoming MUST list each enabled timed event of every covered orchestrator once, with its next firing time, ordered by next firing time (soonest first); disabled events MUST NOT be listed.
+- **FR-007**: Upcoming MUST list each enabled timed event of every covered orchestrator once, with its next firing time, ordered by next firing time (soonest first); disabled events MUST NOT be listed. Upcoming shows the schedule; when the event's dedupe is on and a run of it is still open (so the next firing will be skipped), the entry MUST say so.
 - **FR-008**: Queued and In progress MUST list all queued and in-flight runs (running, awaiting input, awaiting review) of every covered orchestrator.
 - **FR-009**: History MUST list the 15 most recently finished runs across all covered orchestrators, newest first.
-- **FR-010**: Each run in the Overview MUST offer the same actions the current Queue view offers for a run in that state: open its prompt; cancel a queued run; mark the worker free for a run awaiting review.
+- **FR-010**: Each run in the Overview MUST offer the same actions the current Queue view offers for a run in that state: open its prompt; cancel a queued run; mark the worker free for a run awaiting review. (Marking a parked or idle worker free, which is not tied to a run, stays in Daemons › Orchestrators › Workers; see FR-024.)
 - **FR-011**: Each Upcoming entry MUST offer **Enqueue now**, with exactly the behaviour of the Events view's Enqueue now (one run queued as that event; the event's dedupe applies and a refusal is explained; the schedule is unchanged; confirmation when dedupe is off and a run of the event is already open; an immediate repeat press is ignored).
-- **FR-012**: Each finished run (completed, failed or cancelled) MUST offer **Open results**, which shows the run's full reported result (or the reason it ended) in a scrollable view that can be closed, with no truncation; when nothing was reported it MUST say so.
+- **FR-012**: Each finished run (completed, failed or cancelled) MUST offer **Open results**, which shows the run's full reported result (or the reason it ended) in a scrollable view that can be closed, with no truncation; when nothing was reported it MUST say so. The reported text is untrusted (written by an agent or a developer note) and is subject to FR-029.
 
 **Queue tab**
 
@@ -155,7 +175,7 @@ Orchestrator administration — creating, renaming and removing orchestrators, a
 
 **Actions & Events tabs**
 
-- **FR-019**: The Actions tab MUST list every action of every covered orchestrator, grouped under a heading per orchestrator (with its host), groups in a stable order; an orchestrator with no actions MUST still show its group with an empty-state line.
+- **FR-019**: The Actions tab MUST list every action of every covered orchestrator, grouped under a heading per orchestrator (with its host), groups ordered by host display name, then orchestrator name, and kept in that order across refreshes (they MUST NOT move when data reloads); an orchestrator with no actions MUST still show its group with an empty-state line.
 - **FR-020**: The Actions tab MUST offer the current Actions view's operations — add, edit, delete and call — acting on the orchestrator of the group the cursor is in (add) or of the highlighted action (edit, delete, call).
 - **FR-021**: The Events tab MUST list every timed event of every covered orchestrator, grouped the same way, and MUST offer the current Events view's operations — add, edit, delete, enable/disable and Enqueue now — acting on the corresponding orchestrator with today's rules.
 
@@ -171,6 +191,8 @@ Orchestrator administration — creating, renaming and removing orchestrators, a
 
 - **FR-027**: All capabilities available today for orchestrators MUST remain available after the reorganisation (nothing is lost by removing the Orchestrators screen).
 - **FR-028**: Key hints for each Jobs tab and the new Daemons › Orchestrators section MUST list the actions available there.
+- **FR-029** (security): Every agent- or remote-supplied text Jobs displays — reported results, failure/cancel reasons, composed prompts and their arguments, and the result snippets in list rows — MUST be shown with terminal control and escape sequences removed or made inert; displaying it MUST NOT change the terminal's state (screen, cursor, colours, title, hyperlinks, clipboard). Shortening such text for a row MUST NOT split a character or leave a partial sequence.
+- **FR-030**: Operations on an entry MUST go to the daemon that hosts its orchestrator; when that daemon is not connected the operation MUST be refused with a clear message, never sent to another daemon.
 
 ### Key Entities
 
@@ -190,6 +212,8 @@ Orchestrator administration — creating, renaming and removing orchestrators, a
 - **SC-004**: A developer can trigger an upcoming scheduled event from the Overview in a single action plus, at most, one confirmation.
 - **SC-005**: Every operation possible on the old Orchestrators screen remains possible after the change (no capability regression), verified by an inventory of today's operations.
 - **SC-006**: With hundreds of runs across orchestrators, the Queue tab lets the developer reach any run, and narrowing to one orchestrator takes a single filter choice.
+- **SC-007**: With several connected daemons and orchestrators holding their full retained history, Jobs shows already-available data and stays navigable while slower daemons are still loading; a change on one orchestrator is reflected without re-reading the others, and moving the cursor or switching tabs never waits on a daemon.
+- **SC-008**: 100% of the agent-reported text shown in Jobs is displayed without altering the terminal (verified with reports containing escape and control sequences).
 
 ## Assumptions
 

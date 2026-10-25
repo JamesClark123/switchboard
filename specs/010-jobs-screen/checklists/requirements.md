@@ -32,4 +32,5 @@
 ## Notes
 
 - All items pass. Clarify scan (2026-10-25): the three open decisions were asked and recorded; no other ambiguity met the bar for a question (remaining details are plan-level or covered by stated assumptions).
+- PR review (2026-10-25, run-c275c8f2-172): added FR-029 (sanitise untrusted text), FR-030 (operations never sent to another daemon), SC-007 (responsiveness), SC-008, late-connecting daemons (FR-004), the Upcoming dedupe-skip note (FR-007), the explicit group order (FR-019), the mark-free scope note (FR-010), and quoted the ticket verbatim in Input. All items still pass.
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`
