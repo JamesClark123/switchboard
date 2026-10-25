@@ -49,23 +49,27 @@ type fakeRunner struct {
 	failLoad      map[string]bool
 	mcpUnloads    []string          // "<ref> <name>" per UnloadMcp
 	unloadErr     map[string]string // UnloadMcp fails with exactly this text for these names
+	loadErr       map[string]string // LoadMcp streams this output and fails like SbxRunner (tail only in the error) for these names
+	loadErrRef    map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
+	launchOut     string            // with failNext: Launch streams this output before failing
 	lastStaticMcp []string
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
 
-func (f *fakeRunner) Launch(_ context.Context, spec LaunchSpec, _ func(string)) (string, error) {
+func (f *fakeRunner) Launch(_ context.Context, spec LaunchSpec, log func(string)) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastStaticMcp = spec.StaticMcp
 	if f.failNext != nil {
 		err := f.failNext
 		f.failNext = nil
+		streamFake(log, f.launchOut)
 		return "", err
 	}
 	f.launches++
 	f.lastKits = spec.KitSources
 	f.lastSources = spec.Sources
-	f.lastStaticMcp = spec.StaticMcp
 	// Mirror the real SbxRunner: the handle is the assigned --name (the human
 	// name), falling back to the id.
 	ref := spec.Name
@@ -390,6 +394,16 @@ func TestLaunchNameUniquenessAndPath(t *testing.T) {
 
 func errContext() error { return context.DeadlineExceeded }
 
+// streamFake feeds out to a runner log callback line by line, like SbxRunner.run.
+func streamFake(log func(string), out string) {
+	if log == nil || out == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		log(line)
+	}
+}
+
 // --- feature 008: MCP attach surface ---
 
 func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, _ func(string)) error {
@@ -402,10 +416,19 @@ func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, _ func(strin
 	return nil
 }
 
-func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)) error {
+func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, log func(string)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mcpLoads = append(f.mcpLoads, ref+" "+name)
+	msg, ok := f.loadErrRef[ref+" "+name]
+	if !ok {
+		msg, ok = f.loadErr[name]
+	}
+	if ok {
+		// Mirror SbxRunner.run: every line is streamed, the error keeps only the tail.
+		streamFake(log, msg)
+		return fmt.Errorf("sbx mcp load %s --sandbox %s: exit status 1%s", name, ref, outputTail([]byte(msg)))
+	}
 	if f.failLoad[name] {
 		return errors.New("load failed for " + name)
 	}

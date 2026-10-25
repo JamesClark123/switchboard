@@ -24,6 +24,8 @@ func TestDetachAndAttachMcpStatusMapping(t *testing.T) {
 		{"reserved", fmt.Errorf("%w: sxb-orch-x", sandbox.ErrMcpReserved), codes.InvalidArgument, codes.Unknown},
 		{"invalid name", fmt.Errorf("%w: \"-x\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},
 		{"runtime text", errors.New("gateway unreachable"), codes.Unknown, codes.Unknown},
+		// SWI-2 (merged from main): a tool-name collision on attach is FAILED_PRECONDITION.
+		{"tool collision", fmt.Errorf("%w: tool name collision with github (list_issues)", sandbox.ErrMcpToolCollision), codes.Unknown, codes.FailedPrecondition},
 		// The sentinel's message quotes the name; text matching must not reinterpret it.
 		{"invalid name quoting 'unknown'", fmt.Errorf("%w: \"-unknown server\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},
 		{"invalid name quoting 'not found'", fmt.Errorf("%w: \"-not found\"", sandbox.ErrMcpInvalidName), codes.InvalidArgument, codes.InvalidArgument},

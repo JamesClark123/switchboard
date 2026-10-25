@@ -304,6 +304,50 @@ that daemon only:
   whose server was removed on the host is skipped and reported in the launch log (`l`), never a
   failed launch.
 
+#### MCP tool collisions
+
+The runtime's MCP gateway puts the tools of every server loaded into a sandbox in **one flat
+namespace** under their bare names, and refuses to load a server whose tool names clash with one
+already loaded — e.g. Linear's `list_issues` / `list_releases` against GitHub's:
+
+```
+tool "list_issues" from server "linear" collides with an existing tool already registered for server "github"
+```
+
+`sbx mcp add/load` and `--static-mcp` cannot prefix, rename or filter tools, so switchboard cannot
+namespace them for you. When a collision happens a launch skips the server and logs
+`mcp: skipped linear: tool name collision with github (list_issues, list_releases); …` (the raw
+runtime text follows on the next line), and attaching from the `M` overlay fails with the same
+message; nothing is changed on the sandbox. In *exclusive* mode the set is pinned at create, so
+a clash fails the launch itself; the launch error names the servers, tools and remedy (additive
+mode would skip the clashing server instead).
+
+**Fix: filter the clashing tools out at one of the servers**, using that server's own filter
+headers in the register form's **Headers** field (one `Name: value` per line). GitHub's remote
+server (`https://api.githubcopilot.com/mcp/`) takes `X-MCP-Toolsets` (comma-separated toolsets)
+and `X-MCP-Tools` (individual tools, additive with toolsets). It has no *exclude* header, so
+build an allowlist: leave out the toolset that holds the clashing tool and add back, by exact
+name, the tools you still want from it. For example, to drop both of GitHub's clashes with Linear,
+`list_issues` (toolset `issues`) and `list_releases` (toolset `repos`), leave both toolsets out
+and add back every other tool they hold:
+
+```
+X-MCP-Toolsets: context,pull_requests,users
+X-MCP-Tools: add_issue_comment,get_label,issue_read,issue_write,list_issue_fields,list_issue_types,search_issues,sub_issue_write,update_issue_comment,create_branch,create_or_update_file,create_repository,delete_file,delete_repository,fork_repository,get_commit,get_file_contents,get_latest_release,get_release_by_tag,get_tag,list_branches,list_commits,list_repository_collaborators,list_tags,push_files,search_code,search_commits,search_repositories
+```
+
+(Toolset membership is from the
+[GitHub MCP server README](https://github.com/github/github-mcp-server#tools) as of 2026-10-25
+and changes over time; re-check it, and trim the list to the tools you actually use. An invalid
+tool name stops the GitHub server from starting, so copy names exactly.) The filtered tools are no
+longer available from that server; use the other
+server's tool of the same name. Registration headers can't be edited in place: remove the server
+(`d`, which also deletes its OAuth credential) and register it again, then authorize (`A`). For
+other servers, use whatever tool-filter option they document.
+
+> The recipe above comes from the servers' documentation and has **not yet been verified on a real
+> host** (research R14).
+
 Each daemon declares a **minimum `sbx` version** (0.36, the first with kit schema 2) and reads
 the host's version at startup; kit and gateway operations on a host below it are refused with
 both versions named, while kit-less sandboxes keep working.
