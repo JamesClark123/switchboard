@@ -53,6 +53,8 @@ type fakeDaemon struct {
 	removedMcp  []string
 	mcpNotes    []string
 	mcpAuthed   []string
+	mcpPasted   []string
+	mcpPasteErr error
 	// mcpAuthFrames are replayed to AuthorizeMcpServer's callback; mcpAuthState is
 	// the terminal state it returns; mcpAuthGate, when set, blocks the authorize
 	// call until closed (so a test can cancel a wait in flight).
@@ -569,6 +571,13 @@ func (f *fakeDaemon) RemoveMcpServer(_ context.Context, name string) ([]string, 
 	}
 	f.mcpServers = kept
 	return f.mcpNotes, nil
+}
+
+func (f *fakeDaemon) CompleteMcpAuthCallback(ctx context.Context, name, callbackURL string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpPasted = append(f.mcpPasted, callbackURL)
+	return f.mcpPasteErr
 }
 
 func (f *fakeDaemon) AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error) {

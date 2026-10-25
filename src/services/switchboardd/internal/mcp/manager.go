@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -52,12 +53,12 @@ type Manager struct {
 	emit   func(*pb.Event) // nil-safe; Event.mcp_gateway_changed after every change
 
 	mu       sync.Mutex
-	inflight map[string]struct{} // names with an authorization wait running
+	inflight map[string]uint32 // names with an authorization wait running -> its OAuth callback port (0 until announced)
 }
 
 // NewManager wires a Manager; emit may be nil.
 func NewManager(cli *CLI, reg *registry.Registry, hostID string, emit func(*pb.Event)) *Manager {
-	return &Manager{cli: cli, reg: reg, hostID: hostID, emit: emit, inflight: map[string]struct{}{}}
+	return &Manager{cli: cli, reg: reg, hostID: hostID, emit: emit, inflight: map[string]uint32{}}
 }
 
 // Attach is what a launch applies (data-model "Launch resolution"): the mode,
@@ -324,7 +325,7 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrAuthInProgress, name)
 	}
-	m.inflight[name] = struct{}{}
+	m.inflight[name] = 0
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -346,7 +347,13 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		if !urlSent {
 			if u := findURL(line); u != "" {
 				urlSent = true
-				frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Url{Url: u}})
+				port := callbackPort(u)
+				if port != 0 {
+					m.mu.Lock()
+					m.inflight[name] = port
+					m.mu.Unlock()
+				}
+				frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Url{Url: u}, CallbackPort: port})
 				return
 			}
 		}
@@ -373,6 +380,47 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Done{Done: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}})
 		return nil
 	}
+}
+
+// CallbackPort returns the OAuth callback port of the in-flight authorization for
+// name. ok is false when none is running or its URL announced no loopback port, so
+// a relay can only ever reach a listener an authorization started.
+func (m *Manager) CallbackPort(name string) (uint32, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	port := m.inflight[name]
+	return port, port != 0
+}
+
+// ErrNoCallback: no in-flight authorization is waiting on a callback for the name
+// → FAILED_PRECONDITION.
+var ErrNoCallback = errors.New("no authorization is waiting for a callback")
+
+// CompleteCallback is the paste-back path: it replays the browser's failed
+// redirect (http://localhost:<port>/...) against the host's callback listener.
+// The URL must be loopback and on the announced port, so it cannot be used to
+// reach anything else.
+func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) error {
+	port, ok := m.CallbackPort(name)
+	if !ok {
+		return ErrNoCallback
+	}
+	target, err := callbackTarget(rawURL, port)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("replay callback: %w", err)
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 // SetDefault sets or clears the attach-by-default mark for a registered server

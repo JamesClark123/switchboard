@@ -3,8 +3,12 @@ package mcp
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -402,5 +406,30 @@ func TestAddRemoteWithHeaders(t *testing.T) {
 	}
 	if n := len(readLog(t, env.log)); n != 3 { // the one good add + its re-list (ls + auth status)
 		t.Errorf("refused adds must not reach the CLI; log = %v", readLog(t, env.log))
+	}
+}
+
+func TestCompleteCallbackReplaysOnTheAnnouncedPortOnly(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotQuery = r.URL.RawQuery }))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	m := NewManager(nil, nil, "h", nil)
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:1/cb"); !errors.Is(err, ErrNoCallback) {
+		t.Fatalf("no in-flight auth: err = %v, want ErrNoCallback", err)
+	}
+	m.inflight["notion"] = uint32(port)
+	if p, ok := m.CallbackPort("notion"); !ok || p != uint32(port) {
+		t.Fatalf("CallbackPort = %d, %v", p, ok)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:1/cb"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("wrong port: err = %v, want ErrInvalidArgs", err)
+	}
+	if err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb?code=abc"); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if gotQuery != "code=abc" {
+		t.Errorf("listener saw query %q", gotQuery)
 	}
 }

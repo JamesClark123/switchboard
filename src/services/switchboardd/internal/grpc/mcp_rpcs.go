@@ -45,7 +45,7 @@ func mcpStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, mcp.ErrInvalidArgs):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, mcp.ErrLocalNotAcknowledged), errors.Is(err, mcp.ErrAuthInProgress):
+	case errors.Is(err, mcp.ErrLocalNotAcknowledged), errors.Is(err, mcp.ErrAuthInProgress), errors.Is(err, mcp.ErrNoCallback):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
@@ -94,6 +94,18 @@ func (s *Server) AuthorizeMcpServer(req *pb.AuthorizeMcpServerRequest, stream pb
 		_ = stream.Send(f)
 	})
 	return mcpStatus(err)
+}
+
+// CompleteMcpAuthCallback replays a pasted browser redirect against the host's
+// OAuth callback listener (paste-back fallback for a remote daemon).
+func (s *Server) CompleteMcpAuthCallback(ctx context.Context, req *pb.CompleteMcpAuthCallbackRequest) (*pb.CompleteMcpAuthCallbackResponse, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	if err := s.mcp.CompleteCallback(ctx, req.GetName(), req.GetCallbackUrl()); err != nil {
+		return nil, mcpStatus(err)
+	}
+	return &pb.CompleteMcpAuthCallbackResponse{}, nil
 }
 
 func (s *Server) SetMcpServerDefault(ctx context.Context, req *pb.SetMcpServerDefaultRequest) (*pb.McpServer, error) {

@@ -377,3 +377,44 @@ func TestAttachMcpServerRPC(t *testing.T) {
 		t.Errorf("unavailable: %v", err)
 	}
 }
+
+// The OAuth callback relay only reaches a listener an in-flight authorization
+// announced; with none running both entry points refuse (FAILED_PRECONDITION).
+func TestMcpAuthCallbackEntryPointsRefuseWithoutAnInflightAuthorization(t *testing.T) {
+	env := startMcpServer(t, available)
+
+	_, err := env.client.CompleteMcpAuthCallback(context.Background(), &pb.CompleteMcpAuthCallbackRequest{Name: "notion", CallbackUrl: "http://localhost:4000/cb"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("CompleteMcpAuthCallback code = %v, want FailedPrecondition", status.Code(err))
+	}
+
+	stream, err := env.client.ForwardPort(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(&pb.PortForwardFrame{Frame: &pb.PortForwardFrame_Open_{
+		Open: &pb.PortForwardFrame_Open{McpAuthName: "notion", LocalPort: 4000},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("ForwardPort code = %v, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestMcpAuthorizeStreamCarriesNoCallbackPortWhenURLHasNone(t *testing.T) {
+	env := startMcpServer(t, available)
+	stream, err := env.client.AuthorizeMcpServer(context.Background(), &pb.AuthorizeMcpServerRequest{Name: "notion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		f, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		if f.GetUrl() != "" && f.GetCallbackPort() != 0 {
+			t.Errorf("url without redirect_uri must not announce a port, got %d", f.GetCallbackPort())
+		}
+	}
+}

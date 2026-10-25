@@ -18,8 +18,11 @@ type McpAuthUpdate struct {
 	URL      string
 	Message  string
 	Deadline time.Time
-	Done     *pb.McpAuthState // terminal frame
-	Err      string           // terminal host diagnostic; the registration is unchanged
+	// CallbackPort is the loopback port of the host's OAuth callback listener (0 if
+	// none was announced); a client on another machine relays it.
+	CallbackPort uint32
+	Done         *pb.McpAuthState // terminal frame
+	Err          string           // terminal host diagnostic; the registration is unchanged
 }
 
 func (c *Conn) ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error) {
@@ -59,7 +62,7 @@ func (c *Conn) AuthorizeMcpServer(ctx context.Context, name string, onUpdate fun
 		if err != nil {
 			return state, err
 		}
-		u := McpAuthUpdate{URL: f.GetUrl(), Message: f.GetMessage(), Err: f.GetError()}
+		u := McpAuthUpdate{URL: f.GetUrl(), Message: f.GetMessage(), Err: f.GetError(), CallbackPort: f.GetCallbackPort()}
 		if d := f.GetDeadlineUnix(); d > 0 {
 			u.Deadline = time.Unix(d, 0)
 		}
@@ -79,6 +82,13 @@ func (c *Conn) AuthorizeMcpServer(ctx context.Context, name string, onUpdate fun
 		return pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED, errors.New(hostErr)
 	}
 	return state, nil
+}
+
+// CompleteMcpAuthCallback is the paste-back fallback: it hands the daemon the
+// browser's failed http://localhost:<port>/... redirect to replay on its host.
+func (c *Conn) CompleteMcpAuthCallback(ctx context.Context, name, callbackURL string) error {
+	_, err := c.API().CompleteMcpAuthCallback(ctx, &pb.CompleteMcpAuthCallbackRequest{Name: name, CallbackUrl: callbackURL})
+	return err
 }
 
 func (c *Conn) SetMcpServerDefault(ctx context.Context, name string, on bool) (*pb.McpServer, error) {

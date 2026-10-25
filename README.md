@@ -283,7 +283,11 @@ that daemon only:
   Registration never waits on a browser: `A` runs the authorization step separately, shows the
   authorization link **in the TUI** (open it where you are — it is never opened on the daemon's
   host) and waits up to **10 minutes**; `esc` cancels and the registration is kept as
-  unauthorized. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
+  unauthorized. On a **remote** daemon the provider redirects your browser to
+  `http://localhost:<port>`, which is the host's callback listener; the TUI binds that same port
+  on your machine and relays it to the host for the duration of the wait, so it just works. If the
+  port is busy locally (or press `p`), paste the address your browser failed to load and the
+  daemon replays it on the host. `d` removes a server (confirmed) and relays any `sbx secret rm` hints the
   runtime prints. The register form's **Headers** field takes one `Name: value` per line for a
   remote endpoint (each becomes a `--header` flag); write a credential as `${placeholder}` and store
   its value as the secret `mcp:<server>:<placeholder>` under **Secrets** (below) — the gateway fills it

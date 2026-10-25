@@ -40,6 +40,7 @@ service SwitchboardMcpGatewayAdditions {
   // terminal frame. Bounded at 10 minutes daemon-side; the client cancelling the
   // stream cancels the wait. The registration is never changed by any outcome.
   rpc AuthorizeMcpServer(AuthorizeMcpServerRequest) returns (stream McpAuthProgress);
+  rpc CompleteMcpAuthCallback(CompleteMcpAuthCallbackRequest) returns (CompleteMcpAuthCallbackResponse);
 
   // Sets or clears the attach-by-default mark for a registered server (FR-080).
   // NOT_FOUND when the name is not registered on this host.
@@ -151,7 +152,11 @@ message McpAuthProgress {
     string error = 4;                // terminal: host diagnostic (registration unchanged)
   }
   int64 deadline_unix = 5;           // set on every frame so the client can show time remaining
+  uint32 callback_port = 6;          // loopback OAuth callback port on the host (with `url`); 0 if none
 }
+
+message CompleteMcpAuthCallbackRequest { string name = 1; string callback_url = 2; }
+message CompleteMcpAuthCallbackResponse {}
 
 message SetMcpServerDefaultRequest { string name = 1; bool attach_by_default = 2; }
 message SetMcpAttachModeRequest { McpAttachMode mode = 1; }

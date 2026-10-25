@@ -151,3 +151,37 @@ func TestFindURL(t *testing.T) {
 		t.Errorf("real transcript URLs = %q", found)
 	}
 }
+
+func TestCallbackPort(t *testing.T) {
+	cases := map[string]uint32{
+		"https://auth.example.com/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A34567%2Fcallback": 34567,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fcb":                    8080,
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A9000%2Fcb":                9000,
+		"https://auth.example.com/authorize?client_id=x":                                                        0, // no redirect_uri
+		"https://auth.example.com/authorize?redirect_uri=https%3A%2F%2Fexample.com%3A443%2Fcb":                  0, // not loopback
+		"https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%2Fcb":                           0, // no port
+		"::not a url": 0,
+	}
+	for in, want := range cases {
+		if got := callbackPort(in); got != want {
+			t.Errorf("callbackPort(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestCallbackTarget(t *testing.T) {
+	got, err := callbackTarget(" http://localhost:34567/callback?code=abc&state=s ", 34567)
+	if err != nil || got != "http://localhost:34567/callback?code=abc&state=s" {
+		t.Errorf("got %q, %v", got, err)
+	}
+	for _, bad := range []string{
+		"http://evil.example.com:34567/cb", // not loopback
+		"http://localhost:1/cb",            // not the announced port
+		"ftp://localhost:34567/cb",         // not http
+		"nonsense",
+	} {
+		if _, err := callbackTarget(bad, 34567); err == nil {
+			t.Errorf("callbackTarget(%q) should be rejected", bad)
+		}
+	}
+}

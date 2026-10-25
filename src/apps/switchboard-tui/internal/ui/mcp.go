@@ -2,16 +2,19 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -34,6 +37,7 @@ type mcpState struct {
 	host     string
 	hostName string
 	daemon   Daemon
+	remote   bool // the daemon is on another machine, so its OAuth callback needs relaying
 
 	servers     []*pb.McpServer
 	settings    *pb.McpGatewaySettings
@@ -67,6 +71,21 @@ type mcpAuthWait struct {
 	messages []string
 	ch       chan tea.Msg
 	cancel   context.CancelFunc
+
+	// Remote daemons only: the provider redirects the browser to
+	// http://localhost:<callbackPort>, which is relayed to the host (tunnel) or, if
+	// that port is unavailable here, pasted back by the developer.
+	callbackPort uint32
+	tunnel       bool   // the local relay is listening
+	tunnelErr    string // why it could not be, shown with the paste prompt
+	pasting      bool
+	paste        textinput.Model
+	pasteErr     string
+}
+
+type mcpPasteMsg struct {
+	host, name string
+	err        error
 }
 
 // --- messages ---
@@ -101,7 +120,7 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, daemon: row.daemon, loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, daemon: row.daemon, remote: row.kind != "local", loading: true}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -189,9 +208,32 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	switch {
 	case v.auth != nil:
-		if msg.String() == "esc" {
-			v.auth.cancel() // the daemon kills the wait; the end message follows
-			v.status = "cancelling authorization of " + v.auth.name + "…"
+		w := v.auth
+		if w.pasting {
+			switch msg.String() {
+			case "esc":
+				w.pasting = false
+			case "enter":
+				if url := strings.TrimSpace(w.paste.Value()); url != "" {
+					w.pasteErr = ""
+					return m, m.mcpPasteCmd(v.daemon, v.host, w.name, url)
+				}
+			default:
+				var cmd tea.Cmd
+				w.paste, cmd = w.paste.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		}
+		switch msg.String() {
+		case "esc":
+			w.cancel() // the daemon kills the wait; the end message follows
+			v.status = "cancelling authorization of " + w.name + "…"
+		case "p":
+			if v.remote && w.callbackPort != 0 {
+				w.pasting = true
+				w.paste.Focus()
+			}
 		}
 		return m, nil
 	case v.pending != nil:
@@ -458,6 +500,27 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 	if u.URL != "" {
 		w.url = u.URL
 	}
+	if u.CallbackPort != 0 && m.mcpView.remote && w.callbackPort == 0 {
+		w.callbackPort = u.CallbackPort
+		w.paste = textinput.New()
+		w.paste.Placeholder = fmt.Sprintf("http://localhost:%d/…", u.CallbackPort)
+		w.paste.CharLimit = 4096
+		w.paste.Width = 60
+		opener, _ := m.mcpView.daemon.(forward.Opener)
+		var err error
+		if opener == nil {
+			err = errors.New("no relay available for this daemon")
+		} else {
+			err = m.forwards.OpenAuth(opener, w.name, u.CallbackPort)
+		}
+		if err != nil {
+			w.tunnelErr = err.Error()
+			w.pasting = true // fall back straight to paste-back
+			w.paste.Focus()
+		} else {
+			w.tunnel = true
+		}
+	}
 	if !u.Deadline.IsZero() {
 		w.deadline = u.Deadline
 	}
@@ -476,6 +539,7 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	v.auth = nil
+	m.forwards.Close(forward.AuthKey(msg.name))
 	switch {
 	case msg.err != nil:
 		v.status = "error: " + msg.err.Error()
@@ -488,6 +552,30 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.mcpLoadCmd(v.daemon, v.host)
+}
+
+func (m Model) mcpPasteCmd(d Daemon, host, name, url string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpOpTimeout)
+		defer cancel()
+		return mcpPasteMsg{host: host, name: name, err: d.CompleteMcpAuthCallback(ctx, name, url)}
+	}
+}
+
+// applyMcpPaste reports the paste-back outcome; on success the daemon's wait ends
+// on its own and the end message follows.
+func (m Model) applyMcpPaste(msg mcpPasteMsg) (tea.Model, tea.Cmd) {
+	w := m.mcpView.auth
+	if w == nil || w.name != msg.name || m.mcpView.host != msg.host {
+		return m, nil
+	}
+	if msg.err != nil {
+		w.pasteErr = msg.err.Error()
+		return m, nil
+	}
+	w.pasting = false
+	w.messages = append(w.messages, "callback delivered — waiting for the provider to confirm…")
+	return m, nil
 }
 
 // --- rendering ---
@@ -607,6 +695,23 @@ func (m Model) mcpModal() string {
 		}
 		for _, l := range w.messages {
 			lines = append(lines, dimStyle.Render(l))
+		}
+		switch {
+		case w.pasting:
+			lines = append(lines, "")
+			if w.tunnelErr != "" {
+				lines = append(lines, statusErrStyle.Render("could not relay the callback here: "+w.tunnelErr))
+			}
+			lines = append(lines,
+				"After approving, your browser will fail to load http://localhost:"+fmt.Sprint(w.callbackPort)+"/…",
+				"Paste that full address here:",
+				w.paste.View())
+			if w.pasteErr != "" {
+				lines = append(lines, statusErrStyle.Render(w.pasteErr))
+			}
+			lines = append(lines, helpStyle.Render("enter submit · esc back"))
+		case w.tunnel:
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("callback relayed from localhost:%d to the host · p paste the address instead", w.callbackPort)))
 		}
 		lines = append(lines, "", dimStyle.Render(fmt.Sprintf("time remaining %s · esc cancels (the registration is kept)", remaining)))
 		inner = lipgloss.JoinVertical(lipgloss.Left, lines...)

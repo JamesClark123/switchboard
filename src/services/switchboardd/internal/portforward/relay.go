@@ -150,3 +150,8 @@ func pipe(stream PortForwardStream, conn net.Conn) error {
 	}
 	return sendErr
 }
+
+// Pipe copies bytes between a ForwardPort stream and conn until either side
+// closes. It is the relay core for callers that dial their own target, such as the
+// MCP OAuth callback relay.
+func Pipe(stream PortForwardStream, conn net.Conn) error { return pipe(stream, conn) }

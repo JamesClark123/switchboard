@@ -1,12 +1,16 @@
 package ui
 
 import (
+	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -390,5 +394,90 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	m, _ = update(m, ctrlS())
 	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "remote endpoints only") {
 		t.Errorf("headers on a host command should be refused; status %q", m.mcpView.status)
+	}
+}
+
+// openerDaemon lets a fakeDaemon satisfy forward.Opener; its streams never carry
+// traffic here, the tests only observe whether the callback listener exists.
+type openerDaemon struct{ *fakeDaemon }
+
+func (openerDaemon) ForwardPort(context.Context) (pb.Switchboard_ForwardPortClient, error) {
+	return nil, errors.New("not connected")
+}
+
+func authFrameModel(t *testing.T, remote bool, port uint32, d Daemon) (Model, *fakeDaemon) {
+	t.Helper()
+	fd := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize", CallbackPort: port}}}
+	m := mcpModel(t, fd)
+	m.mcpView.remote = remote
+	if d == nil {
+		d = fd
+	} else if od, ok := d.(openerDaemon); ok {
+		od.fakeDaemon = fd
+		d = od
+	}
+	m.mcpView.daemon = d
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	return m, fd
+}
+
+func TestMcpAuthRemoteRelaysTheCallbackPort(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Port(forward.AuthKey("notion")) != port || !m.mcpView.auth.tunnel {
+		t.Fatalf("a remote authorization should listen on the callback port; port %d", m.forwards.Port(forward.AuthKey("notion")))
+	}
+	if !strings.Contains(m.View(), "relayed") {
+		t.Errorf("modal should say the callback is relayed:\n%s", m.View())
+	}
+	m, _ = update(m, press("esc")) // cancel; the end message tears the relay down
+	m = drainMcp(m, func() tea.Msg { return mcpAuthEndMsg{host: m.mcpView.host, name: "notion"} })
+	if m.forwards.Count() != 0 {
+		t.Error("the relay must close when the wait ends")
+	}
+}
+
+func TestMcpAuthLocalDaemonOpensNoRelay(t *testing.T) {
+	m, fd := authFrameModel(t, false, 45678, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	if m.forwards.Count() != 0 || m.mcpView.auth.callbackPort != 0 {
+		t.Error("a local daemon's callback is already on this machine; no relay")
+	}
+}
+
+func TestMcpAuthBusyPortFallsBackToPasteBack(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer func() { _ = ln.Close() }()
+	port := uint32(ln.Addr().(*net.TCPAddr).Port)
+	m, fd := authFrameModel(t, true, port, openerDaemon{})
+	defer close(fd.mcpAuthGate)
+	w := m.mcpView.auth
+	if w.tunnel || !w.pasting || w.tunnelErr == "" {
+		t.Fatalf("a busy port should open the paste prompt; tunnel %v pasting %v err %q", w.tunnel, w.pasting, w.tunnelErr)
+	}
+	for _, r := range "http://localhost:1/cb?code=abc" {
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, cmd := update(m, press("enter"))
+	m, _ = update(m, runCmd(cmd))
+	if len(fd.mcpPasted) != 1 || fd.mcpPasted[0] != "http://localhost:1/cb?code=abc" {
+		t.Errorf("pasted = %v", fd.mcpPasted)
+	}
+	if m.mcpView.auth.pasting {
+		t.Error("a delivered callback should leave the paste prompt")
+	}
+}
+
+func TestMcpAuthPKeyOffersPasteBackOnlyWhenRemote(t *testing.T) {
+	m, fd := authFrameModel(t, false, 0, nil)
+	defer close(fd.mcpAuthGate)
+	m, _ = update(m, press("p"))
+	if m.mcpView.auth.pasting {
+		t.Error("p must do nothing for a local daemon")
 	}
 }

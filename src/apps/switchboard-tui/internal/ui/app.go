@@ -88,6 +88,9 @@ type Daemon interface {
 	AddMcpServer(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error)
 	RemoveMcpServer(ctx context.Context, name string) ([]string, error)
 	AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error)
+	// CompleteMcpAuthCallback replays a pasted browser redirect on the daemon's host
+	// (paste-back fallback for a remote authorization).
+	CompleteMcpAuthCallback(ctx context.Context, name, callbackURL string) error
 	SetMcpServerDefault(ctx context.Context, name string, on bool) (*pb.McpServer, error)
 	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
 	// Attaches a registered server to an existing sandbox on this daemon (FR-102).
@@ -782,6 +785,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyMcpAuth(msg)
 	case mcpAuthEndMsg:
 		return m.applyMcpAuthEnd(msg)
+	case mcpPasteMsg:
+		return m.applyMcpPaste(msg)
 	case opStartedMsg:
 		return m.handleOpStarted(msg)
 	case opProgressMsg:
