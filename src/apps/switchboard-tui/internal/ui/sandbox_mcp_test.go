@@ -458,8 +458,8 @@ func TestMcpServersDetachConfirmIsNeutralAndGuardsReentrancy(t *testing.T) {
 func TestMcpServersDetachStatusVariants(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{{Name: "pw", Kind: pb.McpServerKind_MCP_SERVER_KIND_LOCAL, Transport: "stdio"}}}
 	m := openMcpOverlay(t, mcpOverlayModel(t, d)) // notion attached but NOT registered
-	m, cmd := update(m, press("d"))
-	m, cmd = update(m, press("y"))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
 	m, cmd = update(m, runCmd(cmd))
 	m, reload := update(m, runDetach(t, cmd))
 	m, _ = update(m, runCmd(reload)) // the wording waits for the refreshed list

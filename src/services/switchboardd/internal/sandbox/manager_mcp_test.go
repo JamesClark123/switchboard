@@ -680,3 +680,50 @@ func TestAttachCollisionOffersDetachWhenTheOtherServerIsAttached(t *testing.T) {
 		t.Errorf("no detach remedy when the other server is not on this sandbox: %v", err)
 	}
 }
+
+// Review (PR #3, run 87): sbx knows a sandbox by its display name (tried first);
+// the id is only a fallback. A "not loaded" from the real handle must win over the
+// fallback's "not found" instead of being overwritten by it.
+func TestDetachToleranceComesFromTheHandleThatReachedTheSandbox(t *testing.T) {
+	for _, tc := range []struct{ out, warn string }{
+		{`error: MCP server "notion" is not loaded in sandbox "sb"`, "was not loaded in the sandbox"},
+		{`error: MCP server "notion" is not registered (run 'sbx mcp add notion ...')`, "no longer registered on this host"},
+	} {
+		m, runner, sb := attachedSandbox(t, "notion")
+		refs := sbxRefs(sb)
+		if len(refs) != 2 {
+			t.Fatalf("precondition: a named sandbox has two handles; got %v", refs)
+		}
+		runner.unloadErrRef = map[string]string{
+			refs[0] + " notion": tc.out,
+			refs[1] + " notion": `error: sandbox "` + refs[1] + `" not found`,
+		}
+		var logs []string
+		out, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", func(l string) { logs = append(logs, l) })
+		if err != nil || len(out.GetMcpServers()) != 0 {
+			t.Fatalf("%q: want the record dropped; got %v / %v", tc.out, out.GetMcpServers(), err)
+		}
+		if !strings.Contains(strings.Join(logs, "\n"), tc.warn) {
+			t.Errorf("%q: want %q in the log; got %v", tc.out, tc.warn, logs)
+		}
+		// The matching handle ends the search: the fallback is never tried.
+		if got := strings.Count(strings.Join(runner.mcpUnloads, ","), "notion"); got != 1 {
+			t.Errorf("%q: unload attempts = %v, want only the display name", tc.out, runner.mcpUnloads)
+		}
+	}
+
+	// A real failure on the right handle (nothing tolerable on either) still fails,
+	// and leaves the record alone.
+	m, runner, sb := attachedSandbox(t, "notion")
+	refs := sbxRefs(sb)
+	runner.unloadErrRef = map[string]string{
+		refs[0] + " notion": "error: gateway unreachable",
+		refs[1] + " notion": `error: sandbox "` + refs[1] + `" not found`,
+	}
+	if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); err == nil {
+		t.Fatal("an untolerated failure must fail the detach")
+	}
+	if p, _ := m.Get(sb.GetId()); strings.Join(p.GetMcpServers(), ",") != "notion" {
+		t.Errorf("record = %v, want notion kept", p.GetMcpServers())
+	}
+}

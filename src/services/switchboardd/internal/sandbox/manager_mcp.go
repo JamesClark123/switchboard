@@ -171,7 +171,10 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		return nil, fmt.Errorf("%w: %s", ErrMcpNotAttached, name)
 	}
 	logLine, captured := captureOutput(onLog)
-	var failedOut string
+	// tolerated is set by the handle whose output says this server is not loaded
+	// (or no longer registered): that handle reached the right sandbox, so the
+	// search stops there instead of being overwritten by a later handle's "not found".
+	var tolerated string
 	if !mcp.SafeArg(name) {
 		// A legacy record (written before names were checked) whose name could be
 		// misread as a flag: it cannot be handed to the CLI, but it must not be
@@ -185,26 +188,30 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		defer cancel()
 		captured.Reset()
 		e := m.runner.UnloadMcp(uctx, r, name, logLine)
-		if e != nil {
-			failedOut = captured.String() // what the last failing attempt printed
+		if e == nil {
+			return nil
+		}
+		// Classify on what sbx PRINTED for this handle (its full streamed output),
+		// never on the error string: that starts with the command line — which
+		// always contains the server's name — and keeps only the last few lines of
+		// output, so a phrase printed earlier would be missed (same reason attach
+		// builds its collision hint from the captured output).
+		switch out := captured.String(); {
+		case mcp.LooksNotLoaded(out):
+			tolerated = fmt.Sprintf("mcp: %s was not loaded in the sandbox; dropping it from the record", name)
+			return nil
+		case mcp.LooksUnregistered(out, name):
+			// Removed from the host while still recorded: the only way to clean the
+			// record. The runtime may still hold the tools, so say so in the log.
+			tolerated = fmt.Sprintf("mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
+			return nil
 		}
 		return e
 	}); err != nil {
-		// Classify on what sbx PRINTED (the full streamed output of the last failing
-		// attempt), never on the error string: that starts with the command line —
-		// which always contains the server's name — and keeps only the last few lines
-		// of output, so a phrase printed earlier would be missed (same reason attach
-		// builds its collision hint from the captured output).
-		switch {
-		case mcp.LooksNotLoaded(failedOut):
-			logDetach(onLog, "mcp: %s was not loaded in the sandbox; dropping it from the record", name)
-		case mcp.LooksUnregistered(failedOut, name):
-			// Removed from the host while still recorded: the only way to clean the
-			// record. The runtime may still hold the tools, so say so in the log.
-			logDetach(onLog, "mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
-		default:
-			return nil, err
-		}
+		return nil, err
+	}
+	if tolerated != "" {
+		logDetach(onLog, "%s", tolerated)
 	}
 
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {

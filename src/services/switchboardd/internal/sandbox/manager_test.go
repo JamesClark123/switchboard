@@ -49,6 +49,7 @@ type fakeRunner struct {
 	failLoad      map[string]bool
 	mcpUnloads    []string          // "<ref> <name>" per UnloadMcp
 	unloadErr     map[string]string // UnloadMcp fails with exactly this text for these names
+	unloadErrRef  map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
 	loadErr       map[string]string // LoadMcp streams this output and fails like SbxRunner (tail only in the error) for these names
 	loadErrRef    map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
 	launchOut     string            // with failNext: Launch streams this output before failing
@@ -410,7 +411,11 @@ func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, log func(str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mcpUnloads = append(f.mcpUnloads, ref+" "+name)
-	if msg, ok := f.unloadErr[name]; ok {
+	msg, ok := f.unloadErrRef[ref+" "+name]
+	if !ok {
+		msg, ok = f.unloadErr[name]
+	}
+	if ok {
 		// Mirror SbxRunner.run exactly: every output line is streamed, and the error
 		// is "<command line>: <exit status>" plus only the LAST few lines of output.
 		// The command line always contains the server's name.
