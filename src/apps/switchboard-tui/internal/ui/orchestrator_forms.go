@@ -390,17 +390,23 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if cur == nil {
 			return m, nil
 		}
-		od := m.daemonForHost(d.host)
-		id, evID, name := d.id, cur.GetId(), cur.GetName()
-		return m, func() tea.Msg {
-			ctx, cancel := ctxTimeout()
-			defer cancel()
-			run, err := od.FireTimedEvent(ctx, id, evID)
-			if err != nil {
-				return orchDoneMsg{err: err}
-			}
-			return orchDoneMsg{status: fmt.Sprintf("enqueued %s (%s, position %d)", name, run.GetId(), run.GetPosition()), reload: true}
+		if d.firing {
+			d.status = "an enqueue is already in progress"
+			return m, nil
 		}
+		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), disabled: !cur.GetEnabled()}
+		if cur.GetDedupeDisabled() {
+			// Dedupe is off, so nothing else stops a repeat: confirm, which also makes a
+			// held-down key harmless.
+			return m.enterConfirm(confirmState{
+				title:     "Enqueue " + fire.name + " now?",
+				body:      []string{"Dedupe is off for this event, so this queues another run", "even if one of its runs is already queued or running."},
+				warning:   "Another run will be queued; the schedule is not changed.",
+				returnTo:  screenOrchDetail,
+				onConfirm: func() tea.Msg { return fire },
+			})
+		}
+		return m.startOrchFire(fire)
 	case " ":
 		if cur == nil {
 			return m, nil
@@ -426,6 +432,39 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// orchFireStartMsg is an accepted Enqueue now (directly, or after the dedupe-off
+// confirmation): mark the Events view busy, then call the daemon.
+type orchFireStartMsg struct {
+	id, host, evID, name string
+	disabled             bool
+}
+
+func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
+	if m.orchDetail.firing {
+		m.orchDetail.status = "an enqueue is already in progress"
+		return m, nil
+	}
+	m.orchDetail.firing = true
+	od := m.daemonForHost(f.host)
+	return m, func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
+		if err != nil {
+			return orchDoneMsg{err: err}
+		}
+		where := "starting now"
+		if run.GetPosition() > 0 {
+			where = fmt.Sprintf("position %d", run.GetPosition())
+		}
+		status := fmt.Sprintf("enqueued %s (%s, %s)", f.name, run.GetId(), where)
+		if f.disabled {
+			status += " — the event is disabled; its schedule is unchanged"
+		}
+		return orchDoneMsg{status: status, reload: true}
+	}
 }
 
 func cloneEvent(ev *pb.TimedEvent) *pb.TimedEvent {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,5 +307,115 @@ func TestFireTimedEventWorksWhenDisabledAndReportsMissingThings(t *testing.T) {
 	}
 	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "action review-pr") {
 		t.Errorf("deleted action = %v", err)
+	}
+}
+
+// --- PR #4 review fixes ---
+
+// The event is read under the lock: an edit or delete that wins the lock first is
+// what FireTimedEvent sees, never a stale copy.
+func TestFireTimedEventUsesTheCurrentDefinitionAndNotADeletedOne(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+
+	// Hold the lock the way tick() does while an edit lands, then let the fire in.
+	rt.fireMu.Lock()
+	type result struct {
+		run *pb.Run
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+		done <- result{run, err}
+	}()
+	time.Sleep(20 * time.Millisecond) // let it block on fireMu
+	upd := pollEvent()
+	upd.Id = ev.GetId()
+	upd.Arguments = map[string]string{"number": "99", "repo": "acme/web"}
+	if _, err := env.svc.PutTimedEvent(o.GetId(), upd); err != nil {
+		t.Fatal(err)
+	}
+	rt.fireMu.Unlock()
+	r := <-done
+	if r.err != nil || r.run.GetArguments()["number"] != "99" {
+		t.Fatalf("the fire must use the definition current at lock time: %+v / %v", r.run, r.err)
+	}
+
+	// A delete that wins the lock first makes the fire fail NotFound, not queue.
+	rt.fireMu.Lock()
+	go func() {
+		run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+		done <- result{run, err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := env.svc.DeleteTimedEvent(o.GetId(), ev.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	before := runCount(t, env, o.GetId())
+	rt.fireMu.Unlock()
+	if r := <-done; !errors.Is(r.err, ErrNotFound) {
+		t.Errorf("a deleted event must not fire; run %+v err %v", r.run, r.err)
+	}
+	if n := runCount(t, env, o.GetId()); n != before {
+		t.Errorf("a deleted event queued a run: %d -> %d", before, n)
+	}
+}
+
+// Dedupe holds across concurrent manual fires and a scheduled tick: exactly one
+// run is queued.
+func TestFireTimedEventConcurrentWithTickQueuesOne(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var ok, refused atomic.Int32
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); err == nil {
+				ok.Add(1)
+			} else if errors.Is(err, ErrPrecondition) {
+				refused.Add(1)
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); <-start; env.clock.Advance(time.Minute) }() // the scheduled slot comes due too
+	close(start)
+	wg.Wait()
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("dedupe must hold under concurrency: %d runs (ok %d, refused %d)", n, ok.Load(), refused.Load())
+	}
+}
+
+func TestFireTimedEventAwaitingReviewRefusalSaysHowToClearIt(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := env.reg.GetRun(o.GetId(), run.GetId())
+	stored.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
+	if err := env.reg.PutRun(stored); err != nil {
+		t.Fatal(err)
+	}
+	_, err = env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "awaiting review") || !strings.Contains(err.Error(), "mark the worker free") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The position is where the run queued (>= 1), even when a free worker takes it
+// immediately.
+func TestFireTimedEventPositionIsNeverZeroWithAFreeWorker(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 1, false)
+	ev, _ := env.svc.PutTimedEvent(o.GetId(), pollEvent())
+	run, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId())
+	if err != nil || run.GetPosition() != 1 {
+		t.Errorf("position = %d, err %v; want 1", run.GetPosition(), err)
 	}
 }

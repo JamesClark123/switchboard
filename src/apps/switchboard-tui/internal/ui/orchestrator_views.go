@@ -41,6 +41,7 @@ type orchDetailState struct {
 	cursors        [orchViewCount]int
 	loading        bool
 	status         string
+	firing         bool // an Enqueue now is in flight (refuses key-repeat / double presses)
 	// Hosts view: the copy-from-my-hosts picker.
 	hostPick    bool
 	hostChoices []store.KnownHost

@@ -68,10 +68,13 @@ func (rt *runtime) callAction(action string, args map[string]string, kind pb.Eve
 	if err := rt.svc.reg.PutRun(run); err != nil {
 		return nil, err
 	}
+	// The position is read before dispatch can pick the run up, so the caller sees
+	// where it queued (>= 1) rather than 0 when a free worker takes it at once.
+	pos := rt.position(run.GetId())
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
 	out := proto.Clone(run).(*pb.Run)
-	out.Position = rt.position(run.GetId())
+	out.Position = pos
 	return out, nil
 }
 

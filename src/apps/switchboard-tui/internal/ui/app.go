@@ -704,6 +704,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyOrchRows(msg)
 	case orchDetailMsg:
 		return m.applyOrchDetail(msg)
+	case orchFireStartMsg:
+		return m.startOrchFire(msg)
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
 	case reasoningRebuildMsg:

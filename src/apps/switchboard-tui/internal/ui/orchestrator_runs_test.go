@@ -422,3 +422,84 @@ func TestEventsViewEnqueueNowWithNoEventsDoesNothing(t *testing.T) {
 		t.Error("n with no events must do nothing")
 	}
 }
+
+// --- PR #4 review fixes ---
+
+func eventsModel(t *testing.T, ev *pb.TimedEvent, a *fakeDaemon) Model {
+	t.Helper()
+	a.orchestrators = []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host", Actions: []*pb.Action{reviewAction()}, TimedEvents: []*pb.TimedEvent{ev}}}}
+	m := openDetail(t, sized(New(a, "/work")))
+	m.orchDetail.view = viewEvents
+	return m
+}
+
+// With dedupe off, nothing else stops a repeat: n asks first, so a held-down key
+// queues nothing until confirmed, and a confirmed fire queues exactly one.
+func TestEnqueueNowWithDedupeOffConfirmsFirst(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	m, cmd := update(m, press("n"))
+	if m.screen != screenConfirm || cmd != nil {
+		t.Fatalf("n with dedupe off should open a confirm; screen %v", m.screen)
+	}
+	if v := m.View(); !strings.Contains(v, "Enqueue poll now?") || !strings.Contains(v, "Dedupe is off") {
+		t.Errorf("confirm text: %s", v)
+	}
+	// Repeated n presses on the dialog do nothing (it ignores unknown keys).
+	for i := 0; i < 5; i++ {
+		m, cmd = update(m, press("n")) // n cancels: back to the events view, no RPC
+	}
+	if strings.Contains(a.orchCallsJoined(), "FireTimedEvent") {
+		t.Fatalf("cancel must not fire: %q", a.orchCallsJoined())
+	}
+	m, _ = update(m, press("n"))
+	m, cmd = update(m, press("y"))
+	m = feed2(m, cmd)
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent o-a tev-1"); got != 1 {
+		t.Errorf("confirmed fire should call once; calls %q", a.orchCallsJoined())
+	}
+}
+
+// While one enqueue is in flight a second n is refused (key auto-repeat guard);
+// the guard clears when the reply lands.
+func TestEnqueueNowRefusesASecondPressWhileInFlight(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, first := update(m, press("n"))
+	if first == nil || !m.orchDetail.firing {
+		t.Fatal("first n should dispatch and mark firing")
+	}
+	m, second := update(m, press("n"))
+	if second != nil || !strings.Contains(m.orchDetail.status, "already in progress") {
+		t.Errorf("second n: cmd %v status %q", second != nil, m.orchDetail.status)
+	}
+	m = feed2(m, first)
+	if m.orchDetail.firing {
+		t.Error("the guard must clear when the reply arrives")
+	}
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
+		t.Errorf("exactly one call expected; %q", a.orchCallsJoined())
+	}
+	// ...and a failure clears it too.
+	a.orchErr = errors.New("boom")
+	m, c := update(m, press("n"))
+	m = feed2(m, c)
+	if m.orchDetail.firing {
+		t.Error("the guard must clear after an error")
+	}
+}
+
+func TestEnqueueNowStatusWording(t *testing.T) {
+	a := &fakeDaemon{orchRun: &pb.Run{Id: "run-9", Position: 0}}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: false}, a)
+	m, cmd := update(m, press("n"))
+	m = feed2(m, cmd)
+	for _, want := range []string{"enqueued poll (run-9, starting now)", "the event is disabled"} {
+		if !strings.Contains(m.status, want) {
+			t.Errorf("status %q missing %q", m.status, want)
+		}
+	}
+	if strings.Contains(m.status, "position 0") {
+		t.Errorf("never print position 0: %q", m.status)
+	}
+}

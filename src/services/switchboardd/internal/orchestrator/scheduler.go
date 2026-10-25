@@ -139,6 +139,10 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Take the lock first and read the event under it, as tick() does, so an edit
+	// or delete racing this call can never queue a stale or just-deleted definition.
+	rt.fireMu.Lock()
+	defer rt.fireMu.Unlock()
 	var ev *pb.TimedEvent
 	for _, e := range rt.record().GetTimedEvents() {
 		if e.GetId() == eventID {
@@ -149,11 +153,13 @@ func (s *Service) FireTimedEvent(id, eventID string) (*pb.Run, error) {
 	if ev == nil {
 		return nil, fmt.Errorf("%w: event %s", ErrNotFound, eventID)
 	}
-	rt.fireMu.Lock()
-	defer rt.fireMu.Unlock()
 	if !ev.GetDedupeDisabled() {
 		if open := rt.openRunFor(ev.GetId()); open != nil {
-			return nil, fmt.Errorf("%w: run %s of %s is already %s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()))
+			hint := ""
+			if open.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
+				hint = " (mark the worker free in the Queue view to clear it)"
+			}
+			return nil, fmt.Errorf("%w: run %s of %s is already %s%s", ErrPrecondition, open.GetId(), ev.GetName(), runStateLabel(open.GetState()), hint)
 		}
 	}
 	return rt.callAction(ev.GetAction(), ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, ev.GetId(), ev.GetName())

@@ -176,6 +176,7 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
+	m.orchDetail.firing = false
 	if msg.err != nil {
 		m.status = "error: " + msg.err.Error()
 		m.err = msg.err
