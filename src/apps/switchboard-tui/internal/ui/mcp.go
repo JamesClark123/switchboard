@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -216,12 +217,13 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				w.pasting = false
 			case "enter":
 				if url := strings.TrimSpace(w.paste.Value()); url != "" {
-					if err := checkPastedCallback(url, w.callbackPort); err != nil {
+					norm, err := checkPastedCallback(url, w.callbackPort)
+					if err != nil {
 						w.pasteErr = err.Error() // fast feedback before a round trip
 						return m, nil
 					}
 					w.pasteErr = ""
-					return m, m.mcpPasteCmd(v.daemon, v.host, w.name, url)
+					return m, m.mcpPasteCmd(v.daemon, v.host, w.name, norm)
 				}
 			default:
 				var cmd tea.Cmd
@@ -516,12 +518,14 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 		if opener == nil {
 			err = errors.New("no relay available for this daemon")
 		} else {
-			err = m.forwards.OpenAuth(opener, w.name, u.CallbackPort)
+			err = m.forwards.OpenAuth(opener, m.mcpView.host, w.name, u.CallbackPort)
 		}
 		if err != nil {
-			w.tunnelErr = fmt.Sprintf("port %d is in use on this machine (another program, or another sxb waiting on the same authorization)", u.CallbackPort)
-			if opener == nil {
-				w.tunnelErr = err.Error()
+			// Only an occupied port gets the friendly explanation; any other failure
+			// (no such address, permission, sandboxed TUI…) shows the real cause.
+			w.tunnelErr = err.Error()
+			if isAddrInUse(err) {
+				w.tunnelErr = fmt.Sprintf("port %d is in use on this machine (another program, or another sxb waiting on the same authorization)", u.CallbackPort)
 			}
 			w.pasting = true // fall back straight to paste-back
 			w.paste.Focus()
@@ -545,9 +549,8 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	// Release the callback relay first, even if the view has moved on: the wait is
 	// over, and a leaked listener would keep the port bound for the next attempt.
-	if v.host == msg.host || v.auth == nil {
-		m.forwards.Close(forward.AuthKey(msg.name))
-	}
+	// The key includes the host, so this can only ever close this wait's own relay.
+	m.forwards.Close(forward.AuthKey(msg.host, msg.name))
 	if v.auth == nil || v.auth.name != msg.name || v.host != msg.host {
 		return m, nil
 	}
@@ -566,22 +569,40 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 	return m, m.mcpLoadCmd(v.daemon, v.host)
 }
 
-// checkPastedCallback rejects an obviously wrong paste client-side: it must be the
-// http(s)://localhost:<port>/… address the browser failed to load. The daemon
-// validates again; this only saves a round trip and gives a clearer message.
-func checkPastedCallback(raw string, port uint32) error {
+// isAddrInUse reports whether a listen failure is "the port is already taken",
+// across platforms (Windows reports it with different codes and wording).
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	l := strings.ToLower(err.Error())
+	return strings.Contains(l, "address already in use") || strings.Contains(l, "only one usage of each socket address")
+}
+
+// checkPastedCallback validates a pasted address client-side and returns the form
+// to send: it must be the http(s)://localhost:<port>/… address the browser failed
+// to load. A missing scheme is added (Safari and address-bar copies drop it). The
+// daemon validates again; this only saves a round trip and gives a clearer message.
+func checkPastedCallback(raw string, port uint32) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
 	u, err := neturl.Parse(raw)
 	host := ""
 	if err == nil {
 		host = u.Hostname()
 	}
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
-		return fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
+		return "", fmt.Errorf("paste the address the browser failed to load: http://localhost:%d/…", port)
 	}
-	if u.Port() != strconv.Itoa(int(port)) {
-		return fmt.Errorf("that address is for port %s, expected %d", u.Port(), port)
+	switch p := u.Port(); {
+	case p == "":
+		return "", fmt.Errorf("that address has no port; expected http://localhost:%d/…", port)
+	case p != strconv.Itoa(int(port)):
+		return "", fmt.Errorf("that address is for port %s, expected %d", p, port)
 	}
-	return nil
+	return raw, nil
 }
 
 func (m Model) mcpPasteCmd(d Daemon, host, name, url string) tea.Cmd {

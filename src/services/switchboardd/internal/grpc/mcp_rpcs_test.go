@@ -3,11 +3,15 @@ package grpc_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +67,13 @@ type mcpEnv struct {
 // startMcpServer brings up a server whose gateway manager drives the stub sbx.
 func startMcpServer(t *testing.T, avail mcp.Availability) *mcpEnv {
 	t.Helper()
+	bin, sbxLog := mcpStubSbx(t)
+	return startMcpServerWith(t, avail, bin, sbxLog)
+}
+
+// startMcpServerWith is startMcpServer with a caller-supplied `sbx` stub.
+func startMcpServerWith(t *testing.T, avail mcp.Availability, bin, sbxLog string) *mcpEnv {
+	t.Helper()
 	dir := t.TempDir()
 	reg, err := registry.Open(dir)
 	if err != nil {
@@ -73,7 +84,6 @@ func startMcpServer(t *testing.T, avail mcp.Availability) *mcpEnv {
 	_ = os.MkdirAll(ws, 0o755)
 	runner := &testRunner{running: map[string]bool{}}
 	mgr := sandbox.NewManager(reg, runner, ws, "host-1")
-	bin, sbxLog := mcpStubSbx(t)
 	hub := agent.NewHub("host-1")
 	manager := mcp.NewManager(&mcp.CLI{Bin: bin}, reg, "host-1", hub.Publish)
 	srv := sbgrpc.NewServer(sbgrpc.Config{
@@ -415,6 +425,111 @@ func TestMcpAuthorizeStreamCarriesNoCallbackPortWhenURLHasNone(t *testing.T) {
 		}
 		if f.GetUrl() != "" && f.GetCallbackPort() != 0 {
 			t.Errorf("url without redirect_uri must not announce a port, got %d", f.GetCallbackPort())
+		}
+	}
+}
+
+// PR #1: the OAuth callback relay end to end over real gRPC streams. A stub `sbx
+// mcp auth` prints a link whose redirect_uri points at a loopback listener and
+// then keeps running; the daemon announces that port, ForwardPort(mcp_auth_name)
+// relays raw bytes to it, and CompleteMcpAuthCallback replays a pasted address.
+func TestMcpAuthCallbackRelayAndPasteBackOverGRPC(t *testing.T) {
+	var hits atomic.Int32
+	var lastQuery atomic.Value
+	cb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		lastQuery.Store(r.URL.RawQuery)
+		_, _ = w.Write([]byte("callback-ok"))
+	}))
+	defer cb.Close()
+	port := cb.Listener.Addr().(*net.TCPAddr).Port
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	script := "#!/usr/bin/env bash\ncase \"$1 $2\" in\n  \"mcp auth\")\n    echo 'Open this URL to authorize MCP server \"notion\":'\n" +
+		fmt.Sprintf("    echo 'https://auth.example.com/authorize?client_id=x&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A%d%%2Fcb'\n", port) +
+		"    sleep 30 ;;\n  *) exit 0 ;;\nesac\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := startMcpServerWith(t, available, bin, filepath.Join(dir, "sbx.log"))
+
+	actx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	auth, err := env.client.AuthorizeMcpServer(actx, &pb.AuthorizeMcpServerRequest{Name: "notion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var announced uint32
+	for announced == 0 {
+		f, err := auth.Recv()
+		if err != nil {
+			t.Fatalf("auth stream ended before the link: %v", err)
+		}
+		if f.GetUrl() != "" {
+			announced = f.GetCallbackPort()
+			if announced != uint32(port) {
+				t.Fatalf("announced port = %d, want %d", announced, port)
+			}
+		}
+	}
+
+	// A relay for the wrong port, or for a name with no wait, is refused.
+	for name, open := range map[string]*pb.PortForwardFrame_Open{
+		"wrong port":   {McpAuthName: "notion", LocalPort: uint32(port) + 1},
+		"unknown name": {McpAuthName: "ghost", LocalPort: uint32(port)},
+	} {
+		s, err := env.client.ForwardPort(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Send(&pb.PortForwardFrame{Frame: &pb.PortForwardFrame_Open_{Open: open}})
+		if _, err := s.Recv(); err == nil {
+			t.Errorf("%s: the relay must be refused", name)
+		}
+	}
+
+	// The relay: Opened, then raw HTTP over the stream reaches the listener.
+	s, err := env.client.ForwardPort(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Send(&pb.PortForwardFrame{Frame: &pb.PortForwardFrame_Open_{Open: &pb.PortForwardFrame_Open{McpAuthName: "notion", LocalPort: uint32(port)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := s.Recv(); err != nil || f.GetOpened() == nil {
+		t.Fatalf("expected opened, got %v / %v", f, err)
+	}
+	req := "GET /cb?code=abc&state=s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+	if err := s.Send(&pb.PortForwardFrame{Frame: &pb.PortForwardFrame_Data{Data: []byte(req)}}); err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	for !strings.Contains(got.String(), "callback-ok") {
+		f, err := s.Recv()
+		if err != nil {
+			t.Fatalf("relay ended early (%q): %v", got.String(), err)
+		}
+		got.Write(f.GetData())
+	}
+	if lastQuery.Load() != "code=abc&state=s" {
+		t.Errorf("the listener saw %v", lastQuery.Load())
+	}
+
+	// Paste-back: success replays on the announced port; a foreign host or port is refused.
+	before := hits.Load()
+	if _, err := env.client.CompleteMcpAuthCallback(context.Background(), &pb.CompleteMcpAuthCallbackRequest{Name: "notion", CallbackUrl: fmt.Sprintf("http://localhost:%d/cb?code=zzz", port)}); err != nil {
+		t.Fatalf("CompleteMcpAuthCallback: %v", err)
+	}
+	if hits.Load() != before+1 || lastQuery.Load() != "code=zzz" {
+		t.Errorf("the pasted callback must reach the listener once; hits %d query %v", hits.Load()-before, lastQuery.Load())
+	}
+	for name, u := range map[string]string{
+		"foreign host": fmt.Sprintf("http://evil.example.com:%d/cb", port),
+		"other port":   fmt.Sprintf("http://localhost:%d/cb", port+1),
+	} {
+		if _, err := env.client.CompleteMcpAuthCallback(context.Background(), &pb.CompleteMcpAuthCallbackRequest{Name: "notion", CallbackUrl: u}); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: code = %v, want InvalidArgument", name, status.Code(err))
 		}
 	}
 }

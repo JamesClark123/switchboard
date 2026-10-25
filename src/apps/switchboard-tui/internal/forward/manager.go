@@ -101,8 +101,10 @@ func (m *Manager) Open(opener Opener, sandboxID, instanceID string) (uint32, err
 	return port, nil
 }
 
-// AuthKey is the forward key for an MCP server's OAuth callback relay.
-func AuthKey(name string) string { return "mcp-auth:" + name }
+// AuthKey is the forward key for an MCP server's OAuth callback relay on one host.
+// The host is part of the key so the same server name authorized on two daemons
+// can never share (or inherit) a relay and its opener.
+func AuthKey(host, name string) string { return "mcp-auth:" + host + ":" + name }
 
 // OpenAuth binds 127.0.0.1:port on the developer's machine and relays accepted
 // connections to the OAuth callback listener of the in-flight authorization for
@@ -112,9 +114,9 @@ func AuthKey(name string) string { return "mcp-auth:" + name }
 //
 // Unlike Open the port is dictated (it is baked into the redirect_uri), so a port
 // already in use is an error the caller answers with the paste-back fallback.
-// Close it with Close(AuthKey(name)).
-func (m *Manager) OpenAuth(opener Opener, name string, port uint32) error {
-	key := AuthKey(name)
+// Close it with Close(AuthKey(host, name)).
+func (m *Manager) OpenAuth(opener Opener, host, name string, port uint32) error {
+	key := AuthKey(host, name)
 	m.mu.Lock()
 	if _, ok := m.forwards[key]; ok {
 		m.mu.Unlock()
@@ -124,7 +126,7 @@ func (m *Manager) OpenAuth(opener Opener, name string, port uint32) error {
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return fmt.Errorf("%w: port %d: %v", ErrNoLocalPort, port, err)
+		return fmt.Errorf("%w: port %d: %w", ErrNoLocalPort, port, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &forward{instanceID: key, authName: name, localPort: port, listener: ln, cancel: cancel}

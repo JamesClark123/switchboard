@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -436,13 +437,13 @@ func TestOpenAuthBindsTheDictatedPortAndNamesTheAuthorization(t *testing.T) {
 	opener := &fakeOpener{target: echoServer(t)}
 	m := NewManager()
 	port := freePort(t)
-	if err := m.OpenAuth(opener, "notion", port); err != nil {
+	if err := m.OpenAuth(opener, "h1", "notion", port); err != nil {
 		t.Fatalf("OpenAuth: %v", err)
 	}
-	if got := m.Port(AuthKey("notion")); got != port {
+	if got := m.Port(AuthKey("h1", "notion")); got != port {
 		t.Fatalf("port = %d, want %d", got, port)
 	}
-	if err := m.OpenAuth(opener, "notion", port); err != nil || m.Count() != 1 {
+	if err := m.OpenAuth(opener, "h1", "notion", port); err != nil || m.Count() != 1 {
 		t.Errorf("OpenAuth should be idempotent; err %v count %d", err, m.Count())
 	}
 
@@ -461,7 +462,7 @@ func TestOpenAuthBindsTheDictatedPortAndNamesTheAuthorization(t *testing.T) {
 		t.Fatalf("open frames = %+v", frames)
 	}
 
-	m.Close(AuthKey("notion"))
+	m.Close(AuthKey("h1", "notion"))
 	if _, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))); err == nil {
 		t.Error("closing the auth forward must release the port")
 	}
@@ -474,8 +475,36 @@ func TestOpenAuthFailsWhenThePortIsBusy(t *testing.T) {
 	}
 	defer func() { _ = ln.Close() }()
 	m := NewManager()
-	err = m.OpenAuth(&fakeOpener{}, "notion", uint32(ln.Addr().(*net.TCPAddr).Port))
+	err = m.OpenAuth(&fakeOpener{}, "h1", "notion", uint32(ln.Addr().(*net.TCPAddr).Port))
 	if !errors.Is(err, ErrNoLocalPort) || m.Count() != 0 {
 		t.Errorf("err = %v count = %d, want ErrNoLocalPort and no forward", err, m.Count())
+	}
+}
+
+// Review (PR #1, run 32): the same server name on two hosts never shares a relay,
+// and the underlying listen error stays inspectable.
+func TestOpenAuthIsKeyedByHostAndKeepsTheListenCause(t *testing.T) {
+	m := NewManager()
+	pa, pb := freePort(t), freePort(t)
+	if err := m.OpenAuth(&fakeOpener{}, "host-a", "notion", pa); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.OpenAuth(&fakeOpener{}, "host-b", "notion", pb); err != nil {
+		t.Fatal(err)
+	}
+	if m.Count() != 2 || m.Port(AuthKey("host-a", "notion")) != pa || m.Port(AuthKey("host-b", "notion")) != pb {
+		t.Fatalf("two hosts must hold two relays; count %d", m.Count())
+	}
+	m.Close(AuthKey("host-a", "notion"))
+	if m.Count() != 1 || m.Port(AuthKey("host-b", "notion")) != pb {
+		t.Error("closing host A's relay must not touch host B's")
+	}
+	m.CloseAll()
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer func() { _ = ln.Close() }()
+	err := m.OpenAuth(&fakeOpener{}, "host-a", "notion", uint32(ln.Addr().(*net.TCPAddr).Port))
+	if !errors.Is(err, ErrNoLocalPort) || !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("both the sentinel and the cause must be wrapped: %v", err)
 	}
 }

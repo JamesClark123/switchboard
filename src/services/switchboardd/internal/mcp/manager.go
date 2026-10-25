@@ -53,8 +53,9 @@ type Manager struct {
 	hostID string
 	emit   func(*pb.Event) // nil-safe; Event.mcp_gateway_changed after every change
 
-	mu       sync.Mutex
-	inflight map[string]uint32 // names with an authorization wait running -> its OAuth callback port (0 until announced)
+	mu               sync.Mutex
+	warnedNoCallback bool              // warnNoCallback has logged
+	inflight         map[string]uint32 // names with an authorization wait running -> its OAuth callback port (0 until announced)
 }
 
 // NewManager wires a Manager; emit may be nil.
@@ -350,9 +351,7 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 				urlSent = true
 				port := callbackPort(u)
 				if port == 0 {
-					// Remote callback relaying degrades to the old behaviour; make that
-					// diagnosable (the exact redirect_uri shape sbx prints is unverified).
-					log.Printf("[mcp] authorize %s: link has no usable loopback redirect_uri; remote callback relay/paste-back unavailable", name)
+					m.warnNoCallback(name)
 				}
 				if port != 0 {
 					m.mu.Lock()
@@ -385,6 +384,20 @@ func (m *Manager) Authorize(ctx context.Context, name string, onFrame func(*pb.M
 		frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Error{Error: err.Error()}})
 		frame(&pb.McpAuthProgress{Event: &pb.McpAuthProgress_Done{Done: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}})
 		return nil
+	}
+}
+
+// warnNoCallback logs, once per daemon run, that an authorization link carried no
+// usable loopback redirect_uri (remote callback relay/paste-back unavailable).
+// Local daemons legitimately hit this on every authorization, so it must not
+// repeat; the exact redirect_uri shape sbx prints is unverified (research R2).
+func (m *Manager) warnNoCallback(name string) {
+	m.mu.Lock()
+	first := !m.warnedNoCallback
+	m.warnedNoCallback = true
+	m.mu.Unlock()
+	if first {
+		log.Printf("[mcp] authorize %s: link has no usable loopback redirect_uri; remote callback relay/paste-back unavailable (logged once)", name)
 	}
 }
 
@@ -426,6 +439,13 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 		return fmt.Errorf("replay callback: %w", err)
 	}
 	_ = resp.Body.Close()
+	// A redirect to the provider-style error page (…?error=access_denied) is a
+	// rejection too, not a delivery.
+	if loc, lerr := resp.Location(); lerr == nil {
+		if e := loc.Query().Get("error"); e != "" {
+			return fmt.Errorf("the callback was answered with an authorization error (%s) — the provider rejected the sign-in", e)
+		}
+	}
 	if resp.StatusCode >= 400 {
 		// The listener rejected it (state mismatch, expired code, …): say so rather
 		// than let the developer wait out the 10-minute timeout.
@@ -438,7 +458,9 @@ func (m *Manager) CompleteCallback(ctx context.Context, name, rawURL string) err
 // follows a redirect (the listener answers with one to its "success" page, which
 // must not become a request to another host) and never uses a proxy.
 var callbackClient = &http.Client{
-	Transport: &http.Transport{Proxy: nil},
+	// No proxy, and no keep-alive: the listener is one-shot, so an idle pooled
+	// connection to it would only linger (IdleConnTimeout 0 = forever).
+	Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
 	CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	},

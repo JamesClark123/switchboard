@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -437,8 +439,8 @@ func TestCompleteCallbackReplaysOnTheAnnouncedPortOnly(t *testing.T) {
 // Review fixes (PR #1): the replay reports a rejected callback and never follows
 // the listener's redirect to another host.
 func TestCompleteCallbackReportsRejectionAndDoesNotFollowRedirects(t *testing.T) {
-	var elsewhereHit bool
-	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhereHit = true }))
+	var elsewhereHit atomic.Bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhereHit.Store(true) }))
 	defer elsewhere.Close()
 
 	status := http.StatusBadRequest
@@ -463,11 +465,47 @@ func TestCompleteCallbackReportsRejectionAndDoesNotFollowRedirects(t *testing.T)
 	if err := m.CompleteCallback(context.Background(), "notion", base+"/redirect"); err != nil {
 		t.Errorf("a 3xx from the listener is acceptance, not an error: %v", err)
 	}
-	if elsewhereHit {
+	if elsewhereHit.Load() {
 		t.Error("the replay must not follow the listener's redirect to another host")
 	}
 	status = http.StatusOK
 	if err := m.CompleteCallback(context.Background(), "notion", base+"/cb?code=ok"); err != nil {
 		t.Errorf("2xx: %v", err)
+	}
+}
+
+// Review (PR #1, run 32): keep-alives are off, an error redirect is a rejection,
+// and the no-redirect_uri warning is logged once per daemon run.
+func TestCallbackClientDisablesKeepAlives(t *testing.T) {
+	tr, ok := callbackClient.Transport.(*http.Transport)
+	if !ok || !tr.DisableKeepAlives || tr.Proxy != nil {
+		t.Errorf("callbackClient transport must have no proxy and no keep-alive: %+v", callbackClient.Transport)
+	}
+}
+
+func TestCompleteCallbackTreatsAnErrorRedirectAsRejection(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://auth.example.com/done?error=access_denied", http.StatusFound)
+	}))
+	defer listener.Close()
+	port := listener.Listener.Addr().(*net.TCPAddr).Port
+	m := NewManager(nil, nil, "h", nil)
+	m.inflight["notion"] = uint32(port)
+	err := m.CompleteCallback(context.Background(), "notion", "http://localhost:"+strconv.Itoa(port)+"/cb?code=x")
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Errorf("an error redirect must be reported; err = %v", err)
+	}
+}
+
+func TestWarnNoCallbackLogsOnce(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	m := NewManager(nil, nil, "h", nil)
+	m.warnNoCallback("a")
+	m.warnNoCallback("b")
+	m.warnNoCallback("a")
+	if n := strings.Count(buf.String(), "no usable loopback redirect_uri"); n != 1 {
+		t.Errorf("warning logged %d times, want 1:\n%s", n, buf.String())
 	}
 }

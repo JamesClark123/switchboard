@@ -430,8 +430,8 @@ func TestMcpAuthRemoteRelaysTheCallbackPort(t *testing.T) {
 	_ = ln.Close()
 	m, fd := authFrameModel(t, true, port, openerDaemon{})
 	defer close(fd.mcpAuthGate)
-	if m.forwards.Port(forward.AuthKey("notion")) != port || !m.mcpView.auth.tunnel {
-		t.Fatalf("a remote authorization should listen on the callback port; port %d", m.forwards.Port(forward.AuthKey("notion")))
+	if m.forwards.Port(forward.AuthKey(m.mcpView.host, "notion")) != port || !m.mcpView.auth.tunnel {
+		t.Fatalf("a remote authorization should listen on the callback port; port %d", m.forwards.Port(forward.AuthKey(m.mcpView.host, "notion")))
 	}
 	if !strings.Contains(m.View(), "relayed") {
 		t.Errorf("modal should say the callback is relayed:\n%s", m.View())
@@ -491,15 +491,26 @@ func TestMcpAuthPKeyOffersPasteBackOnlyWhenRemote(t *testing.T) {
 }
 
 func TestCheckPastedCallback(t *testing.T) {
-	for _, ok := range []string{"http://localhost:4000/cb?code=x", "https://127.0.0.1:4000/", "http://[::1]:4000/cb"} {
-		if err := checkPastedCallback(ok, 4000); err != nil {
-			t.Errorf("%q should be accepted: %v", ok, err)
+	for in, want := range map[string]string{
+		"http://localhost:4000/cb?code=x": "http://localhost:4000/cb?code=x",
+		"https://127.0.0.1:4000/":         "https://127.0.0.1:4000/",
+		"http://[::1]:4000/cb":            "http://[::1]:4000/cb",
+		"localhost:4000/cb?code=x":        "http://localhost:4000/cb?code=x", // browsers that drop the scheme
+		"  127.0.0.1:4000/cb  ":           "http://127.0.0.1:4000/cb",
+	} {
+		got, err := checkPastedCallback(in, 4000)
+		if err != nil || got != want {
+			t.Errorf("%q: got %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", "nonsense", "ftp://localhost:4000/", "http://evil.example.com:4000/", "http://localhost:4001/cb", "http://localhost/cb"} {
-		if err := checkPastedCallback(bad, 4000); err == nil {
+	for _, bad := range []string{"", "nonsense", "ftp://localhost:4000/", "http://evil.example.com:4000/", "http://localhost:4001/cb"} {
+		if _, err := checkPastedCallback(bad, 4000); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}
+	}
+	// No port: say so instead of printing 'port , expected N'.
+	if _, err := checkPastedCallback("http://localhost/cb", 4000); err == nil || strings.Contains(err.Error(), "port ,") || !strings.Contains(err.Error(), "no port") {
+		t.Errorf("empty port message = %v", err)
 	}
 }
 
@@ -517,5 +528,36 @@ func TestMcpAuthEndClosesRelayEvenWhenViewMovedOn(t *testing.T) {
 	m, _ = update(m, mcpAuthEndMsg{host: m.mcpView.host, name: "notion"})
 	if m.forwards.Count() != 0 {
 		t.Error("the relay must close when the wait ends")
+	}
+}
+
+func TestIsAddrInUse(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer func() { _ = ln.Close() }()
+	_, err := net.Listen("tcp", ln.Addr().String())
+	if !isAddrInUse(err) {
+		t.Errorf("a real EADDRINUSE must match: %v", err)
+	}
+	for _, e := range []error{errors.New("listen tcp 127.0.0.1:80: bind: permission denied"), errors.New("cannot assign requested address")} {
+		if isAddrInUse(e) {
+			t.Errorf("%v must not match", e)
+		}
+	}
+	if !isAddrInUse(errors.New("Only one usage of each socket address (protocol/network address/port) is normally permitted")) {
+		t.Error("the Windows wording must match")
+	}
+}
+
+// The busy-port text is only for a port that is actually taken; any other failure
+// shows its real cause.
+func TestMcpAuthOtherListenFailuresShowTheRealCause(t *testing.T) {
+	m, fd := authFrameModel(t, true, 1, openerDaemon{}) // port 1: privileged, the bind fails (EACCES) unless root
+	defer close(fd.mcpAuthGate)
+	w := m.mcpView.auth
+	if w.tunnel {
+		t.Skip("running as a user that can bind port 1")
+	}
+	if strings.Contains(w.tunnelErr, "is in use") || w.tunnelErr == "" {
+		t.Errorf("a non-EADDRINUSE failure must show the real error; tunnelErr = %q", w.tunnelErr)
 	}
 }
