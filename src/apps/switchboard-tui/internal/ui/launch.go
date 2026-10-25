@@ -387,7 +387,7 @@ func (m Model) openLaunchOrchPick() (tea.Model, tea.Cmd) {
 		}
 	}
 	if len(choices) == 0 {
-		m.launch.progress = "no reachable orchestrator can reach " + m.launchTargetLabel() + " — add this host to one on the Orchestrators screen"
+		m.launch.progress = "no reachable orchestrator can reach " + m.launchTargetLabel() + " — add this host to one under Daemons › Orchestrators"
 		return m, m.orchLoadCmd()
 	}
 	m.launch.orchChoices = choices

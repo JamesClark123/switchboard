@@ -10,24 +10,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// openDetail opens the first row's detail and loads it.
-func openDetail(t *testing.T, m Model) Model {
-	t.Helper()
-	m = openOrchScreen(m)
-	if len(m.orch.rows) == 0 {
-		t.Fatal("no rows")
-	}
-	m, cmd := update(m, press("enter"))
-	return feed(m, cmd)
-}
-
 func TestHostsViewAddRemoveAndCycle(t *testing.T) {
 	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot", &pb.OrchestratorHost{HostId: "hostb", DisplayName: "beta", SshTarget: "me@beta", Reachable: true})}}
 	b := &fakeDaemon{}
 	m, _, _ := twoFakeHosts(t, a, b)
 	m = openDetail(t, m)
 
-	// left/right cycle the six views (wrapping) and keep per-view cursors.
+	// left/right cycle the three views (wrapping) and keep per-view cursors.
 	if m.orchDetail.view != viewWorkers {
 		t.Fatalf("initial view = %v", m.orchDetail.view)
 	}
@@ -35,7 +24,7 @@ func TestHostsViewAddRemoveAndCycle(t *testing.T) {
 	if m.orchDetail.view != viewHosts {
 		t.Errorf("left from Workers should wrap to Hosts, got %v", m.orchDetail.view)
 	}
-	for _, want := range []string{"Workers", "Actions", "Queue", "Events", "Reasoning", "Hosts", "beta", "me@beta", "reachable"} {
+	for _, want := range []string{"Workers", "Reasoning", "Hosts", "beta", "me@beta", "reachable"} {
 		if !strings.Contains(m.View(), want) {
 			t.Errorf("hosts view missing %q", want)
 		}
@@ -137,10 +126,7 @@ func TestDetailHelpAndEmptyViews(t *testing.T) {
 	m = openDetail(t, m)
 	// Per-view keys that act on a highlighted row are no-ops on an empty view
 	// and never open a form.
-	noOps := map[orchView][]string{
-		viewWorkers: {"x", "m"}, viewActions: {"e", "d", "enter"}, viewQueue: {"enter", "x", "m"},
-		viewEvents: {"e", "d", " "}, viewHosts: {"d"},
-	}
+	noOps := map[orchView][]string{viewWorkers: {"x", "m"}, viewHosts: {"d"}}
 	// (The Reasoning view's e/b always act: there is always a reasoning sandbox
 	// to rebuild, present or lost — see orchestrator_reasoning_test.go.)
 	for v := orchView(0); v < orchViewCount; v++ {
@@ -177,8 +163,11 @@ func TestDetailHelpAndEmptyViews(t *testing.T) {
 	if !strings.Contains(a.orchCallsJoined(), "GetOrchestrator o-a") {
 		t.Errorf("detail should re-fetch on orchestrator_changed: %q", a.orchCallsJoined())
 	}
-	// Settings from the detail keeps the strip on Orchestrators.
-	if m.topLevel() != screenOrchestrators {
-		t.Error("detail belongs to the Orchestrators top level")
+	// The detail belongs to the Daemons top level (Daemons › Orchestrators).
+	if m.topLevel() != screenDaemons {
+		t.Error("detail belongs to the Daemons top level")
+	}
+	if !strings.Contains(m.renderHelp(m.orchDetailHelp()), "orchestrators") {
+		t.Error("esc's hint names where it returns")
 	}
 }

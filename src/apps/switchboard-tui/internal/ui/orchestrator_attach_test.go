@@ -20,8 +20,7 @@ func attachEnv(t *testing.T, orchHosts ...*pb.OrchestratorHost) (Model, *fakeDae
 	a.orchestrators = []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "review-bot", HostId: "hosta", Hosts: orchHosts}}}
 	m, _, _ := twoFakeHosts(t, a, b)
 	m = feed2(m, m.listDataCmd())
-	m = openOrchScreen(m) // the TUI knows the orchestrator rows
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = feed(m, m.orchLoadCmd()) // the TUI knows the orchestrator rows
 	m.refreshListItems()
 	return m, a, b
 }

@@ -162,12 +162,16 @@ const (
 	screenMcp
 	screenSecrets
 	screenSettings
-	// feature 009: the third top-level screen in the shift+←/→ cycle, and the
-	// per-orchestrator detail (six views) beneath it.
-	screenOrchestrators
+	// feature 009: the per-orchestrator detail (Workers, Reasoning, Hosts since
+	// feature 010), opened from Daemons › <daemon> › Orchestrators.
 	screenOrchDetail
 	// the `o` attach picker over the sandbox list (orchestrator_attach.go)
 	screenAttachPick
+	// feature 010: the Jobs screen, third in the shift+←/→ cycle (jobs.go), and a
+	// daemon's Orchestrators section under the Daemons screen
+	// (daemon_orchestrators.go).
+	screenJobs
+	screenDaemonOrchs
 )
 
 // Model is the root Bubble Tea model.
@@ -329,17 +333,21 @@ type Model struct {
 	settingsView  settingsState
 	signIn        signInState
 
-	// --- feature 009: the Orchestrators screen and the open detail ---
+	// --- feature 009: the orchestrator rows and the open detail ---
 	orch       orchState
 	orchDetail orchDetailState
-	// orchFires are the Enqueue now calls in flight, by orchestrator id -> the call's
-	// token. On the model (a shared map), not on orchDetail, because opening a detail
-	// replaces orchDetail: re-opening mid-call must still see the call and refuse a second.
+	// orchFires are the Enqueue now calls in flight, by orchestrator (target key) ->
+	// the call's token. On the model (a shared map) so the guard holds across every
+	// tab and surface, and across leaving and re-entering the screen (research R9).
 	orchFires map[string]uint64
 	attach    attachState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
+
+	// --- feature 010: the Jobs screen and Daemons › Orchestrators ---
+	jobs        jobsState
+	daemonOrchs daemonOrchsState
 
 	quitting bool
 }
@@ -668,7 +676,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.listLoading = false
 		m.rebuildTabs()
 		m.refreshListItems()
-		return m, m.subscribeHostsCmd(msg.hosts)
+		return m, tea.Batch(m.subscribeHostsCmd(msg.hosts), m.jobsSyncHostsCmd())
 
 	case statusMsg:
 		m.status = string(msg)
@@ -719,10 +727,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case orchFireStartMsg:
 		return m.startOrchFire(msg)
 	case orchHintExpiredMsg:
-		if m.orchDetail.id == msg.orch && m.orchDetail.status == msg.text {
-			m.orchDetail.status = ""
+		if op := m.opState(msg.sink); op.hintKey == msg.orch && op.status == msg.text {
+			op.status = ""
 		}
 		return m, nil
+	case jobsLoadedMsg:
+		return m.applyJobsLoaded(msg)
+	case jobsHostMsg:
+		return m.applyJobsHost(msg)
+	case jobsOrchMsg:
+		return m.applyJobsOrch(msg)
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
 	case reasoningRebuildMsg:
@@ -739,7 +753,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hostsMsg:
 		out, cmd := m.applyHosts(msg)
 		m = out.(Model)
-		return m, tea.Batch(cmd, m.subscribeHostsCmd([]client.HostSandboxes(msg)))
+		return m, tea.Batch(cmd, m.subscribeHostsCmd([]client.HostSandboxes(msg)), m.jobsSyncHostsCmd())
 
 	case browseMsg:
 		return m.applyBrowse(msg)
@@ -898,7 +912,7 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.advanceSecretsForm(msg)
 		}
 		return m, nil
-	case screenOrchestrators, screenOrchDetail:
+	case screenDaemonOrchs, screenOrchDetail, screenJobs:
 		return m.forwardOrchestrators(msg)
 	case screenDaemons, screenList:
 		if m.hosts.connecting && m.hosts.pwMode != pwHostsScreen {
@@ -974,8 +988,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSecretsKey(msg)
 	case screenSettings:
 		return m.updateSettingsKey(msg)
-	case screenOrchestrators:
-		return m.updateOrchestratorsKey(msg)
+	case screenDaemonOrchs:
+		return m.updateDaemonOrchsKey(msg)
+	case screenJobs:
+		return m.updateJobsKey(msg)
 	case screenOrchDetail:
 		return m.updateOrchDetailKey(msg)
 	case screenAttachPick:
@@ -1002,8 +1018,10 @@ func (m Model) View() string {
 	if m.screen == screenConfirm {
 		var bg string
 		switch m.confirm.returnTo {
-		case screenOrchestrators:
-			bg = m.chrome(m.viewOrchestrators(), m.confirmHelp())
+		case screenDaemonOrchs:
+			bg = m.chrome(m.viewDaemonOrchs(), m.confirmHelp())
+		case screenJobs:
+			bg = m.chrome(m.viewJobs(), m.confirmHelp())
 		case screenOrchDetail:
 			bg = m.chrome(m.viewOrchDetail(), m.confirmHelp())
 		default:
@@ -1054,6 +1072,12 @@ func (m Model) View() string {
 		return overlayCenter(bg, m.mcpModal(), m.width, m.height)
 	}
 
+	// Open results (feature 010) floats over the Jobs screen.
+	if m.screen == screenJobs && m.jobs.results != nil {
+		bg := m.chrome(m.viewJobs(), m.runResultsHelp())
+		return overlayCenter(bg, m.runResultsModal(), m.width, m.height)
+	}
+
 	// The in-place terminal view takes the full body (US2).
 	if m.screen == screenTerminal {
 		return m.chrome(m.viewTerminal(), m.terminalHelp())
@@ -1094,8 +1118,10 @@ func (m Model) View() string {
 		body, hb = m.viewSecrets(), m.secretsHelp()
 	case screenSettings:
 		body, hb = m.viewSettings(), m.settingsHelp()
-	case screenOrchestrators:
-		body, hb = m.viewOrchestrators(), m.orchestratorsHelp()
+	case screenDaemonOrchs:
+		body, hb = m.viewDaemonOrchs(), m.daemonOrchsHelp()
+	case screenJobs:
+		body, hb = m.viewJobs(), m.jobsHelp()
 	case screenOrchDetail:
 		body, hb = m.viewOrchDetail(), m.orchDetailHelp()
 	default:
@@ -1182,7 +1208,7 @@ func (m Model) header() string {
 	}
 	// Feature 009 (FR-143): the three top-level screens are named on the header
 	// line itself, the current one highlighted, so the cycle is discoverable
-	// without costing a body line.
+	// without costing a body line (Jobs replaced Orchestrators in feature 010).
 	strip := "   " + m.screenStrip()
 	gap := m.width - lipgloss.Width(title) - lipgloss.Width(strip) - lipgloss.Width(right)
 	if gap < 2 {
@@ -1196,22 +1222,24 @@ func (m Model) header() string {
 }
 
 // topLevel maps the current screen onto the top-level screen it belongs to.
-func (m Model) topLevel() screen {
-	switch m.screen {
-	case screenDaemons, screenMcp, screenSecrets:
+func (m Model) topLevel() screen { return m.topLevelOf(m.screen) }
+
+func (m Model) topLevelOf(sc screen) screen {
+	switch sc {
+	case screenDaemons, screenMcp, screenSecrets, screenDaemonOrchs, screenOrchDetail:
 		return screenDaemons
-	case screenOrchestrators, screenOrchDetail:
-		return screenOrchestrators
+	case screenJobs:
+		return screenJobs
 	case screenSettings:
-		return m.settingsView.returnTo
+		return m.topLevelOf(m.settingsView.returnTo)
 	case screenConfirm:
-		return m.confirm.returnTo
+		return m.topLevelOf(m.confirm.returnTo)
 	}
 	return screenList
 }
 
-// screenStrip renders `Sandboxes · Daemons · Orchestrators  (shift+←/→)` with the
-// current top-level screen highlighted.
+// screenStrip renders `Sandboxes · Daemons · Jobs  (shift+←/→)` with the current
+// top-level screen highlighted.
 func (m Model) screenStrip() string {
 	cur := m.topLevel()
 	name := func(sc screen, label string) string {
@@ -1221,17 +1249,17 @@ func (m Model) screenStrip() string {
 		return dimStyle.Render(label)
 	}
 	return name(screenList, "Sandboxes") + dimStyle.Render(" · ") + name(screenDaemons, "Daemons") +
-		dimStyle.Render(" · ") + name(screenOrchestrators, "Orchestrators") + dimStyle.Render("  (shift+←/→)")
+		dimStyle.Render(" · ") + name(screenJobs, "Jobs") + dimStyle.Render("  (shift+←/→)")
 }
 
 // screenNextLabel / screenPrevLabel name the screen shift+→ / shift+← reaches
-// from the current top-level screen (FR-143).
+// from the current top-level screen; the cycle wraps (FR-001).
 func (m Model) screenNextLabel() string {
 	switch m.topLevel() {
 	case screenDaemons:
-		return "orchestrators"
-	case screenOrchestrators:
-		return ""
+		return "jobs"
+	case screenJobs:
+		return "sandboxes"
 	}
 	return "daemons"
 }
@@ -1240,10 +1268,10 @@ func (m Model) screenPrevLabel() string {
 	switch m.topLevel() {
 	case screenDaemons:
 		return "sandboxes"
-	case screenOrchestrators:
+	case screenJobs:
 		return "daemons"
 	}
-	return ""
+	return "jobs"
 }
 
 // screenNextKey / screenPrevKey are the shift-arrow bindings with the label of

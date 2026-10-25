@@ -630,6 +630,9 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keyIs(msg, m.keys.ScreenNext):
 		return m.enterDaemons()
+	case keyIs(msg, m.keys.ScreenPrev):
+		// The top-level cycle wraps: shift+← from the list reaches Jobs (FR-001).
+		return m.enterJobs(screenList)
 	case keyIs(msg, m.keys.OrchestratedTab):
 		return m.toggleOrchTab()
 	case keyIs(msg, m.keys.Settings):

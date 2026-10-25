@@ -16,7 +16,8 @@ import (
 //
 // Scripted fields live on fakeDaemon (launch_test.go): orchestrators (the rows
 // ListOrchestrators returns), orchDetail (GetOrchestrator; built from the
-// matching summary when nil), orchRuns (ListRuns), orchBundle, orchRun (the Run
+// matching summary when nil), orchRuns (ListRuns; orchRunsByID per orchestrator
+// when set), orchBundle, orchRun (the Run
 // CallAction/MarkWorkerFree/CancelRun return when set), orchErr (returned by
 // every call when set) and orchCalls, which records "Method args" so a test can
 // assert exactly what reached the daemon.
@@ -303,10 +304,18 @@ func (f *fakeDaemon) ListRuns(_ context.Context, id string) (*pb.ListRunsRespons
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.orchRuns != nil {
-		return f.orchRuns, nil
+	return f.runsOf(id), nil
+}
+
+// runsOf is the scripted runs of one orchestrator (caller holds mu).
+func (f *fakeDaemon) runsOf(id string) *pb.ListRunsResponse {
+	if r, ok := f.orchRunsByID[id]; ok {
+		return r
 	}
-	return &pb.ListRunsResponse{}, nil
+	if f.orchRuns != nil {
+		return f.orchRuns
+	}
+	return &pb.ListRunsResponse{}
 }
 
 func (f *fakeDaemon) GetRun(_ context.Context, id, runID string) (*pb.Run, error) {
@@ -315,7 +324,8 @@ func (f *fakeDaemon) GetRun(_ context.Context, id, runID string) (*pb.Run, error
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, group := range [][]*pb.Run{f.orchRuns.GetQueued(), f.orchRuns.GetInFlight(), f.orchRuns.GetHistory()} {
+	runs := f.runsOf(id)
+	for _, group := range [][]*pb.Run{runs.GetQueued(), runs.GetInFlight(), runs.GetHistory()} {
 		for _, r := range group {
 			if r.GetId() == runID {
 				return r, nil

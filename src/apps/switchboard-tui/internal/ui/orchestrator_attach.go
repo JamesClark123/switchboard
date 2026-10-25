@@ -222,7 +222,7 @@ func (m Model) attachModal() string {
 	a := m.attach
 	rows := []string{sectionStyle.Render("Attach " + a.sandbox.GetDisplayName() + " to an orchestrator"), ""}
 	if len(a.choices) == 0 {
-		rows = append(rows, dimStyle.Render("(no reachable orchestrator)"), dimStyle.Render("create one on the Orchestrators screen"))
+		rows = append(rows, dimStyle.Render("(no reachable orchestrator)"), dimStyle.Render("create one under Daemons › <daemon> › Orchestrators"))
 	}
 	sbHost := m.daemonHostID(a.host)
 	for i, r := range a.choices {

@@ -8,19 +8,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
-// The Orchestrators screen (feature 009, FR-142/FR-143) is the third top-level
-// screen in the shift+←/→ cycle: every orchestrator hosted by any known daemon,
-// with its machine, reachability, worker count and queue depths. Rows are
-// fanned out from ListOrchestrators on every connected host (data-model
-// "Client-side view models"); a host that is disconnected, too old or failing
-// keeps its last-known rows marked unreachable with the reason, and only
-// reading is offered on those (US1 scenario 4). Only the cursor is state, so a
-// round trip through the other screens preserves it.
+// The orchestrator list (feature 009, FR-142/FR-143): every orchestrator hosted
+// by any known daemon, with its machine, reachability, worker count and queue
+// depths. Rows are fanned out from ListOrchestrators on every connected host
+// (data-model "Client-side view models"); a host that is disconnected, too old or
+// failing keeps its last-known rows marked unreachable with the reason, and only
+// reading is offered on those (US1 scenario 4). Since feature 010 the rows back
+// Daemons › <daemon> › Orchestrators (daemon_orchestrators.go, one daemon's rows),
+// the `o` attach picker and the launch wizard's orchestrator choice; the old
+// top-level Orchestrators screen is gone (FR-001).
 
 // orchRow is one orchestrator as the screen shows it.
 type orchRow struct {
@@ -63,37 +63,35 @@ type orchState struct {
 // orchRowsMsg carries one fan-out result.
 type orchRowsMsg struct{ rows []orchRow }
 
-// orchDoneMsg reports a completed mutation (create/rename/remove/hosts) with
-// its status text, or the daemon's error verbatim.
+// orchDoneMsg reports a completed mutation (create/rename/remove/hosts, and the
+// operations of orchestrator_forms.go / run_actions.go) with its status text, or
+// the daemon's error verbatim.
 type orchDoneMsg struct {
 	status string
 	err    error
-	// reload, when set, reloads the screen rows / the open detail afterwards.
+	// reload, when set, reloads the orchestrator rows / the open detail / the
+	// Jobs data afterwards.
 	reload bool
-	// closeForm closes the detail's open form (a successful submission).
+	// closeForm closes the open form of the sink surface (a successful submission).
 	closeForm bool
+	// sink is the surface the operation was started from (its line shows a
+	// refusal); target, when set, is the orchestrator it acted on, so Jobs reloads
+	// just that one.
+	sink   orchSurface
+	target orchTarget
 	// fire marks the reply to an Enqueue now, the only reply that releases its
-	// in-flight guard (an unrelated mutation finishing must not).
+	// in-flight record (an unrelated mutation finishing must not).
 	fire bool
 	// fireEvent is the timed event a successful Enqueue now was for; it starts the
 	// repeat window (a refused or failed fire must not, so an immediate retry works).
 	fireEvent string
-	// fireToken identifies the Enqueue now this reply belongs to. Only the reply
-	// whose token is the open detail's in-flight one may release its guard or start
-	// its repeat window: the orchestrator id cannot tell apart two fires of the same
-	// orchestrator when the detail was left and re-opened in between.
+	// fireToken identifies the Enqueue now this reply belongs to; only the reply
+	// whose token is the model's in-flight record for fireKey releases it.
 	fireToken uint64
-	// fireOrchID / fireOrchName say which orchestrator the fire was for: the id releases
-	// the model's in-flight record, the name labels a late (stale) reply's footer.
-	fireOrchID   string
-	fireOrchName string
-}
-
-// enterOrchestrators switches to the screen and (re)loads its rows.
-func (m Model) enterOrchestrators() (tea.Model, tea.Cmd) {
-	m.screen = screenOrchestrators
-	m.orch.loading = true
-	return m, m.orchLoadCmd()
+	// fireKey / fireLabel say which orchestrator the fire was for: the key releases
+	// the model's in-flight record, the label names it in a refusal.
+	fireKey   string
+	fireLabel string
 }
 
 // orchHost is one host the screen fans out over.
@@ -165,8 +163,8 @@ func (m Model) orchLoadCmd() tea.Cmd {
 	}
 }
 
-// applyOrchRows installs a fan-out result, keeping the cursor on the same
-// orchestrator when it still exists.
+// applyOrchRows installs a fan-out result, keeping the Daemons › Orchestrators
+// cursor on the same orchestrator when it still exists.
 func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 	var keep string
 	if r, ok := m.orchCurrent(); ok {
@@ -176,7 +174,7 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 	m.orch.loading = false
 	m.orch.loaded = true
 	m.orch.cursor = 0
-	for i, r := range msg.rows {
+	for i, r := range m.daemonOrchRows() {
 		if r.summary.GetOrchestrator().GetId() == keep {
 			m.orch.cursor = i
 		}
@@ -192,45 +190,41 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
-	// The call is over whichever detail is open: release the model's in-flight record.
-	if msg.fire && m.orchFires[msg.fireOrchID] == msg.fireToken {
-		delete(m.orchFires, msg.fireOrchID)
-	}
-	// A fire reply is "current" only if it is the one the open detail is waiting for.
-	current := msg.fire && msg.fireToken != 0 && msg.fireToken == m.orchDetail.fireToken
-	if current {
-		m.orchDetail.firing = false
-		m.orchDetail.fireToken = 0
+	op := m.opState(msg.sink)
+	if msg.fire {
+		// The call is over: release the model's in-flight record (only its own).
+		if m.orchFires[msg.fireKey] == msg.fireToken {
+			delete(m.orchFires, msg.fireKey)
+		}
 		if msg.err == nil {
-			m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), msg.fireEvent
+			op.lastFireAt, op.lastFireKey = time.Now(), msg.fireKey+"/"+msg.fireEvent
 			// The success is on the footer; a double tap's in-progress refusal is stale now.
-			if m.orchDetail.status == enqueueInProgressText {
-				m.orchDetail.status = ""
+			if op.status == enqueueInProgressText {
+				op.status = ""
 			}
 		}
 	}
 	if msg.err != nil {
 		m.status = "error: " + msg.err.Error()
 		m.err = msg.err
-		if msg.fire && !current {
-			// A late refusal of a fire the open detail is no longer waiting for (another
-			// orchestrator, or this one re-opened since): footer only, named, so it is
-			// not read as a refusal of whatever the detail shows now.
-			m.status = "error: enqueue on " + msg.fireOrchName + ": " + msg.err.Error()
+		if msg.fire {
+			// Named, so a refusal is not read as one for whatever row is highlighted now.
+			op.status = "enqueue on " + msg.fireLabel + ": " + msg.err.Error()
+			m.status = "error: " + op.status
 			return m, nil
 		}
-		if m.screen == screenOrchDetail {
-			m.orchDetail.status = msg.err.Error()
+		if m.onSurface(msg.sink) {
+			op.status = msg.err.Error()
 		}
 		return m, nil
 	}
 	m.status = msg.status
 	m.err = nil
 	if msg.closeForm {
-		m.orchDetail.form, m.orchDetail.formVals, m.orchDetail.formKind = nil, nil, ""
-		m.orchDetail.status = ""
+		m.closeOpForm(msg.sink)
+		op.status = ""
 		// A dialog opened from the sandbox list (mark free) returns there.
-		if m.markFreeFromList && m.screen == screenOrchDetail {
+		if msg.sink == surfaceDetail && m.markFreeFromList && m.screen == screenOrchDetail {
 			m.markFreeFromList = false
 			m.screen = screenList
 			m.listLoading = true
@@ -246,43 +240,58 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenOrchDetail {
 		cmds = append(cmds, m.orchDetailLoadCmd())
 	}
+	if m.jobs.loaded {
+		if c := m.jobsReloadOrchCmd(msg.target.host, msg.target.id); msg.target.id != "" && c != nil {
+			cmds = append(cmds, c)
+		} else {
+			m.jobs.loading = true
+			cmds = append(cmds, m.jobsLoadCmd())
+		}
+	}
 	return m, tea.Batch(cmds...)
 }
 
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
-	if m.screen == screenOrchDetail {
-		m.orchDetail.status = msg.err.Error()
+	if m.onSurface(msg.sink) {
+		m.opState(msg.sink).status = msg.err.Error()
 	} else {
 		m.status = "error: " + msg.err.Error()
 	}
 	return m, nil
 }
 
-// applyRunPrompt opens the read-only prompt overlay for a run.
+// applyRunPrompt opens the read-only prompt overlay for a run on its surface.
 func (m Model) applyRunPrompt(msg runPromptMsg) (tea.Model, tea.Cmd) {
-	m.orchDetail.prompt = msg.run
+	m.opState(msg.sink).prompt = msg.run
 	return m, nil
 }
 
-// orchCurrent returns the row under the cursor.
+// orchCurrent returns the Daemons › Orchestrators row under the cursor.
 func (m Model) orchCurrent() (orchRow, bool) {
-	if len(m.orch.rows) == 0 || m.orch.cursor >= len(m.orch.rows) {
+	rows := m.daemonOrchRows()
+	if len(rows) == 0 || m.orch.cursor >= len(rows) {
 		return orchRow{}, false
 	}
-	return m.orch.rows[m.orch.cursor], true
+	return rows[m.orch.cursor], true
 }
 
-// syncOrchestratorChanged reacts to Event.orchestrator_changed: the screen's
-// rows reload when it is showing, and an open detail of that orchestrator
-// re-fetches.
+// syncOrchestratorChanged reacts to Event.orchestrator_changed: the
+// orchestrator rows reload while Daemons › Orchestrators or a detail shows, an
+// open detail of that orchestrator re-fetches, and loaded Jobs data reloads just
+// that orchestrator (research R3).
 func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	if m.screen == screenOrchestrators || m.screen == screenOrchDetail {
+	if m.screen == screenDaemonOrchs || m.screen == screenOrchDetail {
 		cmds = append(cmds, m.orchLoadCmd())
 	}
 	if m.screen == screenOrchDetail && m.orchDetail.id == orchID {
 		cmds = append(cmds, m.orchDetailLoadCmd())
+	}
+	if m.jobs.loaded {
+		if c := m.jobsReloadOrchCmd(host, orchID); c != nil {
+			cmds = append(cmds, c)
+		}
 	}
 	if len(cmds) == 0 {
 		return m, nil
@@ -293,128 +302,26 @@ func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd)
 // forwardOrchestrators routes non-key messages to an open form.
 func (m Model) forwardOrchestrators(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch {
-	case m.screen == screenOrchestrators && m.orch.form != nil:
+	case m.screen == screenDaemonOrchs && m.orch.form != nil:
 		return m.advanceOrchForm(msg)
 	case m.screen == screenOrchDetail && m.orchDetail.form != nil:
-		return m.advanceOrchDetailForm(msg)
-	}
-	return m, nil
-}
-
-func (m Model) orchestratorsHelp() helpBindings {
-	if m.orch.form != nil {
-		verb := "create"
-		if m.orch.formKind == orchFormRename {
-			verb = "rename"
-		}
-		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", verb), hkey("esc", "cancel")}
-	}
-	return helpBindings{
-		hkey("n", "new"),
-		hkey("R", "rename"),
-		hkey("d", "remove"),
-		hkey("enter", "open"),
-		hkey("r", "reload"),
-		m.screenPrevKey(),
-		m.keys.Settings,
-		hkey("esc", "sandboxes"),
-		m.keys.Quit,
-	}
-}
-
-func (m Model) updateOrchestratorsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.orch.form != nil {
-		switch msg.String() {
-		case "esc":
-			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-			return m, nil
-		case "ctrl+s":
-			return m.applyOrchForm()
-		}
-		return m.advanceOrchForm(msg)
-	}
-	switch {
-	case keyIs(msg, m.keys.ScreenPrev):
-		m.screen = screenDaemons
-		m.clampDaemonCursor()
-		return m, nil
-	case keyIs(msg, m.keys.ScreenNext):
-		return m, nil // no wrap: orchestrators is the last screen
-	case keyIs(msg, m.keys.Settings):
-		return m.enterSettings(screenOrchestrators)
-	}
-	switch msg.String() {
-	case "esc":
-		m.screen = screenList
-	case "q", "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
-	case "r":
-		m.orch.loading = true
-		return m, m.orchLoadCmd()
-	case "up", "k":
-		if m.orch.cursor > 0 {
-			m.orch.cursor--
-		}
-	case "down", "j":
-		if m.orch.cursor < len(m.orch.rows)-1 {
-			m.orch.cursor++
-		}
-	case "n":
-		return m.openOrchCreateForm()
-	case "R":
-		row, ok := m.orchCurrent()
-		if !ok {
-			return m, nil
-		}
-		if !row.reachable {
-			m.status = row.summary.GetOrchestrator().GetName() + " is unreachable — " + row.reason
-			return m, nil
-		}
-		return m.openOrchRenameForm(row)
-	case "d":
-		row, ok := m.orchCurrent()
-		if !ok {
-			return m, nil
-		}
-		if !row.reachable {
-			m.status = row.summary.GetOrchestrator().GetName() + " is unreachable — " + row.reason
-			return m, nil
-		}
-		return m.confirmOrchRemove(row)
-	case "enter":
-		if row, ok := m.orchCurrent(); ok {
-			return m.enterOrchDetail(row)
-		}
+		return m.advanceOrchOpForm(surfaceDetail, msg)
+	case m.screen == screenJobs && m.jobs.form != nil:
+		return m.advanceOrchOpForm(surfaceJobs, msg)
 	}
 	return m, nil
 }
 
 // --- create / rename forms (the 008 huh pattern: heap values, ctrl+s saves) ---
 
-// orchMachineOptions lists the connected hosts an orchestrator can be placed on.
-func (m Model) orchMachineOptions() []huh.Option[string] {
-	var opts []huh.Option[string]
-	for _, h := range m.orchHosts() {
-		if h.d != nil {
-			opts = append(opts, huh.NewOption(h.name, h.id))
-		}
-	}
-	return opts
-}
-
-func (m Model) openOrchCreateForm() (tea.Model, tea.Cmd) {
-	opts := m.orchMachineOptions()
-	if len(opts) == 0 {
-		m.status = "no connected machine to place an orchestrator on"
-		return m, nil
-	}
-	v := &orchFormVals{host: opts[0].Value}
+// openOrchCreateForm opens the create form for an orchestrator on host (the
+// daemon whose Orchestrators section is open).
+func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
+	v := &orchFormVals{host: host}
 	m.orch.vals = v
 	m.orch.formKind = orchFormCreate
 	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see.").Value(&v.name),
-		huh.NewSelect[string]().Key("host").Title("Machine").Description("The daemon that hosts it; workers can live anywhere it can reach over SSH.").Options(opts...).Value(&v.host),
+		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + hostName + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
 	return m, m.orch.form.Init()
@@ -527,7 +434,7 @@ func (m Model) confirmOrchRemove(row orchRow) (tea.Model, tea.Cmd) {
 			"Queued runs are cancelled and in-flight runs are failed.",
 			"Its actions, events and run history are discarded.",
 		},
-		returnTo: screenOrchestrators,
+		returnTo: screenDaemonOrchs,
 		onConfirm: func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
@@ -560,32 +467,4 @@ func orchRowLine(r orchRow) string {
 		plural(int(r.summary.GetWorkerCount()), "worker", "workers"),
 		dimStyle.Render(fmt.Sprintf("queued %d / in flight %d / review %d", r.summary.GetQueued(), r.summary.GetInFlight(), r.summary.GetAwaitingReview())),
 	)
-}
-
-func (m Model) viewOrchestrators() string {
-	if m.orch.form != nil {
-		title := "New orchestrator"
-		if m.orch.formKind == orchFormRename {
-			title = "Rename orchestrator"
-		}
-		return lipgloss.JoinVertical(lipgloss.Left, sectionStyle.Render(title), "", m.orch.form.View())
-	}
-	lines := []string{sectionStyle.Render("Orchestrators"), ""}
-	switch {
-	case m.orch.loading && !m.orch.loaded:
-		lines = append(lines, m.spinner.View()+dimStyle.Render(" loading…"))
-	case len(m.orch.rows) == 0:
-		lines = append(lines, dimStyle.Render("(no orchestrators)"))
-	}
-	for i, r := range m.orch.rows {
-		cursor := "  "
-		if i == m.orch.cursor {
-			cursor = cursorBarStyle.Render("> ")
-		}
-		lines = append(lines, cursor+orchRowLine(r))
-	}
-	if m.orch.loading && m.orch.loaded {
-		lines = append(lines, "", m.spinner.View()+dimStyle.Render(" refreshing…"))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }

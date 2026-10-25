@@ -1,0 +1,258 @@
+package ui
+
+import (
+	"fmt"
+	"sort"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Jobs › Overview (feature 010, user stories 1–2, FR-006..FR-012): four sections
+// across every orchestrator — Upcoming (each enabled timed event once, by next
+// firing time; `n` Enqueue now), Queued (by receipt), In progress (by start) and
+// History (the latest jobsOverviewHistory finished runs, newest first). Runs keep
+// today's Queue actions (`enter` prompt, `x` cancel, `m` mark free) and finished
+// ones add `o` Open results (research R4, R5, R9).
+
+// jobsRunRow is one run with the orchestrator it belongs to.
+type jobsRunRow struct {
+	target orchTarget
+	run    *pb.Run
+}
+
+// jobsEventRow is one timed event with the orchestrator it belongs to.
+type jobsEventRow struct {
+	target orchTarget
+	event  *pb.TimedEvent
+}
+
+// tsTime is a timestamp as a time (the zero time when unset), for ordering.
+func tsTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.AsTime()
+}
+
+// ago renders a timestamp relative to now, or "—" when unset.
+func ago(ts *timestamppb.Timestamp) string {
+	if ts == nil {
+		return "—"
+	}
+	return relTime(ts)
+}
+
+// jobsUpcoming is every enabled timed event with a next firing time, soonest
+// first (FR-007); disabled events and events without one are left out.
+func jobsUpcoming(orchs []jobsOrch) []jobsEventRow {
+	var out []jobsEventRow
+	for _, o := range orchs {
+		for _, ev := range o.target.rec.GetTimedEvents() {
+			if ev.GetEnabled() && ev.GetNextFireAt() != nil {
+				out = append(out, jobsEventRow{target: o.target, event: ev})
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return tsTime(out[i].event.GetNextFireAt()).Before(tsTime(out[j].event.GetNextFireAt()))
+	})
+	return out
+}
+
+// collectRuns gathers one run group of every orchestrator, ordered by less.
+func collectRuns(orchs []jobsOrch, group func(*pb.ListRunsResponse) []*pb.Run, less func(a, b *pb.Run) bool) []jobsRunRow {
+	var out []jobsRunRow
+	for _, o := range orchs {
+		for _, r := range group(o.runs) {
+			out = append(out, jobsRunRow{target: o.target, run: r})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return less(out[i].run, out[j].run) })
+	return out
+}
+
+// jobsQueued is every queued run, oldest receipt first (dispatch order).
+func jobsQueued(orchs []jobsOrch) []jobsRunRow {
+	return collectRuns(orchs, (*pb.ListRunsResponse).GetQueued, func(a, b *pb.Run) bool {
+		return tsTime(a.GetReceivedAt()).Before(tsTime(b.GetReceivedAt()))
+	})
+}
+
+// jobsInProgress is every in-flight run (running, awaiting input or review),
+// earliest start first.
+func jobsInProgress(orchs []jobsOrch) []jobsRunRow {
+	return collectRuns(orchs, (*pb.ListRunsResponse).GetInFlight, func(a, b *pb.Run) bool {
+		return tsTime(a.GetStartedAt()).Before(tsTime(b.GetStartedAt()))
+	})
+}
+
+// jobsHistory is every finished run, most recently ended first; limit > 0 keeps
+// only the first limit (the Overview's combined cap, FR-009).
+func jobsHistory(orchs []jobsOrch, limit int) []jobsRunRow {
+	out := collectRuns(orchs, (*pb.ListRunsResponse).GetHistory, func(a, b *pb.Run) bool {
+		return tsTime(a.GetEndedAt()).After(tsTime(b.GetEndedAt()))
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// Overview sections, in order (FR-006).
+const (
+	sectionUpcoming = iota
+	sectionQueued
+	sectionInProgress
+	sectionHistory
+)
+
+// overviewItem is one cursor position of the Overview: an upcoming event or a run.
+type overviewItem struct {
+	section int
+	ev      *jobsEventRow
+	run     *jobsRunRow
+}
+
+// overviewItems lists the Overview's rows in display order.
+func (m Model) overviewItems() []overviewItem {
+	var out []overviewItem
+	for _, e := range jobsUpcoming(m.jobs.orchs) {
+		e := e
+		out = append(out, overviewItem{section: sectionUpcoming, ev: &e})
+	}
+	add := func(section int, rows []jobsRunRow) {
+		for _, r := range rows {
+			r := r
+			out = append(out, overviewItem{section: section, run: &r})
+		}
+	}
+	add(sectionQueued, jobsQueued(m.jobs.orchs))
+	add(sectionInProgress, jobsInProgress(m.jobs.orchs))
+	add(sectionHistory, jobsHistory(m.jobs.orchs, jobsOverviewHistory))
+	return out
+}
+
+// overviewCurrent is the Overview row under the cursor.
+func (m Model) overviewCurrent() (overviewItem, bool) {
+	items := m.overviewItems()
+	c := m.jobs.cursors[jobsOverview]
+	if c >= len(items) {
+		return overviewItem{}, false
+	}
+	return items[c], true
+}
+
+// jobsRunsOf is the loaded runs of an orchestrator (empty when unknown).
+func (m Model) jobsRunsOf(t orchTarget) *pb.ListRunsResponse {
+	if o, ok := m.jobsOrchByKey(t.key()); ok {
+		return o.runs
+	}
+	return &pb.ListRunsResponse{}
+}
+
+func (m Model) updateOverviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	it, ok := m.overviewCurrent()
+	if !ok {
+		return m, nil
+	}
+	k := msg.String()
+	if it.ev != nil {
+		if k == "n" {
+			return m.enqueueNowKey(surfaceJobs, it.ev.target, it.ev.event, m.jobsRunsOf(it.ev.target))
+		}
+		return m, nil
+	}
+	switch k {
+	case "enter", "x", "m", "o":
+		return m.runKeyAction(surfaceJobs, it.run.target, it.run.run, k)
+	}
+	return m, nil
+}
+
+// overviewRowHelp is the keys for the highlighted Overview row.
+func (m Model) overviewRowHelp() helpBindings {
+	it, ok := m.overviewCurrent()
+	switch {
+	case !ok:
+		return nil
+	case it.ev != nil:
+		return helpBindings{hkey("n", "enqueue now")}
+	}
+	return runRowHelp(it.run.run)
+}
+
+// --- rendering ---
+
+// upcomingLine renders an Upcoming row: name → action · orchestrator @ host · next in …
+func upcomingLine(e jobsEventRow) string {
+	return selectedStyle.Render(pad(e.event.GetName(), 14)) + " " + dimStyle.Render(pad("→ "+e.event.GetAction(), 16)) + " " +
+		pad(e.target.label(), 24) + "  " + dimStyle.Render("next "+nextFire(e.event))
+}
+
+// jobsRunLine renders a run row of the Overview and the Queue tab, labelled with
+// its orchestrator and host (FR-003; contracts/jobs-ui.md row formats).
+func jobsRunLine(r jobsRunRow) string {
+	run := r.run
+	label := pad(r.target.label(), 24)
+	switch run.GetState() {
+	case pb.RunState_RUN_STATE_QUEUED:
+		return dimStyle.Render(pad(fmt.Sprintf("#%d", run.GetPosition()), 4)) + selectedStyle.Render(pad(run.GetAction(), 14)) + " " +
+			dimStyle.Render(pad(runOrigin(run), 16)) + " " + label + "  " + dimStyle.Render("received "+ago(run.GetReceivedAt()))
+	case pb.RunState_RUN_STATE_RUNNING, pb.RunState_RUN_STATE_AWAITING_INPUT, pb.RunState_RUN_STATE_AWAITING_REVIEW:
+		style := agentWorkStyle
+		if run.GetState() != pb.RunState_RUN_STATE_RUNNING {
+			style = agentWaitStyle
+		}
+		line := selectedStyle.Render(pad(run.GetAction(), 18)) + " " + style.Render(pad(runState(run), 16)) + " " + label + "  " +
+			dimStyle.Render("on "+short(run.GetSandboxId())+" · started "+ago(run.GetStartedAt()))
+		if run.GetEventKind() != pb.EventKind_EVENT_KIND_USER {
+			line += "  " + dimStyle.Render(runOrigin(run))
+		}
+		return line
+	}
+	style := agentIdleStyle
+	if run.GetState() != pb.RunState_RUN_STATE_COMPLETED {
+		style = statusErrStyle
+	}
+	line := selectedStyle.Render(pad(run.GetAction(), 18)) + " " + style.Render(pad(runState(run), 16)) + " " + label + "  " +
+		dimStyle.Render("ended "+ago(run.GetEndedAt()))
+	if detail := runResultLine(run); detail != "" {
+		line += dimStyle.Render(" — " + truncate(detail, 60))
+	}
+	return line
+}
+
+// renderOverview renders the four sections; focus is the cursor's line.
+func (m Model) renderOverview() (lines []string, focus int) {
+	items := m.overviewItems()
+	cur := m.jobs.cursors[jobsOverview]
+	titles := [...]string{"Upcoming", "Queued", "In progress", fmt.Sprintf("History (latest %d)", jobsOverviewHistory)}
+	i := 0
+	for section, title := range titles {
+		if section > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, sectionStyle.Render(title))
+		n := 0
+		for ; i < len(items) && items[i].section == section; i++ {
+			if i == cur {
+				focus = len(lines)
+			}
+			line := ""
+			if items[i].ev != nil {
+				line = upcomingLine(*items[i].ev)
+			} else {
+				line = jobsRunLine(*items[i].run)
+			}
+			lines = append(lines, cursorMark(i == cur)+line)
+			n++
+		}
+		if n == 0 {
+			lines = append(lines, "  "+dimStyle.Render("(none)"))
+		}
+	}
+	return lines, focus
+}

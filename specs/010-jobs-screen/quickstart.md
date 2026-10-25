@@ -28,3 +28,29 @@ The TUI tests drive two fake hosts with orchestrators in every run state and ass
 8. **Escape sequences** — have a worker report a summary containing `\x1b]52;c;aGVsbG8=\x07`, `\x1b[2J` and `\r`: plus a U+202E (right-to-left override), a tab-indented code block and several lines: the History row and Open results show plain text; the screen, title and clipboard are unchanged, nothing spills into another column, line breaks are kept and indented lines stay inside the overlay border.
 9. **Cursor stability** — highlight an Upcoming event, let another event fire (the list re-sorts): the highlight stays on the same event and `n` enqueues it.
 10. **Key behaviour** — on Jobs, `esc` goes to Sandboxes and `q` quits; shift+→ on Jobs wraps to Sandboxes.
+
+## Capability inventory (FR-027 / SC-005)
+
+Every operation of the removed Orchestrators screen and its six-view detail, and where it lives
+now. Each row is covered by an automated test (file in brackets, under
+`src/apps/switchboard-tui/internal/ui/`).
+
+| Operation (feature 009) | Where it was | Where it is now |
+|-------------------------|--------------|-----------------|
+| List orchestrators of every daemon (reachability, workers, queue depths) | Orchestrators screen | Daemons › *daemon* › Orchestrators, per daemon [`daemon_orchestrators_test.go`]; every orchestrator across daemons on Jobs [`jobs_test.go`] |
+| Create (`n`), rename (`R`), remove (`d`, confirmed) | Orchestrators screen | Daemons › *daemon* › Orchestrators — create targets that daemon [`daemon_orchestrators_test.go`] |
+| Open an orchestrator (`enter`) | Orchestrators screen | Daemons › *daemon* › Orchestrators [`daemon_orchestrators_test.go`] |
+| Workers: detach (`x`), mark free (`m`, incl. a parked worker) | Detail › Workers | Detail › Workers, unchanged [`orchestrator_attach_test.go`, `orchestrator_runs_test.go`] |
+| Actions: add (`a`), edit (`e`), delete (`d`), call (`enter`) | Detail › Actions | Jobs › Actions, on the cursor's / highlighted item's orchestrator [`orchestrator_runs_test.go`, `jobs_groups_test.go`] |
+| Queue: show prompt (`enter`), cancel queued (`x`), mark free (`m`) | Detail › Queue | Jobs › Overview and Jobs › Queue [`orchestrator_runs_test.go`, `jobs_overview_test.go`, `jobs_queue_test.go`] |
+| Queue: read a finished run's result | Detail › Queue (one truncated line) | Jobs › Overview / Queue `o` Open results — full text, scrollable [`run_results_test.go`] |
+| Events: add, edit, delete, on/off (`space`) | Detail › Events | Jobs › Events [`orchestrator_runs_test.go`, `jobs_groups_test.go`] |
+| Events: Enqueue now (`n`) with dedupe, dedupe-off confirm, in-flight guard, repeat window | Detail › Events | Jobs › Events and Jobs › Overview › Upcoming, one implementation [`orchestrator_runs_test.go`, `jobs_overview_test.go`] |
+| Reasoning: edit setup (`e`), rebuild (`b`), output (`l`) | Detail › Reasoning | Detail › Reasoning, unchanged [`orchestrator_reasoning_test.go`] |
+| Hosts: add from my hosts (`a`), remove (`d`) | Detail › Hosts | Detail › Hosts, unchanged [`orchestrator_views_test.go`] |
+| Live refresh on `orchestrator_changed` | Orchestrators screen + detail | Daemons › Orchestrators, the detail, and Jobs (that orchestrator only) [`daemon_orchestrators_test.go`, `jobs_test.go`] |
+| Sandbox list `m` mark free (dialog over the detail, back to the list) | Detail | Detail (reached under Daemons › Orchestrators), unchanged [`orchestrator_runs_test.go`] |
+| Sandbox list `o` attach / detach; launch wizard `O` | Orchestrator rows | Same rows (the shared loader) [`orchestrator_attach_test.go`, `launch_orch_test.go`] |
+| Unreachable orchestrators kept with the reason; `R`/`d` refused on them | Orchestrators screen | Daemons › Orchestrators [`daemon_orchestrators_test.go`]; Jobs names the unreadable daemons [`jobs_test.go`] |
+
+Nothing on the old screen is without a home in the new layout.
