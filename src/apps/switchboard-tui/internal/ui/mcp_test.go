@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -582,7 +583,7 @@ func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{
 		"no callback port was reported for this link",
-		"ssh -L PORT:localhost:PORT " + m.mcpView.auth.sshTarget,
+		"ssh -N -L PORT:localhost:PORT " + m.mcpView.auth.sshTarget,
 		"keep this wait running",
 		"esc (cancel this wait)",
 		"sbx mcp auth notion",
@@ -593,7 +594,7 @@ func TestMcpAuthRemoteWithoutACallbackPortShowsAHint(t *testing.T) {
 		}
 	}
 	// The forward needs no cancel, so it comes first; esc belongs to the host-side fallback.
-	if strings.Index(v, "ssh -L") > strings.Index(v, "esc (cancel") || strings.Index(v, "esc (cancel") > strings.Index(v, "sbx mcp auth notion") {
+	if strings.Index(v, "ssh -N") > strings.Index(v, "esc (cancel") || strings.Index(v, "esc (cancel") > strings.Index(v, "sbx mcp auth notion") {
 		t.Error("order must be: forward the port, then (fallback) esc before the host command")
 	}
 
@@ -613,7 +614,85 @@ func TestMcpAuthHintUsesTheDaemonsSSHTarget(t *testing.T) {
 	m.mcpView.remote, m.mcpView.target = true, "dev@build-box"
 	m, cmd := update(m, press("A"))
 	m, _ = update(m, runCmd(cmd))
-	if v := m.View(); !strings.Contains(v, "ssh -L PORT:localhost:PORT dev@build-box") {
+	if v := m.View(); !strings.Contains(v, "ssh -N -L PORT:localhost:PORT dev@build-box") {
 		t.Errorf("the hint should name the ssh target; got:\n%s", v)
+	}
+}
+
+// Review (PR #1, run 65): the suggested command carries the host's saved ssh
+// options, so a copy-paste reaches the same machine the daemon connection does.
+func TestSSHForwardCommandCarriesSavedOptions(t *testing.T) {
+	cases := []struct {
+		opts   []string
+		target string
+		want   string
+	}{
+		{nil, "dev@build-box", "ssh -N -L PORT:localhost:PORT dev@build-box"},
+		{[]string{"-p", "2222", "-i", "~/.ssh/build_key", "-J", "jump@bastion"}, "dev@build-box",
+			"ssh -N -p 2222 -i ~/.ssh/build_key -J jump@bastion -L PORT:localhost:PORT dev@build-box"},
+		{[]string{"-o", "ProxyCommand=ssh -W %h:%p jump"}, "build-box",
+			"ssh -N -o 'ProxyCommand=ssh -W %h:%p jump' -L PORT:localhost:PORT build-box"},
+		{[]string{"-o", "Note=it's"}, "h", `ssh -N -o 'Note=it'\''s' -L PORT:localhost:PORT h`},
+	}
+	for _, c := range cases {
+		if got := sshForwardCommand(c.opts, c.target); got != c.want {
+			t.Errorf("sshForwardCommand(%q, %q)\n got %s\nwant %s", c.opts, c.target, got, c.want)
+		}
+	}
+}
+
+// The options travel from the daemon row to the hint in the modal.
+func TestMcpAuthHintShowsTheHostsSavedSSHOptions(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{notionServer()}, mcpAuthGate: make(chan struct{}),
+		mcpAuthFrames: []client.McpAuthUpdate{{URL: "https://auth.example/authorize"}}}
+	defer close(d.mcpAuthGate)
+	m := mcpModel(t, d)
+	m.mcpView.remote, m.mcpView.target, m.mcpView.sshOpts = true, "dev@build-box", []string{"-p", "2222", "-J", "jump"}
+	m, cmd := update(m, press("A"))
+	m, _ = update(m, runCmd(cmd))
+	// Long commands are broken at argument boundaries with shell continuations, so
+	// undo those (and the box borders) before comparing.
+	norm := regexp.MustCompile(`\s*\\\s*[│\x1b\[0-9;m]*\s*`).ReplaceAllString(stripBox(m.View()), " ")
+	if !strings.Contains(norm, "ssh -N -p 2222 -J jump -L PORT:localhost:PORT dev@build-box") {
+		t.Errorf("the hint should include the saved ssh options; got:\n%s\nnormalised: %s", m.View(), norm)
+	}
+	if strings.Contains(m.View(), "build-\n") {
+		t.Error("the command must not be hard-wrapped in the middle of a word")
+	}
+}
+
+// stripBox drops the modal's border characters and ANSI escapes so wrapped text can
+// be compared as a whole.
+func stripBox(s string) string {
+	s = regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(s, "")
+	return strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(s)
+}
+
+func TestWrapCommandBreaksAtArgumentsAndStaysOneCommand(t *testing.T) {
+	cmd := sshForwardCommand([]string{"-p", "2222", "-o", "ProxyCommand=ssh -W %h:%p jump", "-i", "~/.ssh/build_key"}, "dev@build-box")
+	out := wrapCommand(cmd, 44)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("a long command should be broken: %q", out)
+	}
+	for i, l := range lines {
+		if i < len(lines)-1 && !strings.HasSuffix(l, " \\") {
+			t.Errorf("line %d must end in a shell continuation: %q", i, l)
+		}
+		if len(strings.TrimSuffix(l, " \\")) > 44+10 { // a single long argument may overrun
+			t.Errorf("line %d is too long: %q", i, l)
+		}
+	}
+	// Rejoining the continuations gives back the original command exactly.
+	rejoined := strings.Join(strings.Fields(strings.ReplaceAll(out, " \\\n", " ")), " ")
+	if rejoined != strings.Join(strings.Fields(cmd), " ") {
+		t.Errorf("the wrapped command must be the same command:\n got %s\nwant %s", rejoined, cmd)
+	}
+	// A quoted argument is never split.
+	if !strings.Contains(strings.ReplaceAll(out, " \\\n  ", " "), "'ProxyCommand=ssh -W %h:%p jump'") {
+		t.Errorf("a quoted argument must stay whole: %q", out)
+	}
+	if short := wrapCommand("ssh -N -L PORT:localhost:PORT h", 44); strings.Contains(short, "\n") {
+		t.Errorf("a short command stays on one line: %q", short)
 	}
 }

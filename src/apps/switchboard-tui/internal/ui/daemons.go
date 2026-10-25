@@ -18,7 +18,8 @@ import (
 // daemonRow is one known daemon as the screen shows it.
 type daemonRow struct {
 	id, name, kind string
-	target         string // ssh target or socket path
+	target         string   // ssh target or socket path
+	sshOptions     []string // the host's saved ssh options (-p/-i/-J…), ssh hosts only
 	state          client.HostState
 	err            error
 	daemon         Daemon // non-nil when connected
@@ -52,6 +53,7 @@ func (m Model) daemonRows() []daemonRow {
 		switch hc.Entry.Kind {
 		case "ssh":
 			r.target = hc.Entry.SSHTarget
+			r.sshOptions = hc.Entry.SSHOptions
 		default:
 			r.target = hc.Entry.SocketPath
 		}

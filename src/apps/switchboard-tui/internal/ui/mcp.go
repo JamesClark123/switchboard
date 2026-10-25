@@ -39,7 +39,8 @@ var mcpNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 type mcpState struct {
 	host     string
 	hostName string
-	target   string // the ssh target of a remote daemon (for the port-forward hint)
+	target   string   // the ssh target of a remote daemon (for the port-forward hint)
+	sshOpts  []string // that host's saved ssh options, so the hint's command reaches it the same way
 	daemon   Daemon
 	remote   bool // the daemon is on another machine, so its OAuth callback needs relaying
 
@@ -83,7 +84,8 @@ type mcpAuthWait struct {
 	tunnel       bool   // the local relay is listening
 	tunnelErr    string // why it could not be, shown with the paste prompt
 	noCallback   bool   // remote daemon, but the link carried no loopback callback port
-	sshTarget    string // what to put after `ssh -L PORT:localhost:PORT` in the hint
+	sshTarget    string // the ssh target for the hint's port-forward command
+	sshOpts      []string
 	pasting      bool
 	paste        textinput.Model
 	pasteErr     string
@@ -126,7 +128,7 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, daemon: row.daemon, remote: row.kind != "local", loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, daemon: row.daemon, remote: row.kind != "local", loading: true}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -516,6 +518,7 @@ func (m Model) applyMcpAuth(msg mcpAuthMsg) (tea.Model, tea.Cmd) {
 		// developer to meet a "localhost refused" page unexplained.
 		w.noCallback = true
 		w.sshTarget = m.mcpView.target
+		w.sshOpts = m.mcpView.sshOpts
 		if w.sshTarget == "" {
 			w.sshTarget = m.mcpView.hostName
 		}
@@ -580,6 +583,78 @@ func (m Model) applyMcpAuthEnd(msg mcpAuthEndMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.mcpLoadCmd(v.daemon, v.host)
+}
+
+// sshForwardCommand is the hint's port-forward command for a host, built from the
+// same saved options its daemon connection uses (-p/-i/-J…), so a copy-paste reaches
+// the same machine. -N: forward only, no remote shell (and a busy local port fails
+// loudly instead of leaving an unrelated login open). PORT is left for the developer
+// to fill from the browser's address bar.
+func sshForwardCommand(opts []string, target string) string {
+	parts := []string{"ssh", "-N"}
+	for _, o := range opts {
+		parts = append(parts, shellQuote(o))
+	}
+	parts = append(parts, "-L", "PORT:localhost:PORT", shellQuote(target))
+	return strings.Join(parts, " ")
+}
+
+// wrapCommand breaks a command at argument boundaries into lines of about width
+// characters, each but the last ending in a shell line continuation, so a long
+// command still pastes as one command (the modal would otherwise hard-wrap it in
+// the middle of a word).
+func wrapCommand(cmd string, width int) string {
+	// Split on spaces outside single quotes, so a quoted argument stays whole.
+	var words []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range cmd {
+		switch {
+		case r == '\'':
+			inQuote = !inQuote
+			cur.WriteRune(r)
+		case r == ' ' && !inQuote:
+			if cur.Len() > 0 {
+				words = append(words, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		words = append(words, cur.String())
+	}
+	var lines []string
+	line := ""
+	for _, w := range words {
+		if line != "" && len(line)+1+len(w) > width {
+			lines = append(lines, line+" \\")
+			line = "  " + w
+			continue
+		}
+		if line == "" {
+			line = w
+		} else {
+			line += " " + w
+		}
+	}
+	lines = append(lines, line)
+	return strings.Join(lines, "\n")
+}
+
+// indentLines prefixes every line of s.
+func indentLines(s, prefix string) string {
+	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
+}
+
+// shellQuote leaves plain words alone and single-quotes anything a shell would
+// split or interpret, so options with spaces ("-o ProxyCommand=...") stay one word.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_~-") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // isAddrInUse reports whether a listen failure is "the port is already taken",
@@ -764,13 +839,13 @@ func (m Model) mcpModal() string {
 			// The host-side run is the fallback for someone with a browser on the host,
 			// and ONLY after cancelling — a second `sbx mcp auth` alongside the running
 			// one would race it for the credential.
-			ssh := w.sshTarget
+			ssh := wrapCommand(sshForwardCommand(w.sshOpts, w.sshTarget), 44)
 			lines = append(lines, "",
 				dimStyle.Render("no callback port was reported for this link."),
 				dimStyle.Render("If the browser ends on a ‘localhost:PORT’ error page"),
 				dimStyle.Render("(PORT is in its address bar):"),
 				dimStyle.Render("  • keep this wait running, forward the port:"),
-				dimStyle.Render("      ssh -L PORT:localhost:PORT "+ssh),
+				dimStyle.Render(indentLines(ssh, "      ")),
 				dimStyle.Render("    then reload that browser page"),
 				dimStyle.Render("  • or, with a browser on the host:"),
 				dimStyle.Render("      esc (cancel this wait), run  sbx mcp auth "+w.name),
