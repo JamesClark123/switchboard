@@ -124,6 +124,8 @@ type Daemon interface {
 	DeleteAction(ctx context.Context, id, name string) ([]string, error)
 	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, id, eventID string) error
+	// FireTimedEvent enqueues one run of a timed event now, as that event (SWI-4).
+	FireTimedEvent(ctx context.Context, id, eventID string) (*pb.Run, error)
 	CallAction(ctx context.Context, id, action string, args map[string]string) (*pb.Run, error)
 	ListRuns(ctx context.Context, id string) (*pb.ListRunsResponse, error)
 	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)
@@ -324,7 +326,11 @@ type Model struct {
 	// --- feature 009: the Orchestrators screen and the open detail ---
 	orch       orchState
 	orchDetail orchDetailState
-	attach     attachState
+	// orchFires are the Enqueue now calls in flight, by orchestrator id -> the call's
+	// token. On the model (a shared map), not on orchDetail, because opening a detail
+	// replaces orchDetail: re-opening mid-call must still see the call and refuse a second.
+	orchFires map[string]uint64
+	attach    attachState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -367,6 +373,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		// feature 006: the client owns every listener on this machine.
 		serviceInstances: map[string]*pb.ServiceInstance{},
 		forwards:         forward.NewManager(),
+		orchFires:        map[string]uint64{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},
@@ -702,6 +709,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyOrchRows(msg)
 	case orchDetailMsg:
 		return m.applyOrchDetail(msg)
+	case orchFireStartMsg:
+		return m.startOrchFire(msg)
+	case orchHintExpiredMsg:
+		if m.orchDetail.id == msg.orch && m.orchDetail.status == msg.text {
+			m.orchDetail.status = ""
+		}
+		return m, nil
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
 	case reasoningRebuildMsg:

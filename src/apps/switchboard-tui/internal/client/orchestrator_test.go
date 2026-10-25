@@ -72,6 +72,9 @@ func (s *orchServer) PutTimedEvent(_ context.Context, r *pb.PutTimedEventRequest
 func (s *orchServer) DeleteTimedEvent(context.Context, *pb.DeleteTimedEventRequest) (*pb.DeleteTimedEventResponse, error) {
 	return &pb.DeleteTimedEventResponse{}, nil
 }
+func (s *orchServer) FireTimedEvent(_ context.Context, r *pb.FireTimedEventRequest) (*pb.Run, error) {
+	return &pb.Run{Id: "run-8", Origin: r.GetEventId(), EventKind: pb.EventKind_EVENT_KIND_TIMED, Position: 1}, nil
+}
 func (s *orchServer) CallAction(_ context.Context, r *pb.CallActionRequest) (*pb.Run, error) {
 	return &pb.Run{Id: "run-7", Action: r.GetAction(), Arguments: r.GetArguments(), Position: 3}, nil
 }
@@ -142,6 +145,9 @@ func TestOrchestratorWrappers(t *testing.T) {
 	if err := conn.DeleteTimedEvent(ctx, "o1", "tev-1"); err != nil {
 		t.Errorf("DeleteTimedEvent = %v", err)
 	}
+	if run, err := conn.FireTimedEvent(ctx, "o1", "tev-1"); err != nil || run.GetOrigin() != "tev-1" || run.GetEventKind() != pb.EventKind_EVENT_KIND_TIMED {
+		t.Errorf("FireTimedEvent = %v / %v", run, err)
+	}
 	if run, err := conn.CallAction(ctx, "o1", "review-pr", map[string]string{"number": "412"}); err != nil || run.GetPosition() != 3 || run.GetArguments()["number"] != "412" {
 		t.Errorf("CallAction = %v / %v", run, err)
 	}
@@ -196,6 +202,7 @@ func TestOrchestratorTooOld(t *testing.T) {
 		"DelAction": func() error { _, e := conn.DeleteAction(ctx, "o", "a"); return e },
 		"PutEvent":  func() error { _, e := conn.PutTimedEvent(ctx, "o", nil); return e },
 		"DelEvent":  func() error { return conn.DeleteTimedEvent(ctx, "o", "e") },
+		"FireEvent": func() error { _, err := conn.FireTimedEvent(ctx, "o", "e"); return err },
 		"Call":      func() error { _, e := conn.CallAction(ctx, "o", "a", nil); return e },
 		"ListRuns":  func() error { _, e := conn.ListRuns(ctx, "o"); return e },
 		"GetRun":    func() error { _, e := conn.GetRun(ctx, "o", "r"); return e },

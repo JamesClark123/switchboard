@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -378,5 +380,427 @@ func TestEventFormAndView(t *testing.T) {
 	m, _ = update(m, press("a"))
 	if m.orchDetail.form != nil || !strings.Contains(m.orchDetail.status, "add an action first") {
 		t.Error("no actions ⇒ no event form")
+	}
+}
+
+// SWI-4: `n` on the Events view enqueues the selected event now.
+func TestEventsViewEnqueueNow(t *testing.T) {
+	ev := &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host", Actions: []*pb.Action{reviewAction()}, TimedEvents: []*pb.TimedEvent{ev}}}}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	m.orchDetail.view = viewEvents
+	if !strings.Contains(m.View(), "n enqueue now") {
+		t.Error("the Events view hints should include n enqueue now")
+	}
+	m, cmd := update(m, press("n"))
+	if m.screen == screenConfirm {
+		t.Fatal("enqueue now needs no confirmation")
+	}
+	m = feed2(m, cmd)
+	if !strings.Contains(a.orchCallsJoined(), "FireTimedEvent o-a tev-1") {
+		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+	if !strings.Contains(m.status, "enqueued poll on alpha-bot (run-9, queued at position 2)") {
+		t.Errorf("status = %q", m.status)
+	}
+
+	// The daemon's dedupe refusal is shown as is.
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m.orchDetail.lastFireAt = time.Time{} // past the repeat window
+	m, cmd = update(m, press("n"))
+	m = feed2(m, cmd)
+	if !strings.Contains(m.orchDetail.status, "run run-1 of poll is already queued") {
+		t.Errorf("error status = %q", m.orchDetail.status)
+	}
+}
+
+func TestEventsViewEnqueueNowWithNoEventsDoesNothing(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host"}}}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	m.orchDetail.view = viewEvents
+	if _, cmd := update(m, press("n")); cmd != nil {
+		t.Error("n with no events must do nothing")
+	}
+}
+
+// --- PR #4 review fixes ---
+
+func eventsModel(t *testing.T, ev *pb.TimedEvent, a *fakeDaemon) Model {
+	t.Helper()
+	a.orchestrators = []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host", Actions: []*pb.Action{reviewAction()}, TimedEvents: []*pb.TimedEvent{ev}}}}
+	m := openDetail(t, sized(New(a, "/work")))
+	m.orchDetail.view = viewEvents
+	return m
+}
+
+// With dedupe off AND a run of the event already open, n asks first; with no open
+// run it enqueues directly (nothing would double up).
+func TestEnqueueNowWithDedupeOffConfirmsOnlyWhenARunIsOpen(t *testing.T) {
+	ev := &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}
+
+	// No open run: straight through, no dialog.
+	a := &fakeDaemon{}
+	m := eventsModel(t, ev, a)
+	m, cmd := update(m, press("n"))
+	if m.screen == screenConfirm || cmd == nil {
+		t.Fatalf("dedupe off with no open run should enqueue directly; screen %v", m.screen)
+	}
+	m = feed2(m, cmd)
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent o-a tev-1"); got != 1 {
+		t.Errorf("calls %q", a.orchCallsJoined())
+	}
+
+	// An open run of this event (queued or in flight): confirm first.
+	for name, runs := range map[string]*pb.ListRunsResponse{
+		"queued":    {Queued: []*pb.Run{{Id: "run-q", EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "tev-1"}}},
+		"in flight": {InFlight: []*pb.Run{{Id: "run-q", EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "tev-1"}}},
+	} {
+		a := &fakeDaemon{orchRuns: runs}
+		m := eventsModel(t, ev, a)
+		m, cmd := update(m, press("n"))
+		if m.screen != screenConfirm || cmd != nil {
+			t.Fatalf("%s: n with dedupe off and an open run should open a confirm; screen %v", name, m.screen)
+		}
+		if v := m.View(); !strings.Contains(v, "Enqueue poll now?") || !strings.Contains(v, "run-q") || !strings.Contains(v, "alongside") {
+			t.Errorf("%s: confirm text: %s", name, v)
+		}
+		m, _ = update(m, press("x")) // an unrelated key is ignored by the dialog
+		if m.screen != screenConfirm || strings.Contains(a.orchCallsJoined(), "FireTimedEvent") {
+			t.Fatalf("%s: the dialog must ignore unrelated keys and fire nothing", name)
+		}
+		m, _ = update(m, press("n")) // n cancels
+		if m.screen == screenConfirm || strings.Contains(a.orchCallsJoined(), "FireTimedEvent") {
+			t.Fatalf("%s: cancel must not fire: %q", name, a.orchCallsJoined())
+		}
+		m.orchDetail.lastFireAt = time.Time{}
+		m, _ = update(m, press("n"))
+		m, cmd = update(m, press("y"))
+		m = feed2(m, cmd)
+		if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent o-a tev-1"); got != 1 {
+			t.Errorf("%s: confirmed fire should call once; calls %q", name, a.orchCallsJoined())
+		}
+	}
+}
+
+// While one enqueue is in flight a second n is refused; the guard clears when the
+// fire's own reply lands, on success and on error.
+func TestEnqueueNowRefusesASecondPressWhileInFlight(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, first := update(m, press("n"))
+	if first == nil || !m.orchDetail.firing {
+		t.Fatal("first n should dispatch and mark firing")
+	}
+	m, second := update(m, press("n"))
+	if second != nil || !strings.Contains(m.orchDetail.status, "already in progress") {
+		t.Errorf("second n: cmd %v status %q", second != nil, m.orchDetail.status)
+	}
+	m = feed2(m, first)
+	if m.orchDetail.firing {
+		t.Error("the guard must clear when the fire's reply arrives")
+	}
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
+		t.Errorf("exactly one call expected; %q", a.orchCallsJoined())
+	}
+	// ...and a failure clears it too.
+	m.orchDetail.lastFireAt = time.Time{}
+	a.orchErr = errors.New("boom")
+	m, c := update(m, press("n"))
+	m = feed2(m, c)
+	if m.orchDetail.firing {
+		t.Error("the guard must clear after an error")
+	}
+}
+
+// An unrelated orchestrator reply (a toggle, a form save…) finishing while an
+// enqueue is in flight must NOT release its guard.
+func TestEnqueueNowGuardIgnoresUnrelatedReplies(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, fire := update(m, press("n"))
+	if !m.orchDetail.firing {
+		t.Fatal("precondition: firing")
+	}
+	m, _ = update(m, orchDoneMsg{status: "disabled poll"}) // an unrelated mutation finished
+	if !m.orchDetail.firing {
+		t.Fatal("an unrelated reply must not clear the in-flight guard")
+	}
+	m.orchDetail.lastFireAt = time.Time{}
+	if m2, c := update(m, press("n")); c != nil || !strings.Contains(m2.orchDetail.status, "already in progress") {
+		t.Error("a second n must still be refused")
+	}
+	m = feed2(m, fire)
+	if m.orchDetail.firing {
+		t.Error("the fire's own reply releases the guard")
+	}
+}
+
+// Terminal auto-repeat (or a double tap) right after a fire is dropped silently, so
+// the success message is not replaced by a dedupe refusal.
+func TestEnqueueNowDropsAnAutoRepeatWithinTheWindow(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, cmd := update(m, press("n"))
+	m = feed2(m, cmd) // the reply lands; firing is clear again
+	if m.orchDetail.firing || !strings.Contains(m.status, "enqueued poll") {
+		t.Fatalf("precondition: success shown, guard clear; status %q", m.status)
+	}
+	good := m.status
+	// A held key: the first dropped press schedules the hint's expiry, the rest
+	// schedule nothing (and none calls the daemon; counted below).
+	m, expire := update(m, press("n"))
+	if expire == nil {
+		t.Fatal("the first dropped repeat should schedule the hint's expiry")
+	}
+	for i := 0; i < 4; i++ {
+		var c tea.Cmd
+		if m, c = update(m, press("n")); c != nil {
+			t.Fatal("later repeats must not schedule another timer")
+		}
+	}
+	if m.status != good {
+		t.Errorf("the success message must stay in the footer; status %q", m.status)
+	}
+	if !strings.Contains(m.orchDetail.status, "repeat ignored") {
+		t.Errorf("the dropped repeat should say so on the detail's own line; detail %q", m.orchDetail.status)
+	}
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 1 {
+		t.Errorf("one call expected; %q", a.orchCallsJoined())
+	}
+	// The hint lasts only as long as its window (review run 51). The expiry
+	// message is built directly rather than waiting out the real tick.
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "" {
+		t.Errorf("the repeat hint must clear when its window ends; detail %q", m.orchDetail.status)
+	}
+	// A deliberate second press after the window goes through.
+	m.orchDetail.lastFireAt = time.Now().Add(-2 * enqueueRepeatWindow)
+	if _, c := update(m, press("n")); c == nil {
+		t.Error("a press after the window should dispatch")
+	}
+}
+
+func TestEnqueueNowStatusWording(t *testing.T) {
+	a := &fakeDaemon{orchRun: &pb.Run{Id: "run-9", Position: 3}}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: false}, a)
+	m, cmd := update(m, press("n"))
+	m = feed2(m, cmd)
+	for _, want := range []string{"enqueued poll on alpha-bot (run-9, queued at position 3)", "the event is disabled"} {
+		if !strings.Contains(m.status, want) {
+			t.Errorf("status %q missing %q", m.status, want)
+		}
+	}
+	// No position known (e.g. the daemon could not read it): just the run id.
+	a2 := &fakeDaemon{orchRun: &pb.Run{Id: "run-9"}}
+	m2 := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a2)
+	m2, cmd2 := update(m2, press("n"))
+	m2 = feed2(m2, cmd2)
+	if !strings.Contains(m2.status, "enqueued poll on alpha-bot (run-9)") || strings.Contains(m2.status, "position 0") {
+		t.Errorf("status = %q", m2.status)
+	}
+}
+
+// Review (PR #4, run 43): only a SUCCESSFUL fire starts the repeat window, so a
+// deliberate retry right after a refusal goes through; a different event is never
+// held back by another event's window.
+func TestEnqueueNowRetryAfterAFailedFireIsNotDebounced(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	a.orchErr = errors.New("run run-1 of poll is already queued") // set after the view loaded: every call fails
+	m, cmd := update(m, press("n"))
+	m = feed2(m, cmd)
+	if !m.orchDetail.lastFireAt.IsZero() {
+		t.Fatal("a refused fire must not start the repeat window")
+	}
+	a.orchErr = nil
+	m, retry := update(m, press("n"))
+	if retry == nil {
+		t.Fatal("an immediate retry after a refusal must dispatch")
+	}
+	m = feed2(m, retry)
+	if m.orchDetail.lastFireAt.IsZero() || !strings.Contains(m.status, "enqueued poll") {
+		t.Errorf("a successful fire should start the window; status %q", m.status)
+	}
+}
+
+func TestEnqueueNowWindowIsPerEvent(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m.orchDetail.lastFireAt, m.orchDetail.lastFireEv = time.Now(), "tev-other" // another event fired just now
+	if _, cmd := update(m, press("n")); cmd == nil {
+		t.Error("another event's window must not block this event")
+	}
+}
+
+// Review (PR #4, run 51): the double tap's "already in progress" clears when the
+// fire succeeds, and an expiring hint never clears text that replaced it.
+func TestEnqueueNowSuccessClearsTheInProgressHint(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, first := update(m, press("n"))
+	m, _ = update(m, press("n"))
+	if m.orchDetail.status != enqueueInProgressText {
+		t.Fatalf("precondition: in-progress hint; detail %q", m.orchDetail.status)
+	}
+	m = feed2(m, first)
+	if m.orchDetail.status != "" {
+		t.Errorf("a successful fire must clear the stale in-progress hint; detail %q", m.orchDetail.status)
+	}
+	m.orchDetail.status = "something newer"
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "something newer" {
+		t.Errorf("an expiring hint must not clear other text; detail %q", m.orchDetail.status)
+	}
+}
+
+// Review (PR #4, run 51): a reply for orchestrator A that lands after the
+// developer opened B's detail neither stamps B's repeat window nor clears B's guard.
+func TestEnqueueNowLateReplyLeavesAnotherOrchestratorAlone(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, fire := update(m, press("n"))
+	reply, ok := runCmd(fire).(orchDoneMsg)
+	if !ok {
+		t.Fatal("the fire should reply with an orchDoneMsg")
+	}
+	// The developer moved on to orchestrator B (same event id) with its own fire in flight.
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, firing: true}
+	m, _ = update(m, reply)
+	if !m.orchDetail.lastFireAt.IsZero() || m.orchDetail.lastFireEv != "" {
+		t.Errorf("A's reply must not stamp B's repeat window; %v %q", m.orchDetail.lastFireAt, m.orchDetail.lastFireEv)
+	}
+	if !m.orchDetail.firing {
+		t.Error("A's reply must not clear B's in-flight guard")
+	}
+}
+
+// Review (PR #4, run 59): a late REFUSAL for orchestrator A goes to the footer,
+// naming A, and never onto B's open detail line.
+func TestEnqueueNowLateRefusalStaysOffAnotherOrchestratorsDetail(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, fire := update(m, press("n"))
+	reply, ok := runCmd(fire).(orchDoneMsg)
+	if !ok || reply.err == nil {
+		t.Fatalf("want a refused fire reply; got %#v", reply)
+	}
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, status: "b's own line"}
+	m, _ = update(m, reply)
+	if m.orchDetail.status != "b's own line" {
+		t.Errorf("A's refusal must not land on B's detail; detail %q", m.orchDetail.status)
+	}
+	if !strings.Contains(m.status, "enqueue on alpha-bot: run run-1 of poll is already queued") {
+		t.Errorf("footer = %q, want the refusal naming alpha-bot", m.status)
+	}
+}
+
+// Review (PR #4, run 66): a hint timer scheduled for orchestrator A must not clear
+// the identical hint now shown on orchestrator B's detail.
+func TestHintExpiryOnlyClearsTheOrchestratorItWasScheduledFor(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m.orchDetail.status = enqueueRepeatText // B's own, identical hint
+	if m, _ = update(m, orchHintExpiredMsg{orch: "o-other", text: enqueueRepeatText}); m.orchDetail.status != enqueueRepeatText {
+		t.Errorf("another orchestrator's timer must not clear this hint; detail %q", m.orchDetail.status)
+	}
+	if m, _ = update(m, orchHintExpiredMsg{orch: m.orchDetail.id, text: enqueueRepeatText}); m.orchDetail.status != "" {
+		t.Errorf("this orchestrator's own timer still clears it; detail %q", m.orchDetail.status)
+	}
+}
+
+// Review (PR #4, runs 66 + 74): leaving a detail and re-opening the SAME orchestrator
+// while its fire is in flight must not allow a second fire: the in-flight call lives on
+// the model, so the re-opened detail is restored as busy and the first reply is the
+// current one for it.
+func TestEnqueueNowReopenedDetailKeepsRefusingAndItsReplyIsCurrent(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	row := m.orch.rows[0]
+	m, fire1 := update(m, press("n"))
+	tok := m.orchDetail.fireToken
+	if tok == 0 || m.orchFires[m.orchDetail.id] != tok {
+		t.Fatalf("the fire is recorded on the model: detail token %d, model %v", tok, m.orchFires)
+	}
+	// Re-open the same orchestrator: orchDetail is replaced, the guard is restored.
+	mm, _ := m.enterOrchDetail(row)
+	m = mm.(Model)
+	if !m.orchDetail.firing || m.orchDetail.fireToken != tok {
+		t.Fatalf("a re-opened detail must be restored as busy with the same token; firing %v token %d", m.orchDetail.firing, m.orchDetail.fireToken)
+	}
+	// A second fire for the orchestrator is refused (dedupe is off, so the daemon would not).
+	start := orchFireStartMsg{id: m.orchDetail.id, host: m.orchDetail.host, evID: "tev-1", name: "poll", orch: "alpha-bot"}
+	m2, c := m.startOrchFire(start)
+	if c != nil || m2.(Model).orchDetail.status != enqueueInProgressText {
+		t.Fatalf("a second fire must be refused while the first is in flight; cmd %v status %q", c != nil, m2.(Model).orchDetail.status)
+	}
+	if got := strings.Count(a.orchCallsJoined(), "FireTimedEvent"); got != 0 {
+		// (the first fire's RPC has not run yet: its command was never executed)
+		t.Errorf("no RPC expected yet; %q", a.orchCallsJoined())
+	}
+
+	reply, ok := runCmd(fire1).(orchDoneMsg)
+	if !ok || reply.fireToken != tok {
+		t.Fatalf("the first fire replies with its token; got %#v", reply)
+	}
+	m, _ = update(m, reply)
+	if m.orchDetail.firing || m.orchDetail.fireToken != 0 || m.orchDetail.lastFireAt.IsZero() || len(m.orchFires) != 0 {
+		t.Errorf("the first reply is current for the re-opened detail: firing %v token %d window %v inflight %v",
+			m.orchDetail.firing, m.orchDetail.fireToken, m.orchDetail.lastFireAt, m.orchFires)
+	}
+}
+
+// A reply that arrives after the developer left for ANOTHER orchestrator still releases
+// the model's record for the one it belonged to, without touching the open detail.
+func TestEnqueueNowLateReplyReleasesItsOrchestratorsRecordOnly(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	m, fire := update(m, press("n"))
+	reply, _ := runCmd(fire).(orchDoneMsg)
+	m.orchFires["o-b"] = 77 // B has its own call in flight
+	m.orchDetail = orchDetailState{id: "o-b", host: m.orchDetail.host, view: viewEvents, firing: true, fireToken: 77}
+	m, _ = update(m, reply)
+	if _, still := m.orchFires["o-a"]; still {
+		t.Error("A's record must be released when A's reply lands")
+	}
+	if m.orchFires["o-b"] != 77 || !m.orchDetail.firing {
+		t.Error("B's call and guard must be untouched")
+	}
+}
+
+// A refusal for the re-opened SAME orchestrator is that detail's own: it is shown on
+// its line (it is the current fire), not hidden in the footer.
+func TestEnqueueNowRefusalAfterReopenLandsOnTheDetail(t *testing.T) {
+	a := &fakeDaemon{}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true}, a)
+	row := m.orch.rows[0]
+	a.orchErr = errors.New("run run-1 of poll is already queued")
+	m, fire := update(m, press("n"))
+	mm, _ := m.enterOrchDetail(row)
+	m = mm.(Model)
+	reply, _ := runCmd(fire).(orchDoneMsg)
+	m, _ = update(m, reply)
+	if m.orchDetail.status != "run run-1 of poll is already queued" || m.orchDetail.firing {
+		t.Errorf("detail %q firing %v", m.orchDetail.status, m.orchDetail.firing)
+	}
+}
+
+// The confirm path (dedupe off + a known open run) goes through a message hop; it must
+// take a token and its reply must release the guard like a direct fire.
+func TestEnqueueNowConfirmPathTakesAndReleasesAToken(t *testing.T) {
+	a := &fakeDaemon{orchRuns: &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "run-q", EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "tev-1"}}}}
+	m := eventsModel(t, &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 300, Enabled: true, DedupeDisabled: true}, a)
+	m, cmd := update(m, press("n"))
+	if m.screen != screenConfirm || cmd != nil {
+		t.Fatalf("expected the confirm dialog; screen %v", m.screen)
+	}
+	m, cmd = update(m, press("y"))
+	m, fire := update(m, runCmd(cmd)) // orchFireStartMsg -> startOrchFire
+	if fire == nil || !m.orchDetail.firing || m.orchDetail.fireToken == 0 || m.orchFires[m.orchDetail.id] != m.orchDetail.fireToken {
+		t.Fatalf("the confirmed fire must take a token; firing %v token %d inflight %v", m.orchDetail.firing, m.orchDetail.fireToken, m.orchFires)
+	}
+	m = feed2(m, fire)
+	if m.orchDetail.firing || len(m.orchFires) != 0 || m.orchDetail.lastFireAt.IsZero() {
+		t.Errorf("the reply must release the guard and the record; firing %v inflight %v", m.orchDetail.firing, m.orchFires)
 	}
 }

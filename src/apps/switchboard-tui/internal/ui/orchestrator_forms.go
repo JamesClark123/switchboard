@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -384,6 +385,43 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return orchDoneMsg{status: "deleted " + name, reload: true}
 			},
 		})
+	case "n":
+		// Enqueue now (SWI-4): one run as this event, schedule untouched. No confirm:
+		// it only queues work, and dedupe refuses a duplicate.
+		if cur == nil {
+			return m, nil
+		}
+		if d.firing {
+			d.status = enqueueInProgressText
+			return m, nil
+		}
+		// Terminal auto-repeat (or a double tap) right after a SUCCESSFUL fire is
+		// dropped: the success message in the footer stays instead of being replaced
+		// by a dedupe refusal, and a dedupe-off event cannot be flooded by a held key.
+		// The hint goes on the detail's own status line, which does not overwrite it.
+		if left := enqueueRepeatWindow - time.Since(d.lastFireAt); d.lastFireEv == cur.GetId() && left > 0 {
+			// The hint lasts only as long as the window it describes; the first
+			// dropped press owns the expiry timer (a held key schedules one, not many).
+			if d.status == enqueueRepeatText {
+				return m, nil
+			}
+			d.status = enqueueRepeatText
+			orchID := d.id // the value, not d: the timer must not read through a pointer into this handler's copy of the model
+			return m, tea.Tick(left, func(time.Time) tea.Msg { return orchHintExpiredMsg{orch: orchID, text: enqueueRepeatText} })
+		}
+		fire := orchFireStartMsg{id: d.id, host: d.host, evID: cur.GetId(), name: cur.GetName(), orch: m.orchRec().GetName(), disabled: !cur.GetEnabled()}
+		if open := m.openRunOfEvent(cur.GetId()); cur.GetDedupeDisabled() && open != nil {
+			// Dedupe is off and a run of this event is already open: this really would
+			// double up, so ask first.
+			return m.enterConfirm(confirmState{
+				title:     "Enqueue " + fire.name + " now?",
+				body:      []string{"Dedupe is off and run " + open.GetId() + " of this event is still open,", "so this queues another one alongside it."},
+				warning:   "Another run will be queued; the schedule is not changed.",
+				returnTo:  screenOrchDetail,
+				onConfirm: func() tea.Msg { return fire },
+			})
+		}
+		return m.startOrchFire(fire)
 	case " ":
 		if cur == nil {
 			return m, nil
@@ -409,6 +447,84 @@ func (m Model) updateEventsViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// orchFireStartMsg is an accepted Enqueue now (directly, or after the dedupe-off
+// confirmation): mark the Events view busy, then call the daemon.
+type orchFireStartMsg struct {
+	id, host, evID, name string
+	orch                 string // the orchestrator's name, for the outcome text
+	disabled             bool
+}
+
+// enqueueRepeatWindow drops a repeat Enqueue now for the same event this soon
+// after one started (terminal auto-repeat is ~30 ms; a deliberate second press is
+// slower). A package constant, never an env var.
+const enqueueRepeatWindow = 500 * time.Millisecond
+
+// The Enqueue now hints on the detail's status line; both are transient.
+const (
+	enqueueInProgressText = "an enqueue is already in progress"
+	enqueueRepeatText     = "repeat ignored — press n again in a moment to queue another"
+)
+
+// orchHintExpiredMsg clears a transient detail-line hint once it no longer
+// applies, unless something else has replaced it meanwhile. It names the
+// orchestrator it was scheduled for, so a timer that outlives a switch to another
+// orchestrator's detail cannot clear that one's identical hint.
+type orchHintExpiredMsg struct{ orch, text string }
+
+// fireTokens hands out the per-fire tokens. Process-wide (not on orchDetail, which
+// is replaced whenever a detail is opened) so a token is never reused. Only
+// uniqueness matters: nothing may depend on a token's value or order.
+var fireTokens atomic.Uint64
+
+// openRunOfEvent is a queued or in-flight run created by this timed event, as last
+// loaded into the view (nil when none is known). The daemon stays the authority —
+// this only decides whether to ask first. The list can lag a moment behind other
+// clients, and the run it names may have just finished; both only affect the prompt.
+func (m Model) openRunOfEvent(eventID string) *pb.Run {
+	r := m.orchDetail.runs
+	for _, group := range [][]*pb.Run{r.GetQueued(), r.GetInFlight()} {
+		for _, run := range group {
+			if run.GetEventKind() == pb.EventKind_EVENT_KIND_TIMED && run.GetOrigin() == eventID {
+				return run
+			}
+		}
+	}
+	return nil
+}
+
+func (m Model) startOrchFire(f orchFireStartMsg) (tea.Model, tea.Cmd) {
+	if m.orchDetail.firing || m.orchFires[f.id] != 0 {
+		m.orchDetail.status = enqueueInProgressText
+		return m, nil
+	}
+	tok := fireTokens.Add(1)
+	m.orchFires[f.id] = tok
+	m.orchDetail.firing = true
+	m.orchDetail.fireToken = tok
+	m.orchDetail.status = ""
+	od := m.daemonForHost(f.host)
+	return m, func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		run, err := od.FireTimedEvent(ctx, f.id, f.evID)
+		if err != nil {
+			return orchDoneMsg{err: err, fire: true, fireToken: tok, fireOrchID: f.id, fireOrchName: f.orch}
+		}
+		// The position is where the run queued (the daemon reads it before dispatch),
+		// not a live one: a free worker may already be starting it.
+		detail := run.GetId()
+		if run.GetPosition() > 0 {
+			detail = fmt.Sprintf("%s, queued at position %d", run.GetId(), run.GetPosition())
+		}
+		status := fmt.Sprintf("enqueued %s on %s (%s)", f.name, f.orch, detail)
+		if f.disabled {
+			status += " — the event is disabled; its schedule is unchanged"
+		}
+		return orchDoneMsg{status: status, reload: true, fire: true, fireToken: tok, fireOrchID: f.id, fireOrchName: f.orch, fireEvent: f.evID}
+	}
 }
 
 func cloneEvent(ev *pb.TimedEvent) *pb.TimedEvent {

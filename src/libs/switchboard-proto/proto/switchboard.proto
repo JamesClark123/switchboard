@@ -288,6 +288,13 @@ service Switchboard {
   // Creates or replaces a timed event (interval >= 60 s; the action must exist).
   rpc PutTimedEvent(PutTimedEventRequest) returns (TimedEvent);
   rpc DeleteTimedEvent(DeleteTimedEventRequest) returns (DeleteTimedEventResponse);
+  // Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
+  // origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
+  // the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
+  // for an unknown event or action. The returned run's position is where it queued
+  // (read before dispatch), not a live position: a free worker may already be
+  // starting it.
+  rpc FireTimedEvent(FireTimedEventRequest) returns (Run);
 
   // A USER event (FR-129): validates the call, composes the prompt at call time,
   // queues the run and returns it with its position. INVALID_ARGUMENT names a
@@ -1311,6 +1318,7 @@ message DeleteActionResponse { repeated string disabled_events = 1; }
 message PutTimedEventRequest { string orchestrator_id = 1; TimedEvent event = 2; }   // empty id => create
 message DeleteTimedEventRequest { string orchestrator_id = 1; string event_id = 2; }
 message DeleteTimedEventResponse {}
+message FireTimedEventRequest { string orchestrator_id = 1; string event_id = 2; }
 
 message CallActionRequest {
   string orchestrator_id = 1;

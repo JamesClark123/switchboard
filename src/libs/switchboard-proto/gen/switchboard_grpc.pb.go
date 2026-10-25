@@ -88,6 +88,7 @@ const (
 	Switchboard_DeleteAction_FullMethodName            = "/switchboard.v1.Switchboard/DeleteAction"
 	Switchboard_PutTimedEvent_FullMethodName           = "/switchboard.v1.Switchboard/PutTimedEvent"
 	Switchboard_DeleteTimedEvent_FullMethodName        = "/switchboard.v1.Switchboard/DeleteTimedEvent"
+	Switchboard_FireTimedEvent_FullMethodName          = "/switchboard.v1.Switchboard/FireTimedEvent"
 	Switchboard_CallAction_FullMethodName              = "/switchboard.v1.Switchboard/CallAction"
 	Switchboard_ListRuns_FullMethodName                = "/switchboard.v1.Switchboard/ListRuns"
 	Switchboard_GetRun_FullMethodName                  = "/switchboard.v1.Switchboard/GetRun"
@@ -341,6 +342,13 @@ type SwitchboardClient interface {
 	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
 	PutTimedEvent(ctx context.Context, in *PutTimedEventRequest, opts ...grpc.CallOption) (*TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, in *DeleteTimedEventRequest, opts ...grpc.CallOption) (*DeleteTimedEventResponse, error)
+	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
+	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
+	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
+	FireTimedEvent(ctx context.Context, in *FireTimedEventRequest, opts ...grpc.CallOption) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a
 	// missing required argument, an undeclared argument, an oversized value or an
@@ -1008,6 +1016,16 @@ func (c *switchboardClient) DeleteTimedEvent(ctx context.Context, in *DeleteTime
 	return out, nil
 }
 
+func (c *switchboardClient) FireTimedEvent(ctx context.Context, in *FireTimedEventRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_FireTimedEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) CallAction(ctx context.Context, in *CallActionRequest, opts ...grpc.CallOption) (*Run, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Run)
@@ -1361,6 +1379,13 @@ type SwitchboardServer interface {
 	// Creates or replaces a timed event (interval >= 60 s; the action must exist).
 	PutTimedEvent(context.Context, *PutTimedEventRequest) (*TimedEvent, error)
 	DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error)
+	// Enqueues one run of a timed event now (SWI-4), as that event (EVENT_KIND_TIMED,
+	// origin = event id). The event's schedule is untouched. FAILED_PRECONDITION when
+	// the event's dedupe is on and one of its runs is queued or in flight; NOT_FOUND
+	// for an unknown event or action. The returned run's position is where it queued
+	// (read before dispatch), not a live position: a free worker may already be
+	// starting it.
+	FireTimedEvent(context.Context, *FireTimedEventRequest) (*Run, error)
 	// A USER event (FR-129): validates the call, composes the prompt at call time,
 	// queues the run and returns it with its position. INVALID_ARGUMENT names a
 	// missing required argument, an undeclared argument, an oversized value or an
@@ -1571,6 +1596,9 @@ func (UnimplementedSwitchboardServer) PutTimedEvent(context.Context, *PutTimedEv
 }
 func (UnimplementedSwitchboardServer) DeleteTimedEvent(context.Context, *DeleteTimedEventRequest) (*DeleteTimedEventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTimedEvent not implemented")
+}
+func (UnimplementedSwitchboardServer) FireTimedEvent(context.Context, *FireTimedEventRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method FireTimedEvent not implemented")
 }
 func (UnimplementedSwitchboardServer) CallAction(context.Context, *CallActionRequest) (*Run, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallAction not implemented")
@@ -2517,6 +2545,24 @@ func _Switchboard_DeleteTimedEvent_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_FireTimedEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FireTimedEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).FireTimedEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_FireTimedEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).FireTimedEvent(ctx, req.(*FireTimedEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_CallAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CallActionRequest)
 	if err := dec(in); err != nil {
@@ -2861,6 +2907,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteTimedEvent",
 			Handler:    _Switchboard_DeleteTimedEvent_Handler,
+		},
+		{
+			MethodName: "FireTimedEvent",
+			Handler:    _Switchboard_FireTimedEvent_Handler,
 		},
 		{
 			MethodName: "CallAction",

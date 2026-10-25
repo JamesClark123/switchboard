@@ -516,3 +516,42 @@ func TestTwoDaemonsCallDeliverReviewMarkFree(t *testing.T) {
 	}
 	_ = del
 }
+
+// PR #4: FireTimedEvent over the wire — queues as the event, dedupe refusal is
+// FAILED_PRECONDITION naming the run, unknown event / orchestrator are NOT_FOUND.
+func TestFireTimedEventRPC(t *testing.T) {
+	env := startOrchServer(t)
+	ctx := context.Background()
+	c := env.client
+	o, err := c.CreateOrchestrator(ctx, &pb.CreateOrchestratorRequest{Name: "review-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{
+		Name: "check", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "check {repo}",
+		Arguments: []*pb.ActionArgument{{Name: "repo", Required: true}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := c.PutTimedEvent(ctx, &pb.PutTimedEventRequest{OrchestratorId: o.GetId(), Event: &pb.TimedEvent{
+		Name: "poll", Action: "check", IntervalSeconds: 3600, Enabled: true, Arguments: map[string]string{"repo": "acme/web"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := c.FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: o.GetId(), EventId: ev.GetId()})
+	if err != nil || run.GetEventKind() != pb.EventKind_EVENT_KIND_TIMED || run.GetOrigin() != ev.GetId() || run.GetOriginLabel() != "poll" || run.GetPosition() < 1 {
+		t.Fatalf("FireTimedEvent = %+v / %v", run, err)
+	}
+	_, err = c.FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: o.GetId(), EventId: ev.GetId()})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), run.GetId()) {
+		t.Errorf("dedupe refusal = %v, want FAILED_PRECONDITION naming %s", err, run.GetId())
+	}
+	if _, err := c.FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: o.GetId(), EventId: "tev-404"}); status.Code(err) != codes.NotFound {
+		t.Errorf("unknown event = %v, want NOT_FOUND", err)
+	}
+	if _, err := c.FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: "nope", EventId: ev.GetId()}); status.Code(err) != codes.NotFound {
+		t.Errorf("unknown orchestrator = %v, want NOT_FOUND", err)
+	}
+}
