@@ -92,6 +92,8 @@ type Daemon interface {
 	SetMcpAttachMode(ctx context.Context, mode pb.McpAttachMode) (*pb.McpGatewaySettings, error)
 	// Attaches a registered server to an existing sandbox on this daemon (FR-102).
 	AttachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
+	// Detaches a server from an existing sandbox on this daemon (SWI-3); it stays registered.
+	DetachMcpServer(ctx context.Context, sandboxID, name string) (*pb.Sandbox, error)
 	// Secrets (feature 008, FR-104): the host's `sbx secret` store, managed per daemon.
 	SecretsAvailable() (available bool, reason string)
 	ListSecrets(ctx context.Context) ([]*pb.Secret, error)
@@ -763,6 +765,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSourcesRemoved(msg)
 	case sandboxMcpListMsg:
 		return m.handleSandboxMcpList(msg)
+	case sandboxMcpDetachedMsg:
+		return m.handleSandboxMcpDetached(msg)
 	case sandboxMcpAttachedMsg:
 		return m.handleSandboxMcpAttached(msg)
 

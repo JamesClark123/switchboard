@@ -254,8 +254,11 @@ server switchboard attached to it (at launch via attach-by-default marks, or lat
 kind and authorization state its daemon reports. `a` lists that daemon's other registered servers;
 `enter` attaches one with `sbx mcp load`, which the runtime applies live — the agent sees the new
 tools without a stop or restart, in additive and exclusive sandboxes alike. Servers the agent
-attached for itself through the gateway's discovery tools are not listed, and there is no detach
-(the runtime has none). Register and authorize servers on the daemon screen first (`shift+→`).
+attached for itself through the gateway's discovery tools are not listed. `d` detaches the
+highlighted server (after a confirmation) with `sbx mcp unload`: its tools leave the sandbox at once,
+nothing stops or restarts, and the server stays registered on the daemon so `a` can attach it again.
+If the runtime says the server is no longer loaded, the sandbox record simply drops it. The
+orchestrator's own per-worker server is never listed or detachable. Register and authorize servers on the daemon screen first (`shift+→`).
 
 ### Daemon screen & MCP gateway
 

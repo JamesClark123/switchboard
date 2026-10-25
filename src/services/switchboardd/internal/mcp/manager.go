@@ -312,6 +312,20 @@ func LooksNotRegistered(out string) bool {
 	return strings.Contains(l, "not registered") || strings.Contains(l, "not found") || strings.Contains(l, "unknown")
 }
 
+// LooksNotLoaded reports whether an `sbx mcp unload` diagnostic says the server
+// is not loaded in that sandbox (or is no longer registered on the host), i.e.
+// there is nothing left to unload and the sandbox record should simply drop it.
+// The exact runtime wording is unverified (SWI-3), so the match is tolerant.
+func LooksNotLoaded(out string) bool {
+	l := strings.ToLower(out)
+	for _, s := range []string{"not loaded", "isn't loaded", "not currently loaded", "not attached", "not registered"} {
+		if strings.Contains(l, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // Authorize runs the host's authorization flow for a registered server as a
 // bounded, killable child (research R2). Frames: the URL as soon as the runtime
 // prints it, then progress lines, then a terminal Done (AUTHORIZED, or

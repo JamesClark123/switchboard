@@ -377,3 +377,51 @@ func TestAttachMcpServerRPC(t *testing.T) {
 		t.Errorf("unavailable: %v", err)
 	}
 }
+
+// DetachMcpServer (SWI-3): unloads a server from an existing sandbox, drops it
+// from the record, and maps the failure modes to codes.
+func TestDetachMcpServerRPC(t *testing.T) {
+	env := startMcpServer(t, available)
+	ctx := context.Background()
+	sb := launchViaRPC(t, env, "plain")
+	for _, n := range []string{"notion", "linear"} {
+		if _, err := env.client.AttachMcpServer(ctx, &pb.AttachMcpServerRequest{SandboxId: sb.GetId(), Name: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := env.client.DetachMcpServer(ctx, &pb.DetachMcpServerRequest{SandboxId: sb.GetId(), Name: "notion"})
+	if err != nil {
+		t.Fatalf("DetachMcpServer: %v", err)
+	}
+	if strings.Join(out.GetMcpServers(), ",") != "linear" {
+		t.Errorf("record = %v, want [linear]", out.GetMcpServers())
+	}
+	if len(env.runner.mcpUnloads) != 1 || env.runner.mcpUnloads[0] != sb.GetContainerRef()+" notion" {
+		t.Errorf("runner unloads = %v", env.runner.mcpUnloads)
+	}
+
+	cases := []struct {
+		name string
+		req  *pb.DetachMcpServerRequest
+		code codes.Code
+	}{
+		{"not attached", &pb.DetachMcpServerRequest{SandboxId: sb.GetId(), Name: "notion"}, codes.NotFound},
+		{"empty name", &pb.DetachMcpServerRequest{SandboxId: sb.GetId(), Name: " "}, codes.InvalidArgument},
+		{"orchestrator server", &pb.DetachMcpServerRequest{SandboxId: sb.GetId(), Name: mcp.WorkerServerPrefix + "abcd1234"}, codes.InvalidArgument},
+		{"unknown sandbox", &pb.DetachMcpServerRequest{SandboxId: "nope", Name: "linear"}, codes.NotFound},
+	}
+	for _, c := range cases {
+		if _, err := env.client.DetachMcpServer(ctx, c.req); status.Code(err) != c.code {
+			t.Errorf("%s: code = %v (%v), want %v", c.name, status.Code(err), err, c.code)
+		}
+	}
+	if len(env.runner.mcpUnloads) != 1 {
+		t.Errorf("refused detaches must not unload; unloads = %v", env.runner.mcpUnloads)
+	}
+
+	down := startMcpServer(t, mcp.Availability{Available: false, Reason: "sbx mcp is not usable here"})
+	if _, err := down.client.DetachMcpServer(ctx, &pb.DetachMcpServerRequest{SandboxId: "x", Name: "notion"}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("unavailable: %v", err)
+	}
+}

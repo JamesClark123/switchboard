@@ -52,3 +52,16 @@ func TestSbxRunnerStaticMcpAndLoadArgv(t *testing.T) {
 		t.Error("an empty StaticMcp must not render --static-mcp")
 	}
 }
+
+// SWI-3: detaching rides the documented `mcp unload <name> --sandbox <ref>`.
+func TestSbxRunnerUnloadMcpArgv(t *testing.T) {
+	bin, logPath := loggingSbx(t)
+	r := &SbxRunner{Bin: bin}
+	if err := r.UnloadMcp(context.Background(), "sb", "notion", nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(logPath)
+	if got := strings.TrimSpace(string(b)); got != "mcp unload notion --sandbox sb" {
+		t.Errorf("unload argv = %q", got)
+	}
+}

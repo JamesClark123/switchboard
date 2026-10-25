@@ -63,6 +63,9 @@ type Runner interface {
 	// LoadMcp attaches an already-registered MCP server to a created sandbox
 	// (`sbx mcp load <name> --sandbox <ref>`; feature 008 additive attach mode).
 	LoadMcp(ctx context.Context, containerRef, name string, log func(string)) error
+	// UnloadMcp detaches a loaded MCP server from a sandbox (`sbx mcp unload
+	// <name> --sandbox <ref>`, SWI-3); the server stays registered on the host.
+	UnloadMcp(ctx context.Context, containerRef, name string, log func(string)) error
 }
 
 // SbxRunner is the production Runner that shells out to the host `sbx` binary.
@@ -309,6 +312,13 @@ func (r *SbxRunner) Exec(ctx context.Context, ref string, argv []string) *exec.C
 // restarts, so the daemon never re-applies it.
 func (r *SbxRunner) LoadMcp(ctx context.Context, ref, name string, log func(string)) error {
 	_, err := r.run(ctx, log, "mcp", "load", name, "--sandbox", ref)
+	return err
+}
+
+// UnloadMcp maps to `sbx mcp unload <name> --sandbox <ref>` (SWI-3). The runtime
+// removes the server's tools from the sandbox live; the registration is untouched.
+func (r *SbxRunner) UnloadMcp(ctx context.Context, ref, name string, log func(string)) error {
+	_, err := r.run(ctx, log, "mcp", "unload", name, "--sandbox", ref)
 	return err
 }
 

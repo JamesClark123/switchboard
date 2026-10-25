@@ -404,3 +404,16 @@ func TestAddRemoteWithHeaders(t *testing.T) {
 		t.Errorf("refused adds must not reach the CLI; log = %v", readLog(t, env.log))
 	}
 }
+
+func TestLooksNotLoaded(t *testing.T) {
+	for _, yes := range []string{`MCP server "notion" is not loaded in sandbox "x"`, "server isn't loaded", `MCP server "n" is not registered`, "not currently loaded"} {
+		if !LooksNotLoaded(yes) {
+			t.Errorf("%q should be tolerated", yes)
+		}
+	}
+	for _, no := range []string{"", "gateway unreachable", "permission denied"} {
+		if LooksNotLoaded(no) {
+			t.Errorf("%q must not be tolerated", no)
+		}
+	}
+}

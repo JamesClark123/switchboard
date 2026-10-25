@@ -17,7 +17,8 @@ import (
 // one more registered server from that daemon's gateway list. The runtime
 // delivers the new tools to the agent live, so nothing here stops or restarts
 // anything; servers the agent attached for itself are the runtime's affair and
-// are not listed.
+// are not listed. `d` detaches the highlighted server (SWI-3) behind a confirm;
+// the server stays registered on the daemon and can be attached again.
 
 // attachMcpTimeout is the client-side bound on one attach; the daemon bounds the
 // `mcp load` itself at 60 s. A package constant, never an env var.
@@ -50,6 +51,14 @@ type sandboxMcpListMsg struct {
 
 // sandboxMcpAttachedMsg is the outcome of one attach.
 type sandboxMcpAttachedMsg struct {
+	id   string
+	name string
+	sb   *pb.Sandbox
+	err  error
+}
+
+// sandboxMcpDetachedMsg is the outcome of one detach.
+type sandboxMcpDetachedMsg struct {
 	id   string
 	name string
 	sb   *pb.Sandbox
@@ -145,11 +154,12 @@ func (m Model) sandboxMcpHelp() helpBindings {
 	if m.sandboxMcpView.picking {
 		return helpBindings{hkey("enter", "attach"), hkey("↑/↓", "move"), hkey("esc", "back")}
 	}
-	return helpBindings{hkey("a", "attach server"), hkey("r", "reload"), hkey("↑/↓", "move"), hkey("esc", "close")}
+	return helpBindings{hkey("a", "attach server"), hkey("d", "detach"), hkey("r", "reload"), hkey("↑/↓", "move"), hkey("esc", "close")}
 }
 
-// updateSandboxMcpKey drives the overlay. Nothing here is destructive: an attach
-// only ever adds a server, and there is no detach (the runtime has none).
+// updateSandboxMcpKey drives the overlay. An attach only ever adds a server; a
+// detach (`d`) removes one from the sandbox only (the registration is untouched)
+// and is confirmed first.
 func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.sandboxMcpView
 	if v.picking {
@@ -198,6 +208,29 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.loading = true
 			return m, m.sandboxMcpListCmd(v.host, v.sandboxID)
 		}
+	case "d":
+		switch {
+		case v.gatewayErr != "":
+			v.status = "cannot detach: " + v.gatewayErr
+		case v.busy != "":
+			v.status = "an attach is already in progress"
+		case v.cursor < 0 || v.cursor >= len(v.attached):
+			v.status = "nothing to detach"
+		default:
+			name, id, host := v.attached[v.cursor], v.sandboxID, v.host
+			v.status = ""
+			return m.enterConfirm(confirmState{
+				title: "Detach " + name + "?",
+				body: []string{
+					"Removes " + selectedStyle.Render(name) + " from sandbox " + selectedStyle.Render(v.sandbox) + ".",
+					"The agent loses its tools at once; the server stays registered",
+					"on the daemon and can be attached again.",
+				},
+				warning:   "The sandbox keeps running.",
+				onConfirm: m.detachMcpCmd(host, id, name),
+				returnTo:  screenSandboxMcp,
+			})
+		}
 	case "a":
 		switch {
 		case v.gatewayErr != "":
@@ -228,6 +261,41 @@ func (m Model) attachMcpCmd(host, id, name string) tea.Cmd {
 		sb, err := d.AttachMcpServer(ctx, id, name)
 		return sandboxMcpAttachedMsg{id: id, name: name, sb: sb, err: err}
 	}
+}
+
+// detachMcpCmd runs the detach against the owning daemon.
+func (m Model) detachMcpCmd(host, id, name string) tea.Cmd {
+	d := m.daemonForHost(host)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), attachMcpTimeout)
+		defer cancel()
+		sb, err := d.DetachMcpServer(ctx, id, name)
+		return sandboxMcpDetachedMsg{id: id, name: name, sb: sb, err: err}
+	}
+}
+
+// handleSandboxMcpDetached merges the updated record into the row and the
+// overlay, or surfaces the daemon's diagnostic.
+func (m Model) handleSandboxMcpDetached(msg sandboxMcpDetachedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		if m.mcpOverlayFor(msg.id) {
+			m.sandboxMcpView.status = "detach " + msg.name + " failed: " + msg.err.Error()
+		} else {
+			m.status = "detach " + msg.name + " from " + m.sandboxName(msg.id) + " failed: " + msg.err.Error()
+		}
+		return m, nil
+	}
+	if msg.sb != nil {
+		m.mergeSandboxUpdate(msg.sb)
+		m.refreshListItems()
+		m.syncSandboxMcpOverlay(msg.sb)
+	}
+	if m.mcpOverlayFor(msg.id) {
+		m.sandboxMcpView.status = "detached " + msg.name + " — still registered on the daemon (a re-attaches it)"
+	} else {
+		m.status = "detached " + msg.name + " from " + m.sandboxName(msg.id)
+	}
+	return m, nil
 }
 
 // handleSandboxMcpAttached merges the updated record into the row and the
@@ -342,7 +410,7 @@ func (m Model) sandboxMcpModal() string {
 		}
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", style.Render(v.status))
 	}
-	help := "a attach server · r reload · ↑/↓ move · esc close"
+	help := "a attach server · d detach · r reload · ↑/↓ move · esc close"
 	if v.picking {
 		help = "enter attach · ↑/↓ move · esc back"
 	}

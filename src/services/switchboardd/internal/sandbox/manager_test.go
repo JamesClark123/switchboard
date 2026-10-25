@@ -47,6 +47,8 @@ type fakeRunner struct {
 	// loads observed when the record was last read as RUNNING (ordering probe).
 	mcpLoads      []string
 	failLoad      map[string]bool
+	mcpUnloads    []string          // "<ref> <name>" per UnloadMcp
+	unloadErr     map[string]string // UnloadMcp fails with exactly this text for these names
 	lastStaticMcp []string
 }
 
@@ -389,6 +391,16 @@ func TestLaunchNameUniquenessAndPath(t *testing.T) {
 func errContext() error { return context.DeadlineExceeded }
 
 // --- feature 008: MCP attach surface ---
+
+func (f *fakeRunner) UnloadMcp(_ context.Context, ref, name string, _ func(string)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpUnloads = append(f.mcpUnloads, ref+" "+name)
+	if msg, ok := f.unloadErr[name]; ok {
+		return errors.New(msg)
+	}
+	return nil
+}
 
 func (f *fakeRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)) error {
 	f.mu.Lock()

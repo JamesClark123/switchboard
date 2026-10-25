@@ -463,8 +463,13 @@ and the toggle is still off.
   stopping or restarting it, append the name to the sandbox's record on success, and reach other
   clients through the existing sandbox-changed event; a failed load MUST leave the record untouched
   and show the runtime's diagnostic. Eligible states are RUNNING and STOPPED, in either attach mode.
-  Servers the agent attached for itself are not shown, and the view MUST say so. There is no detach
-  (the runtime has none). When the daemon's gateway is unavailable the view MUST still show the record
+  Servers the agent attached for itself are not shown, and the view MUST say so. **Detach (SWI-3)**:
+  the developer MUST be able to detach a recorded server from the overlay (`d`, behind a
+  confirmation) with the runtime's `sbx mcp unload <name> --sandbox <name>`; the sandbox is never
+  stopped or restarted, the record drops the name and the change reaches other clients through the
+  same sandbox-changed event, the registration on the host is untouched, a failed unload leaves the
+  record untouched and shows the runtime's diagnostic, a server the runtime reports as not loaded is
+  still dropped from the record, and the orchestrator's per-worker server is never offered. When the daemon's gateway is unavailable the view MUST still show the record
   and name the reason instead of offering an attach.
 - **FR-103** *(added 2026-10-12)*: Registering a remote server MUST accept custom HTTP headers,
   one `Name: value` entry per header, each passed to the runtime as its own `--header` flag. A

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"strings"
 	"testing"
 
@@ -225,5 +226,119 @@ func TestAttachableState(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrIneligibleState) {
 			t.Errorf("%v: err should wrap ErrIneligibleState: %v", st, err)
 		}
+	}
+}
+
+// --- SWI-3: detaching a server from an EXISTING sandbox ---
+
+func attachedSandbox(t *testing.T, names ...string) (*Manager, *fakeRunner, *pb.Sandbox) {
+	t.Helper()
+	m, _, runner, dir := newTestManager(t)
+	sb, _ := launchWithMcp(t, m, dir, nil)
+	for _, n := range names {
+		if _, err := m.AttachMcp(context.Background(), sb.GetId(), n, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return m, runner, sb
+}
+
+func TestDetachMcpUnloadsDropsRecordAndEmits(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion", "linear")
+	out, err := m.DetachMcp(context.Background(), sb.GetId(), " notion ", nil)
+	if err != nil {
+		t.Fatalf("DetachMcp: %v", err)
+	}
+	if want := sb.GetContainerRef() + " notion"; len(runner.mcpUnloads) != 1 || runner.mcpUnloads[0] != want {
+		t.Errorf("unloads = %v, want [%s]", runner.mcpUnloads, want)
+	}
+	if got := strings.Join(out.GetMcpServers(), ","); got != "linear" {
+		t.Errorf("record = %q, want linear", got)
+	}
+	if out.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("a detach must not change the state; got %v", out.GetState())
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "linear" {
+		t.Errorf("persisted = %q", got)
+	}
+	// Re-attachable afterwards.
+	if _, err := m.AttachMcp(context.Background(), sb.GetId(), "notion", nil); err != nil {
+		t.Errorf("re-attach after detach: %v", err)
+	}
+}
+
+func TestDetachMcpRefusals(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	ctx := context.Background()
+	if _, err := m.DetachMcp(ctx, sb.GetId(), "", nil); err == nil {
+		t.Error("an empty name must be refused")
+	}
+	if _, err := m.DetachMcp(ctx, sb.GetId(), "ghost", nil); !errors.Is(err, ErrMcpNotAttached) {
+		t.Errorf("unrecorded name err = %v, want ErrMcpNotAttached", err)
+	}
+	if _, err := m.DetachMcp(ctx, sb.GetId(), mcp.WorkerServerPrefix+"abcd1234", nil); !errors.Is(err, ErrMcpReserved) {
+		t.Errorf("orchestrator server err = %v, want ErrMcpReserved", err)
+	}
+	if _, err := m.DetachMcp(ctx, "no-such-sandbox", "notion", nil); err == nil {
+		t.Error("an unknown sandbox must be refused")
+	}
+	if err := m.ops.acquire(sb.GetId(), opRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DetachMcp(ctx, sb.GetId(), "notion", nil); !errors.Is(err, ErrBusy) {
+		t.Errorf("busy err = %v, want ErrBusy", err)
+	}
+	m.ops.release(sb.GetId())
+	if len(runner.mcpUnloads) != 0 {
+		t.Errorf("refusals must not call the CLI; unloads = %v", runner.mcpUnloads)
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "notion" {
+		t.Errorf("refusals must not touch the record; got %q", got)
+	}
+}
+
+func TestDetachMcpFailureKeepsRecordButNotLoadedDropsIt(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion", "linear")
+	ctx := context.Background()
+
+	runner.unloadErr = map[string]string{"notion": "gateway unreachable"}
+	if _, err := m.DetachMcp(ctx, sb.GetId(), "notion", nil); err == nil || !strings.Contains(err.Error(), "gateway unreachable") {
+		t.Fatalf("a failed unload must surface the runtime text; err = %v", err)
+	}
+	persisted, _ := m.Get(sb.GetId())
+	if got := strings.Join(persisted.GetMcpServers(), ","); got != "notion,linear" {
+		t.Errorf("a failed unload must keep the record; got %q", got)
+	}
+
+	// The runtime no longer has it loaded: the record follows the runtime.
+	runner.unloadErr = map[string]string{"notion": `MCP server "notion" is not loaded in sandbox "x"`}
+	var logs []string
+	out, err := m.DetachMcp(ctx, sb.GetId(), "notion", func(l string) { logs = append(logs, l) })
+	if err != nil {
+		t.Fatalf("not-loaded should be tolerated: %v", err)
+	}
+	if got := strings.Join(out.GetMcpServers(), ","); got != "linear" {
+		t.Errorf("record = %q, want linear", got)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "was not loaded") {
+		t.Errorf("tolerated case should be logged; got %v", logs)
+	}
+}
+
+func TestDetachMcpRefusedWhenSandboxIsNotRunningOrStopped(t *testing.T) {
+	m, runner, sb := attachedSandbox(t, "notion")
+	if _, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+		s.State = pb.SandboxState_SANDBOX_STATE_ERROR
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DetachMcp(context.Background(), sb.GetId(), "notion", nil); !errors.Is(err, ErrIneligibleState) {
+		t.Errorf("err = %v, want ErrIneligibleState", err)
+	}
+	if len(runner.mcpUnloads) != 0 {
+		t.Error("an ineligible sandbox must not reach the CLI")
 	}
 }

@@ -312,3 +312,82 @@ func TestMcpServersOverlayEdgePaths(t *testing.T) {
 		t.Error("the overlay should show the exclusive mode")
 	}
 }
+
+func (f *fakeDaemon) DetachMcpServer(_ context.Context, id, name string) (*pb.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.detachMcpErr != nil {
+		return nil, f.detachMcpErr
+	}
+	if f.detachedMcp == nil {
+		f.detachedMcp = map[string][]string{}
+	}
+	f.detachedMcp[id] = append(f.detachedMcp[id], name)
+	for _, sb := range f.sandboxes {
+		if sb.GetId() == id {
+			var keep []string
+			for _, n := range sb.McpServers {
+				if n != name {
+					keep = append(keep, n)
+				}
+			}
+			sb.McpServers = keep
+			return proto.Clone(sb).(*pb.Sandbox), nil
+		}
+	}
+	return &pb.Sandbox{Id: id}, nil
+}
+
+// SWI-3: `d` asks for confirmation, then detaches the highlighted server; the
+// record and the row update and the overlay returns.
+func TestMcpServersDetachFlow(t *testing.T) {
+	d := &fakeDaemon{}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, cmd := update(m, press("d"))
+	if m.screen != screenConfirm || cmd != nil {
+		t.Fatalf("d should open the confirm dialog; screen %v", m.screen)
+	}
+	if v := m.View(); !strings.Contains(v, "Detach notion?") || !strings.Contains(v, "stays registered") {
+		t.Errorf("confirm should name the server and say it stays registered; got:\n%s", v)
+	}
+	// Cancelling returns to the overlay and detaches nothing.
+	m2, _ := update(m, press("n"))
+	if m2.screen != screenSandboxMcp || len(d.detachedMcp) != 0 {
+		t.Fatalf("cancel: screen %v, detaches %v", m2.screen, d.detachedMcp)
+	}
+
+	m, cmd = update(m, press("y"))
+	if m.screen != screenSandboxMcp || cmd == nil {
+		t.Fatalf("accept should return to the overlay and dispatch; screen %v", m.screen)
+	}
+	m, _ = update(m, runCmd(cmd))
+	if got := d.detachedMcp["sb-1"]; len(got) != 1 || got[0] != "notion" {
+		t.Errorf("daemon detach calls = %v, want [notion]", got)
+	}
+	if len(m.sandboxMcpView.attached) != 0 {
+		t.Errorf("overlay attached = %v, want none", m.sandboxMcpView.attached)
+	}
+	v := m.View()
+	if !strings.Contains(v, "detached notion") || !strings.Contains(v, "none attached") {
+		t.Errorf("overlay should confirm and show an empty list; got:\n%s", v)
+	}
+	// Nothing left to detach.
+	m, _ = update(m, press("d"))
+	if m.screen != screenSandboxMcp || !strings.Contains(m.sandboxMcpView.status, "nothing to detach") {
+		t.Errorf("d on an empty list: screen %v status %q", m.screen, m.sandboxMcpView.status)
+	}
+}
+
+func TestMcpServersDetachFailureKeepsRecordAndShowsDiagnostic(t *testing.T) {
+	d := &fakeDaemon{detachMcpErr: errors.New("gateway unreachable")}
+	m := openMcpOverlay(t, mcpOverlayModel(t, d))
+	m, _ = update(m, press("d"))
+	m, cmd := update(m, press("y"))
+	m, _ = update(m, runCmd(cmd))
+	if got := m.sandboxMcpView.attached; strings.Join(got, ",") != "notion" {
+		t.Errorf("a failed detach must keep the record; attached = %v", got)
+	}
+	if v := m.View(); !strings.Contains(v, "detach notion failed: gateway unreachable") {
+		t.Errorf("overlay should show the diagnostic; got:\n%s", v)
+	}
+}
