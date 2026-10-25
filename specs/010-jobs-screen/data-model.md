@@ -38,7 +38,7 @@ One per hosting screen: Jobs and the orchestrator detail (R1).
 | runs | `ListRunsResponse` (queued, in_flight, history newest first) |
 | err | load error for this orchestrator, if its runs could not be read (named on every tab: R3) |
 | reachable | false while its host is disconnected; rows stay, dimmed, and operations are refused (R3, R12) |
-| gen | latest load generation issued; replies with an older generation are dropped (R3) |
+| gen | latest load generation issued, by an event reload **or** a host load's `ListRuns` for it; replies (or a host reply's part for this orchestrator) with an older generation are dropped (R3, FR-005) |
 | inFlight, dirty | coalescing: one reload in flight; `dirty` asks for one more when it lands (R3) |
 | stale | an event arrived while Jobs wasn't visible; reloaded on entering Jobs (R3) |
 
@@ -47,9 +47,9 @@ One per hosting screen: Jobs and the orchestrator detail (R1).
 | Field | Meaning |
 |-------|---------|
 | tab | `overview` \| `actions` \| `events` \| `queue` (order fixed: FR-002) |
-| orchs | loaded orchestrators, ordered by host display name then orchestrator name (stable group order: FR-019) |
+| orchs | loaded orchestrators, ordered by host display name, then orchestrator name, ties by host entry id (deterministic group and filter order: FR-019, FR-015) |
 | hosts | per host: `loading` (load in flight), `gen` (host load generation), `err` (could not be listed) |
-| unreachable | derived: display names of hosts that could not be listed or are disconnected, plus `name @ host (runs)` for orchestrators with `err` (FR-004) |
+| unreachable | derived: display names of hosts that are connecting, whose connection failed or dropped, or whose listing failed, plus `name @ host (runs)` for orchestrators with `err`; hosts the developer disconnected or never connected are not listed (FR-004) |
 | rev | data revision, bumped whenever a load is applied; derived rows are cached per `rev` (R4) |
 | cursors | one per tab: `{index, key}`, where `key` is the selected item's identity (R11) |
 | surface | the Jobs `orchSurface` (R1) |
@@ -62,7 +62,7 @@ One per hosting screen: Jobs and the orchestrator detail (R1).
 
 - `upcoming`: for each enabled `TimedEvent` with `next_fire_at` → `{target, event, willSkip}`, sorted by `next_fire_at` ascending (FR-007). `willSkip` = dedupe on (`!dedupe_disabled`) and the orchestrator's loaded runs contain a queued or in-flight run with `origin == event.id`.
 - `queued`: all `runs.queued` → `{target, run}`, sorted by `received_at` ascending.
-- `inProgress`: all `runs.in_flight` → `{target, run, worker}`, sorted by `started_at` ascending; `worker` = the sandbox display name from `rec.workers` (fallback: short sandbox id).
+- `inProgress`: all `runs.in_flight` → `{target, run, worker}`, sorted by `started_at` ascending; `worker` = the display name of the sandbox (`run.sandbox_host_id` via `entryForDaemonHost`, `run.sandbox_id`) in the TUI's aggregated sandbox list (fallback: short sandbox id). `rec.workers` can't be used: `Worker` has no display name (R4).
 - `history`: all `runs.history` → `{target, run}`, sorted by `ended_at` descending, first **15** (`jobsOverviewHistory`, FR-009).
 
 **Queue tab**: `queued` ++ `inProgress` ++ all `history` (no cap: FR-013), filtered by `queueFilter`; page `p` shows items `[p*25, (p+1)*25)` (`jobsQueuePageSize`); `pages = max(1, ceil(n/25))`; `queuePage` clamps to `pages-1` (FR-014, edge case "page beyond the end"); after a reload the page follows the selected run (R11).
@@ -80,7 +80,7 @@ All agent- or remote-supplied text in these rows (summary, reason, origin label)
 | action row | `(host, orchestrator id, action name)` |
 | group heading / empty line | `(host, orchestrator id)` |
 
-After every re-derive, each cursor moves to the row with its key; only if that row is gone does it fall back to its old index, clamped.
+After every re-derive, each cursor moves to the row with its key; only if that row is gone does it move to its nearest neighbour (the row now at its old position in the same section, else the previous row; FR-031). Operations resolve their item from the key, never from the index.
 
 ## Row actions (by row kind and run state)
 
@@ -98,7 +98,9 @@ Every action on a row of an unreachable orchestrator is refused with `<host> is 
 ## State transitions
 
 - Enter Jobs → first time: full load (every connected host, one command per host, results applied as each arrives); later: reload `stale` orchestrators and hosts not yet loaded.
-- `Event.orchestrator_changed(host, id)` while Jobs is visible → reload that orchestrator (`GetOrchestrator` + `ListRuns`, new `gen`, coalesced) → re-derive; a removed orchestrator disappears; if it was the queue filter, the filter resets to all with a status note. While Jobs isn't visible → mark it `stale`.
+- `Event.orchestrator_changed(host, id)` while Jobs is visible → reload that orchestrator (`GetOrchestrator` + `ListRuns`, new `gen`, coalesced) → re-derive; a **NotFound** reply means the orchestrator was removed: it disappears from every tab (other errors set its `err`); if it was the queue filter, the filter resets to all with a status note. While Jobs isn't visible → mark it `stale`.
+- Host load → bumps and records each orchestrator's `gen` as it issues that `ListRuns`; each orchestrator's part of the reply applies only if its `gen` is still the recorded one; orchestrators no longer listed are dropped.
 - Host connects or reconnects (including before the first load completes) → load that host's orchestrators and merge; it leaves `unreachable`.
-- Host disconnects → its orchestrators stay as last known with `reachable = false`, dimmed, listed in `unreachable`; operations on them are refused. Dropped only when the host is removed from the host list.
+- Host connection lost or failing (connecting, or disconnected with an error) → its orchestrators stay as last known with `reachable = false`, dimmed, listed in `unreachable`; operations on them are refused.
+- Host disconnected by the developer (no error) or removed → its orchestrators are dropped; not listed in `unreachable`.
 - Reply with `gen` older than the latest issued for that orchestrator (or host) → dropped.

@@ -42,11 +42,14 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
 
 - **Decision**:
   - **Event-driven reload of one orchestrator.** `Event.orchestrator_changed(host, id)` reloads just that orchestrator: `GetOrchestrator` for its record (actions, timed events) and `ListRuns` for its runs. Then the merged rows are re-derived (FR-005: no other orchestrator is re-read).
-  - **Ordered replies.** Each orchestrator has a load **generation**. Every reload request increments it, and the reply carries the generation it was issued with. A reply older than the latest issued is dropped, so an older `ListRuns` can never overwrite a newer one. Full host loads carry a per-host generation the same way.
-  - **Coalescing.** At most one reload per orchestrator is in flight. Events that arrive meanwhile set a `dirty` flag, and one more reload is issued when the current one lands. A burst such as queued → running → awaiting review, plus a scheduler tick, costs at most two reloads.
+  - **Ordered replies.** Each orchestrator has a load **generation**. Every reload request increments it, and the reply carries the generation it was issued with. A reply older than the latest issued is dropped, so an older `ListRuns` can never overwrite a newer one (FR-005: the most recent state wins).
+  - **Host loads share the per-orchestrator generations.** A full host load carries a per-host generation for the orchestrator *list*. When it issues an orchestrator's `ListRuns`, it also bumps that orchestrator's generation and records the value it issued. Each orchestrator's part of the host reply is applied only if that orchestrator's generation is still the recorded one. A slow host load that lands after a newer event reload of one of its orchestrators therefore keeps the newer state for that orchestrator, and still applies the rest.
+  - **Coalescing.** At most one reload per orchestrator is in flight; a host load's `ListRuns` for an orchestrator counts as that orchestrator's in-flight reload. Events that arrive meanwhile set a `dirty` flag, and one more reload is issued when the current one lands. A burst such as queued → running → awaiting review, plus a scheduler tick, costs at most two reloads.
   - **Only while visible.** Reloads run only while Jobs is the visible screen, including a form, confirm or overlay opened from Jobs. On other screens an event only marks the orchestrator `stale`. Entering Jobs reloads stale orchestrators (and does a full load the first time). Nothing is fetched in the background for the rest of the session.
+  - **Removed orchestrators.** An event reload whose `GetOrchestrator` or `ListRuns` returns **NotFound** removes that `jobsOrch` from every tab. If it was the Queue filter, the filter resets to all with a note. Any other error is recorded as the orchestrator's `err`. A host load drops the orchestrators its `ListOrchestrators` no longer returns.
   - **Host connects or reconnects**, including during the first load: that host's orchestrators are loaded and merged, and it leaves the "could not read" line (FR-004, US1 scenario 6). Host snapshots received before the first load completes are not ignored; they mark that host for loading.
-  - **Host disconnects**: its orchestrators are **kept as last known, marked unreachable**, as today's `orchLoadCmd` does. The host is named on the "could not read" line, its rows are dimmed, and operations on them are refused with a clear message (R12). The rows are dropped only when the host is removed from the host list. A transient disconnect therefore does not make in-flight runs vanish or reset the Queue filter.
+  - **Host connection lost or failing** (`HostConnecting`, or `HostDisconnected` with a connection error): its orchestrators are **kept as last known, marked unreachable**, as today's `orchLoadCmd` does. The host is named on the "could not read" line, its rows are dimmed, and operations on them are refused with a clear message (R12). A transient drop therefore does not make in-flight runs vanish or reset the Queue filter.
+  - **Host the developer disconnected or never connected** (`HostDisconnected` with no error, or removed from the host list): its rows are removed and it is **not** listed as unreadable (FR-004). A Queue filter on one of its orchestrators resets to all with a note.
   - **Per-orchestrator load errors** (its `ListRuns` failed) are named on the "could not read" line on **every** tab, as `name @ host (runs)`, not only as a heading note on the Events tab.
 - **Rationale**: Meets FR-004 and FR-005 without polling, with bounded work per event and no stale overwrites. It follows the spec's edge case that entries of a daemon that disconnects meanwhile stay and refuse operations.
 - **Alternatives considered**:
@@ -59,9 +62,9 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
 - **Decision**:
   - **Upcoming**: every enabled timed event with a `next_fire_at`, soonest first. When the event's dedupe is on and its orchestrator's loaded runs show an open (queued or in-flight) run of that event, the row says `next firing skipped — run open` (FR-007, US2 scenario 3). This is the same check as `openRunOfEvent`, using `Run.origin == event id`.
   - **Queued**: queued runs ordered by received time (oldest first, as dispatch order).
-  - **In progress**: running, awaiting input and awaiting review runs, ordered by start time. The row names the worker by its sandbox display name (from the orchestrator record's workers), falling back to the short sandbox id.
+  - **In progress**: running, awaiting input and awaiting review runs, ordered by start time. The row names the worker by its sandbox display name. It is resolved from the TUI's aggregated sandbox list by (`run.sandbox_host_id` mapped through `entryForDaemonHost`, `run.sandbox_id`), falling back to the short sandbox id. `Worker` in the orchestrator record has no display name (only `WorkerView` from `GetOrchestrator` does), so this lookup works the same after a host load and after an event reload, with no RPC.
   - **History**: finished runs merged across orchestrators by `ended_at` (newest first), truncated to 15 (package constant `jobsOverviewHistory = 15`).
-  - Every row shows host and orchestrator name.
+  - Every row shows host and orchestrator name. Group and filter order is host display name, then orchestrator name, ties broken by host entry id (FR-019, FR-015).
   - **Row layout**: columns are padded **and truncated** to fixed display widths (`lipgloss.Width` / `ansi.Truncate`, never bytes), so long names cannot push columns out of line. The History result snippet takes the remaining width.
   - **Caching**: derived rows are computed once per data revision (bumped on every applied load), not on every frame.
 - **Rationale**: Matches FR-006–FR-009 and the spec's assumptions (one Upcoming entry per event; combined 15 cap).
@@ -87,7 +90,7 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
 
 - **Decision**:
   - **Rows**: flatten all runs (queued, then in progress, then history newest first).
-  - **Filter**: `f` cycles through "all orchestrators" and each orchestrator (labelled `name @ host`); `F` clears it.
+  - **Filter**: `f` cycles through "all orchestrators" and each orchestrator (labelled `name @ host`), in group order (FR-015); `F` clears it.
   - **Pagination**: page-based with a package constant page size (`jobsQueuePageSize = 25`). `]`/`pgdown` goes to the next page and `[`/`pgup` to the previous; the header shows "page N of M (K runs)".
   - **Edge cases**: when the page no longer exists (runs trimmed or filter changed), the page clamps to the last page. When the filtered orchestrator is **removed**, the filter resets to all and says so. An orchestrator that is only unreachable keeps the filter (R3).
   - **Cursor**: identity-based (R11). After a reload the cursor moves to the page that now holds the selected run.
@@ -138,15 +141,19 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
 - **Decision**:
   - **A new sanitiser.** Nothing in `internal/ui` strips control or escape sequences today; `runLine` and the prompt overlay render raw text, and the daemon only bounds a summary's length. A new `sanitizeTerminalText(s string) string` is added in `UI/sanitize.go`. It removes:
     - ESC-introduced sequences: CSI (`ESC [` … final byte), OSC (`ESC ]` … BEL or ST), DCS, SOS, PM and APC (`ESC P/X/^/_` … ST), and two-character escapes;
-    - every other C0 control except `\n` and `\t`, which covers `\r`, backspace and BEL;
+    - every other C0 control except `\n` and `\t` (backspace, BEL and so on). `\r\n` and a lone `\r` become `\n`, so line breaks are kept (FR-029);
     - DEL and C1 controls (U+0080–U+009F, including 8-bit CSI/OSC);
+    - Unicode bidirectional and invisible formatting characters: U+061C, U+200B–U+200F, U+202A–U+202E, U+2060–U+2064, U+2066–U+2069 and U+FEFF. They could reorder or hide text, or make it appear in another column;
     - invalid UTF-8, replaced by U+FFFD.
+
+    It then **expands `\t` to spaces up to the next multiple of 4 columns**. The tab is kept visually, as FR-029 requires, but measured correctly: `ansi.StringWidth`, `lipgloss.Width` and `ansi.Wrap` count a raw tab as zero columns, while a terminal draws up to 8. Raw tabs would make wrapped overlay lines run past the modal border.
   - **A one-line variant.** `sanitizeLine` also folds `\n`/`\t` to spaces and then truncates by **display width** (`ansi.Truncate`/`lipgloss.Width`). It is used for row snippets and never splits a rune or leaves a partial sequence; today's `truncate` cuts by byte.
   - **Where it applies.** Both are applied to every agent- or remote-supplied string Jobs shows:
     - in the Overview, Queue and History rows: summaries, reasons and origin labels;
     - in the results overlay;
     - in the prompt overlay: the composed prompt and its arguments;
-    - in the detail views that render them.
+    - in the detail views that render them;
+    - beyond Jobs (FR-029): in Daemons › Orchestrators, and in the notifications that lead into this feature (the notification list's message and filter text, such as a failed or awaiting-review run's notification) and the sandbox list's review prompt and mark-free dialog.
   - **Placement.** Sanitising happens where text is rendered, never on stored data.
 - **Rationale**: These strings are written by agents that handle untrusted input (PR bodies, issue text). A prompt-injected agent can report OSC 52 (clipboard write), `ESC[2J` (screen clear) or cursor moves that spoof the UI.
 - **Alternatives considered**:
@@ -161,7 +168,7 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
     - an event is (host, orchestrator id, event id);
     - an action is (host, orchestrator id, action name);
     - a group heading or empty line is (host, orchestrator id).
-  - **Re-anchoring.** After every re-derive (load, event reload, filter or page change), the cursor is moved to the item with that identity. In the Queue tab this includes switching to its page. Only when the item is gone does it fall back to the nearest index, clamped.
+  - **Re-anchoring.** After every re-derive (load, event reload, filter or page change), the cursor is moved to the item with that identity. In the Queue tab this includes switching to its page. Only when the item is gone does it move to its nearest neighbour: the row now at its old position in the same section, else the previous row (FR-031). Operations read the item from the cursor's key, not its index, so they never act on an item that moved into its place.
 - **Rationale**: Rows reorder under the developer. Upcoming re-sorts every time an event fires or is skipped (its `next_fire_at` moves). Each finished run shifts newest-first history by one, and groups gain or lose items. With index cursors, `n` (no confirmation when dedupe is on), `space`, `x` or `m` can act on a different item than the one highlighted. `applyOrchRows` already re-anchors the orchestrator list this way.
 - **Alternatives considered**: Freezing the rows while the cursor is on them (the data goes stale, and FR-005 is violated).
 
@@ -171,6 +178,7 @@ All unknowns from the plan's Technical Context are resolved below. Format per it
   - **A connected-host check.** Every Jobs and Daemons › Orchestrators operation resolves its daemon with a new `connectedDaemon(host) (Daemon, error)`. It returns an error, such as `<host> is not connected`, when the host isn't in the manager or isn't `HostConnected`.
   - **No fallback.** Operations never use `daemonForHost`, which silently falls back to the active daemon (`m.daemon`).
   - **Where the check runs.** It runs when the operation is started (key press) **and** again when a form is submitted. The host can drop while a form is open: a create, rename or call submitted after a disconnect is refused with the message, and the form stays open.
+  - **Detail views too.** The opened orchestrator detail (Workers detach and mark free, Reasoning edit and rebuild, Hosts add and remove) resolves its daemon the same way. Opening an orchestrator from Daemons › Orchestrators is refused when that daemon is not connected (FR-030).
   - **Single-daemon setups.** Without a manager, the lone daemon is "connected".
 - **Rationale**: `daemonForHost` falls back to the active daemon. A Jobs row or the Daemons › Orchestrators list of a host that dropped would otherwise create orchestrators, or act, on the wrong daemon, or fail with a misleading NotFound.
 - **Alternatives considered**: Changing `daemonForHost` itself (it is used by many sandbox paths that rely on the fallback).

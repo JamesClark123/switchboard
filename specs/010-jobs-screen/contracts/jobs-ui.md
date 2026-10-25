@@ -47,7 +47,7 @@ In progress  review-pr       running       beta-bot @ build-box  on worker-wa ·
 History      review-pr       completed     alpha-bot @ local     ended 5m ago — Reviewed PR 412 and…
 ```
 
-Columns are padded and truncated to fixed display widths (long names end in `…`); the History snippet takes the remaining width. `on <worker>` is the worker sandbox's display name. Snippets, reasons and origin labels are sanitised single lines (FR-029). The cursor stays on the same item when rows reorder after a refresh (research R11).
+Columns are padded and truncated to fixed display widths (long names end in `…`); the History snippet takes the remaining width. `on <worker>` is the worker sandbox's display name. Snippets, reasons and origin labels are sanitised single lines (FR-029). The cursor stays on the same item when rows reorder or move between sections after a refresh; if the item is gone it moves to its nearest neighbour (FR-031, research R11).
 
 ### Actions
 
@@ -77,7 +77,7 @@ Every run the daemons keep (queued, in progress, history), no cap, paginated.
 
 | Key | Effect |
 |-----|--------|
-| `f` | cycle the orchestrator filter: all → `alpha-bot @ local` → `beta-bot @ build-box` → … → all |
+| `f` | cycle the orchestrator filter: all → `alpha-bot @ local` → `beta-bot @ build-box` → … → all, in group order (FR-015) |
 | `F` | clear the filter (all orchestrators) |
 | `]` / `pgdown` | next page |
 | `[` / `pgup` | previous page |
@@ -87,12 +87,12 @@ Header: `filter: <all | name @ host> · page N of M (K runs)`.
 
 ### Open results overlay
 
-Shows action, `orchestrator @ host`, state, end time, then the full reported result (`closed by developer: <note>` when closed by hand; the failure/cancel reason for failed/cancelled runs; "no result was reported" when empty). `↑`/`↓`/`pgup`/`pgdown` scroll; `esc` closes. All text is sanitised (control and escape sequences removed; the terminal's screen, cursor, colours, title, hyperlinks and clipboard are never changed: FR-029). The overlay fits the terminal: content is wrapped to the overlay's inner width (after padding), the scroll indicator and `esc close` hint stay visible, and it re-fits when the terminal is resized.
+Shows action, `orchestrator @ host`, state, end time, then the full reported result (`closed by developer: <note>` when closed by hand; the failure/cancel reason for failed/cancelled runs; "no result was reported" when empty). `↑`/`↓`/`pgup`/`pgdown` scroll; `esc` closes. All text is sanitised (control and escape sequences and bidi/invisible formatting characters removed; line breaks kept, carriage returns shown as line breaks, tabs expanded to spaces; the terminal's screen, cursor, colours, title, hyperlinks and clipboard are never changed: FR-029). The overlay fits the terminal: content is wrapped to the overlay's inner width (after padding), the scroll indicator and `esc close` hint stay visible, and it re-fits when the terminal is resized.
 
 ### Empty / partial states
 
 - No orchestrators: "No orchestrators yet — create one under Daemons › <daemon> › Orchestrators."
-- Unreachable daemons: a dim line "could not read: <host>, <host>, <orchestrator> @ <host> (runs)" above the content, on every tab — disconnected daemons, daemons whose listing failed, and orchestrators whose runs failed to load. A disconnected daemon's rows stay, dimmed; acting on them shows "<host> is not connected" (FR-030).
+- Unreachable daemons: a dim line "could not read: <host>, <host>, <orchestrator> @ <host> (runs)" above the content, on every tab — daemons that are connecting or whose connection failed or dropped, daemons whose listing failed, and orchestrators whose runs failed to load. Daemons you disconnected or never connected are not listed, and their rows are not shown (FR-004). A dropped daemon's rows stay, dimmed; acting on them shows "<host> is not connected" (FR-030).
 - Still loading: a dim "loading: <host>" while a daemon has not answered; other daemons' rows are already shown and navigable (SC-007).
 
 ## Daemons › Orchestrators
