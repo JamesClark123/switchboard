@@ -26,11 +26,15 @@ jobs:
             src/services/switchboardd/go.sum
             src/apps/switchboard-tui/go.sum
 
+      # The version lives in the Makefile (GOLANGCI_LINT_VERSION) so local and CI
+      # runs agree; install.sh is fetched from that same tag, not from master.
       - name: Install golangci-lint
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+          v="$(make -s lint-version)"
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${v}/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${v}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/golangci-lint" version
 
       - name: Shellcheck install.sh
         run: |

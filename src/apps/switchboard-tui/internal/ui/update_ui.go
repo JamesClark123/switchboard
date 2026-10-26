@@ -257,7 +257,7 @@ func (m Model) viewUpdate() string {
 			mark = failMark
 			detail = r.err.Error()
 		}
-		b.WriteString(fmt.Sprintf("%s host %s — %s\n", mark, r.name, detail))
+		fmt.Fprintf(&b, "%s host %s — %s\n", mark, r.name, detail)
 	}
 
 	b.WriteString("\n")

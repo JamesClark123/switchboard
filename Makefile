@@ -16,7 +16,12 @@ E2E_MODULES := \
 
 COVER_FLOOR := 90
 
-.PHONY: all build lint vet test cover env-check proto fmt fmt-check e2e
+# golangci-lint must be built with a Go at least as new as the modules' `go`
+# directive (1.26): an older build refuses to load the config. CI installs exactly
+# this version (see .github/workflows/ci.yml, which reads it via `make lint-version`).
+GOLANGCI_LINT_VERSION := v2.15.0
+
+.PHONY: all build lint lint-version vet test cover env-check proto fmt fmt-check e2e
 
 all: fmt-check vet lint test
 
@@ -33,8 +38,14 @@ fmt-check:
 vet:
 	@for m in $(MODULES); do echo ">> vet $$m"; (cd $$m && go vet ./...) || exit 1; done
 
+# On failure, name the version CI uses: an older local build fails with
+# "can't load config: the Go language version … is lower than the targeted Go version".
 lint:
-	@for m in $(MODULES); do echo ">> lint $$m"; (cd $$m && golangci-lint run ./...) || exit 1; done
+	@for m in $(MODULES); do echo ">> lint $$m"; (cd $$m && golangci-lint run ./...) || { \
+		echo "lint failed; CI uses golangci-lint $(GOLANGCI_LINT_VERSION) (yours: $$(golangci-lint version 2>&1 | head -1))"; exit 1; }; done
+
+lint-version:
+	@echo $(GOLANGCI_LINT_VERSION)
 
 test:
 	@for m in $(MODULES); do echo ">> test $$m"; (cd $$m && go test ./...) || exit 1; done
