@@ -126,3 +126,21 @@ func TestManagerConnectErrors(t *testing.T) {
 		t.Errorf("disconnected host should aggregate empty: %+v", agg)
 	}
 }
+
+// Disconnect is the developer's choice: a previous dial error is cleared, so the
+// host is not reported as failing (feature 010, R3).
+func TestManagerDisconnectClearsErr(t *testing.T) {
+	mgr := client.NewManager()
+	mgr.SetDialFunc(func(context.Context, client.HostEntry) (*client.Conn, error) { return nil, errors.New("refused") })
+	mgr.Upsert(client.HostEntry{ID: "a", Kind: "ssh", SSHTarget: "a"})
+	if err := mgr.Connect(context.Background(), "a"); err == nil {
+		t.Fatal("the dial fails")
+	}
+	if hc, _ := mgr.Get("a"); hc.Err == nil {
+		t.Fatal("a failed dial records its error")
+	}
+	mgr.Disconnect("a")
+	if hc, _ := mgr.Get("a"); hc.Err != nil || hc.State != client.HostDisconnected {
+		t.Errorf("after Disconnect: state %v err %v", hc.State, hc.Err)
+	}
+}

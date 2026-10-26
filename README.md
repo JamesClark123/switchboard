@@ -381,11 +381,12 @@ views (`←`/`→`; `esc` back to the list):
 | Hosts | The machines the orchestrator can place workers on, with reachability. `a` copies an entry from your saved SSH hosts, `d` removes one (refused while workers live there). |
 
 **Jobs.** `shift+→` twice (or `shift+←` from the sandbox list) opens the **Jobs** screen: every
-orchestrator on every connected daemon, every row labelled `orchestrator @ host`. A daemon that
-is connecting, whose connection failed or dropped, or whose orchestrators could not be read is named
-above the content with its error (`could not read: …`); its rows stay, dimmed, and refuse operations
-(`<host> is not connected`) while the others still show — a daemon you disconnected yourself just
-drops out. Each daemon's rows appear as soon as it answers. The screen follows changes live, one
+orchestrator on every connected daemon, every row labelled `orchestrator @ host`. A daemon whose
+connection failed or was lost (its event stream ended, or a call found it unavailable), or whose
+orchestrators could not be read, is named above the content with its error (`could not read: …`);
+its rows stay, dimmed, and refuse operations (`<host> is not connected` / `<host>: connection
+lost`) until it answers again, while the others still show. A daemon still connecting is listed
+as `connecting: …`, and one you disconnected yourself just drops out. Each daemon's rows appear as soon as it answers. The screen follows changes live, one
 orchestrator at a time and only while it is on screen (it catches up when shown again); the
 highlight stays on its item when rows re-sort. Text written by agents (reports, reasons, prompts) is
 shown without terminal control sequences. Four tabs, switched with `←`/`→` (the last one is

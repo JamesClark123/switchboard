@@ -129,7 +129,7 @@ func TestJobsTabsOrderAndSwitching(t *testing.T) {
 		t.Fatalf("tab order = %v", jobsTabNames)
 	}
 	bar := m.jobsTabBar()
-	if i, j, k, l := strings.Index(bar, "Overview"), strings.Index(bar, "Actions"), strings.Index(bar, "Events"), strings.Index(bar, "Queue"); !(i < j && j < k && k < l) {
+	if i, j, k, l := strings.Index(bar, "Overview"), strings.Index(bar, "Actions"), strings.Index(bar, "Events"), strings.Index(bar, "Queue"); i >= j || j >= k || k >= l {
 		t.Errorf("tab bar order: %q", bar)
 	}
 	want := []jobsTab{jobsActions, jobsEvents, jobsQueue, jobsOverview}
@@ -202,7 +202,7 @@ func TestJobsFanOutAcrossTwoHosts(t *testing.T) {
 	m.jobs.orchs[0].err = errBoom{}
 	for tab := jobsTab(0); tab < jobsTabCount; tab++ {
 		m.jobs.tab = tab
-		if !strings.Contains(m.View(), "could not read: alpha-bot @ alpha (runs)") {
+		if !strings.Contains(m.View(), "could not read: alpha-bot @ alpha (runs: boom)") {
 			t.Errorf("tab %s: a runs failure is named:\n%s", jobsTabNames[tab], m.View())
 		}
 	}
@@ -357,16 +357,16 @@ func TestJobsApplyOrchEdgeCases(t *testing.T) {
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "solo")}}
 	m := openJobs(sized(New(d, "/work")))
 	key := m.jobs.orchs[0].target
-	gen := m.jobs.metaOf(key.host, key.id).gen
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, gen: gen, err: status.Error(codes.Unavailable, "down")})
+	seq := jobsSeq.Add(1)
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: seq, err: status.Error(codes.Internal, "boom")})
 	if len(m.jobs.orchs) != 1 || m.jobs.orchs[0].err == nil {
-		t.Error("an Unavailable reload keeps the orchestrator, with the error")
+		t.Error("a failed reload keeps the orchestrator, with the error")
 	}
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, gen: gen - 1, gone: true})
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: seq - 1, gone: true})
 	if len(m.jobs.orchs) != 1 {
 		t.Error("an older reply is dropped")
 	}
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, gen: gen, gone: true, err: status.Error(codes.NotFound, "gone")})
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "gone")})
 	if len(m.jobs.orchs) != 0 {
 		t.Error("a NotFound reload removes it")
 	}

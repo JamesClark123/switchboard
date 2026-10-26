@@ -159,8 +159,9 @@ func (m *Manager) ConnectWithPassword(ctx context.Context, id, password string) 
 	return nil
 }
 
-// Disconnect closes a host's connection and marks it disconnected. The remote
-// sandbox keeps running on its host (spec edge case); only the client link drops.
+// Disconnect closes a host's connection and marks it disconnected, clearing any
+// dial error (disconnecting is not a failure). The remote sandbox keeps running
+// on its host (spec edge case); only the client link drops.
 func (m *Manager) Disconnect(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -173,6 +174,7 @@ func (m *Manager) Disconnect(id string) {
 		hc.Conn = nil
 	}
 	hc.State = HostDisconnected
+	hc.Err = nil // the developer's choice, not a failure: no longer "could not read"
 }
 
 // Get returns a snapshot of a host's managed connection.

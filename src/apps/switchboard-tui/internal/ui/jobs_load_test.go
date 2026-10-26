@@ -100,9 +100,10 @@ func TestJobsQueuePageFollowsRun(t *testing.T) {
 	}
 }
 
-// An older reply never overwrites a newer one: a host load started after an
-// orchestrator reload wins even if the reload's reply lands last (FR-005, review
-// item 3).
+// An older reply never overwrites a newer one: every call is stamped from jobsSeq
+// as it is issued, so a host load issued after an orchestrator reload wins even
+// if the reload's reply lands last, and a slow host load's older part does not
+// revert a newer event reload (FR-005, review item 3, R3).
 func TestJobsOlderReplyIsDropped(t *testing.T) {
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
 	m := openJobs(sized(New(d, "/work")))
@@ -121,16 +122,50 @@ func TestJobsOlderReplyIsDropped(t *testing.T) {
 	if runs := m.jobs.orchs[0].runs; len(runs.GetInFlight()) != 1 || len(runs.GetQueued()) != 0 {
 		t.Fatalf("the older reply must not put the run back in the queue: %v", runs)
 	}
-	// A host reply older than the latest host load is dropped too.
-	gen := m.jobs.hosts[target.host].gen
-	m, _ = update(m, jobsHostMsg{host: target.host, gen: gen - 1})
+	// A host reply other than the load in flight is dropped too.
+	flight := m.jobs.hosts[target.host].flight
+	m, _ = update(m, jobsHostMsg{host: target.host, flight: flight - 1})
 	if len(m.jobs.orchs) != 1 {
-		t.Error("an older host reply is dropped")
+		t.Error("a superseded host reply is dropped")
+	}
+
+	// The other way round: the host load reads first (queued) but lands after an
+	// event reload that read later (running). The event reload's state stays.
+	d.orchRuns = queued
+	slow := runAll(m.jobsLoadAll())
+	d.orchRuns = running
+	m = changedOrch(m, target)
+	for _, msg := range slow {
+		m, _ = update(m, msg)
+	}
+	if runs := m.jobs.orchs[0].runs; len(runs.GetInFlight()) != 1 || len(runs.GetQueued()) != 0 {
+		t.Fatalf("a slow host load must not revert a newer event reload: %v", runs)
+	}
+	// ...and its older list does not drop an orchestrator a newer reload read.
+	d.orchestrators = nil
+	slow = runAll(m.jobsLoadAll())
+	d.orchestrators = []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}
+	m = changedOrch(m, target)
+	for _, msg := range slow {
+		m, _ = update(m, msg)
+	}
+	if len(m.jobs.orchs) != 1 {
+		t.Error("an older list does not drop an orchestrator read since")
+	}
+	// A newer list without it does.
+	d.orchestrators = nil
+	if m = reloadJobs(m); len(m.jobs.orchs) != 0 {
+		t.Error("a newer list without it drops it")
+	}
+	// And an older reply cannot bring it back.
+	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, seq: 1, orch: &jobsOrch{target: target, runs: running}})
+	if len(m.jobs.orchs) != 0 {
+		t.Error("an older reply does not resurrect a removed orchestrator")
 	}
 }
 
-// Events during a reload are coalesced into one more reload; events during a
-// host load wait for it (R3, review item 6).
+// Events during a reload are coalesced into one more reload; host loads do not
+// take part (R3, review item 6).
 func TestJobsReloadsAreCoalesced(t *testing.T) {
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
 	m := openJobs(sized(New(d, "/work")))
@@ -154,19 +189,19 @@ func TestJobsReloadsAreCoalesced(t *testing.T) {
 	if last != nil || strings.Count(d.orchCallsJoined(), "GetOrchestrator o-a") != 2 {
 		t.Errorf("a burst costs two reloads: %q", d.orchCallsJoined())
 	}
-	// During a host load the event waits for the host's reply, then reloads once.
+	// During a host load an event reloads at once; the host's reply adds nothing.
 	load := m.jobsLoadAll()
 	mm, c := m.syncOrchestratorChanged(target.host, target.id)
 	m = mm.(Model)
-	if c != nil {
-		t.Fatal("an event during a host load waits for it")
+	if c == nil {
+		t.Fatal("an event during a host load reloads its orchestrator")
 	}
 	if again := m.jobsLoadAll(); again != nil {
 		t.Error("r while a host load runs does not stack another")
 	}
 	m, follow := update(m, runAll(load)[0])
-	if follow == nil {
-		t.Error("the waiting event reloads once the host has answered")
+	if follow != nil {
+		t.Error("the host's reply asks for no further reload")
 	}
 }
 
@@ -203,8 +238,7 @@ func TestJobsNotFoundRunsRemoves(t *testing.T) {
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
 	m := openJobs(sized(New(d, "/work")))
 	target := m.jobs.orchs[0].target
-	gen := m.jobs.metaOf(target.host, target.id).gen
-	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, gen: gen, gone: true, err: status.Error(codes.NotFound, "no such orchestrator")})
+	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, seq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "no such orchestrator")})
 	if len(m.jobs.orchs) != 0 {
 		t.Error("NotFound removes it from every tab")
 	}
@@ -333,7 +367,7 @@ func TestFireErrorUnderFormGoesToFooter(t *testing.T) {
 // Agent-written text on the main Jobs rows, in the prompt view and in
 // notifications cannot reach the terminal (FR-029, review item 5).
 func TestJobsRowsAreSanitised(t *testing.T) {
-	hostile := "ok\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED‮txt.exe\x9b31m"
+	hostile := "ok\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED\u202etxt.exe\x9b31m"
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}, orchRuns: &pb.ListRunsResponse{
 		Queued:  []*pb.Run{{Id: "q1", Action: "triage\x1b[31m", State: pb.RunState_RUN_STATE_QUEUED, EventKind: pb.EventKind_EVENT_KIND_TRIGGERED, OriginLabel: "w\x1b]0;t\x07"}},
 		History: []*pb.Run{{Id: "h1", Action: "review-pr", State: pb.RunState_RUN_STATE_FAILED, Summary: hostile, Reason: "tab\there", EndedAt: at(0)}},
@@ -342,7 +376,7 @@ func TestJobsRowsAreSanitised(t *testing.T) {
 	for tab := jobsTab(0); tab < jobsTabCount; tab++ {
 		m.jobs.tab = tab
 		v := m.View()
-		for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "‮", "\x07", "\x9b", "\t", "\x1b[31mm"} {
+		for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "\u202e", "\x07", "\x9b", "\t", "\x1b[31mm"} {
 			if strings.Contains(v, bad) {
 				t.Errorf("tab %s shows %q", jobsTabNames[tab], bad)
 			}
@@ -355,11 +389,11 @@ func TestJobsRowsAreSanitised(t *testing.T) {
 	if v := m.promptView(&pb.Run{Id: "p", Prompt: "do\x1b]52;c;x\x07 it\r\nnow"}); strings.Contains(v, "\x1b]52") || !strings.Contains(v, "do it") {
 		t.Errorf("prompt view: %q", v)
 	}
-	n := &pb.NotificationEvent{Id: "n1", Message: "run failed: \x1b]52;c;x\x07bad‮"}
+	n := &pb.NotificationEvent{Id: "n1", Message: "run failed: \x1b]52;c;x\x07bad\u202e"}
 	m.inbox = []*pb.NotificationEvent{n}
 	m.inboxHosts = map[string]string{}
 	mm, _ := m.enterNotifications()
-	if v := mm.(Model).View(); strings.Contains(v, "\x1b]52") || strings.Contains(v, "‮") {
+	if v := mm.(Model).View(); strings.Contains(v, "\x1b]52") || strings.Contains(v, "\u202e") {
 		t.Errorf("notification list: %q", v)
 	}
 }
@@ -442,10 +476,7 @@ func TestJobsResponsivenessBudget(t *testing.T) {
 	}
 	time1("an orchestrator's reply", func() {
 		o := m.jobs.orchs[5]
-		md := m.jobs.metaOf(o.target.host, o.target.id)
-		m.jobs.seq++
-		md.gen = m.jobs.seq
-		m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, gen: md.gen, orch: &o})
+		m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, seq: jobsSeq.Add(1), orch: &o})
 		_ = m.View()
 	})
 }
@@ -502,5 +533,132 @@ func TestJobsRefusalsAndAfterChange(t *testing.T) {
 	m.manager.Remove("local")
 	if m.jobsSyncHosts(); len(m.jobs.orchs) != 0 || m.jobs.hasHost("local") {
 		t.Errorf("a removed host is forgotten: %v", jobsLabels(m))
+	}
+}
+
+// The client keeps a dead link HostConnected, so Jobs marks a host lost when its
+// event stream ends or a Jobs call fails Unavailable: rows stay, dimmed, named
+// with the error, and operations are refused without an RPC; the next successful
+// load (r, or a re-subscribe) clears it (R3, R12, FR-004, FR-030).
+func TestJobsLostHost(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}, orchRuns: &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "run-b", Action: "triage", State: pb.RunState_RUN_STATE_QUEUED, Position: 1}}}}
+	m, mgr, _ := twoFakeHosts(t, a, b)
+	m = openJobs(m)
+
+	// beta's event stream ends while the client still calls it connected.
+	m, _ = update(m, eventErrMsg{hostID: "hostb", err: status.Error(codes.Unavailable, "transport is closing\x1b]52;c;x\x07")})
+	v := m.View()
+	if !strings.Contains(v, "could not read: beta (transport is closing)") || strings.Contains(v, "\x1b]52") {
+		t.Errorf("a lost host is named with its sanitised error:\n%s", v)
+	}
+	if got := strings.Join(jobsLabels(m), ","); got != "alpha-bot @ alpha,beta-bot @ beta" {
+		t.Errorf("a lost host keeps its rows: %q", got)
+	}
+	if m.jobsReachable("hostb") || !m.jobsReachable("hosta") {
+		t.Error("only beta's rows are unreachable")
+	}
+	m.jobs.tab = jobsQueue
+	m.rememberJobsCursor(jobsQueue)
+	b.orchCalls = nil
+	m, cmd := update(m, press("x"))
+	if cmd != nil || !strings.Contains(m.jobs.status, "beta: connection lost") || b.orchCallsJoined() != "" {
+		t.Errorf("cancel on a lost host is refused without an RPC: status %q calls %q", m.jobs.status, b.orchCallsJoined())
+	}
+	// A successful load clears it.
+	m = reloadJobs(m)
+	if strings.Contains(m.View(), "could not read") || !m.jobsReachable("hostb") {
+		t.Errorf("the next successful load clears the lost mark:\n%s", m.View())
+	}
+
+	// A Jobs call failing Unavailable marks it lost too; a re-subscribe clears it
+	// and reads the host again.
+	b.orchErr = status.Error(codes.Unavailable, "connection refused")
+	m = reloadJobs(m)
+	if _, err := m.connectedDaemon("hostb"); err == nil || err.Error() != "beta: connection lost" {
+		t.Errorf("Unavailable ⇒ lost: %v", err)
+	}
+	b.orchErr = nil
+	b.orchCalls = nil
+	m = feed(m, m.jobsResubscribed("hostb"))
+	if !m.jobsReachable("hostb") || !strings.Contains(b.orchCallsJoined(), "ListOrchestrators") {
+		t.Errorf("a re-subscribe clears it and reloads beta: %q", b.orchCallsJoined())
+	}
+	if m.jobsResubscribed("hostb") != nil {
+		t.Error("a re-subscribe of a host that was not lost reads nothing")
+	}
+
+	// Hidden: the stream end marks it, a re-subscribe marks the host for loading.
+	m.screen = screenList
+	m, _ = update(m, eventErrMsg{hostID: "hostb", err: status.Error(codes.Unavailable, "eof")})
+	if c := m.jobsResubscribed("hostb"); c != nil || !m.jobs.hosts["hostb"].stale {
+		t.Error("hidden ⇒ the re-subscribed host is loaded when Jobs is shown")
+	}
+
+	// A host the developer disconnected is not marked when its stream ends.
+	m.screen = screenJobs
+	mgr.Disconnect("hostb")
+	m = feed2(m, m.hostsCmd())
+	m, _ = update(m, eventErrMsg{hostID: "hostb", err: status.Error(codes.Canceled, "closed")})
+	if strings.Contains(m.View(), "could not read") {
+		t.Errorf("a disconnected host's stream end is not a failure:\n%s", m.View())
+	}
+}
+
+// A connecting host is shown on the connecting line, not as unreadable; a failed
+// dial is named with its sanitised error until the developer disconnects it
+// (Manager.Disconnect clears the error: FR-004, FR-029).
+func TestJobsConnectingAndFailedDial(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, mgr, _ := twoFakeHosts(t, a, b)
+	m = openJobs(m)
+
+	release := make(chan struct{})
+	dialing := make(chan struct{})
+	mgr.SetDialFunc(func(context.Context, client.HostEntry) (*client.Conn, error) {
+		close(dialing)
+		<-release
+		return nil, fmt.Errorf("ssh: banner \x1b[2Jhostile\x1b]0;t\x07 rejected")
+	})
+	mgr.Disconnect("hostb")
+	done := make(chan struct{})
+	go func() { _ = mgr.Connect(context.Background(), "hostb"); close(done) }()
+	<-dialing
+	m = feed2(m, m.hostsCmd())
+	v := m.View()
+	if !strings.Contains(v, "connecting: beta") || strings.Contains(v, "could not read") {
+		t.Errorf("a connecting host is on the connecting line only:\n%s", v)
+	}
+	close(release)
+	<-done
+	m = feed2(m, m.hostsCmd())
+	v = m.View()
+	if !strings.Contains(v, "could not read: beta (ssh: banner hostile rejected)") || strings.Contains(v, "\x1b[2J") || strings.Contains(v, "connecting:") {
+		t.Errorf("a failed dial is named with its sanitised error:\n%s", v)
+	}
+	mgr.Disconnect("hostb")
+	m = feed2(m, m.hostsCmd())
+	if strings.Contains(m.View(), "could not read") {
+		t.Errorf("the developer disconnected it: no longer named:\n%s", m.View())
+	}
+}
+
+// The Reasoning rebuild output is shown as plain lines: colour dropped, each \r
+// progress redraw a line of its own (FR-024, FR-029).
+func TestReasoningRebuildLogIsSanitised(t *testing.T) {
+	m := sized(New(&fakeDaemon{}, "/work"))
+	key := reasoningLogKey("o1")
+	ch := make(chan tea.Msg, 1)
+	m.rebuilds = map[string]*reasoningRebuild{"o1": {id: "o1", name: "bot", ch: ch}}
+	m.beginOpLog(key, "reasoning sandbox of bot", "rebuild")
+	mm, _ := m.handleReasoningProgress(reasoningProgressMsg{id: "o1", update: client.LaunchUpdate{LogLine: "\x1b[32mpulling\x1b[0m 10%\r20%\r\n\x1b]52;c;x\x07done\t!"}})
+	m = mm.(Model)
+	got := m.opLogs[key].lines
+	if strings.Join(got, "|") != "pulling 10%|20%|done    !" {
+		t.Errorf("rebuild log lines = %q", got)
+	}
+	if m.rebuilds["o1"].latest != "done    !" {
+		t.Errorf("latest = %q", m.rebuilds["o1"].latest)
 	}
 }

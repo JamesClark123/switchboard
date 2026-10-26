@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
@@ -17,51 +18,70 @@ import (
 // loaded by its own command (hosts in parallel, each under its own deadline,
 // at most jobsRunsParallel ListRuns at a time within one) and applied as it
 // answers. Event.orchestrator_changed reloads just that orchestrator. Every
-// load takes a generation from one counter shared by host and orchestrator
-// loads: an orchestrator reload's reply applies only if it is still the latest
-// issued for that orchestrator, and a host reply's part for an orchestrator only
-// if no newer load of it was issued after the host load started — so an older
-// reply never overwrites a newer state. At most one reload per orchestrator (and
-// one load per host) is in flight; events meanwhile mark it dirty and cost one
-// more reload when it lands. Nothing is fetched while Jobs is not on screen:
-// events mark orchestrators stale and a connecting host marks itself, and Jobs
-// catches up when it is shown again.
+// call is stamped from the process-wide jobsSeq as it is issued, inside the
+// command, and an orchestrator's state is replaced only by a part stamped newer
+// than the one applied (its appliedSeq) — so an older reply, such as a slow host
+// load's part, never overwrites a newer state. At most one event reload per
+// orchestrator (and one load per host) is in flight; events meanwhile mark it
+// dirty and cost one more reload when it lands. Nothing is fetched while Jobs is
+// not on screen: events mark orchestrators stale and a connecting host marks
+// itself, and Jobs catches up when it is shown again.
+//
+// A host whose link died stays HostConnected in the client (only a failed dial
+// records an error), so Jobs marks it lost when its event stream ends or a Jobs
+// call to it fails with Unavailable; its rows stay, dimmed, and refuse
+// operations until a load of it succeeds again (R3, R12).
 
 // jobsRunsParallel bounds a host load's concurrent ListRuns calls (R2).
 const jobsRunsParallel = 4
 
+// jobsSeq stamps every Jobs GetOrchestrator, ListRuns and ListOrchestrators call
+// as it is issued (R3). Commands only take stamps; the model compares them.
+var jobsSeq atomic.Uint64
+
 // jobsHostLoad is one host's load bookkeeping.
 type jobsHostLoad struct {
-	gen      uint64 // generation of the latest load issued
+	flight   uint64 // token of the load in flight (which reply ends it; not an order)
+	listSeq  uint64 // stamp of the last applied ListOrchestrators
 	loading  bool   // a load is in flight
 	answered bool   // a load has answered (until then the host shows as loading)
 	dirty    bool   // a reload was asked for while one was in flight
 	stale    bool   // it connected while Jobs was not on screen
 	err      error  // its orchestrators could not be listed
+	lost     error  // its event stream ended or a call failed Unavailable
 }
 
-// jobsOrchMeta is one orchestrator's load bookkeeping.
+// jobsOrchMeta is one orchestrator's load bookkeeping. It outlives a removed
+// orchestrator, so an older reply cannot bring it back.
 type jobsOrchMeta struct {
-	host, id  string
-	gen       uint64 // generation of the latest load issued (orchestrator or host)
-	flightGen uint64 // generation of the orchestrator reload in flight
-	inFlight  bool
-	dirty     bool // changed while a reload was in flight
-	stale     bool // changed while Jobs was not on screen
+	host, id   string
+	appliedSeq uint64 // stamp of the newest part applied
+	flight     uint64 // token of the event reload in flight
+	inFlight   bool
+	dirty      bool // changed while a reload was in flight
+	stale      bool // changed while Jobs was not on screen
 }
 
 // jobsHostMsg carries one host load; jobsOrchMsg one orchestrator reload (gone
-// when it no longer exists).
+// when it no longer exists). seq/listSeq are the jobsSeq stamps of the calls.
 type jobsHostMsg struct {
-	host  string
-	gen   uint64
-	orchs []jobsOrch
-	err   error
+	host    string
+	flight  uint64
+	listSeq uint64
+	parts   []jobsPart
+	err     error
+}
+
+// jobsPart is one orchestrator of a host load, stamped by its ListRuns.
+type jobsPart struct {
+	orch jobsOrch
+	seq  uint64
 }
 
 type jobsOrchMsg struct {
 	host, id string
-	gen      uint64
+	flight   uint64
+	seq      uint64
 	orch     *jobsOrch
 	gone     bool
 	err      error
@@ -170,26 +190,28 @@ func (m *Model) jobsLoadHost(h orchHost, coalesce bool) tea.Cmd {
 		hs.dirty = hs.dirty || coalesce
 		return nil
 	}
-	j.seq++
-	hs.gen, hs.loading, hs.stale = j.seq, true, false
-	gen := j.seq
+	j.flights++
+	hs.flight, hs.loading, hs.stale = j.flights, true, false
+	flight := j.flights
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
-		orchs, err := loadJobsHost(ctx, h)
-		return jobsHostMsg{host: h.id, gen: gen, orchs: orchs, err: err}
+		listSeq, parts, err := loadJobsHost(ctx, h)
+		return jobsHostMsg{host: h.id, flight: flight, listSeq: listSeq, parts: parts, err: err}
 	}
 }
 
 // loadJobsHost lists one host's orchestrators and reads their runs, at most
-// jobsRunsParallel at a time. An orchestrator whose runs cannot be read is still
-// listed, with the error (its actions and events are known).
-func loadJobsHost(ctx context.Context, h orchHost) ([]jobsOrch, error) {
+// jobsRunsParallel at a time, stamping each call as it is issued. An
+// orchestrator whose runs cannot be read is still listed, with the error (its
+// actions and events are known).
+func loadJobsHost(ctx context.Context, h orchHost) (uint64, []jobsPart, error) {
+	listSeq := jobsSeq.Add(1)
 	list, err := h.d.ListOrchestrators(ctx)
 	if err != nil {
-		return nil, err
+		return listSeq, nil, err
 	}
-	out := make([]jobsOrch, len(list))
+	out := make([]jobsPart, len(list))
 	sem := make(chan struct{}, jobsRunsParallel)
 	var wg sync.WaitGroup
 	for i, s := range list {
@@ -199,21 +221,23 @@ func loadJobsHost(ctx context.Context, h orchHost) ([]jobsOrch, error) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			o := s.GetOrchestrator()
+			seq := jobsSeq.Add(1)
 			runs, err := h.d.ListRuns(ctx, o.GetId())
 			if runs == nil {
 				runs = &pb.ListRunsResponse{}
 			}
-			out[i] = jobsOrch{target: targetOf(h.id, h.name, o), summary: s, runs: runs, err: err}
+			out[i] = jobsPart{orch: jobsOrch{target: targetOf(h.id, h.name, o), summary: s, runs: runs, err: err}, seq: seq}
 		}(i, s)
 	}
 	wg.Wait()
-	return out, nil
+	return listSeq, out, nil
 }
 
 // jobsReloadOrch asks for one orchestrator's reload after it changed (R3): stale
-// while Jobs is not shown, dirty while its host or it is loading, otherwise a
-// GetOrchestrator + ListRuns under a new generation. Nothing is asked of a host
-// that is not connected (its reconnect loads it).
+// while Jobs is not shown, dirty while its own reload is in flight, otherwise a
+// GetOrchestrator + ListRuns stamped from jobsSeq. A host load running meanwhile
+// costs at most one extra ListRuns; the stamps decide which state is kept.
+// Nothing is asked of a host that is not connected (its reconnect loads it).
 func (m *Model) jobsReloadOrch(host, id string) tea.Cmd {
 	if id == "" {
 		return nil
@@ -224,7 +248,7 @@ func (m *Model) jobsReloadOrch(host, id string) tea.Cmd {
 		md.stale = true
 		return nil
 	}
-	if hs := j.hosts[host]; md.inFlight || (hs != nil && hs.loading) {
+	if md.inFlight {
 		md.dirty, md.stale = true, false
 		return nil
 	}
@@ -236,22 +260,23 @@ func (m *Model) jobsReloadOrch(host, id string) tea.Cmd {
 	if o, ok := m.jobsOrchByKey(host + "/" + id); ok {
 		hostName = o.target.hostName
 	}
-	j.seq++
-	md.gen, md.flightGen, md.inFlight, md.stale, md.dirty = j.seq, j.seq, true, false, false
-	gen := j.seq
+	j.flights++
+	md.flight, md.inFlight, md.stale, md.dirty = j.flights, true, false, false
+	flight := j.flights
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
+		seq := jobsSeq.Add(1)
 		det, err := d.GetOrchestrator(ctx, id)
 		if err != nil {
-			return jobsOrchMsg{host: host, id: id, gen: gen, gone: status.Code(err) == codes.NotFound, err: err}
+			return jobsOrchMsg{host: host, id: id, flight: flight, seq: seq, gone: status.Code(err) == codes.NotFound, err: err}
 		}
 		runs, rerr := d.ListRuns(ctx, id)
 		if status.Code(rerr) == codes.NotFound {
-			return jobsOrchMsg{host: host, id: id, gen: gen, gone: true, err: rerr}
+			return jobsOrchMsg{host: host, id: id, flight: flight, seq: seq, gone: true, err: rerr}
 		}
 		s := det.GetSummary()
-		return jobsOrchMsg{host: host, id: id, gen: gen, orch: &jobsOrch{target: targetOf(host, hostName, s.GetOrchestrator()), summary: s, runs: runs, err: rerr}}
+		return jobsOrchMsg{host: host, id: id, flight: flight, seq: seq, orch: &jobsOrch{target: targetOf(host, hostName, s.GetOrchestrator()), summary: s, runs: runs, err: rerr}}
 	}
 }
 
@@ -284,15 +309,14 @@ func (j *jobsState) putOrch(o jobsOrch) {
 	j.orchs = append(j.orchs, o)
 }
 
-// dropOrchs removes the orchestrators keep rejects, with their bookkeeping.
+// dropOrchs removes the orchestrators drop selects. Their bookkeeping stays, so
+// an older reply cannot bring them back (dropHost forgets it).
 func (j *jobsState) dropOrchs(drop func(jobsOrch) bool) {
 	kept := j.orchs[:0:0]
 	for _, o := range j.orchs {
-		if drop(o) {
-			delete(j.meta, o.target.key())
-			continue
+		if !drop(o) {
+			kept = append(kept, o)
 		}
-		kept = append(kept, o)
 	}
 	j.orchs = kept
 }
@@ -312,73 +336,116 @@ func (j *jobsState) dropHost(host string) {
 func (m Model) applyJobsHost(msg jobsHostMsg) (tea.Model, tea.Cmd) {
 	j := &m.jobs
 	hs := j.hosts[msg.host]
-	if hs == nil || msg.gen != hs.gen {
-		return m, nil // superseded, or the host was dropped meanwhile
+	if hs == nil || msg.flight != hs.flight {
+		return m, nil // the host was dropped (or reconnected and reloaded) meanwhile
 	}
 	hs.loading, hs.answered, hs.err = false, true, msg.err
 	if msg.err == nil {
-		listed := map[string]bool{}
-		for _, o := range msg.orchs {
-			listed[o.target.key()] = true
-			md := j.metaOf(o.target.host, o.target.id)
-			if md.gen >= msg.gen {
-				continue // a newer reload of it was issued after this load started
+		hs.lost = nil // it answered: the link works again
+		if msg.listSeq > hs.listSeq {
+			hs.listSeq = msg.listSeq
+			listed := map[string]bool{}
+			for _, p := range msg.parts {
+				listed[p.orch.target.key()] = true
 			}
-			md.gen, md.stale = msg.gen, false
-			j.putOrch(o)
+			// Missing from a list newer than anything applied for them: removed.
+			j.dropOrchs(func(o jobsOrch) bool {
+				if o.target.host != msg.host || listed[o.target.key()] {
+					return false
+				}
+				md := j.metaOf(o.target.host, o.target.id)
+				if md.appliedSeq >= msg.listSeq {
+					return false
+				}
+				md.appliedSeq = msg.listSeq
+				return true
+			})
 		}
-		j.dropOrchs(func(o jobsOrch) bool {
-			md := j.meta[o.target.key()]
-			return o.target.host == msg.host && !listed[o.target.key()] && (md == nil || md.gen < msg.gen)
-		})
+		for _, p := range msg.parts {
+			md := j.metaOf(p.orch.target.host, p.orch.target.id)
+			if p.seq <= md.appliedSeq {
+				continue // a newer state of it was already applied
+			}
+			md.appliedSeq, md.stale = p.seq, false
+			j.putOrch(p.orch)
+			m.jobsNoteLost(msg.host, p.orch.err)
+		}
+	} else {
+		m.jobsNoteLost(msg.host, msg.err)
 	}
-	var cmds []tea.Cmd
-	for _, md := range m.jobsDirtyOn(msg.host) {
-		md.dirty = false
-		cmds = append(cmds, m.jobsReloadOrch(md.host, md.id))
-	}
+	var cmd tea.Cmd
 	if hs.dirty {
 		hs.dirty = false
 		for _, h := range m.orchHosts() {
 			if h.id == msg.host {
-				cmds = append(cmds, m.jobsLoadHost(h, false))
+				cmd = m.jobsLoadHost(h, false)
 			}
 		}
 	}
 	m.jobsChanged()
-	return m, tea.Batch(cmds...)
+	return m, cmd
 }
 
-// jobsDirtyOn lists a host's orchestrators that changed during its load.
-func (m Model) jobsDirtyOn(host string) []*jobsOrchMeta {
-	var out []*jobsOrchMeta
-	for _, md := range m.jobs.meta {
-		if md.host == host && md.dirty && !md.inFlight {
-			out = append(out, md)
+// jobsNoteLost marks a host lost when a Jobs call to it failed with Unavailable:
+// the client still calls a dead link connected (R3).
+func (m *Model) jobsNoteLost(host string, err error) {
+	if status.Code(err) == codes.Unavailable {
+		m.jobs.hostLoad(host).lost = err
+	}
+}
+
+// jobsStreamEnded marks a connected host lost when its event stream ended
+// (eventErrMsg). A host the developer disconnected is not connected any more,
+// so it is not marked.
+func (m *Model) jobsStreamEnded(host string, err error) {
+	for _, h := range m.orchHosts() {
+		if h.id == host && h.d != nil {
+			m.jobs.hostLoad(host).lost = err
+			m.jobsChanged()
 		}
 	}
-	sort.Slice(out, func(a, b int) bool { return out[a].id < out[b].id })
-	return out
+}
+
+// jobsResubscribed clears a lost host once its event stream opens again and
+// reads it afresh (now if Jobs is shown, else when it is).
+func (m *Model) jobsResubscribed(host string) tea.Cmd {
+	hs := m.jobs.hosts[host]
+	if hs == nil || hs.lost == nil {
+		return nil
+	}
+	hs.lost = nil
+	m.jobsChanged()
+	if !m.jobs.started {
+		return nil
+	}
+	if !m.jobsVisible() {
+		hs.stale = true
+		return nil
+	}
+	for _, h := range m.orchHosts() {
+		if h.id == host {
+			return m.jobsLoadHost(h, true)
+		}
+	}
+	return nil
 }
 
 func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 	j := &m.jobs
-	md := j.meta[msg.host+"/"+msg.id]
+	key := msg.host + "/" + msg.id
+	md := j.meta[key]
 	if md == nil {
 		return m, nil // the host was dropped meanwhile
 	}
-	if msg.gen == md.flightGen {
+	if msg.flight == md.flight {
 		md.inFlight = false
 	}
-	if msg.gen == md.gen {
-		key := msg.host + "/" + msg.id
+	if msg.seq > md.appliedSeq {
+		md.appliedSeq = msg.seq
 		switch {
 		case msg.gone:
 			// NotFound: the orchestrator was removed (R3).
 			j.dropOrchs(func(o jobsOrch) bool { return o.target.key() == key })
-			delete(j.meta, key)
-			m.jobsChanged()
-			return m, nil
 		case msg.orch == nil:
 			// It could not be read: keep what was last read, with the error.
 			for i := range j.orchs {
@@ -386,6 +453,7 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 					j.orchs[i].err = msg.err
 				}
 			}
+			m.jobsNoteLost(msg.host, msg.err)
 		default:
 			o := *msg.orch
 			if o.runs == nil {
@@ -396,6 +464,7 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			j.putOrch(o)
+			m.jobsNoteLost(msg.host, o.err)
 		}
 		m.jobsChanged()
 	}
@@ -428,6 +497,9 @@ func (m *Model) jobsSyncHosts() tea.Cmd {
 			}
 			j.connected[h.id] = true
 			changed = true
+			if hs := j.hosts[h.id]; hs != nil {
+				hs.lost = nil // a new link
+			}
 			if !j.started {
 				continue
 			}
@@ -498,33 +570,50 @@ func (j *jobsState) sortJobs() {
 	})
 }
 
-// jobsUnreadable is the "could not read" line's entries (FR-004): hosts that
-// are connecting, whose connection failed or dropped, or whose listing failed,
-// each with its error, then orchestrators whose runs could not be read. Hosts
-// the developer disconnected or never connected are not named.
+// jobsUnreadable is the "could not read" line's entries (FR-004): hosts whose
+// connection failed or was lost, or whose listing failed, each with its error,
+// then orchestrators whose runs could not be read, with theirs. Errors are
+// sanitised single lines (FR-029). Hosts the developer disconnected or never
+// connected are not named, and connecting hosts are on the connecting line.
 func (m Model) jobsUnreadable() []string {
 	var hosts, orchs []string
 	for _, h := range m.orchHosts() {
-		why := ""
+		hs := m.jobs.hosts[h.id]
+		var why error
 		switch {
-		case h.state == client.HostConnecting:
-			why = "connecting"
-		case h.d == nil && h.err != nil:
-			why = status.Convert(h.err).Message()
-		case h.d != nil && m.jobs.hosts[h.id] != nil && m.jobs.hosts[h.id].err != nil:
-			why = status.Convert(m.jobs.hosts[h.id].err).Message()
-		default:
-			continue
+		case h.d == nil && h.state != client.HostConnecting:
+			why = h.err
+		case h.d != nil && hs != nil && hs.lost != nil:
+			why = hs.lost
+		case h.d != nil && hs != nil:
+			why = hs.err
 		}
-		hosts = append(hosts, sanitizeLine(h.name, 0)+" ("+sanitizeLine(why, 60)+")")
+		if why != nil {
+			hosts = append(hosts, sanitizeLine(h.name, 0)+" ("+errLine(why)+")")
+		}
 	}
 	for _, o := range m.jobs.orchs {
 		if o.err != nil {
-			orchs = append(orchs, sanitizeLine(o.target.label(), 0)+" (runs)")
+			orchs = append(orchs, sanitizeLine(o.target.label(), 0)+" (runs: "+errLine(o.err)+")")
 		}
 	}
 	sort.Strings(hosts)
 	return append(hosts, orchs...)
+}
+
+// errLine is an error as one sanitised line, short enough to share a line.
+func errLine(err error) string { return sanitizeLine(status.Convert(err).Message(), 60) }
+
+// jobsConnectingHosts names the hosts still connecting (not unreadable yet).
+func (m Model) jobsConnectingHosts() []string {
+	var out []string
+	for _, h := range m.orchHosts() {
+		if h.state == client.HostConnecting {
+			out = append(out, sanitizeLine(h.name, 0))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // jobsLoadingHosts names the connected hosts that have not answered yet.

@@ -766,7 +766,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.hostID == "" || msg.hostID == m.activeHost || m.sub == nil {
 			m.sub = msg.stream
 		}
-		return m, m.recvCmd(msg.stream)
+		return m, tea.Batch(m.recvCmd(msg.stream), m.jobsResubscribed(host))
 
 	case eventMsg:
 		return m.handleEvent(msg.hostID, msg.ev)
@@ -781,6 +781,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.subs, host)
 		delete(m.subscribed, host)
+		// Jobs treats a connected host whose stream ended as lost (R3).
+		m.jobsStreamEnded(host, msg.err)
 		return m, nil
 
 	case groupsMsg:

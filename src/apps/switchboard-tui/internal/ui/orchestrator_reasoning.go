@@ -215,13 +215,19 @@ func (m Model) handleReasoningProgress(msg reasoningProgressMsg) (tea.Model, tea
 		if total > 0 {
 			pct = int(100 * msg.update.Copy.GetBytesCopied() / total)
 		}
-		rb.latest = fmt.Sprintf("copying %d%% %s", pct, filepath.Base(msg.update.Copy.GetCurrentPath()))
+		rb.latest = fmt.Sprintf("copying %d%% %s", pct, sanitizeLine(filepath.Base(msg.update.Copy.GetCurrentPath()), 0))
 		m.setOpLatest(key, rb.latest)
 	case msg.update.LogLine != "":
-		// The rebuild's output is the sandbox runtime's, drawn as text (FR-029).
-		line := sanitizeLine(msg.update.LogLine, 0)
-		rb.latest = line
-		m.appendOpLog(key, line)
+		// The rebuild's output is the sandbox runtime's, drawn as text: colour is
+		// dropped and each \r progress redraw becomes a line of its own (FR-024,
+		// FR-029).
+		for _, line := range strings.Split(sanitizeTerminalText(msg.update.LogLine), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			rb.latest = line
+			m.appendOpLog(key, line)
+		}
 	}
 	if m.screen == screenOrchDetail && m.orchDetail.id == msg.id {
 		m.orchDetail.status = "rebuilding… " + rb.latest

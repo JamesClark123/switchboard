@@ -46,10 +46,15 @@ func (m Model) connectedDaemon(host string) (Daemon, error) {
 	if m.manager == nil {
 		return m.daemon, nil
 	}
-	if hc, ok := m.manager.Get(host); ok && hc.State == client.HostConnected {
-		return m.daemonForHost(host), nil
+	hc, ok := m.manager.Get(host)
+	if !ok || hc.State != client.HostConnected {
+		return nil, fmt.Errorf("%s is not connected", m.hostDisplayName(host))
 	}
-	return nil, fmt.Errorf("%s is not connected", m.hostDisplayName(host))
+	if hs := m.jobs.hosts[host]; hs != nil && hs.lost != nil {
+		// Still "connected" to the client, but its link died (R3).
+		return nil, fmt.Errorf("%s: connection lost", m.hostDisplayName(host))
+	}
+	return m.daemonForHost(host), nil
 }
 
 // requireDaemon is connectedDaemon for an operation started on a surface: a

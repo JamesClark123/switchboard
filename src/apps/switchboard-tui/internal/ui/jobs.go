@@ -64,12 +64,12 @@ type jobsState struct {
 	cursorKeys [jobsTabCount]string
 	// cursorSection is the Overview cursor's section, for its nearest neighbour.
 	cursorSection int
-	// The load bookkeeping (jobs_load.go): started once Jobs first loads; seq is
-	// the generation counter shared by host and orchestrator loads; hosts and
-	// meta are per host and per orchestrator (keyed by target key); connected
-	// records which hosts were connected at the last host snapshot.
+	// The load bookkeeping (jobs_load.go): started once Jobs first loads; flights
+	// numbers the loads in flight (ordering is jobsSeq's); hosts and meta are per
+	// host and per orchestrator (keyed by target key); connected records which
+	// hosts were connected at the last host snapshot.
 	started   bool
-	seq       uint64
+	flights   uint64
 	hosts     map[string]*jobsHostLoad
 	meta      map[string]*jobsOrchMeta
 	connected map[string]bool
@@ -384,6 +384,9 @@ func (m Model) viewJobs() string {
 	top := []string{header}
 	if names := m.jobsUnreadable(); len(names) > 0 {
 		top = append(top, m.fitLine(dimStyle.Render("could not read: "+joinNames(names))))
+	}
+	if names := m.jobsConnectingHosts(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("connecting: "+joinNames(names))))
 	}
 	if names := m.jobsLoadingHosts(); len(names) > 0 {
 		top = append(top, m.fitLine(dimStyle.Render("loading: "+joinNames(names))))
