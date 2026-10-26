@@ -70,7 +70,7 @@ func TestToolCallActionFromWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = json.Unmarshal([]byte(body), &out)
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), out.RunID) == pb.RunState_RUN_STATE_RUNNING })
 	if got, _ := env.svc.GetRun(o.GetId(), out.RunID); got.GetSandboxId() != "reasoning-1" || got.GetOrigin() != "wb" {
 		t.Errorf("reason run = %+v", got)
@@ -166,7 +166,7 @@ func TestToolListCheckAndReport(t *testing.T) {
 	// A run awaiting review closes normally on a late report, and the grace
 	// timer is dropped.
 	run2 := call(t, env, o.GetId(), "2")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), run2.GetId()) == pb.RunState_RUN_STATE_RUNNING })
 	got, _ = env.svc.GetRun(o.GetId(), run2.GetId())
 	onSb := got.GetSandboxId()
@@ -190,7 +190,7 @@ func TestToolListCheckAndReport(t *testing.T) {
 
 	// A run awaiting input closes on a report too.
 	run3 := call(t, env, o.GetId(), "3")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), run3.GetId()) == pb.RunState_RUN_STATE_RUNNING })
 	got, _ = env.svc.GetRun(o.GetId(), run3.GetId())
 	push(w, got.GetSandboxId(), pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT, pb.SandboxState_SANDBOX_STATE_RUNNING)

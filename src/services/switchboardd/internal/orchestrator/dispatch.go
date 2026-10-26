@@ -66,6 +66,18 @@ func (rt *runtime) dispatch() {
 	}
 	rec := rt.record()
 	claimed := map[string]bool{}
+	// One view of the roster per pass: were a record re-read per run, a worker
+	// freed mid-pass could take a later run while an earlier one it could have
+	// taken stays queued (SC-003). The change that freed it triggers another pass.
+	sbs := map[string]*pb.Sandbox{}
+	ups := map[string]bool{}
+	for _, w := range rec.GetWorkers() {
+		sbs[w.GetSandboxId()] = rt.sandboxRecord(w.GetSandboxId())
+		if _, ok := ups[w.GetHostId()]; !ok {
+			up, _ := rt.reachability(w.GetHostId())
+			ups[w.GetHostId()] = up
+		}
+	}
 	for _, run := range runs {
 		if run.GetState() != pb.RunState_RUN_STATE_QUEUED {
 			continue
@@ -87,8 +99,7 @@ func (rt *runtime) dispatch() {
 			if claimed[w.GetSandboxId()] {
 				continue
 			}
-			sb := rt.sandboxRecord(w.GetSandboxId())
-			up, _ := rt.reachability(w.GetHostId())
+			sb, up := sbs[w.GetSandboxId()], ups[w.GetHostId()]
 			if !free(sb, up) || !eligible(run, w, sb, tag) {
 				continue
 			}

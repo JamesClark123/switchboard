@@ -43,9 +43,11 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 	return env, w, o, rt
 }
 
-// settle waits until no dispatch pass is pending.
-func settle(rt *runtime) {
-	deadline := time.Now().Add(3 * time.Second)
+// settle waits until no dispatch pass is pending, failing the test if it never
+// settles (rather than letting a later waitFor fail with a misleading message).
+func settle(t *testing.T, rt *runtime) {
+	t.Helper()
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		rt.dispatchMu.Lock()
 		idle := !rt.dispatching && !rt.dispatchPending
@@ -55,6 +57,7 @@ func settle(rt *runtime) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	t.Fatal("dispatch did not settle in time")
 }
 
 func call(t *testing.T, env *testEnv, orchID, number string) *pb.Run {
@@ -71,7 +74,7 @@ func TestDispatchOrderAndCapacity(t *testing.T) {
 	r1 := call(t, env, o.GetId(), "1")
 	r2 := call(t, env, o.GetId(), "2")
 	r3 := call(t, env, o.GetId(), "3")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		runs, _ := env.svc.ListRuns(o.GetId())
 		return len(runs.GetInFlight()) == 2 && len(runs.GetQueued()) == 1
@@ -142,14 +145,13 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
 		t.Fatal(err)
 	}
-	wb := w.get("wb")
-	wb.Tag = "ci"
+	wb := w.update("wb", func(sb *pb.Sandbox) { sb.Tag = "ci" })
 	rt.mu.Lock()
 	rt.sbs["wb"] = wb
 	rt.mu.Unlock()
 	r1 := call(t, env, o.GetId(), "1")
 	reason, _ := env.svc.CallAction(o.GetId(), "triage", map[string]string{"issues": "a, b"}, pb.EventKind_EVENT_KIND_USER, "", "")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		runs, _ := env.svc.ListRuns(o.GetId())
 		return len(runs.GetInFlight()) == 2
@@ -176,7 +178,7 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	r3, _ := env.svc.CallAction(o.GetId(), "any", map[string]string{"number": "3", "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", "")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r3.GetId())
 		return got.GetState() == pb.RunState_RUN_STATE_RUNNING && got.GetSandboxId() == "wa"
@@ -213,11 +215,10 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 func TestDeliveryRefusedAndFailed(t *testing.T) {
 	env, w, o, rt := dispatchEnv(t, 1, false)
 	// The fake refuses delivery when the agent is not idle.
-	sb := w.get("wa")
-	sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING
+	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
 	// …but the orchestrator's cached record still says idle (a race).
 	r1 := call(t, env, o.GetId(), "1")
-	settle(rt)
+	settle(t, rt)
 	time.Sleep(20 * time.Millisecond)
 	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Errorf("a refused delivery keeps the run queued: %v", got.GetState())
@@ -227,7 +228,7 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	delete(w.sbs, "wa")
 	w.mu.Unlock()
 	rt.triggerDispatch()
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r1.GetId())
 		return got.GetState() == pb.RunState_RUN_STATE_FAILED
@@ -236,6 +237,8 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	if !strings.Contains(got.GetReason(), "delivery failed") {
 		t.Errorf("reason = %q", got.GetReason())
 	}
+	// RUN_FAILED is raised after the run is stored as FAILED.
+	waitFor(t, func() bool { return len(env.hub.notifications()) >= 1 })
 	n := env.hub.notifications()
 	if len(n) != 1 || n[0].GetKind() != pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED || !strings.Contains(n[0].GetMessage(), "review-bot") {
 		t.Errorf("notifications = %+v", n)
@@ -264,7 +267,7 @@ func TestDispatchOrderProperty(t *testing.T) {
 				w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: w.get(id)}}
 			}
 		}
-		settle(rt)
+		settle(t, rt)
 		time.Sleep(3 * time.Millisecond)
 		// At most one in-flight run per sandbox at every step (SC-004).
 		runs, _ := env.svc.ListRuns(o.GetId())

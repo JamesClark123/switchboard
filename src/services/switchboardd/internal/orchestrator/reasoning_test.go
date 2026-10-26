@@ -38,7 +38,7 @@ func (r *launchRecorder) launch(_ context.Context, req ReasoningLaunch, onLog fu
 	sb := running(sprintf("reasoning-%d", n), req.DisplayName)
 	sb.Controller = proto.Clone(req.Controller).(*pb.SandboxController)
 	sb.Sources = req.Setup.GetSources()
-	r.w.put(sb)
+	r.w.put(proto.Clone(sb).(*pb.Sandbox)) // the fake owns its copy; sb stays ours
 	// The real manager publishes the new record on the host's stream.
 	r.w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: proto.Clone(sb).(*pb.Sandbox)}}
 	return proto.Clone(sb).(*pb.Sandbox), nil

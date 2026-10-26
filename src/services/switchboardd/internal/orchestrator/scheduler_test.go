@@ -75,7 +75,7 @@ func TestTimedEventFiresDedupesAndKeepsPhase(t *testing.T) {
 	if !ev.GetLastFiredAt().AsTime().Equal(start.Add(time.Minute)) || !ev.GetNextFireAt().AsTime().Equal(start.Add(2*time.Minute)) {
 		t.Errorf("after fire = %+v", ev)
 	}
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), runs[0].GetId()) == pb.RunState_RUN_STATE_RUNNING })
 
 	// Dedupe (on by default): while that run is in flight the next firing is
@@ -97,7 +97,7 @@ func TestTimedEventFiresDedupesAndKeepsPhase(t *testing.T) {
 	if n := runCount(t, env, o.GetId()); n != 2 {
 		t.Errorf("after close: %d runs, want 2", n)
 	}
-	settle(rt)
+	settle(t, rt)
 
 	// dedupe_disabled queues every firing even with a run in flight; an
 	// update that keeps the interval keeps the phase.
@@ -265,7 +265,7 @@ func TestFireTimedEventRefusedWhileARunIsInFlightButNotWithDedupeOff(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), first.GetId()) == pb.RunState_RUN_STATE_RUNNING })
 	if _, err := env.svc.FireTimedEvent(o.GetId(), ev.GetId()); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "running") {
 		t.Errorf("in-flight refusal = %v", err)
