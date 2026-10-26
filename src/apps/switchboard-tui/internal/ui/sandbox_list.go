@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"github.com/charmbracelet/x/ansi"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"

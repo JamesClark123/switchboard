@@ -120,7 +120,7 @@ func (m Model) runResultsHelp() helpBindings {
 func (m Model) runResultsModal() string {
 	rs := m.jobs.results
 	rows := []string{sectionStyle.Render(rs.title), "", rs.vp.View()}
-	if !(rs.vp.AtTop() && rs.vp.AtBottom()) {
+	if !rs.vp.AtTop() || !rs.vp.AtBottom() {
 		rows = append(rows, "", dimStyle.Render(fmt.Sprintf("%d%% scrolled", int(rs.vp.ScrollPercent()*100))))
 	}
 	rows = append(rows, "", helpStyle.Render("↑/↓ scroll · pgup/pgdn page · esc close"))

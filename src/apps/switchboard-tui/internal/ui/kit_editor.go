@@ -3,13 +3,13 @@ package ui
 import (
 	"errors"
 	"fmt"
-	"github.com/charmbracelet/x/ansi"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/x/ansi"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

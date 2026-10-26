@@ -17,7 +17,7 @@ import (
 // TestTUITwoDaemonsE2E is the feature-009 harness smoke test: two stub daemons
 // (local + "remote"), the remote one reached through the stub ssh that execs
 // `sxbd dial-stdio`; the daemon screen lists both connected, and shift+→ once
-// more reaches the Orchestrators screen with the header strip (research R16).
+// more reaches the Jobs screen (feature 010: Sandboxes → Daemons → Jobs).
 func TestTUITwoDaemonsE2E(t *testing.T) {
 	requireLocalTarget(t)
 	tui, daemon := buildBinaries(t)
@@ -38,20 +38,19 @@ func TestTUITwoDaemonsE2E(t *testing.T) {
 	p.expect(t, "signed in to 1 of 1 saved hosts", 20*time.Second)
 
 	m = p.mark()
-	p.send("\x1b[1;2C") // shift+→: orchestrators
-	p.expectNew(t, m, "Orchestrators", 10*time.Second)
-	p.expect(t, "(no orchestrators)", 5*time.Second)
+	p.send("\x1b[1;2C") // shift+→: jobs
+	p.expectNew(t, m, "Overview", 10*time.Second)
+	p.expect(t, "No orchestrators yet", 5*time.Second)
 	m = p.mark()
 	p.send("\x1b[1;2D") // shift+←: back to daemons
 	p.expectNew(t, m, "(local ", 5*time.Second)
 	p.send("q")
 }
 
-// TestTUIOrchestratorCreateE2E drives US1 through the real binaries: shift+→
-// twice reaches the Orchestrators screen (the header strip names it), `n`
-// creates review-bot on the local daemon and the row is listed reachable; the
-// TUI is relaunched and the row is still there (persisted on the daemon); `d`
-// plus confirm removes it.
+// TestTUIOrchestratorCreateE2E drives US1 through the real binaries: Daemons ›
+// <local> › Orchestrators (feature 010) lists none, `n` creates review-bot on
+// that daemon and the row is listed reachable; the TUI is relaunched and the
+// row is still there (persisted on the daemon); `d` plus confirm removes it.
 func TestTUIOrchestratorCreateE2E(t *testing.T) {
 	requireLocalTarget(t)
 	tui, daemon := buildBinaries(t)
@@ -62,13 +61,8 @@ func TestTUIOrchestratorCreateE2E(t *testing.T) {
 
 	p := spawnTUIWithConfig(t, tui, sock, src, configDir)
 	p.expect(t, "Switchboard", 20*time.Second)
-	p.expect(t, "Orchestrators", 5*time.Second) // the header strip, on the list screen too
-	m := p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(no orchestrators)", 10*time.Second)
+	p.expect(t, "Jobs", 5*time.Second) // the header strip, on the list screen too
+	openDaemonOrchs(t, p, "(no orchestrators on ")
 
 	p.send("n")
 	p.expect(t, "New orchestrator", 10*time.Second)
@@ -81,9 +75,7 @@ func TestTUIOrchestratorCreateE2E(t *testing.T) {
 	// Relaunch: the orchestrator survives the TUI (it lives on the daemon).
 	p = spawnTUIWithConfig(t, tui, sock, src, configDir)
 	p.expect(t, "Switchboard", 20*time.Second)
-	p.send("\x1b[1;2C")
-	p.send("\x1b[1;2C")
-	p.expect(t, "review-bot", 15*time.Second)
+	openDaemonOrchs(t, p, "review-bot")
 	p.expect(t, "0 workers", 5*time.Second)
 
 	p.send("d")
@@ -93,7 +85,7 @@ func TestTUIOrchestratorCreateE2E(t *testing.T) {
 	p.expect(t, "removed review-bot", 15*time.Second)
 	// This process never showed the empty state before the removal, so a plain
 	// expect is the right barrier (the renderer repaints only changed lines).
-	p.expect(t, "(no orchestrators)", 10*time.Second)
+	p.expect(t, "(no orchestrators on ", 10*time.Second)
 	p.send("q")
 }
 
@@ -148,23 +140,11 @@ func TestTUIAttachLocalAndRemoteE2E(t *testing.T) {
 	}
 
 	// Create the orchestrator on the local daemon.
-	m1 := p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m1, "(local ", 10*time.Second)
-	m1 = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m1, "(no orchestrators)", 10*time.Second)
-	p.send("n")
-	p.expect(t, "New orchestrator", 10*time.Second)
-	p.send("review-bot")
-	p.send("\x13")
-	p.expect(t, "created review-bot", 15*time.Second)
-	m1 = p.mark()
-	p.send("\x1b") // back to the sandbox list
-	p.expectNew(t, m1, "All Sandboxes", 10*time.Second)
+	createOrchestrator(t, p)
+	backToList(t, p)
 
 	// Local attach: the All tab's first row is the local sandbox.
-	m1 = p.mark()
+	m1 := p.mark()
 	p.send("o")
 	p.expectNew(t, m1, "to an orchestrator", 10*time.Second)
 	p.send("\r")
@@ -214,15 +194,11 @@ func TestTUIAttachLocalAndRemoteE2E(t *testing.T) {
 	}
 
 	// Detach the remote worker. Workers leave the everyday tabs once attached
-	// (FR-115), so the detach goes through the orchestrator's Workers view: the
-	// roster lists the local worker first, the remote one second; `x` confirms,
-	// then `mcp rm --force` runs on the remote stub.
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "2 workers", 10*time.Second)
+	// (FR-115), so the detach goes through the orchestrator's Workers view
+	// (Daemons › <local> › Orchestrators › review-bot): the roster lists the
+	// local worker first, the remote one second; `x` confirms, then `mcp rm
+	// --force` runs on the remote stub.
+	openDaemonOrchs(t, p, "2 workers")
 	p.send("\r")
 	p.expect(t, "Orchestrator review-bot", 10*time.Second)
 	p.send("j")
@@ -291,11 +267,11 @@ func has(calls []string, prefix string) bool {
 }
 
 // TestTUIActionRunE2E drives US3 through the real binaries: create review-bot,
-// attach the stub-launched local sandbox, author review-pr with two arguments,
-// call it with values — the Queue view shows the run in progress and the stub
-// agent (the daemon's PTY runs `sbx exec -it …`, which the stub copies to a
-// file) received the framed prompt with both substituted values and the
-// appended argument; a second call waits at position 1.
+// attach the stub-launched local sandbox, author review-pr with two arguments on
+// the Jobs Actions tab, call it with values — the Jobs Overview shows the run in
+// progress and the stub agent (the daemon's PTY runs `sbx exec -it …`, which the
+// stub copies to a file) received the framed prompt with both substituted
+// values and the appended argument; a second call waits at position 1.
 func TestTUIActionRunE2E(t *testing.T) {
 	requireLocalTarget(t)
 	tui, daemon := buildBinaries(t)
@@ -305,38 +281,17 @@ func TestTUIActionRunE2E(t *testing.T) {
 	launchOne(t, p)
 
 	// Orchestrator + attach.
+	createOrchestrator(t, p)
+	backToList(t, p)
 	m := p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(no orchestrators)", 10*time.Second)
-	p.send("n")
-	p.expect(t, "New orchestrator", 10*time.Second)
-	p.send("review-bot")
-	p.send("\x13")
-	p.expect(t, "created review-bot", 15*time.Second)
-	m = p.mark()
-	p.send("\x1b")
-	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
-	m = p.mark()
 	p.send("o")
 	p.expectNew(t, m, "to an orchestrator", 10*time.Second)
 	p.send("\r")
 	p.expect(t, "attached", 15*time.Second)
 
-	// Author the action in the detail's Actions view. The worker left the
-	// everyday list (US4), so the row is on the O tab; the orchestrator screen
-	// is two shift+→ away either way.
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "1 worker", 10*time.Second)
-	p.send("\r") // open the detail
-	p.expect(t, "Orchestrator review-bot", 10*time.Second)
-	p.send("\x1b[C") // → Actions
+	// Author the action on the Jobs Actions tab (shift+← from the list).
+	openJobs(t, p)
+	p.gotoView(t, "no actions — press a to add one")
 	m = p.mark()
 	p.send("a")
 	p.expectNew(t, m, "Body", 10*time.Second)
@@ -366,10 +321,11 @@ func TestTUIActionRunE2E(t *testing.T) {
 	p.expect(t, "queued run-", 15*time.Second)
 	p.expect(t, "at position 1", 5*time.Second)
 
-	// The Queue view shows it running; the stub agent received the framed prompt.
-	p.send("\x1b[C") // → Queue
-	p.expect(t, "In progress", 20*time.Second)
-	p.expect(t, "running", 20*time.Second)
+	// The Overview shows it running; the stub agent received the framed prompt.
+	m = p.mark()
+	p.send("\x1b[D") // ← Overview
+	p.expectNew(t, m, "In progress", 20*time.Second)
+	p.expectNew(t, m, "running", 20*time.Second)
 	// The stub agent copies its stdin to agent-<container ref>.in.
 	deadline := time.Now().Add(20 * time.Second)
 	var typed string
@@ -393,7 +349,9 @@ func TestTUIActionRunE2E(t *testing.T) {
 		}
 	}
 	// A second call waits at position 1 (one worker, one run).
-	p.send("\x1b[D") // ← Actions
+	m = p.mark()
+	p.send("\x1b[C") // → Actions
+	p.expectNew(t, m, "{number*, repo*, focus}", 10*time.Second)
 	m = p.mark()
 	p.send("\r")
 	p.expectNew(t, m, "number *", 10*time.Second)
@@ -403,8 +361,9 @@ func TestTUIActionRunE2E(t *testing.T) {
 	m = p.mark()
 	p.send("\x13")
 	p.expectNew(t, m, "at position 1", 15*time.Second)
-	p.send("\x1b[C")
-	p.expect(t, "Queued", 10*time.Second)
+	m = p.mark()
+	p.send("\x1b[D") // ← Overview: the queued row
+	p.expectNew(t, m, "#1", 10*time.Second)
 	p.send("q")
 }
 
@@ -440,15 +399,49 @@ func (p *ptyProcess) lastLineWith(sub string) string {
 	return ""
 }
 
-// createOrchestrator makes review-bot from the sandbox list and returns to it.
-func createOrchestrator(t *testing.T, p *ptyProcess) {
+// openDaemonOrchs opens Daemons › <local daemon> › Orchestrators from the
+// sandbox list (feature 010: orchestrator administration lives under the daemon
+// that hosts it) and waits for want. Arrow keys, not j/k: runes sent together
+// would arrive as one key.
+func openDaemonOrchs(t *testing.T, p *ptyProcess, want string) {
 	t.Helper()
 	m := p.mark()
-	p.send("\x1b[1;2C")
+	p.send("\x1b[1;2C") // shift+→: daemons
 	p.expectNew(t, m, "(local ", 10*time.Second)
+	p.send("\x1b[A") // the local daemon is the first row
+	time.Sleep(300 * time.Millisecond)
 	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(no orchestrators)", 10*time.Second)
+	p.send("\r") // its options: MCP gateway · Secrets · Orchestrators
+	p.expectNew(t, m, "Secrets", 10*time.Second)
+	p.send("\x1b[B")
+	p.send("\x1b[B")
+	time.Sleep(300 * time.Millisecond)
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, want, 10*time.Second)
+}
+
+// openJobs opens the Jobs screen from the sandbox list (shift+← wraps to it).
+func openJobs(t *testing.T, p *ptyProcess) {
+	t.Helper()
+	m := p.mark()
+	p.send("\x1b[1;2D")
+	p.expectNew(t, m, "Overview", 10*time.Second)
+}
+
+// backToList returns to the sandbox list from Daemons › Orchestrators (shift+←).
+func backToList(t *testing.T, p *ptyProcess) {
+	t.Helper()
+	m := p.mark()
+	p.send("\x1b[1;2D")
+	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
+}
+
+// createOrchestrator makes review-bot on the local daemon from the sandbox list
+// and stays on Daemons › <local> › Orchestrators, its row highlighted.
+func createOrchestrator(t *testing.T, p *ptyProcess) {
+	t.Helper()
+	openDaemonOrchs(t, p, "(no orchestrators on ")
 	p.send("n")
 	p.expect(t, "New orchestrator", 10*time.Second)
 	p.send("review-bot")
@@ -456,14 +449,15 @@ func createOrchestrator(t *testing.T, p *ptyProcess) {
 	p.expect(t, "created review-bot", 15*time.Second)
 }
 
-// addPingAction authors a no-argument action from the orchestrators screen
-// (cursor on review-bot) and leaves the detail on its Actions view.
+// addPingAction authors a no-argument action on the Jobs Actions tab, reached
+// from Daemons › Orchestrators (shift+→), and stays there.
 func addPingAction(t *testing.T, p *ptyProcess) {
 	t.Helper()
-	p.send("\r")
-	p.expect(t, "Orchestrator review-bot", 10*time.Second)
-	p.send("\x1b[C") // → Actions
 	m := p.mark()
+	p.send("\x1b[1;2C") // shift+→: jobs
+	p.expectNew(t, m, "Overview", 10*time.Second)
+	p.gotoView(t, "no actions — press a to add one")
+	m = p.mark()
 	p.send("a")
 	p.expectNew(t, m, "Body", 10*time.Second)
 	p.send("ping")
@@ -487,12 +481,10 @@ func TestTUIHiddenWorkersE2E(t *testing.T) {
 	p := spawnTUI(t, tui, sock, seedSource(t))
 	launchOne(t, p)
 	createOrchestrator(t, p)
-	m := p.mark()
-	p.send("\x1b")
-	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
+	backToList(t, p)
 
 	// Attaching hides the worker from the everyday tabs: All is now empty.
-	m = p.mark()
+	m := p.mark()
 	p.send("o")
 	p.expectNew(t, m, "to an orchestrator", 10*time.Second)
 	m = p.mark()
@@ -542,9 +534,8 @@ func TestTUITimedEventE2E(t *testing.T) {
 	createOrchestrator(t, p)
 	addPingAction(t, p)
 
-	// Events view: a timed event on ping, every minute, dedupe on (default).
-	p.send("\x1b[C") // → Queue
-	p.send("\x1b[C") // → Events
+	// Events tab: a timed event on ping, every minute, dedupe on (default).
+	p.gotoView(t, "no events — press a to add one")
 	m := p.mark()
 	p.send("a")
 	p.expectNew(t, m, "Every (minutes)", 10*time.Second)
@@ -569,29 +560,17 @@ func TestTUITimedEventE2E(t *testing.T) {
 	p.expectNew(t, m, "[on]", 10*time.Second)
 
 	// Persisted on the daemon: a fresh TUI still lists it.
-	p.send("\x1b")
-	p.send("\x1b")
 	p.send("q")
 	time.Sleep(500 * time.Millisecond)
 	p2 := spawnTUI(t, tui, sock, src)
 	p2.expect(t, "Switchboard", 20*time.Second)
-	m = p2.mark()
-	p2.send("\x1b[1;2C")
-	p2.expectNew(t, m, "(local ", 10*time.Second)
-	m = p2.mark()
-	p2.send("\x1b[1;2C")
-	p2.expectNew(t, m, "review-bot", 10*time.Second)
-	p2.send("\r")
-	p2.expect(t, "Orchestrator review-bot", 10*time.Second)
-	for i := 0; i < 3; i++ {
-		p2.send("\x1b[C")
-	}
-	p2.expect(t, "every 1m", 10*time.Second)
+	openJobs(t, p2)
+	p2.gotoView(t, "every 1m")
 	p2.send("q")
 }
 
-// gotoView presses → on the orchestrator detail until a view renders marker
-// (the detail reopens on whichever view was last shown).
+// gotoView presses → on the orchestrator detail or the Jobs screen until a view
+// or tab renders marker (both reopen on whichever was last shown).
 func (p *ptyProcess) gotoView(t *testing.T, marker string) {
 	t.Helper()
 	for i := 0; i < 7; i++ {
@@ -657,10 +636,7 @@ func TestTUIWorkerToolsE2E(t *testing.T) {
 	createOrchestrator(t, p)
 	addPingAction(t, p)
 	m = p.mark()
-	p.send("\x1b")
-	p.expectNew(t, m, "queued 0 / in flight 0", 10*time.Second) // the orchestrators list row
-	m = p.mark()
-	p.send("\x1b")
+	p.send("\x1b") // Jobs › esc: the sandbox list
 	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
 
 	// Attach the remote sandbox (the only row), adding the host first.
@@ -693,18 +669,11 @@ func TestTUIWorkerToolsE2E(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"state":"queued"`) {
 		t.Fatalf("call_action = %d %s", code, body)
 	}
+	openJobs(t, p)
 	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "1 worker", 10*time.Second)
-	m = p.mark()
-	p.send("\r")
-	p.expectNew(t, m, "Orchestrator review-bot", 10*time.Second)
-	p.gotoView(t, "In progress") // the Queue view, wherever the detail opened
-	p.expect(t, "triggered by sandbox-", 20*time.Second)
-	p.expect(t, "running", 20*time.Second)
+	p.gotoView(t, "In progress")                      // the Overview (Jobs reopens on its last tab)
+	p.expectNew(t, m, "triggered by", 20*time.Second) // the origin, cut at the PTY width
+	p.expectNew(t, m, "running", 20*time.Second)
 	deadline = time.Now().Add(20 * time.Second)
 	var typed string
 	for time.Now().Before(deadline) && typed == "" {
@@ -724,8 +693,7 @@ func TestTUIWorkerToolsE2E(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"ok":true`) {
 		t.Fatalf("report = %d %s", code, body)
 	}
-	p.expect(t, "History", 20*time.Second)
-	p.expect(t, "pong sent", 20*time.Second)
+	p.expect(t, "pong sent", 20*time.Second) // the History row's result
 	// The briefing block names the orchestrator and the four tools.
 	var briefing string
 	files, _ := filepath.Glob(filepath.Join(remote.workspaceRoot, "*", "CLAUDE.md"))
@@ -739,9 +707,15 @@ func TestTUIWorkerToolsE2E(t *testing.T) {
 			t.Errorf("CLAUDE.md lacks %q (files %v)", want, files)
 		}
 	}
-	// Detach: the token is revoked, the endpoint answers 404.
-	p.send("\x1b[D")
-	p.send("\x1b[D") // ← Workers
+	// Detach from the orchestrator's Workers view (Daemons › <local> ›
+	// Orchestrators › review-bot): the token is revoked, the endpoint answers 404.
+	m = p.mark()
+	p.send("\x1b") // Jobs › esc: the sandbox list
+	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
+	openDaemonOrchs(t, p, "1 worker")
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "Orchestrator review-bot", 10*time.Second)
 	m = p.mark()
 	p.send("x")
 	p.expectNew(t, m, "Detach", 10*time.Second)
@@ -786,7 +760,7 @@ func TestTUIReasoningSandboxE2E(t *testing.T) {
 	}
 	// Absent from All, on the O tab marked reasoning.
 	m := p.mark()
-	p.send("\x1b")
+	p.send("\x1b[1;2D")
 	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
 	p.expectNew(t, m, "No sandboxes", 10*time.Second)
 	m = p.mark()
@@ -796,12 +770,7 @@ func TestTUIReasoningSandboxE2E(t *testing.T) {
 	p.expectNew(t, m, "orchestrator: review-bot (reasoning)", 10*time.Second)
 
 	// b rebuilds it: rm then a fresh create.
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "(local ", 10*time.Second)
-	m = p.mark()
-	p.send("\x1b[1;2C")
-	p.expectNew(t, m, "review-bot", 10*time.Second)
+	openDaemonOrchs(t, p, "review-bot")
 	m = p.mark()
 	p.send("\r")
 	p.expectNew(t, m, "Orchestrator review-bot", 10*time.Second)
@@ -829,8 +798,15 @@ func TestTUIReasoningSandboxE2E(t *testing.T) {
 		t.Fatalf("rebuild should rm then create; calls: %v", sbxCalls(t, sbxDir)[before:])
 	}
 
-	// A reason action call is delivered to the reasoning sandbox.
-	p.gotoView(t, "(no actions)")
+	// A reason action call is delivered to the reasoning sandbox; actions are
+	// authored on the Jobs Actions tab (esc to the orchestrators, shift+→).
+	m = p.mark()
+	p.send("\x1b")
+	p.expectNew(t, m, "0 workers", 10*time.Second)
+	m = p.mark()
+	p.send("\x1b[1;2C")
+	p.expectNew(t, m, "Overview", 10*time.Second)
+	p.gotoView(t, "no actions — press a to add one")
 	m = p.mark()
 	p.send("a")
 	p.expectNew(t, m, "Body", 10*time.Second)
