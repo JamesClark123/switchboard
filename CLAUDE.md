@@ -147,7 +147,22 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/009-orchestrator/plan.md` (Orchestrator). A new **daemon role**: an
+Active feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).
+**TUI-only**: the **Orchestrators** top-level screen is replaced by a **Jobs** screen (cycle Sandboxes →
+Daemons → Jobs, wrapping; `esc` → Sandboxes, `q` quits) with tabs **Overview · Actions · Events · Queue** covering every orchestrator on every
+connected daemon (rows labelled `name @ host`). Overview = Upcoming (enabled timed events, `n` Enqueue now)
++ Queued + In progress + History capped at 15; per-run `enter` prompt, `x` cancel, `m` mark free, `o` Open
+results (full `Run.summary`/`reason` in a scrollable viewport overlay). Actions/Events = today's views grouped
+by orchestrator. Queue = every retained run (daemon retention unchanged at 200 finished/orchestrator), `f`/`F`
+filter, `]`/`[` pages of 25. Orchestrator admin (create/rename/remove; Workers/Reasoning/Hosts) moves to a new
+**Orchestrators** option under Daemons. Data via client fan-out (`ListOrchestrators` + `ListRuns` per host,
+`Event.orchestrator_changed` reloads one orchestrator); operations refactored onto an explicit `orchTarget`
+hosted by a per-screen `orchSurface` (R1). Rules: agent/remote text sanitised before display (`sanitize.go`, R10,
+FR-029); cursors keyed by item identity (R11); operations only via `connectedDaemon(host)`, never the
+`daemonForHost` fallback (R12, FR-030); reloads per orchestrator, ordered by one process-wide call sequence (`jobsSeq`, stamped as each call is issued; NotFound = removed); lost hosts = event stream ended or `Unavailable`,
+coalesced, only while Jobs is visible (R3); worker names from the aggregated sandbox list (R4). No proto/daemon/env change. See `research.md` (R1–R12), `data-model.md`, `contracts/jobs-ui.md`, `quickstart.md`.
+
+Prior feature: `specs/009-orchestrator/plan.md` (Orchestrator). A new **daemon role**: an
 orchestrator is a named, persistent prompt queue the developer places on a machine (hosted
 in-process by that machine's `switchboardd`, no new binary/process/port), with a stable opaque
 identity and a changeable name. It attaches sandboxes on any reachable machine as **workers**
