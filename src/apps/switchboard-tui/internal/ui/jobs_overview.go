@@ -328,61 +328,38 @@ func (m Model) lookupWorkerName(r *pb.Run) string {
 // runSandbox finds the record of a run's worker sandbox and the TUI host entry
 // it is on, to open its terminal (SWI-14). Unlike lookupWorkerName, which only
 // names the worker, it never guesses across hosts: the run's sandbox_host_id
-// must be a connected daemon's, and only that host's sandboxes match (the
-// active host's list too when it is that host). A run without one matches only
-// when exactly one host has the sandbox.
+// must be a connected daemon's and only that host's sandboxes match; a run
+// without one matches only when exactly one host has the sandbox.
 func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
 	id := r.GetSandboxId()
 	if id == "" {
 		return nil, "", false
 	}
-	if r.GetSandboxHostId() == "" {
-		var found *pb.Sandbox
-		var host string
-		for _, hs := range m.hostAgg {
-			for _, sb := range hs.Sandboxes {
-				if sb.GetId() == id {
-					if found != nil {
-						return nil, "", false // on two hosts: ambiguous
-					}
-					found, host = sb, hs.Host.Entry.ID
-				}
+	entry, scoped := "", false
+	if hid := r.GetSandboxHostId(); hid != "" {
+		var ok bool
+		if entry, ok = m.entryForDaemonHost(hid); !ok {
+			// entryForDaemonHost skips a host without a connection object, which
+			// is how a manager can hold the adopted active host (connOf).
+			if m.daemon.HostID() != hid {
+				return nil, "", false
 			}
+			entry = m.activeHost
 		}
-		if found == nil {
-			return findSandbox(m.sandboxes, id, m.activeHost)
+		scoped = true
+	}
+	var found *pb.Sandbox
+	var host string
+	for _, row := range m.allRows() {
+		if row.sb.GetId() != id || (scoped && row.host != entry) {
+			continue
 		}
-		return found, host, true
-	}
-	entry, ok := m.entryForDaemonHost(r.GetSandboxHostId())
-	if !ok && m.daemon.HostID() == r.GetSandboxHostId() {
-		// The active host, adopted without a connection object (connOf).
-		entry, ok = m.activeHost, true
-	}
-	if !ok {
-		return nil, "", false
-	}
-	for _, hs := range m.hostAgg {
-		if hs.Host.Entry.ID == entry {
-			if sb, h, ok := findSandbox(hs.Sandboxes, id, entry); ok {
-				return sb, h, true
-			}
+		if found != nil {
+			return nil, "", false // on two hosts: ambiguous
 		}
+		found, host = row.sb, row.host
 	}
-	if entry != m.activeHost {
-		return nil, "", false
-	}
-	return findSandbox(m.sandboxes, id, entry)
-}
-
-// findSandbox is the sandbox with id in sbs, reported as on host.
-func findSandbox(sbs []*pb.Sandbox, id, host string) (*pb.Sandbox, string, bool) {
-	for _, sb := range sbs {
-		if sb.GetId() == id {
-			return sb, host, true
-		}
-	}
-	return nil, "", false
+	return found, host, found != nil
 }
 
 // renderOverview renders the four sections; focus is the cursor's line.

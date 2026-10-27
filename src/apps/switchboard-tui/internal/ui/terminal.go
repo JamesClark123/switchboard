@@ -116,7 +116,9 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		_ = msg.session.Close()
 		msg.cancel()
 		close(msg.done)
-		m.status = "detached from " + msg.name
+		if msg.seq == m.termSeq {
+			m.status = "detached from " + msg.name
+		}
 		return m, nil
 	}
 	m.term = termState{
@@ -143,8 +145,12 @@ func (m Model) attachAwaited(from screen) bool {
 // changes screen only when it is about the terminal showing: a failed attach
 // leaves the developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
+	showing := m.screen == screenTerminal && msg.seq == m.term.seq
+	if !showing && msg.seq != m.termSeq {
+		return m, nil // about an attach a newer one superseded: nothing to report
+	}
 	var cmd tea.Cmd
-	if m.screen == screenTerminal && msg.seq == m.term.seq {
+	if showing {
 		m.closeTerm()
 		m, cmd = m.leaveTerminal(msg.returnTo)
 	}

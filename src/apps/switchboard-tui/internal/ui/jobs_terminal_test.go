@@ -260,8 +260,8 @@ func TestJobsTerminalAttachIdentity(t *testing.T) {
 		t.Fatal("the latest attach opens")
 	}
 	m, _ = update(m, termClosedMsg{err: errors.New("old"), name: "x", returnTo: screenList, seq: m.term.seq - 1})
-	if m.screen != screenTerminal || m.term.session == nil {
-		t.Error("a close about an older attach leaves the terminal open")
+	if m.screen != screenTerminal || m.term.session == nil || strings.Contains(m.status, "old") {
+		t.Errorf("a close about an older attach changes nothing: status %q", m.status)
 	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
 
