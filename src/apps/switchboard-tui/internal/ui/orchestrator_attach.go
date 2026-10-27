@@ -224,14 +224,14 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 
 func (m Model) attachModal() string {
 	a := m.attach
-	rows := []string{sectionStyle.Render("Attach " + a.sandbox.GetDisplayName() + " to an orchestrator"), ""}
+	rows := []string{sectionStyle.Render("Attach " + sanitizeLine(a.sandbox.GetDisplayName(), 32) + " to an orchestrator"), ""}
 	if len(a.choices) == 0 {
 		rows = append(rows, dimStyle.Render("(no reachable orchestrator)"), dimStyle.Render("create one under Daemons › <daemon> › Orchestrators"))
 	}
 	sbHost := m.daemonHostID(a.host)
 	for i, r := range a.choices {
 		o := r.summary.GetOrchestrator()
-		label := o.GetName() + dimStyle.Render("  @"+r.hostName)
+		label := fitCol(o.GetName(), 24) + dimStyle.Render("  @"+sanitizeLine(r.hostName, 24))
 		if o.GetHostId() != sbHost && !orchHasHost(o, sbHost) {
 			label += dimStyle.Render("  (will add this host)")
 		}
@@ -308,7 +308,9 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		if name == "" {
 			name = short(w.GetSandboxId())
 		}
-		line := cursor(i) + name + dimStyle.Render("  @"+w.GetHostId()) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
+		// Remote text is sanitised and fitted like the Jobs rows (FR-029; review
+		// run-242 finding 4).
+		line := cursor(i) + fitCol(name, 24) + dimStyle.Render("  @"+fitCol(w.GetHostId(), 16)) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
 		if w.GetRunAction() != "" {
 			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + ")")
 		}
@@ -318,7 +320,7 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		if !w.GetHostReachable() {
 			line += "  " + statusErrStyle.Render("host unreachable")
 		}
-		lines = append(lines, line)
+		lines = append(lines, m.fitLine(line))
 	}
 	return lines
 }

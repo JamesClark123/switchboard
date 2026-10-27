@@ -264,7 +264,7 @@ func (m Model) renderReasoningView() []string {
 	w := d.reasoningWorker()
 	name := "reasoning-" + short(d.id)
 	if w != nil && w.GetDisplayName() != "" {
-		name = w.GetDisplayName()
+		name = sanitizeLine(w.GetDisplayName(), 32)
 	}
 	var lines []string
 	switch rb, busy := m.rebuilds[d.id]; {
@@ -283,7 +283,7 @@ func (m Model) renderReasoningView() []string {
 	}
 	lines = append(lines, "", sectionStyle.Render("Setup"))
 	for _, l := range reasoningSetupLines(sum.GetOrchestrator().GetReasoningSetup()) {
-		lines = append(lines, "  "+l)
+		lines = append(lines, m.fitLine("  "+sanitizeLine(l, 0)))
 	}
 	lines = append(lines, "", dimStyle.Render("e edit the setup (folders, K kits; enter rebuilds) · b rebuild with this setup · l output"))
 	return lines

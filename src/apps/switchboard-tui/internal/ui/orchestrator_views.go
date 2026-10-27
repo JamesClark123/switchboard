@@ -369,7 +369,7 @@ func (m Model) viewOrchDetail() string {
 			if i == d.hostCursor {
 				cursor = cursorBarStyle.Render("> ")
 			}
-			lines = append(lines, cursor+h.DisplayName+dimStyle.Render("  "+h.Summary()))
+			lines = append(lines, m.fitLine(cursor+fitCol(h.DisplayName, 24)+dimStyle.Render("  "+sanitizeLine(h.Summary(), 0))))
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
@@ -400,7 +400,7 @@ func (m Model) renderOrchView() []string {
 	case viewHosts:
 		hosts := d.detail.GetHosts()
 		if len(hosts) == 0 {
-			return []string{dimStyle.Render("(no hosts — workers can only live on " + d.hostName + " until you add one)")}
+			return []string{dimStyle.Render("(no hosts — workers can only live on " + sanitizeLine(d.hostName, 0) + " until you add one)")}
 		}
 		var lines []string
 		for i, h := range hosts {
@@ -411,7 +411,7 @@ func (m Model) renderOrchView() []string {
 					reach += dimStyle.Render(": " + sanitizeLine(h.GetError(), 80))
 				}
 			}
-			lines = append(lines, cursor(i)+hostLabel(h)+dimStyle.Render("  ·  "+h.GetSshTarget())+"  ·  "+reach)
+			lines = append(lines, m.fitLine(cursor(i)+fitCol(hostLabel(h), 24)+dimStyle.Render("  ·  "+sanitizeLine(h.GetSshTarget(), 40))+"  ·  "+reach))
 		}
 		return lines
 	case viewWorkers:

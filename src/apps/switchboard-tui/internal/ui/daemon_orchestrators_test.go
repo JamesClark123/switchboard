@@ -388,3 +388,31 @@ func TestStatusLinesAreSanitised(t *testing.T) {
 	m.jobs.status = hostileName
 	assertNoHostile(t, "the jobs status", m.View())
 }
+
+// The detail's Workers, Reasoning and Hosts views and the attach picker draw
+// worker, host and orchestrator names and SSH targets only sanitised (FR-029;
+// review run-242 finding 4).
+func TestOrchDetailViewsAndAttachPickerAreSanitised(t *testing.T) {
+	sum := orchSummary("o-a", hostileName)
+	sum.ReasoningReady = true
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{sum}, orchDetail: &pb.OrchestratorDetail{
+		Summary: sum,
+		Workers: []*pb.WorkerView{
+			{SandboxId: "w1", DisplayName: hostileName, HostId: hostileName},
+			{SandboxId: "r1", DisplayName: hostileName, HostId: "h", Reasoning: true},
+		},
+		Hosts: []*pb.OrchestratorHost{{HostId: "h2", DisplayName: hostileName, SshTarget: hostileName}},
+	}}
+	m := openDetail(t, sized(New(d, "/work")))
+	for v, name := range map[orchView]string{viewWorkers: "Workers", viewReasoning: "Reasoning", viewHosts: "Hosts"} {
+		m.orchDetail.view = v
+		view := m.View()
+		if !strings.Contains(view, "evil") {
+			t.Fatalf("%s view does not show the rows:\n%s", name, view)
+		}
+		assertNoHostile(t, "the "+name+" view", view)
+	}
+	m.screen = screenAttachPick
+	m.attach = attachState{sandbox: &pb.Sandbox{Id: "s1", DisplayName: hostileName}, choices: []orchRow{{host: "local", hostName: hostileName, summary: sum, reachable: true}}}
+	assertNoHostile(t, "the attach picker", m.View())
+}
