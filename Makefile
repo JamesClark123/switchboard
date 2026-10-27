@@ -14,6 +14,13 @@ E2E_MODULES := \
 	src/apps/switchboard-tui-e2e \
 	src/services/switchboardd-e2e
 
+# fmt/fmt-check cover every go.work module, read from go.work itself so a new
+# module is formatted without editing this file (lint/vet/test still use
+# MODULES; see SWI-11). The `use` paths are taken as written (repo-relative, a
+# leading ./ dropped), not resolved, so a symlinked checkout or one whose path
+# has a space still works. `=` defers the go call to the targets that use it.
+FMT_MODULES = $(shell go work edit -json | sed -n 's|.*"DiskPath": "\(\./\)\{0,1\}\(.*\)".*|\2|p')
+
 COVER_FLOOR := 90
 
 # golangci-lint must be built with a Go at least as new as the modules' `go`
@@ -21,19 +28,36 @@ COVER_FLOOR := 90
 # this version (see .github/workflows/ci.yml, which reads it via `make lint-version`).
 GOLANGCI_LINT_VERSION := v2.15.0
 
-.PHONY: all build lint lint-version vet test cover env-check proto fmt fmt-check e2e
+.PHONY: all build lint lint-version vet test cover env-check proto fmt fmt-check require-golangci-lint e2e
 
 all: fmt-check vet lint test
 
 build:
 	@for m in $(MODULES); do echo ">> build $$m"; (cd $$m && go build ./...) || exit 1; done
 
-fmt:
-	gofmt -w $$(find src -name '*.go' -not -path '*/gen/*')
+# Formatting goes through golangci-lint so it applies the same formatters
+# (gofmt + goimports) that lint enforces. Generated stubs are skipped by the
+# config's `generated: strict` exclusion.
+fmt: require-golangci-lint
+	@test -n "$(FMT_MODULES)" || { echo "fmt: no go.work modules found (is GOWORK off?)"; exit 1; }
+	@for m in $(FMT_MODULES); do echo ">> fmt $$m"; (cd $$m && golangci-lint fmt ./...) || { \
+		echo "fmt failed; CI uses golangci-lint $(GOLANGCI_LINT_VERSION) (yours: $$(golangci-lint version 2>&1 | head -1))"; exit 1; }; done
 
-fmt-check:
-	@out=$$(gofmt -l $$(find src -name '*.go' -not -path '*/gen/*')); \
-	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+# `golangci-lint fmt --diff` exits 1 for a diff and another non-zero code when
+# the tool itself fails (e.g. an older build can't load the config). Only the
+# latter names the CI version, and it stops at once: it would repeat per module.
+fmt-check: require-golangci-lint
+	@test -n "$(FMT_MODULES)" || { echo "fmt-check: no go.work modules found (is GOWORK off?)"; exit 1; }
+	@fail=0; for m in $(FMT_MODULES); do \
+		out=$$(cd $$m && golangci-lint fmt --diff ./... 2>&1); rc=$$?; \
+		if [ $$rc -eq 1 ]; then echo "formatting needed in $$m (run make fmt):"; echo "$$out"; fail=1; \
+		elif [ $$rc -ne 0 ]; then echo "golangci-lint failed in $$m:"; echo "$$out"; \
+			echo "CI uses golangci-lint $(GOLANGCI_LINT_VERSION) (yours: $$(golangci-lint version 2>&1 | head -1))"; exit 1; fi; \
+	done; exit $$fail
+
+require-golangci-lint:
+	@command -v golangci-lint >/dev/null || { \
+		echo "make fmt/fmt-check need golangci-lint $(GOLANGCI_LINT_VERSION) (see README › Prerequisites; make lint-version)"; exit 1; }
 
 vet:
 	@for m in $(MODULES); do echo ">> vet $$m"; (cd $$m && go vet ./...) || exit 1; done
