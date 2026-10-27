@@ -171,7 +171,7 @@ func TestRunSandboxResolution(t *testing.T) {
 	}
 	resolves(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostb"}, "hostb")
 	resolves(&pb.Run{SandboxId: "w-run", SandboxHostId: "hosta"}, "hosta")
-	refused(&pb.Run{SandboxId: "w-in", SandboxHostId: "hosta"}, "was not found on hosta (still loading, or destroyed)")
+	refused(&pb.Run{SandboxId: "w-in", SandboxHostId: "hosta"}, "was not found on alpha (still loading, or destroyed)")
 	refused(&pb.Run{}, "has no worker sandbox")
 	// Without a sandbox_host_id only a sandbox on exactly one host matches.
 	resolves(&pb.Run{SandboxId: "w-in"}, "hostb")
@@ -291,7 +291,7 @@ func TestJobsTerminalHoldsAFirstEsc(t *testing.T) {
 	m, _ = update(m, runCmd(cmd))
 	rec := &sentData{TermSession: m.term.session}
 	m.term.session = rec
-	if v := m.viewTerminal(); !strings.Contains(v, "keys go to the agent — esc interrupts it · ctrl+q back to Jobs") {
+	if v := m.viewTerminal(); !strings.HasPrefix(strings.TrimPrefix(strings.SplitN(v, "\n", 2)[0], "Terminal worker-w-run"), "   ctrl+q back to Jobs · keys go to the agent (esc interrupts it)") {
 		t.Errorf("a Jobs terminal's header should warn about esc:\n%s", v)
 	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -299,8 +299,8 @@ func TestJobsTerminalHoldsAFirstEsc(t *testing.T) {
 		t.Errorf("first esc: sent %q, screen %v, status %q", rec.sent, m.screen, m.status)
 	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
-	if string(rec.sent) != "\x1b" {
-		t.Errorf("second esc: sent %q", rec.sent)
+	if string(rec.sent) != "\x1b" || m.status != "" {
+		t.Errorf("second esc: sent %q, status %q (the hint should be cleared)", rec.sent, m.status)
 	}
 
 	// Any other first key ends the hold.

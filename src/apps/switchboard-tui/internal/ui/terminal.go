@@ -237,6 +237,10 @@ func (m Model) termRows() int {
 // updateTerminalKey forwards keystrokes to the sandbox PTY. Ctrl+Q detaches back
 // to the screen the terminal was opened from (leaving the session running);
 // everything else is translated to raw bytes and sent to the daemon.
+// escHoldHint explains a held first esc in a terminal opened from Jobs; the
+// next key clears it.
+const escHoldHint = "esc goes to the agent and interrupts its turn — press esc again to send it, ctrl+q to go back to Jobs"
+
 func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlQ {
 		name, back := m.term.name, m.term.returnTo
@@ -251,9 +255,12 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.term.escHeld {
 		m.term.escHeld = false
 		if msg.Type == tea.KeyEsc {
-			m.status = "esc goes to the agent and interrupts its turn — press esc again to send it, ctrl+q to go back to Jobs"
+			m.status = escHoldHint
 			return m, nil
 		}
+	}
+	if m.status == escHoldHint {
+		m.status = "" // the held esc is resolved: this key is sent (or ignored)
 	}
 	if b := keyToBytes(msg); len(b) > 0 {
 		// Typing snaps the view back to the live output so the user sees what
@@ -296,7 +303,8 @@ func (m Model) viewTerminal() string {
 	}
 	detach := "   ctrl+q to detach (session keeps running)"
 	if m.term.returnTo == screenJobs {
-		detach = "   keys go to the agent — esc interrupts it · ctrl+q back to Jobs"
+		// The way back first: a narrow terminal cuts the header's end.
+		detach = "   ctrl+q back to Jobs · keys go to the agent (esc interrupts it)"
 	}
 	header := sectionStyle.Render("Terminal ") + dimStyle.Render(m.term.name) + dimStyle.Render(detach)
 	if off := m.term.screen.ScrollOffset(); off > 0 {

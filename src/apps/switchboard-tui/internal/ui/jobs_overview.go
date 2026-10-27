@@ -362,7 +362,7 @@ func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, string) {
 	}
 	if found == nil {
 		if scoped {
-			on := entry
+			on := m.hostDisplayName(entry)
 			if on == "" { // the lone local daemon has no host entry
 				on = r.GetSandboxHostId()
 			}
