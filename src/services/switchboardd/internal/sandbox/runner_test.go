@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ case "$1" in
   stop) echo "Sandbox '$2' stopped; state preserved. Restart with: sbx run --name $2" ;;
   exec) echo "Sandbox $2 started successfully" ;;   # Start = no-op exec; there is no sbx start (2026-10-12)
   rm) exit 0 ;;
-  ls) echo '{"sandboxes":[{"name":"sb1","id":"id-1","status":"running"}]}' ;;  # IsRunning parses ls --json
+  ls) echo '{"sandboxes":[{"name":"sb1","id":"id-1","status":"running"}]}' ;;  # ListStatuses parses ls --json
   clone) mkdir -p "$3" ;;             # $3 is dest
   *) echo "unknown $1" >&2; exit 1 ;;
 esac
@@ -65,9 +66,9 @@ func TestSbxRunnerLifecycle(t *testing.T) {
 	if err := r.Start(ctx, ref); err != nil {
 		t.Errorf("Start: %v", err)
 	}
-	running, err := r.IsRunning(ctx, ref)
-	if err != nil || !running {
-		t.Errorf("IsRunning = %v, %v; want true", running, err)
+	statuses, err := r.ListStatuses(ctx)
+	if err != nil || statuses["sb1"] != "running" {
+		t.Errorf("ListStatuses = %v, %v; want sb1 running", statuses, err)
 	}
 	if err := r.Destroy(ctx, ref); err != nil {
 		t.Errorf("Destroy: %v", err)
@@ -91,10 +92,9 @@ func TestSbxRunnerErrorPropagation(t *testing.T) {
 	if err := r.Stop(context.Background(), "ref"); err == nil {
 		t.Error("expected Stop error with missing binary")
 	}
-	// IsRunning treats an errored handle as not running.
-	running, err := r.IsRunning(context.Background(), "ref")
-	if err != nil || running {
-		t.Errorf("IsRunning on bad binary = %v, %v; want false, nil", running, err)
+	// An unreadable runtime is an error, never an empty listing (SWI-13).
+	if statuses, err := r.ListStatuses(context.Background()); err == nil {
+		t.Errorf("ListStatuses on bad binary = %v, nil; want an error", statuses)
 	}
 }
 
@@ -164,7 +164,7 @@ func TestOutputTail(t *testing.T) {
 }
 
 // sbxWithLs writes an sbx stub whose `ls` subcommand prints the given payload,
-// so IsRunning's ls --json parsing can be exercised across shapes.
+// so ListStatuses' ls --json parsing can be exercised across shapes.
 func sbxWithLs(t *testing.T, lsPayload string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -176,35 +176,62 @@ func sbxWithLs(t *testing.T, lsPayload string) string {
 	return bin
 }
 
-func TestIsRunning(t *testing.T) {
+func TestListStatuses(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name    string
 		payload string
-		ref     string
-		want    bool
+		want    map[string]string
 	}{
-		{"match by name running", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`, "sb1", true},
-		{"match by id running", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`, "u1", true},
-		{"match but stopped", `{"sandboxes":[{"name":"sb1","id":"u1","status":"stopped"}]}`, "sb1", false},
-		{"no matching ref", `{"sandboxes":[{"name":"other","id":"u2","status":"running"}]}`, "sb1", false},
+		{"keyed by name and id", `{"sandboxes":[{"name":"sb1","id":"u1","status":"running"}]}`,
+			map[string]string{"sb1": "running", "u1": "running"}},
+		{"status lower-cased", `{"sandboxes":[{"name":"sb1","id":"u1","status":"Stopped"}]}`,
+			map[string]string{"sb1": "stopped", "u1": "stopped"}},
+		{"empty id is not a key", `{"sandboxes":[{"name":"sb1","status":"running"}]}`,
+			map[string]string{"sb1": "running"}},
 		// The real shape (sbx 0.47, 2026-10-12) carries extra fields the parser ignores.
-		{"real listing", `{"sandboxes":[{"name":"probe-c","id":"d9739da9-2db2-48e7-b6ab-dacdbd0efb67","agent":"claude","status":"running","last_used_at":"2026-10-12T02:14:35.3107Z","workspaces":["/Users/x/probe-kit"],"created_at":"2026-10-12T02:08:34Z"},{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspaces":["/Users/x/test"],"workspace_missing":true}]}`, "probe-c", true},
-		{"real listing stopped", `{"sandboxes":[{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspace_missing":true}]}`, "shell-test", false},
-		{"unparseable output", `not json at all`, "sb1", false},
-		{"empty list", `{"sandboxes":[]}`, "sb1", false},
+		{"real listing", `{"sandboxes":[{"name":"probe-c","id":"d9739da9-2db2-48e7-b6ab-dacdbd0efb67","agent":"claude","status":"running","last_used_at":"2026-10-12T02:14:35.3107Z","workspaces":["/Users/x/probe-kit"],"created_at":"2026-10-12T02:08:34Z"},{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspaces":["/Users/x/test"],"workspace_missing":true}]}`,
+			map[string]string{"probe-c": "running", "d9739da9-2db2-48e7-b6ab-dacdbd0efb67": "running", "shell-test": "stopped", "eb65a68a": "stopped"}},
+		{"empty list is a real answer", `{"sandboxes":[]}`, map[string]string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &SbxRunner{Bin: sbxWithLs(t, tc.payload)}
-			got, err := r.IsRunning(ctx, tc.ref)
+			got, err := r.ListStatuses(ctx)
 			if err != nil {
-				t.Fatalf("IsRunning err = %v", err)
+				t.Fatalf("ListStatuses err = %v", err)
 			}
-			if got != tc.want {
-				t.Errorf("IsRunning(%q) = %v, want %v", tc.ref, got, tc.want)
+			if !maps.Equal(got, tc.want) {
+				t.Errorf("ListStatuses = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestListStatusesUnreadable pins SWI-13: output that is not a listing is an
+// error, so reconciliation keeps the last-known state instead of reading it as
+// "nothing is running".
+func TestListStatusesUnreadable(t *testing.T) {
+	for name, payload := range map[string]string{
+		"not json":         `not json at all`,
+		"no sandboxes key": `{"other":[]}`,
+		"empty output":     ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &SbxRunner{Bin: sbxWithLs(t, payload)}
+			if got, err := r.ListStatuses(context.Background()); err == nil {
+				t.Errorf("ListStatuses = %v, nil; want an error", got)
+			}
+		})
+	}
+	// A non-zero exit is an error too.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env bash\necho 'docker daemon not running' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (&SbxRunner{Bin: bin}).ListStatuses(context.Background()); err == nil {
+		t.Errorf("ListStatuses on failing sbx = %v, nil; want an error", got)
 	}
 }
 

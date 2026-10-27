@@ -47,8 +47,11 @@ type Runner interface {
 	// ValidateKit checks a materialized kit directory (`sbx kit validate`),
 	// returning sbx's diagnostics verbatim when it rejects the kit.
 	ValidateKit(ctx context.Context, kitDir string) (string, error)
-	// IsRunning reports whether containerRef is a live container (re-adoption).
-	IsRunning(ctx context.Context, containerRef string) (bool, error)
+	// ListStatuses reads the runtime's sandbox listing once and returns each
+	// sandbox's lower-cased status keyed by both its name and its id
+	// (reconciliation). An error means the runtime could not be read, which is
+	// never the same answer as "not running" (SWI-13).
+	ListStatuses(ctx context.Context) (map[string]string, error)
 	// CloneRepo uses the sandbox tooling's clone option to seed dest from a repo.
 	CloneRepo(ctx context.Context, repo, dest string, log func(string)) error
 	// PublishPort exposes sandboxPort inside containerRef as hostPort on the daemon
@@ -223,37 +226,49 @@ func (r *SbxRunner) Destroy(ctx context.Context, ref string) error {
 	return err
 }
 
-// IsRunning reports whether ref (a sandbox name or id) is a live container.
+// ListStatuses runs `sbx ls --json` once and returns every listed sandbox's
+// lower-cased status keyed by both its name and its id.
 //
-// It queries `sbx ls --json` and matches the ref against each sandbox's name or
-// id. sbx has no `status` subcommand (verified against sbx v0.33.0: `sbx status
-// <ref>` exits non-zero with usage text), so re-adoption must read the list.
+// sbx has no `status` subcommand (verified against sbx v0.33.0: `sbx status
+// <ref>` exits non-zero with usage text), so reconciliation must read the list.
 //
 // Shape confirmed on a real host (sbx 0.47, 2026-10-12): `{"sandboxes":[{"name",
 // "id","agent","status":"running"|"stopped","last_used_at","workspaces":[…],
 // "created_at", optional "workspace_missing":true}]}` — the three fields read
 // here are present verbatim; the rest are ignored.
-func (r *SbxRunner) IsRunning(ctx context.Context, ref string) (bool, error) {
+//
+// A failed or unparseable listing is returned as an error, never as an empty
+// listing: callers must keep the last-known state rather than read "couldn't
+// tell" as "stopped" (SWI-13). A sandbox absent from a successful listing is a
+// real answer — it is not running.
+func (r *SbxRunner) ListStatuses(ctx context.Context) (map[string]string, error) {
 	out, err := r.run(ctx, nil, "ls", "--json")
 	if err != nil {
-		return false, nil // treat an errored/unknown runtime as not running
+		return nil, err
 	}
 	var listing struct {
-		Sandboxes []struct {
+		Sandboxes *[]struct {
 			Name   string `json:"name"`
 			ID     string `json:"id"`
 			Status string `json:"status"`
 		} `json:"sandboxes"`
 	}
 	if err := json.Unmarshal([]byte(out), &listing); err != nil {
-		return false, nil // unparseable listing => treat as not running
+		return nil, fmt.Errorf("parse %s ls --json: %w", r.Bin, err)
 	}
-	for _, s := range listing.Sandboxes {
-		if s.Name == ref || s.ID == ref {
-			return strings.EqualFold(s.Status, "running"), nil
+	if listing.Sandboxes == nil {
+		return nil, fmt.Errorf("parse %s ls --json: no \"sandboxes\" list", r.Bin)
+	}
+	statuses := map[string]string{}
+	for _, s := range *listing.Sandboxes {
+		status := strings.ToLower(strings.TrimSpace(s.Status))
+		for _, key := range []string{s.Name, s.ID} {
+			if key != "" {
+				statuses[key] = status
+			}
 		}
 	}
-	return false, nil
+	return statuses, nil
 }
 
 func (r *SbxRunner) CloneRepo(ctx context.Context, repo, dest string, log func(string)) error {

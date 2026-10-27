@@ -1037,38 +1037,90 @@ func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, 
 
 // Readopt reconciles the registry with live containers on daemon startup
 // (FR-002a, SC-012): still-running containers are marked running; the rest are
-// marked stopped. Records are never deleted here.
+// marked stopped. Records are never deleted here. Nothing is in flight at
+// startup, so a record a dead daemon left mid-transition (CREATING,
+// DESTROYING, ERROR) is settled too. When the runtime cannot be read, nothing
+// changes and the error is returned (SWI-13).
 func (m *Manager) Readopt(ctx context.Context) error {
+	_, err := m.reconcile(ctx, true)
+	return err
+}
+
+// Reconcile re-reads the runtime once and moves RUNNING/STOPPED records that
+// disagree with it (SWI-13), returning the records it changed (each already
+// emitted). A record mid-operation — a transitional state, a held operation
+// latch, or one written again while the runtime was being read — is left to
+// the operation that owns it. When the runtime cannot be read, nothing changes
+// and the error is returned: "couldn't tell" never means "stopped".
+func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
+	return m.reconcile(ctx, false)
+}
+
+// errReconcileSkip aborts a reconcile write whose record moved under it.
+var errReconcileSkip = errors.New("record changed during reconcile")
+
+func (m *Manager) reconcile(ctx context.Context, startup bool) ([]*pb.Sandbox, error) {
+	// The records are read BEFORE the runtime: a write that lands in between
+	// (a Stop or Restart finishing) changes UpdatedAt, and the write below then
+	// skips the record rather than overwrite a newer answer with an older one.
 	all, err := m.store.List()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	statuses, err := m.runner.ListStatuses(ctx)
+	if err != nil {
+		log.Printf("[warn] reconcile: runtime unreadable, keeping last-known state: %v", err)
+		return nil, fmt.Errorf("reconcile: runtime unreadable: %w", err)
+	}
+	var changed []*pb.Sandbox
 	for _, sb := range all {
-		running := false
-		if sb.GetContainerRef() != "" {
-			for _, r := range sbxRefs(sb) {
-				if ok, _ := m.runner.IsRunning(ctx, r); ok {
-					running = true
-					break
-				}
+		state := sb.GetState()
+		settled := state == pb.SandboxState_SANDBOX_STATE_RUNNING || state == pb.SandboxState_SANDBOX_STATE_STOPPED
+		if !startup {
+			if !settled {
+				continue
+			}
+			if _, busy := m.ops.holder(sb.GetId()); busy {
+				continue
 			}
 		}
 		want := pb.SandboxState_SANDBOX_STATE_STOPPED
-		if running {
+		if sb.GetContainerRef() != "" && listedRunning(statuses, sbxRefs(sb)) {
 			want = pb.SandboxState_SANDBOX_STATE_RUNNING
 		}
-		if sb.GetState() == want {
+		if state == want {
 			continue
 		}
-		if _, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+		seen := sb.GetUpdatedAt()
+		out, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+			if s.GetState() != state || !proto.Equal(s.GetUpdatedAt(), seen) {
+				return errReconcileSkip
+			}
 			leaveRunning(s, want)
 			s.UpdatedAt = timestamppb.Now()
 			return nil
-		}); err != nil {
-			return err
+		})
+		switch {
+		case errors.Is(err, errReconcileSkip):
+			continue
+		case err != nil:
+			return changed, err
+		}
+		log.Printf("[info] reconcile: sandbox %s %s -> %s", sb.GetId(), state, want)
+		m.emit(out)
+		changed = append(changed, out)
+	}
+	return changed, nil
+}
+
+// listedRunning reports whether any of a sandbox's handles is listed running.
+func listedRunning(statuses map[string]string, refs []string) bool {
+	for _, r := range refs {
+		if statuses[r] == "running" {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 // RefreshHooks rewrites the agent hook settings of every sandbox that still has

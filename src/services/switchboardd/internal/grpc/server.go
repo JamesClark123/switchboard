@@ -62,6 +62,9 @@ type Server struct {
 	worker       *worker.Service
 	orchestrator *orchestrator.Service
 
+	// reconcile throttles the registry-vs-runtime check ListSandboxes runs (SWI-13).
+	reconcile reconcileGate
+
 	grpc *grpc.Server
 }
 
@@ -246,7 +249,8 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 
 // ListSandboxes returns every sandbox known to this daemon (FR-017), each
 // enriched with its live terminal-attachment count (feature 003, FR-008).
-func (s *Server) ListSandboxes(_ context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+func (s *Server) ListSandboxes(ctx context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+	s.reconcileSandboxes(ctx)
 	all, err := s.mgr.List()
 	if err != nil {
 		return nil, err

@@ -146,8 +146,12 @@ func runServe(cfg *config.Config, debug bool) error {
 	defer stop()
 
 	// Re-adopt still-running sandboxes after a daemon restart (FR-002a, SC-012).
+	// A daemon started at login can come up before the sbx runtime does; an
+	// unreadable runtime changes nothing (SWI-13), so try again a few times in
+	// the background instead of leaving every state as last recorded.
 	if err := mgr.Readopt(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: re-adoption error:", err)
+		go retryReconcile(ctx, mgr, readoptRetries)
 	}
 	// Collect any `.switchboard/staging` debris an add interrupted by a daemon
 	// crash left behind (feature 007, research R2). Best-effort, never fatal.
@@ -589,4 +593,25 @@ func dialStdio(socket string) error {
 	go func() { _, e := io.Copy(conn, os.Stdin); errc <- e }()
 	go func() { _, e := io.Copy(os.Stdout, conn); errc <- e }()
 	return <-errc
+}
+
+// readoptRetries are the delays (from daemon start) of the background
+// reconciles after a startup re-adoption could not read the runtime (SWI-13).
+// A few, not a poll loop: every ListSandboxes reconciles as well.
+var readoptRetries = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+
+// retryReconcile reconciles at each delay until one reads the runtime, the
+// daemon stops, or the delays run out.
+func retryReconcile(ctx context.Context, mgr *sandbox.Manager, delays []time.Duration) {
+	start := time.Now()
+	for _, d := range delays {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Until(start.Add(d))):
+		}
+		if _, err := mgr.Reconcile(ctx); err == nil {
+			return
+		}
+	}
 }
