@@ -221,7 +221,8 @@ func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model
 		op.status = "worker sandbox " + m.workerName(run) + " is not on a connected daemon"
 		return m, nil
 	}
-	if _, err := m.connectedDaemon(host); err != nil {
+	d, err := m.connectedDaemon(host)
+	if err != nil {
 		op.status = "worker sandbox " + m.workerName(run) + ": " + err.Error()
 		return m, nil
 	}
@@ -232,7 +233,7 @@ func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model
 	if external {
 		return m.openExternalTerminal(sb, host)
 	}
-	return m.enterTerminalFrom(sb, host, surfaceScreen(s))
+	return m.enterTerminalFrom(sb, host, d, surfaceScreen(s))
 }
 
 // runPromptCmd fetches a run (its composed prompt) for the read-only overlay.

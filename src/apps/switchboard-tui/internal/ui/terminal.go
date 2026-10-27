@@ -72,18 +72,18 @@ type termClosedMsg struct {
 // blocks; the session shows prior output immediately via the daemon snapshot
 // (FR-003).
 func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
-	return m.enterTerminalFrom(sb, host, screenList)
-}
-
-// enterTerminalFrom is enterTerminal for a terminal opened from another screen:
-// detaching, or the session closing, returns to returnTo (SWI-14).
-func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, returnTo screen) (tea.Model, tea.Cmd) {
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		m.status = "start the sandbox before opening its terminal"
 		return m, nil
 	}
+	return m.enterTerminalFrom(sb, host, m.daemonForHost(host), screenList)
+}
+
+// enterTerminalFrom attaches to a running sandbox's session on daemon d, which
+// the caller resolved: detaching, or the session closing, returns to returnTo
+// (SWI-14).
+func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo screen) (tea.Model, tea.Cmd) {
 	cols, rows := m.bodyWidth(), m.termRows()
-	d := m.daemonForHost(host)
 	id, name := sb.GetId(), sb.GetDisplayName()
 	m.status = "opening terminal…"
 	return m, func() tea.Msg {
@@ -105,6 +105,15 @@ func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, returnTo screen) (
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
+	if m.screen != msg.returnTo {
+		// The developer left the screen the terminal was opened from while it
+		// attached: detach rather than pull them into it.
+		_ = msg.session.Close()
+		msg.cancel()
+		close(msg.done)
+		m.status = "detached from " + msg.name
+		return m, nil
+	}
 	m.term = termState{
 		screen: msg.screen, session: msg.session, cancel: msg.cancel,
 		updates: msg.updates, done: msg.done,
@@ -116,24 +125,41 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 	return m, m.waitTermUpdateCmd()
 }
 
+// handleTermClosed reports a session that closed, or an attach that failed. It
+// changes screen only when the terminal is showing: a failed attach leaves the
+// developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
-	m.closeTerm()
-	m.screen = msg.returnTo
+	var cmd tea.Cmd
+	if m.screen == screenTerminal {
+		m.closeTerm()
+		m, cmd = m.leaveTerminal(msg.returnTo)
+	}
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		if errors.Is(msg.err, client.ErrExternalAlreadyOpen) {
 			m.status = "an external terminal is already attached to " + msg.name
 		} else {
 			m.status = "terminal: " + msg.err.Error()
 		}
-		return m, nil
+		return m, cmd
 	}
 	m.status = "detached from " + msg.name
 	if m.screen != screenList {
-		// Jobs follows its own stream; only the list reloads (SWI-14).
-		return m, nil
+		return m, cmd
 	}
 	m.listLoading = true
 	return m, m.reloadCmd()
+}
+
+// leaveTerminal shows the screen a closed terminal returns to. Jobs is entered
+// as from the screen cycle, so reloads skipped while the terminal hid it run
+// now (SWI-14).
+func (m Model) leaveTerminal(back screen) (Model, tea.Cmd) {
+	if back == screenJobs {
+		mm, cmd := m.enterJobs(screenTerminal)
+		return mm.(Model), cmd
+	}
+	m.screen = back
+	return m, nil
 }
 
 // waitTermUpdateCmd blocks until the sink signals new output (or the view is
@@ -194,9 +220,9 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlQ {
 		name, back := m.term.name, m.term.returnTo
 		m.closeTerm()
-		m.screen = back
+		m, cmd := m.leaveTerminal(back)
 		m.status = "detached from " + name
-		return m, nil
+		return m, cmd
 	}
 	if m.term.session == nil {
 		return m, nil

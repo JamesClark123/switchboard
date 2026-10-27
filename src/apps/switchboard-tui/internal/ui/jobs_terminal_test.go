@@ -130,7 +130,7 @@ func TestJobsTerminalFromQueue(t *testing.T) {
 		t.Fatal("no run-rev row on the queue")
 	}
 	m, _ = update(m, press("T"))
-	if _, ok := m.extTerm["w-rev"]; !ok || m.screen != screenJobs {
+	if _, ok := m.extTerm[m.extTermKey(m.activeHost, "w-rev")]; !ok || m.screen != screenJobs {
 		t.Fatalf("T should open w-rev externally, status %q / %q", m.status, m.jobs.status)
 	}
 	d.attachErr = errors.New("boom")
@@ -170,7 +170,64 @@ func TestRunSandboxResolution(t *testing.T) {
 	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-solo"}); !ok || host != m.activeHost {
 		t.Errorf("fallback resolves to %q %v", host, ok)
 	}
+	// A host that is known but not connected, or a connected host that is not
+	// the active one, never falls back to another host's sandbox.
+	m.sandboxes = append(m.sandboxes, runningWorker("w-run"))
+	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostc"}); ok {
+		t.Error("a worker on a disconnected daemon is refused")
+	}
+	other := "hosta"
+	if m.activeHost == "hosta" {
+		other = "hostb"
+	}
+	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: other}); ok {
+		t.Errorf("%s's worker must not resolve to the active host's list", other)
+	}
 	if got := m.lookupWorkerName(&pb.Run{SandboxId: "w-solo"}); got != "w-solo" {
 		t.Errorf("an unnamed worker shows its id, got %q", got)
+	}
+}
+
+// SWI-14: orchestrator reloads skipped while the terminal hid Jobs run when
+// ctrl+q returns to it.
+func TestJobsTerminalDetachReloadsStale(t *testing.T) {
+	m, d := terminalJobs(t)
+	m = overviewAt(t, m, "run-run")
+	m, cmd := update(m, press("t"))
+	m, _ = update(m, runCmd(cmd))
+	runs := terminalRuns()
+	runs.InFlight = runs.InFlight[1:]
+	runs.History = append(runs.History, &pb.Run{Id: "run-run", State: pb.RunState_RUN_STATE_COMPLETED, EndedAt: at(0)})
+	d.mu.Lock()
+	d.orchRuns = runs
+	d.mu.Unlock()
+	tg := m.jobs.orchs[0].target
+	if c := m.jobsReloadOrch(tg.host, tg.id); c != nil {
+		t.Fatal("a reload while the terminal shows is deferred")
+	}
+	m, cmd = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+	m = feed(m, cmd)
+	for _, it := range m.overviewItems() {
+		if it.run != nil && it.run.run.GetId() == "run-run" && !runFinished(it.run.run) {
+			t.Error("the deferred reload ran on return: run-run is finished")
+		}
+	}
+}
+
+// SWI-14: an attach that completes or fails after the developer left the
+// screen it was started from neither pulls them into the terminal nor back.
+func TestJobsTerminalAttachAfterLeaving(t *testing.T) {
+	m, d := terminalJobs(t)
+	m = overviewAt(t, m, "run-run")
+	_, cmd := update(m, press("t"))
+	opened := runCmd(cmd)
+	m.screen = screenDaemons
+	m, _ = update(m, opened)
+	if m.screen != screenDaemons || m.term.session != nil || !d.termClosed {
+		t.Errorf("a late attach detaches: screen %v", m.screen)
+	}
+	m, _ = update(m, termClosedMsg{err: errors.New("late"), name: "x", returnTo: screenJobs})
+	if m.screen != screenDaemons || !strings.Contains(m.status, "terminal: late") {
+		t.Errorf("a late failure only reports: screen %v status %q", m.screen, m.status)
 	}
 }

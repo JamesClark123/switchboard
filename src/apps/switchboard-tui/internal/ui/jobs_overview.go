@@ -306,22 +306,41 @@ func (m Model) workerName(r *pb.Run) string {
 }
 
 func (m Model) lookupWorkerName(r *pb.Run) string {
-	if sb, _, ok := m.runSandbox(r); ok && sb.GetDisplayName() != "" {
-		return sb.GetDisplayName()
+	entry, _ := m.entryForDaemonHost(r.GetSandboxHostId())
+	for _, hs := range m.hostAgg {
+		if entry != "" && hs.Host.Entry.ID != entry {
+			continue
+		}
+		for _, sb := range hs.Sandboxes {
+			if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
+				return sb.GetDisplayName()
+			}
+		}
+	}
+	for _, sb := range m.sandboxes {
+		if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
+			return sb.GetDisplayName()
+		}
 	}
 	return short(r.GetSandboxId())
 }
 
 // runSandbox finds the record of a run's worker sandbox and the TUI host entry
-// it is on: among the sandboxes of the host whose daemon advertises the run's
-// sandbox_host_id (every host when none does), then the active host's list.
+// it is on, to open its terminal (SWI-14). Unlike lookupWorkerName, which only
+// names the worker, it never guesses across hosts: the run's sandbox_host_id
+// must belong to a connected daemon, and only that host's sandboxes match (the
+// active host's list too when it is that host). A run without a
+// sandbox_host_id matches on any host.
 func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
 	if r.GetSandboxId() == "" {
 		return nil, "", false
 	}
-	entry, _ := m.entryForDaemonHost(r.GetSandboxHostId())
+	entry, ok := m.entryForDaemonHost(r.GetSandboxHostId())
+	if r.GetSandboxHostId() != "" && !ok {
+		return nil, "", false
+	}
 	for _, hs := range m.hostAgg {
-		if entry != "" && hs.Host.Entry.ID != entry {
+		if ok && hs.Host.Entry.ID != entry {
 			continue
 		}
 		for _, sb := range hs.Sandboxes {
@@ -329,6 +348,9 @@ func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
 				return sb, hs.Host.Entry.ID, true
 			}
 		}
+	}
+	if ok && entry != m.activeHost {
+		return nil, "", false
 	}
 	for _, sb := range m.sandboxes {
 		if sb.GetId() == r.GetSandboxId() {
