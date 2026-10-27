@@ -202,19 +202,6 @@ func stubSSH(t *testing.T, remoteSock, daemonBin string) string {
 	return dir
 }
 
-// withPath prefixes dirs onto the PATH of an environment.
-func withPath(env []string, dirs ...string) []string {
-	path := strings.Join(dirs, string(os.PathListSeparator)) + string(os.PathListSeparator) + os.Getenv("PATH")
-	out := make([]string, 0, len(env)+1)
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return append(out, "PATH="+path)
-}
-
 // spawnTUIWithHosts is spawnTUIWithConfig with hosts.toml pre-seeded with the
 // "remote" host (an ssh entry whose target the stub ssh ignores) and the stub
 // ssh on the TUI's PATH, so the daemon screen can connect it.
@@ -326,6 +313,22 @@ func (p *ptyProcess) mark() int { return len(p.buf.String()) }
 func (p *ptyProcess) expectNew(t *testing.T, from int, sub string, timeout time.Duration) {
 	t.Helper()
 	p.expectFrom(t, from, sub, timeout)
+}
+
+// expectRow waits for a line matching re (styling stripped) in output produced
+// after mark: a row's columns, which a plain substring cannot match across the
+// colour escapes between them.
+func (p *ptyProcess) expectRow(t *testing.T, from int, re string, timeout time.Duration) {
+	t.Helper()
+	rx := regexp.MustCompile(re)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s := p.buf.String(); from <= len(s) && rx.MatchString(ansiRe.ReplaceAllString(s[from:], "")) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected a row matching %q within %s.\n--- output ---\n%s", re, timeout, p.tail(3000))
 }
 
 func (p *ptyProcess) expectFrom(t *testing.T, from int, sub string, timeout time.Duration) {

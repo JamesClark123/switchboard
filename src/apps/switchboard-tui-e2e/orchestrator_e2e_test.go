@@ -324,8 +324,7 @@ func TestTUIActionRunE2E(t *testing.T) {
 	// The Overview shows it running; the stub agent received the framed prompt.
 	m = p.mark()
 	p.send("\x1b[D") // ← Overview
-	p.expectNew(t, m, "In progress", 20*time.Second)
-	p.expectNew(t, m, "running", 20*time.Second)
+	p.expectRow(t, m, `review-pr +running +review-bot @`, 20*time.Second)
 	// The stub agent copies its stdin to agent-<container ref>.in.
 	deadline := time.Now().Add(20 * time.Second)
 	var typed string
@@ -363,7 +362,7 @@ func TestTUIActionRunE2E(t *testing.T) {
 	p.expectNew(t, m, "at position 1", 15*time.Second)
 	m = p.mark()
 	p.send("\x1b[D") // ← Overview: the queued row
-	p.expectNew(t, m, "#1", 10*time.Second)
+	p.expectRow(t, m, `#1 +review-pr +user +review-bot @`, 10*time.Second)
 	p.send("q")
 }
 
@@ -599,7 +598,7 @@ func mcpPost(t *testing.T, url, tool, args string) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
 }

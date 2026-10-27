@@ -98,7 +98,7 @@ func (m Model) confirmDeleteAction(s orchSurface, t orchTarget, a *pb.Action) (t
 	id, name := t.id, a.GetName()
 	return m.enterConfirm(confirmState{
 		title:    "Delete action " + name + "?",
-		body:     []string{"On " + t.label() + ".", "Timed events calling it are disabled; queued runs keep their composed prompt."},
+		body:     []string{"On " + sanitizeLine(t.label(), 0) + ".", "Timed events calling it are disabled; queued runs keep their composed prompt."},
 		returnTo: surfaceScreen(s),
 		onConfirm: func() tea.Msg {
 			ctx, cancel := ctxTimeout()
@@ -199,7 +199,7 @@ func (m Model) confirmDeleteEvent(s orchSurface, t orchTarget, ev *pb.TimedEvent
 	id, evID, name := t.id, ev.GetId(), ev.GetName()
 	return m.enterConfirm(confirmState{
 		title:    "Delete event " + name + "?",
-		body:     []string{"On " + t.label() + ".", "It stops firing; runs it already queued are untouched."},
+		body:     []string{"On " + sanitizeLine(t.label(), 0) + ".", "It stops firing; runs it already queued are untouched."},
 		returnTo: surfaceScreen(s),
 		onConfirm: func() tea.Msg {
 			ctx, cancel := ctxTimeout()
@@ -267,7 +267,7 @@ func (m Model) enqueueNowKey(s orchSurface, t orchTarget, ev *pb.TimedEvent, run
 	if open := openRunOfEvent(runs, ev.GetId()); ev.GetDedupeDisabled() && open != nil {
 		return m.enterConfirm(confirmState{
 			title:     "Enqueue " + fire.name + " now?",
-			body:      []string{"On " + t.label() + ".", "Dedupe is off and run " + open.GetId() + " of this event is still open,", "so this queues another one alongside it."},
+			body:      []string{"On " + sanitizeLine(t.label(), 0) + ".", "Dedupe is off and run " + open.GetId() + " of this event is still open,", "so this queues another one alongside it."},
 			warning:   "Another run will be queued; the schedule is not changed.",
 			returnTo:  surfaceScreen(s),
 			onConfirm: func() tea.Msg { return fire },

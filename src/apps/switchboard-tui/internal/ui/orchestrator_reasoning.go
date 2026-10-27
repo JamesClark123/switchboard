@@ -97,7 +97,7 @@ func (m Model) updateReasoningViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		req := reasoningRebuildMsg{id: d.id, host: d.host, name: d.name}
 		body := []string{"The current reasoning sandbox is destroyed and a new one is created from the saved setup:"}
 		for _, l := range reasoningSetupLines(d.detail.GetSummary().GetOrchestrator().GetReasoningSetup()) {
-			body = append(body, "  "+l)
+			body = append(body, "  "+sanitizeLine(l, 0))
 		}
 		body = append(body, "Its conversation and workspace are lost.")
 		return m.enterConfirm(confirmState{

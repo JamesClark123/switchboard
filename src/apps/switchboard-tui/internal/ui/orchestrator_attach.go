@@ -144,7 +144,7 @@ func (m Model) attachTo(row orchRow, sb *pb.Sandbox, host string) (tea.Model, te
 	id, name := o.GetId(), o.GetName()
 	return m.enterConfirm(confirmState{
 		title:     fmt.Sprintf("Add host %s to %s?", known.DisplayName, name),
-		body:      []string{fmt.Sprintf("%s has no entry for %s.", name, known.DisplayName), "The orchestrator's machine will dial it over SSH (" + known.SSHTarget + ")", "with keys or an agent, then attach the sandbox."},
+		body:      []string{sanitizeLine(fmt.Sprintf("%s has no entry for %s.", name, known.DisplayName), 0), "The orchestrator's machine will dial it over SSH (" + sanitizeLine(known.SSHTarget, 0) + ")", "with keys or an agent, then attach the sandbox."},
 		warning:   "The orchestrator's machine must be able to ssh there non-interactively.",
 		sandboxID: sb.GetId(),
 		verb:      "attaching",
@@ -201,7 +201,7 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 			return statusMsg(fmt.Sprintf("detached %s from %s", sb.GetDisplayName(), c.GetName()))
 		}
 	} else {
-		body = append(body, fmt.Sprintf("%s's machine is not connected: the sandbox's own daemon clears it;", c.GetName()), "the orchestrator notices when it next reaches this machine.")
+		body = append(body, sanitizeLine(fmt.Sprintf("%s's machine is not connected: the sandbox's own daemon clears it;", c.GetName()), 0), "the orchestrator notices when it next reaches this machine.")
 		sd := m.daemonForHost(host)
 		cmd = func() tea.Msg {
 			ctx, cancel := ctxTimeout()

@@ -221,7 +221,7 @@ func (m Model) confirmCancelRun(s orchSurface, t orchTarget, runID string) (tea.
 	id := t.id
 	return m.enterConfirm(confirmState{
 		title:    "Cancel run " + runID + "?",
-		body:     []string{"It leaves the queue of " + t.label() + "; nothing was delivered."},
+		body:     []string{"It leaves the queue of " + sanitizeLine(t.label(), 0) + "; nothing was delivered."},
 		warning:  "The call is not retried.",
 		returnTo: surfaceScreen(s),
 		onConfirm: func() tea.Msg {
