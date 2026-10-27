@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -240,4 +241,44 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 		t.Errorf("without an applier: %v / %+v", err, sb3.GetController())
 	}
 	_ = filepath.Join
+}
+
+// SWI-12: a WORKING or WAITING agent does not survive leaving RUNNING (its
+// session is gone), so a worker stopped mid-wait and restarted is IDLE — free —
+// rather than busy forever with no agent left to report otherwise.
+func TestStopResetsABusyAgent(t *testing.T) {
+	for _, st := range []pb.AgentStatus{pb.AgentStatus_AGENT_STATUS_WAITING, pb.AgentStatus_AGENT_STATUS_WORKING} {
+		t.Run(st.String(), func(t *testing.T) {
+			m, _, _, dir := newTestManager(t)
+			sb, err := m.Launch(context.Background(), LaunchRequest{
+				Config: &pb.ConfigSnapshot{Name: "w"}, Sources: []*pb.SourceRef{makeSource(t, dir, "proj")},
+			}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.SetAgentStatus(sb.GetId(), st, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			stopped, err := m.Stop(context.Background(), sb.GetId())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := stopped.GetAgent().GetStatus(); got != pb.AgentStatus_AGENT_STATUS_IDLE {
+				t.Errorf("agent after stop = %v, want IDLE", got)
+			}
+			restarted, err := m.Restart(context.Background(), sb.GetId(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restarted.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || restarted.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+				t.Errorf("after restart: %v / %v, want RUNNING / IDLE", restarted.GetState(), restarted.GetAgent().GetStatus())
+			}
+		})
+	}
+	// NEEDS_INPUT is a request for the developer and is left to them.
+	s := &pb.Sandbox{Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT}}
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+		t.Errorf("NEEDS_INPUT after leaving RUNNING = %v, want kept", s.GetAgent().GetStatus())
+	}
 }

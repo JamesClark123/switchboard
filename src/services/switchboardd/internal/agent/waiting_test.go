@@ -140,6 +140,29 @@ func TestBackstopEndsAStuckWait(t *testing.T) {
 	if k := w.kinds(); len(k) != 1 || k[0] != pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE {
 		t.Fatalf("backstop should notify task complete, got %v", k)
 	}
+	// It says the wait was given up, not that the work finished.
+	if msg := w.hub.Undelivered()[0].GetMessage(); !strings.Contains(msg, "stopped waiting on background work after 30m") || strings.Contains(msg, "task complete") {
+		t.Errorf("backstop message = %q", msg)
+	}
+}
+
+// A background subagent's own tool calls fire PreToolUse (and PostToolUse)
+// with the sandbox's id while the main turn waits on it: the wait and its
+// backstop go on. Outside a wait they still mean WORKING.
+func TestToolHooksDoNotEndAWait(t *testing.T) {
+	w := newWaitingServer(nil)
+	w.dispatch(hookPayload{Event: "Stop", SandboxID: "sb1", PendingBackground: 1})
+	for _, ev := range []string{"PreToolUse", "PostToolUse"} {
+		w.dispatch(hookPayload{Event: ev, SandboxID: "sb1"})
+		if w.st.current != pb.AgentStatus_AGENT_STATUS_WAITING || w.timers[0].stopped {
+			t.Fatalf("%s while waiting: status %v, backstop stopped %v; want WAITING, armed", ev, w.st.current, w.timers[0].stopped)
+		}
+	}
+	w.dispatch(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb1"}) // the wake-up
+	w.dispatch(hookPayload{Event: "PreToolUse", SandboxID: "sb1"})
+	if w.st.current != pb.AgentStatus_AGENT_STATUS_WORKING || !w.timers[0].stopped {
+		t.Fatalf("after the wake-up: status %v, backstop stopped %v; want WORKING, disarmed", w.st.current, w.timers[0].stopped)
+	}
 }
 
 // A fired backstop does nothing once the agent moved on, or once a newer wait
@@ -165,10 +188,11 @@ func TestBackstopIgnoredWhenStale(t *testing.T) {
 	}
 }
 
-// Every way out of WAITING other than the idle nudge cancels the backstop.
+// Every way out of WAITING cancels the backstop. (The idle nudge and tool
+// hooks are not ways out: TestStopWithBackgroundWorkWaits, TestToolHooksDoNotEndAWait.)
 func TestBackstopDisarmedWhenTheAgentMovesOn(t *testing.T) {
 	for _, p := range []hookPayload{
-		{Event: "PreToolUse"},
+		{Event: "UserPromptSubmit"},
 		{Event: "Stop"},
 		{Event: "Notification", NotificationType: "permission_prompt"},
 	} {
@@ -267,14 +291,21 @@ func TestRearmWaitingOnStart(t *testing.T) {
 	at := func(ago time.Duration) *pb.AgentSession {
 		return &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_WAITING, LastEventAt: timestamppb.New(now.Add(-ago))}
 	}
+	running := pb.SandboxState_SANDBOX_STATE_RUNNING
 	w.RearmWaiting([]*pb.Sandbox{
-		{Id: "recent", Agent: at(10 * time.Minute)},
-		{Id: "overdue", Agent: at(2 * backgroundWaitMax)},
-		{Id: "no-time", Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_WAITING}},
-		{Id: "idle", Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE}},
+		{Id: "recent", State: running, Agent: at(10 * time.Minute)},
+		{Id: "overdue", State: running, Agent: at(2 * backgroundWaitMax)},
+		{Id: "no-time", State: running, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_WAITING}},
+		{Id: "idle", State: running, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE}},
+		// Stopped while waiting by a daemon that did not yet reset the status:
+		// no agent is left to wait, so it is set IDLE rather than armed.
+		{Id: "stopped", State: pb.SandboxState_SANDBOX_STATE_STOPPED, Agent: at(time.Minute)},
 	})
 	if len(w.timers) != 3 {
 		t.Fatalf("armed %d backstops, want 3", len(w.timers))
+	}
+	if w.st.current != pb.AgentStatus_AGENT_STATUS_IDLE || w.st.lastID != "stopped" {
+		t.Fatalf("stopped waiting sandbox: status %v on %q, want IDLE on stopped", w.st.current, w.st.lastID)
 	}
 	for i, want := range []time.Duration{backgroundWaitMax - 10*time.Minute, 0, backgroundWaitMax} {
 		if w.timers[i].d != want {

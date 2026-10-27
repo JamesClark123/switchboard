@@ -285,12 +285,26 @@ func (s *HookServer) dispatch(p hookPayload) {
 		s.hub.EmitNotification(p.SandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "agent task complete", now)
 	case "Notification":
 		s.notification(p, now)
+	case "PreToolUse", "PostToolUse":
+		if st, ok := s.agentStatus(p.SandboxID); ok && st == pb.AgentStatus_AGENT_STATUS_WAITING {
+			// A background subagent's own tool calls fire these too, with the
+			// same sandbox id, while the main turn waits on it: the wait (and
+			// its backstop) goes on. The main agent's wake-up is a
+			// UserPromptSubmit (the <task-notification>).
+			return
+		}
+		s.working(p.SandboxID, now)
 	default:
-		// UserPromptSubmit / PreToolUse / PostToolUse etc. => the agent is working
-		// (a WAITING agent woken by its finished background work lands here too).
-		s.disarmBackstop(p.SandboxID)
-		_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_WORKING, now)
+		// UserPromptSubmit etc. => the agent is working (a WAITING agent woken
+		// by its finished background work lands here too).
+		s.working(p.SandboxID, now)
 	}
+}
+
+// working records the agent busy on a turn, ending any background wait.
+func (s *HookServer) working(sandboxID string, now time.Time) {
+	s.disarmBackstop(sandboxID)
+	_, _ = s.status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_WORKING, now)
 }
 
 // armBackstop (re)starts the WAITING backstop for a sandbox.
@@ -312,11 +326,17 @@ func (s *HookServer) armBackstopFor(sandboxID string, d time.Duration) {
 // RearmWaiting restores the backstop of every sandbox recorded WAITING when
 // the daemon starts: the timers live in memory, and without this an agent
 // whose wake-up was missed while the daemon was down would wait forever. Each
-// gets what is left of backgroundWaitMax since its last hook event.
+// gets what is left of backgroundWaitMax since its last hook event. A sandbox
+// that is not running has no agent left to wait: it is set IDLE instead (a
+// record a daemon stopped before a stop reset the status).
 func (s *HookServer) RearmWaiting(sandboxes []*pb.Sandbox) {
 	now := s.now()
 	for _, sb := range sandboxes {
 		if sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_WAITING {
+			continue
+		}
+		if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+			_, _ = s.status.SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, now)
 			continue
 		}
 		left := backgroundWaitMax
@@ -338,8 +358,11 @@ func (s *HookServer) disarmBackstop(sandboxID string) {
 }
 
 // backstopExpired ends a wait that outlived backgroundWaitMax: an agent still
-// WAITING is treated as having stopped (IDLE + task complete). gen names the
-// timer that fired; a newer one armed since then owns the sandbox instead.
+// WAITING is treated as having stopped (IDLE), and the developer is told the
+// wait was given up — the background work may well still be running. gen names
+// the timer that fired; a newer one armed since then owns the sandbox instead.
+// A sandbox that stopped meanwhile needs nothing: leaving RUNNING already
+// reset its agent.
 func (s *HookServer) backstopExpired(sandboxID string, gen uint64) {
 	s.mu.Lock()
 	b, ok := s.backstop[sandboxID]
@@ -363,7 +386,19 @@ func (s *HookServer) backstopExpired(sandboxID string, gen uint64) {
 	}
 	now := s.now()
 	_, _ = s.status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
-	s.hub.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "agent task complete", now)
+	s.hub.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, backstopMessage, now)
+}
+
+// backstopMessage tells the developer the wait was given up, not that the work
+// finished: background work (a dev server, a long build) may still be running.
+var backstopMessage = fmt.Sprintf("stopped waiting on background work after %s — check the agent; it may still be running", fmtWait(backgroundWaitMax))
+
+// fmtWait renders a wait as "30m" / "2h" rather than time.Duration's "30m0s".
+func fmtWait(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", d/time.Hour)
+	}
+	return fmt.Sprintf("%dm", d/time.Minute)
 }
 
 // notification maps a Notification hook by its notification_type.

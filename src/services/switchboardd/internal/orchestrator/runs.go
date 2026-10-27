@@ -188,6 +188,11 @@ func (s *Service) MarkWorkerFree(id, sandboxID string, failed bool, note string)
 			return &pb.Run{}, rt.clearNeedsInput(hostOf(rt.record(), sandboxID), sandboxID)
 		}
 	}
+	if run != nil && inFlight(run) {
+		// Typically acting on a review notification whose run resumed since
+		// (SWI-12): say so rather than that there is nothing to review.
+		return nil, fmt.Errorf("%w: run %s on sandbox %s resumed and is %s again — no review needed", ErrPrecondition, run.GetId(), sandboxID, stateLabel(run.GetState()))
+	}
 	return nil, fmt.Errorf("%w: no run awaiting review on sandbox %s", ErrPrecondition, sandboxID)
 }
 
@@ -317,12 +322,43 @@ func (rt *runtime) runResumed(run *pb.Run) {
 	}
 }
 
+// workerPushLock is the worker's lock for controller.run pushes (pushMu).
+func (rt *runtime) workerPushLock(sandboxID string) *sync.Mutex {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.pushMu == nil {
+		rt.pushMu = map[string]*sync.Mutex{}
+	}
+	l, ok := rt.pushMu[sandboxID]
+	if !ok {
+		l = &sync.Mutex{}
+		rt.pushMu[sandboxID] = l
+	}
+	return l
+}
+
+// clearWorkerRun pushes the clearing of a closed run's controller.run, under
+// the worker's push lock so a review-flag push computed before the close can
+// never land after it and leave the closed run on the worker.
+func (rt *runtime) clearWorkerRun(run *pb.Run) {
+	l := rt.workerPushLock(run.GetSandboxId())
+	l.Lock()
+	defer l.Unlock()
+	rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), nil)
+}
+
 // syncReviewFlag pushes a worker's controller.run with needs_review set exactly
-// when its in-flight run is AWAITING_REVIEW, read live under flagMu so that of
-// two racing pushes (review and resume) the last always matches the run.
+// when its in-flight run is AWAITING_REVIEW, read live under the worker's push
+// lock so that of racing pushes (review, resume, close) the last always matches
+// the run.
 func (rt *runtime) syncReviewFlag(runID string) {
-	rt.flagMu.Lock()
-	defer rt.flagMu.Unlock()
+	first, err := rt.svc.reg.GetRun(rt.id, runID)
+	if err != nil || first.GetSandboxId() == "" {
+		return
+	}
+	l := rt.workerPushLock(first.GetSandboxId())
+	l.Lock()
+	defer l.Unlock()
 	live, err := rt.svc.reg.GetRun(rt.id, runID)
 	if err != nil || !inFlight(live) || live.GetSandboxId() == "" {
 		return
@@ -398,7 +434,7 @@ func (rt *runtime) completeRun(run *pb.Run, summary string, byDeveloper, failed 
 		return nil, err
 	}
 	rt.closedRun(run)
-	rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), nil)
+	rt.clearWorkerRun(run)
 	return proto.Clone(run).(*pb.Run), nil
 }
 
@@ -419,7 +455,7 @@ func (rt *runtime) failRun(run *pb.Run, reason string) {
 	}
 	rt.closedRun(run)
 	if run.GetSandboxId() != "" && rt.sandboxRecord(run.GetSandboxId()) != nil {
-		rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), nil)
+		rt.clearWorkerRun(run)
 	}
 	rt.notify(run, pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, "failed: "+reason)
 }

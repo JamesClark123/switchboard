@@ -46,10 +46,13 @@ type runtime struct {
 	// worker, or re-adopt the detached one).
 	reconcileMu   sync.Mutex
 	inputNotified map[string]bool // run id -> RUN_NEEDS_INPUT raised for the current input wait
-	// flagMu serializes pushes of a worker's needs_review flag (SWI-12): each
-	// push is computed from the run's live state while holding it, so the last
-	// one to land always matches the run (review and resume race otherwise).
-	flagMu    sync.Mutex
+	// pushMu holds one lock per worker sandbox serializing the pushes of its
+	// controller.run (SWI-12): the needs_review flag is computed from the run's
+	// live state while holding it, and the clearing push of a run that closed
+	// takes it too, so the last push to land always matches the run (review,
+	// resume and close race otherwise). Per worker, so a slow host never holds
+	// up another's pushes. Guarded by mu.
+	pushMu    map[string]*sync.Mutex
 	sched     *scheduler
 	reasoning reasoningState
 }

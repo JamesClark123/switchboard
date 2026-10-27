@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -70,8 +72,10 @@ func TestResumedAgentLeavesReview(t *testing.T) {
 				det, _ := env.svc.Get(o.GetId())
 				return det.GetWorkers()[0].GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY && det.GetSummary().GetAwaitingReview() == 0
 			})
-			if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) {
-				t.Errorf("mark free on a resumed run = %v, want ErrPrecondition", err)
+			// Acting on the now-stale review notification says what happened.
+			if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) ||
+				!strings.Contains(err.Error(), "resumed and is running again — no review needed") {
+				t.Errorf("mark free on a resumed run = %v, want ErrPrecondition saying it resumed", err)
 			}
 
 			live, _ := env.svc.GetRun(o.GetId(), run.GetId())
@@ -203,5 +207,46 @@ func TestResumeDoesNotReopenAClosedRun(t *testing.T) {
 	rt.runAwaitingReview(stale)
 	if got, _ := env.svc.GetRun(o.GetId(), run.GetId()); got.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		t.Errorf("a closed run was sent to review: %v", got.GetState())
+	}
+}
+
+// The pushes of a worker's controller.run are serialized per worker (SWI-12):
+// a run's clearing push waits for a review-flag push in progress on the same
+// worker — so a flag computed before the close can never land after it — and
+// another worker's push never holds it up.
+func TestWorkerRunPushesSerializedPerWorker(t *testing.T) {
+	env, w, o, rt, run := startOne(t)
+	live, err := env.svc.GetRun(o.GetId(), run.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := rt.workerPushLock("some-other-worker")
+	other.Lock()
+	defer other.Unlock()
+	mine := rt.workerPushLock("wa")
+	mine.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := rt.completeRun(live, "done", false, false); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-done:
+		t.Fatal("the clearing push did not wait for the worker's push lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if w.get("wa").GetController().GetRun() == nil {
+		t.Fatal("cleared while another push held the worker's lock")
+	}
+	mine.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completeRun never finished once the lock was released")
+	}
+	if w.get("wa").GetController().GetRun() != nil {
+		t.Error("the closed run is still on the worker")
 	}
 }

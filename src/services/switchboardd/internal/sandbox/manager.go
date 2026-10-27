@@ -100,6 +100,11 @@ func (m *Manager) Controller(id string) (*pb.SandboxController, error) {
 // the status event into a failed run, research R7) — except a run the
 // orchestrator has already handed to the developer for review, which a stop
 // keeps so the review can still be closed (FR-156 edge case).
+//
+// Nor can an agent that was busy: a WORKING or WAITING (SWI-12) status names a
+// session that is gone, and kept across a restart it would leave the sandbox
+// busy with no agent left to report otherwise (a worker never free again). It
+// becomes IDLE; the next session reports its own status.
 func leaveRunning(s *pb.Sandbox, state pb.SandboxState) {
 	s.State = state
 	if state == pb.SandboxState_SANDBOX_STATE_RUNNING {
@@ -107,6 +112,10 @@ func leaveRunning(s *pb.Sandbox, state pb.SandboxState) {
 	}
 	if c := s.GetController(); c != nil && c.GetRun() != nil && !c.GetRun().GetNeedsReview() {
 		c.Run = nil
+	}
+	if a := s.GetAgent(); a != nil &&
+		(a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING || a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WAITING) {
+		a.Status = pb.AgentStatus_AGENT_STATUS_IDLE
 	}
 }
 
