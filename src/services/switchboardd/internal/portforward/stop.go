@@ -185,11 +185,13 @@ func (s *Supervisor) stopProc(proc *runningProc, ref string, inSbx bool) {
 
 // StopAll stops every non-terminal service of a sandbox. It is the teardown hook,
 // run once the sandbox has left RUNNING: stopping, destroying, or refreshing a
-// sandbox must leave no orphaned process and no held port (FR-048, US4-5). The
-// sandbox is down by then, so in-sandbox services are not signalled through
-// `sbx exec`, which would start it again (SWI-13, signalGroup).
-func (s *Supervisor) StopAll(sandboxID string) {
+// sandbox must leave no orphaned process and no held port (FR-048, US4-5).
+// sandboxDown says the container is down: its in-sandbox services went with it
+// and are not signalled through `sbx exec`, which would start it again (SWI-13,
+// signalGroup). A sandbox that left RUNNING with its container still up (a kit
+// being attached, an operation that failed) has them signalled as usual.
+func (s *Supervisor) StopAll(sandboxID string, sandboxDown bool) {
 	for _, inst := range s.insts.ActiveBySandbox(sandboxID) {
-		s.stopInstance(inst.GetId(), true)
+		s.stopInstance(inst.GetId(), sandboxDown)
 	}
 }

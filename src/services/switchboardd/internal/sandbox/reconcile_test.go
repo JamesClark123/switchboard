@@ -446,3 +446,39 @@ type statusRunner struct {
 func (r *statusRunner) ListStatuses(context.Context) (map[string]string, error) {
 	return r.statuses, nil
 }
+
+// SWI-13 review: the teardown runs before the observer publishes, so a write
+// landing during it (a restart's RUNNING) is published before the pass's
+// STOPPED. Announce then publishes the record as it is now, so the last state
+// clients see is the current one.
+func TestAnnounceRepublishesAWriteDuringTheTeardown(t *testing.T) {
+	m, reg, _, _ := newTestManager(t)
+	putRecord(t, reg, "id-a", "a", "a", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	changed, err := m.ReconcileRecords(context.Background())
+	if err != nil || len(changed) != 1 {
+		t.Fatalf("ReconcileRecords = %v / %v; want id-a stopped", changed, err)
+	}
+	var published []pb.SandboxState
+	m.SetOnChange(func(s *pb.Sandbox) {
+		if s.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED && len(published) == 0 {
+			// The developer restarts it while the teardown runs; that write
+			// announces itself (published here first).
+			restarted, err := reg.Update("id-a", func(x *pb.Sandbox) error {
+				x.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+				x.UpdatedAt = timestamppb.New(time.Now().Add(time.Second))
+				return nil
+			})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			published = append(published, restarted.GetState())
+		}
+		published = append(published, s.GetState())
+	})
+
+	m.Announce(changed)
+	if n := len(published); n == 0 || published[n-1] != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("published %v; want the current RUNNING last", published)
+	}
+}

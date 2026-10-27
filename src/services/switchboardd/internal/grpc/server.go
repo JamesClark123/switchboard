@@ -172,9 +172,12 @@ func NewServer(cfg Config) *Server {
 				}
 				// Same for port-forwarded services (feature 006, FR-048): every one
 				// of this sandbox's services stops, releasing its ports, so a stop or
-				// destroy never leaves an orphan holding a port.
+				// destroy never leaves an orphan holding a port. Only STOPPED and
+				// DESTROYING mean the container is down; CREATING (a kit being
+				// attached) and ERROR leave it up, so its services are signalled.
 				if s.services != nil {
-					s.services.StopAll(sb.GetId())
+					down := sb.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED || sb.GetState() == pb.SandboxState_SANDBOX_STATE_DESTROYING
+					s.services.StopAll(sb.GetId(), down)
 				}
 			}
 			if cfg.Hub != nil {

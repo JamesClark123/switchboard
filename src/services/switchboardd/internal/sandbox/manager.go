@@ -652,11 +652,19 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// Stop first — the workspace is mounted into the running container and is about
 	// to be deleted underneath it. Best-effort: an already-stopped or vanished
 	// container must not block a refresh.
+	leave := pb.SandboxState_SANDBOX_STATE_STOPPED
 	if sb.GetContainerRef() != "" {
 		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Stop(ctx, r) }); err != nil {
 			log.Printf("[warn] refresh %s: stop failed (continuing): %v", id, err)
 			if onLog != nil {
 				onLog("warning: stop failed, continuing: " + err.Error())
+			}
+			if m.listedRunning(ctx, sb) {
+				// STOPPED tells the teardown the container is down, so its
+				// in-sandbox services are not signalled (SWI-13). This one is
+				// still up: CREATING, as for a kit being attached, has them
+				// stopped rather than orphaned.
+				leave = pb.SandboxState_SANDBOX_STATE_CREATING
 			}
 		}
 	}
@@ -665,7 +673,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// sit in the workspace we are about to delete, and a stale PTY would hand the
 	// next attach an immediate EOF.
 	stopped, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+		leaveRunning(s, leave)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -1156,6 +1164,13 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 			if fn := m.onBringUp; fn != nil && cur.GetController() != nil {
 				go fn(cur)
 			}
+			continue
+		}
+		// The teardown ran before the observer published, so a write that
+		// landed during it (a restart's RUNNING) was published first and is now
+		// behind this pass's state: publish the record as it is now.
+		if latest, err := m.store.Get(sb.GetId()); err == nil && !proto.Equal(latest.GetUpdatedAt(), cur.GetUpdatedAt()) {
+			m.emit(latest)
 		}
 	}
 }
@@ -1174,6 +1189,18 @@ func (m *Manager) warnUnknownStatus(id, status string, state pb.SandboxState) {
 func (m *Manager) busy(id string) bool {
 	_, latched := m.ops.holder(id)
 	return latched || m.lifecycle.has(id)
+}
+
+// listedRunning reports whether the runtime lists the sandbox's container as
+// running. An unreadable runtime reads as not running: a teardown then skips
+// `sbx exec`, which would start a stopped container again.
+func (m *Manager) listedRunning(ctx context.Context, sb *pb.Sandbox) bool {
+	statuses, err := m.runner.ListStatuses(ctx)
+	if err != nil {
+		return false
+	}
+	state, _ := listedState(statuses, sb)
+	return state == pb.SandboxState_SANDBOX_STATE_RUNNING
 }
 
 // errReconcileSkip aborts a reconcile write whose record moved under it.

@@ -86,7 +86,7 @@ func TestTwoSandboxesRunTheSamePortTokenServiceConcurrently(t *testing.T) {
 	if _, err := s.Start("sb2", "worker"); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { s.StopAll("sb1"); s.StopAll("sb2") }()
+	defer func() { s.StopAll("sb1", true); s.StopAll("sb2", true) }()
 
 	a := waitForState(t, s, "sb1", "worker", pb.ServiceState_SERVICE_STATE_RUNNING, 15*time.Second)
 	b := waitForState(t, s, "sb2", "worker", pb.ServiceState_SERVICE_STATE_RUNNING, 15*time.Second)
@@ -154,6 +154,6 @@ func TestOnHostLoopbackBindIsReachable(t *testing.T) {
 	if _, err := s.Start("sb1", "worker"); err != nil {
 		t.Fatal(err)
 	}
-	defer s.StopAll("sb1")
+	defer s.StopAll("sb1", true)
 	waitForState(t, s, "sb1", "worker", pb.ServiceState_SERVICE_STATE_RUNNING, 15*time.Second)
 }

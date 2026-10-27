@@ -217,7 +217,7 @@ func TestStopAllCascadesAcrossASandbox(t *testing.T) {
 	pidA := s.procFor(instanceIDOf(t, s, "sb1", "a")).cmd.Process.Pid
 	pidB := s.procFor(instanceIDOf(t, s, "sb1", "b")).cmd.Process.Pid
 
-	s.StopAll("sb1")
+	s.StopAll("sb1", true)
 
 	if got := len(s.insts.ActiveBySandbox("sb1")); got != 0 {
 		t.Errorf("active instances after teardown = %d, want 0", got)
@@ -230,7 +230,7 @@ func TestStopAllCascadesAcrossASandbox(t *testing.T) {
 func TestStopAllOnASandboxWithNothingRunning(t *testing.T) {
 	sb := runningSandbox("sb1", svc("web", "sleep 30", 3000, inSandbox))
 	s, _, _, _ := newTestSupervisor(t, sb)
-	s.StopAll("sb1") // must not panic or block
+	s.StopAll("sb1", true) // must not panic or block
 }
 
 // SWI-13: the teardown runs once the sandbox has left RUNNING, and `sbx exec`
@@ -258,7 +258,7 @@ func TestStopAllNeverExecsIntoTheStoppedSandbox(t *testing.T) {
 	before := len(runner.execArgv)
 	runner.mu.Unlock()
 
-	s.StopAll("sb1")
+	s.StopAll("sb1", true)
 
 	runner.mu.Lock()
 	after := runner.execArgv[before:]
@@ -270,4 +270,47 @@ func TestStopAllNeverExecsIntoTheStoppedSandbox(t *testing.T) {
 		t.Errorf("active instances after teardown = %d, want 0", got)
 	}
 	waitFor(t, "the host-side sbx exec child to be dropped", 3*time.Second, proc.hasExited)
+}
+
+// SWI-13 review: a sandbox can leave RUNNING with its container still up (a
+// kit being attached reads CREATING, a failed operation ERROR). Its in-sandbox
+// trees did not go down with anything, so StopAll signals them through
+// `sbx exec` as a single-service Stop does, rather than orphaning them.
+func TestStopAllSignalsInSandboxServicesWhileTheContainerIsUp(t *testing.T) {
+	ln, port := listenAllInterfaces(t)
+	defer func() { _ = ln.Close() }()
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	proc := s.procFor(instanceIDOf(t, s, "sb1", "web"))
+	if proc == nil || proc.pgid <= 0 {
+		t.Fatal("expected a launched in-sandbox process with an announced pgid")
+	}
+	t.Cleanup(func() { killPGID(proc.pgid, true) })
+	runner.mu.Lock()
+	before := len(runner.execArgv)
+	runner.mu.Unlock()
+
+	s.StopAll("sb1", false)
+
+	runner.mu.Lock()
+	after := append([][]string(nil), runner.execArgv[before:]...)
+	runner.mu.Unlock()
+	want := "kill -TERM -" + strconv.Itoa(proc.pgid)
+	signalled := false
+	for _, argv := range after {
+		if strings.Contains(strings.Join(argv, " "), want) {
+			signalled = true
+		}
+	}
+	if !signalled {
+		t.Errorf("teardown with the container up did not signal the tree (%q); execs: %v", want, after)
+	}
+	if got := len(s.insts.ActiveBySandbox("sb1")); got != 0 {
+		t.Errorf("active instances after teardown = %d, want 0", got)
+	}
 }
