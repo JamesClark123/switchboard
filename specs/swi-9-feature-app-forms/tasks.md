@@ -103,7 +103,9 @@ snapshots (R3–R5).
       nothing; y/Y accept as usual. n/N/esc/q/ctrl+c are unaffected. `confirmHelp` and the `confirmModal` hint
       (`confirm.go:93`) both read `y confirm · n/esc cancel` when `yOnly` is set. Both live here in Phase 2, because
       the Rebuild (T006/T023) and sources Save (T024) confirms use it from US3 on.
-    - Every key-opened confirm leaves both fields at their zero value, so nothing changes for it.
+    - Every confirm opened by its own dedicated key (C1a, the 16 existing callers) leaves both fields at their zero
+      value, so nothing changes for it. The guard's Rebuild and sources Save confirms are opened by a dialog key and
+      do set them.
       `confirmAddOverride` is the one existing confirm that changes (T033).
   - `openUnsaved(g, fromEnlarge)`, with Cancel highlighted, `openedAt = nowFunc()`, and the label "Rebuild" for
     `gReasoning`.
@@ -470,7 +472,7 @@ field holds the edit and focus stays on it, with no dialog.
     `add to <name> needs confirmation — back on the list`.
     `confirmAddOverride` sets `yOnly = true` (C3), so enter no longer accepts it. Keep the check O(1): it looks at
     the head only.
-  - Existing test: `TestSourcesAddBlockedOverrideRoundTrip` (`UI/sources_test.go:237–289`) already accepts with
+  - Existing test: `TestSourcesAddBlockedOverrideRoundTrip` (`UI/sources_test.go:237–290`) already accepts with
     `y` and declines with `n`, so it passes unchanged. Add a line to it asserting that enter on the override does
     not send `sourcesOverrideMsg`. No other existing test presses enter on an override.
   - Unconditional queue purge (C2): the `Removed` handler and the connected, error-free list reload drop entries for

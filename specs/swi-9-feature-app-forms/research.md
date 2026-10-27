@@ -263,7 +263,7 @@ otherwise:
   - The time comes from a package `nowFunc = time.Now` seam. `openedAt` is also read from `nowFunc`, so shifting
     the clock by a fixed amount before opening would not leave the window. Tests therefore use two mechanisms:
     - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` to 0 with
-      `t.Cleanup` restoring them. With a zero grace, `elapsed < grace` is never true, so every key acts.
+      `t.Cleanup` restoring it. With a zero grace, `elapsed < grace` is never true, so every key acts.
     - The grace tests (T009) install a fake clock (`nowFunc` returns a variable) and advance it **after** the dialog
       opens.
 
@@ -466,9 +466,15 @@ otherwise:
       enter, however late and from whichever prompt, is ignored. There is no clock, timer or re-arm, and no
       per-message work.
     - `y` is not bound on the two screens where a queued override can open (the sandbox list and the sources
-      overlay), nor on the reasoning setup or the unsaved dialog that lead to the other two. So a stray `y` meant for
-      the screen underneath is not a realistic path. Keys typed into a credential prompt over a confirm go to the
-      prompt (app.go:941–946), never to the confirm.
+      overlay), nor on the reasoning setup or the unsaved dialog that lead to the other two. Keys typed into a
+      credential prompt over a confirm go to the prompt (app.go:941–946), never to the confirm.
+    - **Known residual risk (accepted):** a queued override can open on the list just before the developer starts a
+      filter search without noticing it. The confirm ignores `/` (confirm.go:56–74), so the first `y` in the query
+      would accept the add. The risk is low: the override only opens while the filter is *not* being typed into
+      (C2), the modal is drawn over the list, and the action is a low-disk add, not a removal. Closing this fully
+      would need a confirm that, once it has ignored a printable key, ignores `y` too, and then the developer could
+      never accept it. That is not worth the cost. The same filter caveat already applies to `enterApproval` (table
+      above).
     - Confirms opened by their own dedicated key (C1a, all 16 existing callers) keep `yOnly` false and behave
       exactly as today. `confirmAddOverride` is the one existing confirm whose keys change: it now always has
       `yOnly`, so enter no longer accepts it.
