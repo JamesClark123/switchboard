@@ -19,19 +19,22 @@ const (
 	reconcileTimeout = 8 * time.Second
 )
 
-// reconcileGate throttles reconciles and collapses concurrent callers onto one:
-// a caller arriving while a reconcile runs waits for it and then finds it
-// recent. A failed reconcile counts as recent too, so an unreadable runtime
-// costs one timeout per window rather than one per list.
+// reconcileGate throttles reconciles to one per reconcileWindow. A caller that
+// arrives while a reconcile is running does not wait for it: it answers with
+// the stored states at once, and the running pass emits whatever it changes.
+// A failed reconcile counts as recent too, so an unreadable runtime costs one
+// timeout per window rather than one per list.
 type reconcileGate struct {
 	mu   sync.Mutex
 	last time.Time
 	now  func() time.Time
 }
 
-// run calls fn unless a reconcile finished within reconcileWindow.
+// run calls fn unless a reconcile is running or finished within reconcileWindow.
 func (g *reconcileGate) run(fn func()) {
-	g.mu.Lock()
+	if !g.mu.TryLock() {
+		return
+	}
 	defer g.mu.Unlock()
 	now := time.Now
 	if g.now != nil {
@@ -51,8 +54,8 @@ func (s *Server) reconcileSandboxes(ctx context.Context) {
 		return
 	}
 	s.reconcile.run(func() {
-		// Detached from the caller: every caller waiting on the gate shares this
-		// pass, so one client hanging up must not cut it short for the rest.
+		// Detached from the caller: the pass serves every client that lists in
+		// this window, so one client hanging up must not cut it short.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		defer cancel()
 		_, _ = s.mgr.Reconcile(rctx)

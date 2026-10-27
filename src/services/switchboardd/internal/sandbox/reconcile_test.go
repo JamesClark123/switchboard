@@ -302,3 +302,49 @@ func (r *racingRunner) ListStatuses(ctx context.Context) (map[string]string, err
 	r.during()
 	return r.fakeRunner.ListStatuses(ctx)
 }
+
+// A status this daemon does not know (a transient "starting", say) leaves the
+// record alone instead of reading it as stopped.
+func TestReconcileLeavesUnknownStatusesAlone(t *testing.T) {
+	m, reg, _, _ := newTestManager(t)
+	putRecord(t, reg, "id-s", "s", "s", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	m.runner = &statusRunner{fakeRunner: newFakeRunner(), statuses: map[string]string{"s": "starting"}}
+	if changed, err := m.Reconcile(context.Background()); err != nil || len(changed) != 0 {
+		t.Errorf("Reconcile = %v, %v; want no change", changed, err)
+	}
+	if got := stateOf(t, reg, "id-s"); got != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("record with an unknown status = %v; want RUNNING kept", got)
+	}
+}
+
+// Settling a stale ERROR record drops the old failure text.
+func TestReconcileClearsASettledError(t *testing.T) {
+	m, reg, runner, _ := newTestManager(t)
+	if err := reg.Put(&pb.Sandbox{
+		Id: "id-e", DisplayName: "e", ContainerRef: "e", State: pb.SandboxState_SANDBOX_STATE_ERROR,
+		Error: "sbx create: boom", UpdatedAt: timestamppb.New(m.started.Add(-time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.running = map[string]bool{"e": true}
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := reg.Get("id-e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || got.GetError() != "" {
+		t.Errorf("settled record = %v %q; want RUNNING with no error", got.GetState(), got.GetError())
+	}
+}
+
+// statusRunner answers ListStatuses with fixed statuses.
+type statusRunner struct {
+	*fakeRunner
+	statuses map[string]string
+}
+
+func (r *statusRunner) ListStatuses(context.Context) (map[string]string, error) {
+	return r.statuses, nil
+}

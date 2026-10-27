@@ -79,8 +79,8 @@ func TestListSandboxesReconcilesWithTheRuntime(t *testing.T) {
 	if got := listedState(t, client); got != pb.SandboxState_SANDBOX_STATE_STOPPED {
 		t.Errorf("second list = %v; want STOPPED", got)
 	}
-	if runner.lists != 1 {
-		t.Errorf("two lists within the window read the runtime %d times; want 1", runner.lists)
+	if runner.lists.Load() != 1 {
+		t.Errorf("two lists within the window read the runtime %d times; want 1", runner.lists.Load())
 	}
 }
 
@@ -96,7 +96,7 @@ func TestListSandboxesKeepsStateWhenTheRuntimeIsUnreadable(t *testing.T) {
 	if got := listedState(t, client); got != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		t.Errorf("second list = %v; want RUNNING kept", got)
 	}
-	if runner.lists != 1 {
-		t.Errorf("a failed reconcile was retried within the window (%d reads); want 1", runner.lists)
+	if runner.lists.Load() != 1 {
+		t.Errorf("a failed reconcile was retried within the window (%d reads); want 1", runner.lists.Load())
 	}
 }

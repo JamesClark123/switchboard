@@ -1085,11 +1085,8 @@ func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
 		if (!settled && !sb.GetUpdatedAt().AsTime().Before(m.started)) || m.busy(sb.GetId()) {
 			continue
 		}
-		want := pb.SandboxState_SANDBOX_STATE_STOPPED
-		if sb.GetContainerRef() != "" && listedRunning(statuses, sbxRefs(sb)) {
-			want = pb.SandboxState_SANDBOX_STATE_RUNNING
-		}
-		if state == want {
+		want, known := listedState(statuses, sb)
+		if !known || state == want {
 			continue
 		}
 		seen := sb.GetUpdatedAt()
@@ -1100,6 +1097,7 @@ func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
 				return errReconcileSkip
 			}
 			leaveRunning(s, want)
+			s.Error = "" // a settled ERROR record drops its old failure
 			s.UpdatedAt = timestamppb.Now()
 			return nil
 		})
@@ -1136,14 +1134,34 @@ func (m *Manager) busy(id string) bool {
 // errReconcileSkip aborts a reconcile write whose record moved under it.
 var errReconcileSkip = errors.New("record changed during reconcile")
 
-// listedRunning reports whether any of a sandbox's handles is listed running.
-func listedRunning(statuses map[string]string, refs []string) bool {
-	for _, r := range refs {
-		if statuses[r] == "running" {
-			return true
+// listedState is the state a successful listing gives a sandbox: RUNNING when
+// any of its handles is listed running, STOPPED when one is listed stopped or
+// none is listed (or it has no container at all). known is false for a status
+// sbx has but this daemon does not (a transient "starting", say): the record
+// is then left as it is rather than read as stopped.
+func listedState(statuses map[string]string, sb *pb.Sandbox) (state pb.SandboxState, known bool) {
+	if sb.GetContainerRef() == "" {
+		return pb.SandboxState_SANDBOX_STATE_STOPPED, true
+	}
+	listed, unknown := false, false
+	for _, r := range sbxRefs(sb) {
+		status, ok := statuses[r]
+		if !ok {
+			continue
+		}
+		listed = true
+		switch status {
+		case "running":
+			return pb.SandboxState_SANDBOX_STATE_RUNNING, true
+		case "stopped":
+		default:
+			unknown = true
 		}
 	}
-	return false
+	if listed && unknown {
+		return pb.SandboxState_SANDBOX_STATE_UNSPECIFIED, false
+	}
+	return pb.SandboxState_SANDBOX_STATE_STOPPED, true
 }
 
 // RefreshHooks rewrites the agent hook settings of every sandbox that still has

@@ -22,3 +22,23 @@ func TestReconcileGateThrottles(t *testing.T) {
 		t.Fatalf("runs = %d once the window passed; want 2", runs)
 	}
 }
+
+// A caller arriving while a reconcile runs does not wait for it.
+func TestReconcileGateDoesNotQueueBehindARunningPass(t *testing.T) {
+	g := &reconcileGate{}
+	entered, release := make(chan struct{}), make(chan struct{})
+	go g.run(func() { close(entered); <-release })
+	<-entered
+	ran := false
+	done := make(chan struct{})
+	go func() { g.run(func() { ran = true }); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second caller waited behind the running reconcile")
+	}
+	close(release)
+	if ran {
+		t.Error("a second caller ran its own reconcile while one was running")
+	}
+}

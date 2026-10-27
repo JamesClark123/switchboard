@@ -149,7 +149,9 @@ func runServe(cfg *config.Config, debug bool) error {
 	// A daemon started at login can come up before the sbx runtime does; an
 	// unreadable runtime changes nothing (SWI-13), so it is retried a few times
 	// in the background once the server is wired (below).
-	readoptErr := mgr.Readopt(ctx)
+	readoptCtx, readoptCancel := context.WithTimeout(ctx, readoptTimeout)
+	readopted, readoptErr := mgr.Reconcile(readoptCtx)
+	readoptCancel()
 	if readoptErr != nil {
 		fmt.Fprintln(os.Stderr, "warning: re-adoption error:", readoptErr)
 	}
@@ -334,6 +336,13 @@ func runServe(cfg *config.Config, debug bool) error {
 		Debug:           debug,
 	})
 	workerSvc.SetTerminals(srv.Terminals())
+	// Workers re-adopted RUNNING at startup were moved before the bring-up
+	// observer existed: reload their registrations now, as after a Restart.
+	for _, sb := range readopted {
+		if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && sb.GetController() != nil {
+			go workerSvc.OnBringUp(sb)
+		}
+	}
 	if readoptErr != nil {
 		// Started only now: the manager's change and bring-up observers are set,
 		// so what the retry moves reaches clients (and is never a data race).
@@ -605,6 +614,10 @@ func dialStdio(socket string) error {
 // A few, not a poll loop: every ListSandboxes reconciles as well.
 var readoptRetries = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 
+// readoptTimeout bounds the startup re-adoption, so a runtime that hangs rather
+// than fails cannot keep the daemon from serving (SWI-13).
+const readoptTimeout = 30 * time.Second
+
 // retryReconcile reconciles at each delay until one reads the runtime, the
 // daemon stops, or the delays run out.
 func retryReconcile(ctx context.Context, mgr *sandbox.Manager, delays []time.Duration) {
@@ -615,7 +628,10 @@ func retryReconcile(ctx context.Context, mgr *sandbox.Manager, delays []time.Dur
 			return
 		case <-time.After(time.Until(start.Add(d))):
 		}
-		if _, err := mgr.Reconcile(ctx); err == nil {
+		rctx, cancel := context.WithTimeout(ctx, readoptTimeout)
+		_, err := mgr.Reconcile(rctx)
+		cancel()
+		if err == nil {
 			return
 		}
 	}

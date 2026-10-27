@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -246,6 +247,8 @@ func (r *SbxRunner) ListStatuses(ctx context.Context) (map[string]string, error)
 	// stdout only: a notice sbx prints on stderr (an available update, say) must
 	// not turn a good listing into unparseable output.
 	cmd := exec.CommandContext(ctx, r.Bin, "ls", "--json")
+	// A helper sbx leaves holding stdout must not outlive the context's cancel.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr []byte

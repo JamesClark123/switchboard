@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,10 +27,10 @@ type testRunner struct {
 	mcpUnloads []string         // SWI-3: "<ref> <name>" per UnloadMcp
 	loadErr    map[string]error // feature 008: LoadMcp fails for these names
 	running    map[string]bool
-	kitAdds    []string // kit sources passed to `sbx kit add`
-	published  []string // feature 006: "<ref> <host>:<sandbox>" per PublishPort
-	listErr    error    // SWI-13: ListStatuses fails (an unreadable runtime)
-	lists      int      // SWI-13: ListStatuses calls
+	kitAdds    []string     // kit sources passed to `sbx kit add`
+	published  []string     // feature 006: "<ref> <host>:<sandbox>" per PublishPort
+	listErr    error        // SWI-13: ListStatuses fails (an unreadable runtime)
+	lists      atomic.Int32 // SWI-13: ListStatuses calls
 	// feature 007: when set, CloneRepo signals cloneEntered on entry and then
 	// waits for the current gate (see setCloneGate) to close, so a test can hold
 	// an add mid-flight.
@@ -69,7 +70,7 @@ func (r *testRunner) LoadMcp(_ context.Context, ref, name string, _ func(string)
 func (r *testRunner) Start(_ context.Context, ref string) error   { r.running[ref] = true; return nil }
 func (r *testRunner) Destroy(_ context.Context, ref string) error { delete(r.running, ref); return nil }
 func (r *testRunner) ListStatuses(_ context.Context) (map[string]string, error) {
-	r.lists++
+	r.lists.Add(1)
 	if r.listErr != nil {
 		return nil, r.listErr
 	}
