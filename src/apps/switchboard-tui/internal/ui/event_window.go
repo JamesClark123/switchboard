@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+	_ "time/tzdata" // the daemon's zone database, so the form's check matches it
 
 	"github.com/charmbracelet/huh"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -14,7 +16,9 @@ import (
 
 // Timed-event active windows (SWI-10): the editor's "Active from/until", "Days"
 // and "Timezone" fields, and the window shown on an event's row. The daemon
-// validates the window again and is the authority on the timezone.
+// validates the window again and is the authority on the timezone; both embed
+// the same zone database, so a zone this host's older zoneinfo lacks is still
+// known here.
 
 // weekdayOrder is the Days field's order (Monday first); values are the proto's
 // 0=Sunday … 6=Saturday.
@@ -104,7 +108,7 @@ func windowFromForm(v *eventFormVals) (*pb.ActiveWindow, error) {
 	if tz == "" {
 		return nil, fmt.Errorf("the window needs a timezone, an IANA name like America/Los_Angeles")
 	}
-	if _, err := time.LoadLocation(tz); err != nil && zoneDataAvailable() {
+	if _, err := time.LoadLocation(tz); err != nil {
 		return nil, fmt.Errorf("unknown timezone %q; use an IANA name like America/Los_Angeles", tz)
 	}
 	w := &pb.ActiveWindow{Start: start, End: end, Timezone: tz}
@@ -115,23 +119,25 @@ func windowFromForm(v *eventFormVals) (*pb.ActiveWindow, error) {
 	return w, nil
 }
 
-// zoneDataAvailable reports whether this host can load IANA zones at all. The
-// daemon embeds the zone database and has the final say; without zone data here
-// a name cannot be checked, so the form leaves it to the daemon.
-func zoneDataAvailable() bool {
-	_, err := time.LoadLocation("America/Los_Angeles")
-	return err == nil
-}
-
 // windowToForm pre-fills the editor's window fields from a saved window.
 func windowToForm(v *eventFormVals, w *pb.ActiveWindow) {
 	if w == nil {
 		return
 	}
-	v.activeFrom, v.activeUntil, v.timezone = w.GetStart(), w.GetEnd(), w.GetTimezone()
+	v.activeFrom, v.activeUntil, v.timezone = w.GetStart(), windowEnd(w), w.GetTimezone()
 	for _, d := range w.GetWeekdays() {
 		v.days = append(v.days, int(d))
 	}
+}
+
+// windowEnd is a window's end as the form spells it: a midnight end is stored
+// as 00:00 (the end is exclusive) and shown as the 24:00 the form accepts,
+// unless the window starts at midnight too.
+func windowEnd(w *pb.ActiveWindow) string {
+	if w.GetEnd() == "00:00" && w.GetStart() != "00:00" {
+		return "24:00"
+	}
+	return w.GetEnd()
 }
 
 // windowLabel renders a window for an event's row, e.g. "08:00–17:00 Mon–Fri
@@ -140,12 +146,33 @@ func windowLabel(w *pb.ActiveWindow) string {
 	if w == nil {
 		return ""
 	}
-	parts := []string{w.GetStart() + "–" + w.GetEnd()}
+	return strings.Join(append(windowSpan(w), w.GetTimezone()), " ")
+}
+
+// compactWindowLabel is windowLabel for the Jobs Upcoming row, where width is
+// short: the zone only when it is not local's, e.g. "08:00–17:00 Mon–Fri".
+func compactWindowLabel(w *pb.ActiveWindow, local string) string {
+	if w == nil {
+		return ""
+	}
+	parts := windowSpan(w)
+	if w.GetTimezone() != local {
+		parts = append(parts, w.GetTimezone())
+	}
+	return strings.Join(parts, " ")
+}
+
+// windowSpan is a window's times and, unless every day, its days.
+func windowSpan(w *pb.ActiveWindow) []string {
+	parts := []string{w.GetStart() + "–" + windowEnd(w)}
 	if days := daysLabel(w.GetWeekdays()); days != "" {
 		parts = append(parts, days)
 	}
-	return strings.Join(append(parts, w.GetTimezone()), " ")
+	return parts
 }
+
+// localZone is localZoneName read once, for rows rendered every frame.
+var localZone = sync.OnceValue(localZoneName)
 
 // daysLabel renders weekdays Monday first: "" for every day (none or all seven),
 // "Mon–Fri" for a run of three or more, else "Sat,Sun".

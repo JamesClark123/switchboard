@@ -167,8 +167,8 @@ func TestNextFireOverADay(t *testing.T) {
 	}
 }
 
-// 24:00 ends a window at midnight; a non-IANA zone is refused in the form when
-// this host has zone data to check it against.
+// 24:00 ends a window at midnight; a non-IANA zone is refused in the form,
+// checked against the embedded zone database the daemon also uses.
 func TestWindowFromFormMidnightAndZones(t *testing.T) {
 	w, err := windowFromForm(&eventFormVals{activeFrom: "18:00", activeUntil: " 24:00 ", timezone: "UTC"})
 	if err != nil || w.GetStart() != "18:00" || w.GetEnd() != "00:00" {
@@ -176,9 +176,6 @@ func TestWindowFromFormMidnightAndZones(t *testing.T) {
 	}
 	if _, err := windowFromForm(&eventFormVals{activeFrom: "24:00", activeUntil: "08:00", timezone: "UTC"}); err == nil || !strings.Contains(err.Error(), `active from "24:00" must be HH:MM`) {
 		t.Errorf("24:00 as a start: %v", err)
-	}
-	if !zoneDataAvailable() {
-		t.Skip("no zone data on this host: the daemon checks the name")
 	}
 	if _, err := windowFromForm(&eventFormVals{activeFrom: "08:00", activeUntil: "17:00", timezone: "PST"}); err == nil || !strings.Contains(err.Error(), `unknown timezone "PST"; use an IANA name`) {
 		t.Errorf("PST: %v", err)
@@ -191,11 +188,55 @@ func TestUpcomingLineShowsTheWindow(t *testing.T) {
 	ev := &pb.TimedEvent{Id: "ev-1", Name: "poll", Action: "review-pr", Enabled: true, NextFireAt: at(62 * time.Hour),
 		Window: &pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{1, 2, 3, 4, 5}, Timezone: "America/Los_Angeles"}}
 	rows := jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, &pb.ListRunsResponse{})})
-	if len(rows) != 1 || !strings.Contains(upcomingLine(rows[0]), " · 08:00–17:00 Mon–Fri America/Los_Angeles") {
+	if len(rows) != 1 || !strings.Contains(upcomingLine(rows[0]), " · 08:00–17:00 Mon–Fri") {
 		t.Errorf("Upcoming row without the window: %q", upcomingLine(rows[0]))
 	}
+	// The skip note comes before the window, so a narrow row cuts the window.
+	rows[0].willSkip = true
+	if line := upcomingLine(rows[0]); strings.Index(line, "next firing skipped") > strings.Index(line, "08:00–17:00") {
+		t.Errorf("skip note after the window: %q", line)
+	}
+	rows[0].willSkip = false
 	ev.Window = nil
 	if line := upcomingLine(jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, &pb.ListRunsResponse{})})[0]); strings.Contains(line, "·") {
 		t.Errorf("an event without a window gets no marker: %q", line)
+	}
+}
+
+// The Upcoming row's window leaves out a local zone; a midnight end reads
+// 24:00 in labels and in the form, as the form accepts it.
+func TestCompactWindowLabelAndMidnightEnd(t *testing.T) {
+	w := &pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{1, 2, 3, 4, 5}, Timezone: "America/Los_Angeles"}
+	if got := compactWindowLabel(w, "America/Los_Angeles"); got != "08:00–17:00 Mon–Fri" {
+		t.Errorf("local zone = %q", got)
+	}
+	if got := compactWindowLabel(w, "Europe/Berlin"); got != "08:00–17:00 Mon–Fri America/Los_Angeles" {
+		t.Errorf("other zone = %q", got)
+	}
+	if compactWindowLabel(nil, "UTC") != "" {
+		t.Error("no window, no label")
+	}
+	night, err := windowFromForm(&eventFormVals{activeFrom: "18:00", activeUntil: "24:00", timezone: "UTC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := windowLabel(night); got != "18:00–24:00 UTC" {
+		t.Errorf("midnight end label = %q", got)
+	}
+	v := &eventFormVals{}
+	windowToForm(v, night)
+	if v.activeUntil != "24:00" {
+		t.Errorf("midnight end in the form = %q, want 24:00", v.activeUntil)
+	}
+	if back, err := windowFromForm(v); err != nil || back.GetEnd() != "00:00" {
+		t.Errorf("re-saving = %+v, %v; want 00:00 stored", back, err)
+	}
+	// A window starting at midnight keeps 00:00 (00:00–24:00 would be all day).
+	early := &pb.ActiveWindow{Start: "22:00", End: "00:00", Timezone: "UTC"}
+	if got := windowLabel(early); got != "22:00–24:00 UTC" {
+		t.Errorf("22:00–00:00 label = %q", got)
+	}
+	if got := windowEnd(&pb.ActiveWindow{Start: "00:00", End: "00:00"}); got != "00:00" {
+		t.Errorf("00:00 start keeps 00:00, got %q", got)
 	}
 }

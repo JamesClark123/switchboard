@@ -42,13 +42,13 @@ Row formats (illustrative):
 ```
 Upcoming     poll            → review-pr   alpha-bot @ local     next in 3m
 Upcoming     nightly         → triage      beta-bot @ build-box  next in 9m · next firing skipped — run open
-Upcoming     standup         → digest      alpha-bot @ local     next in 2d14h · 08:00–17:00 Mon–Fri America/Los_Angeles
+Upcoming     standup         → digest      alpha-bot @ local     next in 2d14h · 08:00–17:00 Mon–Fri
 Queued       #1 review-pr    timed poll    alpha-bot @ local     received 12s ago
 In progress  review-pr       running       beta-bot @ build-box  on worker-wa · 2m
 History      review-pr       completed     alpha-bot @ local     ended 5m ago — Reviewed PR 412 and…
 ```
 
-Columns are padded and truncated to fixed display widths (long names end in `…`); the History snippet takes the remaining width. `on <worker>` is the worker sandbox's display name. A timed event with an active window (SWI-10) shows the window after its next firing. Snippets, reasons and origin labels are sanitised single lines (FR-029). The cursor stays on the same item when rows reorder or move between sections after a refresh; if the item is gone it moves to its nearest neighbour (FR-031, research R11).
+Columns are padded and truncated to fixed display widths (long names end in `…`); the History snippet takes the remaining width. `on <worker>` is the worker sandbox's display name. A timed event with an active window (SWI-10) shows the window after its next firing, in a compact form: its zone is left out when it is the TUI's local zone (the Events tab shows it in full), and a midnight end reads `24:00`. The `next firing skipped — run open` note comes before the window, so on a narrow terminal the window is what gets cut. Snippets, reasons and origin labels are sanitised single lines (FR-029). The cursor stays on the same item when rows reorder or move between sections after a refresh; if the item is gone it moves to its nearest neighbour (FR-031, research R11).
 
 ### Actions
 
