@@ -344,8 +344,10 @@ field holds the edit and focus stays on it, with no dialog.
 - [ ] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
   - `openEnlarge(g, field, entry)`: a textarea with `MaxHeight 0`, `CharLimit 0`, `ShowLineNumbers false`,
     `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, value `*ptr`,
-    cursor at the top (via `ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})`, i.e. `KeyMap.InputBegin`; bubbles v1.0.0
-    has no exported move-to-start method, and the keymap must keep `InputBegin`), focused, `baseline = *ptr`.
+    `baseline = *ptr`. Then, in this order: `ta.Focus()`, and only then the cursor to the top via
+    `ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})` (`KeyMap.InputBegin`). `textarea.Update` ignores keys while
+    unfocused (bubbles textarea.go:958–962), so the reverse order leaves the cursor at the end. bubbles v1.0.0 has no
+    exported move-to-start method, and the keymap must keep `InputBegin`.
   - `enlargeStyles()`: map huh's focused `FieldStyles` to a `textarea.Style` the way `Text.View` does (huh
     field_text.go:436–443).
   - After every `SetValue` (open, ctrl+r), `SetWidth` and `SetHeight`, call `ta.Update(nil)` so the cursor is
