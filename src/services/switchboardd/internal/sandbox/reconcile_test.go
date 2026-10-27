@@ -317,7 +317,8 @@ func TestReconcileLeavesUnknownStatusesAlone(t *testing.T) {
 	}
 }
 
-// Settling a stale ERROR record drops the old failure text.
+// A stale ERROR record found running again drops the old failure text; one
+// settled STOPPED keeps it, so the reason it never came up stays visible.
 func TestReconcileClearsASettledError(t *testing.T) {
 	m, reg, runner, _ := newTestManager(t)
 	if err := reg.Put(&pb.Sandbox{
@@ -336,6 +337,19 @@ func TestReconcileClearsASettledError(t *testing.T) {
 	}
 	if got.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || got.GetError() != "" {
 		t.Errorf("settled record = %v %q; want RUNNING with no error", got.GetState(), got.GetError())
+	}
+
+	if err := reg.Put(&pb.Sandbox{
+		Id: "id-f", DisplayName: "f", State: pb.SandboxState_SANDBOX_STATE_ERROR,
+		Error: "sbx create: boom", UpdatedAt: timestamppb.New(m.started.Add(-time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reg.Get("id-f"); got.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED || got.GetError() != "sbx create: boom" {
+		t.Errorf("settled record = %v %q; want STOPPED keeping its error", got.GetState(), got.GetError())
 	}
 }
 

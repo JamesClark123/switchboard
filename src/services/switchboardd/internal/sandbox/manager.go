@@ -1045,10 +1045,10 @@ func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, 
 	return out, nil
 }
 
-// Readopt reconciles the registry with live containers on daemon startup
-// (FR-002a, SC-012): still-running containers are marked running; the rest are
-// marked stopped. Records are never deleted here. When the runtime cannot be
-// read, nothing changes and the error is returned (SWI-13).
+// Readopt is Reconcile without the changed records (FR-002a, SC-012): records
+// follow a readable runtime, nothing changes when it cannot be read, and
+// records are never deleted. sxbd calls Reconcile itself at startup so it can
+// bring up the workers it re-adopts.
 func (m *Manager) Readopt(ctx context.Context) error {
 	_, err := m.Reconcile(ctx)
 	return err
@@ -1097,7 +1097,9 @@ func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
 				return errReconcileSkip
 			}
 			leaveRunning(s, want)
-			s.Error = "" // a settled ERROR record drops its old failure
+			if want == pb.SandboxState_SANDBOX_STATE_RUNNING {
+				s.Error = "" // running again: an old failure no longer applies
+			}
 			s.UpdatedAt = timestamppb.Now()
 			return nil
 		})

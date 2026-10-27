@@ -50,9 +50,6 @@ func (g *reconcileGate) run(fn func()) {
 // reconcileSandboxes checks the registry against the runtime before a list.
 // Failure keeps the last-known states (the manager already logged why).
 func (s *Server) reconcileSandboxes(ctx context.Context) {
-	if s.mgr == nil {
-		return
-	}
 	s.reconcile.run(func() {
 		// Detached from the caller: the pass serves every client that lists in
 		// this window, so one client hanging up must not cut it short.

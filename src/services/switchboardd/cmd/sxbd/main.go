@@ -609,8 +609,9 @@ func dialStdio(socket string) error {
 	return <-errc
 }
 
-// readoptRetries are the delays (from daemon start) of the background
-// reconciles after a startup re-adoption could not read the runtime (SWI-13).
+// readoptRetries are the delays, from when the server is wired, of the
+// background reconciles after a startup re-adoption could not read the
+// runtime (SWI-13). Each is bounded by readoptTimeout.
 // A few, not a poll loop: every ListSandboxes reconciles as well.
 var readoptRetries = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 
