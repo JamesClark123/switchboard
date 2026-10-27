@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -60,6 +62,9 @@ type Manager struct {
 	// former and settles only transitional records older than the latter (SWI-13).
 	lifecycle inflight
 	started   time.Time
+	// unknownStatuses records the sbx status words reconciliation has already
+	// warned about (warnUnknownStatus).
+	unknownStatuses sync.Map
 
 	// --- feature 009 (orchestrator worker side; research R3/R4) ---
 	// onDestroy, when set, is called with the record just before it is deleted
@@ -1055,7 +1060,18 @@ func (m *Manager) Readopt(ctx context.Context) error {
 }
 
 // Reconcile reads the runtime once and moves records that disagree with it
-// (SWI-13), returning the records it changed (each already emitted).
+// (SWI-13), returning the records it changed (each already announced): it is
+// ReconcileRecords followed by Announce.
+func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
+	changed, err := m.ReconcileRecords(ctx)
+	m.Announce(changed)
+	return changed, err
+}
+
+// ReconcileRecords is Reconcile's write phase: it moves records that disagree
+// with the runtime and returns them, without announcing them. A caller that
+// must not wait on the change observers (a stop's teardown can take tens of
+// seconds) writes here and runs Announce on its own goroutine.
 //
 //   - When the runtime cannot be read, nothing changes and the error is
 //     returned: "couldn't tell" never means "stopped".
@@ -1065,7 +1081,7 @@ func (m *Manager) Readopt(ctx context.Context) error {
 //   - A record an operation is working on — a held operation latch, a
 //     lifecycle operation in flight, a transitional state this daemon wrote, or
 //     a write that landed while the runtime was being read — is left to it.
-func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
+func (m *Manager) ReconcileRecords(ctx context.Context) ([]*pb.Sandbox, error) {
 	// The records are read BEFORE the runtime: a write that lands in between
 	// changes UpdatedAt, and the write below then skips the record rather than
 	// overwrite a newer answer with an older one.
@@ -1085,8 +1101,12 @@ func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
 		if (!settled && !sb.GetUpdatedAt().AsTime().Before(m.started)) || m.busy(sb.GetId()) {
 			continue
 		}
-		want, known := listedState(statuses, sb)
-		if !known || state == want {
+		want, unknown := listedState(statuses, sb)
+		if unknown != "" {
+			m.warnUnknownStatus(sb.GetId(), unknown, state)
+			continue
+		}
+		if state == want {
 			continue
 		}
 		seen := sb.GetUpdatedAt()
@@ -1104,27 +1124,50 @@ func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
 			return nil
 		})
 		switch {
-		case errors.Is(err, errReconcileSkip):
-			continue // moved meanwhile
+		case errors.Is(err, errReconcileSkip), errors.Is(err, registry.ErrNotFound):
+			continue // moved or destroyed meanwhile: an expected race
 		case err != nil:
-			// Destroyed meanwhile, or this record could not be written: one
-			// record never stops the pass over the rest.
+			// This record could not be written: one record never stops the pass
+			// over the rest.
 			log.Printf("[warn] reconcile: sandbox %s left as %s: %v", sb.GetId(), state, err)
 			continue
 		}
 		log.Printf("[info] reconcile: sandbox %s %s -> %s", sb.GetId(), state, want)
-		m.emit(out)
-		if want == pb.SandboxState_SANDBOX_STATE_RUNNING {
-			// Started outside the daemon: a worker's registration is re-loaded as
-			// after a Restart. The observer may take minutes; it never holds up
-			// the caller.
-			if fn := m.onBringUp; fn != nil && out.GetController() != nil {
-				go fn(out)
-			}
-		}
 		changed = append(changed, out)
 	}
 	return changed, nil
+}
+
+// Announce emits the records a ReconcileRecords pass changed, which runs the
+// change observers (a stop's teardown of terminals, agents and services) and
+// publishes them to clients. A worker found running again is brought up as
+// after a Restart. A record written again since the pass (an operation, or a
+// later pass) is skipped: that write announced itself, and replaying the older
+// state could tear down a sandbox that is running again.
+func (m *Manager) Announce(changed []*pb.Sandbox) {
+	for _, sb := range changed {
+		cur, err := m.store.Get(sb.GetId())
+		if err != nil || !proto.Equal(cur.GetUpdatedAt(), sb.GetUpdatedAt()) {
+			continue
+		}
+		m.emit(cur)
+		if cur.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
+			// The observer may take minutes; it never holds up the caller.
+			if fn := m.onBringUp; fn != nil && cur.GetController() != nil {
+				go fn(cur)
+			}
+		}
+	}
+}
+
+// warnUnknownStatus logs, once per status word, a sbx status the reconcile
+// does not map, so a runtime that reports stopped under another word is seen
+// in the log rather than leaving records unchanged silently.
+func (m *Manager) warnUnknownStatus(id, status string, state pb.SandboxState) {
+	if _, seen := m.unknownStatuses.LoadOrStore(status, true); seen {
+		return
+	}
+	log.Printf("[warn] reconcile: sandbox %s: unknown sbx status %q; leaving it %s (logged once per status)", id, status, state)
 }
 
 // busy reports whether an operation is working on the sandbox (SWI-13).
@@ -1138,32 +1181,30 @@ var errReconcileSkip = errors.New("record changed during reconcile")
 
 // listedState is the state a successful listing gives a sandbox: RUNNING when
 // any of its handles is listed running, STOPPED when one is listed stopped or
-// none is listed (or it has no container at all). known is false for a status
-// sbx has but this daemon does not (a transient "starting", say): the record
-// is then left as it is rather than read as stopped.
-func listedState(statuses map[string]string, sb *pb.Sandbox) (state pb.SandboxState, known bool) {
+// none is listed (or it has no container at all). unknown names a status sbx
+// has but this daemon does not (a transient "starting", say): the record is
+// then left as it is rather than read as stopped.
+func listedState(statuses map[string]string, sb *pb.Sandbox) (state pb.SandboxState, unknown string) {
 	if sb.GetContainerRef() == "" {
-		return pb.SandboxState_SANDBOX_STATE_STOPPED, true
+		return pb.SandboxState_SANDBOX_STATE_STOPPED, ""
 	}
-	listed, unknown := false, false
 	for _, r := range sbxRefs(sb) {
 		status, ok := statuses[r]
 		if !ok {
 			continue
 		}
-		listed = true
 		switch status {
 		case "running":
-			return pb.SandboxState_SANDBOX_STATE_RUNNING, true
+			return pb.SandboxState_SANDBOX_STATE_RUNNING, ""
 		case "stopped":
 		default:
-			unknown = true
+			unknown = status
 		}
 	}
-	if listed && unknown {
-		return pb.SandboxState_SANDBOX_STATE_UNSPECIFIED, false
+	if unknown != "" {
+		return pb.SandboxState_SANDBOX_STATE_UNSPECIFIED, unknown
 	}
-	return pb.SandboxState_SANDBOX_STATE_STOPPED, true
+	return pb.SandboxState_SANDBOX_STATE_STOPPED, ""
 }
 
 // RefreshHooks rewrites the agent hook settings of every sandbox that still has

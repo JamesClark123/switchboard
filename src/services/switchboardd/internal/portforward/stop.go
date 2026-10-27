@@ -42,17 +42,18 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 	if IsTerminal(inst.GetState()) {
 		return inst, nil
 	}
-	s.stopInstance(inst.GetId())
+	s.stopInstance(inst.GetId(), false)
 	stopped, _ := s.insts.Get(inst.GetId())
 	return stopped, nil
 }
 
 // stopInstance drives one instance to STOPPED, killing its tree and releasing its
-// resources. Shared by Stop and the sandbox-teardown cascade.
-func (s *Supervisor) stopInstance(instID string) {
+// resources. Shared by Stop and the sandbox-teardown cascade; sandboxDown is the
+// cascade's "the sandbox is no longer running" (see signalGroup).
+func (s *Supervisor) stopInstance(instID string, sandboxDown bool) {
 	h, hadHandle := s.handleFor(instID)
 	if hadHandle {
-		s.terminate(h)
+		s.terminate(h, sandboxDown)
 	}
 	if proc := s.procFor(instID); proc != nil {
 		out, truncated := proc.output()
@@ -70,8 +71,8 @@ func (s *Supervisor) stopInstance(instID string) {
 
 // terminate signals a service's process group, waits out the grace period, force-
 // kills the remainder, and then waits for the listen port to actually go free.
-func (s *Supervisor) terminate(h *procHandle) {
-	s.signalGroup(h, false)
+func (s *Supervisor) terminate(h *procHandle, sandboxDown bool) {
+	s.signalGroup(h, false, sandboxDown)
 
 	deadline := time.Now().Add(s.stopGrace)
 	for time.Now().Before(deadline) {
@@ -81,7 +82,7 @@ func (s *Supervisor) terminate(h *procHandle) {
 		time.Sleep(portFreeWaitStep)
 	}
 	if !s.gone(h) {
-		s.signalGroup(h, true)
+		s.signalGroup(h, true, sandboxDown)
 		// Confirm the force-kill actually landed. Returning while the tree is still
 		// dying would let a following Start race a process that still holds the port.
 		killDeadline := time.Now().Add(s.stopGrace)
@@ -101,13 +102,16 @@ func (s *Supervisor) terminate(h *procHandle) {
 }
 
 // signalGroup sends SIGTERM (or SIGKILL) to the service's process tree, by the
-// route appropriate to where it runs.
-func (s *Supervisor) signalGroup(h *procHandle, force bool) {
+// route appropriate to where it runs. With sandboxDown (the sandbox stopped or
+// went away) an in-sandbox tree is not signalled: it went down with the
+// container, and `sbx exec` would start a stopped sandbox again (SWI-13). Only
+// the host-side `sbx exec` child is dropped.
+func (s *Supervisor) signalGroup(h *procHandle, force, sandboxDown bool) {
 	if h.inSbx {
 		// The host-side `sbx exec` child is not the service; the tree lives inside
 		// the sandbox and has to be signalled there, using the PGID the setsid
 		// wrapper announced (research R3).
-		if h.pgid > 0 && h.ref != "" {
+		if h.pgid > 0 && h.ref != "" && !sandboxDown {
 			sig := "TERM"
 			if force {
 				sig = "KILL"
@@ -117,7 +121,7 @@ func (s *Supervisor) signalGroup(h *procHandle, force bool) {
 			_ = cmd.Run()
 			cancel()
 		}
-		if force && h.cancel != nil {
+		if (force || sandboxDown) && h.cancel != nil {
 			h.cancel() // also drop the host-side sbx exec child
 		}
 		return
@@ -169,21 +173,23 @@ func (s *Supervisor) stopProc(proc *runningProc, ref string, inSbx bool) {
 		return
 	}
 	h := &procHandle{proc: proc, pgid: proc.pgid, inSbx: inSbx, ref: ref}
-	s.signalGroup(h, false)
+	s.signalGroup(h, false, false)
 	deadline := time.Now().Add(s.stopGrace)
 	for time.Now().Before(deadline) && !proc.hasExited() {
 		time.Sleep(portFreeWaitStep)
 	}
 	if !proc.hasExited() {
-		s.signalGroup(h, true)
+		s.signalGroup(h, true, false)
 	}
 }
 
-// StopAll stops every non-terminal service of a sandbox. It is the teardown hook:
-// stopping, destroying, or refreshing a sandbox must leave no orphaned process and
-// no held port (FR-048, US4-5).
+// StopAll stops every non-terminal service of a sandbox. It is the teardown hook,
+// run once the sandbox has left RUNNING: stopping, destroying, or refreshing a
+// sandbox must leave no orphaned process and no held port (FR-048, US4-5). The
+// sandbox is down by then, so in-sandbox services are not signalled through
+// `sbx exec`, which would start it again (SWI-13, signalGroup).
 func (s *Supervisor) StopAll(sandboxID string) {
 	for _, inst := range s.insts.ActiveBySandbox(sandboxID) {
-		s.stopInstance(inst.GetId())
+		s.stopInstance(inst.GetId(), true)
 	}
 }

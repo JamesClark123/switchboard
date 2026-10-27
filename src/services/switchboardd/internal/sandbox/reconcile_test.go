@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +223,7 @@ func TestReconcileSurvivesARecordDestroyedMeanwhile(t *testing.T) {
 		}
 	}}
 	emits := recordEmits(m)
+	logs := captureLog(t)
 	changed, err := m.Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +234,21 @@ func TestReconcileSurvivesARecordDestroyedMeanwhile(t *testing.T) {
 	if len(changed) != 1 || stateOf(t, reg, "id-b") != pb.SandboxState_SANDBOX_STATE_STOPPED {
 		t.Errorf("changed %v; want id-b STOPPED after id-a vanished", changed)
 	}
+	// An expected race, not a warning (only real write failures warn).
+	if strings.Contains(logs.String(), "[warn]") {
+		t.Errorf("a destroy racing the pass logged a warning:\n%s", logs)
+	}
+}
+
+// captureLog redirects the standard logger for the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
+	return &buf
 }
 
 // A worker found running again is brought up like after a Restart.
@@ -314,6 +333,71 @@ func TestReconcileLeavesUnknownStatusesAlone(t *testing.T) {
 	}
 	if got := stateOf(t, reg, "id-s"); got != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		t.Errorf("record with an unknown status = %v; want RUNNING kept", got)
+	}
+}
+
+// An unknown status is logged once per status word, so a runtime that reports
+// stopped under another word shows up in the log rather than silently.
+func TestReconcileWarnsOncePerUnknownStatus(t *testing.T) {
+	m, reg, _, _ := newTestManager(t)
+	putRecord(t, reg, "id-x", "x", "x", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	putRecord(t, reg, "id-y", "y", "y", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	putRecord(t, reg, "id-z", "z", "z", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	m.runner = &statusRunner{fakeRunner: newFakeRunner(), statuses: map[string]string{"x": "exited", "y": "exited", "z": "paused"}}
+	logs := captureLog(t)
+	for range 2 {
+		if _, err := m.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := logs.String()
+	if n := strings.Count(out, `unknown sbx status "exited"`); n != 1 {
+		t.Errorf(`"exited" warned %d times; want once:\n%s`, n, out)
+	}
+	if n := strings.Count(out, `unknown sbx status "paused"`); n != 1 {
+		t.Errorf(`"paused" warned %d times; want once:\n%s`, n, out)
+	}
+}
+
+// ReconcileRecords writes without announcing; Announce then emits what is
+// still current, and skips a record written again since (its own write
+// announced it, and replaying the older state could tear a running sandbox
+// down).
+func TestReconcileRecordsThenAnnounce(t *testing.T) {
+	m, reg, _, _ := newTestManager(t)
+	putRecord(t, reg, "id-a", "a", "a", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	putRecord(t, reg, "id-b", "b", "b", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	putRecord(t, reg, "id-c", "c", "c", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	emits := recordEmits(m)
+
+	changed, err := m.ReconcileRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 3 || len(emits) != 0 {
+		t.Fatalf("ReconcileRecords changed %d, emitted %v; want 3 written, nothing emitted", len(changed), emits)
+	}
+	if got := stateOf(t, reg, "id-a"); got != pb.SandboxState_SANDBOX_STATE_STOPPED {
+		t.Errorf("record after ReconcileRecords = %v; want STOPPED written", got)
+	}
+	// id-b is started again, and id-c destroyed, before the announcement.
+	if _, err := reg.Update("id-b", func(s *pb.Sandbox) error {
+		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		s.UpdatedAt = timestamppb.New(time.Now().Add(time.Second))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Delete("id-c"); err != nil {
+		t.Fatal(err)
+	}
+
+	m.Announce(changed)
+	if emits["id-a"] != 1 {
+		t.Errorf("id-a emitted %d times; want 1", emits["id-a"])
+	}
+	if emits["id-b"] != 0 || emits["id-c"] != 0 {
+		t.Errorf("superseded records emitted %v; want none for id-b, id-c", emits)
 	}
 }
 

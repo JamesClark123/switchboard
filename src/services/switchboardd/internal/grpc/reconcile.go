@@ -49,12 +49,22 @@ func (g *reconcileGate) run(fn func()) {
 
 // reconcileSandboxes checks the registry against the runtime before a list.
 // Failure keeps the last-known states (the manager already logged why).
+//
+// Only the record writes happen here, so the list that follows shows them.
+// Announcing them runs the change observers, and a sandbox found stopped is
+// torn down (terminals, agent, escape-hatch runs, services: up to tens of
+// seconds per service), so that runs on its own goroutine: reconcileTimeout
+// bounds the whole wait, and the gate is not held while it runs. Clients get
+// the change events as each announcement goes out.
 func (s *Server) reconcileSandboxes(ctx context.Context) {
 	s.reconcile.run(func() {
 		// Detached from the caller: the pass serves every client that lists in
 		// this window, so one client hanging up must not cut it short.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		defer cancel()
-		_, _ = s.mgr.Reconcile(rctx)
+		changed, _ := s.mgr.ReconcileRecords(rctx)
+		if len(changed) > 0 {
+			go s.mgr.Announce(changed)
+		}
 	})
 }

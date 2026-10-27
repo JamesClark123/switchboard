@@ -232,3 +232,42 @@ func TestStopAllOnASandboxWithNothingRunning(t *testing.T) {
 	s, _, _, _ := newTestSupervisor(t, sb)
 	s.StopAll("sb1") // must not panic or block
 }
+
+// SWI-13: the teardown runs once the sandbox has left RUNNING, and `sbx exec`
+// would start a stopped sandbox again, so StopAll never execs into it. The
+// in-sandbox tree went down with the container; only the host-side `sbx exec`
+// child is dropped and the instance released.
+func TestStopAllNeverExecsIntoTheStoppedSandbox(t *testing.T) {
+	ln, port := listenAllInterfaces(t)
+	defer func() { _ = ln.Close() }()
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	proc := s.procFor(instanceIDOf(t, s, "sb1", "web"))
+	if proc == nil || proc.pgid <= 0 {
+		t.Fatal("expected a launched in-sandbox process with an announced pgid")
+	}
+	// The fake Runner runs the "in-sandbox" tree on the host; a real container
+	// stop would have killed it, so the test does.
+	t.Cleanup(func() { killPGID(proc.pgid, true) })
+	runner.mu.Lock()
+	before := len(runner.execArgv)
+	runner.mu.Unlock()
+
+	s.StopAll("sb1")
+
+	runner.mu.Lock()
+	after := runner.execArgv[before:]
+	runner.mu.Unlock()
+	for _, argv := range after {
+		t.Errorf("teardown ran sbx exec %v; it must not exec into a stopped sandbox", argv)
+	}
+	if got := len(s.insts.ActiveBySandbox("sb1")); got != 0 {
+		t.Errorf("active instances after teardown = %d, want 0", got)
+	}
+	waitFor(t, "the host-side sbx exec child to be dropped", 3*time.Second, proc.hasExited)
+}
