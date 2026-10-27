@@ -44,6 +44,7 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 	var name string
 	ready := s.agents == nil || s.agents.Ready(req.GetSandboxId())
 	starting, stray := false, false
+	var seen pb.AgentStatus // the stray status, when stray
 	sb, err := s.reg.Update(req.GetSandboxId(), func(x *pb.Sandbox) error {
 		c := x.GetController()
 		switch {
@@ -57,8 +58,8 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 			// The record may still read IDLE (no agent ever started, or the
 			// daemon restarted): the registry, not the record, knows.
 			starting = true
-			st := x.GetAgent().GetStatus()
-			stray = st != pb.AgentStatus_AGENT_STATUS_STARTING && st != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+			seen = x.GetAgent().GetStatus()
+			stray = seen != pb.AgentStatus_AGENT_STATUS_STARTING && seen != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
 			return fmt.Errorf("%w: agent is starting", ErrPrecondition)
 		case x.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE:
 			// WAITING (on background work, SWI-12) is refused too: the agent
@@ -78,8 +79,9 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 			if stray {
 				// A hook wrote over the not-ready status; put it back so the
 				// worker stops reading free (and mark-free can vouch again).
-				// On its own goroutine: the write's observers may dispatch.
-				go s.agents.ReassertUnready(req.GetSandboxId())
+				// On its own goroutine: the write's observers may dispatch. Only
+				// while the record still reads what was seen here.
+				go s.agents.ReassertUnready(req.GetSandboxId(), seen)
 			}
 		} else if starting {
 			s.startAgent(req.GetSandboxId(), "deliver")

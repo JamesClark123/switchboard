@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -391,19 +392,80 @@ func TestReassertUnready(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(rec.snapshot()) == 1 }) // STARTING
-	reg.ReassertUnready("sb")
+	reg.ReassertUnready("sb", pb.AgentStatus_AGENT_STATUS_IDLE)
 	if n := len(rec.snapshot()); n != 2 || last() != pb.AgentStatus_AGENT_STATUS_STARTING {
 		t.Errorf("before the timeout: %v, want STARTING again", rec.snapshot())
 	}
 	waitFor(t, func() bool { return len(rec.snapshot()) == 3 }) // the timeout's NEEDS_INPUT
-	reg.ReassertUnready("sb")
+	reg.ReassertUnready("sb", pb.AgentStatus_AGENT_STATUS_IDLE)
 	if n := len(rec.snapshot()); n != 4 || last() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
 		t.Errorf("after the timeout: %v, want NEEDS_INPUT again", rec.snapshot())
 	}
 	reg.MarkReady("sb")
-	reg.ReassertUnready("sb")
-	reg.ReassertUnready("sb-none")
+	reg.ReassertUnready("sb", pb.AgentStatus_AGENT_STATUS_IDLE)
+	reg.ReassertUnready("sb-none", pb.AgentStatus_AGENT_STATUS_IDLE)
 	if n := len(rec.snapshot()); n != 4 {
 		t.Errorf("a ready agent or no session got a write: %v", rec.snapshot())
+	}
+}
+
+// statusStore keeps one status per sandbox, readable back like the registry.
+type statusStore struct {
+	mu sync.Mutex
+	st map[string]pb.AgentStatus
+}
+
+func (s *statusStore) SetAgentStatus(id string, st pb.AgentStatus, _ time.Time) (*pb.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st[id] = st
+	return &pb.Sandbox{Id: id}, nil
+}
+
+func (s *statusStore) Get(id string) (*pb.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &pb.Sandbox{Id: id, Agent: &pb.AgentSession{Status: s.st[id]}}, nil
+}
+
+func (s *statusStore) get(id string) pb.AgentStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st[id]
+}
+
+// SWI-15 review: ReassertUnready rewrites only the stray status the refused
+// delivery saw. A hook that landed since (the WORKING of the developer's next
+// prompt) is left as it is; a rewrite is logged.
+func TestReassertUnreadyOnlyOverTheStatusSeen(t *testing.T) {
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return newMemSession(), nil })
+	store := &statusStore{st: map[string]pb.AgentStatus{}}
+	reg.SetStatusUpdater(store)
+	var logs []string
+	var logMu sync.Mutex
+	reg.SetLogger(func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if _, err := reg.Session("sb", &pb.AgentSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return store.get("sb") == pb.AgentStatus_AGENT_STATUS_STARTING })
+
+	_, _ = store.SetAgentStatus("sb", pb.AgentStatus_AGENT_STATUS_WORKING, time.Now()) // the next prompt's hook
+	reg.ReassertUnready("sb", pb.AgentStatus_AGENT_STATUS_IDLE)
+	if got := store.get("sb"); got != pb.AgentStatus_AGENT_STATUS_WORKING {
+		t.Errorf("a WORKING that landed since was overwritten with %v", got)
+	}
+	_, _ = store.SetAgentStatus("sb", pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()) // its Stop
+	reg.ReassertUnready("sb", pb.AgentStatus_AGENT_STATUS_IDLE)
+	if got := store.get("sb"); got != pb.AgentStatus_AGENT_STATUS_STARTING {
+		t.Errorf("the stray IDLE = %v after reasserting, want STARTING", got)
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if len(logs) != 1 || !strings.Contains(logs[0], "sb: agent never reported ready; status starting put back over a stray idle") {
+		t.Errorf("logs = %q, want the one rewrite", logs)
 	}
 }

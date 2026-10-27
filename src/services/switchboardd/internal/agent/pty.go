@@ -238,8 +238,10 @@ func (r *Registry) MarkReady(sandboxID string) {
 // write IDLE over those (a lost SessionStart, then a developer typing into the
 // agent and its Stop), which would leave the worker reading free while every
 // delivery is refused and mark-free has nothing to vouch for. A ready agent, or
-// no session, is left alone.
-func (r *Registry) ReassertUnready(sandboxID string) {
+// no session, is left alone, and so is a record no longer reading seen (the
+// stray status the caller found): a hook that landed since, such as the
+// WORKING of the developer's next prompt, is not overwritten.
+func (r *Registry) ReassertUnready(sandboxID string, seen pb.AgentStatus) {
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
 	r.mu.Lock()
@@ -248,10 +250,24 @@ func (r *Registry) ReassertUnready(sandboxID string) {
 	if ok && e.timedOut {
 		st = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
 	}
+	g, canGet := r.status.(sandboxGetter)
 	r.mu.Unlock()
-	if ok {
-		r.writeUnreadyLocked(sandboxID, e, st)
+	if !ok {
+		return
 	}
+	if canGet {
+		if sb, err := g.Get(sandboxID); err != nil || sb.GetAgent().GetStatus() != seen {
+			return
+		}
+	}
+	if r.writeUnreadyLocked(sandboxID, e, st) {
+		r.log("[agent] %s: agent never reported ready; status %s put back over a stray %s", sandboxID, statusWord(st), statusWord(seen))
+	}
+}
+
+// statusWord is an agent status for the log, e.g. "needs_input".
+func statusWord(st pb.AgentStatus) string {
+	return strings.ToLower(strings.TrimPrefix(st.String(), "AGENT_STATUS_"))
 }
 
 // startTimedOut parks an agent that never reported ready: NEEDS_INPUT plus a
