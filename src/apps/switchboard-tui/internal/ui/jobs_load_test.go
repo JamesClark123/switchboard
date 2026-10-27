@@ -790,10 +790,16 @@ func TestDetailClosesOnItsOwnDaemon(t *testing.T) {
 	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
 	m, mgr, _ := twoFakeHosts(t, a, b)
 	m.daemonOrchs = daemonOrchsState{host: "hosta", hostName: "alpha"} // an earlier visit
+	m.orchDetail.name, m.orchDetail.hostName = "alpha-bot", "alpha"    // alpha-bot's detail was open
 	mm, _ := m.markFreeKey(reviewWorker("hostb"), "hostb")
 	m = mm.(Model)
 	if m.screen != screenOrchDetail || m.orchDetail.form == nil {
 		t.Fatalf("the dialog opens: screen %v", m.screen)
+	}
+	// The header names beta-bot, not the detail opened before (review run-242
+	// finding 1).
+	if v := m.View(); !strings.Contains(v, "beta-bot › mark free") || strings.Contains(v, "alpha-bot") {
+		t.Errorf("the dialog header:\n%s", v)
 	}
 	mgr.Disconnect("hosta")
 	m = feed2(m, m.hostsCmd())
@@ -951,5 +957,46 @@ func TestJobsRowsFitTheWidth(t *testing.T) {
 				t.Errorf("tab %s: a %d-column line: %q", jobsTabNames[tab], w, l)
 			}
 		}
+	}
+}
+
+// An older event reload that failed with Unavailable, landing after a newer
+// successful read, does not mark the host lost (review run-242 finding 2).
+func TestJobsOlderUnavailableDoesNotMarkLost(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	o := m.jobs.orchs[0].target
+	old := jobsSeq.Add(1)
+	m = changedOrch(m, o) // the newer read succeeds
+	m, _ = update(m, jobsOrchMsg{host: o.host, id: o.id, recSeq: old, runsSeq: old, err: status.Error(codes.Unavailable, "eof")})
+	if hs := m.jobs.hosts[o.host]; hs != nil && hs.lost != nil {
+		t.Errorf("an outdated Unavailable marked the host lost: %v", hs.lost)
+	}
+	// A newer one still does.
+	s := jobsSeq.Add(1)
+	m, _ = update(m, jobsOrchMsg{host: o.host, id: o.id, recSeq: s, runsSeq: s, err: status.Error(codes.Unavailable, "eof")})
+	if hs := m.jobs.hosts[o.host]; hs == nil || hs.lost == nil {
+		t.Error("a current Unavailable marks the host lost")
+	}
+}
+
+// Daemons › Orchestrators opens for a lost daemon whose Jobs load is already in
+// flight: that load is the retry (review run-242 finding 3).
+func TestDaemonOrchsOpensForLostHostWhileLoading(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	m = openJobs(m)
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	m.jobsLoadAll() // r on Jobs: the loads are in flight (their commands not run)
+	mm, _ := m.enterDaemonOrchs(daemonRow{id: "hostb", name: "beta"})
+	if m = mm.(Model); m.screen != screenDaemonOrchs {
+		t.Errorf("refused while the retry runs: screen %v status %q", m.screen, m.status)
+	}
+	// A daemon that is not connected at all is still refused.
+	m.screen = screenDaemons
+	m.manager.Disconnect("hostb")
+	if mm, _ = m.enterDaemonOrchs(daemonRow{id: "hostb", name: "beta"}); mm.(Model).screen == screenDaemonOrchs {
+		t.Error("a disconnected daemon opens")
 	}
 }

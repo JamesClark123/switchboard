@@ -486,17 +486,19 @@ func (m *Model) jobsAnswered(host string) tea.Cmd {
 
 // jobsRetryLost retries a lost host that the client still calls connected (the
 // Daemons › Orchestrators entry and `r`): its Jobs load clears the mark on
-// success and re-subscribes (R3). Nil when the host is not lost.
-func (m *Model) jobsRetryLost(host string) tea.Cmd {
+// success and re-subscribes (R3). retrying reports such a host, including one
+// whose load is already in flight (the command is then nil: that load is the
+// retry, review run-242 finding 3).
+func (m *Model) jobsRetryLost(host string) (cmd tea.Cmd, retrying bool) {
 	if hs := m.jobs.hosts[host]; hs == nil || hs.lost == nil {
-		return nil
+		return nil, false
 	}
 	for _, h := range m.orchHosts() {
 		if h.id == host && h.d != nil {
-			return m.jobsLoadHost(h, false)
+			return m.jobsLoadHost(h, false), true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // jobsNoteLost marks a host lost when a Jobs call to it failed with Unavailable:
@@ -553,6 +555,9 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 	if msg.flight == md.flight {
 		md.inFlight = false
 	}
+	// Only a reply newer than what is applied can mark the host lost: an older
+	// Unavailable must not undo a later successful read (review run-242 finding 2).
+	newer := maxSeq(msg.recSeq, msg.runsSeq) > md.seq()
 	switch {
 	case msg.gone:
 		// NotFound: the orchestrator was removed (R3).
@@ -570,7 +575,9 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 	default:
 		m.applyJobsRead(*msg.orch, msg.recSeq, msg.runsSeq, false)
 	}
-	m.jobsNoteLost(msg.host, msg.err)
+	if newer {
+		m.jobsNoteLost(msg.host, msg.err)
+	}
 	m.jobsChanged()
 	if md.dirty && !md.inFlight {
 		md.dirty = false

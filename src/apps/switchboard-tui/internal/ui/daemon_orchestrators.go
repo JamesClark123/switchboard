@@ -24,8 +24,8 @@ func (m Model) enterDaemonOrchs(row daemonRow) (tea.Model, tea.Cmd) {
 		// Without a host manager the rows are keyed by the active host entry.
 		host = m.activeHost
 	}
-	retry := m.jobsRetryLost(host)
-	if _, err := m.connectedDaemon(host); err != nil && retry == nil {
+	retry, retrying := m.jobsRetryLost(host)
+	if _, err := m.connectedDaemon(host); err != nil && !retrying {
 		m.status = "error: " + err.Error()
 		return m, nil
 	}
@@ -108,7 +108,8 @@ func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "r":
 		m.orch.loading = true
-		return m, tea.Batch(m.orchLoadCmd(), m.jobsRetryLost(m.daemonOrchs.host))
+		retry, _ := m.jobsRetryLost(m.daemonOrchs.host)
+		return m, tea.Batch(m.orchLoadCmd(), retry)
 	case "up", "k":
 		if m.orch.cursor > 0 {
 			m.orch.cursor--

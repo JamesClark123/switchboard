@@ -279,8 +279,10 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	}
 	// The dialog lives on the detail state but returns to the list.
 	t := orchTarget{host: orchHost, hostName: m.hostDisplayName(orchHost), id: c.GetOrchestratorId(), name: c.GetName()}
-	m.orchDetail.host = orchHost
-	m.orchDetail.id = c.GetOrchestratorId()
+	// The detail's names too: the form header and a disconnect's close message
+	// read them (review run-242 finding 1).
+	m.orchDetail.host, m.orchDetail.hostName = orchHost, t.hostName
+	m.orchDetail.id, m.orchDetail.name = c.GetOrchestratorId(), t.name
 	m.markFreeFromList = true
 	m.screen = screenOrchDetail
 	return m.openMarkFreeForm(surfaceDetail, t, sb.GetId())
