@@ -25,7 +25,7 @@
 
 ### PR review 2026-10-27 (pr-review run `run-c275c8f2-276`, resolved in pr-response run `run-c275c8f2-362`)
 
-- Multi-line fields lose their 99-line cap (the textarea's default `MaxHeight`). They and the enlarged view accept text up to the existing 10,000-line load limit, because without the external editor nothing else could grow a field past 99 lines. (FR-009a)
+- The enlarged view accepts text up to the existing 10,000-line load limit, because without the external editor nothing else could grow a field past 99 lines. (FR-009a; round 2 below keeps the inline fields' 99-line cap)
 - A forced close (daemon disconnect, or the edited object removed) takes precedence over an open unsaved-changes dialog. The dialog goes with the surface, and the status line says why the edits were lost. (Edge Cases)
 - In the enlarged view, ctrl+c writes the text back and then acts as ctrl+c in the form, so this is how the dialog opens over it. Cancel returns to the enlarged view. tab and shift+tab do nothing there. (FR-004, FR-005a, FR-015)
 - Inline inputs count as changed only after the normalisation enter applies (trim). A value enter would reject (an empty sandbox name) is a validation failure for Save. (FR-011a, US3 #1 and #7)
@@ -33,6 +33,12 @@
 - Declining the follow-up removal confirm after Save in the sources overlay behaves like Cancel. Confirming completes the exit. (US3 #3)
 - The enlarged view gets a revert key that restores the text from when it opened. (FR-005b)
 - Large text must stay responsive in the enlarged view. (SC-006)
+
+### PR review round 2 (2026-10-27, re-review run `run-c275c8f2-377`, resolved in pr-response run `run-c275c8f2-386`)
+
+- **Inline multi-line fields keep their 99-line typing cap.** All 17 inline multi-line fields are `huh.Text`. In huh v1.0.0, `huh.Text` doesn't expose its textarea's `MaxHeight`, so removing the cap inline would mean replacing `huh.Text` with a custom field or forking huh. Instead, the enlarged view is how a field grows past 99 lines. A longer value is kept intact inline, because the cap only stops enter from adding a line. I checked this against huh v1.0.0 during review: a 150-line value loaded into `huh.Text` is kept and can be edited, and enter at its end adds no line. (FR-009a, US2 #8)
+- Responsiveness also covers a form whose inline field holds very long text (written back from the enlarged view), since every field re-renders on each keystroke. (SC-006)
+- The revert baseline is set when ctrl+e opens the enlarged view, and it survives a ctrl+c → Cancel round trip. (FR-005b)
 
 ## Background (current behaviour this feature changes)
 
@@ -162,7 +168,7 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 5. **Given** the enlarged view is open, **When** the developer presses the form's save key (ctrl+s), **Then** the view closes with its edits kept and the form saves, exactly as if ctrl+s had been pressed in the form.
 6. **Given** the enlarged view is open, **When** the terminal is resized, **Then** the view re-fits without losing text, cursor or scroll position.
 7. **Given** focus on a single-line input, **When** the developer presses ctrl+e, **Then** it moves the cursor to the end of the line as it does today, and no enlarge hint is shown. On a non-text field (toggle, select) ctrl+e does nothing.
-8. **Given** a multi-line field holding 150 lines, whether inline or in the enlarged view, **When** the developer presses enter at the end, **Then** a 151st line is added (FR-009a).
+8. **Given** a multi-line field holding 150 lines in the enlarged view, **When** the developer presses enter at the end, **Then** a 151st line is added. Closing the view leaves all 151 lines in the inline field, and the form saves them in full. Pressing enter at the end inline adds no line past 99, and ctrl+e is how the developer grows the field further (FR-009a).
 9. **Given** the enlarged view with edits, **When** the developer presses the revert key, **Then** the view shows the text exactly as it was when the view opened. Edits made in the form before enlarging are kept (FR-005b).
 10. **Given** the enlarged view over a changed form, **When** the developer presses ctrl+c, **Then** the view's text is written back and the unsaved-changes dialog opens. Cancel returns to the enlarged view with its text, cursor and scroll position intact (FR-005a).
 
@@ -195,12 +201,16 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 - **FR-004**: The enlarged view MUST be editable with the same editing and navigation behaviour as the inline field, and MUST scroll to keep the cursor visible. tab and shift+tab, which move between fields inline, MUST do nothing in the enlarged view; they neither insert text nor close it.
 - **FR-005**: Closing the enlarged view (esc or ctrl+e) MUST write its text back into the field, return focus to that field, and keep the form open. Closing it MUST NOT raise the unsaved-changes dialog.
 - **FR-005a**: ctrl+c in the enlarged view MUST write its text back and then act exactly as ctrl+c in the form (FR-012 (b)). If the form is changed, the unsaved-changes dialog opens and the enlarged view stays underneath it: Cancel returns to the enlarged view unchanged, while Save and Discard act on the whole form. If the form is unchanged, the form closes as it does today.
-- **FR-005b**: The enlarged view MUST offer a **revert** key, shown in its key hints, that restores the text the field held when the view opened. It undoes only the edits made in this view, never the form's other edits. The planning phase chooses the key, under the same no-clash rule as the dialog keys.
+- **FR-005b**: The enlarged view MUST offer a **revert** key, shown in its key hints, that restores the text the field held when the view opened. It undoes only the edits made in this view, never the form's other edits. The baseline is set when ctrl+e opens the view, and it survives a ctrl+c → Cancel round trip (FR-005a): the write-back at ctrl+c doesn't move it, so after Cancel, revert still restores the text from before ctrl+e. The planning phase chooses the key, under the same no-clash rule as the dialog keys.
 - **FR-006**: The form's save key pressed in the enlarged view MUST close the view with its edits kept, then save the form exactly as the form's save key does.
 - **FR-007**: Edits made in the enlarged view MUST count towards the form's changed state exactly as inline edits do.
 - **FR-008**: The enlarged view MUST re-fit when the terminal is resized, keeping text, cursor and scroll position.
 - **FR-009**: ctrl+e MUST NOT launch an external editor anywhere in the app. On single-line inputs it MUST keep its existing move-to-end-of-line behaviour; on non-text fields it MUST do nothing. In multi-line fields and in the enlarged view, move-to-end-of-line stays available on `end`.
-- **FR-009a**: Every editable multi-line field, inline and enlarged, MUST accept text up to at least the existing 10,000-line load limit, with no lower line cap. This means removing the textarea's 99-line `MaxHeight` default, which currently stops enter from adding a line. Without it, removing the external editor would leave no way to grow a field past 99 lines. Today the editor's result already reaches fields with only the 10,000-line limit, so kit **Content** and **Agent instructions** can exceed 99 lines.
+- **FR-009a**: The enlarged view MUST accept text up to at least the existing 10,000-line load limit, with no lower line cap. Without the external editor it is the only way to grow a field past 99 lines. (Today the editor's result already reaches fields with only the 10,000-line limit, so kit **Content** and **Agent instructions** can exceed 99 lines.)
+  - Inline multi-line fields (`huh.Text`) keep huh's textarea default, a 99-line `MaxHeight` that stops enter from adding a line past 99. huh v1.0.0 offers no setter for it, and lifting it would mean replacing `huh.Text` with a custom field.
+  - An inline field MUST still hold, show (scrolling) and save in full any value up to the 10,000-line limit, whether written back from the enlarged view or loaded. The cap blocks only enter: setting a value is bounded only by the 10,000-line limit.
+  - The planning phase verifies that a value over 99 lines round-trips through `huh.Text` unchanged. If it doesn't, the plan replaces `huh.Text` for the affected fields rather than truncating the value.
+  - The inline field's `ctrl+e enlarge` hint is how a developer at the cap adds lines. Detecting the blocked enter is not required.
 
 **Unsaved-changes guard**
 
@@ -245,7 +255,11 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 - **SC-003**: On an 80×24 terminal, the enlarged view shows at least 16 lines of text. On a 200×50 terminal, it uses at least 80% of the terminal's height and width.
 - **SC-004**: A developer can enlarge a field, edit it, close the view and see the edit in the form using no more than two keypresses beyond the edit itself.
 - **SC-005**: The three dialog choices produce the specified result for every exit in User Stories 1–3. Cancel always restores the exact previous state of the surface.
-- **SC-006**: With 5,000 lines of text in the enlarged view on a 200×50 terminal, typing, cursor movement and scrolling show each keystroke's result within 100 ms. The planning phase includes a check of this, since rendering walks every line of the value.
+- **SC-006**: On a 200×50 terminal, each keystroke's result MUST show within 100 ms in both of these cases:
+  - with 5,000 lines of text in the enlarged view, for typing, cursor movement and scrolling;
+  - in a form whose inline multi-line field holds 5,000 lines (written back from the enlarged view), for typing in *another* field of that form.
+
+  The planning phase includes a check of both. Rendering walks every line of a value, a form re-renders every field on each update, and the textarea's wrap cache is sized to its `MaxHeight` (99 inline), so a long inline value can thrash it.
 
 ## Assumptions
 
