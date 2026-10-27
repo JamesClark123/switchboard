@@ -158,9 +158,9 @@ R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 6 
 launch, reasoning, sources overlay + add browser, rename/tag/add host/add group) routes its exits (esc; ctrl+c in forms;
 `q` on the kit overview and sources overlay) through `requestExit`: clean (current values == baseline snapshot, taken
 after the form is built and Text values normalised) leaves as today, dirty opens
-one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild → the destructive rebuild
-confirm) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight; letter keys ignored
-for 150 ms after it opens. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
+one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild → a destructive confirm
+built from the edited setup) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight;
+only esc/ctrl+c act for 150 ms after it opens. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
 `View` applies the password/sign-in overlays last over every layer. Save = the surface's existing save/confirm, Discard =
 its esc path. MCP "register anyway?" back-out returns to the form; sources Save → removal confirm (decline = Cancel);
 a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog/enlarge layers are closed by

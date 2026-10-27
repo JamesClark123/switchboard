@@ -43,8 +43,10 @@ The manual scenarios below run against a local daemon (`sxbd`) and the TUI (`sxb
 3. `n` (launch), mark two folders, esc: the dialog appears; `s` launches.
 4. In the launch wizard press `N`, type a name, esc: only the field blurs. Open the host picker with `H`, then esc:
    back to the wizard, no dialog.
-5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`). `r` opens the
-   destructive rebuild confirm, and n there returns to the setup. Toggling a folder off and on again (it moves to the
+5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`). `r` opens a destructive
+   confirm listing the **edited** folders, with the setup still visible behind it. n returns to the setup with the
+   toggle intact. Repeat and press y: the rebuild uses the edited folders, and you land on the orchestrator
+   detail. Toggling a folder off and on again (it moves to the
    end of the order) also raises the dialog.
 6. `S` (sources), mark a folder, esc → `s`: the removal confirm appears. Press n: back on the overlay with the mark
    kept. Repeat and press y: the folder is removed and the overlay closes.

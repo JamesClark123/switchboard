@@ -19,8 +19,8 @@ This plan formalises how the TUI's forms and inputs handle long text and leaving
    - Each surface's exits (esc; ctrl+c in forms; `q` on the kit overview and the sources overlay; esc in the add
      browser) go through one dispatcher. It leaves immediately when the surface's current values equal its opening baseline (R3). Otherwise it
      opens one shared three-choice dialog: **s** Save / **c** Cancel / **d** Discard, with Cancel highlighted and
-     esc = Cancel (R4–R5). On the reasoning setup Save is **r** Rebuild, which goes through the existing destructive
-     confirm. Letter keys are ignored for 150 ms after the dialog opens, so letters typed after a stray esc never act.
+     esc = Cancel (R4–R5). On the reasoning setup Save is **r** Rebuild, which opens a destructive confirm built from the
+     **edited** setup. This is a deliberate extra confirm beyond FR-017, recorded in R5. For 150 ms after the dialog opens only esc/ctrl+c act, so keys typed after a stray esc never act.
    - Save reuses each surface's existing save or confirm unchanged. Discard runs today's esc path.
 3. **Related fixes.**
    - Nested and follow-up behaviour: kit item → kit overview levels; MCP "register anyway?" returns to the form;
@@ -122,7 +122,8 @@ src/apps/switchboard-tui/internal/ui/
 │                          #   chrome, dialog overlays; WindowSize re-fits the enlarged view; footer adds `ctrl+e enlarge`
 ├── keys.go                # dialog / enlarge bindings
 ├── confirm.go             # confirmState.acceptTo (sources Save → removal confirm closes the overlay on y only)
-├── terminal.go            # termOpenedMsg never takes over a guarded surface; termClosedMsg only leaves screenTerminal
+├── terminal.go            # termOpenedMsg switches screens only from screenList (else detaches); termClosedMsg only
+│                          #   leaves screenTerminal
 ├── config_editor.go       # heap *configFormVals (manifest option maps); guard (gConfig); formKeyMap
 ├── mcp.go                 # spec.text for Headers; guard (gMcp); FR-012a: keep vals across "register anyway?", reopen on back-out
 ├── secrets.go             # guard (gSecrets)
@@ -134,7 +135,8 @@ src/apps/switchboard-tui/internal/ui/
 ├── jobs.go                # Jobs op form keys through the guard
 ├── kit_editor.go          # spec.text for 13 fields; gKitItem (apply) + gKitOverview (save; baseline after migration)
 ├── launch.go              # gLaunch snapshot/guard; footer help aligned in reasoning mode
-├── orchestrator_reasoning.go # gReasoning (Save labelled Rebuild); baseline = pre-filled saved setup
+├── orchestrator_reasoning.go # gReasoning (Save labelled Rebuild → confirmRebuildFromSetup: confirm built from the
+│                             #   edited setup); baseline = pre-filled saved setup
 ├── sources.go             # gSources (Save → removal confirm with exitAfter) + gSourcesBrowse; parked add-override (R7)
 ├── tageditor.go           # gTag
 ├── hosts.go               # gHostAdd; forced-close teardown on host drop

@@ -79,8 +79,11 @@ bypassed. It asserts the returned command is not a `tea.ExecProcess`. A test als
   - It is styled like huh's focused Text: `huhTheme()` returns huh `FieldStyles`, not a textarea `Style`, so
     `enlargeStyles()` copies the mapping `Text.View` applies (huh field_text.go:436–443: `TextInput.Text`,
     `.Placeholder`, `.Cursor`, `.CursorLine` from the focused theme).
-  - It opens with the field's current value (`*ptr`; huh keeps it live, see R3) and the cursor **at the top**
-    (`MoveToBegin`), because the view is mostly for reading a long value from its start.
+  - It opens with the field's current value (`*ptr`; huh keeps it live, see R3) and the cursor **at the top**,
+    because the view is mostly for reading a long value from its start. bubbles v1.0.0 exports no move-to-start
+    method (`moveToBegin` is unexported, textarea.go:874), so the view sends
+    `ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})` through `KeyMap.InputBegin` (:90, :1051). This also re-scrolls, and
+    the custom keymap keeps `InputBegin`.
   - **Cursor visibility (FR-004, FR-008)**: bubbles' textarea re-scrolls to the cursor only inside `Update`
     (textarea.go:1087). `SetValue` resets the viewport to the top without following the cursor (:596–600), and
     `SetWidth`/`SetHeight` don't re-scroll at all (:947). So every `SetValue` (open, ctrl+r), `SetWidth` and
@@ -127,11 +130,12 @@ values against it.
    (FR-011), and so would the enlarged view's write-back.
 3. **Values the textarea would rewrite.** huh already applies this rewrite today on any edit or blur of such a field,
    so saving rewrites the stored text. The plan keeps that behaviour but makes it safe and visible:
-   - `spec.text` converts `\r\n` to `\n` in the bound value **before** the field is built, so CRLF content keeps
-     its line structure and is not doubled.
-   - When `normalize()` still changes a value (tabs, a lone `\r`, control bytes), the surface shows a status notice:
-     `<field title>: tabs/control characters will be rewritten when saved`. The developer learns about the rewrite
-     before saving, and the baseline (the normalised value) does not raise a spurious dialog.
+   - `spec.text` records the **original** value in its `textEntry`, then converts `\r\n` to `\n` in the bound value
+     **before** the field is built, so CRLF content keeps its line structure and is not doubled.
+   - `normalize()` reports every field whose final (cleaned) value differs from that recorded original, so CRLF
+     conversion is reported as well as tabs, a lone `\r` and control bytes. The surface shows a status notice:
+     `<field title>: line endings/tabs/control characters will be rewritten when saved`. The developer learns about
+     the rewrite before saving, and the baseline (the normalised value) does not raise a spurious dialog.
 
 The values are snapshots compared with `==` where every field is a scalar, and with `maps.Equal`/`slices.Equal`
 otherwise:
@@ -239,7 +243,7 @@ otherwise:
 
 | Key | Action |
 |---|---|
-| `s` | **Save**. On the reasoning setup it is `r` **Rebuild**, which opens the existing destructive rebuild confirm (the same body as `b`, orchestrator_reasoning.go:92–108) instead of rebuilding directly. |
+| `s` | **Save**. On the reasoning setup it is `r` **Rebuild**, which opens a destructive rebuild confirm built from the **edited** setup (see "Rebuild confirm" below) instead of rebuilding directly. |
 | `c`, `esc`, `ctrl+c` | **Cancel** |
 | `d` | **Discard** |
 | `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
@@ -247,10 +251,31 @@ otherwise:
 
   Cancel is highlighted when the dialog opens. Every other key is ignored.
 
-  **Typing grace**: the dialog exists to catch a habitual esc pressed mid-typing, so the developer's next letters
-  land on it. For `unsavedKeyGrace = 150 * time.Millisecond` after it opens, the letter keys (`s`, `r`, `d`, `c`,
-  `h`, `l`) are ignored. esc, enter (which starts on Cancel) and the arrows act at once. The time comes from a package
-  `nowFunc = time.Now` seam so that tests control it.
+  **Typing grace**: the dialog exists to catch a habitual esc pressed mid-typing, so the developer's next keystrokes
+  land on it. For `unsavedKeyGrace = 150 * time.Millisecond` after it opens, **only the Cancel keys** (`esc`,
+  `ctrl+c`) act; every other key is ignored. That includes the letters, enter, ←/→/h/l and tab/shift+tab. Letting
+  the arrows and enter through would allow the common in-text sequence "→, enter" to move the highlight from Cancel
+  to Discard and discard everything.
+  - The time comes from a package `nowFunc = time.Now` seam.
+  - Story tests that press a choice right after opening use a `pastGrace()` test helper, which moves `nowFunc` past
+    the window. Only the grace tests themselves exercise the window.
+
+  **Rebuild confirm** (reasoning setup only): the `b` confirm cannot be reused. It sends `reasoningRebuildMsg`
+  without a setup, and a nil setup means the *saved* one (orchestrator_reasoning.go:27–28, :97–108), so it would
+  drop the edits. Instead, `r` calls `confirmRebuildFromSetup()`:
+  1. It builds the `ReasoningSetup` exactly as `startReasoningRebuildFromSetup` does (orchestrator_reasoning.go:152–167),
+     running `selectedKitRefs` first. A kit error closes the dialog and shows on the setup, as enter would.
+  2. It opens a confirm whose body lists the **new** selection (sources, seeding mode, kits) and says the
+     conversation and workspace are lost. The `onConfirm` is `reasoningRebuildMsg{…, setup: <edited setup>}`.
+  3. It sets `returnTo = screenLaunch`, so n returns to the setup with its state intact (`m.launch` is untouched by
+     the confirm), and `acceptTo = screenOrchDetail`, so y lands where the setup's own rebuild lands today.
+  4. `View`'s confirm-background switch gains a `screenLaunch` case that draws the launch modal, so the setup stays
+     visible behind the confirm.
+
+  This is a deliberate deviation from FR-017's "Save does exactly what the surface's confirm action does": the
+  setup's own enter/ctrl+s rebuilds without a confirm. The extra confirm exists only on the dialog path, because a
+  single key in a dialog that interrupts typing should never destroy a sandbox. The spec should be amended to say so
+  when the implementation PR lands.
 - **Rationale for the keys**:
   - `y`/`n` are deliberately **not** used. The destructive confirm uses y = proceed, and muscle memory must not turn
     into Discard.
@@ -340,17 +365,32 @@ otherwise:
     section item list and forms), because unsaved kit edits survive on the item list too. The exception is the
     sources overlay **of the same sandbox** with no dialog or browser open. Any other overlay is not exempt: a
     confirm whose `returnTo` is the list would wipe another sandbox's overlay and its marks.
-  - Parked overrides are kept in a FIFO, `m.pendingOverrides []confirmState`, because concurrent adds on different
-    sandboxes are allowed (`sourceAdds` is a map), so a single slot would lose one.
-  - `reconcileGuardLayers` opens the head of the queue on the first message where no guarded surface is active
-    **and** neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite
-    `m.confirm` (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens. That
-    covers every way a surface closes: esc, enter on inline inputs, async success, Discard and forced close.
+  - Parked overrides are kept in a FIFO, `m.pendingOverrides []parkedOverride{msg sourcesAddResultMsg; name string}`,
+    because concurrent adds on different sandboxes are allowed (`sourceAdds` is a map), so a single slot would lose
+    one.
+    - The queue holds the **result message**, not a built `confirmState`. The confirm is built by
+      `confirmAddOverride(msg, name)` at dequeue time, so its `returnTo` (`screenSources` only if that sandbox's
+      overlay is showing then, sources.go:376–379) reflects the screen at that moment, not when it was parked.
+  - `reconcileGuardLayers` opens the head of the queue only:
+    - on a **non-key** message, so the enter that closed a rename or tag can never also accept a "may fill the disk"
+      confirm (enter = yes, confirm.go:55);
+    - when neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite
+      `m.confirm` (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens;
+    - when no guarded surface is active, **or** the only active surface is that sandbox's own overlay and it is
+      clean, matching the parking exception.
+
+    The next non-key message after a surface closes (a blink, a tick or a stream event) opens it, which covers every
+    way a surface closes: esc, enter on inline inputs, async success, Discard and forced close.
 - **Terminal open/close** also switches screens asynchronously:
   - `termOpenedMsg` sets `screen = screenTerminal` unconditionally (terminal.go:96–104), and `termClosedMsg` returns
-    to the list. If the developer opened a guarded surface while "opening terminal…" was pending, `termOpenedMsg`
-    detaches the new session instead of switching, with the status
-    `terminal for <name> ready — closed because an editor is open; press t again`.
+    to the list.
+  - `termOpenedMsg` now switches screens **only when `m.screen == screenList`**, where `t` was pressed; the approval
+    auto-open uses the same rule (notifications.go:194). "No guarded surface is active" is not enough: during the
+    guard's own follow-up confirms (sources removal, Rebuild) `m.screen == screenConfirm` and no surface counts as
+    active.
+  - On any other screen it **detaches** the new session itself: `msg.session.Close()`, `msg.cancel()` and
+    `close(msg.done)`. `closeTerm()` only acts on `m.term`, which this session never reached. The status reads
+    `terminal for <name> ready — closed because you left the list; press t again`.
   - `termClosedMsg` changes the screen only when `m.screen == screenTerminal`.
 
 ## R8 — Help and key hints

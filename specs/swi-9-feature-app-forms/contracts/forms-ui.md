@@ -57,15 +57,16 @@ to one, rather than overflowing. It re-fits on resize and keeps the text, cursor
 | Key | Action |
 |---|---|
 | `s` | Save: the surface's own save or confirm (FR-017). If a background update has left the surface unchanged, it just leaves. |
-| `r` (reasoning setup only, labelled **Rebuild**; `s` is ignored there) | Opens the existing destructive rebuild confirm (the same one as `b`); y rebuilds, n returns to the setup |
+| `r` (reasoning setup only, labelled **Rebuild**; `s` is ignored there) | Opens a destructive rebuild confirm built from the **edited** setup; its body lists the new sources, mode and kits. y rebuilds with that setup and goes to the orchestrator detail; n returns to the setup with its state intact. (This is an extra confirm beyond the setup's own enter, deliberately; see research R5.) |
 | `c`, `esc`, `ctrl+c` | Cancel: back to the surface exactly as it was (FR-015) |
 | `d` | Discard: close the surface without applying, completing the exit (FR-016) |
 | `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
 | `enter` | Activate the highlighted choice. Cancel is highlighted on open, so enter discards only when Discard is highlighted (FR-019). |
 | anything else | Ignored |
 
-**Typing grace**: for 150 ms after the dialog opens, letter keys (`s`, `r`, `d`, `c`, `h`, `l`) are ignored, so letters
-typed just after a stray esc never act. esc, enter and the arrows act immediately.
+**Typing grace**: for 150 ms after the dialog opens, only `esc` and `ctrl+c` (Cancel) act. Every other key is ignored,
+including letters, `enter`, `←`/`→`/`h`/`l` and `tab`/`shift+tab`. This way keys typed just after a stray esc can
+never move the highlight to Discard and activate it.
 
 The dialog is identical on every surface (FR-020), apart from the Rebuild label. The body line names the surface kind:
 "This form…", "This input…", "This launch…", "These marked folders…". The dialog is `modalInnerWidth()` wide (53 at 80
@@ -89,7 +90,7 @@ exits immediately, as today (FR-014).
 | Kit section / item form | esc, ctrl+c | — | `applyKitForm` (apply to the kit in memory) | close the form, kit untouched |
 | Kit overview | esc, q | esc/q on a section's item list (back to the overview) | `saveKit` | `enterKitPicker` (kit unchanged on disk) |
 | Launch wizard | esc | esc in the name field, host/orchestrator/kit pickers | `startLaunch` (as enter) | back to the list |
-| Reasoning setup | esc | esc in the kit picker | `startReasoningRebuildFromSetup` (**Rebuild**) | back to the orchestrator detail |
+| Reasoning setup | esc | esc in the kit picker | **Rebuild** → a confirm built from the edited setup (`confirmRebuildFromSetup`); y runs the same rebuild as `startReasoningRebuildFromSetup` | back to the orchestrator detail |
 | Sources overlay | esc, q | — | `confirmRemoveSources`. Declining the confirm returns to the overlay with marks kept; confirming removes and closes the overlay (`confirmState.acceptTo`). | back to the list |
 | Sources add browser | esc | — | `dispatchAddSources` (as enter) | back to the overlay |
 | Rename | esc | — | as enter. Empty name: stays open with "name can't be empty" (FR-011a). | close, nothing renamed |
@@ -122,5 +123,6 @@ An async low-resource add-override confirm never replaces an open guarded surfac
 other than that sandbox's own sources overlay. Overrides queue in arrival order and open one at a time, once no
 guarded surface, confirm or approval is showing.
 
-A terminal that finishes opening while a guarded surface is open does not take over the screen. The session is
-detached, and the status reads `terminal for <name> ready — closed because an editor is open; press t again`.
+A terminal that finishes opening while the developer is no longer on the sandbox list (where `t` was pressed) does
+not take over the screen. The session is detached, and the status reads
+`terminal for <name> ready — closed because you left the list; press t again`.

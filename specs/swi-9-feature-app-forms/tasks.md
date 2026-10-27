@@ -36,10 +36,11 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
     recorded;
   - `lookup(field huh.Field) (*huh.Text, textEntry, bool)`;
   - `normalize() []string`: `Update(nil)` on each recorded field, so its pointer holds the textarea's cleaned value
-    (research R3). It returns the titles of fields whose value changed, and the surface shows the status
-    `<title>: tabs/control characters will be rewritten when saved`.
-  - `text` converts `\r\n` to `\n` in `*ptr` before building, so CRLF content is not doubled by the sanitizer
-    (which maps each `\r` and `\n` to a newline).
+    (research R3). It returns the titles of fields whose final value differs from the **original** recorded by
+    `text`, so CRLF conversion counts too. The surface shows the status
+    `<title>: line endings/tabs/control characters will be rewritten when saved`.
+  - `text` records the original value in its `textEntry`, then converts `\r\n` to `\n` in `*ptr` before building,
+    so CRLF content is not doubled by the sanitizer (which maps each `\r` and `\n` to a newline).
 - [ ] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
   with the form:
   - the 13 kit fields in `UI/kit_editor.go`, on `kitEditorState`;
@@ -54,7 +55,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
   - For every form with a Text field (kit agent instructions, MCP, action, event), sending ctrl+e straight to
     `form.Update` returns no `tea.ExecProcess` command, with `EDITOR` set and `WithShowHelp(false)`.
   - `normalize()` turns a stored tab into the textarea's spaces and reports that field; CRLF content keeps its line
-    count.
+    count **and** is reported (the notice mentions line endings).
   - No `form.KeyBinds()` help reads "open editor".
   - A source scan finds no `huh.NewText(` outside `formguard.go`.
 
@@ -86,13 +87,25 @@ snapshots (R3–R5).
   Unimplemented surfaces default to "never dirty" and are filled in by the stories. Every story task that adds a
   surface also adds its cases to these switches, so those tasks share `UI/formguard.go` and are not `[P]`.
 - [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
-  `openedAt`), plus a package `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond`:
+  `openedAt`), plus a package `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond`. Add a
+  `pastGrace()` test helper in `UI/unsaved_test.go` that moves `nowFunc` past the window. Every story test that
+  presses a dialog choice (T016, T020, T025, T030, T034) calls it. The suite does not use `t.Parallel`, so a package
+  global is safe; restore it with `t.Cleanup`.
   - `openUnsaved(g, fromEnlarge)`, with Cancel highlighted, `openedAt = nowFunc()`, and the label "Rebuild" for
     `gReasoning`.
   - `updateUnsavedKey` per contracts/forms-ui.md §3:
-    - letter keys (`s`, `r`, `d`, `c`, `h`, `l`) are ignored within `unsavedKeyGrace` of `openedAt`;
-    - `s` Save (not on `gReasoning`), or on `gReasoning` `r` Rebuild, which opens the existing destructive rebuild
-      confirm (the `b` body in `UI/orchestrator_reasoning.go`; `returnTo` the setup, so n returns there);
+    - within `unsavedKeyGrace` of `openedAt`, only esc/ctrl+c (Cancel) act and every other key is ignored, including
+      enter, arrows, h/l and tab/shift+tab;
+    - `s` Save (not on `gReasoning`), or on `gReasoning` `r` Rebuild → `confirmRebuildFromSetup()` in
+      `UI/orchestrator_reasoning.go` (research R5):
+      - build the `ReasoningSetup` as `startReasoningRebuildFromSetup` does, with `selectedKitRefs` first (a kit
+        error shows on the setup);
+      - the confirm body lists the edited sources, mode and kits;
+      - `onConfirm` sends `reasoningRebuildMsg{…, setup}`, `returnTo = screenLaunch` and
+        `acceptTo = screenOrchDetail`;
+      - add a `screenLaunch` case to `View`'s confirm-background switch in `UI/app.go`.
+
+      Do **not** reuse the `b` confirm: it rebuilds the saved setup;
     - `c`/esc/ctrl+c Cancel; `d` Discard; ←/→/h/l/tab/shift+tab move the highlight; enter activates the highlight;
       anything else is ignored.
 
@@ -124,11 +137,13 @@ snapshots (R3–R5).
 - [ ] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
   - the dialog opens on Cancel, and enter there cancels;
   - ←/→ wrap; `d` and enter@Discard discard; `s` and enter@Save save; esc and ctrl+c cancel; `y`/`n`/`q` are ignored;
-  - the label reads Rebuild for `gReasoning`; `r` opens the destructive confirm (n there returns to the setup) and `s`
-    is ignored;
-  - letter keys within the grace window are ignored (via `nowFunc`), and esc/enter/arrows act at once;
+  - the label reads Rebuild for `gReasoning`; `r` opens a confirm whose body lists the **edited** setup; n there
+    returns to the setup with `m.launch` intact (setup still drawn behind the confirm); `s` is ignored;
+  - within the grace window (via `nowFunc`) letters, enter, →/← and tab are ignored, so "→, enter" can't discard; esc
+    and ctrl+c cancel at once;
   - no line of the modal is wider than 80 cells at 80×24, for both hint variants;
-  - with the dialog open and `hosts.connecting` set (startup sign-in), `View()` shows the password prompt on top;
+  - with the dialog open and `hosts.connecting = true`, `hosts.pwMode = pwSignIn` (startup sign-in), `View()` shows
+    the password prompt on top;
     the same holds on the launch and sources screens (T007 overlay order);
   - `requestExit` on a clean surface leaves without opening the dialog;
   - snapshot helpers: the kit fingerprint is stable across a nil vs empty slice, differs for an unnamed kit with an
@@ -153,12 +168,16 @@ with nothing applied; Save behaves as ctrl+s; an unchanged form or an edit undon
 calls `reopenForm`.
 
 - [ ] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
-  `reopenForm`; never writes `vals`) (research R4):
+  `reopenForm`; **never fills `vals` from the source**. huh `Select` and `spec.text` still write the bound pointer
+  while building, which is expected) (research R4):
   - `UI/kit_editor.go`: the section forms (`identityForm`, `networkForm`, `environmentForm`,
     `agentInstructionsForm`, …) and `openKitItemForm`;
-  - `UI/orchestrator_forms.go`: `openActionForm`, `openEventForm`, `openCallForm`, `openMarkFreeForm`;
-  - `UI/orchestrators.go`: `openOrchCreateForm`/`openOrchRenameForm`;
-  - `UI/mcp.go`, `UI/secrets.go` and `UI/config_editor.go`.
+  - `UI/orchestrator_forms.go`: `openActionForm`, `openEventForm`, `openCallForm`;
+  - `UI/run_actions.go`: `openMarkFreeForm`;
+  - `UI/orchestrators.go`: `openOrchCreateForm`/`openOrchRenameForm`.
+
+  `mcpForm(v)` and `secretsForm(v)` already build from vals, so they only need registering. The config editor's
+  split is part of T010.
 
   Register the per-surface builder in the `reopenForm` switch.
 - [ ] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
@@ -287,8 +306,9 @@ closes.
   - tag: cleared → Save clears it;
   - host and group add;
   - launch: two sources → dialog, Save launches; name field and picker esc are not exits;
-  - reasoning: the dialog shows Rebuild/`r`; `r` opens the destructive confirm, y starts the rebuild, n returns to the
-    setup; Discard returns to the detail; un-marking and re-marking a pre-filled folder (order change) raises the
+  - reasoning: the dialog shows Rebuild/`r`; `r` opens the confirm, and y sends a `reasoningRebuildMsg` whose `setup`
+    carries the **edited** `Sources`/kits (not nil) and lands on the orchestrator detail; n returns to the setup with
+    its edits; Discard returns to the detail; un-marking and re-marking a pre-filled folder (order change) raises the
     dialog;
   - sources: Save → confirm → n keeps marks and the overlay, y removes and closes (`sourcesView` is reset only on y);
   - browser: Discard returns to the overlay;
@@ -309,7 +329,8 @@ field holds the edit and focus stays on it, with no dialog.
 - [ ] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
   - `openEnlarge(g, field, entry)`: a textarea with `MaxHeight 0`, `CharLimit 0`, `ShowLineNumbers false`,
     `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, value `*ptr`,
-    cursor at the top (`MoveToBegin`), focused, `baseline = *ptr`.
+    cursor at the top (via `ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})`, i.e. `KeyMap.InputBegin`; bubbles v1.0.0
+    has no exported move-to-start method, and the keymap must keep `InputBegin`), focused, `baseline = *ptr`.
   - `enlargeStyles()`: map huh's focused `FieldStyles` to a `textarea.Style` the way `Text.View` does (huh
     field_text.go:436–443).
   - After every `SetValue` (open, ctrl+r), `SetWidth` and `SetHeight`, call `ta.Update(nil)` so the cursor is
@@ -382,11 +403,14 @@ field holds the edit and focus stays on it, with no dialog.
   - the MCP view drop (`UI/hosts.go`, `UI/daemons.go`);
   - `closeOrchAdminOnDrop` (`UI/hosts.go`), which gains a `screenLaunch` case for a reasoning setup on the dropped
     host;
-  - Sandbox removal, in the message handlers rather than `reconcileGuardLayers` (`UI/notifications.go`,
-    `UI/sandbox_list.go`), for rename, tag, sources overlay or add browser:
-    - `Event_Removed` for the id → "sandbox removed";
-    - a list reload where the host is `HostConnected` with `Err == nil` and lacks the id → "sandbox removed";
-    - the host dropped → "daemon disconnected";
+  - Sandbox removal, in the message handlers rather than `reconcileGuardLayers`, for rename, tag, sources overlay or
+    add browser:
+    - `Event_Removed` for the id (`removeSandbox`, `UI/notifications.go`) → "sandbox removed";
+    - a list reload, in the `sandboxesMsg`/`listDataMsg` handlers (`UI/app.go:667/673`), where the host is
+      `HostConnected` with `Err == nil` and lacks the id → "sandbox removed". The local `sandboxesMsg` (`refreshCmd`,
+      `UI/app.go:523–532`) carries no per-host status; it is authoritative only because its errors arrive separately
+      as `errMsg`;
+    - the host dropped (`applyHosts`, `UI/hosts.go`) → "daemon disconnected";
     - a host `List` error → no close.
   - Orchestrator removal (`UI/orchestrators.go`, `UI/orchestrator_views.go`, `UI/jobs.go`):
     - `syncOrchestratorChanged` issues a `GetOrchestrator` check whenever an active guarded surface targets that
@@ -394,14 +418,19 @@ field holds the edit and focus stays on it, with no dialog.
     - a NotFound reply, `applyOrchDetail` receiving NotFound (a new branch), or a Jobs reload dropping the
       orchestrator calls `forceClose(…, "orchestrator removed")`.
 - [ ] T033 Park async add-overrides and guard terminal screen switches (R7):
-  - `confirmAddOverride` in `UI/sources.go` appends the confirm to a FIFO, `m.pendingOverrides`, while any guarded
-    surface is active (the whole kit editor included). The one exception is the sources overlay of the **same**
-    sandbox with no dialog or browser open (`overlayFor(id)`).
-  - `reconcileGuardLayers` in `UI/formguard.go` opens the head of the queue on the first message where no guarded
-    surface is active and neither `screenConfirm` nor `screenApproval` is showing.
-  - `UI/terminal.go`: when `termOpenedMsg` arrives while a guarded surface is active, detach the session and set the
-    status `terminal for <name> ready — closed because an editor is open; press t again`. `termClosedMsg` changes
-    the screen only when `m.screen == screenTerminal`.
+  - The `sourcesAddResultMsg` handler in `UI/sources.go` appends `parkedOverride{msg, name}` to a FIFO,
+    `m.pendingOverrides`, instead of calling `confirmAddOverride`, while any guarded surface is active (the whole kit
+    editor included). The one exception is the sources overlay of the **same** sandbox with no dialog or browser open
+    (`overlayFor(id)`).
+  - `reconcileGuardLayers` in `UI/formguard.go` dequeues the head and calls `confirmAddOverride(msg, name)`, building
+    the confirm then so `returnTo` is current, but only:
+    - on a **non-key** message;
+    - when neither `screenConfirm` nor `screenApproval` is showing;
+    - when no guarded surface is active, or the only active one is that sandbox's own clean overlay.
+  - `UI/terminal.go`: `termOpenedMsg` switches to the terminal only when `m.screen == screenList`. Otherwise it
+    detaches the new session itself (`msg.session.Close()`, `msg.cancel()`, `close(msg.done)`) and sets the status
+    `terminal for <name> ready — closed because you left the list; press t again`. `termClosedMsg` changes the screen
+    only when `m.screen == screenTerminal`.
 - [ ] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
   - host drop with the MCP form dirty and the dialog open → closed, with the status naming "daemon disconnected";
   - orchestrator admin drop with a dirty rename → "<host> disconnected — orchestrators closed; unsaved edits lost";
@@ -414,7 +443,12 @@ field holds the edit and focus stays on it, with no dialog.
   - two overrides parked during a rename open one after the other; an override never replaces the sources removal
     confirm the guard's Save opened;
   - an override during unsaved kit edits on a section item list is parked;
-  - a terminal finishing opening during a rename leaves the rename open with the "terminal … ready" status.
+  - a terminal finishing opening during a rename, or during the guard's sources removal confirm, leaves that screen
+    as it was, with the "terminal … ready" status, and the session is closed;
+  - the enter that closes a rename does not accept a parked override; the override opens on the next non-key
+    message;
+  - an override parked while the same sandbox's add browser was open, dequeued after the overlay closed, has
+    `returnTo = screenList`.
 - [ ] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
   editor), the enlarged-view keys, the unsaved-changes dialog keys, and ctrl+c in forms ≡ esc.
 - [ ] T036 Run quickstart.md scenarios 1–7 at 80×24 and 200×50, and record the `BenchmarkSC006*` results in the PR

@@ -11,18 +11,18 @@ This enum identifies one guarded surface (spec: **Guarded surface**). At most on
 | Value | Surface | Active when |
 |---|---|---|
 | `gConfig` | Config editor form | `screenConfigEditor` with a form |
-| `gMcp` | MCP registration form | `mcpView.form != nil` |
-| `gSecrets` | Secrets form | `secretsView.form != nil` |
-| `gOrchAdmin` | Orchestrator create/rename | `m.orch.form != nil` |
-| `gOpForm` (+ `orchSurface`) | Action / timed-event / call / mark-free form | `opState(s).form != nil` |
-| `gKitItem` | Kit section or item form | `kitEditor.form != nil` |
+| `gMcp` | MCP registration form | `screenMcp` and `mcpView.form != nil` |
+| `gSecrets` | Secrets form | `screenSecrets` and `secretsView.form != nil` |
+| `gOrchAdmin` | Orchestrator create/rename | `screenDaemonOrchs` and `m.orch.form != nil` |
+| `gOpForm` (+ `orchSurface`) | Action / timed-event / call / mark-free form | `m.screen == surfaceScreen(s)` and `opState(s).form != nil` |
+| `gKitItem` | Kit section or item form | `screenKitEditor` and `kitEditor.form != nil` |
 | `gKitOverview` | Kit editor overview and section item lists | `screenKitEditor`, no form (dirty is the kit fingerprint, so applied-but-unsaved edits are guarded for parking while on an item list too; esc/q on the item list remain non-exits) |
 | `gLaunch` | Launch wizard | `screenLaunch`, `launch.reasoning == nil` |
 | `gReasoning` | Reasoning-sandbox setup | `screenLaunch`, `launch.reasoning != nil` |
 | `gSources` | Sources overlay | `screenSources`, `!browsing` |
 | `gSourcesBrowse` | Sources add browser | `screenSources`, `browsing` |
 | `gRename` / `gTag` | Inline rename / tag | `screenRename` / `screenTag` |
-| `gHostAdd` / `gGroupAdd` | Inline add host / group | `hosts.adding` / `groups.adding` |
+| `gHostAdd` / `gGroupAdd` | Inline add host / group | `screenHosts` and `hosts.adding` / `screenGroups` and `groups.adding` |
 
 Precedence inside a surface: a nested form (`gKitItem`) wins over its parent (`gKitOverview`). Each pair of
 sub-states is mutually exclusive by construction (`gSources` vs `gSourcesBrowse`, `gLaunch` vs `gReasoning`), so
@@ -81,8 +81,8 @@ identified by the `guardSurface` held in `unsavedState.surface`, and no separate
 | `surface` | `guardSurface` | The surface (and so the requested exit) it guards. |
 | `fromEnlarge` | `bool` | Raised by ctrl+c in the enlarged view; Cancel returns to it (FR-015). |
 | `highlight` | `int` | 0 Save, 1 Cancel, 2 Discard. Starts at 1 (Cancel). |
-| `saveLabel` | `string` | "Save", or "Rebuild" for `gReasoning` (opens the destructive rebuild confirm). |
-| `openedAt` | `time.Time` | From `nowFunc()`; letter keys are ignored for `unsavedKeyGrace` (150 ms) after it (research R5). |
+| `saveLabel` | `string` | "Save", or "Rebuild" for `gReasoning` (opens a destructive confirm built from the edited setup). |
+| `openedAt` | `time.Time` | From `nowFunc()`. For `unsavedKeyGrace` (150 ms) after it, only esc/ctrl+c (Cancel) act (research R5). |
 
 State transitions:
 
@@ -91,8 +91,9 @@ closed --requestExit(g) && dirty(g)--> open(g, highlight=Cancel)
 open --c / esc / ctrl+c / enter@Cancel--> closed                      (surface untouched; enlarged view kept)
 open --d / enter@Discard--> closed + guardLeave(g)                    (enlarged view discarded first)
 open --s / enter@Save--> closed + guardSave(g)                        (re-checks dirty; enlarged view already written back)
-open --r / enter@Rebuild--> closed + destructive rebuild confirm      (gReasoning only)
-open --letter key within 150 ms of opening--> ignored                 (typing grace)
+open --r / enter@Rebuild--> closed + confirmRebuildFromSetup()       (gReasoning only; confirm built from the EDITED setup,
+                                                                      n → setup intact, y → rebuild → orchestrator detail)
+open --any key but esc/ctrl+c within 150 ms of opening--> ignored     (typing grace)
 open --forceClose(g)--> closed                                        (status "unsaved edits lost: …" if dirty)
 ```
 
