@@ -587,22 +587,23 @@ func actionLine(a *pb.Action) string {
 	return line
 }
 
-// eventLine renders one timed event: [on|off] name → action · every · next ·
-// waiting/skipped counts, with the dedupe badge and any disabled reason. waiting
+// eventLine renders one timed event: [on|off] name → action · any disabled
+// reason · every · next · waiting/skipped counts, with the dedupe badge. waiting
 // is how many of its runs are queued.
 func eventLine(ev *pb.TimedEvent, waiting int) string {
 	onOff := statusOKStyle.Render("[on]")
 	if !ev.GetEnabled() {
 		onOff = dimStyle.Render("[off]")
 	}
-	line := fmt.Sprintf("%s  %s  %s  %s  %s  %s", onOff, selectedStyle.Render(sanitizeLine(ev.GetName(), 0)), dimStyle.Render("→ "+sanitizeLine(ev.GetAction(), 0)),
-		dimStyle.Render(fmt.Sprintf("every %dm", ev.GetIntervalSeconds()/60)), dimStyle.Render("next "+nextFire(ev)),
+	line := fmt.Sprintf("%s  %s  %s", onOff, selectedStyle.Render(sanitizeLine(ev.GetName(), 24)), dimStyle.Render("→ "+sanitizeLine(ev.GetAction(), 24)))
+	if ev.GetDisabledReason() != "" {
+		// Before the counters, so a row cut to the width still says why.
+		line += "  " + statusErrStyle.Render("disabled: "+sanitizeLine(ev.GetDisabledReason(), 60))
+	}
+	line += fmt.Sprintf("  %s  %s  %s", dimStyle.Render(fmt.Sprintf("every %dm", ev.GetIntervalSeconds()/60)), dimStyle.Render("next "+nextFire(ev)),
 		dimStyle.Render(fmt.Sprintf("waiting %d · skipped %d", waiting, ev.GetSkippedCount())))
 	if !ev.GetDedupeDisabled() {
 		line += "  " + tagBadgeStyle.Render("dedupe")
-	}
-	if ev.GetDisabledReason() != "" {
-		line += "  " + statusErrStyle.Render("disabled: "+sanitizeLine(ev.GetDisabledReason(), 80))
 	}
 	return line
 }

@@ -143,7 +143,11 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 		}
 		heading := sectionStyle.Render(sanitizeLine(o.target.label(), 0))
 		if !m.jobsReachable(o.target.host) {
-			heading = dimStyle.Render(sanitizeLine(o.target.label(), 0) + "  (not connected)")
+			note := "  (not connected)"
+			if hs := m.jobs.hosts[o.target.host]; hs != nil && hs.lost != nil {
+				note = "  (connection lost)"
+			}
+			heading = dimStyle.Render(sanitizeLine(o.target.label(), 0) + note)
 		}
 		lines = append(lines, heading)
 		waiting := map[string]int{}

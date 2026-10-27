@@ -262,10 +262,13 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 		if run.GetState() != pb.RunState_RUN_STATE_RUNNING {
 			style = agentWaitStyle
 		}
-		line := selectedStyle.Render(fitCol(run.GetAction(), 18)) + " " + style.Render(fitCol(runState(run), 16)) + " " + label + "  " +
-			dimStyle.Render("on "+sanitizeLine(m.workerName(run), 24)+" · started "+ago(run.GetStartedAt()))
+		line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  " +
+			dimStyle.Render("on "+sanitizeLine(m.workerName(run), 16)+" · "+ago(run.GetStartedAt()))
 		if run.GetEventKind() != pb.EventKind_EVENT_KIND_USER {
-			line += "  " + dimStyle.Render(sanitizeLine(runOrigin(run), 24))
+			// The origin takes what is left of the row, like the History snippet.
+			if room := m.bodyWidth() - 2 - lipgloss.Width(line) - 2; room > 0 {
+				line += "  " + dimStyle.Render(sanitizeLine(runOrigin(run), room))
+			}
 		}
 		return line
 	}
@@ -273,7 +276,7 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 	if run.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		style = statusErrStyle
 	}
-	line := selectedStyle.Render(fitCol(run.GetAction(), 18)) + " " + style.Render(fitCol(runState(run), 16)) + " " + label + "  " +
+	line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  " +
 		dimStyle.Render("ended "+ago(run.GetEndedAt()))
 	if detail := runResultLine(run); detail != "" {
 		// The snippet takes what is left of the row (the cursor column is 2 wide).

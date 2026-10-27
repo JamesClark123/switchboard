@@ -425,9 +425,11 @@ func (m Model) viewJobs() string {
 // fitLine cuts a rendered line to the body width.
 func (m Model) fitLine(s string) string { return ansi.Truncate(s, m.bodyWidth(), "…") }
 
-// jobsRowStyle dims a row of a host that is not connected now: it stays as last
-// read, and operations on it are refused (R3, R12).
+// jobsRowStyle cuts a row to the body width (less the 2-column cursor mark) and
+// dims it when its host is not connected now: it stays as last read, and
+// operations on it are refused (R3, R12).
 func (m Model) jobsRowStyle(host, line string) string {
+	line = ansi.Truncate(line, m.bodyWidth()-2, "…")
 	if m.jobsReachable(host) {
 		return line
 	}

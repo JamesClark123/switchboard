@@ -24,7 +24,8 @@ func (m Model) enterDaemonOrchs(row daemonRow) (tea.Model, tea.Cmd) {
 		// Without a host manager the rows are keyed by the active host entry.
 		host = m.activeHost
 	}
-	if _, err := m.connectedDaemon(host); err != nil {
+	retry := m.jobsRetryLost(host)
+	if _, err := m.connectedDaemon(host); err != nil && retry == nil {
 		m.status = "error: " + err.Error()
 		return m, nil
 	}
@@ -34,7 +35,7 @@ func (m Model) enterDaemonOrchs(row daemonRow) (tea.Model, tea.Cmd) {
 	m.daemonOrchs = daemonOrchsState{host: host, hostName: row.name}
 	m.screen = screenDaemonOrchs
 	m.orch.loading = true
-	return m, m.orchLoadCmd()
+	return m, tea.Batch(m.orchLoadCmd(), retry)
 }
 
 // backToDaemonOrchs leaves the detail for its daemon's Orchestrators list.
@@ -107,7 +108,7 @@ func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "r":
 		m.orch.loading = true
-		return m, m.orchLoadCmd()
+		return m, tea.Batch(m.orchLoadCmd(), m.jobsRetryLost(m.daemonOrchs.host))
 	case "up", "k":
 		if m.orch.cursor > 0 {
 			m.orch.cursor--

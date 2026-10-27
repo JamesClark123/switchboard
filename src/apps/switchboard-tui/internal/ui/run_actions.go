@@ -52,7 +52,7 @@ func (m Model) connectedDaemon(host string) (Daemon, error) {
 	}
 	if hs := m.jobs.hosts[host]; hs != nil && hs.lost != nil {
 		// Still "connected" to the client, but its link died (R3).
-		return nil, fmt.Errorf("%s: connection lost", m.hostDisplayName(host))
+		return nil, fmt.Errorf("%s: connection lost — r on Jobs retries", m.hostDisplayName(host))
 	}
 	return d, nil
 }

@@ -484,6 +484,21 @@ func (m *Model) jobsAnswered(host string) tea.Cmd {
 	return nil
 }
 
+// jobsRetryLost retries a lost host that the client still calls connected (the
+// Daemons › Orchestrators entry and `r`): its Jobs load clears the mark on
+// success and re-subscribes (R3). Nil when the host is not lost.
+func (m *Model) jobsRetryLost(host string) tea.Cmd {
+	if hs := m.jobs.hosts[host]; hs == nil || hs.lost == nil {
+		return nil
+	}
+	for _, h := range m.orchHosts() {
+		if h.id == host && h.d != nil {
+			return m.jobsLoadHost(h, false)
+		}
+	}
+	return nil
+}
+
 // jobsNoteLost marks a host lost when a Jobs call to it failed with Unavailable:
 // the client still calls a dead link connected (R3).
 func (m *Model) jobsNoteLost(host string, err error) {

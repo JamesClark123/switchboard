@@ -589,7 +589,7 @@ func TestJobsLostHost(t *testing.T) {
 	// and reads the host again.
 	b.orchErr = status.Error(codes.Unavailable, "connection refused")
 	m = reloadJobs(m)
-	if _, err := m.connectedDaemon("hostb"); err == nil || err.Error() != "beta: connection lost" {
+	if _, err := m.connectedDaemon("hostb"); err == nil || err.Error() != "beta: connection lost — r on Jobs retries" {
 		t.Errorf("Unavailable ⇒ lost: %v", err)
 	}
 	b.orchErr = nil
@@ -892,5 +892,55 @@ func TestJobsFrameMemo(t *testing.T) {
 	}
 	if got := m.workerName(&pb.Run{SandboxHostId: "h", SandboxId: "s"}); got != "memo" {
 		t.Errorf("workerName = %q", got)
+	}
+}
+
+// A lost daemon's groups say so, and opening its Daemons › Orchestrators or r
+// there retries it: its Jobs load clears the mark (review run-224 UX notes).
+func TestJobsLostHeadingAndRetryFromDaemonOrchs(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-b", Name: "beta-bot", Actions: []*pb.Action{reviewAction()}}}}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	m = openJobs(m)
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	m.jobs.tab = jobsActions
+	if v := m.View(); !strings.Contains(v, "beta-bot @ beta  (connection lost)") {
+		t.Errorf("the lost heading:\n%s", v)
+	}
+	m.subscribed[m.subHostKey("hostb")] = true // the stream is open again
+	// Daemons › Orchestrators opens for a lost daemon and retries it.
+	mm, cmd := m.enterDaemonOrchs(daemonRow{id: "hostb", name: "beta"})
+	m = feed(mm.(Model), cmd)
+	if m.screen != screenDaemonOrchs || m.jobs.hosts["hostb"].lost != nil {
+		t.Errorf("entry: screen %v lost %v", m.screen, m.jobs.hosts["hostb"].lost)
+	}
+	// So does r there.
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	m, cmd = update(m, press("r"))
+	m = feed(m, cmd)
+	if hs := m.jobs.hosts["hostb"]; hs.lost != nil {
+		t.Errorf("r on Daemons › Orchestrators leaves the host lost: %v", hs.lost)
+	}
+}
+
+// Every Jobs row fits an 80-column terminal, whatever the names (review run-224
+// UX notes).
+func TestJobsRowsFitTheWidth(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	ev := &pb.TimedEvent{Id: "ev-1", Name: long, Action: long, Enabled: true, NextFireAt: at(time.Hour)}
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o1", Name: long, TimedEvents: []*pb.TimedEvent{ev}, Actions: []*pb.Action{reviewAction()}}}},
+		orchRuns: &pb.ListRunsResponse{
+			Queued:   []*pb.Run{{Id: "q1", Action: long, State: pb.RunState_RUN_STATE_QUEUED, EventKind: pb.EventKind_EVENT_KIND_TIMED, Origin: "ev-1", OriginLabel: long}},
+			InFlight: []*pb.Run{{Id: "r1", Action: long, State: pb.RunState_RUN_STATE_RUNNING, EventKind: pb.EventKind_EVENT_KIND_TRIGGERED, OriginLabel: long, SandboxId: long, StartedAt: at(0)}},
+		}}
+	m, _ := update(New(d, "/work"), tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = openJobs(m)
+	for tab := jobsTab(0); tab < jobsTabCount; tab++ {
+		m.jobs.tab = tab
+		for _, l := range strings.Split(m.View(), "\n") {
+			if w := lipgloss.Width(l); w > 80 {
+				t.Errorf("tab %s: a %d-column line: %q", jobsTabNames[tab], w, l)
+			}
+		}
 	}
 }

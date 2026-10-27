@@ -117,11 +117,15 @@ func TestOverviewAcrossTwoHosts(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{"Upcoming", "Queued", "In progress", "History (latest 15)",
 		"poll", "→ review-pr", "alpha-bot @ alpha", "next in", "nightly", "beta-bot @ beta",
-		"#1", "timed nightly", "received", "running", "on worker-", "awaiting review", "triggered by worker-two",
+		"#1", "timed nightly", "received", "running", "on worker-", "awaiting review", "triggered by",
 		"completed", "ended", "Reviewed PR 412"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("overview missing %q:\n%s", want, v)
 		}
+	}
+	// The origin takes the rest of the row: whole on a wide terminal.
+	if wide, _ := update(m, tea.WindowSizeMsg{Width: 140, Height: 40}); !strings.Contains(wide.View(), "triggered by worker-two") {
+		t.Errorf("a wide row shows the whole origin:\n%s", wide.View())
 	}
 	if strings.Contains(v, "paused") {
 		t.Error("a disabled event is not upcoming")
