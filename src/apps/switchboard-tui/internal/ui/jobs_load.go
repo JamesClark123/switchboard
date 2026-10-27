@@ -145,9 +145,23 @@ func (j *jobsState) metaOf(host, id string) *jobsOrchMeta {
 // overlay or settings opened from it (R3).
 func (m Model) jobsVisible() bool { return m.topLevel() == screenJobs }
 
+// jobsFrame is the per-frame memo of jobsReachable and workerName.
+type jobsFrame struct {
+	reach map[string]bool
+	names map[string]string
+}
+
 // jobsReachable reports whether a host's rows can be acted on now.
 func (m Model) jobsReachable(host string) bool {
+	if f := m.jobs.frame; f != nil {
+		if r, ok := f.reach[host]; ok {
+			return r
+		}
+	}
 	_, err := m.connectedDaemon(host)
+	if f := m.jobs.frame; f != nil {
+		f.reach[host] = err == nil
+	}
 	return err == nil
 }
 
@@ -161,12 +175,20 @@ func (m Model) enterJobs(from screen) (tea.Model, tea.Cmd) {
 		return m, m.jobsLoadAll()
 	}
 	var cmds []tea.Cmd
+	full := map[string]bool{}
 	for _, h := range m.orchHosts() {
 		if hs := m.jobs.hosts[h.id]; h.d != nil && (hs == nil || hs.stale || (!hs.answered && !hs.loading)) {
-			cmds = append(cmds, m.jobsLoadHost(h, false))
+			if c := m.jobsLoadHost(h, false); c != nil {
+				full[h.id] = true
+				cmds = append(cmds, c)
+			}
 		}
 	}
 	for _, md := range m.jobsStaleMeta() {
+		if full[md.host] {
+			md.stale = false // the host load reads it anyway
+			continue
+		}
 		cmds = append(cmds, m.jobsReloadOrch(md.host, md.id))
 	}
 	return m, tea.Batch(cmds...)
@@ -305,21 +327,15 @@ func (m *Model) jobsReloadOrch(host, id string) tea.Cmd {
 }
 
 // jobsAfterChange follows an operation's success: the orchestrator it acted on
-// reloads; one without a target (create, rename, remove) reloads every host —
-// both only while Jobs is shown, else when it is shown again.
+// reloads, only while Jobs is shown, else when it is shown again. One without a
+// target (create, rename, remove, hosts, detach, mark free) reloads nothing
+// here: the daemon emits Event.orchestrator_changed for every such mutation
+// (R14), which reloads just that orchestrator (FR-005).
 func (m *Model) jobsAfterChange(t orchTarget) tea.Cmd {
-	if t.id != "" {
-		return m.jobsReloadOrch(t.host, t.id)
+	if t.id == "" {
+		return nil
 	}
-	if m.jobsVisible() {
-		return m.jobsLoadAll()
-	}
-	for _, h := range m.orchHosts() {
-		if h.d != nil {
-			m.jobs.hostLoad(h.id).stale = true
-		}
-	}
-	return nil
+	return m.jobsReloadOrch(t.host, t.id)
 }
 
 // putOrch adds or replaces one orchestrator.

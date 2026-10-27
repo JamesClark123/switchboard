@@ -519,15 +519,15 @@ func TestJobsRefusalsAndAfterChange(t *testing.T) {
 	if done, ok := m.runPromptCmd(surfaceJobs, box, "r1")().(orchDoneMsg); !ok || done.err == nil || !strings.Contains(done.err.Error(), "not connected") {
 		t.Errorf("prompt on a dropped host: %v", done.err)
 	}
-	// No target: every host reloads while shown, or is marked to when shown.
+	// No target: nothing reloads here; the daemon's orchestrator_changed does
+	// (review run-224 item 11).
 	d.orchCalls = nil
-	m = feed(m, m.jobsAfterChange(orchTarget{}))
-	if !strings.Contains(d.orchCallsJoined(), "ListOrchestrators") {
-		t.Errorf("a create/rename/remove reloads the hosts: %q", d.orchCallsJoined())
+	if c := m.jobsAfterChange(orchTarget{}); c != nil || d.orchCallsJoined() != "" {
+		t.Errorf("an untargeted success re-reads hosts: %q", d.orchCallsJoined())
 	}
 	m.screen = screenList
-	if c := m.jobsAfterChange(orchTarget{}); c != nil || !m.jobs.hosts["local"].stale {
-		t.Error("hidden ⇒ the hosts are marked stale")
+	if c := m.jobsAfterChange(orchTarget{}); c != nil || m.jobs.hosts["local"].stale {
+		t.Error("hidden ⇒ nothing is marked stale")
 	}
 	// A host the developer removed drops out with its bookkeeping.
 	m.screen = screenJobs
@@ -847,5 +847,50 @@ func TestConnOfNeverFallsBack(t *testing.T) {
 		if got := m.connOf(c.hc) != nil; got != c.want {
 			t.Errorf("connOf(%+v) = %v, want %v", c.hc, got, c.want)
 		}
+	}
+}
+
+// After a create, only the event's orchestrator is read, and an orchestrator
+// marked stale on a host that is fully loaded on entry is read once, by that
+// load (review run-224 item 11).
+func TestJobsCreateReadsOnlyTheNewOrchestrator(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	d.orchestrators = append(d.orchestrators, orchSummary("o2", "beta-bot"))
+	d.orchCalls = nil
+	m = feed(m, m.jobsAfterChange(orchTarget{}))
+	mm, cmd := m.syncOrchestratorChanged(m.subHostKey(""), "o2")
+	m = feed(mm.(Model), cmd)
+	if calls := d.orchCallsJoined(); strings.Contains(calls, "ListOrchestrators") || strings.Contains(calls, "o1") || !strings.Contains(calls, "o2") {
+		t.Errorf("calls after a create = %q", calls)
+	}
+	if got := jobsLabels(m); len(got) != 2 {
+		t.Errorf("rows = %v", got)
+	}
+	// Hidden: the event marks o2 stale and the host is marked to reload; entry
+	// reads o2 once.
+	m.screen = screenList
+	mm, _ = m.syncOrchestratorChanged(m.subHostKey(""), "o2")
+	m = mm.(Model)
+	m.jobs.hostLoad(m.subHostKey("")).stale = true
+	d.orchCalls = nil
+	mm, cmd = m.enterJobs(screenList)
+	m = feed2(mm.(Model), cmd)
+	if n := strings.Count(d.orchCallsJoined(), "ListRuns o2"); n != 1 || strings.Contains(d.orchCallsJoined(), "GetOrchestrator o2") {
+		t.Errorf("o2 read %d times on entry: %q", n, d.orchCallsJoined())
+	}
+}
+
+// A frame resolves each host's reachability and each worker's name once
+// (review run-224 item 12).
+func TestJobsFrameMemo(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	m.jobs.frame = &jobsFrame{reach: map[string]bool{"local": false}, names: map[string]string{"h/s": "memo"}}
+	if m.jobsReachable("local") {
+		t.Error("the frame's answer is used")
+	}
+	if got := m.workerName(&pb.Run{SandboxHostId: "h", SandboxId: "s"}); got != "memo" {
+		t.Errorf("workerName = %q", got)
 	}
 }

@@ -77,6 +77,10 @@ type jobsState struct {
 	// (computed once per change, not per frame: R4).
 	rev     uint64
 	derived *jobsDerived
+	// frame memoises per-host reachability and worker names while one view
+	// renders; viewJobs sets it on its own copy only, so it never outlives the
+	// frame (review run-224 item 12).
+	frame *jobsFrame
 	// queueFilter is "" (all orchestrators) or a target key; its label is kept so
 	// a vanished filter can be named when it resets (jobs_queue.go).
 	queueFilter      string
@@ -221,9 +225,8 @@ func (m *Model) rememberJobsCursor(t jobsTab) {
 // updateJobsKey handles a key, then records the item the cursor is on, so the
 // next data change keeps it there (R11).
 func (m Model) updateJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.jobs.results == nil && m.jobs.prompt == nil && m.jobs.form == nil {
-		m.rememberJobsCursor(m.jobs.tab)
-	}
+	// The cursor's item is already recorded: after the previous key and after
+	// every data change (anchorJobsCursors), so one pass after the key suffices.
 	out, cmd := m.handleJobsKey(msg)
 	if mm, ok := out.(Model); ok && mm.screen == screenJobs && mm.jobs.results == nil && mm.jobs.prompt == nil && mm.jobs.form == nil {
 		mm.rememberJobsCursor(mm.jobs.tab)
@@ -365,6 +368,7 @@ func (m Model) jobsTabBar() string {
 const jobsEmptyText = "No orchestrators yet — create one under Daemons › <daemon> › Orchestrators."
 
 func (m Model) viewJobs() string {
+	m.jobs.frame = &jobsFrame{reach: map[string]bool{}, names: map[string]string{}}
 	j := m.jobs
 	if j.prompt != nil {
 		return m.promptView(j.prompt)

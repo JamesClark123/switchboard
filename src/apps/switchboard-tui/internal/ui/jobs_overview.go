@@ -288,6 +288,21 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 // aggregated sandbox list (the orchestrator record carries none, R4); the short
 // sandbox id when it is not listed.
 func (m Model) workerName(r *pb.Run) string {
+	f := m.jobs.frame
+	key := r.GetSandboxHostId() + "/" + r.GetSandboxId()
+	if f != nil {
+		if n, ok := f.names[key]; ok {
+			return n
+		}
+	}
+	n := m.lookupWorkerName(r)
+	if f != nil {
+		f.names[key] = n
+	}
+	return n
+}
+
+func (m Model) lookupWorkerName(r *pb.Run) string {
 	entry, _ := m.entryForDaemonHost(r.GetSandboxHostId())
 	for _, hs := range m.hostAgg {
 		if entry != "" && hs.Host.Entry.ID != entry {
