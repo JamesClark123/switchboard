@@ -234,13 +234,13 @@ func (m Model) termRows() int {
 	return 3
 }
 
-// updateTerminalKey forwards keystrokes to the sandbox PTY. Ctrl+Q detaches back
-// to the screen the terminal was opened from (leaving the session running);
-// everything else is translated to raw bytes and sent to the daemon.
 // escHoldHint explains a held first esc in a terminal opened from Jobs; the
 // next key clears it.
 const escHoldHint = "esc goes to the agent and interrupts its turn — press esc again to send it, ctrl+q to go back to Jobs"
 
+// updateTerminalKey forwards keystrokes to the sandbox PTY. Ctrl+Q detaches back
+// to the screen the terminal was opened from (leaving the session running);
+// everything else is translated to raw bytes and sent to the daemon.
 func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlQ {
 		name, back := m.term.name, m.term.returnTo
