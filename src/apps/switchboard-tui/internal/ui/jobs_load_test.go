@@ -896,15 +896,21 @@ func TestJobsCreateReadsOnlyTheNewOrchestrator(t *testing.T) {
 	}
 }
 
-// A frame resolves each host's reachability and each worker's name once
-// (review run-224 item 12).
+// A frame resolves each host's reachability once, however many rows it has
+// (review run-224 item 12; run-242 finding 8: through View, not a hand-set memo).
 func TestJobsFrameMemo(t *testing.T) {
-	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o1", "alpha-bot")}}
-	m := openJobs(sized(New(d, "/work")))
-	m.jobs.frame = &jobsFrame{reach: map[string]bool{"local": false}, names: map[string]string{"h/s": "memo"}}
-	if m.jobsReachable("local") {
-		t.Error("the frame's answer is used")
+	var orchs []*pb.OrchestratorSummary
+	for i := 0; i < 6; i++ {
+		orchs = append(orchs, &pb.OrchestratorSummary{Orchestrator: &pb.Orchestrator{Id: fmt.Sprintf("o%d", i), Name: fmt.Sprintf("bot-%d", i), Actions: []*pb.Action{reviewAction()}}})
 	}
+	m := openJobs(sized(New(&fakeDaemon{orchestrators: orchs}, "/work")))
+	m.jobs.tab = jobsActions
+	jobsReachLookups = 0
+	_ = m.View()
+	if jobsReachLookups != 1 {
+		t.Errorf("one host, six groups: %d reachability lookups in a frame", jobsReachLookups)
+	}
+	m.jobs.frame = &jobsFrame{reach: map[string]bool{}, names: map[string]string{"h/s": "memo"}}
 	if got := m.workerName(&pb.Run{SandboxHostId: "h", SandboxId: "s"}); got != "memo" {
 		t.Errorf("workerName = %q", got)
 	}
@@ -998,5 +1004,38 @@ func TestDaemonOrchsOpensForLostHostWhileLoading(t *testing.T) {
 	m.manager.Disconnect("hostb")
 	if mm, _ = m.enterDaemonOrchs(daemonRow{id: "hostb", name: "beta"}); mm.(Model).screen == screenDaemonOrchs {
 		t.Error("a disconnected daemon opens")
+	}
+}
+
+// Group headings are cut to the width too: a 64-character name on a lost daemon
+// does not widen the view (review run-242 finding 5).
+func TestJobsGroupHeadingsFitTheWidth(t *testing.T) {
+	long := strings.Repeat("x", 64)
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-b", Name: long, Actions: []*pb.Action{reviewAction()}}}}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	m, _ = update(m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = openJobs(m)
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	for _, tab := range []jobsTab{jobsActions, jobsEvents} {
+		m.jobs.tab = tab
+		for _, l := range strings.Split(m.View(), "\n") {
+			if w := lipgloss.Width(l); w > 80 {
+				t.Errorf("tab %s: a %d-column line: %q", jobsTabNames[tab], w, l)
+			}
+		}
+	}
+}
+
+// A record that could not be read is named as such, not as a runs failure
+// (review run-242 finding 7).
+func TestJobsRecordErrorLabel(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	o := m.jobs.orchs[0].target
+	s := jobsSeq.Add(1)
+	m, _ = update(m, jobsOrchMsg{host: o.host, id: o.id, recSeq: s, err: status.Error(codes.DeadlineExceeded, "slow")})
+	if got := strings.Join(m.jobsUnreadable(), "; "); !strings.Contains(got, "alpha-bot @ test-host (orchestrator: ") {
+		t.Errorf("unreadable = %q", got)
 	}
 }

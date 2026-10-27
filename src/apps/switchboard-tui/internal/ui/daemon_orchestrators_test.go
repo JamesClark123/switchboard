@@ -416,3 +416,29 @@ func TestOrchDetailViewsAndAttachPickerAreSanitised(t *testing.T) {
 	m.attach = attachState{sandbox: &pb.Sandbox{Id: "s1", DisplayName: hostileName}, choices: []orchRow{{host: "local", hostName: hostileName, summary: sum, reachable: true}}}
 	assertNoHostile(t, "the attach picker", m.View())
 }
+
+// Opening Rename and saving without an edit renames nothing, even when the name
+// shown was cleaned of hostile characters; the form says it would be cleaned
+// (review run-242 finding 6).
+func TestRenameUneditedIsNoOp(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "bot‮exe")}}
+	m := openDaemonOrchs(t, sized(New(d, "/work")), "")
+	m, _ = update(m, press("R"))
+	if m.orch.form == nil || !strings.Contains(m.View(), "invisible characters; saving an edit drops them") {
+		t.Fatalf("the rename form says the name will be cleaned:\n%s", m.View())
+	}
+	d.orchCalls = nil
+	mm, cmd := m.applyOrchForm()
+	m = feed(mm.(Model), cmd)
+	if strings.Contains(d.orchCallsJoined(), "Rename") || m.orch.form != nil || m.status != "name unchanged" {
+		t.Errorf("an unedited rename: calls %q status %q", d.orchCallsJoined(), m.status)
+	}
+	// An edit is sent.
+	m, _ = update(m, press("R"))
+	m.orch.vals.name = "bot-two"
+	mm, cmd = m.applyOrchForm()
+	m = feed(mm.(Model), cmd)
+	if !strings.Contains(d.orchCallsJoined(), "Rename") {
+		t.Errorf("an edited rename is sent: %q", d.orchCallsJoined())
+	}
+}

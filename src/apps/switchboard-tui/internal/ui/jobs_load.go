@@ -151,6 +151,10 @@ type jobsFrame struct {
 	names map[string]string
 }
 
+// jobsReachLookups counts jobsReachable's connectedDaemon calls, so a test can
+// see that a frame resolves each host once.
+var jobsReachLookups int
+
 // jobsReachable reports whether a host's rows can be acted on now.
 func (m Model) jobsReachable(host string) bool {
 	if f := m.jobs.frame; f != nil {
@@ -158,6 +162,7 @@ func (m Model) jobsReachable(host string) bool {
 			return r
 		}
 	}
+	jobsReachLookups++
 	_, err := m.connectedDaemon(host)
 	if f := m.jobs.frame; f != nil {
 		f.reach[host] = err == nil
@@ -453,7 +458,7 @@ func (m *Model) applyJobsRead(o jobsOrch, recSeq, runsSeq uint64, gone bool) {
 		cur.target, cur.summary, md.recSeq = o.target, o.summary, recSeq
 	}
 	if runsNew {
-		md.runsSeq, cur.err = runsSeq, o.err
+		md.runsSeq, cur.err, cur.recErr = runsSeq, o.err, false
 		if o.runs != nil {
 			cur.runs = o.runs
 		}
@@ -568,7 +573,7 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 			md.runsSeq = maxSeq(md.runsSeq, msg.recSeq)
 			for i := range j.orchs {
 				if j.orchs[i].target.key() == key {
-					j.orchs[i].err = msg.err
+					j.orchs[i].err, j.orchs[i].recErr = msg.err, true
 				}
 			}
 		}
@@ -705,7 +710,11 @@ func (m Model) jobsUnreadable() []string {
 	}
 	for _, o := range m.jobs.orchs {
 		if o.err != nil {
-			orchs = append(orchs, sanitizeLine(o.target.label(), 0)+" (runs: "+errLine(o.err)+")")
+			what := "runs"
+			if o.recErr {
+				what = "orchestrator" // its record could not be read (review run-242 finding 7)
+			}
+			orchs = append(orchs, sanitizeLine(o.target.label(), 0)+" ("+what+": "+errLine(o.err)+")")
 		}
 	}
 	sort.Strings(hosts)

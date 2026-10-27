@@ -149,7 +149,9 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 			}
 			heading = dimStyle.Render(sanitizeLine(o.target.label(), 0) + note)
 		}
-		lines = append(lines, heading)
+		// Cut like the rows: one over-wide line would widen the whole view
+		// (review run-242 finding 5).
+		lines = append(lines, m.fitLine(heading))
 		waiting := map[string]int{}
 		if t == jobsEvents {
 			for _, run := range o.runs.GetQueued() {

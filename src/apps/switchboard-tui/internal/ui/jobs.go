@@ -48,6 +48,7 @@ type jobsOrch struct {
 	summary *pb.OrchestratorSummary
 	runs    *pb.ListRunsResponse // never nil
 	err     error                // its runs (or record) could not be read
+	recErr  bool                 // err is the record's (GetOrchestrator), not the runs'
 }
 
 // jobsState backs the screen (data-model "jobsState"). It survives leaving the

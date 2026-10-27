@@ -58,6 +58,9 @@ type orchState struct {
 	vals     *orchFormVals
 	formID   string // the row being renamed
 	formHost string
+	// formPrefill is the rename input's starting value: submitting it unedited
+	// renames nothing.
+	formPrefill string
 }
 
 // orchRowsMsg carries one fan-out result.
@@ -330,14 +333,22 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
-	// The editable value starts sanitised too: the input draws it as typed.
-	v := &orchFormVals{name: sanitizeLine(row.summary.GetOrchestrator().GetName(), 0), host: row.host}
+	// The editable value starts sanitised too: the input draws it as typed. A
+	// name that loses characters that way says so, and an unedited submit is a
+	// no-op rather than a silent rename (review run-242 finding 6).
+	raw := row.summary.GetOrchestrator().GetName()
+	v := &orchFormVals{name: sanitizeLine(raw, 0), host: row.host}
+	desc := "The label only; workers and briefings follow as they are reachable."
+	if v.name != raw {
+		desc += " The current name has control or invisible characters; saving an edit drops them."
+	}
 	m.orch.vals = v
 	m.orch.formKind = orchFormRename
 	m.orch.formID = row.summary.GetOrchestrator().GetId()
 	m.orch.formHost = row.host
+	m.orch.formPrefill = v.name
 	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(row.summary.GetOrchestrator().GetName(), 0)).Description("The label only; workers and briefings follow as they are reachable.").Value(&v.name),
+		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(raw, 0)).Description(desc).Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
 	return m, m.orch.form.Init()
@@ -390,6 +401,11 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 	exceptID := ""
 	if m.orch.formKind == orchFormRename {
 		exceptID = m.orch.formID
+		if name == strings.TrimSpace(m.orch.formPrefill) {
+			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+			m.status = "name unchanged"
+			return m, nil
+		}
 	}
 	if other, taken := m.orchNameTaken(name, exceptID); taken {
 		m.status = fmt.Sprintf("an orchestrator named %s already exists on %s", name, other.hostName)
