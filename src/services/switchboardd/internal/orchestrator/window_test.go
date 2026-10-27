@@ -34,6 +34,16 @@ func workdays() *pb.ActiveWindow {
 	return &pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{1, 2, 3, 4, 5}, Timezone: "America/Los_Angeles"}
 }
 
+// longWeekdays is every weekday, then a million distinct out-of-range values;
+// normalizeWindow refuses it at the first one rather than de-duplicating it.
+func longWeekdays() []uint32 {
+	days := []uint32{0, 1, 2, 3, 4, 5, 6}
+	for d := range uint32(1_000_000) {
+		days = append(days, 7+d)
+	}
+	return days
+}
+
 func TestNormalizeWindow(t *testing.T) {
 	for name, tc := range map[string]struct {
 		in   *pb.ActiveWindow
@@ -45,6 +55,7 @@ func TestNormalizeWindow(t *testing.T) {
 		"missing end":       {&pb.ActiveWindow{Start: "08:00", Timezone: "UTC"}, "window end"},
 		"start == end":      {&pb.ActiveWindow{Start: "08:00", End: "08:00", Timezone: "UTC"}, "around the clock"},
 		"weekday 7":         {&pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{7}, Timezone: "UTC"}, "weekday 7 is out of range"},
+		"long weekday list": {&pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: longWeekdays(), Timezone: "UTC"}, "weekday 7 is out of range"},
 		"no timezone":       {&pb.ActiveWindow{Start: "08:00", End: "17:00"}, "needs a timezone"},
 		"Local":             {&pb.ActiveWindow{Start: "08:00", End: "17:00", Timezone: "Local"}, "needs a timezone"},
 		"abbreviation":      {&pb.ActiveWindow{Start: "08:00", End: "17:00", Timezone: "PST"}, `unknown timezone "PST"; use an IANA name like America/Los_Angeles`},
@@ -423,5 +434,58 @@ func TestWindowedEventLateTimerDoesNotFireOutsideTheWindow(t *testing.T) {
 	}
 	if missedWindow(pollEvent(), env.clock.Now()) {
 		t.Error("an event without a window never misses one")
+	}
+}
+
+// schedulerDeadline is when an orchestrator's scheduler timer fires.
+func schedulerDeadline(t *testing.T, env *testEnv, orchID string) time.Time {
+	t.Helper()
+	rt, err := env.svc.runtimeFor(orchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.sched.mu.Lock()
+	tm, ok := rt.sched.timer.(*fakeTimer)
+	rt.sched.mu.Unlock()
+	if !ok {
+		t.Fatal("no scheduler timer armed")
+	}
+	env.clock.mu.Lock()
+	defer env.clock.mu.Unlock()
+	return tm.at
+}
+
+func TestSchedulerNeverSleepsPastTheCap(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 0, false)
+	loc := la(t)
+	setClock(t, env, time.Date(2026, 10, 26, 16, 50, 0, 0, loc)) // Monday, after the last slot
+	ev, err := env.svc.PutTimedEvent(o.GetId(), windowedEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening := time.Date(2026, 10, 27, 8, 0, 0, 0, loc)
+	if got := ev.GetNextFireAt().AsTime(); !got.Equal(opening) {
+		t.Fatalf("next fire = %v, want Tuesday 08:00", got.In(loc))
+	}
+	// The next slot is 15h away, but the timer is a short wake-up: a monotonic
+	// sleep that long would fire late by however long the host was suspended.
+	for range 3 {
+		now := env.clock.Now()
+		if at := schedulerDeadline(t, env, o.GetId()); at.After(now.Add(schedulerMaxSleep)) {
+			t.Fatalf("timer armed for %v, more than %v away", at.Sub(now), schedulerMaxSleep)
+		}
+		env.clock.Advance(schedulerMaxSleep)
+	}
+	// Wake-ups with nothing due neither fire nor move the slot.
+	if n := runCount(t, env, o.GetId()); n != 0 {
+		t.Errorf("a wake-up fired: %d runs", n)
+	}
+	if got := eventOf(t, env, o.GetId(), ev.GetId()).GetNextFireAt().AsTime(); !got.Equal(opening) {
+		t.Errorf("a wake-up moved the slot to %v", got.In(loc))
+	}
+	// Waking just after the opening (the host resumed then) fires that slot.
+	setClock(t, env, opening.Add(30*time.Second))
+	if n := runCount(t, env, o.GetId()); n != 1 {
+		t.Errorf("runs after the opening = %d, want 1", n)
 	}
 }

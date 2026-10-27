@@ -31,6 +31,11 @@ const (
 	// windowSearchDays bounds the search for a timed event's next window opening
 	// (SWI-10); a week plus a day always finds one.
 	windowSearchDays = 8
+	// schedulerMaxSleep caps one scheduler timer. Go timers run on the monotonic
+	// clock, which stops while the host is suspended, so a single sleep until a
+	// window opening hours away would fire late by the whole suspend; waking at
+	// least this often re-reads the wall clock (SWI-10).
+	schedulerMaxSleep = time.Minute
 	// historyKeep is how many finished runs are retained per orchestrator.
 	historyKeep = 200
 	// maxArgumentBytes / maxPromptBytes bound a call's values and the composed prompt.

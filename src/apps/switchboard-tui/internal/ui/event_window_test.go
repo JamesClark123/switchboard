@@ -166,3 +166,36 @@ func TestNextFireOverADay(t *testing.T) {
 		t.Errorf("nextFire 62h ahead = %q", got)
 	}
 }
+
+// 24:00 ends a window at midnight; a non-IANA zone is refused in the form when
+// this host has zone data to check it against.
+func TestWindowFromFormMidnightAndZones(t *testing.T) {
+	w, err := windowFromForm(&eventFormVals{activeFrom: "18:00", activeUntil: " 24:00 ", timezone: "UTC"})
+	if err != nil || w.GetStart() != "18:00" || w.GetEnd() != "00:00" {
+		t.Errorf("18:00–24:00 = %+v, %v; want 18:00–00:00", w, err)
+	}
+	if _, err := windowFromForm(&eventFormVals{activeFrom: "24:00", activeUntil: "08:00", timezone: "UTC"}); err == nil || !strings.Contains(err.Error(), `active from "24:00" must be HH:MM`) {
+		t.Errorf("24:00 as a start: %v", err)
+	}
+	if !zoneDataAvailable() {
+		t.Skip("no zone data on this host: the daemon checks the name")
+	}
+	if _, err := windowFromForm(&eventFormVals{activeFrom: "08:00", activeUntil: "17:00", timezone: "PST"}); err == nil || !strings.Contains(err.Error(), `unknown timezone "PST"; use an IANA name`) {
+		t.Errorf("PST: %v", err)
+	}
+}
+
+// The Upcoming row names a windowed event's window, so a far-off next firing
+// reads as the window and not as a stuck event.
+func TestUpcomingLineShowsTheWindow(t *testing.T) {
+	ev := &pb.TimedEvent{Id: "ev-1", Name: "poll", Action: "review-pr", Enabled: true, NextFireAt: at(62 * time.Hour),
+		Window: &pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{1, 2, 3, 4, 5}, Timezone: "America/Los_Angeles"}}
+	rows := jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, &pb.ListRunsResponse{})})
+	if len(rows) != 1 || !strings.Contains(upcomingLine(rows[0]), " · 08:00–17:00 Mon–Fri America/Los_Angeles") {
+		t.Errorf("Upcoming row without the window: %q", upcomingLine(rows[0]))
+	}
+	ev.Window = nil
+	if line := upcomingLine(jobsUpcoming([]jobsOrch{jo("h", "bot", []*pb.TimedEvent{ev}, &pb.ListRunsResponse{})})[0]); strings.Contains(line, "·") {
+		t.Errorf("an event without a window gets no marker: %q", line)
+	}
+}

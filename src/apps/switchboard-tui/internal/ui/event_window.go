@@ -91,6 +91,9 @@ func windowFromForm(v *eventFormVals) (*pb.ActiveWindow, error) {
 		return nil, fmt.Errorf("active from %q must be HH:MM (24-hour, e.g. 08:00)", from)
 	}
 	end, ok := normClock(until)
+	if strings.TrimSpace(until) == "24:00" {
+		end, ok = "00:00", true // the end is exclusive, so midnight is the next day's 00:00
+	}
 	if !ok {
 		return nil, fmt.Errorf("active until %q must be HH:MM (24-hour, e.g. 17:00)", until)
 	}
@@ -101,12 +104,23 @@ func windowFromForm(v *eventFormVals) (*pb.ActiveWindow, error) {
 	if tz == "" {
 		return nil, fmt.Errorf("the window needs a timezone, an IANA name like America/Los_Angeles")
 	}
+	if _, err := time.LoadLocation(tz); err != nil && zoneDataAvailable() {
+		return nil, fmt.Errorf("unknown timezone %q; use an IANA name like America/Los_Angeles", tz)
+	}
 	w := &pb.ActiveWindow{Start: start, End: end, Timezone: tz}
 	for _, d := range v.days {
 		w.Weekdays = append(w.Weekdays, uint32(d))
 	}
 	slices.Sort(w.Weekdays)
 	return w, nil
+}
+
+// zoneDataAvailable reports whether this host can load IANA zones at all. The
+// daemon embeds the zone database and has the final say; without zone data here
+// a name cannot be checked, so the form leaves it to the daemon.
+func zoneDataAvailable() bool {
+	_, err := time.LoadLocation("America/Los_Angeles")
+	return err == nil
 }
 
 // windowToForm pre-fills the editor's window fields from a saved window.

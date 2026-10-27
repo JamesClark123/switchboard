@@ -34,8 +34,15 @@ func normalizeWindow(w *pb.ActiveWindow) (*pb.ActiveWindow, error) {
 		return nil, nil
 	}
 	n := &pb.ActiveWindow{Start: strings.TrimSpace(w.GetStart()), End: strings.TrimSpace(w.GetEnd()), Timezone: strings.TrimSpace(w.GetTimezone())}
+	var seen [7]bool
 	for _, d := range w.GetWeekdays() {
-		if !slices.Contains(n.Weekdays, d) {
+		// Range-checked here, before parseWindow, so a long client-supplied
+		// list is refused at its first bad value.
+		if d > 6 {
+			return nil, fmt.Errorf("%w: window weekday %d is out of range (0=Sunday … 6=Saturday)", ErrInvalid, d)
+		}
+		if !seen[d] {
+			seen[d] = true
 			n.Weekdays = append(n.Weekdays, d)
 		}
 	}

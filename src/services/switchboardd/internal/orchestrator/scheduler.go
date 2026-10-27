@@ -261,7 +261,8 @@ func (rt *runtime) stopScheduler() {
 	}
 }
 
-// rearmScheduler arms the timer for the earliest enabled next_fire_at.
+// rearmScheduler arms the timer for the earliest enabled next_fire_at, or
+// for schedulerMaxSleep if that is sooner.
 func (rt *runtime) rearmScheduler() {
 	if rt.sched == nil || rt.ctx.Err() != nil {
 		return
@@ -286,10 +287,9 @@ func (rt *runtime) rearmScheduler() {
 	if earliest.IsZero() {
 		return
 	}
-	delay := earliest.Sub(rt.svc.clock.Now())
-	if delay < 0 {
-		delay = 0
-	}
+	// A long sleep is never trusted (see schedulerMaxSleep): a wake-up with
+	// nothing due just re-arms.
+	delay := min(max(earliest.Sub(rt.svc.clock.Now()), 0), schedulerMaxSleep)
 	rt.sched.timer = rt.svc.clock.AfterFunc(delay, rt.tick)
 }
 
