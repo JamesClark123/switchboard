@@ -122,12 +122,15 @@ func TestJobsOlderReplyIsDropped(t *testing.T) {
 	if runs := m.jobs.orchs[0].runs; len(runs.GetInFlight()) != 1 || len(runs.GetQueued()) != 0 {
 		t.Fatalf("the older reply must not put the run back in the queue: %v", runs)
 	}
-	// A host reply other than the load in flight is dropped too.
-	flight := m.jobs.hosts[target.host].flight
-	m, _ = update(m, jobsHostMsg{host: target.host, flight: flight - 1})
+	// A host reply other than the load in flight is dropped too, even one whose
+	// newer list (empty) would otherwise remove alpha-bot (review run-224 tests).
+	superseded := hostReply(&m, target, jobsSeq.Add(1))
+	superseded.flight--
+	m, _ = update(m, superseded)
 	if len(m.jobs.orchs) != 1 {
 		t.Error("a superseded host reply is dropped")
 	}
+	m, _ = update(m, jobsHostMsg{host: target.host, flight: superseded.flight + 1}) // end the load
 
 	// The other way round: the host load reads first (queued) but lands after an
 	// event reload that read later (running). The event reload's state stays.
@@ -376,7 +379,7 @@ func TestJobsRowsAreSanitised(t *testing.T) {
 	for tab := jobsTab(0); tab < jobsTabCount; tab++ {
 		m.jobs.tab = tab
 		v := m.View()
-		for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "\u202e", "\x07", "\x9b", "\t", "\x1b[31mm"} {
+		for _, bad := range []string{"\x1b", "\r", "\u202e", "\x07", "\x9b", "\t"} { // test views carry no styling, so any ESC is a leak
 			if strings.Contains(v, bad) {
 				t.Errorf("tab %s shows %q", jobsTabNames[tab], bad)
 			}
@@ -460,12 +463,18 @@ func TestJobsResponsivenessBudget(t *testing.T) {
 	if n := len(m.jobsRows().queue); n != 6000 {
 		t.Fatalf("queue = %d runs", n)
 	}
+	// The best of a few tries is measured, so a GC pause or a loaded CI machine
+	// (-race) does not fail it (review run-224 tests).
 	budget := 100 * time.Millisecond
 	time1 := func(name string, f func()) {
-		start := time.Now()
-		f()
-		if el := time.Since(start); el > budget {
-			t.Errorf("%s took %v (budget %v)", name, el, budget)
+		best := time.Duration(1<<63 - 1)
+		for i := 0; i < 5; i++ {
+			start := time.Now()
+			f()
+			best = min(best, time.Since(start))
+		}
+		if best > budget {
+			t.Errorf("%s took %v (budget %v)", name, best, budget)
 		}
 	}
 	for _, tab := range []jobsTab{jobsOverview, jobsActions, jobsEvents, jobsQueue} {

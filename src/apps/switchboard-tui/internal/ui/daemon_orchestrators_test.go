@@ -343,7 +343,10 @@ const hostileName = "evil\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED\u202etxt"
 
 func assertNoHostile(t *testing.T, where, v string) {
 	t.Helper()
-	for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "\u202e", "\x07"} {
+	// Test views carry no styling, so any ESC is a leak — except the SGR reset
+	// overlayCenter writes where it cuts the background under a dialog.
+	v = strings.ReplaceAll(v, "\x1b[0m", "")
+	for _, bad := range []string{"\x1b", "\r", "\u202e", "\x07"} {
 		if strings.Contains(v, bad) {
 			t.Errorf("%s shows %q", where, bad)
 		}
@@ -360,7 +363,7 @@ func TestDaemonOrchsRowsAreSanitised(t *testing.T) {
 	m.orch.rows[0].reachable, m.orch.rows[0].reason = false, hostileName
 	assertNoHostile(t, "the unreachable row", m.View())
 	m.orch.rows[0].reachable = true
-	for _, k := range []string{"r", "d"} {
+	for _, k := range []string{"R", "d"} {
 		mm, _ := update(m, press(k))
 		assertNoHostile(t, "the "+k+" dialog", mm.View())
 	}

@@ -330,7 +330,8 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
-	v := &orchFormVals{name: row.summary.GetOrchestrator().GetName(), host: row.host}
+	// The editable value starts sanitised too: the input draws it as typed.
+	v := &orchFormVals{name: sanitizeLine(row.summary.GetOrchestrator().GetName(), 0), host: row.host}
 	m.orch.vals = v
 	m.orch.formKind = orchFormRename
 	m.orch.formID = row.summary.GetOrchestrator().GetId()
