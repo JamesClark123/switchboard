@@ -82,7 +82,7 @@ identified by the `guardSurface` held in `unsavedState.surface`, and no separate
 | `fromEnlarge` | `bool` | Raised by ctrl+c in the enlarged view; Cancel returns to it (FR-015). |
 | `highlight` | `int` | 0 Save, 1 Cancel, 2 Discard. Starts at 1 (Cancel). |
 | `saveLabel` | `string` | "Save", or "Rebuild" for `gReasoning` (opens a destructive confirm built from the edited setup). |
-| `openedAt` | `time.Time` | From `nowFunc()`. For `unsavedKeyGrace` (150 ms) after it, only esc/ctrl+c (Cancel) act (research R5). |
+| `openedAt` | `time.Time` | From `nowFunc()`. For `unsavedKeyGrace` (a `var`, 150 ms; 0 in story tests) after it, only esc/ctrl+c (Cancel) act (research R5). |
 
 State transitions:
 
@@ -91,8 +91,10 @@ closed --requestExit(g) && dirty(g)--> open(g, highlight=Cancel)
 open --c / esc / ctrl+c / enter@Cancel--> closed                      (surface untouched; enlarged view kept)
 open --d / enter@Discard--> closed + guardLeave(g)                    (enlarged view discarded first)
 open --s / enter@Save--> closed + guardSave(g)                        (re-checks dirty; enlarged view already written back)
-open --r / enter@Rebuild--> closed + confirmRebuildFromSetup()       (gReasoning only; confirm built from the EDITED setup,
-                                                                      n → setup intact, y → rebuild → orchestrator detail)
+open --r / enter@Rebuild--> closed + guardSave(gReasoning) = confirmRebuildFromSetup()
+                                                                      (confirm built from the EDITED setup, keeps the
+                                                                      "Refused while a run is on it." warning;
+                                                                      n → setup intact, y → onAccept → orchestrator detail)
 open --any key but esc/ctrl+c within 150 ms of opening--> ignored     (typing grace)
 open --forceClose(g)--> closed                                        (status "unsaved edits lost: …" if dirty)
 ```
@@ -137,10 +139,26 @@ form.
 
 After every message, `reconcileGuardLayers()` does O(1) work:
 - it closes the dialog and the enlarged view if their `surface` is no longer `activeGuard()`;
-- it opens the head of `pendingOverrides` once no guarded surface is active and no confirm or approval is showing
-  (research R4, R7).
+- it opens the head of `pendingOverrides` on a non-key message when no confirm or approval is showing **and** either no guarded surface is
+  active (and no dialog is open), or the active surface is that sandbox's own sources overlay with no dialog open.
+  This is the parking exception. The opened confirm ignores y/enter for `confirmOverrideGrace` (150 ms) (research
+  R4, R7).
+
+`m.suspendedGuard()` reports a guarded surface that sits under one of its own follow-up confirms (`screenConfirm`
+with `confirm.returnTo` = that surface's screen, its state still set). Forced-close triggers match active **or**
+suspended surfaces. `activeGuard()` itself stays false under a confirm.
 
 Sandbox-removal forced closes are done in the `Removed` event and list-reload handlers, not here.
 
 `activeGuard()` checks `m.screen` for every row above. For example, `gMcp` requires `screenMcp` and
 `mcpView.form != nil`, so a form stranded on a screen the user has left is never active.
+
+## confirmState additions (UI/confirm.go)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `onAccept` | `func(m *Model)` | Optional. Called on y/enter with the live model, after `screen = returnTo` and before `onConfirm`. It captures only plain values. It is used by the sources removal Save (close and reset the overlay) and the Rebuild confirm (go to the orchestrator detail). nil means today's behaviour. n/esc and forced closes never call it. |
+| `graceUntil` | `time.Time` | Optional. Before this time `updateConfirmKey` ignores y/Y/enter, while n/esc/q/ctrl+c act. It is set only on add-overrides opened from the parked queue. |
+
+`acceptTo screen` is deliberately not used: `screenList` is the zero value of `screen`, so "go to the list" would be
+indistinguishable from "not set".

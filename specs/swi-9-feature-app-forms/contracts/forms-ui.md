@@ -57,7 +57,7 @@ to one, rather than overflowing. It re-fits on resize and keeps the text, cursor
 | Key | Action |
 |---|---|
 | `s` | Save: the surface's own save or confirm (FR-017). If a background update has left the surface unchanged, it just leaves. |
-| `r` (reasoning setup only, labelled **Rebuild**; `s` is ignored there) | Opens a destructive rebuild confirm built from the **edited** setup; its body lists the new sources, mode and kits. y rebuilds with that setup and goes to the orchestrator detail; n returns to the setup with its state intact. (This is an extra confirm beyond the setup's own enter, deliberately; see research R5.) |
+| `r` (reasoning setup only, labelled **Rebuild**; `s` is ignored there) | Opens a destructive rebuild confirm built from the **edited** setup; its body lists the new sources, mode and kits and warns "Refused while a run is on it.". y rebuilds with that setup and goes to the orchestrator detail; n returns to the setup with its state intact. enter on the highlighted Rebuild does the same as `r`. (FR-017 as amended in this PR.) |
 | `c`, `esc`, `ctrl+c` | Cancel: back to the surface exactly as it was (FR-015) |
 | `d` | Discard: close the surface without applying, completing the exit (FR-016) |
 | `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
@@ -90,8 +90,8 @@ exits immediately, as today (FR-014).
 | Kit section / item form | esc, ctrl+c | — | `applyKitForm` (apply to the kit in memory) | close the form, kit untouched |
 | Kit overview | esc, q | esc/q on a section's item list (back to the overview) | `saveKit` | `enterKitPicker` (kit unchanged on disk) |
 | Launch wizard | esc | esc in the name field, host/orchestrator/kit pickers | `startLaunch` (as enter) | back to the list |
-| Reasoning setup | esc | esc in the kit picker | **Rebuild** → a confirm built from the edited setup (`confirmRebuildFromSetup`); y runs the same rebuild as `startReasoningRebuildFromSetup` | back to the orchestrator detail |
-| Sources overlay | esc, q | — | `confirmRemoveSources`. Declining the confirm returns to the overlay with marks kept; confirming removes and closes the overlay (`confirmState.acceptTo`). | back to the list |
+| Reasoning setup | esc | esc in the kit picker | **Rebuild** (`r`, or enter on it) → a confirm built from the edited setup (`confirmRebuildFromSetup`), never a direct rebuild; y runs the same rebuild as `startReasoningRebuildFromSetup` | back to the orchestrator detail |
+| Sources overlay | esc, q | — | `confirmRemoveSources`. Declining the confirm returns to the overlay with marks kept; confirming removes and closes the overlay (the confirm's `onAccept` hook). | back to the list |
 | Sources add browser | esc | — | `dispatchAddSources` (as enter) | back to the overlay |
 | Rename | esc | — | as enter. Empty name: stays open with "name can't be empty" (FR-011a). | close, nothing renamed |
 | Tag | esc | — | as enter (an empty value clears the tag) | close |
@@ -120,8 +120,13 @@ A background update that closes the surface while the dialog or enlarged view is
 succeeding) closes them too.
 
 An async low-resource add-override confirm never replaces an open guarded surface, including the whole kit editor,
-other than that sandbox's own sources overlay. Overrides queue in arrival order and open one at a time, once no
-guarded surface, confirm or approval is showing.
+other than that sandbox's own sources overlay with no dialog or browser open. Overrides queue in arrival order and
+open one at a time, on the next non-key message, when no confirm or approval is showing, and either no guarded surface is active or that sandbox's
+own overlay is (marks kept). For 150 ms after such an override opens, y/enter are ignored, so a repeated enter can't
+accept it; n/esc decline at once.
+
+If a forced close hits a surface while one of its own follow-up confirms is showing (the sources removal confirm or
+the Rebuild confirm), the confirm closes with the surface and does not act.
 
 A terminal that finishes opening while the developer is no longer on the sandbox list (where `t` was pressed) does
 not take over the screen. The session is detached, and the status reads

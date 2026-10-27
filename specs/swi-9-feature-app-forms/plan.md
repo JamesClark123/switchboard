@@ -20,7 +20,7 @@ This plan formalises how the TUI's forms and inputs handle long text and leaving
      browser) go through one dispatcher. It leaves immediately when the surface's current values equal its opening baseline (R3). Otherwise it
      opens one shared three-choice dialog: **s** Save / **c** Cancel / **d** Discard, with Cancel highlighted and
      esc = Cancel (R4–R5). On the reasoning setup Save is **r** Rebuild, which opens a destructive confirm built from the
-     **edited** setup. This is a deliberate extra confirm beyond FR-017, recorded in R5. For 150 ms after the dialog opens only esc/ctrl+c act, so keys typed after a stray esc never act.
+     **edited** setup. FR-017 is amended in this PR for that extra confirm (R5). For 150 ms after the dialog opens only esc/ctrl+c act, so keys typed after a stray esc never act.
    - Save reuses each surface's existing save or confirm unchanged. Discard runs today's esc path.
 3. **Related fixes.**
    - Nested and follow-up behaviour: kit item → kit overview levels; MCP "register anyway?" returns to the form;
@@ -121,7 +121,8 @@ src/apps/switchboard-tui/internal/ui/
 ├── app.go                 # handleKey: dialog layer → enlarged layer before the screen switch; View: enlarged view replaces
 │                          #   chrome, dialog overlays; WindowSize re-fits the enlarged view; footer adds `ctrl+e enlarge`
 ├── keys.go                # dialog / enlarge bindings
-├── confirm.go             # confirmState.acceptTo (sources Save → removal confirm closes the overlay on y only)
+├── confirm.go             # confirmState.onAccept hook (y-only effects: sources Save closes + resets the overlay;
+│                          #   Rebuild goes to the detail) and graceUntil (dequeued add-overrides ignore y/enter 150 ms)
 ├── terminal.go            # termOpenedMsg switches screens only from screenList (else detaches); termClosedMsg only
 │                          #   leaves screenTerminal
 ├── config_editor.go       # heap *configFormVals (manifest option maps); guard (gConfig); formKeyMap

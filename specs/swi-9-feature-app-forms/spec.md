@@ -44,6 +44,10 @@
 
 - Responsiveness also covers typing, cursor movement and scrolling **in** the long inline field itself, which is where focus lands after the enlarged view closes (FR-005). The textarea's wrap cache is only cut to 99 entries once the field is focused, so that is the worst case. (SC-006)
 
+### Plan review (2026-10-27, re-review run `run-c275c8f2-435`, resolved in pr-response run `run-c275c8f2-437`)
+
+- Rebuild in the unsaved-changes dialog always goes through a confirm built from the edited setup, whichever key chooses it. A dialog that interrupts typing must never destroy a sandbox on one key. (FR-017 exception)
+
 ## Background (current behaviour this feature changes)
 
 Switchboard's terminal UI edits its data through these surfaces:
@@ -237,6 +241,7 @@ A developer is editing a long text field, such as a kit's agent instructions, an
   - If the save fails on a surface that stays open while saving, it MUST stay open with its values and show the error.
   - On success, the surface closes as it does after a normal save.
   - Where the surface's confirm action is destructive (the reasoning-sandbox setup, whose confirm destroys and relaunches the reasoning sandbox), the Save choice MUST be labelled with that action ("Rebuild").
+  - Exception: choosing **Rebuild** in the dialog MUST NOT rebuild at once. It MUST open a destructive confirm that names the **edited** setup, even though the setup's own rebuild key has no confirm. Declining returns to the setup unchanged; confirming rebuilds with the edited setup.
 - **FR-018**: In nested editors the guard MUST apply at each level:
   - Leaving a changed item editor raises the dialog for that item; there, Save means "apply to the parent".
   - Leaving a parent that holds applied-but-unsaved item changes raises the dialog for the parent; there, Save means "save the parent".

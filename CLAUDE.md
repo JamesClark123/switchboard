@@ -158,13 +158,17 @@ R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 6 
 launch, reasoning, sources overlay + add browser, rename/tag/add host/add group) routes its exits (esc; ctrl+c in forms;
 `q` on the kit overview and sources overlay) through `requestExit`: clean (current values == baseline snapshot, taken
 after the form is built and Text values normalised) leaves as today, dirty opens
-one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild → a destructive confirm
-built from the edited setup) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight;
-only esc/ctrl+c act for 150 ms after it opens. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
+one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` or enter@Rebuild → `guardSave(gReasoning)` =
+`confirmRebuildFromSetup`, a destructive confirm built from the edited setup; FR-017 exception) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight;
+only esc/ctrl+c act for `unsavedKeyGrace` (a var, 150 ms; story tests zero it with `noKeyGrace(t)`) after it opens.
+`confirmState.onAccept func(*Model)` carries y-only effects (sources Save closes + resets the overlay; Rebuild → detail);
+never an `acceptTo screen` field, since `screenList` is the zero value. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
 `View` applies the password/sign-in overlays last over every layer. Save = the surface's existing save/confirm, Discard =
 its esc path. MCP "register anyway?" back-out returns to the form; sources Save → removal confirm (decline = Cancel);
 a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog/enlarge layers are closed by
-`reconcileGuardLayers` when their surface goes away; forced closes (host drop, sandbox/orchestrator removed) drop the guard with `unsaved edits lost: <reason>`. SC-006
+`reconcileGuardLayers` when their surface goes away; forced closes (host drop, sandbox/orchestrator removed) drop the guard with `unsaved edits lost: <reason>`, also when
+the surface is suspended under its own confirm (`suspendedGuard`); parked add-overrides dequeue on a non-key message
+and ignore y/enter for 150 ms (`graceUntil`). SC-006
 timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). See `research.md` (R1–R10),
 `data-model.md`, `contracts/forms-ui.md`, `quickstart.md`.
 

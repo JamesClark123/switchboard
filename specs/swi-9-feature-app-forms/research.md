@@ -252,30 +252,40 @@ otherwise:
   Cancel is highlighted when the dialog opens. Every other key is ignored.
 
   **Typing grace**: the dialog exists to catch a habitual esc pressed mid-typing, so the developer's next keystrokes
-  land on it. For `unsavedKeyGrace = 150 * time.Millisecond` after it opens, **only the Cancel keys** (`esc`,
+  land on it. For `unsavedKeyGrace` (a package `var`, 150 ms) after it opens, **only the Cancel keys** (`esc`,
   `ctrl+c`) act; every other key is ignored. That includes the letters, enter, ←/→/h/l and tab/shift+tab. Letting
   the arrows and enter through would allow the common in-text sequence "→, enter" to move the highlight from Cancel
   to Discard and discard everything.
-  - The time comes from a package `nowFunc = time.Now` seam.
-  - Story tests that press a choice right after opening use a `pastGrace()` test helper, which moves `nowFunc` past
-    the window. Only the grace tests themselves exercise the window.
+  - The time comes from a package `nowFunc = time.Now` seam. `openedAt` is also read from `nowFunc`, so shifting
+    the clock by a fixed amount before opening would not leave the window. Tests therefore use two mechanisms:
+    - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` (and `confirmOverrideGrace`, R7) to 0 with
+      `t.Cleanup` restoring them. With a zero grace, `elapsed < grace` is never true, so every key acts.
+    - The grace tests (T009) install a fake clock (`nowFunc` returns a variable) and advance it **after** the dialog
+      opens.
 
   **Rebuild confirm** (reasoning setup only): the `b` confirm cannot be reused. It sends `reasoningRebuildMsg`
   without a setup, and a nil setup means the *saved* one (orchestrator_reasoning.go:27–28, :97–108), so it would
-  drop the edits. Instead, `r` calls `confirmRebuildFromSetup()`:
+  drop the edits. Instead, `guardSave(gReasoning)` **is** `confirmRebuildFromSetup()`. Every dialog path to Rebuild
+  goes through `guardSave`: `r`, and enter while Rebuild is highlighted. Neither path can rebuild directly. The
+  setup's own enter/ctrl+s keep calling `startReasoningRebuildFromSetup`, unchanged. Like every `guardSave`, it first
+  re-checks `guardDirty` and just leaves if the setup is clean. Then:
   1. It builds the `ReasoningSetup` exactly as `startReasoningRebuildFromSetup` does (orchestrator_reasoning.go:152–167),
      running `selectedKitRefs` first. A kit error closes the dialog and shows on the setup, as enter would.
   2. It opens a confirm whose body lists the **new** selection (sources, seeding mode, kits) and says the
-     conversation and workspace are lost. The `onConfirm` is `reasoningRebuildMsg{…, setup: <edited setup>}`.
+     conversation and workspace are lost. It keeps the `b` confirm's `warning: "Refused while a run is on it."`
+     (orchestrator_reasoning.go:106), so the user knows the daemon can still refuse after y. The `onConfirm` is
+     `reasoningRebuildMsg{…, setup: <edited setup>}`.
   3. It sets `returnTo = screenLaunch`, so n returns to the setup with its state intact (`m.launch` is untouched by
-     the confirm), and `acceptTo = screenOrchDetail`, so y lands where the setup's own rebuild lands today.
+     the confirm). It sets `onAccept` (R6) to `func(m *Model) { m.screen = screenOrchDetail }`, so y lands where the
+     setup's own rebuild lands today. `m.orchDetail` was untouched while on the setup, so it is the same
+     orchestrator.
   4. `View`'s confirm-background switch gains a `screenLaunch` case that draws the launch modal, so the setup stays
      visible behind the confirm.
 
-  This is a deliberate deviation from FR-017's "Save does exactly what the surface's confirm action does": the
-  setup's own enter/ctrl+s rebuilds without a confirm. The extra confirm exists only on the dialog path, because a
-  single key in a dialog that interrupts typing should never destroy a sandbox. The spec should be amended to say so
-  when the implementation PR lands.
+  The setup's own enter/ctrl+s rebuilds without a confirm, so this extra confirm departs from FR-017's "exactly what
+  the surface's confirm action does". It exists only on the dialog path, because a dialog that interrupts typing
+  should never destroy a sandbox on one key. **FR-017 is amended in this PR** (spec.md) with this exception and a
+  clarification entry, so the spec and the plan agree.
 - **Rationale for the keys**:
   - `y`/`n` are deliberately **not** used. The destructive confirm uses y = proceed, and muscle memory must not turn
     into Discard.
@@ -315,10 +325,18 @@ otherwise:
 - **Sources removal confirm** (US3 #3):
   - A dialog Save on `gSources` calls `confirmRemoveSources` with `exitAfter = true`.
   - `updateConfirmKey` (confirm.go:54) today sets `screen = returnTo` on both y and n, so the confirm needs a
-    destination per answer. `confirmState` gains `acceptTo screen`, which is used on y when set and otherwise falls
-    back to `returnTo`. `confirmRemoveSources` sets `acceptTo = screenList` when `exitAfter` is set. The
-    `sourcesView` reset happens on the **accept** path only (in `updateConfirmKey` when `acceptTo` is used), so
-    declining keeps the marks.
+    per-answer effect. A destination field (`acceptTo screen`) cannot work: `screenList` is `iota` 0 (app.go:141),
+    so "go to the list" would read as "not set". `confirmState` gains an **`onAccept func(m *Model)`** hook instead.
+    - On y/enter, `updateConfirmKey` sets `screen = returnTo` as today, then calls `onAccept(&m)` when it is non-nil,
+      then returns `startBusy` + `onConfirm` as today. n/esc never call it.
+    - The hook is called with the **live** model pointer, and it must capture only plain values (ids), never a
+      `Model`, so it cannot act on a stale copy.
+    - A forced close drops the confirm (R7), so its hook never runs.
+    - Every existing confirm leaves `onAccept` nil and behaves exactly as today.
+  - `confirmRemoveSources(exitAfter=true)` sets
+    `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }`. The reset belongs to this
+    one confirm, and declining keeps the marks. A later `handleSourcesRemoved` for that sandbox then finds no overlay
+    and only sets its status, as it does today when the overlay is closed.
   - Declining (n/esc) returns to `returnTo = screenSources` with the marks kept, and the exit is dropped.
   - Confirming sends the removal and closes the overlay.
 - **Add browser** (`gSourcesBrowse`): Save = `dispatchAddSources`. Its refusals (an empty selection cannot be dirty;
@@ -350,6 +368,19 @@ otherwise:
     These checks run in those message handlers, not in `reconcileGuardLayers`.
   - The reasoning setup when its host drops, with reason "daemon disconnected" (`closeOrchAdminOnDrop` gains a
     `screenLaunch` case for `launch.reasoning.host`).
+  - **Suspended surfaces.** While one of a guarded surface's own follow-up confirms is showing (the sources removal
+    confirm, the Rebuild confirm, or any confirm whose `returnTo` is that surface's screen), `m.screen ==
+    screenConfirm`, so `activeGuard()` reports nothing. The surface still exists underneath, and n returns to it.
+    - `m.suspendedGuard() (guardSurface, bool)` reports it when `m.screen == screenConfirm`, `confirm.returnTo` is a
+      guarded surface's screen, and that surface's state is still set: `launch.reasoning != nil` for `screenLaunch`,
+      `sourcesView.sandboxID != ""` for `screenSources`.
+    - Every forced-close trigger (host drop, sandbox removal, orchestrator removal, including the
+      `syncOrchestratorChanged` target check) matches on `activeOrSuspendedGuard()`. `forceClose` on a suspended
+      surface also clears `m.confirm` (so neither its `onConfirm` nor its `onAccept` runs) and moves to the surface's
+      leave destination with the usual status. Without this, a host drop during the Rebuild confirm would leave n
+      returning to a setup on a dead host, and y failing in `connectedDaemon` (orchestrator_reasoning.go:180).
+    - `activeGuard()` itself is unchanged, so the layer, terminal and override rules keep treating a confirm screen as
+      "not on the surface".
   - The reasoning setup, the orchestrator rename form, and op forms targeting the orchestrator when it is removed,
     with reason "orchestrator removed". Today nothing notices this:
     - `syncOrchestratorChanged` issues no reload while the screen is `screenLaunch`;
@@ -371,16 +402,24 @@ otherwise:
     - The queue holds the **result message**, not a built `confirmState`. The confirm is built by
       `confirmAddOverride(msg, name)` at dequeue time, so its `returnTo` (`screenSources` only if that sandbox's
       overlay is showing then, sources.go:376–379) reflects the screen at that moment, not when it was parked.
-  - `reconcileGuardLayers` opens the head of the queue only:
-    - on a **non-key** message, so the enter that closed a rename or tag can never also accept a "may fill the disk"
-      confirm (enter = yes, confirm.go:55);
-    - when neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite
-      `m.confirm` (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens;
-    - when no guarded surface is active, **or** the only active surface is that sandbox's own overlay and it is
-      clean, matching the parking exception.
+  - `reconcileGuardLayers` opens the head of the queue only when **all** of these hold:
+    - the message is a **non-key** message, so the key that closed a surface is never also handled by the confirm;
+    - neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite `m.confirm`
+      (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens;
+    - one of these is true:
+      - no guarded surface is active and no unsaved dialog is open;
+      - the active surface is that sandbox's own sources overlay (`gSources`, marks allowed) with no dialog open.
 
-    The next non-key message after a surface closes (a blink, a tick or a stream event) opens it, which covers every
-    way a surface closes: esc, enter on inline inputs, async success, Discard and forced close.
+      The second case is exactly the parking exception: the browser being open would make the active surface
+      `gSourcesBrowse`. The confirm is built at that moment, so its `returnTo` is `screenSources` and the marks
+      survive both answers.
+  - **Accept grace**: the non-key rule alone is not enough. The spinner tick (app.go:616, :656–665) arrives within
+    ~100 ms of the enter that closed a rename or tag, so a quick second enter would still land on the confirm. So a
+    dequeued override gets
+    `confirmState.graceUntil = nowFunc().Add(confirmOverrideGrace)` (a `var`, 150 ms), and `updateConfirmKey`
+    ignores **y/Y/enter** until then. n/esc/q/ctrl+c (decline) act at once, because declining is safe. A repeated
+    or double enter can therefore never accept "may fill the disk". The rule covers every way a surface closes: esc,
+    enter on inline inputs, async success, Discard and forced close.
 - **Terminal open/close** also switches screens asynchronously:
   - `termOpenedMsg` sets `screen = screenTerminal` unconditionally (terminal.go:96–104), and `termClosedMsg` returns
     to the list.
