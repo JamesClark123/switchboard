@@ -256,9 +256,13 @@ otherwise:
   `ctrl+c`) act; every other key is ignored. That includes the letters, enter, ←/→/h/l and tab/shift+tab. Letting
   the arrows and enter through would allow the common in-text sequence "→, enter" to move the highlight from Cancel
   to Discard and discard everything.
+  - A timed window is enough here, unlike for confirms (R7 C3), because it targets a typed *sequence*, not a held
+    key. A held enter after the window activates the default highlight, Cancel, which is harmless. On the two
+    surfaces whose Save opens a destructive confirm (sources, reasoning setup), that confirm is `yOnly` (R7 C3), so
+    an enter that reaches Save still cannot carry through to the destructive action.
   - The time comes from a package `nowFunc = time.Now` seam. `openedAt` is also read from `nowFunc`, so shifting
     the clock by a fixed amount before opening would not leave the window. Tests therefore use two mechanisms:
-    - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` (and `confirmKeyGrace`, R7 C3) to 0 with
+    - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` to 0 with
       `t.Cleanup` restoring them. With a zero grace, `elapsed < grace` is never true, so every key acts.
     - The grace tests (T009) install a fake clock (`nowFunc` returns a variable) and advance it **after** the dialog
       opens.
@@ -278,8 +282,8 @@ otherwise:
   3. It sets `returnTo = screenLaunch`, so n returns to the setup with its state intact (`m.launch` is untouched by
      the confirm). It sets `onAccept` (R6) to `func(m *Model) { m.screen = screenOrchDetail }`, so y lands where the
      setup's own rebuild lands today. `m.orchDetail` was untouched while on the setup, so it is the same
-     orchestrator. It also sets `graceUntil` (R7 C3), so the enter that chose Rebuild, repeated or held, cannot
-     also accept the confirm.
+     orchestrator. It also sets `yOnly` (R7 C3), so only `y` accepts. The enter that chose Rebuild, repeated or
+     held for any length of time, cannot also accept the confirm.
   4. `View`'s confirm-background switch gains a `screenLaunch` case that draws the launch modal, so the setup stays
      visible behind the confirm.
 
@@ -335,8 +339,8 @@ otherwise:
     - A forced close drops the confirm (R7), so its hook never runs.
     - Every existing confirm leaves `onAccept` nil and behaves exactly as today.
   - `confirmRemoveSources(exitAfter=true)` sets
-    `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` and `graceUntil` (R7 C3).
-    The overlay's own removal key keeps `exitAfter=false`, so it has no hook and no grace. The reset belongs to this
+    `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` and `yOnly` (R7 C3).
+    The overlay's own removal key keeps `exitAfter=false`, so it has no hook and enter still accepts. The reset belongs to this
     one confirm, and declining keeps the marks. A later `handleSourcesRemoved` for that sandbox then finds no overlay
     and only sets its status, as it does today when the overlay is closed.
   - Declining (n/esc) returns to `returnTo = screenSources` with the marks kept, and the exit is dropped.
@@ -402,7 +406,7 @@ otherwise:
   | 16 `enterConfirm` callers (`confirmOrchRemove`, `confirmCancelRun`, `confirmDelete*`, `attachTo`, `confirmDetach`, `confirmRefresh`, `confirmAttachKit`, MCP / sandbox-MCP / secrets removal, `confirmRemoveSources`, the `b` rebuild, …) | the user's own key on that screen | C1 |
   | The guard's follow-up confirms: sources removal Save, the Rebuild confirm | the unsaved dialog (`s`/`r`/enter) | C1, C3 |
   | `confirmAddOverride` (sources.go:367) | an async `sourcesAddResultMsg` | C2, C3 |
-  | `enterApproval` (approval.go:21) | an async escape-hatch event, only when `m.screen == screenList` (notifications.go:194) | unchanged by this feature: it opens only on the list, so never over a confirm or a guarded surface. Known, pre-existing risk, out of scope: it can open while the list filter is being typed into, where a typed `y` answers it |
+  | `enterApproval` (approval.go:21) | an async escape-hatch event, only when `m.screen == screenList` (notifications.go:195) | unchanged by this feature: it opens only on the list, so never over a confirm or a guarded surface. Known, pre-existing risk, out of scope: it can open while the list filter is being typed into, where a typed `y` answers it |
   | y/enter, n/esc (`updateConfirmKey`) | the user | C3, C4 |
   | Forced close (host drop, sandbox or orchestrator removed) | async | C4 |
 
@@ -412,7 +416,7 @@ otherwise:
     either (a) synchronously from a key handler, as the direct answer to the user's key on the current screen, or
     (b) from the C2 dequeue. No message handler other than C2 opens a confirm. Under (a) a confirm cannot be
     replaced: while one is showing, keys go to `updateConfirmKey`, or before it to a credential prompt (the
-    host-password prompt or the sign-in failure card, app.go:921–927, :944), and neither prompt writes `m.confirm`.
+    host-password prompt or the sign-in failure card, app.go:941–946), and neither prompt writes `m.confirm`.
     Under (b) the dequeue requires that no confirm is showing. **So a showing confirm is never replaced**, whichever
     surface owns it.
   - **C2, async overrides always go through the queue.** The `sourcesAddResultMsg` handler **always** appends
@@ -448,23 +452,26 @@ otherwise:
 
     An override already **showing** on the list for a sandbox that is then removed stays up. y then fails with the
     daemon's error in the status, as any action on a removed sandbox does today. This is accepted.
-  - **C3, accept grace on confirms the user didn't open with that key.** `confirmState.graceUntil` is set to
-    `nowFunc().Add(confirmKeyGrace)` (a `var`, 150 ms) on exactly three kinds of confirm: a dequeued override, the
-    removal confirm opened by the guard's Save, and the Rebuild confirm. Each of these opens on a key or message the
-    user meant for something else, so a double or held enter would otherwise accept it.
-    - Before `graceUntil`, `updateConfirmKey` ignores y/Y/enter **and pushes `graceUntil` forward** to
-      `nowFunc().Add(confirmKeyGrace)`. A held key (auto-repeat) or a fast repeat therefore never gets through. Only
-      a fresh press after a 150 ms pause accepts.
-    - n/N/esc/q/ctrl+c act at once, because declining is safe.
-    - While graced, both the footer (`confirmHelp`) and the modal's own hint line (`confirmModal`, which hardcodes
-      `y/enter confirm · n/esc cancel` at confirm.go:93) show only `n/esc cancel`. The spinner tick (≤ 100 ms)
-      re-renders both with `y/enter confirm` once the grace has passed.
-    - A credential prompt can open over a showing confirm (sign-in is asynchronous). So while a credential prompt
-      is up over a graced confirm, `reconcileGuardLayers` keeps re-arming `graceUntil = nowFunc().Add(
-      confirmKeyGrace)`. The enter that submits the password, repeated, cannot then fall through to the confirm.
-      This is O(1).
-    - Confirms opened by their own dedicated key (C1a, all 16 existing callers) keep `graceUntil` zero and behave
-      exactly as today.
+  - **C3, explicit accept on confirms the user didn't open with that key.** `confirmState.yOnly bool` is set on
+    exactly three kinds of confirm: a dequeued override, the removal confirm opened by the guard's Save, and the
+    Rebuild confirm. Each opens on a key or message the user meant for something else, usually enter (enter@Save,
+    enter@Rebuild, or the enter that closed a rename before a queued override opened).
+    - On a `yOnly` confirm, `updateConfirmKey` accepts **only `y`/`Y`**. enter is ignored, with no other effect.
+      n/N/esc/q/ctrl+c decline at once, because declining is safe.
+    - The footer (`confirmHelp`) and the modal's hint line (`confirmModal`, which hardcodes
+      `y/enter confirm · n/esc cancel` at confirm.go:93) read `y confirm · n/esc cancel` on a `yOnly` confirm.
+    - Why not a time window: an earlier draft ignored y/enter for 150 ms. OS key auto-repeat starts 225–1000 ms
+      after the first press, so a held enter still accepted after the window. The enter that submitted a password
+      over the confirm also closed the prompt before any re-arm could run. A key rule has neither problem. Every
+      enter, however late and from whichever prompt, is ignored. There is no clock, timer or re-arm, and no
+      per-message work.
+    - `y` is not bound on the two screens where a queued override can open (the sandbox list and the sources
+      overlay), nor on the reasoning setup or the unsaved dialog that lead to the other two. So a stray `y` meant for
+      the screen underneath is not a realistic path. Keys typed into a credential prompt over a confirm go to the
+      prompt (app.go:941–946), never to the confirm.
+    - Confirms opened by their own dedicated key (C1a, all 16 existing callers) keep `yOnly` false and behave
+      exactly as today. `confirmAddOverride` is the one existing confirm whose keys change: it now always has
+      `yOnly`, so enter no longer accepts it.
   - **C4, the close rule.** A confirm closes only (a) through `updateConfirmKey`, or (b) with its owning surface,
     guarded or not, in a forced close. On y/enter the `onAccept` hook (R6) and `onConfirm` run. On n/esc neither
     runs. For (b), `forceClose` uses `suspendedGuard()` (above) to find the guarded surface under the confirm. The
@@ -476,7 +483,7 @@ otherwise:
   - `termOpenedMsg` sets `screen = screenTerminal` unconditionally (terminal.go:96–104), and `termClosedMsg` returns
     to the list.
   - `termOpenedMsg` now switches screens **only when `m.screen == screenList`**, where `t` was pressed; the approval
-    auto-open uses the same rule (notifications.go:194). "No guarded surface is active" is not enough: during the
+    auto-open uses the same rule (notifications.go:195). "No guarded surface is active" is not enough: during the
     guard's own follow-up confirms (sources removal, Rebuild) `m.screen == screenConfirm` and no surface counts as
     active.
   - On any other screen it **detaches** the new session itself: `msg.session.Close()`, `msg.cancel()` and

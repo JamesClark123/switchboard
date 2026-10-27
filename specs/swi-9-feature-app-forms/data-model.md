@@ -141,9 +141,8 @@ After every message, `reconcileGuardLayers()` does O(1) work:
 - it closes the dialog and the enlarged view if their `surface` is no longer `activeGuard()`;
 - it opens the head of `pendingOverrides` (every async add-override goes through the queue) when
   `overrideMayOpen` holds. That means a non-key message; either the plain sandbox list (not filtering) or that
-  sandbox's own sources overlay with no dialog; and no credential prompt is up. The opened confirm is graced. The
-  pass also re-arms a graced confirm's `graceUntil` while a credential prompt covers it (research R7 "Confirm
-  lifecycle", C2–C3).
+  sandbox's own sources overlay with no dialog; and no credential prompt is up. The opened confirm is `yOnly`
+  (research R7 "Confirm lifecycle", C2–C3).
 
 **Confirm lifecycle** (research R7, C1–C4): a showing confirm is never replaced, because only key handlers and the
 override dequeue open confirms, and the dequeue opens only on the list or the sandbox's own overlay. A confirm closes
@@ -164,7 +163,7 @@ Sandbox-removal forced closes are done in the `Removed` event and list-reload ha
 | Field | Type | Meaning |
 |---|---|---|
 | `onAccept` | `func(m *Model)` | Optional. Called on y/enter with the live model, after `screen = returnTo` and before `onConfirm`. It captures only plain values. It is used by the sources removal Save (close and reset the overlay) and the Rebuild confirm (go to the orchestrator detail). nil means today's behaviour. n/esc and forced closes never call it. |
-| `graceUntil` | `time.Time` | Optional (C3). Before this time `updateConfirmKey` ignores y/Y/enter **and pushes it forward by `confirmKeyGrace`**, while n/esc/q/ctrl+c act at once, and both the modal hint and the footer show only `n/esc cancel`. It is set on exactly three kinds of confirm: dequeued add-overrides, the sources removal confirm opened by the guard's Save, and the Rebuild confirm. Zero elsewhere. |
+| `yOnly` | `bool` | C3. When set, `updateConfirmKey` accepts only `y`/`Y`; enter is ignored. n/esc/q/ctrl+c decline as usual. The modal hint and the footer read `y confirm · n/esc cancel`. It is set on exactly three kinds of confirm: dequeued add-overrides, the sources removal confirm opened by the guard's Save, and the Rebuild confirm. It is false elsewhere. There is no timer. |
 
 `acceptTo screen` is deliberately not used: `screenList` is the zero value of `screen`, so "go to the list" would be
 indistinguishable from "not set".

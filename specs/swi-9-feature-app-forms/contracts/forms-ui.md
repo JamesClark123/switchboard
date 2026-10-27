@@ -129,10 +129,10 @@ the password or sign-in prompts, it waits, and the status reads `add to <name> n
 list`. When nothing is in the way it opens at once. If the sandbox is removed or its host drops while it waits, it
 is dropped with the status `add of <folders> to <name> cancelled: <reason>`.
 
-**Accept grace** on the three confirms that open without the user pressing their key (a queued override, the
-guard's sources removal Save, Rebuild): y/enter are ignored for 150 ms, and each ignored press restarts the 150 ms,
-so a double or held enter can't accept. The modal's hint and the footer show only `n/esc cancel` until then. n/esc
-decline at once. While a password or sign-in prompt covers such a confirm, the 150 ms keeps restarting.
+**y to accept** on the three confirms that open without the user pressing their key (a queued override, the guard's
+sources removal Save, Rebuild): only `y` accepts, and enter is ignored. A double, repeated or held enter, or the enter
+that submits a password prompt over the confirm, can never accept it. The modal's hint and the footer read
+`y confirm · n/esc cancel`. n/esc decline at once. Every other confirm still accepts y or enter.
 
 If a forced close hits a surface while one of its own follow-up confirms is showing (the sources removal confirm or
 the Rebuild confirm), the confirm closes with the surface and does not act.

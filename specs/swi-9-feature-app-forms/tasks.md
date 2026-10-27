@@ -87,23 +87,24 @@ snapshots (R3–R5).
   Unimplemented surfaces default to "never dirty" and are filled in by the stories. Every story task that adds a
   surface also adds its cases to these switches, so those tasks share `UI/formguard.go` and are not `[P]`.
 - [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
-  `openedAt`), plus package vars `nowFunc = time.Now`, `unsavedKeyGrace = 150 * time.Millisecond` and
-  `confirmKeyGrace = 150 * time.Millisecond` (vars, not consts). Add a `noKeyGrace(t)` test helper in
-  `UI/unsaved_test.go` that sets both graces to 0 and restores them with `t.Cleanup`. Moving `nowFunc` would not
-  work, because `openedAt` is read from the same clock. Story tests that press a dialog or graced-confirm choice
-  (T016, T020, T025, T030, T034) call it. The **grace tests** themselves (T009, and the grace cases in T025 and
-  T034) do not call it and use a fake clock instead. The suite does not use `t.Parallel`, so package vars are
-  safe.
+  `openedAt`), plus package vars `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond` (vars, not
+  consts). Add a `noKeyGrace(t)` test helper in `UI/unsaved_test.go` that sets `unsavedKeyGrace` to 0 and restores
+  it with `t.Cleanup`. Moving `nowFunc` would not work, because `openedAt` is read from the same clock. Story tests
+  that press a dialog choice (T016, T020, T025, T030, T034) call it. The dialog grace tests (T009) don't; they use a
+  fake clock instead. The suite does not use `t.Parallel`, so package vars are safe. (Confirms have no timer: see
+  `yOnly` below.)
   - In `UI/confirm.go`, add the confirm-lifecycle fields (research R7 "Confirm lifecycle", rules C1–C4). They live
     here, not in T024 or T033, because the Rebuild confirm below already uses both.
     - `confirmState.onAccept func(m *Model)` (R6). On y/enter, `updateConfirmKey` sets `screen = returnTo`, then
       calls `onAccept(&m)` when it is non-nil, then returns as today. Read the hook into a local next to `onConfirm`
       (confirm.go:57), **before** the clear `m.confirm = confirmState{}` (confirm.go:60), or it is lost. n/esc never
       call it. Hooks capture plain values only, never a `Model`.
-    - `confirmState.graceUntil time.Time` (C3). First thing in the y/Y/enter case: if `nowFunc().Before(graceUntil)`,
-      set `graceUntil = nowFunc().Add(confirmKeyGrace)` and ignore the key, so held or repeated keys keep it closed.
-      n/N/esc/q/ctrl+c are unaffected. While graced, `confirmHelp` shows only `n/esc cancel`.
-    - Every existing confirm leaves both fields at their zero value, so nothing changes for them.
+    - `confirmState.yOnly bool` (C3). In the y/Y/enter case, `enter` with `yOnly` set returns `m, nil` and changes
+      nothing; y/Y accept as usual. n/N/esc/q/ctrl+c are unaffected. `confirmHelp` and the `confirmModal` hint
+      (`confirm.go:93`) both read `y confirm · n/esc cancel` when `yOnly` is set. Both live here in Phase 2, because
+      the Rebuild (T006/T023) and sources Save (T024) confirms use it from US3 on.
+    - Every key-opened confirm leaves both fields at their zero value, so nothing changes for it.
+      `confirmAddOverride` is the one existing confirm that changes (T033).
   - `openUnsaved(g, fromEnlarge)`, with Cancel highlighted, `openedAt = nowFunc()`, and the label "Rebuild" for
     `gReasoning`.
   - `updateUnsavedKey` per contracts/forms-ui.md §3:
@@ -116,8 +117,7 @@ snapshots (R3–R5).
       - the confirm body lists the edited sources, mode and kits;
       - keep the `b` confirm's `warning: "Refused while a run is on it."`;
       - `onConfirm` sends `reasoningRebuildMsg{…, setup}`, `returnTo = screenLaunch`,
-        `onAccept = func(m *Model) { m.screen = screenOrchDetail }` and
-        `graceUntil = nowFunc().Add(confirmKeyGrace)` (C3);
+        `onAccept = func(m *Model) { m.screen = screenOrchDetail }` and `yOnly = true` (C3);
       - add a `screenLaunch` case to `View`'s confirm-background switch in `UI/app.go`.
 
       Do **not** reuse the `b` confirm: it rebuilds the saved setup;
@@ -158,10 +158,10 @@ snapshots (R3–R5).
     window letters, enter, →/← and tab are ignored, so "→, enter" can't discard; esc and ctrl+c cancel at once;
     after the clock passes 150 ms, the same keys act;
   - `onAccept`: a confirm with a hook runs it on y and enter and not on n/esc; a nil hook still lands on `returnTo`
-    (all existing confirm tests unchanged);
-  - `graceUntil` (fake clock): y/enter inside the window are ignored and each one extends it; enter repeated every
-    50 ms for 1 s never accepts; after a 150 ms pause enter accepts; n/esc act at once; while graced the help shows
-    only `n/esc cancel`; a zero `graceUntil` accepts at once;
+    (the existing key-opened confirm tests are unchanged);
+  - `yOnly`: any number of enters (no clock involved) never accepts and leaves the confirm showing; y accepts; n/esc
+    decline; the modal hint and the footer read `y confirm · n/esc cancel` and fit 80 columns; with `yOnly` false,
+    enter still accepts;
   - no line of the modal is wider than 80 cells at 80×24, for both hint variants;
   - with the dialog open and `hosts.connecting = true`, `hosts.pwMode = pwSignIn` (startup sign-in), `View()` shows
     the password prompt on top;
@@ -320,8 +320,8 @@ closes.
   `UI/confirm.go`:
   - Overlay dirty = `len(marked) > 0`; esc/q → `requestExit`. Save = `confirmRemoveSources(exitAfter=true)`, which sets
     `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` (T006's hook; not an
-    `acceptTo screen` field, because `screenList` is the zero value) and `graceUntil` (C3). The overlay's own removal
-    key keeps `exitAfter=false`: no hook, no grace. Confirming sends the RPC and closes and resets the overlay. n/esc
+    `acceptTo screen` field, because `screenList` is the zero value) and `yOnly` (C3). The overlay's own removal
+    key keeps `exitAfter=false`: no hook, and enter still accepts. Confirming sends the RPC and closes and resets the overlay. n/esc
     returns to `screenSources` with marks kept.
   - Browser dirty = `len(launch.selected) > 0`; esc → `requestExit`. Save = `dispatchAddSources`; Leave = back to the
     overlay.
@@ -335,10 +335,10 @@ closes.
     `reasoningRebuildMsg` until y), whose body carries the "Refused while a run is on it." warning; y sends a `reasoningRebuildMsg` whose `setup`
     carries the **edited** `Sources`/kits (not nil) and lands on the orchestrator detail; n returns to the setup with
     its edits; Discard returns to the detail; un-marking and re-marking a pre-filled folder (order change) raises the
-    dialog; with a fake clock, enter@Rebuild followed by enters every 50 ms sends no `reasoningRebuildMsg`;
+    dialog; enter@Rebuild followed by any number of enters sends no `reasoningRebuildMsg`, and y then does;
   - sources: Save → confirm → n keeps marks and the overlay; y removes, lands on `screenList` and resets
-    `sourcesView` (a regression test for the zero-value `screenList`); enter@Save then a repeated enter (fake clock)
-    removes nothing; the overlay's own removal confirm still accepts enter at once;
+    `sourcesView` (a regression test for the zero-value `screenList`); enter@Save then repeated enters remove
+    nothing; the overlay's own removal confirm still accepts enter;
   - browser: Discard returns to the overlay;
   - ctrl+c on these surfaces behaves as before.
 
@@ -468,11 +468,11 @@ field holds the edit and focus stays on it, with no dialog.
 
     When an arriving override can't open in the same `Update`, set the status once (not on every pass) to
     `add to <name> needs confirmation — back on the list`.
-    `confirmAddOverride` sets `graceUntil = nowFunc().Add(confirmKeyGrace)` (C3). Keep the check O(1): it looks at
+    `confirmAddOverride` sets `yOnly = true` (C3), so enter no longer accepts it. Keep the check O(1): it looks at
     the head only.
-  - C3 re-arm: while a credential prompt is up and `m.screen == screenConfirm` with a non-zero `graceUntil`,
-    `reconcileGuardLayers` sets `graceUntil = nowFunc().Add(confirmKeyGrace)`.
-  - `confirmModal` (`UI/confirm.go:93`) and `confirmHelp` both show only `n/esc cancel` while graced.
+  - Existing test: `TestSourcesAddBlockedOverrideRoundTrip` (`UI/sources_test.go:237–289`) already accepts with
+    `y` and declines with `n`, so it passes unchanged. Add a line to it asserting that enter on the override does
+    not send `sourcesOverrideMsg`. No other existing test presses enter on an override.
   - Unconditional queue purge (C2): the `Removed` handler and the connected, error-free list reload drop entries for
     a missing sandbox, and `applyHosts` drops entries for a dropped host, whether or not any surface is open. Each
     purge sets `add of <folders> to <name> cancelled: <reason>`.
@@ -493,9 +493,8 @@ field holds the edit and focus stays on it, with no dialog.
   - an override arriving while the list filter is being typed into, on the MCP "register anyway?" step (the kept
     vals survive), on orchestrator detail, or while the sign-in failure card is up stays queued with the "needs
     confirmation" status, and opens once the user is back on the plain list;
-  - a sign-in prompt opening over a graced confirm: the enter that submits the password, repeated, does not accept
-    the confirm;
-  - the modal hint and the footer read `n/esc cancel` while graced and `y/enter confirm · n/esc cancel` after;
+  - a host-password prompt opening over a `yOnly` confirm: typed characters and the submitting enter go to the
+    prompt; that enter and further enters after the prompt closes do not accept the confirm; y then does;
   - an override arriving during rename is parked and shown after rename closes by enter;
   - an override for sandbox A arriving while B's overlay has marks is parked, and B's marks survive;
   - two overrides parked during a rename open one after the other;
@@ -509,8 +508,7 @@ field holds the edit and focus stays on it, with no dialog.
   - a terminal finishing opening during a rename, or during the guard's sources removal confirm, leaves that screen
     as it was, with the "terminal … ready" status, and the session is closed;
   - the enter that closes a rename does not accept a parked override; the override opens on the next non-key
-    message; a second enter within 150 ms (fake clock) is ignored and extends the window, n declines at once, and
-    enter 150 ms after the **last** ignored enter accepts;
+    message; further enters, at any rate and for any duration, never accept it; n declines at once, and y accepts;
   - an override parked during a rename of sandbox A, with A's overlay later open and marked, is dequeued there with
     `returnTo = screenSources`, and the marks survive both answers;
   - a host drop while the Rebuild confirm is showing closes the confirm and the setup (no `reasoningRebuildMsg`,

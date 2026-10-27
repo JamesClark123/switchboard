@@ -170,8 +170,8 @@ a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog
 the surface is suspended under its own confirm (`suspendedGuard`); confirm lifecycle (research R7 C1–C4): only key handlers and the
 override queue open confirms, so a showing confirm is never replaced; every async add-override is queued and opens on
 a non-key message only on the plain list (not filtering) or its own sandbox's overlay, with no credential prompt up
-(queue purged on sandbox removal/host drop); guard-opened and queued confirms carry
-`graceUntil` (y/enter ignored until a 150 ms pause). SC-006
+(queue purged on sandbox removal/host drop); guard-opened and queued confirms are
+`yOnly` (accept on y only; enter ignored; no timer). SC-006
 timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). See `research.md` (R1–R10),
 `data-model.md`, `contracts/forms-ui.md`, `quickstart.md`.
 

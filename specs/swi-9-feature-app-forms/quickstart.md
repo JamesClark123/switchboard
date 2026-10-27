@@ -51,7 +51,8 @@ The manual scenarios below run against a local daemon (`sxbd`) and the TUI (`sxb
    end of the order) also raises the dialog.
 6. `S` (sources), mark a folder, esc → `s`: the removal confirm appears. Press n: back on the overlay with the mark
    kept. Repeat and press y: the folder is removed, the overlay closes and you are on the sandbox list. Repeat
-   once more with enter on Save and hold enter: nothing is removed until you release, pause and press enter again.
+   once more with enter on Save, then press or hold enter: nothing is removed, and the confirm reads
+   `y confirm · n/esc cancel`. Press y to remove.
 7. `S` → `a`, select a folder, esc: the dialog appears. `d` returns to the overlay.
 
 ## Scenario 4: enlarge (US4)
