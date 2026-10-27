@@ -219,9 +219,9 @@ func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model
 	if !runInFlight(run) {
 		return refuse("only an in-progress run has a terminal")
 	}
-	sb, host, ok := m.runSandbox(run)
-	if !ok {
-		return refuse("worker sandbox " + m.workerName(run) + " is not on a connected daemon")
+	sb, host, why := m.runSandbox(run)
+	if why != "" {
+		return refuse("worker sandbox " + m.workerName(run) + " " + why)
 	}
 	d, err := m.connectedDaemon(host)
 	if err != nil {

@@ -29,6 +29,10 @@ type termState struct {
 	// Sandboxes list (the zero value) or the Jobs screen it was opened from.
 	returnTo screen
 	seq      uint64 // the attach that opened it (Model.termSeq)
+	// escHeld: opened from Jobs and nothing typed yet. A lone esc there is
+	// likely meant as "back", but it would interrupt the worker's agent, so
+	// the first one is held and explained instead (SWI-14).
+	escHeld bool
 }
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
@@ -117,7 +121,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		msg.cancel()
 		close(msg.done)
 		if msg.seq == m.termSeq {
-			m.status = "detached from " + msg.name
+			m.status = "terminal for " + msg.name + " not opened — you moved on; press t again"
 		}
 		return m, nil
 	}
@@ -125,7 +129,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		screen: msg.screen, session: msg.session, cancel: msg.cancel,
 		updates: msg.updates, done: msg.done,
 		sandboxID: msg.id, host: msg.host, name: msg.name, cols: msg.cols, rows: msg.rows,
-		returnTo: msg.returnTo, seq: msg.seq,
+		returnTo: msg.returnTo, seq: msg.seq, escHeld: msg.returnTo == screenJobs,
 	}
 	m.screen = screenTerminal
 	m.status = ""
@@ -244,6 +248,13 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.term.session == nil {
 		return m, nil
 	}
+	if m.term.escHeld {
+		m.term.escHeld = false
+		if msg.Type == tea.KeyEsc {
+			m.status = "esc goes to the agent and interrupts its turn — press esc again to send it, ctrl+q to go back to Jobs"
+			return m, nil
+		}
+	}
 	if b := keyToBytes(msg); len(b) > 0 {
 		// Typing snaps the view back to the live output so the user sees what
 		// they're sending rather than staying stuck in scrollback.
@@ -283,8 +294,11 @@ func (m Model) viewTerminal() string {
 	if m.term.screen == nil {
 		return ""
 	}
-	header := sectionStyle.Render("Terminal ") + dimStyle.Render(m.term.name) +
-		dimStyle.Render("   ctrl+q to detach (session keeps running)")
+	detach := "   ctrl+q to detach (session keeps running)"
+	if m.term.returnTo == screenJobs {
+		detach = "   keys go to the agent — esc interrupts it · ctrl+q back to Jobs"
+	}
+	header := sectionStyle.Render("Terminal ") + dimStyle.Render(m.term.name) + dimStyle.Render(detach)
 	if off := m.term.screen.ScrollOffset(); off > 0 {
 		header += dimStyle.Render("   ⇡ scrolled " + strconv.Itoa(off) + " (type to follow)")
 	}

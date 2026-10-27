@@ -96,7 +96,7 @@ func TestJobsTerminalRefusals(t *testing.T) {
 	for _, c := range []struct{ id, key, want string }{
 		{"run-q", "t", "only an in-progress run has a terminal"},
 		{"run-done", "T", "only an in-progress run has a terminal"},
-		{"run-gone", "t", "worker sandbox w-gone is not on a connected daemon"},
+		{"run-gone", "t", "worker sandbox w-gone was not found on hostb (still loading, or destroyed)"},
 	} {
 		m = overviewAt(t, m, c.id)
 		m.jobs.status = ""
@@ -154,44 +154,41 @@ func TestJobsTerminalFromQueue(t *testing.T) {
 }
 
 // The run's sandbox_host_id picks the host; without one, any host matches, and
-// the active host's list is the fallback.
+// the active host's list is the fallback. A miss says why.
 func TestRunSandboxResolution(t *testing.T) {
 	m := terminalHosts(t)
-	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostb"}); !ok || host != "hostb" {
-		t.Errorf("hostb's w-run resolves to %q %v", host, ok)
+	resolves := func(r *pb.Run, want string) {
+		t.Helper()
+		if _, host, why := m.runSandbox(r); why != "" || host != want {
+			t.Errorf("%s on %q resolves to %q (%s), want %q", r.GetSandboxId(), r.GetSandboxHostId(), host, why, want)
+		}
 	}
-	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: "hosta"}); !ok || host != "hosta" {
-		t.Errorf("hosta's w-run resolves to %q %v", host, ok)
+	refused := func(r *pb.Run, want string) {
+		t.Helper()
+		if sb, _, why := m.runSandbox(r); sb != nil || why != want {
+			t.Errorf("%s on %q: %q, want %q", r.GetSandboxId(), r.GetSandboxHostId(), why, want)
+		}
 	}
-	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-in", SandboxHostId: "hosta"}); ok {
-		t.Error("w-in is not on hosta")
-	}
-	if _, _, ok := m.runSandbox(&pb.Run{}); ok {
-		t.Error("a run with no worker has no sandbox")
-	}
+	resolves(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostb"}, "hostb")
+	resolves(&pb.Run{SandboxId: "w-run", SandboxHostId: "hosta"}, "hosta")
+	refused(&pb.Run{SandboxId: "w-in", SandboxHostId: "hosta"}, "was not found on hosta (still loading, or destroyed)")
+	refused(&pb.Run{}, "has no worker sandbox")
 	// Without a sandbox_host_id only a sandbox on exactly one host matches.
-	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-in"}); !ok || host != "hostb" {
-		t.Errorf("w-in (hostb only) resolves to %q %v", host, ok)
-	}
-	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run"}); ok {
-		t.Error("w-run is on two hosts: ambiguous")
-	}
+	resolves(&pb.Run{SandboxId: "w-in"}, "hostb")
+	refused(&pb.Run{SandboxId: "w-run"}, "is on more than one host — open it from Sandboxes")
+	refused(&pb.Run{SandboxId: "w-nowhere"}, "was not found on a connected daemon")
 	m.hostAgg = nil
 	m.sandboxes = []*pb.Sandbox{{Id: "w-solo"}}
-	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-solo"}); !ok || host != m.activeHost {
-		t.Errorf("fallback resolves to %q %v", host, ok)
-	}
+	resolves(&pb.Run{SandboxId: "w-solo"}, m.activeHost)
 	// A host that is known but not connected, or a connected host that is not
 	// the active one, never falls back to another host's sandbox.
 	m.sandboxes = append(m.sandboxes, runningWorker("w-run"))
-	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostc"}); ok {
-		t.Error("a worker on a disconnected daemon is refused")
-	}
+	refused(&pb.Run{SandboxId: "w-run", SandboxHostId: "hostc"}, "is not on a connected daemon")
 	other := "hosta"
 	if m.activeHost == "hosta" {
 		other = "hostb"
 	}
-	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: other}); ok {
+	if sb, _, _ := m.runSandbox(&pb.Run{SandboxId: "w-run", SandboxHostId: other}); sb != nil {
 		t.Errorf("%s's worker must not resolve to the active host's list", other)
 	}
 	if got := m.lookupWorkerName(&pb.Run{SandboxId: "w-solo"}); got != "w-solo" {
@@ -230,14 +227,17 @@ func TestJobsTerminalDetachReloadsStale(t *testing.T) {
 func TestJobsTerminalAttachAfterLeaving(t *testing.T) {
 	m, d := terminalJobs(t)
 	m = overviewAt(t, m, "run-run")
-	_, cmd := update(m, press("t"))
+	m, cmd := update(m, press("t"))
 	opened := runCmd(cmd)
 	m.screen = screenDaemons
 	m, _ = update(m, opened)
 	if m.screen != screenDaemons || m.term.session != nil || !d.termClosed {
 		t.Errorf("a late attach detaches: screen %v", m.screen)
 	}
-	m, _ = update(m, termClosedMsg{err: errors.New("late"), name: "x", returnTo: screenJobs})
+	if want := "terminal for worker-w-run not opened — you moved on; press t again"; m.status != want {
+		t.Errorf("a dropped attach: status %q, want %q", m.status, want)
+	}
+	m, _ = update(m, termClosedMsg{err: errors.New("late"), name: "x", returnTo: screenJobs, seq: m.termSeq})
 	if m.screen != screenDaemons || !strings.Contains(m.status, "terminal: late") {
 		t.Errorf("a late failure only reports: screen %v status %q", m.screen, m.status)
 	}
@@ -270,5 +270,57 @@ func TestJobsTerminalAttachIdentity(t *testing.T) {
 	m, _ = update(m, runCmd(cmd))
 	if m.screen != screenJobs || m.term.session != nil {
 		t.Error("an overlay opened while attaching keeps the terminal out")
+	}
+}
+
+// sentData records what the in-place terminal sends to the PTY.
+type sentData struct {
+	client.TermSession
+	sent []byte
+}
+
+func (s *sentData) SendData(p []byte) error { s.sent = append(s.sent, p...); return nil }
+
+// SWI-14: from Jobs, a lone esc as the first key is held and explained (it
+// would interrupt the worker's agent); a second esc, or any other first key,
+// goes through. From the Sandboxes list esc is sent at once.
+func TestJobsTerminalHoldsAFirstEsc(t *testing.T) {
+	m, _ := terminalJobs(t)
+	m = overviewAt(t, m, "run-run")
+	m, cmd := update(m, press("t"))
+	m, _ = update(m, runCmd(cmd))
+	rec := &sentData{TermSession: m.term.session}
+	m.term.session = rec
+	if v := m.viewTerminal(); !strings.Contains(v, "keys go to the agent — esc interrupts it · ctrl+q back to Jobs") {
+		t.Errorf("a Jobs terminal's header should warn about esc:\n%s", v)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if len(rec.sent) != 0 || m.screen != screenTerminal || !strings.Contains(m.status, "press esc again to send it, ctrl+q to go back to Jobs") {
+		t.Errorf("first esc: sent %q, screen %v, status %q", rec.sent, m.screen, m.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if string(rec.sent) != "\x1b" {
+		t.Errorf("second esc: sent %q", rec.sent)
+	}
+
+	// Any other first key ends the hold.
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+	m, cmd = update(m, press("t"))
+	m, _ = update(m, runCmd(cmd))
+	rec = &sentData{TermSession: m.term.session}
+	m.term.session = rec
+	m, _ = update(m, press("q"))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if string(rec.sent) != "q\x1b" {
+		t.Errorf("typed first: sent %q", rec.sent)
+	}
+
+	// The Sandboxes list's terminal is unchanged.
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+	mm, cmd := m.enterTerminal(runningWorker("w-run"), m.activeHost)
+	m, _ = update(mm.(Model), runCmd(cmd))
+	m.screen = screenTerminal
+	if m.term.escHeld || strings.Contains(m.viewTerminal(), "esc interrupts") {
+		t.Error("a terminal from the Sandboxes list holds nothing")
 	}
 }

@@ -329,11 +329,12 @@ func (m Model) lookupWorkerName(r *pb.Run) string {
 // it is on, to open its terminal (SWI-14). Unlike lookupWorkerName, which only
 // names the worker, it never guesses across hosts: the run's sandbox_host_id
 // must be a connected daemon's and only that host's sandboxes match; a run
-// without one matches only when exactly one host has the sandbox.
-func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
+// without one matches only when exactly one host has the sandbox. When there is
+// no match, the last result says why, as the end of a "worker sandbox X …" line.
+func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, string) {
 	id := r.GetSandboxId()
 	if id == "" {
-		return nil, "", false
+		return nil, "", "has no worker sandbox"
 	}
 	entry, scoped := "", false
 	if hid := r.GetSandboxHostId(); hid != "" {
@@ -342,7 +343,7 @@ func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
 			// entryForDaemonHost skips a host without a connection object, which
 			// is how a manager can hold the adopted active host (connOf).
 			if m.daemon.HostID() != hid {
-				return nil, "", false
+				return nil, "", "is not on a connected daemon"
 			}
 			entry = m.activeHost
 		}
@@ -355,11 +356,21 @@ func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
 			continue
 		}
 		if found != nil {
-			return nil, "", false // on two hosts: ambiguous
+			return nil, "", "is on more than one host — open it from Sandboxes"
 		}
 		found, host = row.sb, row.host
 	}
-	return found, host, found != nil
+	if found == nil {
+		if scoped {
+			on := entry
+			if on == "" { // the lone local daemon has no host entry
+				on = r.GetSandboxHostId()
+			}
+			return nil, "", "was not found on " + on + " (still loading, or destroyed)"
+		}
+		return nil, "", "was not found on a connected daemon"
+	}
+	return found, host, ""
 }
 
 // renderOverview renders the four sections; focus is the cursor's line.
