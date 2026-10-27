@@ -1,7 +1,10 @@
 package orchestrator
 
 import (
+	"errors"
+
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/worker"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -66,9 +69,10 @@ func (rt *runtime) dispatch() {
 	}
 	rec := rt.record()
 	claimed := map[string]bool{}
-	// One view of the roster per pass: were a record re-read per run, a worker
-	// freed mid-pass could take a later run while an earlier one it could have
-	// taken stays queued (SC-003). The change that freed it triggers another pass.
+	// Candidates come from one view of the roster per pass: were a record
+	// re-read per run, a worker freed mid-pass could take a later run while an
+	// earlier one it could have taken stays queued (SC-003). The change that
+	// freed it triggers another pass.
 	sbs := map[string]*pb.Sandbox{}
 	ups := map[string]bool{}
 	for _, w := range rec.GetWorkers() {
@@ -103,7 +107,15 @@ func (rt *runtime) dispatch() {
 			if !free(sb, up) || !eligible(run, w, sb, tag) {
 				continue
 			}
+			// …but the latest record must still agree before delivering: a
+			// worker removed, detached or busied since the view was taken is
+			// out of this pass (the change triggers the next one), rather than
+			// failing the run with a delivery to a sandbox that is gone.
 			claimed[w.GetSandboxId()] = true
+			liveUp, _ := rt.reachability(w.GetHostId())
+			if live := rt.sandboxRecord(w.GetSandboxId()); !free(live, liveUp) || !eligible(run, w, live, tag) {
+				continue
+			}
 			rt.deliver(run, w)
 			break
 		}
@@ -131,9 +143,10 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) {
 		if err := rt.startRun(run, w.GetSandboxId(), w.GetHostId()); err != nil {
 			rt.svc.logf("[orchestrator %s] record start of %s: %v", rt.name(), run.GetId(), err)
 		}
-	case status.Code(err) == codes.FailedPrecondition:
+	case status.Code(err) == codes.FailedPrecondition, errors.Is(err, worker.ErrPrecondition):
 		// A developer got there first (or the record moved): the run stays
-		// queued and the sandbox is not free for this pass.
+		// queued and the sandbox is not free for this pass. The own host's
+		// in-process API returns the worker sentinel, not a gRPC status.
 	case err != nil:
 		rt.failRun(run, "delivery failed: "+describe(err, w.GetHostId()))
 	default:

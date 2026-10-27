@@ -503,8 +503,10 @@ cd src/services/switchboardd && go test ./internal/sandbox/ -run TestLaunch -v
 ```
 
 A Husky `pre-commit` hook runs the fast subset (`fmt-check`, `vet`, `lint`, `test`, `env-check`);
-CI (`.github/workflows/ci.yml`) runs `fmt-check`, `vet`, `lint` and `env-check`, then the test suite
-once via `make cover` (which prints any failing test's output), then `make e2e`.
+CI (`.github/workflows/ci.yml`) runs `fmt-check`, `vet`, `lint` and `env-check`, then the unit +
+integration tests of the `MODULES` once via `make cover` (every package except generated stubs;
+`cmd/` packages are tested but not counted towards coverage; any failing test's output is
+printed), then `make e2e`.
 
 ## Regenerating the gRPC contract
 

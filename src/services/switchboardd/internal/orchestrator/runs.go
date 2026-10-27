@@ -406,6 +406,10 @@ func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun) {
 	rt.mu.Lock()
 	rt.sbs[sandboxID] = sb
 	rt.mu.Unlock()
+	if run == nil {
+		// The worker may be free now; don't rely on its host's status event.
+		rt.triggerDispatch()
+	}
 }
 
 // failRunsOn fails every in-flight run on a sandbox (worker detached, removed).

@@ -124,10 +124,7 @@ func TestMcpRPCsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// Subscribe first so the mark change's event is observable.
-	sub, err := env.client.Subscribe(ctx, &pb.SubscribeRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sub := subscribe(t, env.client, &pb.SubscribeRequest{})
 
 	resp, err := env.client.ListMcpServers(ctx, &pb.ListMcpServersRequest{})
 	if err != nil {

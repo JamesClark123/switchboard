@@ -8,6 +8,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -20,6 +21,12 @@ func (s *Server) Subscribe(req *pb.SubscribeRequest, stream pb.Switchboard_Subsc
 	}
 	id, ch, replay := s.hub.Subscribe(req.GetReplayUndelivered())
 	defer s.hub.Unsubscribe(id)
+	// Response headers go out only once the subscriber is registered: a client
+	// that waits on stream.Header() knows it will see every later event (live
+	// events are not buffered, so one emitted before registration is lost).
+	if err := stream.SendHeader(metadata.MD{}); err != nil {
+		return err
+	}
 
 	for _, ev := range replay {
 		if err := stream.Send(ev); err != nil {

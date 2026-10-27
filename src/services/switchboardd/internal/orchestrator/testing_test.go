@@ -249,6 +249,9 @@ type fakeWorker struct {
 	links  int
 	// linkIn lets a test push frames (call) to the orchestrator over the link.
 	linkOut chan *pb.OrchestratorLinkFrame
+	// onDeliver, when set (under mu), runs at the start of each
+	// DeliverWorkerPrompt, before the fake decides; it may change records.
+	onDeliver func(req *pb.DeliverWorkerPromptRequest)
 }
 
 func newFakeWorker(hostID string) *fakeWorker {
@@ -383,10 +386,21 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
 	w.record("deliver %s %s", req.GetSandboxId(), req.GetRunId())
 	w.mu.Lock()
+	hook := w.onDeliver
+	w.mu.Unlock()
+	if hook != nil {
+		hook(req)
+	}
+	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb, ok := w.sbs[req.GetSandboxId()]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "sandbox not found")
+	}
+	// As the real worker side (worker.Service.Deliver): only a worker of the
+	// calling orchestrator, running, idle and without a run takes a delivery.
+	if c := sb.GetController(); c == nil || c.GetOrchestratorId() != req.GetOrchestratorId() {
+		return nil, status.Error(codes.FailedPrecondition, "not a worker of this orchestrator")
 	}
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || sb.GetController().GetRun() != nil {
 		return nil, status.Error(codes.FailedPrecondition, "not free")

@@ -389,11 +389,7 @@ func TestSourceEditsBroadcastSandboxChanged(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := client.Subscribe(ctx, &pb.SubscribeRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(100 * time.Millisecond) // let the subscriber register
+	stream := subscribe(t, client, &pb.SubscribeRequest{})
 
 	// One reader forwards every sandbox_changed for sb; waitFor blocks until one
 	// arrives whose source set matches.

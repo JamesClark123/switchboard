@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
@@ -220,5 +221,91 @@ func TestWorkerViewsForUnknownRecords(t *testing.T) {
 	}
 	if err := remoteErr(statusUnimplemented(), "h"); !errors.Is(err, ErrUnreachable) {
 		t.Errorf("remoteErr too old = %v", err)
+	}
+}
+
+// staleListAPI is a host whose ListSandboxes answers with the records as they
+// were when it was called, then holds the reply until release is closed: a
+// reconcile whose listing predates whatever the test does meanwhile.
+type staleListAPI struct {
+	WorkerAPI
+	listed  chan struct{}
+	release chan struct{}
+}
+
+func (a staleListAPI) ListSandboxes(ctx context.Context) ([]*pb.Sandbox, error) {
+	sbs, err := a.WorkerAPI.ListSandboxes(ctx)
+	close(a.listed)
+	<-a.release
+	return sbs, err
+}
+
+// reconcileAround runs a reconcile of "box" whose listing is taken before op
+// and applied after it.
+func reconcileAround(t *testing.T, w *fakeWorker, rt *runtime, op func()) {
+	t.Helper()
+	api, err := rt.apiFor("box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := staleListAPI{WorkerAPI: api, listed: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- rt.reconcile(bg(), "box", stale) }()
+	<-stale.listed
+	opDone := make(chan struct{})
+	go func() { op(); close(opDone) }()
+	// Let op reach the host (its record changes there) before the stale
+	// listing is applied; op itself may then wait for the reconcile.
+	waitFor(t, func() bool { return len(w.recorded()) > 0 })
+	close(stale.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-opDone:
+	case <-time.After(testWaitTimeout):
+		t.Fatal("operation did not finish")
+	}
+}
+
+// A reconcile whose listing predates an attach does not drop the new worker.
+func TestReconcileDuringAttachKeepsWorker(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "worker-wa"))
+	settle(t, rt)
+	w.mu.Lock()
+	w.calls = nil
+	w.mu.Unlock()
+	reconcileAround(t, w, rt, func() {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+			t.Error(err)
+		}
+	})
+	if !rosterHas(rt.record(), "wa") {
+		t.Errorf("worker dropped by a stale reconcile: roster = %v", rt.record().GetWorkers())
+	}
+	if rt.sandboxRecord("wa") == nil {
+		t.Error("worker record dropped by a stale reconcile")
+	}
+}
+
+// A reconcile whose listing predates a detach does not re-adopt the worker.
+func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "worker-wa"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, rt)
+	w.mu.Lock()
+	w.calls = nil
+	w.mu.Unlock()
+	reconcileAround(t, w, rt, func() {
+		if err := env.svc.DetachWorker(bg(), o.GetId(), "wa"); err != nil {
+			t.Error(err)
+		}
+	})
+	if rosterHas(rt.record(), "wa") {
+		t.Errorf("detached worker re-adopted by a stale reconcile: roster = %v", rt.record().GetWorkers())
 	}
 }
