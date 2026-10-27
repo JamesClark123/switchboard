@@ -196,6 +196,11 @@ func runServe(cfg *config.Config, debug bool) error {
 	agents.SetStatusUpdater(mgr)
 	agents.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	hookServer := agent.NewHookServer(hub, mgr)
+	// SWI-12: a WAITING agent's backstop lives in memory; restore it for agents
+	// recorded WAITING before this start.
+	if all, err := mgr.List(); err == nil {
+		hookServer.RearmWaiting(all)
+	}
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)

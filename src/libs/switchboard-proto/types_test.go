@@ -28,6 +28,7 @@ func TestAgentStatusLabel(t *testing.T) {
 		pb.AgentStatus_AGENT_STATUS_WORKING:     "working",
 		pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT: "needs-input",
 		pb.AgentStatus_AGENT_STATUS_EXITED:      "exited",
+		pb.AgentStatus_AGENT_STATUS_WAITING:     "waiting",
 		pb.AgentStatus_AGENT_STATUS_UNSPECIFIED: "unknown",
 	}
 	for st, want := range cases {

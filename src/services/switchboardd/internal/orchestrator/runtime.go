@@ -46,8 +46,12 @@ type runtime struct {
 	// worker, or re-adopt the detached one).
 	reconcileMu   sync.Mutex
 	inputNotified map[string]bool // run id -> RUN_NEEDS_INPUT raised for the current input wait
-	sched         *scheduler
-	reasoning     reasoningState
+	// flagMu serializes pushes of a worker's needs_review flag (SWI-12): each
+	// push is computed from the run's live state while holding it, so the last
+	// one to land always matches the run (review and resume race otherwise).
+	flagMu    sync.Mutex
+	sched     *scheduler
+	reasoning reasoningState
 }
 
 func newRuntime(ctx context.Context, svc *Service, rec *pb.Orchestrator) *runtime {

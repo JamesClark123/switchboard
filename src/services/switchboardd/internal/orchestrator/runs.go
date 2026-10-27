@@ -288,36 +288,92 @@ func (rt *runtime) runNeedsInput(run *pb.Run) {
 	}
 }
 
-// runResumed folds the agent working again into the run.
+// runResumed folds the agent working again (or waiting on its own background
+// work) into the run. A run handed to review comes back too (SWI-12): an agent
+// that resumes was not finished, it had paused — so the run is RUNNING again
+// and the worker's needs_review flag is cleared.
 func (rt *runtime) runResumed(run *pb.Run) {
 	rt.runs.mu.Lock()
-	defer rt.runs.mu.Unlock()
-	if run.GetState() != pb.RunState_RUN_STATE_AWAITING_INPUT {
+	// The live record, not the caller's copy: a report or a mark free may have
+	// closed the run since it was read, and must not be undone.
+	live, err := rt.svc.reg.GetRun(rt.id, run.GetId())
+	from := live.GetState()
+	if err != nil || (from != pb.RunState_RUN_STATE_AWAITING_INPUT && from != pb.RunState_RUN_STATE_AWAITING_REVIEW) {
+		rt.runs.mu.Unlock()
 		return
 	}
-	run.State = pb.RunState_RUN_STATE_RUNNING
-	_ = rt.putRun(run)
+	live.State = pb.RunState_RUN_STATE_RUNNING
+	err = rt.putRun(live)
+	rt.runs.mu.Unlock()
+	if err != nil {
+		return
+	}
+	run.State = live.GetState()
 	rt.mu.Lock()
 	delete(rt.inputNotified, run.GetId())
 	rt.mu.Unlock()
+	if from == pb.RunState_RUN_STATE_AWAITING_REVIEW {
+		rt.syncReviewFlag(run.GetId())
+	}
+}
+
+// syncReviewFlag pushes a worker's controller.run with needs_review set exactly
+// when its in-flight run is AWAITING_REVIEW, read live under flagMu so that of
+// two racing pushes (review and resume) the last always matches the run.
+func (rt *runtime) syncReviewFlag(runID string) {
+	rt.flagMu.Lock()
+	defer rt.flagMu.Unlock()
+	live, err := rt.svc.reg.GetRun(rt.id, runID)
+	if err != nil || !inFlight(live) || live.GetSandboxId() == "" {
+		return
+	}
+	rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), &pb.WorkerRun{
+		Id: live.GetId(), Action: live.GetAction(), NeedsReview: live.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW,
+	})
+}
+
+// repairReviewFlag re-pushes the worker's needs_review flag when its record
+// disagrees with the run (a push lost while the link was down, or one that
+// landed out of order) — the record the link last delivered is the evidence.
+func (rt *runtime) repairReviewFlag(run *pb.Run, sb *pb.Sandbox) {
+	wr := sb.GetController().GetRun()
+	if wr.GetId() != run.GetId() {
+		return
+	}
+	live, err := rt.svc.reg.GetRun(rt.id, run.GetId())
+	if err != nil || !inFlight(live) {
+		return
+	}
+	if wr.GetNeedsReview() != (live.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW) {
+		rt.syncReviewFlag(run.GetId())
+	}
 }
 
 // runAwaitingReview hands an idle, unreported run to the developer (FR-156):
 // the worker's record is flagged needs_review and a notification raised.
 func (rt *runtime) runAwaitingReview(run *pb.Run) {
 	rt.runs.mu.Lock()
-	if run.GetState() != pb.RunState_RUN_STATE_RUNNING && run.GetState() != pb.RunState_RUN_STATE_AWAITING_INPUT {
+	// Decided on the live record and the worker's latest status, both under
+	// runs.mu like runResumed: an agent that resumed (SWI-12) or a report that
+	// closed the run since the caller looked keeps it out of review.
+	live, err := rt.svc.reg.GetRun(rt.id, run.GetId())
+	if err != nil || (live.GetState() != pb.RunState_RUN_STATE_RUNNING && live.GetState() != pb.RunState_RUN_STATE_AWAITING_INPUT) ||
+		rt.sandboxRecord(live.GetSandboxId()).GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
 		rt.runs.mu.Unlock()
 		return
 	}
-	run.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
-	err := rt.putRun(run)
+	live.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
+	err = rt.putRun(live)
 	rt.runs.mu.Unlock()
 	if err != nil {
 		return
 	}
-	rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction(), NeedsReview: true})
-	rt.notify(run, pb.NotificationKind_NOTIFICATION_KIND_RUN_AWAITING_REVIEW, "finished without a completion report — review the worker and mark it free")
+	run.State = live.GetState()
+	rt.syncReviewFlag(run.GetId())
+	if cur, err := rt.svc.reg.GetRun(rt.id, run.GetId()); err != nil || cur.GetState() != pb.RunState_RUN_STATE_AWAITING_REVIEW {
+		return // resumed or closed meanwhile: no stale alert
+	}
+	rt.notify(live, pb.NotificationKind_NOTIFICATION_KIND_RUN_AWAITING_REVIEW, "finished without a completion report — review the worker and mark it free")
 }
 
 // completeRun closes a run with its one summary (a report, or the developer's
@@ -516,9 +572,13 @@ func (rt *runtime) foldStatus(sb *pb.Sandbox) {
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 		rt.disarmReview(run.GetId())
 		rt.runNeedsInput(run)
-	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING:
+	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING,
+		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WAITING:
+		// WAITING: the turn ended to wait on background work the agent started
+		// (SWI-12). The run is still going — no review is armed.
 		rt.disarmReview(run.GetId())
 		rt.runResumed(run)
+		rt.repairReviewFlag(run, sb)
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE:
 		if run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
 			return
@@ -589,7 +649,9 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED:
 			rt.failRun(run, "agent exited")
 		case run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW:
-			// unchanged
+			if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && busy(sb) {
+				rt.runResumed(run) // the agent resumed while the link was down
+			}
 		case sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING:
 			rt.failRun(run, "sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")))
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE:
@@ -601,6 +663,18 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 			}
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 			rt.runNeedsInput(run)
+		case busy(sb):
+			rt.runResumed(run)
+		}
+		if sb != nil {
+			rt.repairReviewFlag(run, sb)
 		}
 	}
+}
+
+// busy reports whether a worker's agent is still on its run: working, or
+// waiting on background work it started (SWI-12).
+func busy(sb *pb.Sandbox) bool {
+	st := sb.GetAgent().GetStatus()
+	return st == pb.AgentStatus_AGENT_STATUS_WORKING || st == pb.AgentStatus_AGENT_STATUS_WAITING
 }

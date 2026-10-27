@@ -66,6 +66,7 @@ var (
 	// Colors intentionally match the notification inbox: warn ◆ = needs prompting,
 	// green ✓ = settled/task-complete.
 	agentWorkStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	agentBgStyle   = lipgloss.NewStyle().Foreground(colAccent)
 	agentWaitStyle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
 	agentIdleStyle = lipgloss.NewStyle().Foreground(colRunning)
 

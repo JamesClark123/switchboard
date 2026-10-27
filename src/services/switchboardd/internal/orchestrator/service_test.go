@@ -228,6 +228,8 @@ func TestAvailabilityTable(t *testing.T) {
 		{running(pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r", NeedsReview: true}), true, pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW},
 		{running(pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT, nil), true, pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT},
 		{running(pb.AgentStatus_AGENT_STATUS_WORKING, nil), true, pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY},
+		{running(pb.AgentStatus_AGENT_STATUS_WAITING, &pb.WorkerRun{Id: "r"}), true, pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY},
+		{running(pb.AgentStatus_AGENT_STATUS_WAITING, nil), true, pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY},
 		{running(pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r"}), true, pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY},
 		{running(pb.AgentStatus_AGENT_STATUS_EXITED, nil), true, pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY},
 		{running(pb.AgentStatus_AGENT_STATUS_IDLE, nil), true, pb.WorkerAvailability_WORKER_AVAILABILITY_FREE},

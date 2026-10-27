@@ -314,9 +314,10 @@ func TestInjectHooks(t *testing.T) {
 		if !strings.Contains(hm[0].Hooks[0].Command, `'http://host.docker.internal:8765/hook?event=`+event+`&sandbox_id=sb1'`) {
 			t.Errorf("%s hook should name its event and the sandbox id in the URL: %s", event, hm[0].Hooks[0].Command)
 		}
-		// Only the Notification hook forwards Claude Code's hook input (the
-		// notification_type lives there); the others post nothing.
-		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); forwards != (event == "Notification") {
+		// Only the Notification and Stop hooks forward Claude Code's hook input
+		// (the notification_type, and the Stop's background_tasks); the others
+		// post nothing.
+		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); forwards != (event == "Notification" || event == "Stop") {
 			t.Errorf("%s hook forwards stdin = %v: %s", event, forwards, hm[0].Hooks[0].Command)
 		}
 		// The ping must be best-effort: time-bounded, output discarded, and never

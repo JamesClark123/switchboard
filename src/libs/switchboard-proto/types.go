@@ -42,6 +42,8 @@ func AgentStatusLabel(s pb.AgentStatus) string {
 		return "needs-input"
 	case pb.AgentStatus_AGENT_STATUS_EXITED:
 		return "exited"
+	case pb.AgentStatus_AGENT_STATUS_WAITING:
+		return "waiting"
 	default:
 		return "unknown"
 	}

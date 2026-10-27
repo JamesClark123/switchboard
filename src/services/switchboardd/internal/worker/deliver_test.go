@@ -93,7 +93,8 @@ func TestDeliverRefusals(t *testing.T) {
 			x.State = pb.SandboxState_SANDBOX_STATE_RUNNING
 			x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING
 		}, "agent is working"},
-		"agent needs input": {func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT }, "agent is needs_input"},
+		"agent needs input":                {func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT }, "agent is needs_input"},
+		"agent waiting on background work": {func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WAITING }, "agent is waiting"},
 		"wrong orchestrator": {func(x *pb.Sandbox) {
 			x.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
 			x.Controller.OrchestratorId = "other"

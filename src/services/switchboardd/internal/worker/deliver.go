@@ -44,6 +44,8 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 		case c.GetRun() != nil:
 			return fmt.Errorf("%w: run %s is already on this sandbox", ErrPrecondition, c.GetRun().GetId())
 		case x.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE:
+			// WAITING (on background work, SWI-12) is refused too: the agent
+			// will resume on its own and a new run would interleave with it.
 			return fmt.Errorf("%w: agent is %s", ErrPrecondition, strings.ToLower(strings.TrimPrefix(x.GetAgent().GetStatus().String(), "AGENT_STATUS_")))
 		}
 		name = c.GetName()

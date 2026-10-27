@@ -205,8 +205,17 @@ func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) err
 	return nil
 }
 
-// idleNow reports whether the sandbox's agent is recorded IDLE right now (so a
-// submit can be verified through its next hook) and the time of the check.
+// atPrompt reports whether an agent with this status sits at an empty input box
+// between turns: IDLE, or WAITING on background work (SWI-12) — a prompt typed
+// into a waiting agent starts a turn just as one typed into an idle agent does,
+// so it is verified the same way.
+func atPrompt(st pb.AgentStatus) bool {
+	return st == pb.AgentStatus_AGENT_STATUS_IDLE || st == pb.AgentStatus_AGENT_STATUS_WAITING
+}
+
+// idleNow reports whether the sandbox's agent is recorded at its prompt (IDLE
+// or WAITING) right now — so a submit can be verified through its next hook —
+// and the time of the check.
 func (r *Registry) idleNow(sandboxID string) (time.Time, bool) {
 	r.mu.Lock()
 	g, ok := r.status.(sandboxGetter)
@@ -216,11 +225,12 @@ func (r *Registry) idleNow(sandboxID string) (time.Time, bool) {
 		return now, false
 	}
 	sb, err := g.Get(sandboxID)
-	return now, err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE
+	return now, err == nil && atPrompt(sb.GetAgent().GetStatus())
 }
 
 // submitted reports whether the agent has reported anything since the prompt
-// was typed: it is no longer idle, or a hook event arrived after `since`.
+// was typed: it is no longer at its prompt, or a hook event arrived after
+// `since`.
 func (r *Registry) submitted(sandboxID string, since time.Time) bool {
 	r.mu.Lock()
 	g, ok := r.status.(sandboxGetter)
@@ -232,7 +242,7 @@ func (r *Registry) submitted(sandboxID string, since time.Time) bool {
 	if err != nil {
 		return true // the sandbox is gone; nothing to retry on
 	}
-	return sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE ||
+	return !atPrompt(sb.GetAgent().GetStatus()) ||
 		sb.GetAgent().GetLastEventAt().AsTime().After(since)
 }
 
