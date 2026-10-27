@@ -55,6 +55,11 @@ type Manager struct {
 	// RemoveSources (feature 007, FR-066): seed-mutating operations on one
 	// workspace never interleave. See oplock.go.
 	ops opLock
+	// lifecycle marks sandboxes Stop/Restart/AddKit/Destroy/Rename are working
+	// on, and started is when this manager was built: reconciliation skips the
+	// former and settles only transitional records older than the latter (SWI-13).
+	lifecycle inflight
+	started   time.Time
 
 	// --- feature 009 (orchestrator worker side; research R3/R4) ---
 	// onDestroy, when set, is called with the record just before it is deleted
@@ -135,7 +140,7 @@ func (m *Manager) injectEscapeHatchInto(sb *pb.Sandbox, onLog func(string)) {
 
 // NewManager constructs a Manager.
 func NewManager(store Store, runner Runner, workspaceRoot, hostID string) *Manager {
-	return &Manager{store: store, runner: runner, workspaceRoot: workspaceRoot, hostID: hostID}
+	return &Manager{store: store, runner: runner, workspaceRoot: workspaceRoot, hostID: hostID, started: time.Now()}
 }
 
 // SetOnChange registers a sandbox-change observer.
@@ -463,6 +468,7 @@ func tryRefs(refs []string, op func(string) error) error {
 
 // Stop stops the container but RETAINS the workspace copy (FR-012a).
 func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
+	defer m.lifecycle.begin(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -491,6 +497,7 @@ func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 // or when there's no handle — it relaunches from the retained workspace copy,
 // clearing any stale container first.
 func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*pb.Sandbox, error) {
+	defer m.lifecycle.begin(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -716,6 +723,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // newServices carries the attached kit's declared services (feature 006); they are
 // merged into the sandbox's resolved set with the same later-kit-wins rule.
 func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, newServices []*pb.KitService, onLog func(string)) (*pb.Sandbox, error) {
+	defer m.lifecycle.begin(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -786,6 +794,7 @@ func (m *Manager) ValidateKit(ctx context.Context, kitDir string) (string, error
 
 // Destroy removes the container and DELETES the retained copy (FR-012c).
 func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
+	defer m.lifecycle.begin(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return false, err
@@ -982,6 +991,7 @@ func (m *Manager) resolveName(explicit, label, id string) (string, error) {
 // container's mount is tied to the old path, so the container is released and
 // relaunched from the renamed copy on the next start. The uuid id is unchanged.
 func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, error) {
+	defer m.lifecycle.begin(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -1037,32 +1047,28 @@ func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, 
 
 // Readopt reconciles the registry with live containers on daemon startup
 // (FR-002a, SC-012): still-running containers are marked running; the rest are
-// marked stopped. Records are never deleted here. Nothing is in flight at
-// startup, so a record a dead daemon left mid-transition (CREATING,
-// DESTROYING, ERROR) is settled too. When the runtime cannot be read, nothing
-// changes and the error is returned (SWI-13).
+// marked stopped. Records are never deleted here. When the runtime cannot be
+// read, nothing changes and the error is returned (SWI-13).
 func (m *Manager) Readopt(ctx context.Context) error {
-	_, err := m.reconcile(ctx, true)
+	_, err := m.Reconcile(ctx)
 	return err
 }
 
-// Reconcile re-reads the runtime once and moves RUNNING/STOPPED records that
-// disagree with it (SWI-13), returning the records it changed (each already
-// emitted). A record mid-operation — a transitional state, a held operation
-// latch, or one written again while the runtime was being read — is left to
-// the operation that owns it. When the runtime cannot be read, nothing changes
-// and the error is returned: "couldn't tell" never means "stopped".
+// Reconcile reads the runtime once and moves records that disagree with it
+// (SWI-13), returning the records it changed (each already emitted).
+//
+//   - When the runtime cannot be read, nothing changes and the error is
+//     returned: "couldn't tell" never means "stopped".
+//   - RUNNING and STOPPED records follow the listing. So does a transitional
+//     record (CREATING, DESTROYING, ERROR) older than this manager: a previous
+//     daemon died mid-operation and nothing will finish it.
+//   - A record an operation is working on — a held operation latch, a
+//     lifecycle operation in flight, a transitional state this daemon wrote, or
+//     a write that landed while the runtime was being read — is left to it.
 func (m *Manager) Reconcile(ctx context.Context) ([]*pb.Sandbox, error) {
-	return m.reconcile(ctx, false)
-}
-
-// errReconcileSkip aborts a reconcile write whose record moved under it.
-var errReconcileSkip = errors.New("record changed during reconcile")
-
-func (m *Manager) reconcile(ctx context.Context, startup bool) ([]*pb.Sandbox, error) {
 	// The records are read BEFORE the runtime: a write that lands in between
-	// (a Stop or Restart finishing) changes UpdatedAt, and the write below then
-	// skips the record rather than overwrite a newer answer with an older one.
+	// changes UpdatedAt, and the write below then skips the record rather than
+	// overwrite a newer answer with an older one.
 	all, err := m.store.List()
 	if err != nil {
 		return nil, err
@@ -1076,13 +1082,8 @@ func (m *Manager) reconcile(ctx context.Context, startup bool) ([]*pb.Sandbox, e
 	for _, sb := range all {
 		state := sb.GetState()
 		settled := state == pb.SandboxState_SANDBOX_STATE_RUNNING || state == pb.SandboxState_SANDBOX_STATE_STOPPED
-		if !startup {
-			if !settled {
-				continue
-			}
-			if _, busy := m.ops.holder(sb.GetId()); busy {
-				continue
-			}
+		if (!settled && !sb.GetUpdatedAt().AsTime().Before(m.started)) || m.busy(sb.GetId()) {
+			continue
 		}
 		want := pb.SandboxState_SANDBOX_STATE_STOPPED
 		if sb.GetContainerRef() != "" && listedRunning(statuses, sbxRefs(sb)) {
@@ -1093,7 +1094,9 @@ func (m *Manager) reconcile(ctx context.Context, startup bool) ([]*pb.Sandbox, e
 		}
 		seen := sb.GetUpdatedAt()
 		out, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
-			if s.GetState() != state || !proto.Equal(s.GetUpdatedAt(), seen) {
+			// Re-checked under the registry write: an operation that began after
+			// the check above owns the record now.
+			if s.GetState() != state || !proto.Equal(s.GetUpdatedAt(), seen) || m.busy(s.GetId()) {
 				return errReconcileSkip
 			}
 			leaveRunning(s, want)
@@ -1102,16 +1105,36 @@ func (m *Manager) reconcile(ctx context.Context, startup bool) ([]*pb.Sandbox, e
 		})
 		switch {
 		case errors.Is(err, errReconcileSkip):
-			continue
+			continue // moved meanwhile
 		case err != nil:
-			return changed, err
+			// Destroyed meanwhile, or this record could not be written: one
+			// record never stops the pass over the rest.
+			log.Printf("[warn] reconcile: sandbox %s left as %s: %v", sb.GetId(), state, err)
+			continue
 		}
 		log.Printf("[info] reconcile: sandbox %s %s -> %s", sb.GetId(), state, want)
 		m.emit(out)
+		if want == pb.SandboxState_SANDBOX_STATE_RUNNING {
+			// Started outside the daemon: a worker's registration is re-loaded as
+			// after a Restart. The observer may take minutes; it never holds up
+			// the caller.
+			if fn := m.onBringUp; fn != nil && out.GetController() != nil {
+				go fn(out)
+			}
+		}
 		changed = append(changed, out)
 	}
 	return changed, nil
 }
+
+// busy reports whether an operation is working on the sandbox (SWI-13).
+func (m *Manager) busy(id string) bool {
+	_, latched := m.ops.holder(id)
+	return latched || m.lifecycle.has(id)
+}
+
+// errReconcileSkip aborts a reconcile write whose record moved under it.
+var errReconcileSkip = errors.New("record changed during reconcile")
 
 // listedRunning reports whether any of a sandbox's handles is listed running.
 func listedRunning(statuses map[string]string, refs []string) bool {

@@ -147,11 +147,11 @@ func runServe(cfg *config.Config, debug bool) error {
 
 	// Re-adopt still-running sandboxes after a daemon restart (FR-002a, SC-012).
 	// A daemon started at login can come up before the sbx runtime does; an
-	// unreadable runtime changes nothing (SWI-13), so try again a few times in
-	// the background instead of leaving every state as last recorded.
-	if err := mgr.Readopt(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: re-adoption error:", err)
-		go retryReconcile(ctx, mgr, readoptRetries)
+	// unreadable runtime changes nothing (SWI-13), so it is retried a few times
+	// in the background once the server is wired (below).
+	readoptErr := mgr.Readopt(ctx)
+	if readoptErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: re-adoption error:", readoptErr)
 	}
 	// Collect any `.switchboard/staging` debris an add interrupted by a daemon
 	// crash left behind (feature 007, research R2). Best-effort, never fatal.
@@ -334,6 +334,11 @@ func runServe(cfg *config.Config, debug bool) error {
 		Debug:           debug,
 	})
 	workerSvc.SetTerminals(srv.Terminals())
+	if readoptErr != nil {
+		// Started only now: the manager's change and bring-up observers are set,
+		// so what the retry moves reaches clients (and is never a data race).
+		go retryReconcile(ctx, mgr, readoptRetries)
+	}
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)
 	if debug {
 		fmt.Fprintln(os.Stderr, "sxbd debug logging enabled: every RPC action and error will be logged")

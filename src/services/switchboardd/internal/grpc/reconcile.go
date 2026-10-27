@@ -51,7 +51,9 @@ func (s *Server) reconcileSandboxes(ctx context.Context) {
 		return
 	}
 	s.reconcile.run(func() {
-		rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+		// Detached from the caller: every caller waiting on the gate shares this
+		// pass, so one client hanging up must not cut it short for the rest.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		defer cancel()
 		_, _ = s.mgr.Reconcile(rctx)
 	})

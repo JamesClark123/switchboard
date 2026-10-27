@@ -193,6 +193,7 @@ func TestListStatuses(t *testing.T) {
 		{"real listing", `{"sandboxes":[{"name":"probe-c","id":"d9739da9-2db2-48e7-b6ab-dacdbd0efb67","agent":"claude","status":"running","last_used_at":"2026-10-12T02:14:35.3107Z","workspaces":["/Users/x/probe-kit"],"created_at":"2026-10-12T02:08:34Z"},{"name":"shell-test","id":"eb65a68a","agent":"shell","status":"stopped","workspaces":["/Users/x/test"],"workspace_missing":true}]}`,
 			map[string]string{"probe-c": "running", "d9739da9-2db2-48e7-b6ab-dacdbd0efb67": "running", "shell-test": "stopped", "eb65a68a": "stopped"}},
 		{"empty list is a real answer", `{"sandboxes":[]}`, map[string]string{}},
+		{"null list is an empty list", `{"sandboxes":null}`, map[string]string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,14 +225,33 @@ func TestListStatusesUnreadable(t *testing.T) {
 			}
 		})
 	}
+	// A list of the wrong shape is unreadable too.
+	if got, err := (&SbxRunner{Bin: sbxWithLs(t, `{"sandboxes":{}}`)}).ListStatuses(context.Background()); err == nil {
+		t.Errorf("ListStatuses on a non-list = %v, nil; want an error", got)
+	}
 	// A non-zero exit is an error too.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(bin, []byte("#!/usr/bin/env bash\necho 'docker daemon not running' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := (&SbxRunner{Bin: bin}).ListStatuses(context.Background()); err == nil {
-		t.Errorf("ListStatuses on failing sbx = %v, nil; want an error", got)
+	_, err := (&SbxRunner{Bin: bin}).ListStatuses(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "docker daemon not running") {
+		t.Errorf("ListStatuses on failing sbx: err = %v; want one carrying its stderr", err)
+	}
+}
+
+// A notice sbx prints on stderr does not spoil the JSON on stdout.
+func TestListStatusesIgnoresStderr(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sbx")
+	script := "#!/usr/bin/env bash\necho 'A new version of sbx is available' >&2\necho '{\"sandboxes\":[{\"name\":\"sb1\",\"id\":\"u1\",\"status\":\"running\"}]}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&SbxRunner{Bin: bin}).ListStatuses(context.Background())
+	if err != nil || got["sb1"] != "running" {
+		t.Errorf("ListStatuses = %v, %v; want sb1 running", got, err)
 	}
 }
 

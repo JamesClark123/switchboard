@@ -165,13 +165,102 @@ func TestReconcileLeavesOperationsAlone(t *testing.T) {
 		t.Errorf("latched record = %v; want untouched", got)
 	}
 
-	// Startup has nothing in flight: Readopt settles stale transitional records.
+	// A lifecycle operation in flight (Stop, Restart, Destroy, ...) is skipped
+	// the same way, without refusing anything.
 	m.ops.release("id-busy")
-	if err := m.Readopt(context.Background()); err != nil {
+	done := m.lifecycle.begin("id-busy")
+	if _, err := m.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := stateOf(t, reg, "id-SANDBOX_STATE_CREATING"); got != pb.SandboxState_SANDBOX_STATE_STOPPED {
-		t.Errorf("readopt: stale CREATING = %v; want STOPPED", got)
+	if got := stateOf(t, reg, "id-busy"); got != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("record mid-lifecycle-operation = %v; want untouched", got)
+	}
+	done()
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOf(t, reg, "id-busy"); got != pb.SandboxState_SANDBOX_STATE_STOPPED {
+		t.Errorf("record after the operation = %v; want STOPPED", got)
+	}
+}
+
+// A transitional record a previous daemon left behind (written before this
+// manager started) is settled by every pass — startup or a later retry.
+func TestReconcileSettlesStaleTransitionalRecords(t *testing.T) {
+	m, reg, runner, _ := newTestManager(t)
+	old := timestamppb.New(m.started.Add(-time.Hour))
+	for id, st := range map[string]pb.SandboxState{
+		"id-creating": pb.SandboxState_SANDBOX_STATE_CREATING,
+		"id-error":    pb.SandboxState_SANDBOX_STATE_ERROR,
+	} {
+		if err := reg.Put(&pb.Sandbox{Id: id, DisplayName: id, ContainerRef: id, State: st, UpdatedAt: old}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner.running = map[string]bool{"id-error": true}
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateOf(t, reg, "id-creating"); got != pb.SandboxState_SANDBOX_STATE_STOPPED {
+		t.Errorf("stale CREATING = %v; want STOPPED", got)
+	}
+	if got := stateOf(t, reg, "id-error"); got != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("stale ERROR with a running container = %v; want RUNNING", got)
+	}
+}
+
+// A record destroyed mid-pass is skipped; the rest of the pass still runs.
+func TestReconcileSurvivesARecordDestroyedMeanwhile(t *testing.T) {
+	m, reg, _, _ := newTestManager(t)
+	putRecord(t, reg, "id-a", "a", "a", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	putRecord(t, reg, "id-b", "b", "b", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	m.runner = &racingRunner{fakeRunner: newFakeRunner(), during: func() {
+		if err := reg.Delete("id-a"); err != nil {
+			t.Error(err)
+		}
+	}}
+	emits := recordEmits(m)
+	changed, err := m.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emits["id-a"] != 0 {
+		t.Errorf("a destroyed record was emitted %d times; want 0", emits["id-a"])
+	}
+	if len(changed) != 1 || stateOf(t, reg, "id-b") != pb.SandboxState_SANDBOX_STATE_STOPPED {
+		t.Errorf("changed %v; want id-b STOPPED after id-a vanished", changed)
+	}
+}
+
+// A worker found running again is brought up like after a Restart.
+func TestReconcileBringsUpARestartedWorker(t *testing.T) {
+	m, reg, runner, _ := newTestManager(t)
+	if err := reg.Put(&pb.Sandbox{
+		Id: "id-w", DisplayName: "w", ContainerRef: "w", State: pb.SandboxState_SANDBOX_STATE_STOPPED,
+		Controller: &pb.SandboxController{OrchestratorId: "orch"}, UpdatedAt: timestamppb.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	putRecord(t, reg, "id-plain", "plain", "plain", pb.SandboxState_SANDBOX_STATE_STOPPED)
+	runner.running = map[string]bool{"w": true, "plain": true}
+	broughtUp := make(chan string, 2)
+	m.SetOnBringUp(func(sb *pb.Sandbox) { broughtUp <- sb.GetId() })
+
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-broughtUp:
+		if id != "id-w" {
+			t.Errorf("brought up %s; want only the worker id-w", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restarted worker was not brought up")
+	}
+	select {
+	case id := <-broughtUp:
+		t.Errorf("also brought up %s; want only the worker", id)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

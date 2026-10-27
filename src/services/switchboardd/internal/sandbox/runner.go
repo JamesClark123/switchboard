@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -242,25 +243,36 @@ func (r *SbxRunner) Destroy(ctx context.Context, ref string) error {
 // tell" as "stopped" (SWI-13). A sandbox absent from a successful listing is a
 // real answer — it is not running.
 func (r *SbxRunner) ListStatuses(ctx context.Context) (map[string]string, error) {
-	out, err := r.run(ctx, nil, "ls", "--json")
+	// stdout only: a notice sbx prints on stderr (an available update, say) must
+	// not turn a good listing into unparseable output.
+	cmd := exec.CommandContext(ctx, r.Bin, "ls", "--json")
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		var stderr []byte
+		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+			stderr = ee.Stderr
+		}
+		return nil, fmt.Errorf("%s ls --json: %w%s", r.Bin, err, outputTail(stderr))
 	}
-	var listing struct {
-		Sandboxes *[]struct {
-			Name   string `json:"name"`
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		} `json:"sandboxes"`
-	}
-	if err := json.Unmarshal([]byte(out), &listing); err != nil {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s ls --json: %w", r.Bin, err)
 	}
-	if listing.Sandboxes == nil {
+	raw, ok := doc["sandboxes"]
+	if !ok {
 		return nil, fmt.Errorf("parse %s ls --json: no \"sandboxes\" list", r.Bin)
 	}
+	// `"sandboxes": null` is how a Go CLI encodes an empty list: no sandboxes.
+	var sandboxes []struct {
+		Name   string `json:"name"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &sandboxes); err != nil {
+		return nil, fmt.Errorf("parse %s ls --json: %w", r.Bin, err)
+	}
 	statuses := map[string]string{}
-	for _, s := range *listing.Sandboxes {
+	for _, s := range sandboxes {
 		status := strings.ToLower(strings.TrimSpace(s.Status))
 		for _, key := range []string{s.Name, s.ID} {
 			if key != "" {

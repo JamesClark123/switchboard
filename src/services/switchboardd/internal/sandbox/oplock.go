@@ -59,3 +59,37 @@ func (l *opLock) holder(id string) (string, bool) {
 	label, ok := l.held[id]
 	return label, ok
 }
+
+// inflight marks sandboxes a lifecycle operation (Stop, Restart, AddKit,
+// Destroy, Rename) is working on, so reconciliation leaves them to it (SWI-13).
+// Unlike opLock it never refuses: those operations keep their existing
+// concurrency, and the mark only tells a reconcile to skip the record. Counted,
+// so overlapping operations on one sandbox each clear only their own mark.
+type inflight struct {
+	mu   sync.Mutex
+	held map[string]int
+}
+
+// begin marks id and returns the func that clears this mark.
+func (f *inflight) begin(id string) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.held == nil {
+		f.held = map[string]int{}
+	}
+	f.held[id]++
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.held[id]--; f.held[id] <= 0 {
+			delete(f.held, id)
+		}
+	}
+}
+
+// has reports whether any lifecycle operation is working on id.
+func (f *inflight) has(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.held[id] > 0
+}
