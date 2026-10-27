@@ -40,6 +40,10 @@
 - Responsiveness also covers a form whose inline field holds very long text (written back from the enlarged view), since every field re-renders on each keystroke. (SC-006)
 - The revert baseline is set when ctrl+e opens the enlarged view, and it survives a ctrl+c → Cancel round trip. (FR-005b)
 
+### PR review round 3 (2026-10-27, re-review run `run-c275c8f2-400`, resolved in pr-response run `run-c275c8f2-408`)
+
+- Responsiveness also covers typing, cursor movement and scrolling **in** the long inline field itself, which is where focus lands after the enlarged view closes (FR-005). The textarea's wrap cache is only cut to 99 entries once the field is focused, so that is the worst case. (SC-006)
+
 ## Background (current behaviour this feature changes)
 
 Switchboard's terminal UI edits its data through these surfaces:
@@ -255,11 +259,12 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 - **SC-003**: On an 80×24 terminal, the enlarged view shows at least 16 lines of text. On a 200×50 terminal, it uses at least 80% of the terminal's height and width.
 - **SC-004**: A developer can enlarge a field, edit it, close the view and see the edit in the form using no more than two keypresses beyond the edit itself.
 - **SC-005**: The three dialog choices produce the specified result for every exit in User Stories 1–3. Cancel always restores the exact previous state of the surface.
-- **SC-006**: On a 200×50 terminal, each keystroke's result MUST show within 100 ms in both of these cases:
+- **SC-006**: On a 200×50 terminal, each keystroke's result MUST show within 100 ms in all of these cases:
   - with 5,000 lines of text in the enlarged view, for typing, cursor movement and scrolling;
-  - in a form whose inline multi-line field holds 5,000 lines (written back from the enlarged view), for typing in *another* field of that form.
+  - in the inline multi-line field holding those 5,000 lines once the view closes (FR-005 returns focus to it), for typing, cursor movement and scrolling in that field;
+  - in a form whose inline multi-line field holds 5,000 lines, for typing in *another* field of that form.
 
-  The planning phase includes a check of both. Rendering walks every line of a value, a form re-renders every field on each update, and the textarea's wrap cache is sized to its `MaxHeight` (99 inline), so a long inline value can thrash it.
+  The planning phase includes a check of each. Rendering walks every line of a value, and a form re-renders every field on each update. The textarea's wrap cache is cut to its `MaxHeight` (99 inline) on its first focused update, so the focused long field is where the cache thrashes worst. If the check fails, the plan's fallback (a custom field instead of `huh.Text`, FR-009a) also owns the cache sizing.
 
 ## Assumptions
 
