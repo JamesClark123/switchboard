@@ -439,3 +439,22 @@ func TestDispatchOrderProperty(t *testing.T) {
 }
 
 func bg() context.Context { return context.Background() }
+
+// SWI-15: a worker that looks free but refuses the delivery (its agent is
+// still starting) does not hold the run: the same pass offers it to the next
+// free worker.
+func TestRefusedDeliveryFallsThroughToTheNextWorker(t *testing.T) {
+	env, w, o, rt := dispatchEnv(t, 2, false)
+	// The worker side refuses wa (as for an agent not ready yet), while the
+	// orchestrator's cached record still reads it free.
+	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_STARTING })
+	r1 := call(t, env, o.GetId(), "1")
+	settle(t, rt)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), r1.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetSandboxId() != "wb" {
+		t.Errorf("run went to %q, want wb", got.GetSandboxId())
+	}
+	if calls := strings.Join(w.recorded(), "\n"); !strings.Contains(calls, "deliver wa "+r1.GetId()) {
+		t.Errorf("wa was not offered the run first: %s", calls)
+	}
+}

@@ -22,7 +22,9 @@ import (
 // seconds to start, and a prompt typed before its input box is up is lost, so
 // the first run on a fresh worker never started. An agent that is not ready is
 // refused without typing — and started if it has no session yet — and the run
-// stays queued; the orchestrator delivers it once the agent reports IDLE.
+// stays queued; the orchestrator delivers it once the agent reports IDLE. A
+// live unready agent whose record a hook moved to IDLE is put back to STARTING
+// (or NEEDS_INPUT after its start timeout), so it stops reading free.
 
 // runFrameHead / runFrameTail wrap the composed prompt (the recorded Run.prompt
 // is the composed prompt only; the frame is this constant).
@@ -41,7 +43,7 @@ func Frame(orchName, runID, action, prompt string) string {
 func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (bool, error) {
 	var name string
 	ready := s.agents == nil || s.agents.Ready(req.GetSandboxId())
-	starting := false
+	starting, stray := false, false
 	sb, err := s.reg.Update(req.GetSandboxId(), func(x *pb.Sandbox) error {
 		c := x.GetController()
 		switch {
@@ -55,6 +57,8 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 			// The record may still read IDLE (no agent ever started, or the
 			// daemon restarted): the registry, not the record, knows.
 			starting = true
+			st := x.GetAgent().GetStatus()
+			stray = st != pb.AgentStatus_AGENT_STATUS_STARTING && st != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
 			return fmt.Errorf("%w: agent is starting", ErrPrecondition)
 		case x.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE:
 			// WAITING (on background work, SWI-12) is refused too: the agent
@@ -70,7 +74,14 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 		if errors.Is(err, registry.ErrNotFound) {
 			return false, fmt.Errorf("%w: sandbox %s", ErrNotFound, req.GetSandboxId())
 		}
-		if starting {
+		if starting && s.agents.Live(req.GetSandboxId()) {
+			if stray {
+				// A hook wrote over the not-ready status; put it back so the
+				// worker stops reading free (and mark-free can vouch again).
+				// On its own goroutine: the write's observers may dispatch.
+				go s.agents.ReassertUnready(req.GetSandboxId())
+			}
+		} else if starting {
 			s.startAgent(req.GetSandboxId(), "deliver")
 		}
 		return false, err

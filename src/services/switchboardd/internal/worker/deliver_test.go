@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 )
 
@@ -379,5 +380,72 @@ func TestClearNeedsInputVouchesForAnAgentStillStarting(t *testing.T) {
 	}
 	if !e.svc.agents.Ready(sb.GetId()) {
 		t.Error("mark-free should mark the agent ready")
+	}
+}
+
+// statusToRecord writes agent statuses onto the sandbox record, as the sandbox
+// manager does in the daemon.
+type statusToRecord struct{ reg *registry.Registry }
+
+func (s statusToRecord) SetAgentStatus(id string, st pb.AgentStatus, _ time.Time) (*pb.Sandbox, error) {
+	return s.reg.Update(id, func(x *pb.Sandbox) error {
+		if x.Agent == nil {
+			x.Agent = &pb.AgentSession{}
+		}
+		x.Agent.Status = st
+		return nil
+	})
+}
+
+// SWI-15 review: a hook that writes IDLE over an agent that never reported
+// ready (its SessionStart lost, then the developer typed into it and its Stop
+// fired) does not leave the worker reading free forever: the refused delivery
+// puts STARTING back, so dispatch skips the worker until it is ready or the
+// developer vouches for it.
+func TestDeliverPutsAStrayIdleBackToStarting(t *testing.T) {
+	e, sess, created := deliverEnv(t, false)
+	e.svc.agents.SetStatusUpdater(statusToRecord{e.reg})
+	sb := e.sandbox(t, "99999999-8", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "review-bot")}); err != nil {
+		t.Fatal(err)
+	}
+	status := func() pb.AgentStatus {
+		got, _ := e.reg.Get(sb.GetId())
+		return got.GetAgent().GetStatus()
+	}
+	waitUntil := func(want pb.AgentStatus) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for status() != want && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if got := status(); got != want {
+			t.Fatalf("agent status = %v, want %v", got, want)
+		}
+	}
+	waitUntil(pb.AgentStatus_AGENT_STATUS_STARTING)
+	// The Stop hook's IDLE lands; SessionStart never did.
+	if _, err := (statusToRecord{e.reg}).SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := e.svc.Deliver(bg, deliverReq(sb.GetId()))
+	if ok || !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "agent is starting") {
+		t.Fatalf("deliver = %v / %v", ok, err)
+	}
+	waitUntil(pb.AgentStatus_AGENT_STATUS_STARTING)
+	if *created != 1 || sess.typed() != "" {
+		t.Errorf("created %d sessions, typed %q", *created, sess.typed())
+	}
+	// A STARTING record is refused without another write.
+	if ok, _ := e.svc.Deliver(bg, deliverReq(sb.GetId())); ok {
+		t.Error("an unready agent took a delivery")
+	}
+	// Once ready, the IDLE the ready hook writes sticks and the run goes in.
+	e.svc.agents.MarkReady(sb.GetId())
+	if _, err := (statusToRecord{e.reg}).SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.svc.Deliver(bg, deliverReq(sb.GetId())); !ok || err != nil {
+		t.Errorf("deliver once ready = %v / %v", ok, err)
 	}
 }

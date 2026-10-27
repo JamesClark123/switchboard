@@ -374,3 +374,36 @@ func TestCloseResetsAnUnreadyAgent(t *testing.T) {
 		t.Errorf("unreadable status side: %v", got)
 	}
 }
+
+// ReassertUnready puts a live, unready agent's status back over a stray IDLE:
+// STARTING before its start timeout, NEEDS_INPUT after; a ready agent or no
+// session is left alone.
+func TestReassertUnready(t *testing.T) {
+	shortStart(t, 150*time.Millisecond)
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return newMemSession(), nil })
+	rec := &recorder{}
+	reg.SetStatusUpdater(rec)
+	last := func() pb.AgentStatus {
+		got := rec.snapshot()
+		return got[len(got)-1]
+	}
+	if _, err := reg.Session("sb", &pb.AgentSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(rec.snapshot()) == 1 }) // STARTING
+	reg.ReassertUnready("sb")
+	if n := len(rec.snapshot()); n != 2 || last() != pb.AgentStatus_AGENT_STATUS_STARTING {
+		t.Errorf("before the timeout: %v, want STARTING again", rec.snapshot())
+	}
+	waitFor(t, func() bool { return len(rec.snapshot()) == 3 }) // the timeout's NEEDS_INPUT
+	reg.ReassertUnready("sb")
+	if n := len(rec.snapshot()); n != 4 || last() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+		t.Errorf("after the timeout: %v, want NEEDS_INPUT again", rec.snapshot())
+	}
+	reg.MarkReady("sb")
+	reg.ReassertUnready("sb")
+	reg.ReassertUnready("sb-none")
+	if n := len(rec.snapshot()); n != 4 {
+		t.Errorf("a ready agent or no session got a write: %v", rec.snapshot())
+	}
+}

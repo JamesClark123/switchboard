@@ -36,10 +36,11 @@ type Waiter interface {
 // timer that parks it if it never does (nil for an agent kind that reports no
 // readiness, which counts as ready from the start).
 type sessionEntry struct {
-	s       Session
-	closing bool
-	ready   bool
-	startT  *time.Timer
+	s        Session
+	closing  bool
+	ready    bool
+	startT   *time.Timer
+	timedOut bool // the start timer parked it NEEDS_INPUT
 }
 
 // Notifier emits a developer notification (the agent Hub).
@@ -232,6 +233,27 @@ func (r *Registry) MarkReady(sandboxID string) {
 	}
 }
 
+// ReassertUnready rewrites the record of a live agent that has not reported
+// ready back to STARTING, or NEEDS_INPUT once its start timed out. Any hook can
+// write IDLE over those (a lost SessionStart, then a developer typing into the
+// agent and its Stop), which would leave the worker reading free while every
+// delivery is refused and mark-free has nothing to vouch for. A ready agent, or
+// no session, is left alone.
+func (r *Registry) ReassertUnready(sandboxID string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.mu.Lock()
+	e, ok := r.sessions[sandboxID]
+	st := pb.AgentStatus_AGENT_STATUS_STARTING
+	if ok && e.timedOut {
+		st = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	}
+	r.mu.Unlock()
+	if ok {
+		r.writeUnreadyLocked(sandboxID, e, st)
+	}
+}
+
 // startTimedOut parks an agent that never reported ready: NEEDS_INPUT plus a
 // notification, so the developer opens its terminal. A run queued for it stays
 // queued (the worker is not IDLE); the agent's first hook clears this.
@@ -245,6 +267,7 @@ func (r *Registry) startTimedOut(sandboxID string, e *sessionEntry, limit time.D
 	}
 	r.log("[agent] %s: agent did not report ready within %s; parking it NEEDS_INPUT", sandboxID, limit)
 	r.mu.Lock()
+	e.timedOut = true
 	notify, now := r.notify, r.now()
 	r.mu.Unlock()
 	if notify != nil {
