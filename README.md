@@ -225,7 +225,7 @@ The sandbox list is the home screen. Keys:
 | `M` | Show the MCP servers attached to the selected sandbox and attach another from its daemon's registered list — live, no restart |
 | `l` | Show the `sbx` output of the selected sandbox's last launch / kit attach / refresh / source add — kit install-command output lives here; a failed launch's log stays reachable |
 | `u` | Update the client and all connected hosts (shown when a newer release exists) |
-| `shift+→` / `shift+←` | Cycle the three top-level screens — **Sandboxes**, **Daemons**, **Orchestrators** — named in the header strip (see below) |
+| `shift+→` / `shift+←` | Cycle the three top-level screens — **Sandboxes**, **Daemons**, **Jobs** (wrapping) — named in the header strip (see below) |
 | `o` | Attach the selected sandbox to an orchestrator as a worker, or detach it (offers to add the sandbox's host to the orchestrator first) |
 | `O` | Show/hide the **Orchestrator Sandboxes** tab: every worker and reasoning sandbox, which the everyday tabs hide unless they need you |
 | `m` | Mark a worker free: close the run it is holding for review (optionally as failed) so the orchestrator can use it again |
@@ -272,8 +272,8 @@ reopening shows it still in progress. Register and authorize servers on the daem
 with its connection state, `sxbd`/`sbx` versions, and whether it meets the runtime baseline
 (`sbx` ≥ 0.36) and can manage its MCP gateway. `c` connects a disconnected daemon (the same
 masked SSH-password prompt as the hosts screen; blank = key/agent auth), `x` disconnects one,
-`enter` opens its management options — **MCP gateway** and **Secrets**. `shift+←` returns to the
-sandbox list with your selection intact.
+`enter` opens its management options — **MCP gateway**, **Secrets** and **Orchestrators** (see
+[Orchestrators](#orchestrators)). `shift+←` returns to the sandbox list with your selection intact.
 
 **Secrets** is the second option: the host runtime's secret store (`sbx secret`) for that daemon.
 It lists every stored secret with its scope (global or one sandbox), type and the runtime's masked
@@ -362,21 +362,42 @@ both versions named, while kit-less sandboxes keep working.
 
 ### Orchestrators
 
-`shift+→` twice (or `shift+←` from the sandbox list) opens the **Orchestrators** screen. An
-orchestrator is a named, persistent prompt queue that lives in a daemon (`n` creates one on the
-chosen host, `R` renames it — its identity never changes — `d` removes it, `enter` opens it). It
-attaches sandboxes anywhere as **workers**, composes prompts from **actions**, queues a **run**
-whenever an **event** calls an action, and delivers runs in order of receipt to free workers.
-The detail has six views (`←`/`→`):
+An orchestrator is a named, persistent prompt queue that lives in a daemon. It attaches sandboxes
+anywhere as **workers**, composes prompts from **actions**, queues a **run** whenever an **event**
+calls an action, and delivers runs in order of receipt to free workers. Setting one up lives with
+the daemon that hosts it; the day-to-day work of every orchestrator lives on the **Jobs** screen.
+
+**Daemons › Orchestrators.** On the daemon screen, `enter` on a connected daemon and choose
+**Orchestrators**: that daemon's orchestrators with their reachability, worker count and queue
+depths. `n` creates one on this daemon, `R` renames it (its identity never changes), `d` removes it
+(confirmed), `enter` opens it, `esc` returns to the daemon screen. Everything here goes to that
+daemon only: if it disconnects the section closes, and nothing is ever sent to another daemon instead. An opened orchestrator has three
+views (`←`/`→`; `esc` back to the list):
 
 | View | What it shows and does |
 |------|------------------------|
 | Workers | The roster with state and availability (free / busy / needs input / awaiting review); `x` detach, `m` mark free. The reasoning sandbox is listed last, marked `reasoning`. |
-| Actions | `a` add, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and an optional worker tag. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
-| Queue | Queued (in receipt order with positions), in progress and history; `enter` shows a run's composed prompt, `x` cancels a queued run, `m` marks a reviewed run free. |
-| Events | Timed events: `a` add, `e` edit, `d` delete, `space` on/off, `n` **enqueue now** (queues one run of the event immediately without touching its schedule; refused while a run of it is already queued or in flight when dedupe is on; with dedupe off it asks first only if a run of the event is already open; a repeat press within half a second of a successful enqueue is ignored, with a hint). An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
 | Reasoning | The orchestrator's **reasoning sandbox** `reasoning-<id>`, created with the orchestrator on its own host from an empty workspace unless you give it a setup: `e` picks folders (and kits, `K`) through the launch browser and rebuilds it, `b` rebuilds it from the saved setup, `l` shows the `sbx` output. `reason` actions run there and their summary is the answer. It is not detachable; a rebuild is refused while a run is on it; if it is destroyed outside switchboard the view says so and `reason` runs fail until you rebuild. |
 | Hosts | The machines the orchestrator can place workers on, with reachability. `a` copies an entry from your saved SSH hosts, `d` removes one (refused while workers live there). |
+
+**Jobs.** `shift+→` twice (or `shift+←` from the sandbox list) opens the **Jobs** screen: every
+orchestrator on every connected daemon, every row labelled `orchestrator @ host`. A daemon whose
+connection failed or was lost (its event stream ended, or a call found it unavailable), or whose
+orchestrators could not be read, is named above the content with its error (`could not read: …`);
+its rows stay, dimmed, and refuse operations (`<host> is not connected` / `<host>: connection
+lost`) until it answers again, while the others still show. A daemon still connecting is listed
+as `connecting: …`, and one you disconnected yourself just drops out. Each daemon's rows appear as soon as it answers. The screen follows changes live, one
+orchestrator at a time and only while it is on screen (it catches up when shown again); the
+highlight stays on its item when rows re-sort. Text written by agents (reports, reasons, prompts) is
+shown without terminal control sequences. Four tabs, switched with `←`/`→` (the last one is
+remembered); `r` reloads, `esc` goes back to Sandboxes and `q` quits:
+
+| Tab | What it shows and does |
+|-----|------------------------|
+| Overview | **Upcoming** (each enabled timed event once, soonest next firing first), **Queued** (in receipt order), **In progress** and **History** (the 15 most recently finished runs across all orchestrators). On a run: `enter` shows its composed prompt, `x` cancels a queued run, `m` marks a reviewed run's worker free, `o` **Open results** on a finished run — the agent's full report (or your note, or the reason it failed or was cancelled) in a scrollable overlay (`↑`/`↓`/`pgup`/`pgdn`, `esc` closes). On an Upcoming event: `n` **enqueue now** (below). |
+| Actions | Every orchestrator's actions under a heading per orchestrator; an orchestrator with none shows a line you can add from. `a` adds to the orchestrator whose group the cursor is in, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and an optional worker tag. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
+| Events | Timed events, grouped the same way: `a` add, `e` edit, `d` delete, `space` on/off, `n` **enqueue now** (queues one run of the event immediately without touching its schedule; refused while a run of it is already queued or in flight when dedupe is on; with dedupe off it asks first only if a run of the event is already open; a repeat press within half a second of a successful enqueue is ignored, with a hint). An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
+| Queue | Every run the daemons keep (queued, in progress, and the history — the 200 most recent finished runs per orchestrator), with no cap of its own, in pages of 25: `]`/`pgdn` next page, `[`/`pgup` previous; `f` filters to one orchestrator (cycling through them), `F` shows all again. Runs take the Overview's `enter`/`x`/`m`/`o`. |
 
 **Attaching workers.** `o` on a sandbox attaches it to an orchestrator (`o` again detaches; refused
 while a run is in flight on it). The orchestrator's **daemon** dials the worker's machine itself —

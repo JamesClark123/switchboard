@@ -97,7 +97,7 @@ func (m Model) updateReasoningViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		req := reasoningRebuildMsg{id: d.id, host: d.host, name: d.name}
 		body := []string{"The current reasoning sandbox is destroyed and a new one is created from the saved setup:"}
 		for _, l := range reasoningSetupLines(d.detail.GetSummary().GetOrchestrator().GetReasoningSetup()) {
-			body = append(body, "  "+l)
+			body = append(body, "  "+sanitizeLine(l, 0))
 		}
 		body = append(body, "Its conversation and workspace are lost.")
 		return m.enterConfirm(confirmState{
@@ -177,7 +177,12 @@ func (m Model) startReasoningRebuild(msg reasoningRebuildMsg) (tea.Model, tea.Cm
 		m.orchDetail.status = "a rebuild is already in progress"
 		return m, nil
 	}
-	od := m.daemonForHost(msg.host)
+	od, err := m.connectedDaemon(msg.host)
+	if err != nil {
+		m.orchDetail.status = err.Error()
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	key := reasoningLogKey(msg.id)
 	ch := make(chan tea.Msg, 32)
 	m.rebuilds[msg.id] = &reasoningRebuild{id: msg.id, name: msg.name, latest: "starting…", ch: ch}
@@ -210,11 +215,19 @@ func (m Model) handleReasoningProgress(msg reasoningProgressMsg) (tea.Model, tea
 		if total > 0 {
 			pct = int(100 * msg.update.Copy.GetBytesCopied() / total)
 		}
-		rb.latest = fmt.Sprintf("copying %d%% %s", pct, filepath.Base(msg.update.Copy.GetCurrentPath()))
+		rb.latest = fmt.Sprintf("copying %d%% %s", pct, sanitizeLine(filepath.Base(msg.update.Copy.GetCurrentPath()), 0))
 		m.setOpLatest(key, rb.latest)
 	case msg.update.LogLine != "":
-		rb.latest = msg.update.LogLine
-		m.appendOpLog(key, msg.update.LogLine)
+		// The rebuild's output is the sandbox runtime's, drawn as text: colour is
+		// dropped and each \r progress redraw becomes a line of its own (FR-024,
+		// FR-029).
+		for _, line := range strings.Split(sanitizeTerminalText(msg.update.LogLine), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			rb.latest = line
+			m.appendOpLog(key, line)
+		}
 	}
 	if m.screen == screenOrchDetail && m.orchDetail.id == msg.id {
 		m.orchDetail.status = "rebuilding… " + rb.latest
@@ -251,7 +264,7 @@ func (m Model) renderReasoningView() []string {
 	w := d.reasoningWorker()
 	name := "reasoning-" + short(d.id)
 	if w != nil && w.GetDisplayName() != "" {
-		name = w.GetDisplayName()
+		name = sanitizeLine(w.GetDisplayName(), 32)
 	}
 	var lines []string
 	switch rb, busy := m.rebuilds[d.id]; {
@@ -260,17 +273,17 @@ func (m Model) renderReasoningView() []string {
 	case w != nil && sum.GetReasoningReady():
 		line := name + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
 		if w.GetRunAction() != "" {
-			line += dimStyle.Render("  (" + w.GetRunAction() + " · run " + w.GetRunId() + ")")
+			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + " · run " + sanitizeLine(w.GetRunId(), 0) + ")")
 		}
 		lines = append(lines, line)
 	case sum.GetReasoningError() != "":
-		lines = append(lines, name+"  "+statusErrStyle.Render("error: "+sum.GetReasoningError()), dimStyle.Render("b rebuilds it"))
+		lines = append(lines, name+"  "+statusErrStyle.Render("error: "+sanitizeLine(sum.GetReasoningError(), m.bodyWidth()-20)), dimStyle.Render("b rebuilds it"))
 	default:
 		lines = append(lines, name+"  "+agentWorkStyle.Render("coming up…"))
 	}
 	lines = append(lines, "", sectionStyle.Render("Setup"))
 	for _, l := range reasoningSetupLines(sum.GetOrchestrator().GetReasoningSetup()) {
-		lines = append(lines, "  "+l)
+		lines = append(lines, m.fitLine("  "+sanitizeLine(l, 0)))
 	}
 	lines = append(lines, "", dimStyle.Render("e edit the setup (folders, K kits; enter rebuilds) · b rebuild with this setup · l output"))
 	return lines

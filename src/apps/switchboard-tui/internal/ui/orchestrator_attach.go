@@ -116,7 +116,11 @@ func (m Model) updateAttachPickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) attachTo(row orchRow, sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	o := row.summary.GetOrchestrator()
 	sbHost := m.daemonHostID(host)
-	od := m.daemonForHost(row.host)
+	od, err := m.connectedDaemon(row.host)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	attachCmd := m.attachWorkerCmd(od, o.GetId(), o.GetName(), sbHost, sb)
 	if sbHost == o.GetHostId() {
 		return m.startBusy(sb.GetId(), "attaching"), attachCmd
@@ -140,7 +144,7 @@ func (m Model) attachTo(row orchRow, sb *pb.Sandbox, host string) (tea.Model, te
 	id, name := o.GetId(), o.GetName()
 	return m.enterConfirm(confirmState{
 		title:     fmt.Sprintf("Add host %s to %s?", known.DisplayName, name),
-		body:      []string{fmt.Sprintf("%s has no entry for %s.", name, known.DisplayName), "The orchestrator's machine will dial it over SSH (" + known.SSHTarget + ")", "with keys or an agent, then attach the sandbox."},
+		body:      []string{sanitizeLine(fmt.Sprintf("%s has no entry for %s.", name, known.DisplayName), 0), "The orchestrator's machine will dial it over SSH (" + sanitizeLine(known.SSHTarget, 0) + ")", "with keys or an agent, then attach the sandbox."},
 		warning:   "The orchestrator's machine must be able to ssh there non-interactively.",
 		sandboxID: sb.GetId(),
 		verb:      "attaching",
@@ -197,7 +201,7 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 			return statusMsg(fmt.Sprintf("detached %s from %s", sb.GetDisplayName(), c.GetName()))
 		}
 	} else {
-		body = append(body, fmt.Sprintf("%s's machine is not connected: the sandbox's own daemon clears it;", c.GetName()), "the orchestrator notices when it next reaches this machine.")
+		body = append(body, sanitizeLine(fmt.Sprintf("%s's machine is not connected: the sandbox's own daemon clears it;", c.GetName()), 0), "the orchestrator notices when it next reaches this machine.")
 		sd := m.daemonForHost(host)
 		cmd = func() tea.Msg {
 			ctx, cancel := ctxTimeout()
@@ -220,14 +224,14 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 
 func (m Model) attachModal() string {
 	a := m.attach
-	rows := []string{sectionStyle.Render("Attach " + a.sandbox.GetDisplayName() + " to an orchestrator"), ""}
+	rows := []string{sectionStyle.Render("Attach " + sanitizeLine(a.sandbox.GetDisplayName(), 32) + " to an orchestrator"), ""}
 	if len(a.choices) == 0 {
-		rows = append(rows, dimStyle.Render("(no reachable orchestrator)"), dimStyle.Render("create one on the Orchestrators screen"))
+		rows = append(rows, dimStyle.Render("(no reachable orchestrator)"), dimStyle.Render("create one under Daemons › <daemon> › Orchestrators"))
 	}
 	sbHost := m.daemonHostID(a.host)
 	for i, r := range a.choices {
 		o := r.summary.GetOrchestrator()
-		label := o.GetName() + dimStyle.Render("  @"+r.hostName)
+		label := fitCol(o.GetName(), 24) + dimStyle.Render("  @"+sanitizeLine(r.hostName, 24))
 		if o.GetHostId() != sbHost && !orchHasHost(o, sbHost) {
 			label += dimStyle.Render("  (will add this host)")
 		}
@@ -265,7 +269,11 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			d.status = "reasoning sandbox — not detachable"
 			return m, nil
 		}
-		od := m.daemonForHost(d.host)
+		od, err := m.connectedDaemon(d.host)
+		if err != nil {
+			d.status = err.Error()
+			return m, nil
+		}
 		id, name, sbID, sbName := d.id, d.name, w.GetSandboxId(), w.GetDisplayName()
 		return m.enterConfirm(confirmState{
 			title:    fmt.Sprintf("Detach %s from %s?", sbName, name),
@@ -300,9 +308,11 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		if name == "" {
 			name = short(w.GetSandboxId())
 		}
-		line := cursor(i) + name + dimStyle.Render("  @"+w.GetHostId()) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
+		// Remote text is sanitised and fitted like the Jobs rows (FR-029; review
+		// run-242 finding 4).
+		line := cursor(i) + fitCol(name, 24) + dimStyle.Render("  @"+fitCol(w.GetHostId(), 16)) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
 		if w.GetRunAction() != "" {
-			line += dimStyle.Render("  (" + w.GetRunAction() + ")")
+			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + ")")
 		}
 		if w.GetReasoning() {
 			line += "  " + tagBadgeStyle.Render("reasoning")
@@ -310,7 +320,7 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		if !w.GetHostReachable() {
 			line += "  " + statusErrStyle.Render("host unreachable")
 		}
-		lines = append(lines, line)
+		lines = append(lines, m.fitLine(line))
 	}
 	return lines
 }

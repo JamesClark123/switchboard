@@ -23,8 +23,7 @@ func TestLaunchWizardOrchestratorPick(t *testing.T) {
 		{Orchestrator: &pb.Orchestrator{Id: "o-far", Name: "far-bot", HostId: "elsewhere"}},
 	}}
 	m := sized(New(d, root))
-	m = openOrchScreen(m)
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = feed(m, m.orchLoadCmd()) // the TUI knows the orchestrator rows
 
 	m, _ = update(m, press("n"))
 	m, _ = update(m, press("O"))

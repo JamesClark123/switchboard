@@ -3,86 +3,77 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
 // The orchestrator detail (feature 009, research R13) is one orchestrator's
-// management surface: six views switched with ←/→ — Workers, Actions, Queue,
-// Events, Reasoning, Hosts — each filled by its user story. The Hosts view
-// manages the machines the orchestrator dials (FR-106) with copy-from-my-hosts.
+// administration surface, opened from Daemons › <daemon> › Orchestrators
+// (feature 010, FR-024): three views switched with ←/→ — Workers, Reasoning,
+// Hosts. Its former Actions, Queue and Events views live on the Jobs screen,
+// across every orchestrator. The Hosts view manages the machines the
+// orchestrator dials (FR-106) with copy-from-my-hosts.
 
-// orchView is one of the six views.
+// orchView is one of the three views.
 type orchView int
 
 const (
 	viewWorkers orchView = iota
-	viewActions
-	viewQueue
-	viewEvents
 	viewReasoning
 	viewHosts
 	orchViewCount
 )
 
-var orchViewNames = [orchViewCount]string{"Workers", "Actions", "Queue", "Events", "Reasoning", "Hosts"}
+var orchViewNames = [orchViewCount]string{"Workers", "Reasoning", "Hosts"}
 
 // orchDetailState backs the detail screen.
 type orchDetailState struct {
+	// orchOpState carries the detail's open form (mark free), status line and
+	// prompt overlay (run_actions.go).
+	orchOpState
 	host, hostName string
 	id, name       string
 	detail         *pb.OrchestratorDetail
-	runs           *pb.ListRunsResponse
 	view           orchView
 	cursors        [orchViewCount]int
 	loading        bool
-	status         string
-	firing         bool      // an Enqueue now is in flight (refuses key-repeat / double presses)
-	fireToken      uint64    // identifies that in-flight fire; its reply echoes it (0 = none)
-	lastFireAt     time.Time // when the last Enqueue now started, for the repeat debounce
-	lastFireEv     string
 	// Hosts view: the copy-from-my-hosts picker.
 	hostPick    bool
 	hostChoices []store.KnownHost
 	hostCursor  int
-	// a form opened by one of the views (actions, events, mark free …)
-	form     *huh.Form
-	formKind string
-	formVals any
-	// prompt is the run whose composed prompt the read-only overlay shows.
-	prompt *pb.Run
 }
 
-// orchDetailMsg carries a loaded detail (+ runs) or the error.
+// orchDetailMsg carries a loaded detail or the error.
 type orchDetailMsg struct {
 	id     string
 	detail *pb.OrchestratorDetail
-	runs   *pb.ListRunsResponse
 	err    error
 }
 
-// enterOrchDetail opens a row's detail, keeping the list cursor for the return.
+// enterOrchDetail opens a row's detail; esc returns to that daemon's
+// Orchestrators list.
 func (m Model) enterOrchDetail(row orchRow) (tea.Model, tea.Cmd) {
+	if _, err := m.connectedDaemon(row.host); err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
 	o := row.summary.GetOrchestrator()
 	m.orchDetail = orchDetailState{host: row.host, hostName: row.hostName, id: o.GetId(), name: o.GetName(), loading: true, view: m.orchDetail.view}
-	if tok := m.orchFires[o.GetId()]; tok != 0 {
-		// An Enqueue now for this orchestrator is still in flight from before the detail
-		// was left: keep refusing a second one, and let its reply count as current.
-		m.orchDetail.firing, m.orchDetail.fireToken = true, tok
-	}
+	m.daemonOrchs.host, m.daemonOrchs.hostName = row.host, row.hostName
 	m.screen = screenOrchDetail
 	return m, m.orchDetailLoadCmd()
 }
 
-// orchDetailLoadCmd fetches the detail and the run groups.
+// orchDetailLoadCmd fetches the detail.
 func (m Model) orchDetailLoadCmd() tea.Cmd {
-	d := m.daemonForHost(m.orchDetail.host)
 	id := m.orchDetail.id
+	d, err := m.connectedDaemon(m.orchDetail.host)
+	if err != nil {
+		return func() tea.Msg { return orchDetailMsg{id: id, err: err} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
@@ -90,11 +81,7 @@ func (m Model) orchDetailLoadCmd() tea.Cmd {
 		if err != nil {
 			return orchDetailMsg{id: id, err: err}
 		}
-		runs, err := d.ListRuns(ctx, id)
-		if err != nil {
-			runs = &pb.ListRunsResponse{}
-		}
-		return orchDetailMsg{id: id, detail: det, runs: runs}
+		return orchDetailMsg{id: id, detail: det}
 	}
 }
 
@@ -108,7 +95,6 @@ func (m Model) applyOrchDetail(msg orchDetailMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.orchDetail.detail = msg.detail
-	m.orchDetail.runs = msg.runs
 	m.orchDetail.name = msg.detail.GetSummary().GetOrchestrator().GetName()
 	m.clampOrchCursors()
 	return m, nil
@@ -119,18 +105,18 @@ func (m Model) orchRec() *pb.Orchestrator {
 	return m.orchDetail.detail.GetSummary().GetOrchestrator()
 }
 
+// detailTarget is the open orchestrator as an operation target.
+func (m Model) detailTarget() orchTarget {
+	d := m.orchDetail
+	return orchTarget{host: d.host, hostName: d.hostName, id: d.id, name: d.name, rec: m.orchRec()}
+}
+
 // viewRowCount is how many rows the current view has (for cursor clamping).
 func (m Model) viewRowCount(v orchView) int {
 	d := m.orchDetail
 	switch v {
 	case viewWorkers:
 		return len(d.detail.GetWorkers())
-	case viewActions:
-		return len(m.orchRec().GetActions())
-	case viewQueue:
-		return len(d.runs.GetQueued()) + len(d.runs.GetInFlight()) + len(d.runs.GetHistory())
-	case viewEvents:
-		return len(m.orchRec().GetTimedEvents())
 	case viewHosts:
 		return len(d.detail.GetHosts())
 	}
@@ -148,8 +134,6 @@ func (m *Model) clampOrchCursors() {
 func (m Model) orchDetailHelp() helpBindings {
 	d := m.orchDetail
 	switch {
-	case d.prompt != nil:
-		return helpBindings{hkey("esc", "close")}
 	case d.form != nil:
 		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save"), hkey("esc", "cancel")}
 	case d.hostPick:
@@ -159,33 +143,20 @@ func (m Model) orchDetailHelp() helpBindings {
 	switch d.view {
 	case viewWorkers:
 		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"))
-	case viewActions:
-		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("enter", "call"))
-	case viewQueue:
-		hb = append(hb, hkey("enter", "prompt"), hkey("x", "cancel"), hkey("m", "mark free"))
-	case viewEvents:
-		hb = append(hb, hkey("a", "add"), hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"), hkey("n", "enqueue now"))
 	case viewReasoning:
 		hb = append(hb, hkey("e", "edit setup"), hkey("b", "rebuild"), hkey("l", "output"))
 	case viewHosts:
 		hb = append(hb, hkey("a", "add from my hosts"), hkey("d", "remove"))
 	}
-	return append(hb, hkey("r", "reload"), hkey("esc", "back"))
+	return append(hb, hkey("r", "reload"), hkey("esc", "orchestrators"))
 }
 
 func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
-	if d.prompt != nil {
-		switch msg.String() {
-		case "esc", "q", "enter":
-			d.prompt = nil
-		}
-		return m, nil
-	}
 	if d.form != nil {
 		switch msg.String() {
 		case "esc":
-			d.form, d.formVals, d.formKind = nil, nil, ""
+			m.closeOpForm(surfaceDetail)
 			d.status = ""
 			if m.markFreeFromList {
 				m.markFreeFromList = false
@@ -193,18 +164,17 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+s":
-			return m.applyOrchDetailForm()
+			return m.submitOrchDetailForm()
 		}
-		return m.advanceOrchDetailForm(msg)
+		return m.advanceOrchOpForm(surfaceDetail, msg)
 	}
 	if d.hostPick {
 		return m.updateHostPickKey(msg)
 	}
 	switch msg.String() {
 	case "esc":
-		m.screen = screenOrchestrators
 		d.status = ""
-		return m, nil
+		return m.backToDaemonOrchs()
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -233,12 +203,6 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateHostsViewKey(msg)
 	case viewWorkers:
 		return m.updateWorkersViewKey(msg)
-	case viewActions:
-		return m.updateActionsViewKey(msg)
-	case viewQueue:
-		return m.updateQueueViewKey(msg)
-	case viewEvents:
-		return m.updateEventsViewKey(msg)
 	case viewReasoning:
 		return m.updateReasoningViewKey(msg)
 	}
@@ -339,7 +303,10 @@ func knownHostEntry(h store.KnownHost) *pb.OrchestratorHost {
 // setOrchHostsCmd sends the edited host list; the daemon's refusal text is
 // shown verbatim.
 func (m Model) setOrchHostsCmd(hosts []*pb.OrchestratorHost, status string) tea.Cmd {
-	d := m.daemonForHost(m.orchDetail.host)
+	d, err := m.connectedDaemon(m.orchDetail.host)
+	if err != nil {
+		return errCmd(surfaceDetail, err)
+	}
 	id := m.orchDetail.id
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -358,25 +325,15 @@ func hostLabel(h *pb.OrchestratorHost) string {
 	return h.GetHostId()
 }
 
-// --- forms shared by the views (filled per story in orchestrator_forms.go) ---
+// --- the detail's form (mark free; orchestrator_forms.go submits it) ---
 
-func (m Model) advanceOrchDetailForm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	d := &m.orchDetail
-	if d.form == nil {
-		return m, nil
+// submitOrchDetailForm sends the detail's open form; the Reasoning view opens no
+// huh form of its own, so anything else just closes.
+func (m Model) submitOrchDetailForm() (tea.Model, tea.Cmd) {
+	if _, ok := m.orchDetail.formVals.(*markFreeVals); ok {
+		return m.submitOrchOpForm(surfaceDetail)
 	}
-	f, cmd := d.form.Update(msg)
-	if ff, ok := f.(*huh.Form); ok {
-		d.form = ff
-	}
-	switch d.form.State {
-	case huh.StateCompleted:
-		return m.applyOrchDetailForm()
-	case huh.StateAborted:
-		d.form, d.formVals, d.formKind = nil, nil, ""
-		return m, nil
-	}
-	return m, cmd
+	return m.reasoningFormSubmit()
 }
 
 // --- rendering ---
@@ -395,23 +352,15 @@ func (m Model) orchViewTabs() string {
 
 func (m Model) viewOrchDetail() string {
 	d := m.orchDetail
-	if d.prompt != nil {
-		r := d.prompt
-		return lipgloss.JoinVertical(lipgloss.Left,
-			sectionStyle.Render("Run "+r.GetId())+dimStyle.Render("  "+r.GetAction()+" · "+strings.ToLower(strings.TrimPrefix(r.GetState().String(), "RUN_STATE_"))),
-			"",
-			panelStyle.Width(m.bodyWidth()-2).Render(r.GetPrompt()),
-		)
-	}
 	if d.form != nil {
-		parts := []string{sectionStyle.Render(d.name + " › " + d.formKind), "", d.form.View()}
+		parts := []string{sectionStyle.Render(sanitizeLine(d.name+" › "+d.formKind, 0)), "", d.form.View()}
 		if d.status != "" {
 			// A daemon refusal stays visible under the open form (verbatim).
-			parts = append(parts, "", statusErrStyle.Render(d.status))
+			parts = append(parts, "", statusErrStyle.Render(sanitizeTerminalText(d.status)))
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
-	header := sectionStyle.Render("Orchestrator "+d.name) + dimStyle.Render("  @"+d.hostName)
+	header := sectionStyle.Render("Orchestrator "+sanitizeLine(d.name, 0)) + dimStyle.Render("  @"+sanitizeLine(d.hostName, 0))
 	lines := []string{header, m.orchViewTabs(), ""}
 	if d.hostPick {
 		lines = append(lines, sectionStyle.Render("Add a host from my hosts"), "")
@@ -420,7 +369,7 @@ func (m Model) viewOrchDetail() string {
 			if i == d.hostCursor {
 				cursor = cursorBarStyle.Render("> ")
 			}
-			lines = append(lines, cursor+h.DisplayName+dimStyle.Render("  "+h.Summary()))
+			lines = append(lines, m.fitLine(cursor+fitCol(h.DisplayName, 24)+dimStyle.Render("  "+sanitizeLine(h.Summary(), 0))))
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
@@ -433,7 +382,7 @@ func (m Model) viewOrchDetail() string {
 		lines = append(lines, m.renderOrchView()...)
 	}
 	if d.status != "" {
-		lines = append(lines, "", statusErrStyle.Render(d.status))
+		lines = append(lines, "", statusErrStyle.Render(sanitizeTerminalText(d.status)))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -451,7 +400,7 @@ func (m Model) renderOrchView() []string {
 	case viewHosts:
 		hosts := d.detail.GetHosts()
 		if len(hosts) == 0 {
-			return []string{dimStyle.Render("(no hosts — workers can only live on " + d.hostName + " until you add one)")}
+			return []string{dimStyle.Render("(no hosts — workers can only live on " + sanitizeLine(d.hostName, 0) + " until you add one)")}
 		}
 		var lines []string
 		for i, h := range hosts {
@@ -459,27 +408,21 @@ func (m Model) renderOrchView() []string {
 			if !h.GetReachable() {
 				reach = statusErrStyle.Render("unreachable")
 				if h.GetError() != "" {
-					reach += dimStyle.Render(": " + h.GetError())
+					reach += dimStyle.Render(": " + sanitizeLine(h.GetError(), 80))
 				}
 			}
-			lines = append(lines, cursor(i)+hostLabel(h)+dimStyle.Render("  ·  "+h.GetSshTarget())+"  ·  "+reach)
+			lines = append(lines, m.fitLine(cursor(i)+fitCol(hostLabel(h), 24)+dimStyle.Render("  ·  "+sanitizeLine(h.GetSshTarget(), 40))+"  ·  "+reach))
 		}
 		return lines
 	case viewWorkers:
 		return m.renderWorkersView(cursor)
-	case viewActions:
-		return m.renderActionsView(cursor)
-	case viewQueue:
-		return m.renderQueueView(cursor)
-	case viewEvents:
-		return m.renderEventsView(cursor)
 	case viewReasoning:
 		return m.renderReasoningView()
 	}
 	return nil
 }
 
-// orchEmpty is the empty-state line of a view that a later story fills.
+// orchEmpty is the empty-state line of a view.
 func orchEmpty(what string) []string {
 	return []string{dimStyle.Render(fmt.Sprintf("(no %s)", what))}
 }

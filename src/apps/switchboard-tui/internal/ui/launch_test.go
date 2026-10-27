@@ -111,6 +111,7 @@ type fakeDaemon struct {
 	orchestrators  []*pb.OrchestratorSummary
 	orchDetail     *pb.OrchestratorDetail
 	orchRuns       *pb.ListRunsResponse
+	orchRunsByID   map[string]*pb.ListRunsResponse // per orchestrator; falls back to orchRuns
 	orchRun        *pb.Run
 	orchBundle     *pb.WorkerBundle
 	orchErr        error

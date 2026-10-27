@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -630,6 +631,9 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keyIs(msg, m.keys.ScreenNext):
 		return m.enterDaemons()
+	case keyIs(msg, m.keys.ScreenPrev):
+		// The top-level cycle wraps: shift+← from the list reaches Jobs (FR-001).
+		return m.enterJobs(screenList)
 	case keyIs(msg, m.keys.OrchestratedTab):
 		return m.toggleOrchTab()
 	case keyIs(msg, m.keys.Settings):
@@ -798,9 +802,11 @@ func (m Model) viewList() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+// pad right-pads s to n display columns (it never cuts; see fitCol).
 func pad(s string, n int) string {
-	if len(s) >= n {
+	w := ansi.StringWidth(s)
+	if w >= n {
 		return s
 	}
-	return s + strings.Repeat(" ", n-len(s))
+	return s + strings.Repeat(" ", n-w)
 }

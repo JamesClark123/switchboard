@@ -28,8 +28,9 @@ type keyMap struct {
 	// McpServers opens the per-sandbox MCP overlay (feature 008, FR-102).
 	McpServers key.Binding
 	// ScreenNext/ScreenPrev move between the three top-level screens — the
-	// sandbox list, the daemon screen (feature 008, FR-068) and the
-	// Orchestrators screen (feature 009, FR-142). Shift+arrows so plain arrows
+	// sandbox list, the daemon screen (feature 008, FR-068) and the Jobs screen
+	// (feature 010, FR-001; it replaced feature 009's Orchestrators screen), wrapping
+	// around. Shift+arrows so plain arrows
 	// keep their list meaning. The help labels are dynamic (Model.screenNextKey /
 	// screenPrevKey name the screen the key reaches).
 	ScreenNext key.Binding

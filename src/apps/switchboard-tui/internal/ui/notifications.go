@@ -111,7 +111,8 @@ func (m Model) handleEvent(hostID string, ev *pb.Event) (tea.Model, tea.Cmd) {
 		m.inboxHosts[n.GetId()] = m.subHostKey(hostID)
 		m.unread++
 		// OS desktop notification in addition to the in-TUI list (FR-026a).
-		m.notifier.Notify("Switchboard: "+notifTitle(n.GetKind()), n.GetMessage())
+		// The message can carry agent-written text (a run's reason, FR-029).
+		m.notifier.Notify("Switchboard: "+notifTitle(n.GetKind()), sanitizeLine(n.GetMessage(), 0))
 		out = m
 	case *pb.Event_SandboxChanged:
 		// A live state/agent-status change (e.g. the agent started working, needs a
@@ -236,8 +237,8 @@ func (m Model) enterNotifications() (tea.Model, tea.Cmd) {
 		items = append(items, listItem{
 			id:      n.GetSandboxId(),
 			title:   notifIcon(n.GetKind()) + " " + notifTitle(n.GetKind()) + dimStyle.Render("  "+short(n.GetSandboxId())),
-			desc:    n.GetMessage(),
-			filter:  n.GetMessage(),
+			desc:    sanitizeLine(n.GetMessage(), 0),
+			filter:  sanitizeLine(n.GetMessage(), 0),
 			payload: n,
 		})
 	}

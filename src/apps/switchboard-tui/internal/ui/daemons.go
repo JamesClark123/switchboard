@@ -34,8 +34,10 @@ type daemonsState struct {
 }
 
 // daemonOptions are the per-daemon management surfaces, in menu order. Adding one
-// here is the only navigation change a future per-daemon feature needs.
-var daemonOptions = []string{"MCP gateway", "Secrets"}
+// here is the only navigation change a future per-daemon feature needs. The
+// Orchestrators section (feature 010, FR-022) administers the orchestrators the
+// daemon hosts.
+var daemonOptions = []string{"MCP gateway", "Secrets", "Orchestrators"}
 
 // daemonRows derives the rows from the host manager (or the single local daemon
 // when there is no manager, as in tests and single-host use).
@@ -120,7 +122,7 @@ func (m Model) updateDaemonsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if keyIs(msg, m.keys.ScreenNext) {
 		m.daemons.options = false
-		return m.enterOrchestrators()
+		return m.enterJobs(screenDaemons)
 	}
 	if m.daemons.options {
 		switch msg.String() {
@@ -141,6 +143,8 @@ func (m Model) updateDaemonsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m.enterMcp(row)
 				case 1:
 					return m.enterSecrets(row)
+				case 2:
+					return m.enterDaemonOrchs(row)
 				}
 			}
 		}
