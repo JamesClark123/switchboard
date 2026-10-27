@@ -370,10 +370,10 @@ func (m Model) viewJobs() string {
 		return m.promptView(j.prompt)
 	}
 	if j.form != nil {
-		parts := []string{sectionStyle.Render(j.formTarget.label() + " › " + j.formKind), "", j.form.View()}
+		parts := []string{sectionStyle.Render(sanitizeLine(j.formTarget.label()+" › "+j.formKind, 0)), "", j.form.View()}
 		if j.status != "" {
 			// A daemon refusal stays visible under the open form (verbatim).
-			parts = append(parts, "", statusErrStyle.Render(j.status))
+			parts = append(parts, "", statusErrStyle.Render(sanitizeTerminalText(j.status)))
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
@@ -411,7 +411,7 @@ func (m Model) viewJobs() string {
 	}
 	var bottom []string
 	if j.status != "" {
-		bottom = []string{"", statusErrStyle.Render(j.status)}
+		bottom = []string{"", statusErrStyle.Render(sanitizeTerminalText(j.status))}
 	}
 	avail := m.bodyHeight() - len(top) - len(bottom) - (m.helpLineCount(m.jobsHelp()) - 1)
 	lines := append(top, windowLines(body, focus, avail)...)

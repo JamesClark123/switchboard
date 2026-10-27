@@ -21,18 +21,12 @@ import (
 // columns while a terminal draws up to eight, so wrapped text would overflow.
 const tabWidth = 4
 
-// invisibleFormat reports the Unicode bidirectional and invisible formatting
-// characters that can reorder, hide or displace text: ALM, ZWSP..RLM, LRE..RLO,
-// WJ..invisible plus, LRI..PDI and the BOM.
+// invisibleFormat reports the characters that can reorder, hide or displace
+// text: every Unicode format character (Cf: the bidi controls, zero-width
+// characters, the BOM, tag characters and the rest) and the line and paragraph
+// separators, which some terminals break lines on.
 func invisibleFormat(r rune) bool {
-	switch {
-	case r == 0x061C, r == 0xFEFF:
-		return true
-	case r >= 0x200B && r <= 0x200F, r >= 0x202A && r <= 0x202E,
-		r >= 0x2060 && r <= 0x2064, r >= 0x2066 && r <= 0x2069:
-		return true
-	}
-	return false
+	return r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r)
 }
 
 // sanitizeTerminalText makes untrusted text safe to draw in full: escape

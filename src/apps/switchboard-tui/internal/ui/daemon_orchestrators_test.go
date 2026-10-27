@@ -336,3 +336,52 @@ func TestDaemonOrchestratorsSingleHost(t *testing.T) {
 		t.Error("refreshing state")
 	}
 }
+
+// hostileName carries an OSC 52 clipboard write, a screen clear, a carriage
+// return and a bidi override.
+const hostileName = "evil\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED‮txt"
+
+func assertNoHostile(t *testing.T, where, v string) {
+	t.Helper()
+	for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "‮", "\x07"} {
+		if strings.Contains(v, bad) {
+			t.Errorf("%s shows %q", where, bad)
+		}
+	}
+}
+
+// Daemons › Orchestrators rows, the detail header and the rename and remove
+// dialogs show orchestrator names, host names and unreachable reasons only
+// sanitised (FR-029; review run-224 item 9).
+func TestDaemonOrchsRowsAreSanitised(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", hostileName)}}
+	m := openDaemonOrchs(t, sized(New(d, "/work")), "")
+	assertNoHostile(t, "the row", m.View())
+	m.orch.rows[0].reachable, m.orch.rows[0].reason = false, hostileName
+	assertNoHostile(t, "the unreachable row", m.View())
+	m.orch.rows[0].reachable = true
+	for _, k := range []string{"r", "d"} {
+		mm, _ := update(m, press(k))
+		assertNoHostile(t, "the "+k+" dialog", mm.View())
+	}
+	m = openDetail(t, sized(New(d, "/work")))
+	if m.screen != screenOrchDetail {
+		t.Fatalf("screen %v", m.screen)
+	}
+	assertNoHostile(t, "the detail", m.View())
+}
+
+// The footer status and the Jobs and detail status lines draw daemon errors
+// sanitised (FR-029; review run-224 item 10).
+func TestStatusLinesAreSanitised(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := sized(New(d, "/work"))
+	m.status = "error: " + hostileName
+	assertNoHostile(t, "the footer", m.View())
+	m = openDetail(t, sized(New(d, "/work")))
+	m.orchDetail.status = hostileName
+	assertNoHostile(t, "the detail status", m.View())
+	m = openJobs(sized(New(d, "/work")))
+	m.jobs.status = hostileName
+	assertNoHostile(t, "the jobs status", m.View())
+}

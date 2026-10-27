@@ -1312,7 +1312,7 @@ func (m Model) footer(hb helpBindings) string {
 		if m.err != nil || strings.HasPrefix(m.status, "error") {
 			style = statusErrStyle
 		}
-		parts = append(parts, style.Render(m.status))
+		parts = append(parts, style.Render(sanitizeLine(m.status, 0)))
 	}
 	parts = append(parts, m.renderHelp(hb))
 	return "\n" + strings.Join(parts, "\n")

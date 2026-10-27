@@ -323,7 +323,7 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 	m.orch.vals = v
 	m.orch.formKind = orchFormCreate
 	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + hostName + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
+		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
 	return m, m.orch.form.Init()
@@ -336,7 +336,7 @@ func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
 	m.orch.formID = row.summary.GetOrchestrator().GetId()
 	m.orch.formHost = row.host
 	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Rename " + row.summary.GetOrchestrator().GetName()).Description("The label only; workers and briefings follow as they are reachable.").Value(&v.name),
+		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(row.summary.GetOrchestrator().GetName(), 0)).Description("The label only; workers and briefings follow as they are reachable.").Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
 	return m, m.orch.form.Init()
@@ -469,12 +469,12 @@ func orchRowLine(r orchRow) string {
 	if !r.reachable {
 		reach = statusErrStyle.Render("unreachable")
 		if r.reason != "" {
-			reach += dimStyle.Render(" (" + r.reason + ")")
+			reach += dimStyle.Render(" (" + sanitizeLine(r.reason, 60) + ")")
 		}
 	}
 	return fmt.Sprintf("%s  %s  %s  %s  %s",
-		selectedStyle.Render(o.GetName()),
-		dimStyle.Render("@"+r.hostName),
+		selectedStyle.Render(sanitizeLine(o.GetName(), 40)),
+		dimStyle.Render("@"+sanitizeLine(r.hostName, 30)),
 		reach,
 		plural(int(r.summary.GetWorkerCount()), "worker", "workers"),
 		dimStyle.Render(fmt.Sprintf("queued %d / in flight %d / review %d", r.summary.GetQueued(), r.summary.GetInFlight(), r.summary.GetAwaitingReview())),

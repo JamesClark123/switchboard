@@ -353,14 +353,14 @@ func (m Model) orchViewTabs() string {
 func (m Model) viewOrchDetail() string {
 	d := m.orchDetail
 	if d.form != nil {
-		parts := []string{sectionStyle.Render(d.name + " › " + d.formKind), "", d.form.View()}
+		parts := []string{sectionStyle.Render(sanitizeLine(d.name+" › "+d.formKind, 0)), "", d.form.View()}
 		if d.status != "" {
 			// A daemon refusal stays visible under the open form (verbatim).
-			parts = append(parts, "", statusErrStyle.Render(d.status))
+			parts = append(parts, "", statusErrStyle.Render(sanitizeTerminalText(d.status)))
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
-	header := sectionStyle.Render("Orchestrator "+d.name) + dimStyle.Render("  @"+d.hostName)
+	header := sectionStyle.Render("Orchestrator "+sanitizeLine(d.name, 0)) + dimStyle.Render("  @"+sanitizeLine(d.hostName, 0))
 	lines := []string{header, m.orchViewTabs(), ""}
 	if d.hostPick {
 		lines = append(lines, sectionStyle.Render("Add a host from my hosts"), "")
@@ -382,7 +382,7 @@ func (m Model) viewOrchDetail() string {
 		lines = append(lines, m.renderOrchView()...)
 	}
 	if d.status != "" {
-		lines = append(lines, "", statusErrStyle.Render(d.status))
+		lines = append(lines, "", statusErrStyle.Render(sanitizeTerminalText(d.status)))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }

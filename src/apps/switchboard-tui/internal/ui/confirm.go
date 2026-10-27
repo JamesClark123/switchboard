@@ -76,7 +76,7 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // confirmModal renders the dialog body. It is composited over the list by View via
 // overlayCenter, the same path the launch modal uses.
 func (m Model) confirmModal() string {
-	rows := []string{sectionStyle.Render(m.confirm.title), ""}
+	rows := []string{sectionStyle.Render(sanitizeLine(m.confirm.title, 0)), ""}
 	rows = append(rows, m.confirm.body...)
 	warning := m.confirm.warning
 	if warning == "" {

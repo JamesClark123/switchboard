@@ -69,3 +69,12 @@ func TestSanitizeLine(t *testing.T) {
 		t.Errorf("fitCol pads to the width: %q", got)
 	}
 }
+
+// Every format character and the line/paragraph separators are dropped, not
+// only the bidi controls listed by hand before (review run-224).
+func TestSanitizeDropsAllFormatCharacters(t *testing.T) {
+	in := "a­b c d\U000E0041e᠎f"
+	if got := sanitizeTerminalText(in); got != "abcdef" {
+		t.Errorf("sanitizeTerminalText(%q) = %q", in, got)
+	}
+}

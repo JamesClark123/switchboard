@@ -176,14 +176,14 @@ func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mode
 	for _, arg := range a.GetArguments() {
 		val := arg.GetDefaultValue()
 		v.values[arg.GetName()] = &val
-		title := arg.GetName()
+		title := sanitizeLine(arg.GetName(), 0)
 		if arg.GetRequired() {
 			title += " *"
 		}
-		fields = append(fields, huh.NewInput().Key(arg.GetName()).Title(title).Description(arg.GetDescription()).Value(v.values[arg.GetName()]))
+		fields = append(fields, huh.NewInput().Key(arg.GetName()).Title(title).Description(sanitizeTerminalText(arg.GetDescription())).Value(v.values[arg.GetName()]))
 	}
 	if len(fields) == 0 {
-		fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+a.GetName()))
+		fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
 	}
 	return m, m.setOpForm(s, t, "call "+a.GetName(), v, m.newOrchForm(fields...))
 }
