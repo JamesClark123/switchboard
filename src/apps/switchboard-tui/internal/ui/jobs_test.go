@@ -358,15 +358,15 @@ func TestJobsApplyOrchEdgeCases(t *testing.T) {
 	m := openJobs(sized(New(d, "/work")))
 	key := m.jobs.orchs[0].target
 	seq := jobsSeq.Add(1)
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: seq, err: status.Error(codes.Internal, "boom")})
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, recSeq: seq, err: status.Error(codes.Internal, "boom")})
 	if len(m.jobs.orchs) != 1 || m.jobs.orchs[0].err == nil {
 		t.Error("a failed reload keeps the orchestrator, with the error")
 	}
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: seq - 1, gone: true})
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, recSeq: seq - 1, gone: true})
 	if len(m.jobs.orchs) != 1 {
 		t.Error("an older reply is dropped")
 	}
-	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, seq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "gone")})
+	m, _ = update(m, jobsOrchMsg{host: key.host, id: key.id, recSeq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "gone")})
 	if len(m.jobs.orchs) != 0 {
 		t.Error("a NotFound reload removes it")
 	}

@@ -158,7 +158,7 @@ func TestJobsOlderReplyIsDropped(t *testing.T) {
 		t.Error("a newer list without it drops it")
 	}
 	// And an older reply cannot bring it back.
-	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, seq: 1, orch: &jobsOrch{target: target, runs: running}})
+	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, recSeq: 1, runsSeq: 1, orch: &jobsOrch{target: target, runs: running}})
 	if len(m.jobs.orchs) != 0 {
 		t.Error("an older reply does not resurrect a removed orchestrator")
 	}
@@ -238,7 +238,7 @@ func TestJobsNotFoundRunsRemoves(t *testing.T) {
 	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
 	m := openJobs(sized(New(d, "/work")))
 	target := m.jobs.orchs[0].target
-	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, seq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "no such orchestrator")})
+	m, _ = update(m, jobsOrchMsg{host: target.host, id: target.id, recSeq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "no such orchestrator")})
 	if len(m.jobs.orchs) != 0 {
 		t.Error("NotFound removes it from every tab")
 	}
@@ -476,7 +476,8 @@ func TestJobsResponsivenessBudget(t *testing.T) {
 	}
 	time1("an orchestrator's reply", func() {
 		o := m.jobs.orchs[5]
-		m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, seq: jobsSeq.Add(1), orch: &o})
+		s := jobsSeq.Add(1)
+		m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, recSeq: s, runsSeq: s, orch: &o})
 		_ = m.View()
 	})
 }
@@ -565,10 +566,23 @@ func TestJobsLostHost(t *testing.T) {
 	if cmd != nil || !strings.Contains(m.jobs.status, "beta: connection lost") || b.orchCallsJoined() != "" {
 		t.Errorf("cancel on a lost host is refused without an RPC: status %q calls %q", m.jobs.status, b.orchCallsJoined())
 	}
-	// A successful load clears it.
-	m = reloadJobs(m)
-	if strings.Contains(m.View(), "could not read") || !m.jobsReachable("hostb") {
-		t.Errorf("the next successful load clears the lost mark:\n%s", m.View())
+	// A successful load finds the stream gone: it re-subscribes instead of
+	// clearing the mark, and the subscription clears it (review item 6).
+	load := m.jobsLoadAll()
+	var resub tea.Cmd
+	for _, msg := range runAll(load) {
+		mm, c := m.Update(msg)
+		m, resub = mm.(Model), c
+	}
+	if m.jobsReachable("hostb") || resub == nil {
+		t.Fatal("a load without an event stream keeps the mark and re-subscribes")
+	}
+	if opened, ok := resub().(subOpenedMsg); !ok || opened.hostID != "hostb" {
+		t.Fatalf("the load re-subscribes beta: %#v", opened)
+	}
+	m = feed(m, m.jobsResubscribed("hostb")) // what subOpenedMsg does, without arming Recv
+	if strings.Contains(m.View(), "could not read") || !m.jobsReachable("hostb") || !m.subscribed["hostb"] {
+		t.Errorf("the re-subscription clears the lost mark:\n%s", m.View())
 	}
 
 	// A Jobs call failing Unavailable marks it lost too; a re-subscribe clears it
@@ -660,5 +674,77 @@ func TestReasoningRebuildLogIsSanitised(t *testing.T) {
 	}
 	if m.rebuilds["o1"].latest != "done    !" {
 		t.Errorf("latest = %q", m.rebuilds["o1"].latest)
+	}
+}
+
+// hostReply is a host load's reply for t's host, as the load in flight (stamps
+// are taken by the caller in the order the calls would be issued).
+func hostReply(m *Model, t orchTarget, listSeq uint64, parts ...jobsPart) jobsHostMsg {
+	m.jobsLoadAll() // starts the load the reply answers (its command is not run)
+	return jobsHostMsg{host: t.host, flight: m.jobs.hosts[t.host].flight, listSeq: listSeq, parts: parts}
+}
+
+// A host load whose ListRuns for an orchestrator fails keeps that
+// orchestrator's last runs, named with the error (review run-224 item 1, R3).
+func TestJobsHostLoadKeepsRunsWhenListRunsFails(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}, orchRuns: &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "r1", Action: "triage", State: pb.RunState_RUN_STATE_QUEUED, Position: 1}}}}
+	m := openJobs(sized(New(d, "/work")))
+	o := m.jobs.orchs[0]
+	listSeq := jobsSeq.Add(1)
+	failed := jobsOrch{target: o.target, summary: o.summary, err: status.Error(codes.DeadlineExceeded, "deadline exceeded")}
+	m, _ = update(m, hostReply(&m, o.target, listSeq, jobsPart{orch: failed, seq: jobsSeq.Add(1)}))
+	if got := m.jobs.orchs[0].runs.GetQueued(); len(got) != 1 {
+		t.Errorf("the queued run must not vanish: %v", got)
+	}
+	if !strings.Contains(m.View(), "alpha-bot @ test-host (runs: deadline exceeded)") {
+		t.Errorf("the failure is named:\n%s", m.View())
+	}
+}
+
+// A removed orchestrator does not come back from a host load that listed it
+// before the removal: neither from its later ListRuns (NotFound ⇒ gone) nor from
+// a part whose record predates the removal (review run-224 item 2).
+func TestJobsRemovedOrchestratorStaysRemoved(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	o := m.jobs.orchs[0]
+	listSeq := jobsSeq.Add(1) // the host load lists it
+	m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, recSeq: jobsSeq.Add(1), gone: true, err: status.Error(codes.NotFound, "orchestrator not found")})
+	if len(m.jobs.orchs) != 0 {
+		t.Fatal("the event reload's NotFound removes it")
+	}
+	ghost := jobsOrch{target: o.target, summary: o.summary, err: status.Error(codes.NotFound, "orchestrator not found")}
+	m, _ = update(m, hostReply(&m, o.target, listSeq, jobsPart{orch: ghost, seq: jobsSeq.Add(1), gone: true}))
+	if len(m.jobs.orchs) != 0 || strings.Contains(m.View(), "could not read") {
+		t.Errorf("a later NotFound ListRuns does not bring it back:\n%s", m.View())
+	}
+	readable := jobsOrch{target: o.target, summary: o.summary, runs: &pb.ListRunsResponse{}}
+	m, _ = update(m, hostReply(&m, o.target, listSeq, jobsPart{orch: readable, seq: jobsSeq.Add(1)}))
+	if len(m.jobs.orchs) != 0 {
+		t.Error("a part whose record was read before the removal does not bring it back")
+	}
+}
+
+// An event reload's runs are stamped when its ListRuns is issued, after its
+// GetOrchestrator: a host load's ListRuns issued in between read an older state
+// and loses, whichever lands last (review run-224 item 7).
+func TestJobsRunsStampedAtListRuns(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	m := openJobs(sized(New(d, "/work")))
+	o := m.jobs.orchs[0]
+	queued := &pb.ListRunsResponse{Queued: []*pb.Run{{Id: "r1", Action: "triage", State: pb.RunState_RUN_STATE_QUEUED, Position: 1}}}
+	running := &pb.ListRunsResponse{InFlight: []*pb.Run{{Id: "r1", Action: "triage", State: pb.RunState_RUN_STATE_RUNNING}}}
+	listSeq := jobsSeq.Add(1)
+	recSeq := jobsSeq.Add(1)    // the event reload's GetOrchestrator
+	hostRuns := jobsSeq.Add(1)  // the host load's ListRuns (reads queued)
+	eventRuns := jobsSeq.Add(1) // the event reload's ListRuns (reads running)
+	newer := o
+	newer.runs = running
+	m, _ = update(m, jobsOrchMsg{host: o.target.host, id: o.target.id, recSeq: recSeq, runsSeq: eventRuns, orch: &newer})
+	older := o
+	older.runs = queued
+	m, _ = update(m, hostReply(&m, o.target, listSeq, jobsPart{orch: older, seq: hostRuns}))
+	if runs := m.jobs.orchs[0].runs; len(runs.GetInFlight()) != 1 || len(runs.GetQueued()) != 0 {
+		t.Errorf("the host load's older runs must not win: %v", runs)
 	}
 }
