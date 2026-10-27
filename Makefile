@@ -9,13 +9,15 @@
 # as written (repo-relative, a leading ./ and a trailing / dropped), not
 # resolved, so the checkout itself may be a symlink or sit under a path with a
 # space; module paths in go.work must not contain spaces (the lists are words).
-# scripts/cover.sh reads go.work the same way when run directly. `=` defers the
-# go call to the targets that use it.
+# scripts/cover.sh reads go.work the same way when run directly. GO_MODULES is
+# evaluated lazily (so `make lint-version` works before Go is installed) but only
+# once: the first expansion replaces it with its value, so `go work edit` runs
+# once per make (and a GOWORK=off error prints once).
 #   GO_MODULES  every module: fmt, fmt-check, vet, lint (with the e2e tag, so
 #               the E2E suites are vetted and linted too)
 #   MODULES     every module but the E2E ones: build, test (and scripts/cover.sh)
 #   E2E_MODULES the *-e2e modules: e2e
-GO_MODULES  = $(shell go work edit -json | sed -n 's|.*"DiskPath": "\(\./\)\{0,1\}\(.*\)".*|\2|p' | sed 's|/$$||')
+GO_MODULES  = $(eval GO_MODULES := $$(shell go work edit -json | sed -n 's|.*"DiskPath": "\(\./\)\{0,1\}\(.*\)".*|\2|p' | sed 's|/$$$$||'))$(GO_MODULES)
 MODULES     = $(filter-out %-e2e,$(GO_MODULES))
 E2E_MODULES = $(filter %-e2e,$(GO_MODULES))
 

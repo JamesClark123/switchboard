@@ -524,7 +524,10 @@ Run a single test from within a module, e.g.:
 cd src/services/switchboardd && go test ./internal/sandbox/ -run TestLaunch -v
 ```
 
-A Husky `pre-commit` hook runs the fast subset (`fmt-check`, `vet`, `lint`, `test`, `env-check`);
+A Husky `pre-commit` hook runs the fast subset (`fmt-check`, `vet`, `lint`, `test`, `env-check`).
+`vet` and `lint` cover every go.work module, so the hook also type-checks and lints the E2E suites
+(with the `e2e` tag) without running them; on a cold golangci-lint cache that adds noticeably to a
+commit. Running the E2E suites is CI-only (`make e2e`);
 CI (`.github/workflows/ci.yml`) runs `fmt-check`, `vet`, `lint` and `env-check`, then the unit +
 integration tests of the `MODULES` once via `make cover` (every package except generated stubs;
 `cmd/` packages are tested but not counted towards coverage; any failing test's output is
