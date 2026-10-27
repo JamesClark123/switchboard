@@ -19,7 +19,8 @@ This plan formalises how the TUI's forms and inputs handle long text and leaving
    - Each surface's exits (esc; ctrl+c in forms; `q` on the kit overview and the sources overlay; esc in the add
      browser) go through one dispatcher. It leaves immediately when the surface's current values equal its opening baseline (R3). Otherwise it
      opens one shared three-choice dialog: **s** Save / **c** Cancel / **d** Discard, with Cancel highlighted and
-     esc = Cancel (R4–R5).
+     esc = Cancel (R4–R5). On the reasoning setup Save is **r** Rebuild, which goes through the existing destructive
+     confirm. Letter keys are ignored for 150 ms after the dialog opens, so letters typed after a stray esc never act.
    - Save reuses each surface's existing save or confirm unchanged. Discard runs today's esc path.
 3. **Related fixes.**
    - Nested and follow-up behaviour: kit item → kit overview levels; MCP "register anyway?" returns to the form;
@@ -55,9 +56,13 @@ text.
 
 **Constraints**:
 - No external editor anywhere (FR-009).
+- The host-password and sign-in overlays are always drawn last, over every screen and layer, so the prompt is never
+  hidden while it captures keys (R5).
+- `reconcileGuardLayers` runs after every message and must stay O(1) (R4).
 - The dialog never discards on a single stray key (FR-019): Cancel is the default, and enter discards only when
   Discard is highlighted.
-- At 80×24 the enlarged view shows 21 text lines and the dialog fits (FR-021, SC-003).
+- At 80×24 the enlarged view shows 21 text lines with a 76-cell hint, and the dialog's hint fits its 49-cell content
+  width (FR-021, SC-003).
 - No new env vars; all sizes are package constants.
 
 **Scale/Scope**:
@@ -117,6 +122,7 @@ src/apps/switchboard-tui/internal/ui/
 │                          #   chrome, dialog overlays; WindowSize re-fits the enlarged view; footer adds `ctrl+e enlarge`
 ├── keys.go                # dialog / enlarge bindings
 ├── confirm.go             # confirmState.acceptTo (sources Save → removal confirm closes the overlay on y only)
+├── terminal.go            # termOpenedMsg never takes over a guarded surface; termClosedMsg only leaves screenTerminal
 ├── config_editor.go       # heap *configFormVals (manifest option maps); guard (gConfig); formKeyMap
 ├── mcp.go                 # spec.text for Headers; guard (gMcp); FR-012a: keep vals across "register anyway?", reopen on back-out
 ├── secrets.go             # guard (gSecrets)

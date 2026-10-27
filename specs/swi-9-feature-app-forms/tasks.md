@@ -35,8 +35,11 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
   - `text(ptr *string, title string) *huh.Text`: `huh.NewText().ExternalEditor(false).Title(title).Value(ptr)`,
     recorded;
   - `lookup(field huh.Field) (*huh.Text, textEntry, bool)`;
-  - `normalize()`: `Update(nil)` on each recorded field, so its pointer holds the textarea's cleaned value (research
-    R3).
+  - `normalize() []string`: `Update(nil)` on each recorded field, so its pointer holds the textarea's cleaned value
+    (research R3). It returns the titles of fields whose value changed, and the surface shows the status
+    `<title>: tabs/control characters will be rewritten when saved`.
+  - `text` converts `\r\n` to `\n` in `*ptr` before building, so CRLF content is not doubled by the sanitizer
+    (which maps each `\r` and `\n` to a newline).
 - [ ] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
   with the form:
   - the 13 kit fields in `UI/kit_editor.go`, on `kitEditorState`;
@@ -50,7 +53,8 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
   - `formKeyMap()` has a keyless Editor.
   - For every form with a Text field (kit agent instructions, MCP, action, event), sending ctrl+e straight to
     `form.Update` returns no `tea.ExecProcess` command, with `EDITOR` set and `WithShowHelp(false)`.
-  - `normalize()` turns a stored tab into the textarea's spaces.
+  - `normalize()` turns a stored tab into the textarea's spaces and reports that field; CRLF content keeps its line
+    count.
   - No `form.KeyBinds()` help reads "open editor".
   - A source scan finds no `huh.NewText(` outside `formguard.go`.
 
@@ -65,33 +69,52 @@ snapshots (R3–R5).
 
 - [ ] T005 Add the `guardSurface` enum (data-model.md table) and these `Model` methods, each a `switch` over the enum,
   in `UI/formguard.go`:
-  - `activeGuard() (guardSurface, bool)`, with nested-before-parent precedence;
+  - `activeGuard() (guardSurface, bool)`, with nested-before-parent precedence. Every case also checks `m.screen`
+    (data-model.md), so a form stranded on a screen the user has left is never active;
   - `guardDirty(g) bool`;
-  - `guardSave(g) (Model, tea.Cmd)`, whose outcome is read from the resulting state;
+  - `guardSave(g) (Model, tea.Cmd)`: re-check `guardDirty(g)` first and just leave when clean (research R4);
+    otherwise call the surface's save. The outcome is read from the resulting state;
   - `guardLeave(g) (Model, tea.Cmd)`;
   - `requestExit(g) (tea.Model, tea.Cmd)`: leave immediately when clean, otherwise open the dialog;
-  - `reopenForm(g)`: rebuild a completed form from its vals, keeping its spec baseline (research R4);
+  - `reopenForm(g)`: rebuild a completed form with the surface's `build…Form(spec, vals)` from the **same** vals and a
+    **fresh** `formSpec` (no `normalize()`), keeping the surface baseline (research R4; the builders are split in
+    T039);
   - `reconcileGuardLayers()`: the lifetime invariant (data-model.md). Close the dialog and the enlarged view when
-    their surface is no longer active. The forced-close and parked-override parts are added by T032/T033.
+    their surface is no longer active. The parked-override part is added by T033. It must stay O(1): no sandbox-list
+    walks.
 
   Unimplemented surfaces default to "never dirty" and are filled in by the stories. Every story task that adds a
   surface also adds its cases to these switches, so those tasks share `UI/formguard.go` and are not `[P]`.
-- [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`):
-  - `openUnsaved(g, fromEnlarge)`, with Cancel highlighted and the label "Rebuild" for `gReasoning`.
-  - `updateUnsavedKey` per contracts/forms-ui.md §3: `s` (or `r`) Save; `c`/esc/ctrl+c Cancel; `d` Discard;
-    ←/→/h/l/tab/shift+tab move the highlight; enter activates the highlight; anything else is ignored. Save calls
-    `guardSave`, Discard calls `guardLeave` (discarding an open enlarged view first), Cancel only closes.
-  - `unsavedModal(width)` rendered with the existing modal styles: a body line per surface kind, three buttons with
-    the highlighted one marked, and a hint line; ≤ 60×9.
+- [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
+  `openedAt`), plus a package `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond`:
+  - `openUnsaved(g, fromEnlarge)`, with Cancel highlighted, `openedAt = nowFunc()`, and the label "Rebuild" for
+    `gReasoning`.
+  - `updateUnsavedKey` per contracts/forms-ui.md §3:
+    - letter keys (`s`, `r`, `d`, `c`, `h`, `l`) are ignored within `unsavedKeyGrace` of `openedAt`;
+    - `s` Save (not on `gReasoning`), or on `gReasoning` `r` Rebuild, which opens the existing destructive rebuild
+      confirm (the `b` body in `UI/orchestrator_reasoning.go`; `returnTo` the setup, so n returns there);
+    - `c`/esc/ctrl+c Cancel; `d` Discard; ←/→/h/l/tab/shift+tab move the highlight; enter activates the highlight;
+      anything else is ignored.
+
+    Save calls `guardSave`, Discard calls `guardLeave` (discarding an open enlarged view first), and Cancel only
+    closes.
+  - `unsavedModal()`: `modalInnerWidth()` wide in `modalStyle`. A ≤ 2-line body per surface kind, three buttons with
+    the highlighted one marked, and the canonical hint `s save · d discard · esc cancel · ←/→ · enter` (or
+    `r rebuild · …`). ≤ 11 rows; no line wraps at 80 columns.
 - [ ] T007 Wire the dialog layer into `UI/app.go`:
   - `handleKey` routes to `updateUnsavedKey` when `m.unsaved.open`, after the host-password modal and sign-in card
     and before the screen switch.
   - `Update` calls `reconcileGuardLayers()` after handling every message.
   - `View` draws `overlayCenter(<current screen render>, unsavedModal)` when it is open.
+  - **Overlay order (security, research R5)**: restructure `View` so that every return path (chrome, the screens
+    that return early today such as launch, confirm and sources, and later the enlarged view and the dialog) goes
+    through one final pass. That pass applies the host-password prompt and the sign-in failure card **last**. The
+    prompt must never capture keys while hidden.
   - Add the dialog bindings to `UI/keys.go`.
 - [ ] T008 Add snapshot types and helpers in `UI/formguard.go`:
   - `launchSnapshot` with `snapshotLaunch(launchState)` and an `equal` method (`slices.Equal` for the slices): sources
-    sorted, name trimmed, kits in order, host, orchestrator id;
+    in selection order (`l.order`; **not** sorted, since order changes what is sent), name trimmed, kits in order,
+    host, orchestrator id;
   - `flattenCallVals(callFormVals) map[string]string`;
   - `kitFingerprint(store.Kit) string`: `yaml.Marshal` of a deep clone (yaml round trip), after `Normalize()`, plus
     the escape-hatch and services encodings (an empty list gives `""`).
@@ -101,11 +124,16 @@ snapshots (R3–R5).
 - [ ] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
   - the dialog opens on Cancel, and enter there cancels;
   - ←/→ wrap; `d` and enter@Discard discard; `s` and enter@Save save; esc and ctrl+c cancel; `y`/`n`/`q` are ignored;
-  - the label reads Rebuild for `gReasoning`, where `r` saves and `s` is ignored;
-  - the modal fits in 80×24;
+  - the label reads Rebuild for `gReasoning`; `r` opens the destructive confirm (n there returns to the setup) and `s`
+    is ignored;
+  - letter keys within the grace window are ignored (via `nowFunc`), and esc/enter/arrows act at once;
+  - no line of the modal is wider than 80 cells at 80×24, for both hint variants;
+  - with the dialog open and `hosts.connecting` set (startup sign-in), `View()` shows the password prompt on top;
+    the same holds on the launch and sources screens (T007 overlay order);
   - `requestExit` on a clean surface leaves without opening the dialog;
   - snapshot helpers: the kit fingerprint is stable across a nil vs empty slice, differs for an unnamed kit with an
-    added item, and leaves the input kit unmutated; the launch name is trimmed;
+    added item, and leaves the input kit unmutated; the launch name is trimmed; re-ordering sources changes the
+    launch snapshot;
   - `reconcileGuardLayers` closes a dialog whose surface is gone.
 
 **Checkpoint**: the dialog layer exists and is unit-tested; no surface uses it yet, so behaviour is unchanged.
@@ -124,6 +152,15 @@ with nothing applied; Save behaves as ctrl+s; an unchanged form or an edit undon
 `spec.normalize()`. A form rebuilt by `reopenForm` keeps its baseline. A save that fails on a form completed by enter
 calls `reopenForm`.
 
+- [ ] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
+  `reopenForm`; never writes `vals`) (research R4):
+  - `UI/kit_editor.go`: the section forms (`identityForm`, `networkForm`, `environmentForm`,
+    `agentInstructionsForm`, …) and `openKitItemForm`;
+  - `UI/orchestrator_forms.go`: `openActionForm`, `openEventForm`, `openCallForm`, `openMarkFreeForm`;
+  - `UI/orchestrators.go`: `openOrchCreateForm`/`openOrchRenameForm`;
+  - `UI/mcp.go`, `UI/secrets.go` and `UI/config_editor.go`.
+
+  Register the per-surface builder in the `reopenForm` switch.
 - [ ] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
   - Add a heap-allocated `*configFormVals{name, mode string; strs map[string]*string; bools map[string]*bool}`, held
     as a pointer on `editorState`. The option maps follow the manifest's options that `buildEditorForm` creates.
@@ -153,8 +190,10 @@ calls `reopenForm`.
   - Cancel leaves the vals, focused field and `form.View()` identical;
   - Discard closes with no RPC or store write;
   - Save performs the surface's save, and a validation error keeps it open with the error (US1 #6);
-  - enter on the last field with an invalid value leaves a visible, editable form with the error, not a blank one
-    (`reopenForm`);
+  - enter on the last field with an invalid value leaves a visible, editable form with the error and **the values
+    the user typed**, not a blank one or one reset to the originals (`reopenForm`); ctrl+e still enlarges a Text
+    field after the reopen (fresh registry);
+  - Save from the dialog after a background update made the surface clean just leaves, with no save attempted;
   - a stored value containing a tab, tabbed past without editing → esc closes with no dialog (FR-011);
   - type-and-delete back to the original → no dialog (US1 #7);
   - a create form with nothing typed → no dialog (US1 #8);
@@ -201,7 +240,7 @@ anyway?" n returns to the form intact. Text keys like `q`, `,` and shift+→ are
   - esc/q on an item list → overview, no dialog;
   - applying an unchanged item form leaves the overview clean;
   - MCP host command → "register anyway?" → n → form back with every value, and the next esc raises the dialog;
-  - in focused Text and Input fields, `q`, `,` and shift+→ edit the field (US2 #5).
+  - in focused Text and Input fields, `q` and `,` are typed, and shift+→ is a no-op; none of them exits (US2 #5).
 
 **Checkpoint**: every FR-012 exit on forms is guarded.
 
@@ -248,8 +287,10 @@ closes.
   - tag: cleared → Save clears it;
   - host and group add;
   - launch: two sources → dialog, Save launches; name field and picker esc are not exits;
-  - reasoning: the dialog shows Rebuild/`r`, Save starts the rebuild, Discard returns to the detail;
-  - sources: Save → confirm → n keeps marks and the overlay, y removes and closes;
+  - reasoning: the dialog shows Rebuild/`r`; `r` opens the destructive confirm, y starts the rebuild, n returns to the
+    setup; Discard returns to the detail; un-marking and re-marking a pre-filled folder (order change) raises the
+    dialog;
+  - sources: Save → confirm → n keeps marks and the overlay, y removes and closes (`sourcesView` is reset only on y);
   - browser: Discard returns to the overlay;
   - ctrl+c on these surfaces behaves as before.
 
@@ -267,12 +308,16 @@ field holds the edit and focus stays on it, with no dialog.
 
 - [ ] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
   - `openEnlarge(g, field, entry)`: a textarea with `MaxHeight 0`, `CharLimit 0`, `ShowLineNumbers false`,
-    `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, huh theme
-    focused styles, value `*ptr`, focused, `baseline = *ptr`.
-  - `writeBack()`: `*ptr = ta.Value(); field.Value(ptr)`.
+    `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, value `*ptr`,
+    cursor at the top (`MoveToBegin`), focused, `baseline = *ptr`.
+  - `enlargeStyles()`: map huh's focused `FieldStyles` to a `textarea.Style` the way `Text.View` does (huh
+    field_text.go:436–443).
+  - After every `SetValue` (open, ctrl+r), `SetWidth` and `SetHeight`, call `ta.Update(nil)` so the cursor is
+    scrolled into view (research R2).
+  - `writeBack()`: `*ptr = ta.Value(); field.Value(ptr); field.Update(nil)`.
   - `resize(w, h)`.
   - `enlargeView(w, h)`: a rounded border at full size with the title in the top border, the textarea, and the hint
-    line from contracts/forms-ui.md §2.
+    line from contracts/forms-ui.md §2 (76 cells).
   - Size constants that give 21 text lines at 80×24 and at least one line on smaller terminals.
 - [ ] T027 [US4] Add `updateEnlargeKey` in `UI/enlarge.go`:
   - esc/ctrl+e → write back and close;
@@ -310,12 +355,16 @@ field holds the edit and focus stays on it, with no dialog.
   - ctrl+c over an unchanged form closes it;
   - tab/shift+tab are no-ops;
   - resize keeps text and cursor;
-  - 80×24 shows ≥ 16 text lines and the hint line; 200×50 uses ≥ 80% (SC-003); 60×12 renders within the terminal
-    without overflow;
+  - 80×24 shows ≥ 16 text lines and the hint line, and every rendered line is ≤ 80 cells; 200×50 uses ≥ 80%
+    (SC-003); 60×12 renders within the terminal without overflow;
+  - the cursor is inside the visible window after open, after ctrl+r at the end of a long text, and after a resize
+    that shrinks the height;
+  - CRLF content opens and writes back with its original line count;
+  - with the view open and a sign-in password prompt raised, `View()` shows the prompt;
   - a value with a tab: open and close with no edit → the form stays clean;
   - 150 lines + enter at end → 151, close, the kit saves 151 lines; inline enter at line 99+ adds none (FR-009a,
     US4 #8).
-- [ ] T031 [P] [US4] Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
+- [ ] T031 [US4] (after T029) Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
   `BenchmarkSC006OtherField` in `UI/enlarge_perf_test.go`:
   - 200×50, 5,000 lines of ~85 chars, `Update` + `View` per op, driven through the real `Model` key path;
   - a doc comment cites SC-006 and R9's reference numbers;
@@ -333,27 +382,39 @@ field holds the edit and focus stays on it, with no dialog.
   - the MCP view drop (`UI/hosts.go`, `UI/daemons.go`);
   - `closeOrchAdminOnDrop` (`UI/hosts.go`), which gains a `screenLaunch` case for a reasoning setup on the dropped
     host;
-  - `reconcileGuardLayers`: rename, tag, sources overlay or add browser whose sandbox is no longer in the sandbox list.
-    This covers both the `Removed` event and a full list reload.
+  - Sandbox removal, in the message handlers rather than `reconcileGuardLayers` (`UI/notifications.go`,
+    `UI/sandbox_list.go`), for rename, tag, sources overlay or add browser:
+    - `Event_Removed` for the id → "sandbox removed";
+    - a list reload where the host is `HostConnected` with `Err == nil` and lacks the id → "sandbox removed";
+    - the host dropped → "daemon disconnected";
+    - a host `List` error → no close.
   - Orchestrator removal (`UI/orchestrators.go`, `UI/orchestrator_views.go`, `UI/jobs.go`):
     - `syncOrchestratorChanged` issues a `GetOrchestrator` check whenever an active guarded surface targets that
       orchestrator (reasoning setup `launch.reasoning.id`, orchestrator rename form, `opState(s).formTarget`);
     - a NotFound reply, `applyOrchDetail` receiving NotFound (a new branch), or a Jobs reload dropping the
       orchestrator calls `forceClose(…, "orchestrator removed")`.
-- [ ] T033 Park async add-overrides (R7):
-  - `confirmAddOverride` in `UI/sources.go` stores the confirm in `m.pendingOverride` while any guarded surface is
-    active. The one exception is the sources overlay of the **same** sandbox with no dialog or browser open
-    (`overlayFor(id)`).
-  - `reconcileGuardLayers` in `UI/formguard.go` opens it on the first message after no guarded surface is active.
-    This covers enter on inline inputs, async success, Discard and forced close.
+- [ ] T033 Park async add-overrides and guard terminal screen switches (R7):
+  - `confirmAddOverride` in `UI/sources.go` appends the confirm to a FIFO, `m.pendingOverrides`, while any guarded
+    surface is active (the whole kit editor included). The one exception is the sources overlay of the **same**
+    sandbox with no dialog or browser open (`overlayFor(id)`).
+  - `reconcileGuardLayers` in `UI/formguard.go` opens the head of the queue on the first message where no guarded
+    surface is active and neither `screenConfirm` nor `screenApproval` is showing.
+  - `UI/terminal.go`: when `termOpenedMsg` arrives while a guarded surface is active, detach the session and set the
+    status `terminal for <name> ready — closed because an editor is open; press t again`. `termClosedMsg` changes
+    the screen only when `m.screen == screenTerminal`.
 - [ ] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
   - host drop with the MCP form dirty and the dialog open → closed, with the status naming "daemon disconnected";
   - orchestrator admin drop with a dirty rename → "<host> disconnected — orchestrators closed; unsaved edits lost";
   - clean → no "lost" status;
-  - sandbox removed during rename and sources, both by `Removed` event and by a list reload without it;
+  - sandbox removed during rename and sources, both by `Removed` event and by a connected, error-free list reload
+    without it; a reload where the host is disconnected or its `List` errors leaves rename open;
   - orchestrator removed during the reasoning setup, the orchestrator rename form and an op form;
   - an override arriving during rename is parked and shown after rename closes by enter;
-  - an override for sandbox A arriving while B's overlay has marks is parked, and B's marks survive.
+  - an override for sandbox A arriving while B's overlay has marks is parked, and B's marks survive;
+  - two overrides parked during a rename open one after the other; an override never replaces the sources removal
+    confirm the guard's Save opened;
+  - an override during unsaved kit edits on a section item list is parked;
+  - a terminal finishing opening during a rename leaves the rename open with the "terminal … ready" status.
 - [ ] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
   editor), the enlarged-view keys, the unsaved-changes dialog keys, and ctrl+c in forms ≡ esc.
 - [ ] T036 Run quickstart.md scenarios 1–7 at 80×24 and 200×50, and record the `BenchmarkSC006*` results in the PR
@@ -375,8 +436,8 @@ field holds the edit and focus stays on it, with no dialog.
 - **US2 (Phase 4)** depends on US1: it reuses each form's baseline and `requestExit` wiring.
 - **US3 (Phase 5)** depends only on Phase 2. It can be developed alongside US1/US2, but it shares the
   `UI/formguard.go` dispatch switches and `guard_surfaces_test.go` with them, so merge sequentially.
-- **US4 (Phase 6)** depends on Phase 2 and on US1/US2 for T028 (it consolidates their key branches). T026, T027 and
-  T031 can start after Phase 2.
+- **US4 (Phase 6)** depends on Phase 2 and on US1/US2 for T028 (it consolidates their key branches). T026 and T027
+  can start after Phase 2. T031's benchmarks drive the real `Model` key path, so they need T029.
 - **Polish (Phase 7)** depends on all stories.
 
 ### User story dependencies
@@ -393,14 +454,14 @@ field holds the edit and focus stays on it, with no dialog.
 The `guardSurface` dispatch lives in one file (`UI/formguard.go`), and every surface task adds cases to it. Surface
 tasks are therefore sequential even though their main edits are in different files. The genuinely parallel ones are:
 
-- T031 (benchmarks) alongside T026–T030.
+- T031 (benchmarks) alongside T030, once T029 is done.
 - T035 (README) at any time after the contract is final.
 
 ## Parallel Example: User Story 4
 
 ```text
 T026–T030 [US4] enlarged view + routing + tests   (UI/enlarge.go, UI/formguard.go, UI/app.go, UI/enlarge_test.go)
-T031      [US4] SC-006 benchmarks                  (UI/enlarge_perf_test.go)
+T031      [US4] SC-006 benchmarks (after T029)     (UI/enlarge_perf_test.go)
 ```
 
 ## Implementation Strategy

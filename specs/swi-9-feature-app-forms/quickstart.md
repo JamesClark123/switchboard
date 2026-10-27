@@ -22,17 +22,19 @@ The manual scenarios below run against a local daemon (`sxbd`) and the TUI (`sxb
 ## Scenario 2: every exit (US2)
 1. In an orchestrator **Actions** form, edit the body and press ctrl+c: the dialog appears and the app keeps running.
    `d` returns to the screen the form was opened from.
-2. In the kit editor, open a kit, change an item and apply it (ctrl+s). On the overview press `q`: the dialog
-   appears. `d` returns to the picker, and reopening the kit shows it unchanged. Repeat, and `s` saves.
+2. In the kit editor, open a kit, change an item and apply it (ctrl+s). This leaves you on the item list, so press
+   esc to return to the overview, then press `q`: the dialog appears. `d` returns to the picker, and reopening the kit shows it unchanged. Repeat, and `s` saves.
 3. Register an MCP host command (Kind: Host command). At "register anyway?" press n: the form is back with every
    value.
-4. With focus in a text field, type `q`, `,` and shift+→: they are typed, never treated as exits.
+4. With focus in a text field, type `q` and `,`: they are typed. shift+→ does nothing. None of them is treated as an
+   exit.
 5. Open a kit whose file **Content** holds a tab character, tab through its fields without editing, and press esc: no
    dialog.
-6. In an orchestrator Action form, clear the required name and press enter on the last field. The form stays visible
-   with the error, and is not blank.
-7. Kit picker → new kit, add an install command without naming the kit, then press q: the dialog appears. `s` reports
-   "name required".
+6. Call an action that has a required argument (Jobs › Actions › `enter` on the action), leave the argument empty, and press enter on
+   the last field. The call form's fields are all single-line inputs, so enter submits. The form stays visible with
+   the error and the values you typed, and is not blank.
+7. Kit picker → new kit, add an install command without naming the kit (ctrl+s applies it, leaving you on the item
+   list), press esc to return to the overview, then press q: the dialog appears. `s` reports "name required".
 
 ## Scenario 3: inputs, wizards, nested (US3)
 1. `R` (rename) on a stopped sandbox and type a character, then esc: the dialog appears. Clear the name, esc, `s`:
@@ -41,7 +43,9 @@ The manual scenarios below run against a local daemon (`sxbd`) and the TUI (`sxb
 3. `n` (launch), mark two folders, esc: the dialog appears; `s` launches.
 4. In the launch wizard press `N`, type a name, esc: only the field blurs. Open the host picker with `H`, then esc:
    back to the wizard, no dialog.
-5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`).
+5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`). `r` opens the
+   destructive rebuild confirm, and n there returns to the setup. Toggling a folder off and on again (it moves to the
+   end of the order) also raises the dialog.
 6. `S` (sources), mark a folder, esc → `s`: the removal confirm appears. Press n: back on the overlay with the mark
    kept. Repeat and press y: the folder is removed and the overlay closes.
 7. `S` → `a`, select a folder, esc: the dialog appears. `d` returns to the overlay.

@@ -154,12 +154,14 @@ and saves, ctrl+c writes back then leaves the form, `ctrl+r` reverts to the text
 huh's external editor is gone: every form uses `formKeyMap()` (keyless `Text.Editor` **and** keyless `Quit`, since
 `ExternalEditor(false)` alone only hides the binding when help renders) and every Text is built by `formSpec.text(ptr, title)`
 (registry for write-back). Inline fields keep huh's 99-line enter cap; values up to 10,000 lines round-trip (verified,
-R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 7 form surfaces, kit item + overview,
+R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 6 multi-field form surfaces, kit item + overview,
 launch, reasoning, sources overlay + add browser, rename/tag/add host/add group) routes its exits (esc; ctrl+c in forms;
 `q` on the kit overview and sources overlay) through `requestExit`: clean (current values == baseline snapshot, taken
 after the form is built and Text values normalised) leaves as today, dirty opens
-one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild) / `c`·esc·ctrl+c Cancel
-(default highlight) / `d` Discard; enter activates the highlight. Save = the surface's existing save/confirm, Discard =
+one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild → the destructive rebuild
+confirm) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight; letter keys ignored
+for 150 ms after it opens. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
+`View` applies the password/sign-in overlays last over every layer. Save = the surface's existing save/confirm, Discard =
 its esc path. MCP "register anyway?" back-out returns to the form; sources Save → removal confirm (decline = Cancel);
 a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog/enlarge layers are closed by
 `reconcileGuardLayers` when their surface goes away; forced closes (host drop, sandbox/orchestrator removed) drop the guard with `unsaved edits lost: <reason>`. SC-006

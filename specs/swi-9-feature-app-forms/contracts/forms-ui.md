@@ -22,7 +22,7 @@ The view is a full-terminal modal over the whole screen, covering the header and
 │ <textarea: the field's full text, scrolls to keep the cursor visible>│
 │ …                                                                    │
 ╰──────────────────────────────────────────────────────────────────────╯
- esc/ctrl+e close · ctrl+s save form · ctrl+r revert · pgup/pgdn page · ctrl+c leave form
+ esc close · ctrl+s save · ctrl+r revert · pgup/pgdn page · ctrl+c leave form
 ```
 
 | Key | Behaviour |
@@ -36,7 +36,9 @@ The view is a full-terminal modal over the whole screen, covering the header and
 | `end` | Move to end of line. |
 | other keys | Textarea editing and navigation as inline. enter inserts a newline, with no line cap below 10,000 (FR-009a). |
 
-Size: the whole terminal. The title is set into the top border, and there are no line numbers. At 80×24 it shows
+Size: the whole terminal. The title is set into the top border, and there are no line numbers. It opens with the
+cursor at the top of the text, and the cursor is always scrolled into view (also after ctrl+r and resize). The hint
+line is 76 cells. At 80×24 it shows
 ≥ 16 text lines (21 by design); at 200×50 it uses ≥ 80% of width and height. Smaller terminals show fewer lines, down
 to one, rather than overflowing. It re-fits on resize and keeps the text, cursor and scroll.
 
@@ -48,21 +50,28 @@ to one, rather than overflowing. It re-fits on resize and keeps the text, cursor
 │                                                 │
 │    [ Save ]    [› Cancel ‹]    [ Discard ]      │
 │                                                 │
-│ s save · c/esc cancel · d discard · ←/→ · enter │
+│ s save · d discard · esc cancel · ←/→ · enter   │
 ╰─────────────────────────────────────────────────╯
 ```
 
 | Key | Action |
 |---|---|
-| `s` (on the reasoning setup: `r`, labelled **Rebuild**; `s` is ignored there) | Save: the surface's own save or confirm (FR-017) |
+| `s` | Save: the surface's own save or confirm (FR-017). If a background update has left the surface unchanged, it just leaves. |
+| `r` (reasoning setup only, labelled **Rebuild**; `s` is ignored there) | Opens the existing destructive rebuild confirm (the same one as `b`); y rebuilds, n returns to the setup |
 | `c`, `esc`, `ctrl+c` | Cancel: back to the surface exactly as it was (FR-015) |
 | `d` | Discard: close the surface without applying, completing the exit (FR-016) |
 | `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
 | `enter` | Activate the highlighted choice. Cancel is highlighted on open, so enter discards only when Discard is highlighted (FR-019). |
 | anything else | Ignored |
 
+**Typing grace**: for 150 ms after the dialog opens, letter keys (`s`, `r`, `d`, `c`, `h`, `l`) are ignored, so letters
+typed just after a stray esc never act. esc, enter and the arrows act immediately.
+
 The dialog is identical on every surface (FR-020), apart from the Rebuild label. The body line names the surface kind:
-"This form…", "This input…", "This launch…", "These marked folders…". The dialog fits within 60×9.
+"This form…", "This input…", "This launch…", "These marked folders…". The dialog is `modalInnerWidth()` wide (53 at 80
+columns, 49 cells of content). The hint is `s save · d discard · esc cancel · ←/→ · enter` (45 cells), or
+`r rebuild · d discard · esc cancel · ←/→ · enter` (48 cells). The body is ≤ 2 lines and the box ≤ 11 rows. No line
+wraps at 80×24.
 
 ## 4. Per-surface exits, Save and Discard
 
@@ -100,7 +109,7 @@ These close the surface without the guard. Any open dialog or enlarged view clos
 | Trigger | Surfaces | Reason text |
 |---|---|---|
 | Host drop / disconnect | MCP form; orchestrator admin and detail forms; reasoning setup | `daemon disconnected` |
-| Sandbox removed (event or a list reload without it) | rename, tag, sources overlay / add browser of that sandbox | `sandbox removed` |
+| Sandbox removed (a `Removed` event, or a successful reload from its *connected* host without it; a `List` error closes nothing) | rename, tag, sources overlay / add browser of that sandbox | `sandbox removed` (or `daemon disconnected` if its host dropped) |
 | Orchestrator removed | orchestrator rename form, reasoning setup, and op forms targeting it | `orchestrator removed` |
 
 When the closing code already sets a status (e.g. `<host> disconnected — orchestrators closed`), `; unsaved edits lost`
@@ -109,5 +118,9 @@ is appended instead.
 A background update that closes the surface while the dialog or enlarged view is open (e.g. an in-flight save
 succeeding) closes them too.
 
-An async low-resource add-override confirm never replaces an open guarded surface, other than that sandbox's own
-sources overlay. It waits until no guarded surface is open.
+An async low-resource add-override confirm never replaces an open guarded surface, including the whole kit editor,
+other than that sandbox's own sources overlay. Overrides queue in arrival order and open one at a time, once no
+guarded surface, confirm or approval is showing.
+
+A terminal that finishes opening while a guarded surface is open does not take over the screen. The session is
+detached, and the status reads `terminal for <name> ready — closed because an editor is open; press t again`.

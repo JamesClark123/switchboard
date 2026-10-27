@@ -76,8 +76,16 @@ bypassed. It asserts the returned command is not a `tea.ExecProcess`. A test als
   - `ShowLineNumbers = false` and `Prompt = ""`, as `huh.NewText` sets them. `textarea.New()` defaults to line numbers
     and a `┃ ` prompt, and with `MaxHeight 0` its line-number gutter is sized for one digit.
   - Non-key messages (cursor blink) reach the enlarged textarea through `forward()` while it is open.
-  - It is styled with the focused-textarea styles of `huhTheme()`.
-  - It opens with the field's current value (`*ptr`; huh keeps it live, see R3), cursor at the end.
+  - It is styled like huh's focused Text: `huhTheme()` returns huh `FieldStyles`, not a textarea `Style`, so
+    `enlargeStyles()` copies the mapping `Text.View` applies (huh field_text.go:436–443: `TextInput.Text`,
+    `.Placeholder`, `.Cursor`, `.CursorLine` from the focused theme).
+  - It opens with the field's current value (`*ptr`; huh keeps it live, see R3) and the cursor **at the top**
+    (`MoveToBegin`), because the view is mostly for reading a long value from its start.
+  - **Cursor visibility (FR-004, FR-008)**: bubbles' textarea re-scrolls to the cursor only inside `Update`
+    (textarea.go:1087). `SetValue` resets the viewport to the top without following the cursor (:596–600), and
+    `SetWidth`/`SetHeight` don't re-scroll at all (:947). So every `SetValue` (open, ctrl+r), `SetWidth` and
+    `SetHeight` (resize) is followed by `ta.Update(nil)`, and the write-back by `field.Update(nil)`, so that the
+    cursor is in view before the next frame.
   - tab and shift+tab are swallowed (FR-004).
   - pgup/pgdown move the cursor by one view height with `CursorUp`/`CursorDown`, then reposition the view with a
     single `Update` (R9).
@@ -85,6 +93,7 @@ bypassed. It asserts the returned command is not a `tea.ExecProcess`. A test als
   field's textarea (`SetValue`) from the same pointer.
   - Focus is still on that field: the form's focus never moved while the view was open.
   - The inline cursor lands at the end of the text (`SetValue` behaviour), which the spec does not constrain.
+    `field.Update(nil)` then scrolls the inline field so that it is visible.
 - **Revert** (FR-005b): `ctrl+r` "revert" restores `baseline`, the text captured when ctrl+e opened the view.
   - The ctrl+c write-back does not move the baseline, so revert after a ctrl+c → Cancel round trip still restores the
     pre-ctrl+e text.
@@ -112,9 +121,17 @@ values against it.
    the bound pointer during construction, so a baseline taken before would be dirty on open.
 2. First call `spec.normalize()`: send each registered Text a no-op `Update(nil)`. `Text.Update` ends with
    `accessor.Set(textarea.Value())` (field_text.go:350), so this writes the textarea's *cleaned* value back to the
-   pointer. The textarea's input cleaning turns tabs into 4 spaces and drops `\r`. Without this step, merely tabbing
-   past a field whose stored text holds a tab would mark it changed (FR-011), and so would the enlarged view's
-   write-back.
+   pointer. The textarea's input cleaning (bubbles `runeutil` sanitizer) turns tabs into 4 spaces, turns **each**
+   `\r` and `\n` into a newline (so CRLF text gets doubled line breaks; runeutil.go:70), and strips other control
+   characters. Without this step, merely tabbing past a field whose stored text holds a tab would mark it changed
+   (FR-011), and so would the enlarged view's write-back.
+3. **Values the textarea would rewrite.** huh already applies this rewrite today on any edit or blur of such a field,
+   so saving rewrites the stored text. The plan keeps that behaviour but makes it safe and visible:
+   - `spec.text` converts `\r\n` to `\n` in the bound value **before** the field is built, so CRLF content keeps
+     its line structure and is not doubled.
+   - When `normalize()` still changes a value (tabs, a lone `\r`, control bytes), the surface shows a status notice:
+     `<field title>: tabs/control characters will be rewritten when saved`. The developer learns about the rewrite
+     before saving, and the baseline (the normalised value) does not raise a spurious dialog.
 
 The values are snapshots compared with `==` where every field is a scalar, and with `maps.Equal`/`slices.Equal`
 otherwise:
@@ -125,7 +142,7 @@ otherwise:
 | Call form (`map[string]*string`) | flattened to `map[string]string`, compared with `maps.Equal` |
 | Config editor | the option fields come from the host's manifest, so they cannot be fixed struct fields. A heap-allocated `*configFormVals{name, mode string; strs map[string]*string; bools map[string]*bool}` is bound by pointer, held as a pointer on `editorState` (config_editor.go:18–20 warns that pointers into the value-type model dangle), and flattened to `map[string]string`/`map[string]bool` for `maps.Equal`. Reading these vals instead of `GetString` also fixes the latent "ctrl+s reads a stale value before the focused field blurs" bug. |
 | Kit editor overview | `kitFingerprint(kit)`: `yaml.Marshal` of a deep clone (made by a yaml round trip; `store.Kit` has no `Clone`, and `Normalize()` mutates `Permissions.Network` through a shared pointer) after `Normalize()`, plus the escape-hatch and services encodings. It does **not** go through `SpecYAML()`, which returns an error for an unnamed kit and would make every edit to a new, unnamed kit look clean. The baseline is taken after migration, at open (FR-011). |
-| Launch wizard / reasoning setup | `launchSnapshot{sources []string (sorted), cloneMode bool, name string (trimmed), kits []string (in order), host string, orch string}`, compared field by field with `slices.Equal` for the slices. The reasoning baseline is the pre-filled saved setup. |
+| Launch wizard / reasoning setup | `launchSnapshot{sources []string (in selection order), cloneMode bool, name string (trimmed), kits []string (in order), host string, orch string}`, compared field by field with `slices.Equal` for the slices. Sources are **not** sorted: `selectedSources()` sends them in `l.order` (launch.go:701–710) and `toggle()` re-appends, so a different order is a different launch or rebuild. The reasoning baseline is the pre-filled saved setup. |
 | Sources overlay | `len(marked) > 0` (it opens empty) |
 | Add browser | `len(selected) > 0` |
 | Inline inputs | `strings.TrimSpace(input.Value()) != initial`. `initial` is the trimmed starting value (display name, tag, or `""` for add host/group) (FR-011a). |
@@ -149,9 +166,12 @@ otherwise:
 - **Model methods**, one per need, each a switch over the enum:
   - `m.activeGuard() (guardSurface, bool)`: which surface is open now;
   - `m.guardDirty(g) bool`;
-  - `m.guardSave(g) (Model, tea.Cmd)`: calls the surface's existing save/confirm function unchanged. The outcome
-    (closed, still open with an error, or waiting on a follow-up confirm) is read from the resulting state, not
-    returned;
+  - `m.guardSave(g) (Model, tea.Cmd)`: first re-checks `guardDirty(g)`. A background update can make the surface
+    clean while the dialog is open: for example, `syncSourcesOverlay` drops marks on folders that vanished
+    (sources.go:113–130), and `confirmRemoveSources` would then fall back to the *highlighted* folder (:404–408). When
+    the surface is clean, Save just leaves. Otherwise it calls the surface's existing save/confirm function unchanged.
+    The outcome (closed, still open with an error, or waiting on a follow-up confirm) is read from the resulting
+    state, not returned;
   - `m.guardLeave(g) (Model, tea.Cmd)`: today's esc path.
   These are switches, not stored closures, because Bubble Tea models are values and a captured `Model` would be
   stale.
@@ -172,11 +192,27 @@ otherwise:
   follows fails validation (or, for the op forms, the RPC fails) the form must not stay as a blank, dead form. The
   surface rebuilds it from the same vals with `reopenForm(g)`, keeping the baseline, and the error stays visible.
   Focus restarts at the first field. The MCP back-out in R6 uses the same helper.
+  - **Builders must be split for this to work.** Today most builders *fill* `vals` from the source object as they
+    build: `identityForm`/`networkForm` from `m.kitEditor.kit` (kit_editor.go:362–391), `openKitItemForm` allocating
+    new vals (:421), `openActionForm`/`openEventForm` from the action or event (orchestrator_forms.go:68–80), and
+    `openOrchRenameForm` from the row (orchestrators.go:342). Reopening through them would silently replace the
+    developer's edits with the original values.
+  - Each surface is therefore split into `fill…Vals(source) *…Vals` (called on open only) and
+    `build…Form(spec, vals) *huh.Form` (called on open and on reopen, never writing `vals`).
+  - `reopenForm` builds a **fresh `formSpec`**, because the rebuilt form has new `*huh.Text` pointers and the old
+    registry would make ctrl+e silently stop enlarging. It skips `normalize()` (vals are already normalised) and
+    keeps the surface's baseline.
 - **Lifetime invariant**: the dialog and the enlarged view are layers on `Model` bound to a `guardSurface`. After
   every message, `Update` runs `m.reconcileGuardLayers()`, which closes both layers when `activeGuard()` no longer
   matches their surface. This covers a background update while the dialog is open (spec Edge Cases). For example:
   ctrl+s on an op form, then esc while the RPC is in flight, then the success `orchDoneMsg{closeForm}` closes the form
   under the dialog. The same pass opens a parked add-override (R7).
+  - **Cost**: the pass runs on every message, including terminal output, spinner and blink ticks, so it must be O(1).
+    It does three things: an `activeGuard()` evaluation (a few field checks), two surface comparisons, and a
+    queue-length check. It never walks the sandbox list. Removal detection lives in the sandbox `Removed` event and
+    list-reload handlers instead (R7).
+  - **`activeGuard()` always checks `m.screen`** as well as the sub-state (data-model.md). A form left behind on a
+    screen the user is no longer on is not active, so it cannot hold layers open or block a parked override forever.
 - **Not exits** (US3 #6): the launch name field's esc, the host/orchestrator/kit pickers' esc, and the kit item list's
   esc/q keep their current branches and never call `requestExit`.
 - **ctrl+c on non-form surfaces** keeps its current behaviour (FR-012). It is a no-op on the launch wizard, sources and
@@ -190,17 +226,31 @@ otherwise:
 - **Routing**: `handleKey` routes to it **first**, after the host-password modal and sign-in card. It is a layer, not
   a screen, so the surface underneath keeps `m.screen` and all of its state; that is what makes Cancel exact (FR-015).
 - **Rendering**: `overlayCenter` over whatever the screen (or the enlarged view) renders.
+- **Overlay order (security)**: `View` is restructured so that a final pass always applies the host-password prompt
+  and the sign-in failure card **last**, over every return path: chrome, the screens that return early today (launch,
+  confirm, sources overlay, …), the enlarged view and the dialog.
+  - Today `handleKey` routes keys to the password modal first (app.go:941), but `View` overlays it only after
+    `chrome(...)` (app.go:1135–1140), and the async startup sign-in can raise it at any time (signin.go:115). On a
+    screen that returns early, typing therefore goes into an **invisible** password field, and the next enter sends it
+    as an SSH password.
+  - Without this change, replacing the chrome with the enlarged view would extend that hazard to every form. The
+    final overlay pass also fixes the existing early-return screens.
 - **Keys** (FR-019; contracts/forms-ui.md):
 
 | Key | Action |
 |---|---|
-| `s` | **Save** (on the reasoning setup: `r` **Rebuild**) |
+| `s` | **Save**. On the reasoning setup it is `r` **Rebuild**, which opens the existing destructive rebuild confirm (the same body as `b`, orchestrator_reasoning.go:92–108) instead of rebuilding directly. |
 | `c`, `esc`, `ctrl+c` | **Cancel** |
 | `d` | **Discard** |
 | `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
 | `enter` | Activate the highlighted choice |
 
   Cancel is highlighted when the dialog opens. Every other key is ignored.
+
+  **Typing grace**: the dialog exists to catch a habitual esc pressed mid-typing, so the developer's next letters
+  land on it. For `unsavedKeyGrace = 150 * time.Millisecond` after it opens, the letter keys (`s`, `r`, `d`, `c`,
+  `h`, `l`) are ignored. esc, enter (which starts on Cancel) and the arrows act at once. The time comes from a package
+  `nowFunc = time.Now` seam so that tests control it.
 - **Rationale for the keys**:
   - `y`/`n` are deliberately **not** used. The destructive confirm uses y = proceed, and muscle memory must not turn
     into Discard.
@@ -216,8 +266,10 @@ otherwise:
     existing `orchDoneMsg{closeForm:true}`. Failure keeps it open via `applyOrchFormErr`.
   - Where a save is async and closes first (secrets, orchestrator create/rename, MCP remote, the inline inputs),
     Save behaves exactly like the surface's own save. A failure lands in the status line as today (spec Edge Cases).
-- **80×24 (FR-021)**: the dialog is a 3-line message plus a button row plus a hint row inside a border, ≤ 9 rows ×
-  ≤ 60 columns.
+- **80×24 (FR-021)**: the dialog uses `modalInnerWidth()` (53 at 80 columns; launch.go:1074) inside `modalStyle`'s
+  padding, which leaves 49 cells of content. The canonical hints are `s save · d discard · esc cancel · ←/→ · enter`
+  (45 cells) and, on the reasoning setup, `r rebuild · d discard · esc cancel · ←/→ · enter` (48 cells). The body is
+  ≤ 2 lines, so the box is ≤ 11 rows. A test asserts no line wraps at 80×24.
 
 ## R6 — Nested editors (kit editor) and follow-up confirmations
 
@@ -239,8 +291,9 @@ otherwise:
   - A dialog Save on `gSources` calls `confirmRemoveSources` with `exitAfter = true`.
   - `updateConfirmKey` (confirm.go:54) today sets `screen = returnTo` on both y and n, so the confirm needs a
     destination per answer. `confirmState` gains `acceptTo screen`, which is used on y when set and otherwise falls
-    back to `returnTo`. `confirmRemoveSources` sets `acceptTo = screenList` (and resets `sourcesView`) when
-    `exitAfter` is set.
+    back to `returnTo`. `confirmRemoveSources` sets `acceptTo = screenList` when `exitAfter` is set. The
+    `sourcesView` reset happens on the **accept** path only (in `updateConfirmKey` when `acceptTo` is used), so
+    declining keeps the marks.
   - Declining (n/esc) returns to `returnTo = screenSources` with the marks kept, and the exit is dropped.
   - Confirming sends the removal and closes the overlay.
 - **Add browser** (`gSourcesBrowse`): Save = `dispatchAddSources`. Its refusals (an empty selection cannot be dirty;
@@ -256,12 +309,20 @@ otherwise:
     "<host> disconnected — orchestrators closed"), it appends `; unsaved edits lost` instead, so neither message is
     lost.
 - **Existing closes** that gain the teardown and status:
-  - the MCP view on a host drop or disconnect (hosts.go:127–135, daemons.go:195–197);
+  - the MCP view on a host drop (hosts.go:127–135). The Daemons-screen disconnect path at daemons.go:195–197 cannot
+    have an MCP form open, because the developer is on the Daemons screen there, so it needs no change;
   - `closeOrchAdminOnDrop` (hosts.go:408–452).
 - **New closes**, which today leave the editor open on a dead object:
-  - Rename, tag and the sources overlay (and add browser) when their sandbox goes away, with reason "sandbox
-    removed". This covers both the `Removed` event (`removeSandbox`) and a full list reload that no longer contains
-    the id. The check runs in `reconcileGuardLayers`' pass against the current sandbox list.
+  - Rename, tag and the sources overlay (and add browser) when their sandbox goes away. Absence from the aggregated
+    list alone is **not** evidence of removal: `AggregateSandboxes` returns an empty list for a disconnected host and
+    on a `List` error (internal/client/manager.go:232–241). So:
+    - an `Event_Removed` for the id (`removeSandbox`) closes with "sandbox removed";
+    - a list reload closes with "sandbox removed" only when that host's entry is `HostConnected` with `Err == nil`
+      and lacks the id;
+    - a host that dropped closes with "daemon disconnected";
+    - a host with a `List` error is left alone.
+
+    These checks run in those message handlers, not in `reconcileGuardLayers`.
   - The reasoning setup when its host drops, with reason "daemon disconnected" (`closeOrchAdminOnDrop` gains a
     `screenLaunch` case for `launch.reasoning.host`).
   - The reasoning setup, the orchestrator rename form, and op forms targeting the orchestrator when it is removed,
@@ -275,11 +336,22 @@ otherwise:
     detail/Jobs reload reporting NotFound for it, calls `forceClose`.
 - **Async hijack**: `confirmAddOverride` (sources.go:367) currently replaces whatever screen is showing with a
   confirm. Without a fix, an async add result would destroy unsaved edits.
-  - While any guarded surface is active, other than the sources overlay **of the same sandbox** with no dialog or
-    browser open, the override is parked in `m.pendingOverride`. Any other overlay is exempt: a confirm whose
-    `returnTo` is the list would wipe another sandbox's overlay and its marks.
-  - `reconcileGuardLayers` opens the parked override on the first message after no guarded surface is active. That
+  - While any guarded surface is active, the override is parked. This includes the whole kit editor (overview,
+    section item list and forms), because unsaved kit edits survive on the item list too. The exception is the
+    sources overlay **of the same sandbox** with no dialog or browser open. Any other overlay is not exempt: a
+    confirm whose `returnTo` is the list would wipe another sandbox's overlay and its marks.
+  - Parked overrides are kept in a FIFO, `m.pendingOverrides []confirmState`, because concurrent adds on different
+    sandboxes are allowed (`sourceAdds` is a map), so a single slot would lose one.
+  - `reconcileGuardLayers` opens the head of the queue on the first message where no guarded surface is active
+    **and** neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite
+    `m.confirm` (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens. That
     covers every way a surface closes: esc, enter on inline inputs, async success, Discard and forced close.
+- **Terminal open/close** also switches screens asynchronously:
+  - `termOpenedMsg` sets `screen = screenTerminal` unconditionally (terminal.go:96–104), and `termClosedMsg` returns
+    to the list. If the developer opened a guarded surface while "opening terminal…" was pending, `termOpenedMsg`
+    detaches the new session instead of switching, with the status
+    `terminal for <name> ready — closed because an editor is open; press t again`.
+  - `termClosedMsg` changes the screen only when `m.screen == screenTerminal`.
 
 ## R8 — Help and key hints
 
@@ -287,8 +359,12 @@ otherwise:
 - **Footer**: the app adds `ctrl+e enlarge` when, and only when, the focused field of the open form is a registered
   Text (FR-002). huh's own help line no longer shows "open editor" (R1).
 - **Enlarged view hint line**:
-  `esc/ctrl+e close · ctrl+s save form · ctrl+r revert · pgup/pgdn page · ctrl+c leave form`.
-- **Dialog hint line**: `s save · c/esc cancel · d discard · ←/→ choose · enter select`.
+  `esc close · ctrl+s save · ctrl+r revert · pgup/pgdn page · ctrl+c leave form`.
+- **Dialog hint line**: `s save · d discard · esc cancel · ←/→ · enter`, or on the reasoning setup
+  `r rebuild · d discard · esc cancel · ←/→ · enter` (R5). The hint lists `esc` for Cancel; `c` and `ctrl+c` also
+  cancel but are not listed, to keep the hint inside 49 cells.
+- **Enlarged view hint width**: the line above is 76 cells, inside the 78 available at 80 columns. A test asserts
+  that every line of the enlarged view and the dialog is ≤ 80 cells at 80×24 (FR-021).
 - **Launch footer drift**: `launchHelp` still shows N/H/O and "enter launch" in reasoning mode. It is aligned with the
   modal help while this footer is touched (FR-017's Rebuild wording).
 
