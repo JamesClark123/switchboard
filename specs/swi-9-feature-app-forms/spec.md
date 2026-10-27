@@ -23,6 +23,17 @@
 - Q: Inside a form, ctrl+c currently aborts the form silently and does not quit the app. With unsaved changes, what should it do? → A: **The same as esc.** It leaves the form behind the unsaved-changes dialog, and the app never quits from inside a form. (FR-012)
 - Q: Text fields already offer ctrl+e, "open in external editor". How should that relate to enlarge? → A: **ctrl+e becomes the enlarge key.** It opens the in-app enlarged view, and the external-editor action is removed. (FR-001, FR-009) On single-line inputs ctrl+e keeps its existing meaning, move to end of line.
 
+### PR review 2026-10-27 (pr-review run `run-c275c8f2-276`, resolved in pr-response run `run-c275c8f2-362`)
+
+- Multi-line fields lose their 99-line cap (the textarea's default `MaxHeight`). They and the enlarged view accept text up to the existing 10,000-line load limit, because without the external editor nothing else could grow a field past 99 lines. (FR-009a)
+- A forced close (daemon disconnect, or the edited object removed) takes precedence over an open unsaved-changes dialog. The dialog goes with the surface, and the status line says why the edits were lost. (Edge Cases)
+- In the enlarged view, ctrl+c writes the text back and then acts as ctrl+c in the form, so this is how the dialog opens over it. Cancel returns to the enlarged view. tab and shift+tab do nothing there. (FR-004, FR-005a, FR-015)
+- Inline inputs count as changed only after the normalisation enter applies (trim). A value enter would reject (an empty sandbox name) is a validation failure for Save. (FR-011a, US3 #1 and #7)
+- Back keys that step within a surface without dropping anything are not exits. (FR-012, US3 #6)
+- Declining the follow-up removal confirm after Save in the sources overlay behaves like Cancel. Confirming completes the exit. (US3 #3)
+- The enlarged view gets a revert key that restores the text from when it opened. (FR-005b)
+- Large text must stay responsive in the enlarged view. (SC-006)
+
 ## Background (current behaviour this feature changes)
 
 Switchboard's terminal UI edits its data through these surfaces:
@@ -117,12 +128,20 @@ When the developer presses esc in any of these with something entered or selecte
 
 **Acceptance Scenarios**:
 
-1. **Given** an inline single-line input whose value differs from its starting value, **When** the developer presses esc, **Then** the dialog appears. Save commits the value just as enter does; Discard closes the input with nothing committed.
+1. **Given** an inline single-line input whose value, trimmed as enter trims it, differs from its starting value, **When** the developer presses esc, **Then** the dialog appears. Save commits the value just as enter does; Discard closes the input with nothing committed. A value that only gains surrounding spaces is unchanged and closes with no dialog (FR-011a).
 2. **Given** the launch wizard or the reasoning-sandbox setup with any selection or value differing from how it opened, **When** the developer presses esc, **Then** the dialog appears. Save performs the flow's own confirm action, exactly as enter / ctrl+s would: in the launch wizard it launches; in the reasoning setup it starts the rebuild, and the choice is labelled **Rebuild** rather than Save so the destructive effect is explicit. Discard leaves without acting.
 3. **Given** the sources overlay with folders marked for removal, or the add-browser with folders selected, **When** the developer presses esc, **Then** the dialog appears. Save performs the pending removal, which shows its usual confirm dialog, or the add, which is sent immediately as enter does.
+   - If the developer declines that removal confirm (n/esc), it behaves like Cancel: they return to the overlay with the folders still marked, and the requested exit is dropped.
+   - If they confirm it, the removal is sent and the overlay closes, completing the requested exit.
 4. **Given** a nested item editor with changes, **When** the developer presses esc in it, **Then** Save applies the item to the parent (the item editor's normal apply) and Discard drops the item's changes. Either way, the developer returns to the parent.
 5. **Given** a parent holding applied-but-unsaved changes from its nested editors, **When** the developer leaves the parent, **Then** the dialog appears for the parent, and Save saves the whole parent.
-6. **Given** the launch wizard's optional name field, **When** the developer presses esc inside it, **Then** the behaviour is unchanged: the field loses focus, keeps its value, and stays within the wizard. This is not an exit.
+6. **Given** an esc or q that only steps back within the same surface without dropping anything, **When** the developer presses it, **Then** the behaviour is unchanged and no dialog appears. This is not an exit. These keys are:
+   - esc in the launch wizard's optional name field (the field loses focus and keeps its value);
+   - esc in the launch wizard's or reasoning setup's host picker, orchestrator picker or kit picker (back to the wizard);
+   - esc or q on a kit section's item list (back to the overview; applied items stay on the kit).
+
+   In contrast, the sources add-browser *is* guarded, because leaving it drops its selection.
+7. **Given** the rename input cleared to an empty name, **When** the developer presses esc and chooses **Save**, **Then** nothing is renamed and the input stays open with a message that the name can't be empty. Discard closes it and the sandbox keeps its name. (A cleared tag is a valid value: Save clears the tag, as enter does.)
 
 ---
 
@@ -143,18 +162,22 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 5. **Given** the enlarged view is open, **When** the developer presses the form's save key (ctrl+s), **Then** the view closes with its edits kept and the form saves, exactly as if ctrl+s had been pressed in the form.
 6. **Given** the enlarged view is open, **When** the terminal is resized, **Then** the view re-fits without losing text, cursor or scroll position.
 7. **Given** focus on a single-line input, **When** the developer presses ctrl+e, **Then** it moves the cursor to the end of the line as it does today, and no enlarge hint is shown. On a non-text field (toggle, select) ctrl+e does nothing.
+8. **Given** a multi-line field holding 150 lines, whether inline or in the enlarged view, **When** the developer presses enter at the end, **Then** a 151st line is added (FR-009a).
+9. **Given** the enlarged view with edits, **When** the developer presses the revert key, **Then** the view shows the text exactly as it was when the view opened. Edits made in the form before enlarging are kept (FR-005b).
+10. **Given** the enlarged view over a changed form, **When** the developer presses ctrl+c, **Then** the view's text is written back and the unsaved-changes dialog opens. Cancel returns to the enlarged view with its text, cursor and scroll position intact (FR-005a).
 
 ---
 
 ### Edge Cases
 
 - **A save started from the dialog fails** (e.g. the daemon rejects it). On a form that stays open while saving, the form stays open with its values intact and shows the error, as a failed save from the form does today. On an inline input whose own save closes it before the result arrives (rename, tag, add host, add group), Save behaves exactly like enter. A failure then shows in the status line as it does today.
-- **A background update arrives while the dialog is open** (e.g. the edited sandbox changes or is removed). The dialog stays up and the developer's choice is honoured. A Save that then fails follows the rule above.
+- **A background update arrives while the dialog is open** (e.g. the edited sandbox's state or another field changes). The dialog stays up and the developer's choice is honoured. A Save that then fails follows the rule above.
+- **A forced close while the dialog is open.** A forced close takes precedence over the dialog. It is either a daemon disconnect closing an orchestrator form, or the edited object being removed (e.g. the sandbox being renamed or tagged is destroyed, or the orchestrator being edited is removed). The surface closes and the dialog closes with it, so no Save is attempted against a dead link or a missing object. The status line says the edits were lost and why (e.g. "unsaved edits lost: daemon disconnected" or "unsaved edits lost: sandbox removed"). The same happens when there is no dialog open.
 - **Closing the enlarged view** is not leaving the form, so it never raises the unsaved-changes dialog.
 - **Enter in the last field** of a form submits it today; this is a save, not an exit, and is unaffected.
 - **A small terminal**: at 80×24 the enlarged view and the dialog fit fully on screen with their key hints. Smaller sizes degrade by showing fewer lines rather than overflowing.
-- **Whitespace edits**: only a value that differs from the original counts as a change. An edit typed and then deleted does not.
-- **Exits the developer did not start** close a surface without the guard: a daemon disconnect closing an orchestrator form, a closed terminal window, a killed process, a crash. These are not protected and edits are not kept.
+- **Whitespace edits**: only a value that differs from the original counts as a change. An edit typed and then deleted does not. Inline inputs compare trimmed values (FR-011a), so surrounding spaces alone never raise the dialog. In multi-line fields whitespace is content and counts.
+- **Exits the developer did not start** close a surface without the guard: a forced close (above), a closed terminal window, a killed process, a crash. These are not protected and edits are not kept.
 - **Out of scope**:
   - Credential prompts (host password, startup sign-in, the MCP authorization paste box) hold a secret for a single attempt. They are not guarded.
   - Settings toggles save immediately, so nothing is ever unsaved there.
@@ -169,27 +192,31 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 - **FR-001**: Every editable multi-line text field in every form MUST offer an **enlarge** action on **ctrl+e** while that field has focus.
 - **FR-002**: The help line MUST show `ctrl+e enlarge` when, and only when, a multi-line text field has focus.
 - **FR-003**: Enlarging MUST open a modal view showing the field's title and full text, using most of the terminal's height and width (see SC-003). The view covers the screen's header and footer.
-- **FR-004**: The enlarged view MUST be editable with the same editing and navigation behaviour as the inline field, and MUST scroll to keep the cursor visible.
+- **FR-004**: The enlarged view MUST be editable with the same editing and navigation behaviour as the inline field, and MUST scroll to keep the cursor visible. tab and shift+tab, which move between fields inline, MUST do nothing in the enlarged view; they neither insert text nor close it.
 - **FR-005**: Closing the enlarged view (esc or ctrl+e) MUST write its text back into the field, return focus to that field, and keep the form open. Closing it MUST NOT raise the unsaved-changes dialog.
+- **FR-005a**: ctrl+c in the enlarged view MUST write its text back and then act exactly as ctrl+c in the form (FR-012 (b)). If the form is changed, the unsaved-changes dialog opens and the enlarged view stays underneath it: Cancel returns to the enlarged view unchanged, while Save and Discard act on the whole form. If the form is unchanged, the form closes as it does today.
+- **FR-005b**: The enlarged view MUST offer a **revert** key, shown in its key hints, that restores the text the field held when the view opened. It undoes only the edits made in this view, never the form's other edits. The planning phase chooses the key, under the same no-clash rule as the dialog keys.
 - **FR-006**: The form's save key pressed in the enlarged view MUST close the view with its edits kept, then save the form exactly as the form's save key does.
 - **FR-007**: Edits made in the enlarged view MUST count towards the form's changed state exactly as inline edits do.
 - **FR-008**: The enlarged view MUST re-fit when the terminal is resized, keeping text, cursor and scroll position.
 - **FR-009**: ctrl+e MUST NOT launch an external editor anywhere in the app. On single-line inputs it MUST keep its existing move-to-end-of-line behaviour; on non-text fields it MUST do nothing. In multi-line fields and in the enlarged view, move-to-end-of-line stays available on `end`.
+- **FR-009a**: Every editable multi-line field, inline and enlarged, MUST accept text up to at least the existing 10,000-line load limit, with no lower line cap. This means removing the textarea's 99-line `MaxHeight` default, which currently stops enter from adding a line. Without it, removing the external editor would leave no way to grow a field past 99 lines. Today the editor's result already reaches fields with only the 10,000-line limit, so kit **Content** and **Agent instructions** can exceed 99 lines.
 
 **Unsaved-changes guard**
 
 - **FR-010**: The guard MUST apply to every surface listed under Background that holds edits until the developer saves or confirms them: multi-field forms (including the mark-free form), the kit editor (overview and item forms), the launch wizard, the reasoning-sandbox setup, the sources overlay, and the inline single-line inputs. Credential prompts and immediately-saving toggles are excluded.
 - **FR-011**: A surface MUST count as **changed** when, and only when, its current values or selections differ from those it had when it opened (for a create form: its initial or default values). Opening it, moving focus or scrolling MUST NOT count as a change, and an edit undone back to the original value MUST NOT count either. For the kit editor, the baseline is the kit as opened, after any automatic format migration. A pending migration alone does not count as a change; the existing "unchanged on disk until you save" notice covers it.
+- **FR-011a**: An inline single-line input MUST compare its value after the same normalisation enter applies (trimming). A value that enter would reject MUST still count as changed when it differs from the starting value, and Save MUST then fail validation: the input stays open with a message naming the problem. Today the only such value is an empty sandbox name, which enter silently ignores. Clearing a tag is valid, and the add-host and add-group inputs start empty, so an empty value there is unchanged.
 - **FR-012**: The guard MUST intercept every user-initiated exit from a changed surface:
   - (a) esc;
   - (b) ctrl+c inside a form, which MUST act exactly like esc and MUST NOT quit the app;
-  - (c) any surface-specific back or close key (e.g. `q` on the kit editor's overview).
+  - (c) any surface-specific back or close key that leaves the surface or drops part of its state (e.g. `q` on the kit editor's overview, esc in the sources add-browser).
 
-  On guarded surfaces that are not forms (inline inputs, the launch wizard, the kit overview, the sources overlay), ctrl+c keeps its current behaviour. Keys that edit text inside a field MUST NOT be treated as exits. This feature MUST NOT add new ways to leave a form.
+  A key that only steps back within the same surface without dropping anything is not an exit, and MUST raise no dialog (User Story 3, scenario 6). On guarded surfaces that are not forms (inline inputs, the launch wizard, the kit overview, the sources overlay), ctrl+c keeps its current behaviour. Keys that edit text inside a field MUST NOT be treated as exits. This feature MUST NOT add new ways to leave a form.
 - **FR-012a**: Backing out of a confirmation step that follows a form's save (e.g. MCP "register anyway?") MUST return to the form with every value intact, instead of discarding the form. This raises no dialog.
 - **FR-013**: When the developer tries to leave a changed surface, the app MUST show an **unsaved-changes dialog** instead of leaving. The dialog states that there are unsaved changes and offers three choices: **Save**, **Cancel** and **Discard**.
 - **FR-014**: Leaving an unchanged surface MUST work exactly as it does today, immediately and with no dialog.
-- **FR-015**: **Cancel** MUST close the dialog and return to the surface (or the enlarged view) unchanged, with the same values, selections, focus and cursor position.
+- **FR-015**: **Cancel** MUST close the dialog and return to the surface unchanged, with the same values, selections, focus and cursor position. When the dialog was raised from the enlarged view (FR-005a), Cancel MUST return to the enlarged view.
 - **FR-016**: **Discard** MUST close the surface without applying any of its edits, then complete the exit the developer asked for.
 - **FR-017**: **Save** MUST do exactly what the surface's own save or confirm action does, including any validation and follow-up confirmation step:
   - If validation fails, the surface MUST stay open showing the error.
@@ -206,7 +233,7 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 ### Key Entities
 
 - **Guarded surface**: one open form, inline input, wizard or overlay that holds edits. It keeps the values or selections it opened with, its current values, and whether it is changed. A nested editor is its own guarded surface inside its parent.
-- **Requested exit**: the exit the developer asked for while a surface was changed. It is held while the dialog is open, completed after Discard or a successful Save, and dropped after Cancel or a failed Save.
+- **Requested exit**: the exit the developer asked for while a surface was changed. It is held while the dialog is open. It is completed after Discard or a successful Save, and dropped after Cancel, a failed Save, or a declined follow-up confirm. A forced close supersedes it.
 - **Enlarged view**: a temporary large editor bound to one multi-line field. Its edits belong to that field's form.
 
 ## Success Criteria *(mandatory)*
@@ -218,6 +245,7 @@ A developer is editing a long text field, such as a kit's agent instructions, an
 - **SC-003**: On an 80×24 terminal, the enlarged view shows at least 16 lines of text. On a 200×50 terminal, it uses at least 80% of the terminal's height and width.
 - **SC-004**: A developer can enlarge a field, edit it, close the view and see the edit in the form using no more than two keypresses beyond the edit itself.
 - **SC-005**: The three dialog choices produce the specified result for every exit in User Stories 1–3. Cancel always restores the exact previous state of the surface.
+- **SC-006**: With 5,000 lines of text in the enlarged view on a 200×50 terminal, typing, cursor movement and scrolling show each keystroke's result within 100 ms. The planning phase includes a check of this, since rendering walks every line of the value.
 
 ## Assumptions
 
