@@ -214,7 +214,7 @@ func (m Model) updateOverviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch k {
-	case "enter", "x", "m", "o":
+	case "enter", "x", "m", "o", "t", "T":
 		return m.runKeyAction(surfaceJobs, it.run.target, it.run.run, k)
 	}
 	return m, nil
@@ -306,23 +306,36 @@ func (m Model) workerName(r *pb.Run) string {
 }
 
 func (m Model) lookupWorkerName(r *pb.Run) string {
+	if sb, _, ok := m.runSandbox(r); ok && sb.GetDisplayName() != "" {
+		return sb.GetDisplayName()
+	}
+	return short(r.GetSandboxId())
+}
+
+// runSandbox finds the record of a run's worker sandbox and the TUI host entry
+// it is on: among the sandboxes of the host whose daemon advertises the run's
+// sandbox_host_id (every host when none does), then the active host's list.
+func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
+	if r.GetSandboxId() == "" {
+		return nil, "", false
+	}
 	entry, _ := m.entryForDaemonHost(r.GetSandboxHostId())
 	for _, hs := range m.hostAgg {
 		if entry != "" && hs.Host.Entry.ID != entry {
 			continue
 		}
 		for _, sb := range hs.Sandboxes {
-			if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
-				return sb.GetDisplayName()
+			if sb.GetId() == r.GetSandboxId() {
+				return sb, hs.Host.Entry.ID, true
 			}
 		}
 	}
 	for _, sb := range m.sandboxes {
-		if sb.GetId() == r.GetSandboxId() && sb.GetDisplayName() != "" {
-			return sb.GetDisplayName()
+		if sb.GetId() == r.GetSandboxId() {
+			return sb, m.activeHost, true
 		}
 	}
-	return short(r.GetSandboxId())
+	return nil, "", false
 }
 
 // renderOverview renders the four sections; focus is the cursor's line.

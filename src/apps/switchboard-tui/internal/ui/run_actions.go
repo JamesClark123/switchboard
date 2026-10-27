@@ -163,10 +163,21 @@ func runFinished(r *pb.Run) bool {
 	return false
 }
 
+// runInFlight reports whether a run is on a worker (running, awaiting input or
+// awaiting review), so its worker sandbox has a terminal worth opening.
+func runInFlight(r *pb.Run) bool {
+	switch r.GetState() {
+	case pb.RunState_RUN_STATE_RUNNING, pb.RunState_RUN_STATE_AWAITING_INPUT, pb.RunState_RUN_STATE_AWAITING_REVIEW:
+		return true
+	}
+	return false
+}
+
 // runKeyAction is a per-run key on a surface (FR-010, FR-012, FR-016): enter
 // shows the composed prompt, x cancels a queued run, m marks the worker of a run
-// awaiting review free, o opens a finished run's results. A key that does not
-// apply to the run's state says so on the surface's line.
+// awaiting review free, o opens a finished run's results, t / T open the worker
+// sandbox's terminal in place / externally (SWI-14). A key that does not apply
+// to the run's state says so on the surface's line.
 func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
 	switch k {
@@ -190,8 +201,38 @@ func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) 
 			return m, nil
 		}
 		return m.openRunResults(t, run)
+	case "t", "T":
+		return m.runTerminal(s, run, k == "T")
 	}
 	return m, nil
+}
+
+// runTerminal opens the terminal of an in-flight run's worker sandbox: in place
+// (returning to the surface's screen on detach) or, with external, in its own
+// window. Refusals name the worker on the surface's line.
+func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model, tea.Cmd) {
+	op := m.opState(s)
+	if !runInFlight(run) {
+		op.status = "only an in-progress run has a terminal"
+		return m, nil
+	}
+	sb, host, ok := m.runSandbox(run)
+	if !ok {
+		op.status = "worker sandbox " + m.workerName(run) + " is not on a connected daemon"
+		return m, nil
+	}
+	if _, err := m.connectedDaemon(host); err != nil {
+		op.status = "worker sandbox " + m.workerName(run) + ": " + err.Error()
+		return m, nil
+	}
+	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		op.status = "worker sandbox " + m.workerName(run) + " is not running"
+		return m, nil
+	}
+	if external {
+		return m.openExternalTerminal(sb, host)
+	}
+	return m.enterTerminalFrom(sb, host, surfaceScreen(s))
 }
 
 // runPromptCmd fetches a run (its composed prompt) for the read-only overlay.

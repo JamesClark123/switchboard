@@ -25,6 +25,9 @@ type termState struct {
 	host       string
 	name       string
 	cols, rows int
+	// returnTo is the screen leaving the terminal goes back to (SWI-14): the
+	// Sandboxes list (the zero value) or the Jobs screen it was opened from.
+	returnTo screen
 }
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
@@ -55,11 +58,13 @@ type termOpenedMsg struct {
 	id, host   string
 	name       string
 	cols, rows int
+	returnTo   screen
 }
 type termUpdateMsg struct{}
 type termClosedMsg struct {
-	err  error
-	name string
+	err      error
+	name     string
+	returnTo screen
 }
 
 // enterTerminal (lowercase `t`) opens the sandbox's persistent session in-place
@@ -67,6 +72,12 @@ type termClosedMsg struct {
 // blocks; the session shows prior output immediately via the daemon snapshot
 // (FR-003).
 func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
+	return m.enterTerminalFrom(sb, host, screenList)
+}
+
+// enterTerminalFrom is enterTerminal for a terminal opened from another screen:
+// detaching, or the session closing, returns to returnTo (SWI-14).
+func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, returnTo screen) (tea.Model, tea.Cmd) {
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		m.status = "start the sandbox before opening its terminal"
 		return m, nil
@@ -84,11 +95,11 @@ func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 		sess, err := d.AttachTerminal(ctx, id, client.AttachInTUI, uint32(cols), uint32(rows), sink)
 		if err != nil {
 			cancel()
-			return termClosedMsg{err: err, name: name}
+			return termClosedMsg{err: err, name: name, returnTo: returnTo}
 		}
 		return termOpenedMsg{
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
-			id: id, host: host, name: name, cols: cols, rows: rows,
+			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo,
 		}
 	}
 }
@@ -98,6 +109,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		screen: msg.screen, session: msg.session, cancel: msg.cancel,
 		updates: msg.updates, done: msg.done,
 		sandboxID: msg.id, host: msg.host, name: msg.name, cols: msg.cols, rows: msg.rows,
+		returnTo: msg.returnTo,
 	}
 	m.screen = screenTerminal
 	m.status = ""
@@ -106,7 +118,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 	m.closeTerm()
-	m.screen = screenList
+	m.screen = msg.returnTo
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		if errors.Is(msg.err, client.ErrExternalAlreadyOpen) {
 			m.status = "an external terminal is already attached to " + msg.name
@@ -116,6 +128,10 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.status = "detached from " + msg.name
+	if m.screen != screenList {
+		// Jobs follows its own stream; only the list reloads (SWI-14).
+		return m, nil
+	}
 	m.listLoading = true
 	return m, m.reloadCmd()
 }
@@ -172,13 +188,13 @@ func (m Model) termRows() int {
 }
 
 // updateTerminalKey forwards keystrokes to the sandbox PTY. Ctrl+Q detaches back
-// to the list (leaving the session running); everything else is translated to
-// raw bytes and sent to the daemon.
+// to the screen the terminal was opened from (leaving the session running);
+// everything else is translated to raw bytes and sent to the daemon.
 func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlQ {
-		name := m.term.name
+		name, back := m.term.name, m.term.returnTo
 		m.closeTerm()
-		m.screen = screenList
+		m.screen = back
 		m.status = "detached from " + name
 		return m, nil
 	}
@@ -192,7 +208,7 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.term.screen.ScrollToBottom()
 		}
 		if err := m.term.session.SendData(b); err != nil {
-			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name})
+			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name, returnTo: m.term.returnTo})
 		}
 	}
 	return m, nil
