@@ -339,11 +339,11 @@ func TestDaemonOrchestratorsSingleHost(t *testing.T) {
 
 // hostileName carries an OSC 52 clipboard write, a screen clear, a carriage
 // return and a bidi override.
-const hostileName = "evil\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED‮txt"
+const hostileName = "evil\x1b]52;c;Zm9v\x07\x1b[2J\rPWNED\u202etxt"
 
 func assertNoHostile(t *testing.T, where, v string) {
 	t.Helper()
-	for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "‮", "\x07"} {
+	for _, bad := range []string{"\x1b]", "\x1b[2J", "\r", "\u202e", "\x07"} {
 		if strings.Contains(v, bad) {
 			t.Errorf("%s shows %q", where, bad)
 		}

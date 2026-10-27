@@ -73,7 +73,7 @@ func TestSanitizeLine(t *testing.T) {
 // Every format character and the line/paragraph separators are dropped, not
 // only the bidi controls listed by hand before (review run-224).
 func TestSanitizeDropsAllFormatCharacters(t *testing.T) {
-	in := "a­b c d\U000E0041e᠎f"
+	in := "a\u00ADb\u2028c\u2029d\U000E0041e\u180Ef"
 	if got := sanitizeTerminalText(in); got != "abcdef" {
 		t.Errorf("sanitizeTerminalText(%q) = %q", in, got)
 	}
