@@ -421,7 +421,7 @@ func TestOrchDetailViewsAndAttachPickerAreSanitised(t *testing.T) {
 // shown was cleaned of hostile characters; the form says it would be cleaned
 // (review run-242 finding 6).
 func TestRenameUneditedIsNoOp(t *testing.T) {
-	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "bot‮exe")}}
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "bot\u202eexe")}}
 	m := openDaemonOrchs(t, sized(New(d, "/work")), "")
 	m, _ = update(m, press("R"))
 	if m.orch.form == nil || !strings.Contains(m.View(), "invisible characters; saving an edit drops them") {
