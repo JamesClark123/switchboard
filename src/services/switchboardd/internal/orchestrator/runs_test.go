@@ -13,7 +13,7 @@ func startOne(t *testing.T) (*testEnv, *fakeWorker, *pb.Orchestrator, *runtime, 
 	t.Helper()
 	env, w, o, rt := dispatchEnv(t, 1, false)
 	run := call(t, env, o.GetId(), "1")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), run.GetId())
 		return got.GetState() == pb.RunState_RUN_STATE_RUNNING
@@ -23,9 +23,10 @@ func startOne(t *testing.T) (*testEnv, *fakeWorker, *pb.Orchestrator, *runtime, 
 
 // status pushes a worker status event through the fake host's stream.
 func push(w *fakeWorker, id string, agent pb.AgentStatus, state pb.SandboxState) {
-	sb := w.get(id)
-	sb.Agent.Status = agent
-	sb.State = state
+	sb := w.update(id, func(sb *pb.Sandbox) {
+		sb.Agent.Status = agent
+		sb.State = state
+	})
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: sb}}
 }
 
@@ -97,6 +98,7 @@ func TestReviewGraceThenMarkFree(t *testing.T) {
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_REVIEW })
 	// The worker's record carries needs_review; the inbox got RUN_AWAITING_REVIEW.
 	waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetNeedsReview() })
+	waitFor(t, func() bool { return len(env.hub.notifications()) >= 1 })
 	n := env.hub.notifications()
 	if len(n) != 1 || n[0].GetKind() != pb.NotificationKind_NOTIFICATION_KIND_RUN_AWAITING_REVIEW {
 		t.Errorf("notifications = %+v", n)
@@ -122,7 +124,7 @@ func TestReviewGraceThenMarkFree(t *testing.T) {
 	// run, same path).
 	run2 := call(t, env, o.GetId(), "2")
 	push(w, "wa", pb.AgentStatus_AGENT_STATUS_IDLE, pb.SandboxState_SANDBOX_STATE_RUNNING)
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), run2.GetId()) == pb.RunState_RUN_STATE_RUNNING })
 	push(w, "wa", pb.AgentStatus_AGENT_STATUS_IDLE, pb.SandboxState_SANDBOX_STATE_RUNNING)
 	waitFor(t, func() bool { rt.mu.Lock(); defer rt.mu.Unlock(); return len(rt.reviewTimers) == 1 })
@@ -184,6 +186,8 @@ func TestFailureEdges(t *testing.T) {
 			if got.GetReason() != c.want {
 				t.Errorf("reason = %q, want %q", got.GetReason(), c.want)
 			}
+			// RUN_FAILED is raised after the run is stored as FAILED.
+			waitFor(t, func() bool { return len(env.hub.notifications()) >= 1 })
 			n := env.hub.notifications()
 			if len(n) != 1 || n[0].GetKind() != pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED {
 				t.Errorf("notifications = %+v", n)
@@ -212,7 +216,7 @@ func TestFailureEdges(t *testing.T) {
 	// Orchestrator removal fails in-flight and cancels queued runs.
 	env2, _, o2, rt2, run2 := startOne(t)
 	queued := call(t, env2, o2.GetId(), "2")
-	settle(rt2)
+	settle(t, rt2)
 	resp, err := env2.svc.Remove(o2.GetId())
 	if err != nil || resp.GetRunsFailed() != 1 || resp.GetRunsCancelled() != 1 || resp.GetWorkersDetached() != 1 {
 		t.Errorf("remove = %+v / %v (run %s queued %s)", resp, err, run2.GetId(), queued.GetId())
@@ -223,8 +227,7 @@ func TestReconcileInFlightTable(t *testing.T) {
 	env, w, o, rt, run := startOne(t)
 	// Mark the run as RUNNING on a worker whose latest record says IDLE and no
 	// report arrived: reconcile ⇒ AWAITING_REVIEW, with no re-delivery.
-	sb := w.get("wa")
-	sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+	sb := w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE })
 	rt.mu.Lock()
 	rt.sbs["wa"] = sb
 	rt.mu.Unlock()

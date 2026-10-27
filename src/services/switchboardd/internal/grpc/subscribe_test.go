@@ -93,15 +93,8 @@ func startServerWithAgents(t *testing.T) (pb.SwitchboardClient, *agent.Hub) {
 
 func TestSubscribeLiveNotification(t *testing.T) {
 	client, hub := startServerWithAgents(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	stream, err := client.Subscribe(ctx, &pb.SubscribeRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Give the server a moment to register the subscriber, then emit.
-	time.Sleep(100 * time.Millisecond)
+	stream := subscribe(t, client, &pb.SubscribeRequest{})
 	hub.EmitNotification("sb1", pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "done", time.Unix(1, 0))
 
 	ev, err := stream.Recv()
@@ -121,10 +114,7 @@ func TestSubscribeReplayUndeliveredAndAck(t *testing.T) {
 	// Emitted while no client is connected -> buffered.
 	ev := hub.EmitNotification("sb9", pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING, "prompt me", time.Unix(1, 0))
 
-	stream, err := client.Subscribe(ctx, &pb.SubscribeRequest{ReplayUndelivered: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	stream := subscribe(t, client, &pb.SubscribeRequest{ReplayUndelivered: true})
 	got, err := stream.Recv()
 	if err != nil {
 		t.Fatal(err)
@@ -241,4 +231,27 @@ func indexBytes(b []byte, sub string) int {
 		}
 	}
 	return -1
+}
+
+// testWaitTimeout bounds every wait on the daemon in this package's tests. It
+// only costs time when a test is already failing; it leaves headroom for -race,
+// atomic coverage and 2-core CI runners.
+const testWaitTimeout = 15 * time.Second
+
+// subscribe opens an event stream and returns once the daemon has registered
+// the subscriber (Subscribe sends its headers only then), so no event emitted
+// after it returns can be missed. The stream ends after testWaitTimeout, so a
+// Recv for an event that never comes fails instead of hanging the package.
+func subscribe(t *testing.T, client pb.SwitchboardClient, req *pb.SubscribeRequest) pb.Switchboard_SubscribeClient {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testWaitTimeout)
+	t.Cleanup(cancel)
+	stream, err := client.Subscribe(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Header(); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	return stream
 }

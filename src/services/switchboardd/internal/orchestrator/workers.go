@@ -182,17 +182,22 @@ func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string) (*pb.Wo
 	if err != nil {
 		return nil, remoteErr(err, hostID)
 	}
+	// Committed under reconcileMu, like a reasoning launch: a reconcile whose
+	// listing predates the attach would otherwise drop the new worker.
+	rt.reconcileMu.Lock()
 	if _, err := rt.update(func(o *pb.Orchestrator) error {
 		if !rosterHas(o, sandboxID) {
 			o.Workers = append(o.Workers, &pb.Worker{SandboxId: sandboxID, HostId: hostID, AttachedAt: sb.GetController().GetAttachedAt()})
 		}
 		return nil
 	}); err != nil {
+		rt.reconcileMu.Unlock()
 		return nil, err
 	}
 	rt.mu.Lock()
 	rt.sbs[sandboxID] = proto.Clone(sb).(*pb.Sandbox)
 	rt.mu.Unlock()
+	rt.reconcileMu.Unlock()
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
 	up, _ := rt.reachability(hostID)
@@ -227,7 +232,11 @@ func (rt *runtime) detach(ctx context.Context, sandboxID string) error {
 	if _, err := api.DetachController(cctx, &pb.DetachControllerRequest{SandboxId: sandboxID, OrchestratorId: rt.id}); err != nil {
 		return remoteErr(err, hostID)
 	}
+	// Under reconcileMu: a reconcile whose listing predates the detach would
+	// otherwise re-adopt the worker it still shows as controlled.
+	rt.reconcileMu.Lock()
 	rt.dropWorker(sandboxID)
+	rt.reconcileMu.Unlock()
 	rt.svc.emitChanged(rt.id)
 	return nil
 }

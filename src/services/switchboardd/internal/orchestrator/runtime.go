@@ -40,9 +40,10 @@ type runtime struct {
 	runs            runState
 	reviewTimers    map[string]Timer // run id -> armed review-grace timer
 	reported        map[string]bool  // run id -> a completion report arrived
-	// reconcileMu serializes a host reconcile (list + apply) with the commit of
-	// a freshly launched reasoning sandbox, so a listing fetched before the
-	// launch finished can never drop the record the launch just published.
+	// reconcileMu serializes a host reconcile (list + apply) with the roster
+	// commit of an attach, a detach and a freshly launched reasoning sandbox,
+	// so a listing fetched before one of them can never undo it (drop the new
+	// worker, or re-adopt the detached one).
 	reconcileMu   sync.Mutex
 	inputNotified map[string]bool // run id -> RUN_NEEDS_INPUT raised for the current input wait
 	sched         *scheduler

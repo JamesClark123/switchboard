@@ -50,13 +50,12 @@ jobs:
       - name: Lint
         run: make lint
 
-      - name: Unit + integration tests
-        run: make test
-
       - name: Env schema/example lockstep
         run: make env-check
 
-      - name: Coverage (90% floor per module)
+      # make cover runs every unit + integration test (once, with coverage) and
+      # prints any failing test's output; `make test` stays for local runs.
+      - name: Tests + coverage (90% floor per module)
         run: make cover
 
   e2e:

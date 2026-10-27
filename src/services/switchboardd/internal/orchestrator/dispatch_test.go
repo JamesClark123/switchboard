@@ -2,12 +2,19 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
 	"time"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/worker"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // dispatchEnv is an orchestrator with a reachable fake host carrying n
@@ -25,7 +32,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 	if reasoning {
 		r := running("reasoning-1", "reasoning-1")
 		r.Controller = &pb.SandboxController{OrchestratorId: o.GetId(), Name: "review-bot", HostId: "host-m", Reasoning: true}
-		w.put(r)
+		w.put(proto.Clone(r).(*pb.Sandbox)) // the fake and the runtime each own a copy
 		if _, err := rt.update(func(x *pb.Orchestrator) error {
 			x.Workers = append(x.Workers, &pb.Worker{SandboxId: "reasoning-1", HostId: "box", Reasoning: true})
 			x.ReasoningSandboxId = "reasoning-1"
@@ -43,9 +50,11 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 	return env, w, o, rt
 }
 
-// settle waits until no dispatch pass is pending.
-func settle(rt *runtime) {
-	deadline := time.Now().Add(3 * time.Second)
+// settle waits until no dispatch pass is pending, failing the test if it never
+// settles (rather than letting a later waitFor fail with a misleading message).
+func settle(t *testing.T, rt *runtime) {
+	t.Helper()
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		rt.dispatchMu.Lock()
 		idle := !rt.dispatching && !rt.dispatchPending
@@ -55,6 +64,7 @@ func settle(rt *runtime) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	t.Fatal("dispatch did not settle in time")
 }
 
 func call(t *testing.T, env *testEnv, orchID, number string) *pb.Run {
@@ -71,7 +81,7 @@ func TestDispatchOrderAndCapacity(t *testing.T) {
 	r1 := call(t, env, o.GetId(), "1")
 	r2 := call(t, env, o.GetId(), "2")
 	r3 := call(t, env, o.GetId(), "3")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		runs, _ := env.svc.ListRuns(o.GetId())
 		return len(runs.GetInFlight()) == 2 && len(runs.GetQueued()) == 1
@@ -142,14 +152,13 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
 		t.Fatal(err)
 	}
-	wb := w.get("wb")
-	wb.Tag = "ci"
+	wb := w.update("wb", func(sb *pb.Sandbox) { sb.Tag = "ci" })
 	rt.mu.Lock()
 	rt.sbs["wb"] = wb
 	rt.mu.Unlock()
 	r1 := call(t, env, o.GetId(), "1")
 	reason, _ := env.svc.CallAction(o.GetId(), "triage", map[string]string{"issues": "a, b"}, pb.EventKind_EVENT_KIND_USER, "", "")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		runs, _ := env.svc.ListRuns(o.GetId())
 		return len(runs.GetInFlight()) == 2
@@ -176,7 +185,7 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	r3, _ := env.svc.CallAction(o.GetId(), "any", map[string]string{"number": "3", "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", "")
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r3.GetId())
 		return got.GetState() == pb.RunState_RUN_STATE_RUNNING && got.GetSandboxId() == "wa"
@@ -210,14 +219,136 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 
 // Delivery outcomes: FAILED_PRECONDITION keeps the run queued and the sandbox
 // unclaimed for the pass; any other error fails the run (FR-124).
+// setAgent sets a worker's agent status on both the fake host and the
+// orchestrator's cached record, without a status event (no dispatch pass).
+func setAgent(rt *runtime, w *fakeWorker, id string, st pb.AgentStatus) {
+	sb := w.update(id, func(sb *pb.Sandbox) { sb.Agent.Status = st })
+	rt.mu.Lock()
+	rt.sbs[id] = sb
+	rt.mu.Unlock()
+}
+
+// A worker removed while a pass is delivering to another one is out of that
+// pass: the later run stays queued instead of failing on a delivery to a
+// sandbox that is gone.
+func TestWorkerRemovedMidPassKeepsRunQueued(t *testing.T) {
+	env, w, o, rt := dispatchEnv(t, 2, false)
+	setAgent(rt, w, "wa", pb.AgentStatus_AGENT_STATUS_WORKING)
+	setAgent(rt, w, "wb", pb.AgentStatus_AGENT_STATUS_WORKING)
+	r1 := call(t, env, o.GetId(), "1")
+	r2 := call(t, env, o.GetId(), "2")
+	settle(t, rt)
+	// While r1 is delivered to wa, wb is removed and the orchestrator has seen it.
+	removed := make(chan struct{})
+	w.mu.Lock()
+	w.onDeliver = func(req *pb.DeliverWorkerPromptRequest) {
+		if req.GetRunId() != r1.GetId() {
+			return
+		}
+		w.mu.Lock()
+		delete(w.sbs, "wb")
+		w.mu.Unlock()
+		w.events <- &pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: "wb"}}}
+		for deadline := time.Now().Add(testWaitTimeout); rt.sandboxRecord("wb") != nil && time.Now().Before(deadline); {
+			time.Sleep(2 * time.Millisecond)
+		}
+		close(removed)
+	}
+	w.mu.Unlock()
+	// Both free in one pass: r1 → wa, then r2 would go to wb.
+	setAgent(rt, w, "wa", pb.AgentStatus_AGENT_STATUS_IDLE)
+	setAgent(rt, w, "wb", pb.AgentStatus_AGENT_STATUS_IDLE)
+	rt.triggerDispatch()
+	<-removed
+	settle(t, rt)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), r1.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	if got, _ := env.svc.GetRun(o.GetId(), r2.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Errorf("r2 = %v (%q), want QUEUED", got.GetState(), got.GetReason())
+	}
+}
+
+// ownHostAPI is the own host's worker side as the daemon serves it in-process
+// (worker.Local): refusals come back as the worker sentinel, not a gRPC status.
+type ownHostAPI struct{ worker.API }
+
+func (a ownHostAPI) DeliverWorkerPrompt(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
+	resp, err := a.API.DeliverWorkerPrompt(ctx, req)
+	if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+		return &pb.DeliverWorkerPromptResponse{}, fmt.Errorf("%w: %s", worker.ErrPrecondition, st.Message())
+	}
+	return resp, err
+}
+
+// A refusal by the own host's worker side keeps the run queued, as one over a
+// remote link does.
+func TestOwnHostRefusalKeepsRunQueued(t *testing.T) {
+	w := newFakeWorker("host-m")
+	conn, err := dial.DialLocal(context.Background(), w.serve(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	reg, err := registry.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reg.Close() })
+	env := &testEnv{reg: reg, hub: &fakeHub{}, clock: newFakeClock(), dials: &dialRecorder{socks: map[string]string{}}}
+	env.svc = NewService(Deps{Store: reg, Hub: env.hub, HostID: "host-m", Dial: env.dials.dial, Clock: env.clock, Logf: t.Logf, DaemonVersion: "test",
+		Local: ownHostAPI{worker.Remote(conn.API())}})
+	if err := env.svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.svc.Stop)
+	o, err := env.svc.Create("review-bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := env.svc.runtimeFor(o.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := running("wa", "worker-wa")
+	sb.HostId = "host-m"
+	w.put(sb)
+	waitFor(t, func() bool { ok, _ := rt.reachability("host-m"); return ok })
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.PutAction(o.GetId(), reviewPR()); err != nil {
+		t.Fatal(err)
+	}
+	// The agent turns busy as the delivery arrives (the record moved after the
+	// orchestrator's check), so the host refuses it.
+	delivered := make(chan struct{}, 1)
+	w.mu.Lock()
+	w.onDeliver = func(*pb.DeliverWorkerPromptRequest) {
+		w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
+		select {
+		case delivered <- struct{}{}:
+		default:
+		}
+	}
+	w.mu.Unlock()
+	r1 := call(t, env, o.GetId(), "1")
+	select {
+	case <-delivered:
+	case <-time.After(testWaitTimeout):
+		t.Fatal("no delivery attempt")
+	}
+	settle(t, rt)
+	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Errorf("own-host refusal: run = %v (%q), want QUEUED", got.GetState(), got.GetReason())
+	}
+}
+
 func TestDeliveryRefusedAndFailed(t *testing.T) {
 	env, w, o, rt := dispatchEnv(t, 1, false)
 	// The fake refuses delivery when the agent is not idle.
-	sb := w.get("wa")
-	sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING
+	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
 	// …but the orchestrator's cached record still says idle (a race).
 	r1 := call(t, env, o.GetId(), "1")
-	settle(rt)
+	settle(t, rt)
 	time.Sleep(20 * time.Millisecond)
 	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Errorf("a refused delivery keeps the run queued: %v", got.GetState())
@@ -227,7 +358,7 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	delete(w.sbs, "wa")
 	w.mu.Unlock()
 	rt.triggerDispatch()
-	settle(rt)
+	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r1.GetId())
 		return got.GetState() == pb.RunState_RUN_STATE_FAILED
@@ -236,6 +367,8 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	if !strings.Contains(got.GetReason(), "delivery failed") {
 		t.Errorf("reason = %q", got.GetReason())
 	}
+	// RUN_FAILED is raised after the run is stored as FAILED.
+	waitFor(t, func() bool { return len(env.hub.notifications()) >= 1 })
 	n := env.hub.notifications()
 	if len(n) != 1 || n[0].GetKind() != pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED || !strings.Contains(n[0].GetMessage(), "review-bot") {
 		t.Errorf("notifications = %+v", n)
@@ -264,7 +397,7 @@ func TestDispatchOrderProperty(t *testing.T) {
 				w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: w.get(id)}}
 			}
 		}
-		settle(rt)
+		settle(t, rt)
 		time.Sleep(3 * time.Millisecond)
 		// At most one in-flight run per sandbox at every step (SC-004).
 		runs, _ := env.svc.ListRuns(o.GetId())

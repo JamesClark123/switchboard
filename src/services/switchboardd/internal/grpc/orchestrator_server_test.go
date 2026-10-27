@@ -77,12 +77,7 @@ func TestOrchestratorRPCsRoundTrip(t *testing.T) {
 	c := env.client
 
 	// Subscribe first so the orchestrator_changed arm is observed on the wire.
-	sctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stream, err := c.Subscribe(sctx, &pb.SubscribeRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	stream := subscribe(t, c, &pb.SubscribeRequest{})
 
 	o, err := c.CreateOrchestrator(ctx, &pb.CreateOrchestratorRequest{Name: "review-bot"})
 	if err != nil || o.GetName() != "review-bot" || o.GetHostId() != "host-1" {
@@ -242,7 +237,7 @@ func twoDaemons(t *testing.T) (m *orchEnv, nClient pb.SwitchboardClient, nDir st
 
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -480,9 +475,7 @@ func TestTwoDaemonsCallDeliverReviewMarkFree(t *testing.T) {
 	}
 	// The sandbox stops ⇒ the run fails, N's record clears the run, RUN_FAILED
 	// notification raised on M.
-	sctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stream, _ := m.client.Subscribe(sctx, &pb.SubscribeRequest{})
+	stream := subscribe(t, m.client, &pb.SubscribeRequest{})
 	if _, err := n.StopSandbox(ctx, &pb.SandboxIdRequest{SandboxId: sb.GetId()}); err != nil {
 		t.Fatal(err)
 	}

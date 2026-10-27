@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // --- fake clock (research R16) ---
@@ -26,7 +27,9 @@ type fakeClock struct {
 	timers []*fakeTimer
 }
 
+// fakeTimer's stopped/fired flags are guarded by its clock's mu.
 type fakeTimer struct {
+	c       *fakeClock
 	at      time.Time
 	f       func()
 	stopped bool
@@ -44,12 +47,14 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &fakeTimer{at: c.now.Add(d), f: f}
+	t := &fakeTimer{c: c, at: c.now.Add(d), f: f}
 	c.timers = append(c.timers, t)
 	return t
 }
 
 func (t *fakeTimer) Stop() bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
 	t.stopped = true
 	return !t.fired
 }
@@ -67,11 +72,13 @@ func (c *fakeClock) Advance(d time.Duration) {
 			rest = append(rest, t)
 		}
 	}
+	for _, t := range due {
+		t.fired = true
+	}
 	c.timers = rest
 	c.mu.Unlock()
 	sort.SliceStable(due, func(i, j int) bool { return due[i].at.Before(due[j].at) })
 	for _, t := range due {
-		t.fired = true
 		t.f()
 	}
 }
@@ -207,9 +214,15 @@ func newEnv(t *testing.T) *testEnv {
 	return env
 }
 
+// testWaitTimeout bounds every polling wait in this package's tests. It only
+// costs time when a test is already failing, so it is generous: it leaves
+// headroom for -race, atomic coverage (-coverpkg over the whole module) and
+// 2-core CI runners, where a 3 s deadline proved flaky.
+const testWaitTimeout = 15 * time.Second
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -236,6 +249,9 @@ type fakeWorker struct {
 	links  int
 	// linkIn lets a test push frames (call) to the orchestrator over the link.
 	linkOut chan *pb.OrchestratorLinkFrame
+	// onDeliver, when set (under mu), runs at the start of each
+	// DeliverWorkerPrompt, before the fake decides; it may change records.
+	onDeliver func(req *pb.DeliverWorkerPromptRequest)
 }
 
 func newFakeWorker(hostID string) *fakeWorker {
@@ -257,7 +273,7 @@ func (w *fakeWorker) ListSandboxes(context.Context, *pb.ListSandboxesRequest) (*
 	defer w.mu.Unlock()
 	out := &pb.ListSandboxesResponse{}
 	for _, sb := range w.sbs {
-		out.Sandboxes = append(out.Sandboxes, sb)
+		out.Sandboxes = append(out.Sandboxes, proto.Clone(sb).(*pb.Sandbox))
 	}
 	return out, nil
 }
@@ -323,8 +339,8 @@ func (w *fakeWorker) AttachController(_ context.Context, req *pb.AttachControlle
 	if c := sb.GetController(); c != nil && c.GetOrchestratorId() != req.GetController().GetOrchestratorId() {
 		return nil, status.Errorf(codes.AlreadyExists, "sandbox is controlled by %s", c.GetName())
 	}
-	sb.Controller = req.GetController()
-	return sb, nil
+	sb.Controller = proto.Clone(req.GetController()).(*pb.SandboxController)
+	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
 func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControllerRequest) (*pb.Sandbox, error) {
@@ -336,7 +352,7 @@ func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControlle
 		return nil, status.Error(codes.NotFound, "sandbox not found")
 	}
 	sb.Controller = nil
-	return sb, nil
+	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
 func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest) (*pb.Sandbox, error) {
@@ -364,16 +380,27 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
 		}
 	}
-	return sb, nil
+	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
 func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
 	w.record("deliver %s %s", req.GetSandboxId(), req.GetRunId())
 	w.mu.Lock()
+	hook := w.onDeliver
+	w.mu.Unlock()
+	if hook != nil {
+		hook(req)
+	}
+	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb, ok := w.sbs[req.GetSandboxId()]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "sandbox not found")
+	}
+	// As the real worker side (worker.Service.Deliver): only a worker of the
+	// calling orchestrator, running, idle and without a run takes a delivery.
+	if c := sb.GetController(); c == nil || c.GetOrchestratorId() != req.GetOrchestratorId() {
+		return nil, status.Error(codes.FailedPrecondition, "not a worker of this orchestrator")
 	}
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || sb.GetController().GetRun() != nil {
 		return nil, status.Error(codes.FailedPrecondition, "not free")
@@ -413,10 +440,25 @@ func (w *fakeWorker) put(sb *pb.Sandbox) {
 	w.sbs[sb.GetId()] = sb
 }
 
+// get returns a snapshot of a stored record (nil when absent); change one
+// through update, never through a snapshot.
 func (w *fakeWorker) get(id string) *pb.Sandbox {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.sbs[id]
+	sb, ok := w.sbs[id]
+	if !ok {
+		return nil
+	}
+	return proto.Clone(sb).(*pb.Sandbox)
+}
+
+// update changes a stored record under the lock and returns a snapshot of it.
+func (w *fakeWorker) update(id string, fn func(sb *pb.Sandbox)) *pb.Sandbox {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	sb := w.sbs[id]
+	fn(sb)
+	return proto.Clone(sb).(*pb.Sandbox)
 }
 
 // serve starts the fake on a unix socket and returns its path.
