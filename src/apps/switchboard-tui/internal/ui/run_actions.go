@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
-	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -47,14 +46,15 @@ func (m Model) connectedDaemon(host string) (Daemon, error) {
 		return m.daemon, nil
 	}
 	hc, ok := m.manager.Get(host)
-	if !ok || hc.State != client.HostConnected {
+	d := m.connOf(hc)
+	if !ok || d == nil {
 		return nil, fmt.Errorf("%s is not connected", m.hostDisplayName(host))
 	}
 	if hs := m.jobs.hosts[host]; hs != nil && hs.lost != nil {
 		// Still "connected" to the client, but its link died (R3).
 		return nil, fmt.Errorf("%s: connection lost", m.hostDisplayName(host))
 	}
-	return m.daemonForHost(host), nil
+	return d, nil
 }
 
 // requireDaemon is connectedDaemon for an operation started on a surface: a
@@ -270,6 +270,12 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	}
 	if parked {
 		return m.freeParkedWorker(sb.GetId(), sb.GetDisplayName(), orchHost, c.GetOrchestratorId())
+	}
+	// Refuse before touching the detail state: a refusal leaves the list as it
+	// was (review run-224 item 3).
+	if _, err := m.connectedDaemon(orchHost); err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
 	}
 	// The dialog lives on the detail state but returns to the list.
 	t := orchTarget{host: orchHost, hostName: m.hostDisplayName(orchHost), id: c.GetOrchestratorId(), name: c.GetName()}

@@ -114,8 +114,8 @@ func (m Model) orchHosts() []orchHost {
 		if row.name == "" {
 			row.name = row.id
 		}
-		if hc.State == client.HostConnected {
-			row.d = m.daemonForHost(hc.Entry.ID)
+		if d := m.connOf(hc); d != nil {
+			row.d = d
 		}
 		out = append(out, row)
 	}

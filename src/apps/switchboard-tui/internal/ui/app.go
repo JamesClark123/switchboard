@@ -1195,6 +1195,24 @@ func (m Model) daemonForHost(hostID string) Daemon {
 	return m.daemon
 }
 
+// connOf is the daemon of one host snapshot, read from that snapshot only (no
+// second look at the manager, which another goroutine may be redialing): its
+// connection while connected, or the active daemon when it is the active host
+// (adopted without a connection object); nil otherwise — never another
+// daemon (R12, FR-030).
+func (m Model) connOf(hc *client.HostConn) Daemon {
+	if hc == nil || hc.State != client.HostConnected {
+		return nil
+	}
+	if hc.Conn != nil {
+		return hc.Conn
+	}
+	if hc.Entry.ID == m.activeHost {
+		return m.daemon
+	}
+	return nil
+}
+
 // currentHostID is the host owning the list-selected sandbox.
 func (m Model) currentHostID() string {
 	if it, ok := m.list.SelectedItem().(listItem); ok && it.host != "" {

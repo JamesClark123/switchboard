@@ -134,19 +134,9 @@ func (m Model) applyHosts(msg hostsMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	// Daemons › Orchestrators and the detail opened from it act on one daemon
-	// only; when it drops they close rather than reach any other (FR-030).
-	if (m.screen == screenDaemonOrchs || m.screen == screenOrchDetail) && m.daemonOrchs.host != "" {
-		for _, row := range msg {
-			if row.Host.Entry.ID == m.daemonOrchs.host && row.Host.State != client.HostConnected {
-				m.screen = screenDaemons
-				m.daemons.options = false
-				m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-				m.orchDetail.form = nil
-				m.status = m.daemonOrchs.hostName + " disconnected — orchestrators closed"
-			}
-		}
-	}
+	// Daemons › Orchestrators and the detail act on one daemon only; when it
+	// drops they close rather than reach any other (FR-030).
+	m.closeOrchAdminOnDrop(msg)
 	if !m.hosts.ready {
 		return m, nil
 	}
@@ -408,4 +398,55 @@ func (m Model) hostPasswordModal() string {
 	}
 	lines = append(lines, m.hosts.pwInput.View(), "", helpStyle.Render("enter connect · blank = key/agent auth · esc skip"))
 	return modalStyle.Width(m.modalInnerWidth()).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// closeOrchAdminOnDrop closes Daemons › Orchestrators or the orchestrator detail
+// when the daemon it acts on is no longer connected — also when settings or a
+// confirm is open over it — and says so. The detail's daemon is its own host
+// (it may have been opened from the sandbox list for mark free), not the
+// section's (review run-224 items 4, 5).
+func (m *Model) closeOrchAdminOnDrop(msg hostsMsg) {
+	under := m.screen
+	switch under {
+	case screenSettings:
+		under = m.settingsView.returnTo
+	case screenConfirm:
+		under = m.confirm.returnTo
+	}
+	host, name := "", ""
+	switch under {
+	case screenDaemonOrchs:
+		host, name = m.daemonOrchs.host, m.daemonOrchs.hostName
+	case screenOrchDetail:
+		host, name = m.orchDetail.host, m.orchDetail.hostName
+		if name == "" {
+			name = m.hostDisplayName(host)
+		}
+	default:
+		return
+	}
+	if host == "" {
+		return
+	}
+	for _, row := range msg {
+		if row.Host.Entry.ID != host || row.Host.State == client.HostConnected {
+			continue
+		}
+		back := screenDaemons
+		if under == screenOrchDetail && m.markFreeFromList {
+			back = screenList
+		}
+		m.daemons.options = false
+		m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+		m.closeOpForm(surfaceDetail)
+		m.markFreeFromList = false
+		switch m.screen {
+		case screenSettings:
+			m.settingsView.returnTo = back // settings stays open; esc lands safely
+		default:
+			m.screen = back // a confirm over it is dropped with it
+		}
+		m.status = name + " disconnected — orchestrators closed"
+		return
+	}
 }

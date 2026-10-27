@@ -748,3 +748,104 @@ func TestJobsRunsStampedAtListRuns(t *testing.T) {
 		t.Errorf("the host load's older runs must not win: %v", runs)
 	}
 }
+
+// reviewWorker is a sandbox whose run on host's orchestrator awaits review.
+func reviewWorker(daemonHost string) *pb.Sandbox {
+	return &pb.Sandbox{Id: "w1", DisplayName: "worker-one", State: pb.SandboxState_SANDBOX_STATE_RUNNING,
+		Controller: &pb.SandboxController{OrchestratorId: "o-b", Name: "beta-bot", HostId: daemonHost, Run: &pb.WorkerRun{Id: "run-1", Action: "review-pr", NeedsReview: true}}}
+}
+
+// m (mark free) on the sandbox list for a daemon that is lost is refused before
+// anything changes: no detail, no list-return flag (review run-224 item 3).
+func TestMarkFreeFromListRefusedLeavesListAlone(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	m.orchDetail.host, m.orchDetail.id = "hosta", "o-a"
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	mm, cmd := m.markFreeKey(reviewWorker("hostb"), "hostb")
+	m = mm.(Model)
+	if cmd != nil || m.screen != screenList || m.markFreeFromList || m.orchDetail.host != "hosta" || m.orchDetail.form != nil {
+		t.Errorf("refused mark free changed state: screen %v fromList %v detail host %q", m.screen, m.markFreeFromList, m.orchDetail.host)
+	}
+	if !strings.Contains(m.status, "beta: connection lost") {
+		t.Errorf("status = %q", m.status)
+	}
+}
+
+// The detail closes when its own daemon drops, not the Orchestrators section's:
+// a mark-free dialog opened from the list for beta survives alpha dropping and
+// closes back to the list when beta drops (review run-224 item 4).
+func TestDetailClosesOnItsOwnDaemon(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+	m, mgr, _ := twoFakeHosts(t, a, b)
+	m.daemonOrchs = daemonOrchsState{host: "hosta", hostName: "alpha"} // an earlier visit
+	mm, _ := m.markFreeKey(reviewWorker("hostb"), "hostb")
+	m = mm.(Model)
+	if m.screen != screenOrchDetail || m.orchDetail.form == nil {
+		t.Fatalf("the dialog opens: screen %v", m.screen)
+	}
+	mgr.Disconnect("hosta")
+	m = feed2(m, m.hostsCmd())
+	if m.screen != screenOrchDetail || m.orchDetail.form == nil {
+		t.Fatalf("alpha dropping leaves beta's dialog alone: screen %v status %q", m.screen, m.status)
+	}
+	mgr.Disconnect("hostb")
+	m = feed2(m, m.hostsCmd())
+	if m.screen != screenList || m.orchDetail.form != nil || m.orchDetail.formVals != nil || m.markFreeFromList {
+		t.Errorf("beta dropping closes the dialog back to the list: screen %v", m.screen)
+	}
+	if !strings.Contains(m.status, "beta disconnected — orchestrators closed") {
+		t.Errorf("status = %q", m.status)
+	}
+}
+
+// A drop is noticed while settings or a confirm is open over Daemons ›
+// Orchestrators (review run-224 item 5).
+func TestDaemonOrchsCloseUnderSettingsAndConfirm(t *testing.T) {
+	for _, over := range []string{"settings", "confirm"} {
+		a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+		b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-b", "beta-bot")}}
+		m, mgr, _ := twoFakeHosts(t, a, b)
+		mm, cmd := m.enterDaemonOrchs(daemonRow{id: "hostb", name: "beta"})
+		m = feed(mm.(Model), cmd)
+		if over == "settings" {
+			m, _ = update(m, press(","))
+		} else {
+			m, _ = update(m, press("d"))
+		}
+		if m.screen != screenSettings && m.screen != screenConfirm {
+			t.Fatalf("%s did not open: %v", over, m.screen)
+		}
+		mgr.Disconnect("hostb")
+		m = feed2(m, m.hostsCmd())
+		if over == "settings" {
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+		}
+		if m.screen != screenDaemons || !strings.Contains(m.status, "beta disconnected — orchestrators closed") {
+			t.Errorf("%s: screen %v status %q", over, m.screen, m.status)
+		}
+	}
+}
+
+// connOf reads the daemon from one host snapshot and never substitutes another
+// host's (review run-224 item 8).
+func TestConnOfNeverFallsBack(t *testing.T) {
+	m := sized(New(&fakeDaemon{}, "/work"))
+	m.activeHost = "local"
+	for _, c := range []struct {
+		hc   *client.HostConn
+		want bool
+	}{
+		{nil, false},
+		{&client.HostConn{Entry: client.HostEntry{ID: "box"}, State: client.HostConnected}, false},
+		{&client.HostConn{Entry: client.HostEntry{ID: "box"}, State: client.HostConnecting}, false},
+		{&client.HostConn{Entry: client.HostEntry{ID: "local"}, State: client.HostDisconnected}, false},
+		{&client.HostConn{Entry: client.HostEntry{ID: "local"}, State: client.HostConnected}, true},
+	} {
+		if got := m.connOf(c.hc) != nil; got != c.want {
+			t.Errorf("connOf(%+v) = %v, want %v", c.hc, got, c.want)
+		}
+	}
+}
