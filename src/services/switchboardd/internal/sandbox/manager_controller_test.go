@@ -247,7 +247,7 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 // session is gone), so a worker stopped mid-wait and restarted is IDLE — free —
 // rather than busy forever with no agent left to report otherwise.
 func TestStopResetsABusyAgent(t *testing.T) {
-	for _, st := range []pb.AgentStatus{pb.AgentStatus_AGENT_STATUS_WAITING, pb.AgentStatus_AGENT_STATUS_WORKING} {
+	for _, st := range []pb.AgentStatus{pb.AgentStatus_AGENT_STATUS_WAITING, pb.AgentStatus_AGENT_STATUS_WORKING, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT} {
 		t.Run(st.String(), func(t *testing.T) {
 			m, _, _, dir := newTestManager(t)
 			sb, err := m.Launch(context.Background(), LaunchRequest{
@@ -275,10 +275,15 @@ func TestStopResetsABusyAgent(t *testing.T) {
 			}
 		})
 	}
-	// NEEDS_INPUT is a request for the developer and is left to them.
-	s := &pb.Sandbox{Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT}}
+	// A NEEDS_INPUT asked by the stopped session is gone with it, but a run the
+	// orchestrator handed to the developer for review is kept, so what the
+	// developer must still act on stays visible.
+	s := &pb.Sandbox{
+		Agent:      &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
+		Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "run-1", NeedsReview: true}},
+	}
 	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
-	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
-		t.Errorf("NEEDS_INPUT after leaving RUNNING = %v, want kept", s.GetAgent().GetStatus())
+	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || !s.GetController().GetRun().GetNeedsReview() {
+		t.Errorf("after leaving RUNNING: agent %v, run %v; want IDLE with the review run kept", s.GetAgent().GetStatus(), s.GetController().GetRun())
 	}
 }
