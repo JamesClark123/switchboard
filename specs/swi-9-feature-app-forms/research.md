@@ -258,7 +258,7 @@ otherwise:
   to Discard and discard everything.
   - The time comes from a package `nowFunc = time.Now` seam. `openedAt` is also read from `nowFunc`, so shifting
     the clock by a fixed amount before opening would not leave the window. Tests therefore use two mechanisms:
-    - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` (and `confirmOverrideGrace`, R7) to 0 with
+    - Story tests call `noKeyGrace(t)`, which sets `unsavedKeyGrace` (and `confirmKeyGrace`, R7 C3) to 0 with
       `t.Cleanup` restoring them. With a zero grace, `elapsed < grace` is never true, so every key acts.
     - The grace tests (T009) install a fake clock (`nowFunc` returns a variable) and advance it **after** the dialog
       opens.
@@ -278,7 +278,8 @@ otherwise:
   3. It sets `returnTo = screenLaunch`, so n returns to the setup with its state intact (`m.launch` is untouched by
      the confirm). It sets `onAccept` (R6) to `func(m *Model) { m.screen = screenOrchDetail }`, so y lands where the
      setup's own rebuild lands today. `m.orchDetail` was untouched while on the setup, so it is the same
-     orchestrator.
+     orchestrator. It also sets `graceUntil` (R7 C3), so the enter that chose Rebuild, repeated or held, cannot
+     also accept the confirm.
   4. `View`'s confirm-background switch gains a `screenLaunch` case that draws the launch modal, so the setup stays
      visible behind the confirm.
 
@@ -334,7 +335,8 @@ otherwise:
     - A forced close drops the confirm (R7), so its hook never runs.
     - Every existing confirm leaves `onAccept` nil and behaves exactly as today.
   - `confirmRemoveSources(exitAfter=true)` sets
-    `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }`. The reset belongs to this
+    `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` and `graceUntil` (R7 C3).
+    The overlay's own removal key keeps `exitAfter=false`, so it has no hook and no grace. The reset belongs to this
     one confirm, and declining keeps the marks. A later `handleSourcesRemoved` for that sandbox then finds no overlay
     and only sets its status, as it does today when the overlay is closed.
   - Declining (n/esc) returns to `returnTo = screenSources` with the marks kept, and the exit is dropped.
@@ -379,8 +381,9 @@ otherwise:
       surface also clears `m.confirm` (so neither its `onConfirm` nor its `onAccept` runs) and moves to the surface's
       leave destination with the usual status. Without this, a host drop during the Rebuild confirm would leave n
       returning to a setup on a dead host, and y failing in `connectedDaemon` (orchestrator_reasoning.go:180).
-    - `activeGuard()` itself is unchanged, so the layer, terminal and override rules keep treating a confirm screen as
-      "not on the surface".
+    - `activeGuard()` itself is unchanged. The layer and terminal rules keep treating a confirm screen as "not on the
+      surface". The override rule (C2 below) does not need `suspendedGuard`, because it refuses to open while
+      **any** confirm is showing.
   - The reasoning setup, the orchestrator rename form, and op forms targeting the orchestrator when it is removed,
     with reason "orchestrator removed". Today nothing notices this:
     - `syncOrchestratorChanged` issues no reload while the screen is `screenLaunch`;
@@ -390,36 +393,85 @@ otherwise:
     So `syncOrchestratorChanged` issues a `GetOrchestrator` check whenever an active guarded surface targets that
     orchestrator (`reasoning.id`, `orch.formKind == rename` id, `opState(s).formTarget.id`). A NotFound reply, or a
     detail/Jobs reload reporting NotFound for it, calls `forceClose`.
-- **Async hijack**: `confirmAddOverride` (sources.go:367) currently replaces whatever screen is showing with a
-  confirm. Without a fix, an async add result would destroy unsaved edits.
-  - While any guarded surface is active, the override is parked. This includes the whole kit editor (overview,
-    section item list and forms), because unsaved kit edits survive on the item list too. The exception is the
-    sources overlay **of the same sandbox** with no dialog or browser open. Any other overlay is not exempt: a
-    confirm whose `returnTo` is the list would wipe another sandbox's overlay and its marks.
-  - Parked overrides are kept in a FIFO, `m.pendingOverrides []parkedOverride{msg sourcesAddResultMsg; name string}`,
-    because concurrent adds on different sandboxes are allowed (`sourceAdds` is a map), so a single slot would lose
-    one.
-    - The queue holds the **result message**, not a built `confirmState`. The confirm is built by
-      `confirmAddOverride(msg, name)` at dequeue time, so its `returnTo` (`screenSources` only if that sandbox's
-      overlay is showing then, sources.go:376–379) reflects the screen at that moment, not when it was parked.
-  - `reconcileGuardLayers` opens the head of the queue only when **all** of these hold:
-    - the message is a **non-key** message, so the key that closed a surface is never also handled by the confirm;
-    - neither `screenConfirm` nor `screenApproval` is showing. Otherwise `enterConfirm` would overwrite `m.confirm`
-      (confirm.go:42–45), for example the removal confirm that the guard's own sources Save opens;
-    - one of these is true:
-      - no guarded surface is active and no unsaved dialog is open;
-      - the active surface is that sandbox's own sources overlay (`gSources`, marks allowed) with no dialog open.
+- **Confirm lifecycle (one design).** Four review rounds found hijacks in the confirm and override flows, each
+  patched in a different place. They are replaced by a single set of rules covering every path that can open,
+  replace or close a confirm. The paths in today's code:
 
-      The second case is exactly the parking exception: the browser being open would make the active surface
-      `gSourcesBrowse`. The confirm is built at that moment, so its `returnTo` is `screenSources` and the marks
-      survive both answers.
-  - **Accept grace**: the non-key rule alone is not enough. The spinner tick (app.go:616, :656–665) arrives within
-    ~100 ms of the enter that closed a rename or tag, so a quick second enter would still land on the confirm. So a
-    dequeued override gets
-    `confirmState.graceUntil = nowFunc().Add(confirmOverrideGrace)` (a `var`, 150 ms), and `updateConfirmKey`
-    ignores **y/Y/enter** until then. n/esc/q/ctrl+c (decline) act at once, because declining is safe. A repeated
-    or double enter can therefore never accept "may fill the disk". The rule covers every way a surface closes: esc,
-    enter on inline inputs, async success, Discard and forced close.
+  | Path | Opens from | Rule below |
+  |---|---|---|
+  | 16 `enterConfirm` callers (`confirmOrchRemove`, `confirmCancelRun`, `confirmDelete*`, `attachTo`, `confirmDetach`, `confirmRefresh`, `confirmAttachKit`, MCP / sandbox-MCP / secrets removal, `confirmRemoveSources`, the `b` rebuild, …) | the user's own key on that screen | C1 |
+  | The guard's follow-up confirms: sources removal Save, the Rebuild confirm | the unsaved dialog (`s`/`r`/enter) | C1, C3 |
+  | `confirmAddOverride` (sources.go:367) | an async `sourcesAddResultMsg` | C2, C3 |
+  | `enterApproval` (approval.go:21) | an async escape-hatch event, only when `m.screen == screenList` (notifications.go:194) | unchanged by this feature: it opens only on the list, so never over a confirm or a guarded surface. Known, pre-existing risk, out of scope: it can open while the list filter is being typed into, where a typed `y` answers it |
+  | y/enter, n/esc (`updateConfirmKey`) | the user | C3, C4 |
+  | Forced close (host drop, sandbox or orchestrator removed) | async | C4 |
+
+  (`termOpenedMsg` is covered separately below. The MCP "register anyway?" step is an in-view state answered with
+  `y` only, not a `confirmState`.)
+  - **C1, the one-owner rule.** `m.confirm` is only ever written by `enterConfirm`, and `enterConfirm` is only called
+    either (a) synchronously from a key handler, as the direct answer to the user's key on the current screen, or
+    (b) from the C2 dequeue. No message handler other than C2 opens a confirm. Under (a) a confirm cannot be
+    replaced: while one is showing, keys go to `updateConfirmKey`, or before it to a credential prompt (the
+    host-password prompt or the sign-in failure card, app.go:921–927, :944), and neither prompt writes `m.confirm`.
+    Under (b) the dequeue requires that no confirm is showing. **So a showing confirm is never replaced**, whichever
+    surface owns it.
+  - **C2, async overrides always go through the queue.** The `sourcesAddResultMsg` handler **always** appends
+    `parkedOverride{msg, name}` to `m.pendingOverrides` and never calls `confirmAddOverride` itself. There is no
+    separate arrival test that could disagree with the dequeue test, and FIFO order holds. `reconcileGuardLayers`
+    opens the head (building the confirm then, so `returnTo` is current) only when `overrideMayOpen(head)` holds:
+    - the message is **not** a key message;
+    - the user is on one of the two screens the add belongs to, and is not typing there. Either:
+      - `m.screen == screenList` and the list filter is not being typed into (`m.list.FilterState() !=
+        list.Filtering`, as sandbox_list.go:618 checks), so the confirm's `returnTo = screenList` is where the user
+        already is; or
+      - `m.screen == screenSources` and `activeGuard()` is `gSources` for **that** sandbox (with the browser open it
+        would be `gSourcesBrowse`), with no unsaved dialog open. The confirm gets `returnTo = screenSources`
+        (`overlayFor`), and the marks survive both answers.
+
+      Every other screen keeps it queued. That covers confirms (including the guard's removal and Rebuild
+      confirms), approval, the terminal, every guarded surface, and the unguarded screens that hold state a return
+      to the list would drop: the MCP "register anyway?" step and auth wait (`enterMcp` resets `mcpView`,
+      mcp.go:132), the pickers, orchestrator detail, Jobs and settings. When an arriving override cannot open in
+      the same `Update`, the status is set **once** to `add to <name> needs confirmation — back on the list`. It is
+      not re-set on every pass, so it never overwrites later statuses;
+    - no credential prompt is capturing keys: not `hosts.connecting && hosts.pwMode != pwHostsScreen` (app.go:921),
+      and not `signIn.active && signIn.phase == signInFailed` (app.go:944). Either one would take the keys while
+      the confirm sat hidden underneath (app.go:1137–1140).
+
+    When an override arrives while nothing blocks it, the arrival message is itself non-key, so the same `Update`
+    opens it. There is no added delay. The **queue purge is unconditional**, whether or not any surface is open:
+    - the `Removed` event handler and the connected, error-free list reload drop queued entries for a missing
+      sandbox id;
+    - `applyHosts` drops entries for a dropped host;
+    - each purge sets the status `add of <folders> to <name> cancelled: sandbox removed` (or `: daemon
+      disconnected`), so the add doesn't vanish silently.
+
+    An override already **showing** on the list for a sandbox that is then removed stays up. y then fails with the
+    daemon's error in the status, as any action on a removed sandbox does today. This is accepted.
+  - **C3, accept grace on confirms the user didn't open with that key.** `confirmState.graceUntil` is set to
+    `nowFunc().Add(confirmKeyGrace)` (a `var`, 150 ms) on exactly three kinds of confirm: a dequeued override, the
+    removal confirm opened by the guard's Save, and the Rebuild confirm. Each of these opens on a key or message the
+    user meant for something else, so a double or held enter would otherwise accept it.
+    - Before `graceUntil`, `updateConfirmKey` ignores y/Y/enter **and pushes `graceUntil` forward** to
+      `nowFunc().Add(confirmKeyGrace)`. A held key (auto-repeat) or a fast repeat therefore never gets through. Only
+      a fresh press after a 150 ms pause accepts.
+    - n/N/esc/q/ctrl+c act at once, because declining is safe.
+    - While graced, both the footer (`confirmHelp`) and the modal's own hint line (`confirmModal`, which hardcodes
+      `y/enter confirm · n/esc cancel` at confirm.go:93) show only `n/esc cancel`. The spinner tick (≤ 100 ms)
+      re-renders both with `y/enter confirm` once the grace has passed.
+    - A credential prompt can open over a showing confirm (sign-in is asynchronous). So while a credential prompt
+      is up over a graced confirm, `reconcileGuardLayers` keeps re-arming `graceUntil = nowFunc().Add(
+      confirmKeyGrace)`. The enter that submits the password, repeated, cannot then fall through to the confirm.
+      This is O(1).
+    - Confirms opened by their own dedicated key (C1a, all 16 existing callers) keep `graceUntil` zero and behave
+      exactly as today.
+  - **C4, the close rule.** A confirm closes only (a) through `updateConfirmKey`, or (b) with its owning surface,
+    guarded or not, in a forced close. On y/enter the `onAccept` hook (R6) and `onConfirm` run. On n/esc neither
+    runs. For (b), `forceClose` uses `suspendedGuard()` (above) to find the guarded surface under the confirm. The
+    existing `closeOrchAdminOnDrop` path that moves off a confirm over the daemon orchestrators or orchestrator
+    detail (hosts.go:410–415, :444–447) does the same. Every path clears `m.confirm` without running either
+    callback, so no stale confirm state is left behind. A dequeued override over its own sandbox's overlay counts as suspended `gSources`, so it closes
+    with the overlay when that sandbox is removed.
 - **Terminal open/close** also switches screens asynchronously:
   - `termOpenedMsg` sets `screen = screenTerminal` unconditionally (terminal.go:96–104), and `termClosedMsg` returns
     to the list.

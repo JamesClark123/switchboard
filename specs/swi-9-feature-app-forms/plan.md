@@ -121,8 +121,9 @@ src/apps/switchboard-tui/internal/ui/
 ├── app.go                 # handleKey: dialog layer → enlarged layer before the screen switch; View: enlarged view replaces
 │                          #   chrome, dialog overlays; WindowSize re-fits the enlarged view; footer adds `ctrl+e enlarge`
 ├── keys.go                # dialog / enlarge bindings
-├── confirm.go             # confirmState.onAccept hook (y-only effects: sources Save closes + resets the overlay;
-│                          #   Rebuild goes to the detail) and graceUntil (dequeued add-overrides ignore y/enter 150 ms)
+├── confirm.go             # confirm lifecycle (R7 C1–C4): onAccept hook (y-only effects: sources Save closes + resets
+│                          #   the overlay; Rebuild → detail) and graceUntil (guard-opened + queued confirms ignore
+│                          #   y/enter until a 150 ms pause)
 ├── terminal.go            # termOpenedMsg switches screens only from screenList (else detaches); termClosedMsg only
 │                          #   leaves screenTerminal
 ├── config_editor.go       # heap *configFormVals (manifest option maps); guard (gConfig); formKeyMap

@@ -119,11 +119,20 @@ is appended instead.
 A background update that closes the surface while the dialog or enlarged view is open (e.g. an in-flight save
 succeeding) closes them too.
 
-An async low-resource add-override confirm never replaces an open guarded surface, including the whole kit editor,
-other than that sandbox's own sources overlay with no dialog or browser open. Overrides queue in arrival order and
-open one at a time, on the next non-key message, when no confirm or approval is showing, and either no guarded surface is active or that sandbox's
-own overlay is (marks kept). For 150 ms after such an override opens, y/enter are ignored, so a repeated enter can't
-accept it; n/esc decline at once.
+An async low-resource add-override confirm never replaces anything. Every override queues in arrival order and
+opens one at a time, on a non-key message, only where the add belongs:
+- on the plain sandbox list, while you are not typing into its filter;
+- or on that sandbox's own sources overlay with no dialog or browser open, where the marks are kept.
+
+Anywhere else, including confirms, approval, the terminal, any form or editor, the MCP "register anyway?" step and
+the password or sign-in prompts, it waits, and the status reads `add to <name> needs confirmation — back on the
+list`. When nothing is in the way it opens at once. If the sandbox is removed or its host drops while it waits, it
+is dropped with the status `add of <folders> to <name> cancelled: <reason>`.
+
+**Accept grace** on the three confirms that open without the user pressing their key (a queued override, the
+guard's sources removal Save, Rebuild): y/enter are ignored for 150 ms, and each ignored press restarts the 150 ms,
+so a double or held enter can't accept. The modal's hint and the footer show only `n/esc cancel` until then. n/esc
+decline at once. While a password or sign-in prompt covers such a confirm, the 150 ms keeps restarting.
 
 If a forced close hits a surface while one of its own follow-up confirms is showing (the sources removal confirm or
 the Rebuild confirm), the confirm closes with the surface and does not act.

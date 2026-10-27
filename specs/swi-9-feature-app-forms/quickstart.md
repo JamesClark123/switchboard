@@ -43,14 +43,15 @@ The manual scenarios below run against a local daemon (`sxbd`) and the TUI (`sxb
 3. `n` (launch), mark two folders, esc: the dialog appears; `s` launches.
 4. In the launch wizard press `N`, type a name, esc: only the field blurs. Open the host picker with `H`, then esc:
    back to the wizard, no dialog.
-5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`). `r` (or → to Rebuild,
+5. Orchestrator → Reasoning → `e`, toggle a folder, esc: the dialog shows **Rebuild** (`r`). `r` (or ← to Rebuild,
    then enter) opens a destructive confirm listing the **edited** folders and warning "Refused while a run is on
    it.", with the setup still visible behind it. Nothing is rebuilt before y. n returns to the setup with the
    toggle intact. Repeat and press y: the rebuild uses the edited folders, and you land on the orchestrator
    detail. Toggling a folder off and on again (it moves to the
    end of the order) also raises the dialog.
 6. `S` (sources), mark a folder, esc → `s`: the removal confirm appears. Press n: back on the overlay with the mark
-   kept. Repeat and press y: the folder is removed, the overlay closes and you are on the sandbox list.
+   kept. Repeat and press y: the folder is removed, the overlay closes and you are on the sandbox list. Repeat
+   once more with enter on Save and hold enter: nothing is removed until you release, pause and press enter again.
 7. `S` → `a`, select a folder, esc: the dialog appears. `d` returns to the overlay.
 
 ## Scenario 4: enlarge (US4)
