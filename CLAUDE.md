@@ -147,7 +147,26 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).
+Active feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes
+Guard, SWI-9). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
+textarea (`MaxHeight 0`, `enlarge.go`); esc/ctrl+e write back (`*ptr = value; field.Value(ptr)`), ctrl+s writes back
+and saves, ctrl+c writes back then leaves the form, `ctrl+r` reverts to the text at open, pgup/pgdn batch cursor moves.
+huh's external editor is gone: every form uses `formKeyMap()` (keyless `Text.Editor` **and** keyless `Quit`, since
+`ExternalEditor(false)` alone only hides the binding when help renders) and every Text is built by `formSpec.text(ptr, title)`
+(registry for write-back). Inline fields keep huh's 99-line enter cap; values up to 10,000 lines round-trip (verified,
+R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 7 form surfaces, kit item + overview,
+launch, reasoning, sources overlay + add browser, rename/tag/add host/add group) routes its exits (esc; ctrl+c in forms;
+`q` on the kit overview and sources overlay) through `requestExit`: clean (current values == baseline snapshot, taken
+after the form is built and Text values normalised) leaves as today, dirty opens
+one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` Rebuild) / `c`·esc·ctrl+c Cancel
+(default highlight) / `d` Discard; enter activates the highlight. Save = the surface's existing save/confirm, Discard =
+its esc path. MCP "register anyway?" back-out returns to the form; sources Save → removal confirm (decline = Cancel);
+a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog/enlarge layers are closed by
+`reconcileGuardLayers` when their surface goes away; forced closes (host drop, sandbox/orchestrator removed) drop the guard with `unsaved edits lost: <reason>`. SC-006
+timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). See `research.md` (R1–R10),
+`data-model.md`, `contracts/forms-ui.md`, `quickstart.md`.
+
+Prior feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).
 **TUI-only**: the **Orchestrators** top-level screen is replaced by a **Jobs** screen (cycle Sandboxes →
 Daemons → Jobs, wrapping; `esc` → Sandboxes, `q` quits) with tabs **Overview · Actions · Events · Queue** covering every orchestrator on every
 connected daemon (rows labelled `name @ host`). Overview = Upcoming (enabled timed events, `n` Enqueue now)

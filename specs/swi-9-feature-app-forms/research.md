@@ -1,0 +1,333 @@
+# Research: App Forms — Enlargeable Text Fields & Unsaved-Changes Guard
+
+**Feature**: `specs/swi-9-feature-app-forms/spec.md` | **Date**: 2026-10-27
+
+All file references are under `src/apps/switchboard-tui/internal/ui/` unless noted. huh refs are to
+`github.com/charmbracelet/huh@v1.0.0`; textarea refs are to `github.com/charmbracelet/bubbles@v1.0.0/textarea/textarea.go`.
+
+## Current state (inventory that drove the decisions)
+
+- **Forms** are embedded `*huh.Form`s, never `Run()`, so `CancelCmd`/`SubmitCmd` are nil. Each screen's `update*Key`
+  checks esc and ctrl+s **before** the form sees a key. ctrl+c is not intercepted anywhere: it reaches huh's
+  `KeyMap.Quit` (keymap.go:109), which sets `StateAborted` (form.go:558–562). Each surface's `advance*` then closes the
+  form exactly as esc does. Mark-free is the exception: there, ctrl+c closes the form but does not return to the
+  sandbox list, as esc does when it was opened from there (run_actions.go / orchestrator_forms.go:442–444).
+- **Seven form surfaces**:
+  - config editor (Input/Select/Confirm, read back by key with `GetString` — no pointers);
+  - MCP registration (1 Text: Headers);
+  - secrets (Inputs);
+  - orchestrator create/rename;
+  - action / timed-event / call forms (3 Texts: Body, Arguments, Fixed arguments);
+  - mark-free;
+  - the kit editor (13 Texts across section and item forms).
+
+  All except the config editor bind values by pointer into heap-allocated `*…Vals` structs. All except the config
+  editor use `kitFormKeyMap()` (kit_editor.go:1123); the config editor uses huh's default keymap.
+- **Non-form surfaces**: the launch wizard and reasoning setup (`launchState`, launch.go), the sources overlay and add
+  browser (`sourcesState`, sources.go), and four `textinput` inline inputs (rename `app.go:1386`, tag
+  `tageditor.go:28`, add host `hosts.go:274`, add group `groups.go:164`). None has a dirty check.
+- **Modal pattern**: the destructive confirm is a *screen* (`screenConfirm`, confirm.go) with `returnTo`. Rendering
+  uses `overlayCenter` (overlay.go). There is no global key layer: `handleKey` (app.go:938) checks the host-password
+  modal and the sign-in card, then switches on `m.screen`.
+- **External editor**: no code calls `.Editor(`/`ExternalEditor`, so huh's defaults apply everywhere
+  (`externalEditor: true`, `$EDITOR` or `nano`). The editor's `updateValueMsg` reaches the form through `forward()`.
+
+## R1 — Remove the external editor reliably
+
+**Decision**:
+- Every form uses one shared keymap, `formKeyMap()`. This is `kitFormKeyMap()` renamed and extended, and it is now
+  also applied to the config editor. It sets `Text.Editor = key.NewBinding()` (no keys) and `Quit = key.NewBinding()`
+  (no keys).
+- Every multi-line field is built through one constructor, `formSpec.text(ptr, title)`, which calls `ExternalEditor(false)`.
+
+**Rationale**:
+- In huh v1.0.0, `Text.Update` matches `keymap.Editor` *unconditionally* (field_text.go:321). `ExternalEditor(false)`
+  only takes effect through `KeyBinds()` → `SetEnabled(false)`, and `KeyBinds()` is only called when help is rendered.
+  The orchestrator forms use `WithShowHelp(false)`, so on them `ExternalEditor(false)` alone would still launch
+  `$EDITOR`.
+- A binding with no keys never matches whatever its enabled state, and `ExternalEditor(false)` hides it from huh's own
+  help line. Using both is belt and braces.
+- A keyless `Quit` means huh can never abort a form. ctrl+c is routed by the guard instead (R4), and the surfaces'
+  `StateAborted` branches become dead code and are removed.
+
+**Alternatives rejected**:
+- Keeping huh's editor binding relabelled "enlarge" and intercepting ctrl+e first: any missed interception would
+  silently launch an editor.
+- Forking huh: unnecessary given the above.
+
+**Verification**: a test opens every form that has a Text field and presses ctrl+e with the enlarge interception
+bypassed. It asserts the returned command is not a `tea.ExecProcess`. A test also asserts that huh's
+`form.KeyBinds()` never contains a binding whose help reads "open editor".
+
+## R2 — Enlarge: interception, the enlarged textarea and write-back
+
+**Decision**:
+- **Registry**: `formSpec` records `map[*huh.Text]textEntry{ptr *string; title string}`. huh's chainable setters
+  return the same pointer, so `spec.text(&v.body, "Body").Key("body").Lines(5)` registers the field under the pointer
+  the form holds. `text` sets the title itself, because `huh.Text` has no title getter and the enlarged view needs the
+  title.
+- **Interception**: the guard sees each key before the form does. ctrl+e opens the enlarged view only when
+  `form.GetFocusedField()` is a registered `*huh.Text`. On an `Input`, ctrl+e passes through to the textinput's own
+  `LineEnd` (move to end of line, as today). On Select/Confirm it falls through and does nothing.
+- **Enlarged view**: a separate `textarea.Model`.
+  - `MaxHeight = 0` (no line cap; the textarea's own `maxLines = 10000` still applies) and `CharLimit = 0`.
+  - The keymap is the textarea default with `LineEnd` reduced to `end`, and `InsertNewline` bound to
+    `enter`/`alt+enter`/`ctrl+j`, matching the forms' `Text.NewLine`.
+  - `ShowLineNumbers = false` and `Prompt = ""`, as `huh.NewText` sets them. `textarea.New()` defaults to line numbers
+    and a `┃ ` prompt, and with `MaxHeight 0` its line-number gutter is sized for one digit.
+  - Non-key messages (cursor blink) reach the enlarged textarea through `forward()` while it is open.
+  - It is styled with the focused-textarea styles of `huhTheme()`.
+  - It opens with the field's current value (`*ptr`; huh keeps it live, see R3), cursor at the end.
+  - tab and shift+tab are swallowed (FR-004).
+  - pgup/pgdown move the cursor by one view height with `CursorUp`/`CursorDown`, then reposition the view with a
+    single `Update` (R9).
+- **Write-back** (close with esc/ctrl+e, ctrl+s or ctrl+c): `*ptr = ta.Value()`, then `field.Value(ptr)` to reload the
+  field's textarea (`SetValue`) from the same pointer.
+  - Focus is still on that field: the form's focus never moved while the view was open.
+  - The inline cursor lands at the end of the text (`SetValue` behaviour), which the spec does not constrain.
+- **Revert** (FR-005b): `ctrl+r` "revert" restores `baseline`, the text captured when ctrl+e opened the view.
+  - The ctrl+c write-back does not move the baseline, so revert after a ctrl+c → Cancel round trip still restores the
+    pre-ctrl+e text.
+  - `ctrl+r` is unbound in the textarea keymap and on every form surface.
+- **Size**: the enlarged view is drawn instead of the screen chrome, covering the header and footer (FR-003): a
+  rounded border at full terminal size with the field's title set into the top border, the textarea, and one hint
+  line below. At 80×24 that leaves 24 − 2 border − 1 hint = **21 text lines** (SC-003 ≥ 16). At 200×50 it uses 100%
+  of the width and 47/50 of the height for text. Below 80×24 the textarea shrinks, down to a minimum of one line, so
+  the view shows fewer lines rather than overflowing. On `tea.WindowSizeMsg` the view calls `SetWidth`/`SetHeight`, which keeps text, cursor row and column (FR-008).
+
+**FR-009a check (round trip > 99 lines)**: verified on 2026-10-27 with a throwaway test against huh v1.0.0.
+- A 150-line value bound to `huh.Text` stays 150 lines through focus, ctrl+end and enter at the end. MaxHeight blocks
+  the new line, and the value is kept.
+- Writing back 151 lines via `field.Value(ptr)` gives a 151-line field value.
+- **`huh.Text` is therefore kept**; no replacement field is needed. An automated test (T-level, see tasks) pins this:
+  write back 151 lines, then save, and the saved value has 151 lines.
+
+## R3 — Change detection (dirty state)
+
+**Decision**: each guarded surface has a `baseline` captured when it opens and a pure `dirty()` comparing the current
+values against it.
+
+**Baseline rule** (applies to every form):
+1. Take the baseline **after** the `huh.Form` is built. huh's `Select.Value`/`Options` write the selected option into
+   the bound pointer during construction, so a baseline taken before would be dirty on open.
+2. First call `spec.normalize()`: send each registered Text a no-op `Update(nil)`. `Text.Update` ends with
+   `accessor.Set(textarea.Value())` (field_text.go:350), so this writes the textarea's *cleaned* value back to the
+   pointer. The textarea's input cleaning turns tabs into 4 spaces and drops `\r`. Without this step, merely tabbing
+   past a field whose stored text holds a tab would mark it changed (FR-011), and so would the enlarged view's
+   write-back.
+
+The values are snapshots compared with `==` where every field is a scalar, and with `maps.Equal`/`slices.Equal`
+otherwise:
+
+| Surface | Snapshot |
+|---|---|
+| huh forms bound to `*…Vals` (MCP, secrets, orchestrator admin, action, event, mark-free, kit item) | a value copy of the vals struct (every field is a string, bool or int); compared with `==` |
+| Call form (`map[string]*string`) | flattened to `map[string]string`, compared with `maps.Equal` |
+| Config editor | the option fields come from the host's manifest, so they cannot be fixed struct fields. A heap-allocated `*configFormVals{name, mode string; strs map[string]*string; bools map[string]*bool}` is bound by pointer, held as a pointer on `editorState` (config_editor.go:18–20 warns that pointers into the value-type model dangle), and flattened to `map[string]string`/`map[string]bool` for `maps.Equal`. Reading these vals instead of `GetString` also fixes the latent "ctrl+s reads a stale value before the focused field blurs" bug. |
+| Kit editor overview | `kitFingerprint(kit)`: `yaml.Marshal` of a deep clone (made by a yaml round trip; `store.Kit` has no `Clone`, and `Normalize()` mutates `Permissions.Network` through a shared pointer) after `Normalize()`, plus the escape-hatch and services encodings. It does **not** go through `SpecYAML()`, which returns an error for an unnamed kit and would make every edit to a new, unnamed kit look clean. The baseline is taken after migration, at open (FR-011). |
+| Launch wizard / reasoning setup | `launchSnapshot{sources []string (sorted), cloneMode bool, name string (trimmed), kits []string (in order), host string, orch string}`, compared field by field with `slices.Equal` for the slices. The reasoning baseline is the pre-filled saved setup. |
+| Sources overlay | `len(marked) > 0` (it opens empty) |
+| Add browser | `len(selected) > 0` |
+| Inline inputs | `strings.TrimSpace(input.Value()) != initial`. `initial` is the trimmed starting value (display name, tag, or `""` for add host/group) (FR-011a). |
+
+**Rationale**:
+- huh writes bound values live: `Input.Update` (field_input.go:362), `Text.Update` (field_text.go:350), Select cursor
+  moves (field_select.go:520) and Confirm toggles (field_confirm.go:207). So the snapshot is current on every key with
+  no blur needed.
+- Comparing values instead of tracking "touched" satisfies "changed back to the original is not a change" (US1 #7)
+  and "whitespace is content in multi-line fields" (the text is compared exactly).
+- Fingerprinting the kit through its save encoding makes an applied-but-identical item form (for example a nil slice
+  becoming an empty one) count as unchanged whenever it would write the same file. Tasks include a test for exactly
+  that case.
+
+## R4 — Exit interception and the guard dispatch
+
+**Decision**:
+- **Identity**: `guardSurface` is an enum naming every guarded surface: `gConfig`, `gMcp`, `gSecrets`, `gOrchAdmin`,
+  `gOpForm` (with its `orchSurface`), `gKitItem`, `gKitOverview`, `gLaunch`, `gReasoning`, `gSources`,
+  `gSourcesBrowse`, `gRename`, `gTag`, `gHostAdd`, `gGroupAdd`.
+- **Model methods**, one per need, each a switch over the enum:
+  - `m.activeGuard() (guardSurface, bool)`: which surface is open now;
+  - `m.guardDirty(g) bool`;
+  - `m.guardSave(g) (Model, tea.Cmd)`: calls the surface's existing save/confirm function unchanged. The outcome
+    (closed, still open with an error, or waiting on a follow-up confirm) is read from the resulting state, not
+    returned;
+  - `m.guardLeave(g) (Model, tea.Cmd)`: today's esc path.
+  These are switches, not stored closures, because Bubble Tea models are values and a captured `Model` would be
+  stale.
+- **Routing**:
+  - Each surface's existing exit branches call `m.requestExit(g)`. These are esc, ctrl+c in forms, `q` on the kit
+    overview, `q` on the sources overlay, and esc in the add browser.
+  - `requestExit` either leaves immediately (not dirty, FR-014) or opens the unsaved-changes dialog (R5) for `g`.
+  - In forms, the guard's key pre-handler (R2) owns esc/ctrl+c/ctrl+e/ctrl+s before the form. The surfaces' own
+    esc/ctrl+s branches move into it.
+- **One exit per surface**: in the current code every guarded exit of a surface leads to the same place as its esc.
+  - Kit overview q = esc → kit picker.
+  - Form ctrl+c = esc.
+  - Mark-free ctrl+c is aligned with esc, which fixes its don't-return-to-list inconsistency.
+
+  So the "requested exit" (spec Key Entities) is fully described by the surface, and Discard runs `guardLeave(g)`.
+- **A form completed by enter**: enter on the last field sets huh's `StateCompleted` and its private `quitting`
+  flag. From then on `Update` ignores input (form.go:525) and `View()` returns `""` (form.go:649). If the save that
+  follows fails validation (or, for the op forms, the RPC fails) the form must not stay as a blank, dead form. The
+  surface rebuilds it from the same vals with `reopenForm(g)`, keeping the baseline, and the error stays visible.
+  Focus restarts at the first field. The MCP back-out in R6 uses the same helper.
+- **Lifetime invariant**: the dialog and the enlarged view are layers on `Model` bound to a `guardSurface`. After
+  every message, `Update` runs `m.reconcileGuardLayers()`, which closes both layers when `activeGuard()` no longer
+  matches their surface. This covers a background update while the dialog is open (spec Edge Cases). For example:
+  ctrl+s on an op form, then esc while the RPC is in flight, then the success `orchDoneMsg{closeForm}` closes the form
+  under the dialog. The same pass opens a parked add-override (R7).
+- **Not exits** (US3 #6): the launch name field's esc, the host/orchestrator/kit pickers' esc, and the kit item list's
+  esc/q keep their current branches and never call `requestExit`.
+- **ctrl+c on non-form surfaces** keeps its current behaviour (FR-012). It is a no-op on the launch wizard, sources and
+  inline inputs, so nothing changes.
+
+## R5 — The unsaved-changes dialog
+
+**Decision**:
+- **State**: one `unsavedState` on `Model`: `open`, `surface guardSurface`, `fromEnlarge bool`, `highlight`
+  (0 Save, 1 Cancel, 2 Discard), `saveLabel`.
+- **Routing**: `handleKey` routes to it **first**, after the host-password modal and sign-in card. It is a layer, not
+  a screen, so the surface underneath keeps `m.screen` and all of its state; that is what makes Cancel exact (FR-015).
+- **Rendering**: `overlayCenter` over whatever the screen (or the enlarged view) renders.
+- **Keys** (FR-019; contracts/forms-ui.md):
+
+| Key | Action |
+|---|---|
+| `s` | **Save** (on the reasoning setup: `r` **Rebuild**) |
+| `c`, `esc`, `ctrl+c` | **Cancel** |
+| `d` | **Discard** |
+| `←`/`→`, `h`/`l`, `tab`/`shift+tab` | Move the highlight |
+| `enter` | Activate the highlighted choice |
+
+  Cancel is highlighted when the dialog opens. Every other key is ignored.
+- **Rationale for the keys**:
+  - `y`/`n` are deliberately **not** used. The destructive confirm uses y = proceed, and muscle memory must not turn
+    into Discard.
+  - The dialog is modal, so its letters cannot clash with the surface underneath. Even so, `s`, `c` and `d` read as
+    the action names, and enter only discards when Discard is highlighted.
+  - The reasoning setup gets `r` because its choice is labelled Rebuild (FR-017). There, `s` is ignored, so the
+    destructive rebuild is never under a key labelled "save". The dialog is otherwise identical (FR-020).
+- **Save outcome**:
+  - On **validation failure or a synchronous save error**, the surface's own save function leaves it open with its
+    status/error. The dialog closes and the exit is dropped (US1 #6).
+  - On **success**, the surface closes exactly as after a normal save (FR-017).
+  - Where a save is async and the form **stays open** while it runs (op forms, mark-free), success closes it via the
+    existing `orchDoneMsg{closeForm:true}`. Failure keeps it open via `applyOrchFormErr`.
+  - Where a save is async and closes first (secrets, orchestrator create/rename, MCP remote, the inline inputs),
+    Save behaves exactly like the surface's own save. A failure lands in the status line as today (spec Edge Cases).
+- **80×24 (FR-021)**: the dialog is a 3-line message plus a button row plus a hint row inside a border, ≤ 9 rows ×
+  ≤ 60 columns.
+
+## R6 — Nested editors (kit editor) and follow-up confirmations
+
+**Decision**:
+- **Kit item and section forms** (`gKitItem`): Save = `applyKitForm`, which validates and writes into
+  `kitEditor.kit`. Discard closes the form with the kit untouched. Both return to the item list or the overview, as
+  today.
+- **Kit overview** (`gKitOverview`): dirty = `kitFingerprint(kit) != baseline`. Save = `saveKit`, which validates and
+  writes, then returns to the kit picker. Discard = `enterKitPicker`. A new, unnamed kit with an added item is dirty,
+  and Save then fails "name required (Identity)" and stays open.
+- **The `d` delete on an item list** stays immediate (in memory) and simply makes the overview dirty.
+- **FR-012a, MCP "register anyway?"**:
+  - `applyMcpForm` keeps `vals` (and the baseline) while `pending` is set, instead of discarding them.
+  - Backing out with n/esc/q calls `reopenForm(gMcp)` (R4), which rebuilds `mcpForm(vals)` with every value intact.
+    This raises no dialog. huh cannot reopen a completed form, so focus starts at the first field.
+  - The "esc cancel" wording in both `mcpModal` and `mcpHelp` (mcp.go:197) becomes "esc back to form".
+  - `y` registers and closes as today.
+- **Sources removal confirm** (US3 #3):
+  - A dialog Save on `gSources` calls `confirmRemoveSources` with `exitAfter = true`.
+  - `updateConfirmKey` (confirm.go:54) today sets `screen = returnTo` on both y and n, so the confirm needs a
+    destination per answer. `confirmState` gains `acceptTo screen`, which is used on y when set and otherwise falls
+    back to `returnTo`. `confirmRemoveSources` sets `acceptTo = screenList` (and resets `sourcesView`) when
+    `exitAfter` is set.
+  - Declining (n/esc) returns to `returnTo = screenSources` with the marks kept, and the exit is dropped.
+  - Confirming sends the removal and closes the overlay.
+- **Add browser** (`gSourcesBrowse`): Save = `dispatchAddSources`. Its refusals (an empty selection cannot be dirty;
+  an add in flight) keep the browser open.
+
+## R7 — Forced close (spec Edge Cases)
+
+**Decision**:
+- **One helper**: `m.forceClose(g, reason)` closes the surface and drops any open unsaved dialog and enlarged view
+  bound to it.
+  - When the surface was clean it sets no status of its own.
+  - When it was dirty, it sets `unsaved edits lost: <reason>`. If the caller already set a status (for example
+    "<host> disconnected — orchestrators closed"), it appends `; unsaved edits lost` instead, so neither message is
+    lost.
+- **Existing closes** that gain the teardown and status:
+  - the MCP view on a host drop or disconnect (hosts.go:127–135, daemons.go:195–197);
+  - `closeOrchAdminOnDrop` (hosts.go:408–452).
+- **New closes**, which today leave the editor open on a dead object:
+  - Rename, tag and the sources overlay (and add browser) when their sandbox goes away, with reason "sandbox
+    removed". This covers both the `Removed` event (`removeSandbox`) and a full list reload that no longer contains
+    the id. The check runs in `reconcileGuardLayers`' pass against the current sandbox list.
+  - The reasoning setup when its host drops, with reason "daemon disconnected" (`closeOrchAdminOnDrop` gains a
+    `screenLaunch` case for `launch.reasoning.host`).
+  - The reasoning setup, the orchestrator rename form, and op forms targeting the orchestrator when it is removed,
+    with reason "orchestrator removed". Today nothing notices this:
+    - `syncOrchestratorChanged` issues no reload while the screen is `screenLaunch`;
+    - `applyOrchDetail` has no NotFound branch;
+    - Jobs drops a NotFound orchestrator from its rows but leaves an open form.
+
+    So `syncOrchestratorChanged` issues a `GetOrchestrator` check whenever an active guarded surface targets that
+    orchestrator (`reasoning.id`, `orch.formKind == rename` id, `opState(s).formTarget.id`). A NotFound reply, or a
+    detail/Jobs reload reporting NotFound for it, calls `forceClose`.
+- **Async hijack**: `confirmAddOverride` (sources.go:367) currently replaces whatever screen is showing with a
+  confirm. Without a fix, an async add result would destroy unsaved edits.
+  - While any guarded surface is active, other than the sources overlay **of the same sandbox** with no dialog or
+    browser open, the override is parked in `m.pendingOverride`. Any other overlay is exempt: a confirm whose
+    `returnTo` is the list would wipe another sandbox's overlay and its marks.
+  - `reconcileGuardLayers` opens the parked override on the first message after no guarded surface is active. That
+    covers every way a surface closes: esc, enter on inline inputs, async success, Discard and forced close.
+
+## R8 — Help and key hints
+
+**Decision**:
+- **Footer**: the app adds `ctrl+e enlarge` when, and only when, the focused field of the open form is a registered
+  Text (FR-002). huh's own help line no longer shows "open editor" (R1).
+- **Enlarged view hint line**:
+  `esc/ctrl+e close · ctrl+s save form · ctrl+r revert · pgup/pgdn page · ctrl+c leave form`.
+- **Dialog hint line**: `s save · c/esc cancel · d discard · ←/→ choose · enter select`.
+- **Launch footer drift**: `launchHelp` still shows N/H/O and "enter launch" in reasoning mode. It is aligned with the
+  modal help while this footer is touched (FR-017's Rebuild wording).
+
+## R9 — Responsiveness (SC-006)
+
+**Measured** on 2026-10-27 with a throwaway `go test` timing harness (200×50 form, 5,000 lines of ~85 chars,
+`Update` + `View` per keystroke, mean of 20–50 ops, 24-core dev container):
+
+| Case | ms / keystroke |
+|---|---|
+| Enlarged view (MaxHeight 0): type | 34.8 |
+| Enlarged view: cursor up/down | 34.7 |
+| Enlarged view: page (40× `CursorUp` + one `Update` + `View`) | 36.7 |
+| Inline focused `huh.Text` holding 5,000 lines: type | 54.6 |
+| Inline focused field: cursor down | 53.3 |
+| *Another* field of that form: type | 52.9 |
+
+- All cases are within the 100 ms budget, with ~45% headroom on the worst one.
+- Paging by sending 40 `KeyUp` messages through `Update` costs ~377 ms (each `Update` repositions at ~8 ms), so
+  pgup/pgdown use the batched cursor moves above.
+- `View` dominates at ~25 ms, because the textarea wraps every line on each render (textarea.go:1108).
+
+**Decision**:
+- Keep `huh.Text` inline (R2) and a plain textarea in the enlarged view.
+- Ship the measurement as Go benchmarks, `BenchmarkSC006*` in `enlarge_perf_test.go`, run by quickstart Scenario 7.
+  They are not a CI timing gate, because shared CI runners make wall-clock assertions flaky.
+- If a slower machine exceeds 100 ms, the fallback the spec names (a custom field owning its wrap cache) is the
+  remedy, recorded as a follow-up.
+
+## R10 — Testing approach
+
+**Decision**: use the package's existing patterns: `update`/`press`/`runCmd`/`sized` (model_test.go) and the surface
+helpers (`kitModel`, `mcpModel`, `secretsModel`, `openDaemonOrchs`, `jobsWith`, `sourcesModel`, `fakeDaemon`).
+
+- One table-driven test walks every guarded surface. For each, it covers: open → esc with no change (closes, no
+  dialog); change → esc (dialog); Cancel (state identical); Discard (closed, nothing applied); Save (the surface's
+  save effect). Forms also cover ctrl+c, and the kit overview also covers `q`.
+- Focused tests cover the enlarged view: open, edit, close, write-back; ctrl+s; ctrl+c → Cancel → revert; resize; 151
+  lines; tab is a no-op; ctrl+e on Input/Select.
+- Further focused tests cover FR-012a, the sources confirm decline/confirm, the forced closes, and the parked
+  override.
+- Coverage stays ≥ 90% for `switchboard-tui` (`make cover`).
