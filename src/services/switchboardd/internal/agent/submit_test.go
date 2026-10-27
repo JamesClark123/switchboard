@@ -57,6 +57,20 @@ func (a *agentState) Get(id string) (*pb.Sandbox, error) {
 	return &pb.Sandbox{Id: id, Agent: &pb.AgentSession{Status: a.status, LastEventAt: timestamppb.New(a.lastAt)}}, nil
 }
 
+// startedIdle starts the sandbox's session and then records its agent ready and
+// IDLE with its last event in the past — an agent that finished starting
+// (creating a session records it STARTING, SWI-15).
+func startedIdle(t *testing.T, reg *Registry, state *agentState, sandboxID string) {
+	t.Helper()
+	if _, err := reg.Session(sandboxID, &pb.AgentSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	reg.MarkReady(sandboxID)
+	state.mu.Lock()
+	state.status, state.lastAt = pb.AgentStatus_AGENT_STATUS_IDLE, time.Now().Add(-time.Minute)
+	state.mu.Unlock()
+}
+
 func fastSubmit(t *testing.T) {
 	t.Helper()
 	d, c, n := promptSubmitDelay, submitCheckDelay, submitRetries
@@ -73,6 +87,7 @@ func TestPromptRetriesEnterWhileUnsubmitted(t *testing.T) {
 	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
 	state := &agentState{status: pb.AgentStatus_AGENT_STATUS_IDLE, lastAt: time.Now().Add(-time.Minute)}
 	reg.SetStatusUpdater(state)
+	startedIdle(t, reg, state, "sb1")
 	var logMu sync.Mutex
 	var logged []string
 	reg.SetLogger(func(format string, args ...any) {
@@ -113,6 +128,7 @@ func TestPromptStopsRetryingOnceReported(t *testing.T) {
 			reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
 			state := &agentState{status: pb.AgentStatus_AGENT_STATUS_IDLE, lastAt: time.Now().Add(-time.Minute)}
 			reg.SetStatusUpdater(state)
+			startedIdle(t, reg, state, "sb1")
 			if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
 				t.Fatal(err)
 			}
@@ -133,6 +149,7 @@ func TestPromptRetriesOnlyForTheLiveSession(t *testing.T) {
 	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
 	state := &agentState{status: pb.AgentStatus_AGENT_STATUS_IDLE, lastAt: time.Now().Add(-time.Minute)}
 	reg.SetStatusUpdater(state)
+	startedIdle(t, reg, state, "sb1")
 	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +179,12 @@ func TestPromptIntoWaitingAgentIsVerified(t *testing.T) {
 	fastSubmit(t)
 	sess := &recSession{}
 	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
-	reg.SetStatusUpdater(&agentState{status: pb.AgentStatus_AGENT_STATUS_WAITING, lastAt: time.Now().Add(-time.Minute)})
+	state := &agentState{}
+	reg.SetStatusUpdater(state)
+	startedIdle(t, reg, state, "sb1")
+	state.mu.Lock()
+	state.status = pb.AgentStatus_AGENT_STATUS_WAITING // a started agent waiting on background work (SWI-12)
+	state.mu.Unlock()
 	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
 		t.Fatal(err)
 	}

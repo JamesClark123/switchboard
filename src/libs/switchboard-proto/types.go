@@ -40,6 +40,8 @@ func AgentStatusLabel(s pb.AgentStatus) string {
 		return "working"
 	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 		return "needs-input"
+	case pb.AgentStatus_AGENT_STATUS_STARTING:
+		return "starting"
 	case pb.AgentStatus_AGENT_STATUS_EXITED:
 		return "exited"
 	case pb.AgentStatus_AGENT_STATUS_WAITING:

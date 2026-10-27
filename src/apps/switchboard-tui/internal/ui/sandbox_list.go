@@ -459,7 +459,8 @@ func itoa(n int) string {
 // what each agent is doing without opening the sandbox. It returns "" for
 // non-running sandboxes and for sandboxes launched without an agent (nothing to
 // show). The WORKING indicator reuses the model spinner so it animates while the
-// agent is active; IDLE is the resting state (initial, or after a task completes).
+// agent is active; IDLE is the resting state (after start-up, or after a task
+// completes); STARTING covers the boot before the agent reaches its prompt.
 func (m Model) agentBadge(sb *pb.Sandbox) string {
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetAgent() == nil {
 		return ""
@@ -476,6 +477,8 @@ func (m Model) agentBadge(sb *pb.Sandbox) string {
 		return agentWaitStyle.Render("◆ needs input")
 	case pb.AgentStatus_AGENT_STATUS_IDLE:
 		return agentIdleStyle.Render("✓ idle")
+	case pb.AgentStatus_AGENT_STATUS_STARTING: // SWI-15: launched, not yet at its prompt
+		return agentWorkStyle.Render("◌ starting…")
 	default: // UNSPECIFIED / EXITED — nothing to surface on the row
 		return ""
 	}

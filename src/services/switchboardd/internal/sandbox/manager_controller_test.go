@@ -199,6 +199,9 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 		_, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.Controller = c; return nil })
 		return err
 	})
+	// SWI-15: a launched worker is reported once RUNNING so its agent can warm-start.
+	var launched []pb.SandboxState
+	m.SetOnLaunched(func(sb *pb.Sandbox) { launched = append(launched, sb.GetState()) })
 	var logs []string
 	sb, err := m.Launch(ctx, LaunchRequest{
 		Config: &pb.ConfigSnapshot{Name: "worker"}, Sources: []*pb.SourceRef{src},
@@ -239,6 +242,10 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 	sb3, err := m.Launch(ctx, LaunchRequest{Config: &pb.ConfigSnapshot{Name: "worker3"}, Sources: []*pb.SourceRef{src}, Controller: ctl}, nil, nil)
 	if err != nil || sb3.GetController() != nil {
 		t.Errorf("without an applier: %v / %+v", err, sb3.GetController())
+	}
+	// Only the launch whose controller was recorded is reported, as RUNNING.
+	if len(launched) != 1 || launched[0] != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("onLaunched calls = %v, want one RUNNING", launched)
 	}
 	_ = filepath.Join
 }

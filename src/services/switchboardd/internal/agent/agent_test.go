@@ -304,7 +304,7 @@ func TestInjectHooks(t *testing.T) {
 	// Every event the daemon maps to a status MUST be injected, or that status is
 	// never reached. In particular the work-start hooks (UserPromptSubmit /
 	// PreToolUse) are what drive the WORKING indicator — their absence was a bug.
-	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "Notification", "Stop"} {
+	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "Notification", "Stop", "SessionStart"} {
 		hm, ok := s.Hooks[event]
 		if !ok || len(hm) == 0 || len(hm[0].Hooks) == 0 {
 			t.Fatalf("settings missing %s hook", event)
@@ -314,10 +314,10 @@ func TestInjectHooks(t *testing.T) {
 		if !strings.Contains(hm[0].Hooks[0].Command, `'http://host.docker.internal:8765/hook?event=`+event+`&sandbox_id=sb1'`) {
 			t.Errorf("%s hook should name its event and the sandbox id in the URL: %s", event, hm[0].Hooks[0].Command)
 		}
-		// Only the Notification and Stop hooks forward Claude Code's hook input
-		// (the notification_type, and the Stop's background_tasks); the others
-		// post nothing.
-		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); forwards != (event == "Notification" || event == "Stop") {
+		// Only the Notification, Stop and SessionStart hooks forward Claude Code's
+		// hook input (the notification_type, the Stop's background_tasks and the
+		// SessionStart source); the others post nothing.
+		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); forwards != (event == "Notification" || event == "Stop" || event == "SessionStart") {
 			t.Errorf("%s hook forwards stdin = %v: %s", event, forwards, hm[0].Hooks[0].Command)
 		}
 		// The ping must be best-effort: time-bounded, output discarded, and never
@@ -349,7 +349,7 @@ func TestInjectHooks(t *testing.T) {
 	if perms["defaultMode"] != "bypassPermissions" || perms["allow"] == nil || doc["env"] == nil {
 		t.Errorf("re-injection should keep the developer's keys and reset defaultMode: %s", b)
 	}
-	if hooks, _ := doc["hooks"].(map[string]any); len(hooks) != 4 {
+	if hooks, _ := doc["hooks"].(map[string]any); len(hooks) != 5 {
 		t.Errorf("re-injection should replace the hooks wholesale: %s", b)
 	}
 

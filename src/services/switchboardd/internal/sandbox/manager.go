@@ -75,6 +75,10 @@ type Manager struct {
 	// to RUNNING, so a controlled sandbox's gateway registration can be
 	// re-loaded (the attach-time load is skipped while it is not running). MAY be nil.
 	onBringUp func(sb *pb.Sandbox)
+	// onLaunched, when set, is called once a controlled sandbox's Launch has
+	// turned it RUNNING, so the worker service can warm-start its agent (SWI-15:
+	// applyController runs before RUNNING, when no agent may start). MAY be nil.
+	onLaunched func(sb *pb.Sandbox)
 	// applyController, when set, is called by Launch after create and the MCP
 	// marks and BEFORE the record turns RUNNING (FR-110) with the launching
 	// record (container_ref filled in) and the LaunchRequest's controller +
@@ -89,6 +93,9 @@ func (m *Manager) SetOnDestroy(fn func(sb *pb.Sandbox)) { m.onDestroy = fn }
 
 // SetOnBringUp registers the bring-up observer (feature 009).
 func (m *Manager) SetOnBringUp(fn func(sb *pb.Sandbox)) { m.onBringUp = fn }
+
+// SetOnLaunched registers the launched-worker observer (SWI-15).
+func (m *Manager) SetOnLaunched(fn func(sb *pb.Sandbox)) { m.onLaunched = fn }
 
 // SetControllerApplier registers the launch-attach step (feature 009, FR-110).
 func (m *Manager) SetControllerApplier(fn func(ctx context.Context, sb *pb.Sandbox, controller *pb.SandboxController, briefing string) error) {
@@ -398,6 +405,9 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		return nil, err
 	}
 	m.emit(out)
+	if m.onLaunched != nil && out.GetController() != nil {
+		m.onLaunched(out)
+	}
 	return out, nil
 }
 

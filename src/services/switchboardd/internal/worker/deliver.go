@@ -17,6 +17,12 @@ import (
 // its agent IDLE, the controller matches and no run is recorded — all checked
 // under the registry write that records the run — with the PTY drained into
 // the persistent terminal session first so an unattended turn never stalls.
+//
+// The agent must also have reported ready (SWI-15): Claude Code takes a few
+// seconds to start, and a prompt typed before its input box is up is lost, so
+// the first run on a fresh worker never started. An agent that is not ready is
+// refused without typing — and started if it has no session yet — and the run
+// stays queued; the orchestrator delivers it once the agent reports IDLE.
 
 // runFrameHead / runFrameTail wrap the composed prompt (the recorded Run.prompt
 // is the composed prompt only; the frame is this constant).
@@ -34,6 +40,8 @@ func Frame(orchName, runID, action, prompt string) string {
 // guards fail; a failed prompt rolls the recorded run back and returns its error.
 func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (bool, error) {
 	var name string
+	ready := s.agents == nil || s.agents.Ready(req.GetSandboxId())
+	starting := false
 	sb, err := s.reg.Update(req.GetSandboxId(), func(x *pb.Sandbox) error {
 		c := x.GetController()
 		switch {
@@ -43,6 +51,11 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 			return fmt.Errorf("%w: sandbox is not a worker of orchestrator %s", ErrPrecondition, req.GetOrchestratorId())
 		case c.GetRun() != nil:
 			return fmt.Errorf("%w: run %s is already on this sandbox", ErrPrecondition, c.GetRun().GetId())
+		case !ready:
+			// The record may still read IDLE (no agent ever started, or the
+			// daemon restarted): the registry, not the record, knows.
+			starting = true
+			return fmt.Errorf("%w: agent is starting", ErrPrecondition)
 		case x.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE:
 			// WAITING (on background work, SWI-12) is refused too: the agent
 			// will resume on its own and a new run would interleave with it.
@@ -56,6 +69,9 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
 			return false, fmt.Errorf("%w: sandbox %s", ErrNotFound, req.GetSandboxId())
+		}
+		if starting {
+			s.startAgent(req.GetSandboxId(), "deliver")
 		}
 		return false, err
 	}
@@ -74,6 +90,44 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 	}
 	s.mgr.Emit(sb)
 	return true, nil
+}
+
+// startAgent starts the sandbox's agent through its persistent terminal
+// session (so the PTY is drained from the start, research R7) unless one is
+// already live. The agent comes up STARTING and reports IDLE through its
+// SessionStart hook. Best-effort: a failure is logged.
+func (s *Service) startAgent(sandboxID, why string) {
+	if s.agents == nil || s.agents.Live(sandboxID) {
+		return
+	}
+	var err error
+	if s.terms != nil {
+		_, err = s.terms.Broadcaster(sandboxID)
+	} else {
+		sb, gerr := s.reg.Get(sandboxID)
+		if gerr != nil {
+			return
+		}
+		_, err = s.agents.Session(sandboxID, sb.GetAgent().GetSpec())
+	}
+	if err != nil {
+		s.logf("[worker] %s %s: agent not started: %v", why, sandboxID, err)
+	}
+}
+
+// WarmStart starts a running worker's agent ahead of its first run (SWI-15), so
+// the agent is up by the time a run is delivered rather than starting then. It
+// is called once a controlled sandbox is RUNNING: at attach, at the end of a
+// launch, at bring-up and when the daemon starts. Uncontrolled and non-running
+// sandboxes are left alone, and so is a worker with a run in flight: across a
+// daemon restart its agent outlives the host-side client (pty.go agentCommand)
+// and may still be working — a second agent's SessionStart would read as the
+// run going idle.
+func (s *Service) WarmStart(sb *pb.Sandbox) {
+	if sb.GetController() == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetController().GetRun() != nil {
+		return
+	}
+	s.startAgent(sb.GetId(), "warm start")
 }
 
 // rollbackRun clears a run that could not be typed.

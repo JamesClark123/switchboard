@@ -168,6 +168,11 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 		s.logf("[worker] attach %s: briefing not written: %v", sb.GetId(), err)
 	}
 	s.mgr.Emit(sb)
+	// A launch-attach is warm-started once the launch completes (the record is
+	// still CREATING here); a running sandbox is started now.
+	if launching == nil {
+		s.WarmStart(sb)
+	}
 	return sb, nil
 }
 
@@ -220,6 +225,19 @@ func (s *Service) Detach(ctx context.Context, sandboxID, orchID string, force bo
 // Update refreshes the last-known name, the current run and/or the briefing
 // (research R3). PERMISSION_DENIED when the orchestrator is not the controller.
 func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.Sandbox, error) {
+	if req.GetClearNeedsInput() && s.agents != nil {
+		// Mark-free vouches that the agent is at its prompt (SWI-15): one parked
+		// by the start timeout whose SessionStart callback was lost may be typed
+		// into from now on. Before the IDLE write, so a STARTING write still in
+		// flight lands first.
+		// Only one parked NEEDS_INPUT: a fresh agent still STARTING (a stale
+		// view's mark-free) keeps its timeout.
+		if cur, err := s.reg.Get(req.GetSandboxId()); err == nil &&
+			cur.GetController().GetOrchestratorId() == req.GetOrchestratorId() && cur.GetController().GetRun() == nil &&
+			cur.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+			s.agents.MarkReady(req.GetSandboxId())
+		}
+	}
 	out, err := s.reg.Update(req.GetSandboxId(), func(x *pb.Sandbox) error {
 		cur := x.GetController()
 		if cur == nil || cur.GetOrchestratorId() != req.GetOrchestratorId() {
@@ -234,7 +252,8 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 		if req.GetClearNeedsInput() {
 			// The developer's "mark free" on a worker parked NEEDS_INPUT with
 			// no run on it: the agent is declared free again. A run in flight
-			// is never overridden here (the orchestrator closes it first).
+			// is never overridden here (the orchestrator closes it first). An
+			// agent the start timeout parked is vouched ready above (SWI-15).
 			if cur.GetRun() != nil {
 				return fmt.Errorf("%w: run %s is still on this sandbox", ErrPrecondition, cur.GetRun().GetId())
 			}
@@ -294,6 +313,8 @@ func (s *Service) OnBringUp(sb *pb.Sandbox) {
 	if err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb)); err != nil {
 		s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
 	}
+	// After the gateway load, so the agent starts with the orchestrator's tools.
+	s.WarmStart(sb)
 }
 
 // AcceptLink serves one OrchestratorLink stream (the gRPC handler and Local

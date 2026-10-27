@@ -80,6 +80,7 @@ enum AgentStatus {
   AGENT_STATUS_NEEDS_INPUT = 3;  // needs prompting (FR-025)
   AGENT_STATUS_EXITED = 4;
   AGENT_STATUS_WAITING = 5;      // turn ended, background work (bash/agent/monitor) pending (SWI-12)
+  AGENT_STATUS_STARTING = 6;     // agent process started, SessionStart not yet reported (SWI-15)
 }
 
 enum NotificationKind {

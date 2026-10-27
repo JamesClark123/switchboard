@@ -3,9 +3,13 @@ package grpc_test
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -38,9 +42,17 @@ func twoDaemonsAgents(t *testing.T) (m *orchEnv, nClient pb.SwitchboardClient, n
 	nMgr = sandbox.NewManager(nReg, &testRunner{running: map[string]bool{}}, nWs, "host-n")
 	nHub := agent.NewHub("host-n")
 	typed := filepath.Join(nDir, "typed.txt")
-	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
+	// Like Claude Code, each fake agent fires SessionStart once it is up; the
+	// hook server is wired as sxbd wires it (SWI-15).
+	hooks := agent.NewHookServer(nHub, nMgr)
+	hookSrv := httptest.NewServer(http.HandlerFunc(hooks.Handle))
+	t.Cleanup(hookSrv.Close)
+	agents := agent.NewRegistry(func(id string, _ *pb.AgentSpec) (agent.Session, error) {
+		go reportStarted(nMgr, hookSrv.URL, id)
 		return newFileSession(typed), nil
 	})
+	agents.SetStatusUpdater(nMgr)
+	hooks.SetOnReady(agents.MarkReady)
 	sbxBin := filepath.Join(nDir, "sbx")
 	if err := os.WriteFile(sbxBin, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -129,6 +141,20 @@ func (s *fileSession) Close() error {
 		close(s.closed)
 	}
 	return nil
+}
+
+// reportStarted fires a fake agent's SessionStart hook once its session is
+// recorded STARTING (the registry records that after the factory returns).
+func reportStarted(mgr *sandbox.Manager, hookURL, id string) {
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if sb, err := mgr.Get(id); err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_STARTING {
+			break
+		}
+	}
+	body := `{"hook_event_name":"SessionStart","source":"startup"}`
+	if resp, err := http.Post(hookURL+"?event=SessionStart&sandbox_id="+id, "application/json", strings.NewReader(body)); err == nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // typedOn reads what N's agent sessions received.

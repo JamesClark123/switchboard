@@ -208,6 +208,9 @@ func runServe(cfg *config.Config, debug bool) error {
 	if all, err := mgr.List(); err == nil {
 		hookServer.RearmWaiting(all)
 	}
+	// SWI-15: any hook means the agent's input box is up; a stuck start notifies.
+	agents.SetNotifier(hub)
+	hookServer.SetOnReady(agents.MarkReady)
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
@@ -284,6 +287,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	})
 	mgr.SetOnDestroy(workerSvc.OnDestroy)
 	mgr.SetOnBringUp(workerSvc.OnBringUp)
+	mgr.SetOnLaunched(workerSvc.WarmStart)
 	mgr.SetControllerApplier(workerSvc.Apply)
 	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
 	// /orchestrator/w/<token>/mcp. The gateway reaches it on 127.0.0.1:<port>
@@ -314,11 +318,6 @@ func runServe(cfg *config.Config, debug bool) error {
 			return srv.LaunchReasoning(ctx, req, onLog)
 		},
 	})
-	if err := orch.Start(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: orchestrators not started:", err)
-	}
-	defer orch.Stop()
-
 	srv = sbgrpc.NewServer(sbgrpc.Config{
 		Manager:       mgr,
 		HostID:        cfg.HostID,
@@ -354,6 +353,26 @@ func runServe(cfg *config.Config, debug bool) error {
 		// so what the retry moves reaches clients (and is never a data race).
 		go retryReconcile(ctx, mgr, readoptRetries)
 	}
+	// SWI-15: agent sessions do not survive a daemon restart, so every running
+	// worker's agent is started now rather than on the first delivery attempt
+	// (WarmStart leaves a worker with a run in flight alone).
+	// A STARTING saved before the restart names a session that is gone.
+	if sbs, err := mgr.List(); err == nil {
+		for _, sb := range sbs {
+			if sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_STARTING && !agents.Live(sb.GetId()) {
+				if cur, err := mgr.SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()); err == nil {
+					sb = cur
+				}
+			}
+			workerSvc.WarmStart(sb)
+		}
+	}
+	// Started only now, with the terminals wired: a delivery (or a start it
+	// triggers) always goes through a drained broadcaster (research R7).
+	if err := orch.Start(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: orchestrators not started:", err)
+	}
+	defer orch.Stop()
 	fmt.Fprintf(os.Stderr, "sxbd %s serving on %s (workspace %s, hooks %s)\n", version, cfg.Socket, cfg.WorkspaceRoot, cfg.HookAddr)
 	if debug {
 		fmt.Fprintln(os.Stderr, "sxbd debug logging enabled: every RPC action and error will be logged")

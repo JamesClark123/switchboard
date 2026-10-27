@@ -73,9 +73,18 @@ case "$1" in
   exec)
     # feature 009: the daemon's agent PTY runs "sbx exec -it <ref> bash -lc ...";
     # the stub agent copies everything typed into it to <dir>/agent-<ref>.in so a
-    # test can assert what a delivered run looked like. "sbx exec <ref> true"
+    # test can assert what a delivered run looked like. Like Claude Code, it fires
+    # the SessionStart hook injected into its workspace once it is up (SWI-15:
+    # nothing is typed into an agent before that; host.docker.internal is the
+    # host's loopback from a container). "sbx exec <ref> true"
     # (resume) starts the sandbox.
-    if [ "$2" = "-it" ]; then cat > "` + dir + `/agent-$3.in"
+    if [ "$2" = "-it" ]; then
+      wd=$(printf '%s' "$6" | sed -n "s/^cd '\([^']*\)'.*/\1/p")
+      hook=$(grep -o "http://[^'?]*?event=SessionStart[^']*" "$wd/.claude/settings.local.json" 2>/dev/null | head -1 | sed -e 's/\\u0026/\&/g' -e 's#//host.docker.internal:#//127.0.0.1:#')
+      if [ -n "$hook" ]; then
+        ( sleep 0.3; curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"hook_event_name":"SessionStart","source":"startup"}' "$hook" ) &
+      fi
+      cat > "` + dir + `/agent-$3.in"
     elif [ -f "` + dir + `/sbx-state/$2" ]; then echo running > "` + dir + `/sbx-state/$2"; fi ;;
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.

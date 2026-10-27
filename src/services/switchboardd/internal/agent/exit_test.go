@@ -74,13 +74,15 @@ func TestSpontaneousExitReportsExitedOnceAndRecreates(t *testing.T) {
 	if _, err := reg.Session("sb1", &pb.AgentSpec{}); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(rec.snapshot()) == 1 }) // STARTING is written asynchronously
 	mu.Lock()
 	first := created[0]
 	mu.Unlock()
 	first.exit()
 
-	waitFor(t, func() bool { return len(rec.snapshot()) == 1 })
-	if got := rec.snapshot(); got[0] != pb.AgentStatus_AGENT_STATUS_EXITED || rec.ids[0] != "sb1" {
+	// Creating the session recorded STARTING (SWI-15); the exit adds EXITED.
+	waitFor(t, func() bool { return len(rec.snapshot()) == 2 })
+	if got := rec.snapshot(); got[0] != pb.AgentStatus_AGENT_STATUS_STARTING || got[1] != pb.AgentStatus_AGENT_STATUS_EXITED || rec.ids[1] != "sb1" {
 		t.Fatalf("status calls = %v for %v", got, rec.ids)
 	}
 	// The dead session is forgotten: a later Prompt starts a fresh agent.
@@ -95,9 +97,10 @@ func TestSpontaneousExitReportsExitedOnceAndRecreates(t *testing.T) {
 	}
 	// Exiting the first session again (idempotent) reports nothing more.
 	first.exit()
+	waitFor(t, func() bool { return len(rec.snapshot()) >= 3 })
 	time.Sleep(20 * time.Millisecond)
-	if got := rec.snapshot(); len(got) != 1 {
-		t.Errorf("EXITED must be reported once, got %v", got)
+	if got := rec.snapshot(); len(got) != 3 || got[2] != pb.AgentStatus_AGENT_STATUS_STARTING {
+		t.Errorf("EXITED must be reported once (then the new session's STARTING), got %v", got)
 	}
 }
 
@@ -109,8 +112,11 @@ func TestDeliberateCloseIsNotAnExit(t *testing.T) {
 	reg.Close("sb1")
 	s.(*waitSession).exit() // the killed child's Wait returns after Close
 	time.Sleep(30 * time.Millisecond)
-	if got := rec.snapshot(); len(got) != 0 {
-		t.Errorf("a registry-initiated close must not report EXITED, got %v", got)
+	// (STARTING, written asynchronously, is skipped once the session is gone.)
+	for _, st := range rec.snapshot() {
+		if st != pb.AgentStatus_AGENT_STATUS_STARTING {
+			t.Errorf("a registry-initiated close must not report EXITED, got %v", rec.snapshot())
+		}
 	}
 	// Without a status updater an exit is simply forgotten.
 	reg2 := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return newWaitSession(), nil })
@@ -133,8 +139,8 @@ func TestNonWaiterSessionsAreNotWatched(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if len(rec.snapshot()) != 0 {
-		t.Error("no exit should be reported for a plain session")
+	if got := rec.snapshot(); len(got) != 1 || got[0] != pb.AgentStatus_AGENT_STATUS_STARTING {
+		t.Errorf("no exit should be reported for a plain session, got %v", got)
 	}
 }
 
