@@ -28,6 +28,9 @@ const (
 	unaryTimeout = 30 * time.Second
 	// minIntervalSeconds is the smallest timed-event interval.
 	minIntervalSeconds = 60
+	// windowSearchDays bounds the search for a timed event's next window opening
+	// (SWI-10); a week plus a day always finds one.
+	windowSearchDays = 8
 	// historyKeep is how many finished runs are retained per orchestrator.
 	historyKeep = 200
 	// maxArgumentBytes / maxPromptBytes bound a call's values and the composed prompt.

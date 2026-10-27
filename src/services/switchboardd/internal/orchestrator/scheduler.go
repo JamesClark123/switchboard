@@ -16,7 +16,8 @@ import (
 // action as a TIMED event with the event as origin; with dedupe on (the
 // default) a firing is skipped while a run of this event is queued or in
 // flight. After a restart the next firing is the first slot on the event's
-// phase — never a replay.
+// phase — never a replay. An event with an active window (SWI-10, window.go)
+// fires only inside it: at each opening, then every interval until the close.
 
 type scheduler struct {
 	mu    sync.Mutex
@@ -36,6 +37,10 @@ func (s *Service) PutTimedEvent(id string, ev *pb.TimedEvent) (*pb.TimedEvent, e
 	case ev.GetIntervalSeconds() < minIntervalSeconds:
 		return nil, fmt.Errorf("%w: the interval must be at least %d seconds", ErrInvalid, minIntervalSeconds)
 	}
+	win, err := normalizeWindow(ev.GetWindow())
+	if err != nil {
+		return nil, err
+	}
 	now := s.clock.Now()
 	var saved *pb.TimedEvent
 	if _, err := rt.update(func(o *pb.Orchestrator) error {
@@ -46,7 +51,7 @@ func (s *Service) PutTimedEvent(id string, ev *pb.TimedEvent) (*pb.TimedEvent, e
 		if err := validateCall(action, ev.GetArguments()); err != nil {
 			return err
 		}
-		next := timestamppb.New(now.Add(time.Duration(ev.GetIntervalSeconds()) * time.Second))
+		next := timestamppb.New(firstFire(ev.GetIntervalSeconds(), win, now))
 		if ev.GetId() == "" {
 			seq := 0
 			for _, ex := range o.GetTimedEvents() {
@@ -58,7 +63,7 @@ func (s *Service) PutTimedEvent(id string, ev *pb.TimedEvent) (*pb.TimedEvent, e
 			created := &pb.TimedEvent{
 				Id: fmt.Sprintf("tev-%d", seq+1), Name: name, Action: ev.GetAction(), Arguments: ev.GetArguments(),
 				IntervalSeconds: ev.GetIntervalSeconds(), Enabled: ev.GetEnabled(), DedupeDisabled: ev.GetDedupeDisabled(),
-				NextFireAt: next,
+				NextFireAt: next, Window: win,
 			}
 			o.TimedEvents = append(o.TimedEvents, created)
 			saved = created
@@ -74,12 +79,12 @@ func (s *Service) PutTimedEvent(id string, ev *pb.TimedEvent) (*pb.TimedEvent, e
 			if upd.GetEnabled() {
 				upd.DisabledReason = ""
 			}
-			// A new interval, a re-enable or a missing slot restarts the phase
-			// from now (a re-enabled event never replays the time it was off).
-			if ex.GetIntervalSeconds() != ev.GetIntervalSeconds() || ex.GetNextFireAt() == nil || (!ex.GetEnabled() && ev.GetEnabled()) {
+			// A new interval or window, a re-enable or a missing slot restarts the
+			// phase from now (a re-enabled event never replays the time it was off).
+			if ex.GetIntervalSeconds() != ev.GetIntervalSeconds() || !sameWindow(ex.GetWindow(), win) || ex.GetNextFireAt() == nil || (!ex.GetEnabled() && ev.GetEnabled()) {
 				upd.NextFireAt = next
 			}
-			upd.IntervalSeconds = ev.GetIntervalSeconds()
+			upd.IntervalSeconds, upd.Window = ev.GetIntervalSeconds(), win
 			o.TimedEvents[i] = upd
 			saved = upd
 			return nil
@@ -209,13 +214,27 @@ func (rt *runtime) startScheduler() {
 	rt.rearmScheduler()
 }
 
+// firstFire is a saved event's first firing: now + interval, or with a window
+// the next slot on the window's grid (never an immediate fire).
+func firstFire(intervalSeconds uint32, win *pb.ActiveWindow, now time.Time) time.Time {
+	interval := time.Duration(intervalSeconds) * time.Second
+	if w, ok := eventWindow(&pb.TimedEvent{Window: win}); ok {
+		return w.nextFire(now, interval)
+	}
+	return now.Add(interval)
+}
+
 // nextSlot is the first firing time on the event's phase after now: the
 // slot after last_fired_at, else next_fire_at if it is still ahead, else now +
-// interval (never a replay).
+// interval (never a replay). With a window it is the next slot on the window's
+// grid, whose phase is fixed by the opening.
 func nextSlot(ev *pb.TimedEvent, now time.Time) time.Time {
 	interval := time.Duration(ev.GetIntervalSeconds()) * time.Second
 	if interval <= 0 {
 		interval = minIntervalSeconds * time.Second
+	}
+	if w, ok := eventWindow(ev); ok {
+		return w.nextFire(now, interval)
 	}
 	if ev.GetLastFiredAt() != nil {
 		next := ev.GetLastFiredAt().AsTime().Add(interval)
@@ -283,8 +302,8 @@ func (rt *runtime) tick() {
 	defer rt.fireMu.Unlock()
 	now := rt.svc.clock.Now()
 	type firing struct {
-		ev   *pb.TimedEvent
-		skip bool
+		ev           *pb.TimedEvent
+		skip, missed bool
 	}
 	var due []firing
 	rec := rt.record()
@@ -292,10 +311,14 @@ func (rt *runtime) tick() {
 		if !ev.GetEnabled() || ev.GetNextFireAt() == nil || ev.GetNextFireAt().AsTime().After(now) {
 			continue
 		}
+		if missedWindow(ev, now) {
+			due = append(due, firing{ev: ev, missed: true})
+			continue
+		}
 		due = append(due, firing{ev: ev, skip: !ev.GetDedupeDisabled() && rt.hasOpenRun(ev.GetId())})
 	}
 	for _, f := range due {
-		if !f.skip {
+		if !f.skip && !f.missed {
 			if _, err := rt.callAction(f.ev.GetAction(), f.ev.GetArguments(), pb.EventKind_EVENT_KIND_TIMED, f.ev.GetId(), f.ev.GetName()); err != nil {
 				rt.svc.logf("[orchestrator %s] timed event %s: %v", rec.GetName(), f.ev.GetName(), err)
 			}
@@ -309,15 +332,27 @@ func (rt *runtime) tick() {
 						continue
 					}
 					interval := time.Duration(ev.GetIntervalSeconds()) * time.Second
-					if f.skip {
+					if interval <= 0 {
+						interval = minIntervalSeconds * time.Second
+					}
+					switch {
+					case f.missed: // neither fired nor skipped: only the slot moves
+					case f.skip:
 						ev.LastSkippedAt = timestamppb.New(now)
 						ev.SkippedCount++
-					} else {
+					default:
 						ev.LastFiredAt = timestamppb.New(now)
 					}
-					next := ev.GetNextFireAt().AsTime().Add(interval)
-					for !next.After(now) {
-						next = next.Add(interval)
+					var next time.Time
+					if w, ok := eventWindow(ev); ok {
+						// Past the close this jumps to the next opening, so the
+						// timer sleeps through the hours outside the window.
+						next = w.nextFire(now, interval)
+					} else {
+						next = ev.GetNextFireAt().AsTime().Add(interval)
+						for !next.After(now) {
+							next = next.Add(interval)
+						}
 					}
 					ev.NextFireAt = timestamppb.New(next)
 				}
@@ -327,6 +362,19 @@ func (rt *runtime) tick() {
 		rt.svc.emitChanged(rt.id)
 	}
 	rt.rearmScheduler()
+}
+
+// missedWindow reports whether a due slot of a windowed event is being reached
+// only after its window closed — the timer ran late (a suspended host, a long
+// stall). Such a slot is dropped rather than fired outside the window. A slot
+// in no window (one that is empty on a DST day) is never treated as missed.
+func missedWindow(ev *pb.TimedEvent, now time.Time) bool {
+	w, ok := eventWindow(ev)
+	if !ok {
+		return false
+	}
+	o, ok := w.openAt(ev.GetNextFireAt().AsTime())
+	return ok && !now.Before(w.closeAfter(o))
 }
 
 // hasOpenRun reports whether a run with this origin is queued or in flight.

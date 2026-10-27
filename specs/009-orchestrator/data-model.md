@@ -135,6 +135,15 @@ QUEUED or in flight → `last_skipped_at`, `skipped_count++`, `next_fire_at += i
 restart: `next_fire_at = last_fired_at + k·interval` for the smallest k with a future value (no
 replay). Deleting the action → `enabled = false`, `disabled_reason` set (FR-130).
 
+**Active window (SWI-10)**: optional `window: ActiveWindow{start, end, weekdays, timezone}`, a
+daily `HH:MM`–`HH:MM` window (end exclusive; `end < start` crosses midnight) in an IANA timezone,
+optionally limited to weekdays (0=Sun..6=Sat, the day the window opens). Absent = around the clock,
+exactly as above. With a window, the event fires at each opening `o` and at `o + k·interval` while
+before the close; the phase restarts at every opening. `next_fire_at` is the first such slot strictly
+after now — on save (never an immediate fire), after each firing or skip, and after a restart (no
+replay). A changed window restarts the phase like a changed interval. `FireTimedEvent` (Enqueue now)
+ignores the window. Validation: `HH:MM` 24h, `start != end`, weekdays 0–6, a loadable IANA timezone.
+
 ## ReasoningSetup and the reasoning sandbox (R11)
 
 `ReasoningSetup{sources, config, kits, mcp_servers}`; empty = `LaunchRequest{EmptyWorkspace:

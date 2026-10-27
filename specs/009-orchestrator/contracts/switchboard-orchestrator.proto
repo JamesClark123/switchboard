@@ -261,6 +261,16 @@ message TimedEvent {
   google.protobuf.Timestamp last_skipped_at = 10;
   uint32 skipped_count = 11;
   string disabled_reason = 12;           // e.g. "action review-pr was deleted"
+  ActiveWindow window = 13;              // absent => fires around the clock (SWI-10)
+}
+
+// A daily window a timed event fires in (SWI-10): at the window's opening, then
+// every interval until it closes. Absent => always (24/7).
+message ActiveWindow {
+  string start = 1;                      // "HH:MM", 24h, local to timezone
+  string end = 2;                        // "HH:MM", exclusive; end < start => overnight (crosses midnight)
+  repeated uint32 weekdays = 3;          // 0=Sun..6=Sat; empty => every day. An overnight window's day is the day it opens
+  string timezone = 4;                   // IANA name, e.g. "America/Los_Angeles"; required
 }
 
 // The reasoning sandbox's setup (FR-146): the launch wizard's own fields. Empty
