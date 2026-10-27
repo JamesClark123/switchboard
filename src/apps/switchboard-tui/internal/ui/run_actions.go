@@ -211,25 +211,23 @@ func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) 
 // (returning to the surface's screen on detach) or, with external, in its own
 // window. Refusals name the worker on the surface's line.
 func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model, tea.Cmd) {
-	op := m.opState(s)
-	if !runInFlight(run) {
-		op.status = "only an in-progress run has a terminal"
+	refuse := func(why string) (tea.Model, tea.Cmd) {
+		m.opState(s).status = why
+		m.status = why
 		return m, nil
+	}
+	if !runInFlight(run) {
+		return refuse("only an in-progress run has a terminal")
 	}
 	sb, host, ok := m.runSandbox(run)
 	if !ok {
-		op.status = "worker sandbox " + m.workerName(run) + " is not on a connected daemon"
-		return m, nil
+		return refuse("worker sandbox " + m.workerName(run) + " is not on a connected daemon")
 	}
 	d, err := m.connectedDaemon(host)
 	if err != nil {
-		op.status = "worker sandbox " + m.workerName(run) + ": " + err.Error()
-		return m, nil
+		return refuse("worker sandbox " + m.workerName(run) + ": " + err.Error())
 	}
-	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
-		op.status = "worker sandbox " + m.workerName(run) + " is not running"
-		return m, nil
-	}
+	m.opState(s).status = ""
 	if external {
 		return m.openExternalTerminal(sb, host)
 	}

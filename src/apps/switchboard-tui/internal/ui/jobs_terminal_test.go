@@ -97,7 +97,6 @@ func TestJobsTerminalRefusals(t *testing.T) {
 		{"run-q", "t", "only an in-progress run has a terminal"},
 		{"run-done", "T", "only an in-progress run has a terminal"},
 		{"run-gone", "t", "worker sandbox w-gone is not on a connected daemon"},
-		{"run-stop", "T", "worker sandbox worker-w-stop is not running"},
 	} {
 		m = overviewAt(t, m, c.id)
 		m.jobs.status = ""
@@ -108,6 +107,11 @@ func TestJobsTerminalRefusals(t *testing.T) {
 		if inFlight := c.id == "run-gone" || c.id == "run-stop"; strings.Contains(mm.renderHelp(mm.jobsHelp()), "terminal") != inFlight {
 			t.Errorf("%s: only in-flight rows offer the terminal", c.id)
 		}
+	}
+	// A stopped worker gets the Sandboxes list's start-first hint.
+	m = overviewAt(t, m, "run-stop")
+	if mm, cmd := update(m, press("t")); cmd != nil || !strings.Contains(mm.status, "start the sandbox") {
+		t.Errorf("stopped worker: status %q", mm.status)
 	}
 	if d.attachedID != "" {
 		t.Error("a refusal attaches nothing")
@@ -130,7 +134,7 @@ func TestJobsTerminalFromQueue(t *testing.T) {
 		t.Fatal("no run-rev row on the queue")
 	}
 	m, _ = update(m, press("T"))
-	if _, ok := m.extTerm[m.extTermKey(m.activeHost, "w-rev")]; !ok || m.screen != screenJobs {
+	if _, ok := m.extTerm[extTermKey(m.activeHost, "w-rev")]; !ok || m.screen != screenJobs {
 		t.Fatalf("T should open w-rev externally, status %q / %q", m.status, m.jobs.status)
 	}
 	d.attachErr = errors.New("boom")
@@ -143,7 +147,7 @@ func TestJobsTerminalFromQueue(t *testing.T) {
 	m, cmd = update(m, press("t"))
 	m, _ = update(m, runCmd(cmd))
 	// The session dying (a send error) also returns to the Queue.
-	m, _ = update(m, termClosedMsg{err: errors.New("gone"), name: m.term.name, returnTo: m.term.returnTo})
+	m, _ = update(m, termClosedMsg{err: errors.New("gone"), name: m.term.name, returnTo: m.term.returnTo, seq: m.term.seq})
 	if m.screen != screenJobs || !strings.Contains(m.status, "terminal: gone") {
 		t.Errorf("closed session: screen %v status %q", m.screen, m.status)
 	}
@@ -164,6 +168,13 @@ func TestRunSandboxResolution(t *testing.T) {
 	}
 	if _, _, ok := m.runSandbox(&pb.Run{}); ok {
 		t.Error("a run with no worker has no sandbox")
+	}
+	// Without a sandbox_host_id only a sandbox on exactly one host matches.
+	if _, host, ok := m.runSandbox(&pb.Run{SandboxId: "w-in"}); !ok || host != "hostb" {
+		t.Errorf("w-in (hostb only) resolves to %q %v", host, ok)
+	}
+	if _, _, ok := m.runSandbox(&pb.Run{SandboxId: "w-run"}); ok {
+		t.Error("w-run is on two hosts: ambiguous")
 	}
 	m.hostAgg = nil
 	m.sandboxes = []*pb.Sandbox{{Id: "w-solo"}}
@@ -229,5 +240,35 @@ func TestJobsTerminalAttachAfterLeaving(t *testing.T) {
 	m, _ = update(m, termClosedMsg{err: errors.New("late"), name: "x", returnTo: screenJobs})
 	if m.screen != screenDaemons || !strings.Contains(m.status, "terminal: late") {
 		t.Errorf("a late failure only reports: screen %v status %q", m.screen, m.status)
+	}
+}
+
+// SWI-14: only the latest attach opens, an overlay opened while it attached
+// keeps it out, and a stale close never tears down the terminal showing.
+func TestJobsTerminalAttachIdentity(t *testing.T) {
+	m, _ := terminalJobs(t)
+	m = overviewAt(t, m, "run-run")
+	m1, first := update(m, press("t"))
+	m2, second := update(m1, press("t"))
+	firstOpened, secondOpened := runCmd(first), runCmd(second)
+	m, _ = update(m2, firstOpened)
+	if m.screen != screenJobs {
+		t.Fatal("a superseded attach does not open")
+	}
+	m, _ = update(m, secondOpened)
+	if m.screen != screenTerminal {
+		t.Fatal("the latest attach opens")
+	}
+	m, _ = update(m, termClosedMsg{err: errors.New("old"), name: "x", returnTo: screenList, seq: m.term.seq - 1})
+	if m.screen != screenTerminal || m.term.session == nil {
+		t.Error("a close about an older attach leaves the terminal open")
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+
+	m, cmd := update(m, press("t"))
+	m.jobs.prompt = &pb.Run{Id: "run-run"}
+	m, _ = update(m, runCmd(cmd))
+	if m.screen != screenJobs || m.term.session != nil {
+		t.Error("an overlay opened while attaching keeps the terminal out")
 	}
 }

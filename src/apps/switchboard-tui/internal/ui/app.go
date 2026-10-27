@@ -243,6 +243,7 @@ type Model struct {
 
 	// US2/US3: in-place persistent terminal view + tracking of external terminals.
 	term    termState
+	termSeq uint64                  // numbers in-place attaches; only the latest may open (SWI-14)
 	extTerm map[string]*extTerminal // extTermKey(host, sandbox id) -> spawned external terminal
 
 	// US2: saved configurations + sbx option manifest.

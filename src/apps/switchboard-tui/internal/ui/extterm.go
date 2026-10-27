@@ -48,7 +48,7 @@ func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea
 		return m, nil
 	}
 	id, name := sb.GetId(), sb.GetDisplayName()
-	key := m.extTermKey(host, id)
+	key := extTermKey(host, id)
 
 	// Already open from this TUI: focus it (best-effort) rather than spawn a second.
 	if et, ok := m.extTerm[key]; ok && processAlive(et.proc) {
@@ -92,12 +92,7 @@ func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea
 
 // extTermKey keys m.extTerm by host and sandbox: Jobs opens workers on any
 // host, and two hosts can hold sandboxes with the same id (SWI-14).
-func (m Model) extTermKey(host, id string) string {
-	if host == "" {
-		host = m.activeHost
-	}
-	return host + "/" + id
-}
+func extTermKey(host, id string) string { return host + "/" + id }
 
 // processAlive reports whether p is still running (signal 0 probes existence).
 func processAlive(p *os.Process) bool {

@@ -328,33 +328,58 @@ func (m Model) lookupWorkerName(r *pb.Run) string {
 // runSandbox finds the record of a run's worker sandbox and the TUI host entry
 // it is on, to open its terminal (SWI-14). Unlike lookupWorkerName, which only
 // names the worker, it never guesses across hosts: the run's sandbox_host_id
-// must belong to a connected daemon, and only that host's sandboxes match (the
-// active host's list too when it is that host). A run without a
-// sandbox_host_id matches on any host.
+// must be a connected daemon's, and only that host's sandboxes match (the
+// active host's list too when it is that host). A run without one matches only
+// when exactly one host has the sandbox.
 func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, bool) {
-	if r.GetSandboxId() == "" {
+	id := r.GetSandboxId()
+	if id == "" {
 		return nil, "", false
 	}
+	if r.GetSandboxHostId() == "" {
+		var found *pb.Sandbox
+		var host string
+		for _, hs := range m.hostAgg {
+			for _, sb := range hs.Sandboxes {
+				if sb.GetId() == id {
+					if found != nil {
+						return nil, "", false // on two hosts: ambiguous
+					}
+					found, host = sb, hs.Host.Entry.ID
+				}
+			}
+		}
+		if found == nil {
+			return findSandbox(m.sandboxes, id, m.activeHost)
+		}
+		return found, host, true
+	}
 	entry, ok := m.entryForDaemonHost(r.GetSandboxHostId())
-	if r.GetSandboxHostId() != "" && !ok {
+	if !ok && m.daemon.HostID() == r.GetSandboxHostId() {
+		// The active host, adopted without a connection object (connOf).
+		entry, ok = m.activeHost, true
+	}
+	if !ok {
 		return nil, "", false
 	}
 	for _, hs := range m.hostAgg {
-		if ok && hs.Host.Entry.ID != entry {
-			continue
-		}
-		for _, sb := range hs.Sandboxes {
-			if sb.GetId() == r.GetSandboxId() {
-				return sb, hs.Host.Entry.ID, true
+		if hs.Host.Entry.ID == entry {
+			if sb, h, ok := findSandbox(hs.Sandboxes, id, entry); ok {
+				return sb, h, true
 			}
 		}
 	}
-	if ok && entry != m.activeHost {
+	if entry != m.activeHost {
 		return nil, "", false
 	}
-	for _, sb := range m.sandboxes {
-		if sb.GetId() == r.GetSandboxId() {
-			return sb, m.activeHost, true
+	return findSandbox(m.sandboxes, id, entry)
+}
+
+// findSandbox is the sandbox with id in sbs, reported as on host.
+func findSandbox(sbs []*pb.Sandbox, id, host string) (*pb.Sandbox, string, bool) {
+	for _, sb := range sbs {
+		if sb.GetId() == id {
+			return sb, host, true
 		}
 	}
 	return nil, "", false

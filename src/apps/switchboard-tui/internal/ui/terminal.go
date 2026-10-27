@@ -28,6 +28,7 @@ type termState struct {
 	// returnTo is the screen leaving the terminal goes back to (SWI-14): the
 	// Sandboxes list (the zero value) or the Jobs screen it was opened from.
 	returnTo screen
+	seq      uint64 // the attach that opened it (Model.termSeq)
 }
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
@@ -59,12 +60,14 @@ type termOpenedMsg struct {
 	name       string
 	cols, rows int
 	returnTo   screen
+	seq        uint64
 }
 type termUpdateMsg struct{}
 type termClosedMsg struct {
 	err      error
 	name     string
 	returnTo screen
+	seq      uint64 // the attach (or open terminal) it is about
 }
 
 // enterTerminal (lowercase `t`) opens the sandbox's persistent session in-place
@@ -72,10 +75,6 @@ type termClosedMsg struct {
 // blocks; the session shows prior output immediately via the daemon snapshot
 // (FR-003).
 func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
-	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
-		m.status = "start the sandbox before opening its terminal"
-		return m, nil
-	}
 	return m.enterTerminalFrom(sb, host, m.daemonForHost(host), screenList)
 }
 
@@ -83,6 +82,12 @@ func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 // the caller resolved: detaching, or the session closing, returns to returnTo
 // (SWI-14).
 func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo screen) (tea.Model, tea.Cmd) {
+	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		m.status = "start the sandbox before opening its terminal"
+		return m, nil
+	}
+	m.termSeq++
+	seq := m.termSeq
 	cols, rows := m.bodyWidth(), m.termRows()
 	id, name := sb.GetId(), sb.GetDisplayName()
 	m.status = "opening terminal…"
@@ -95,19 +100,19 @@ func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo
 		sess, err := d.AttachTerminal(ctx, id, client.AttachInTUI, uint32(cols), uint32(rows), sink)
 		if err != nil {
 			cancel()
-			return termClosedMsg{err: err, name: name, returnTo: returnTo}
+			return termClosedMsg{err: err, name: name, returnTo: returnTo, seq: seq}
 		}
 		return termOpenedMsg{
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
-			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo,
+			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo, seq: seq,
 		}
 	}
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
-	if m.screen != msg.returnTo {
-		// The developer left the screen the terminal was opened from while it
-		// attached: detach rather than pull them into it.
+	if msg.seq != m.termSeq || !m.attachAwaited(msg.returnTo) {
+		// A newer attach superseded it, or the developer moved on (another
+		// screen, an overlay) while it attached: detach rather than pull them in.
 		_ = msg.session.Close()
 		msg.cancel()
 		close(msg.done)
@@ -118,19 +123,28 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		screen: msg.screen, session: msg.session, cancel: msg.cancel,
 		updates: msg.updates, done: msg.done,
 		sandboxID: msg.id, host: msg.host, name: msg.name, cols: msg.cols, rows: msg.rows,
-		returnTo: msg.returnTo,
+		returnTo: msg.returnTo, seq: msg.seq,
 	}
 	m.screen = screenTerminal
 	m.status = ""
 	return m, m.waitTermUpdateCmd()
 }
 
+// attachAwaited reports whether the developer is still where an attach was
+// started from, with nothing opened over it since.
+func (m Model) attachAwaited(from screen) bool {
+	if m.screen != from {
+		return false
+	}
+	return from != screenJobs || (m.jobs.prompt == nil && m.jobs.form == nil && m.jobs.results == nil)
+}
+
 // handleTermClosed reports a session that closed, or an attach that failed. It
-// changes screen only when the terminal is showing: a failed attach leaves the
-// developer wherever they are now.
+// changes screen only when it is about the terminal showing: a failed attach
+// leaves the developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	if m.screen == screenTerminal {
+	if m.screen == screenTerminal && msg.seq == m.term.seq {
 		m.closeTerm()
 		m, cmd = m.leaveTerminal(msg.returnTo)
 	}
@@ -143,11 +157,8 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	m.status = "detached from " + msg.name
-	if m.screen != screenList {
-		return m, cmd
-	}
 	m.listLoading = true
-	return m, m.reloadCmd()
+	return m, tea.Batch(cmd, m.reloadCmd())
 }
 
 // leaveTerminal shows the screen a closed terminal returns to. Jobs is entered
@@ -234,7 +245,7 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.term.screen.ScrollToBottom()
 		}
 		if err := m.term.session.SendData(b); err != nil {
-			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name, returnTo: m.term.returnTo})
+			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name, returnTo: m.term.returnTo, seq: m.term.seq})
 		}
 	}
 	return m, nil
