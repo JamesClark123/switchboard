@@ -739,3 +739,42 @@ func TestLinesIgnoresViewportAndIsACopy(t *testing.T) {
 		t.Fatalf("snapshot changed after a later write: %q", got[0].Text)
 	}
 }
+
+func TestOSCStringsNeverReachTheScreen(t *testing.T) {
+	tests := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{"BEL-terminated title", []string{"ab\x1b]0;✳ Claude Code\x07cd"}, "abcd"},
+		{"ST-terminated title", []string{"ab\x1b]0;✳ Claude Code\x1b\\cd"}, "abcd"},
+		{"hyperlink", []string{"\x1b]8;;https://x.example\x07link\x1b]8;;\x07!"}, "link!"},
+		{"split across writes", []string{"ab\x1b", "]0;✳ Cla", "ude\x1b", "\\cd"}, "abcd"},
+		{"held ESC then CSI", []string{"ab\x1b", "[1mcd"}, "abcd"},
+		{"double ESC", []string{"a\x1b\x1b[1mb"}, "ab"},
+		{"unterminated OSC then CSI", []string{"a\x1b]0;t\x1b[1mb"}, "ab"},
+		{"unterminated OSC then OSC", []string{"a\x1b]0;t\x1b]0;u\x07b"}, "ab"},
+		{"unterminated OSC then ESC", []string{"a\x1b]0;t\x1b\x1b[1mb"}, "ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(40, 2)
+			for _, w := range tt.writes {
+				_, _ = s.Write([]byte(w))
+			}
+			if got := s.Lines()[0].Text; got != tt.want {
+				t.Fatalf("row = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResetForgetsAHalfReadSequence(t *testing.T) {
+	s := New(40, 2)
+	_, _ = s.Write([]byte("\x1b]0;half a title"))
+	s.Reset()
+	_, _ = s.Write([]byte("fresh"))
+	if got := s.Lines()[0].Text; got != "fresh" {
+		t.Fatalf("row after reset = %q, want %q", got, "fresh")
+	}
+}

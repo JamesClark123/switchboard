@@ -46,7 +46,23 @@ type Screen struct {
 	scroll     []string
 	viewOffset int
 	maxScroll  int // scrollback cap: maxScrollback, or 0 under WithoutScrollback
+
+	osc oscState // OSC filter state, carried across writes (see filterOSC)
 }
+
+// oscState tracks an operating-system command (ESC ] … BEL | ESC \) across
+// writes. OSC strings (window titles, hyperlinks) are dropped before the ANSI
+// parser sees them: its OSC state ends at the first non-ASCII byte and prints
+// the rest of the string, so a title such as "✳ Claude Code" (Claude Code
+// sets one on every turn) would land on the screen.
+type oscState uint8
+
+const (
+	oscNone   oscState = iota
+	oscEsc             // an ESC was seen; held until the next byte
+	oscBody            // inside an OSC string
+	oscBodyEs          // an ESC inside an OSC string (ST or a new sequence)
+)
 
 // Option configures a Screen at construction.
 type Option func(*Screen)
@@ -134,8 +150,55 @@ func (s *Screen) Size() (cols, rows int) {
 func (s *Screen) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pars.Parse(p)
+	s.pars.Parse(s.filterOSC(p))
 	return len(p), nil
+}
+
+// filterOSC returns p without OSC strings, carrying a split sequence over to
+// the next write in s.osc. An ESC is held back until the byte after it shows
+// whether it opens an OSC. Called with s.mu held.
+func (s *Screen) filterOSC(p []byte) []byte {
+	out := make([]byte, 0, len(p)+1)
+	for _, b := range p {
+		switch s.osc {
+		case oscNone:
+			if b == 0x1b {
+				s.osc = oscEsc
+			} else {
+				out = append(out, b)
+			}
+		case oscEsc:
+			switch b {
+			case ']':
+				s.osc = oscBody
+			case 0x1b:
+				out = append(out, 0x1b) // the held ESC; hold this one
+			default:
+				out = append(out, 0x1b, b)
+				s.osc = oscNone
+			}
+		case oscBody:
+			switch b {
+			case 0x07:
+				s.osc = oscNone
+			case 0x1b:
+				s.osc = oscBodyEs
+			}
+		case oscBodyEs:
+			switch b {
+			case '\\':
+				s.osc = oscNone
+			case 0x1b:
+				s.osc = oscEsc // an unterminated OSC, then a new ESC
+			case ']':
+				s.osc = oscBody // an unterminated OSC, then another one
+			default:
+				out = append(out, 0x1b, b) // an unterminated OSC, then a sequence
+				s.osc = oscNone
+			}
+		}
+	}
+	return out
 }
 
 // Reset clears the screen, resets the cursor to the origin, and drops any
@@ -151,6 +214,10 @@ func (s *Screen) Reset() {
 	s.cursorHidden = false
 	s.scroll = nil
 	s.viewOffset = 0
+	// A reset may follow dropped bytes (the daemon's screen): forget any
+	// half-read escape sequence too.
+	s.pars.Reset()
+	s.osc = oscNone
 }
 
 // Lines returns the live screen, without scrollback and ignoring any scrolled
