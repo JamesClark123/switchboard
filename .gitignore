@@ -17,3 +17,7 @@ vendor/
 
 # Switchboard local runtime state (daemon registry, workspace copies)
 *.sock
+
+# Agent sandbox artifacts
+.claude/settings.local.json
+.write_probe

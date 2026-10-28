@@ -147,7 +147,35 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).
+Active feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes
+Guard, SWI-9). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
+textarea (`MaxHeight 0`, `enlarge.go`); esc/ctrl+e write back (`*ptr = value; field.Value(ptr)`), ctrl+s writes back
+and saves, ctrl+c writes back then leaves the form, `ctrl+r` reverts to the text at open, pgup/pgdn batch cursor moves.
+huh's external editor is gone: every form uses `formKeyMap()` (keyless `Text.Editor` **and** keyless `Quit`, since
+`ExternalEditor(false)` alone only hides the binding when help renders) and every Text is built by `formSpec.text(ptr, title)`
+(registry for write-back). Inline fields keep huh's 99-line enter cap; values up to 10,000 lines round-trip (verified,
+R2). **Guard**: every editing surface (`guardSurface` enum in `formguard.go`: 6 multi-field form surfaces, kit item + overview,
+launch, reasoning, sources overlay + add browser, rename/tag/add host/add group) routes its exits (esc; ctrl+c in forms;
+`q` on the kit overview and sources overlay) through `requestExit`: clean (current values == baseline snapshot, taken
+after the form is built and Text values normalised) leaves as today, dirty opens
+one shared dialog (`unsaved.go`, a layer above the screen): `s` Save (reasoning: `r` or enter@Rebuild → `guardSave(gReasoning)` =
+`confirmRebuildFromSetup`, a destructive confirm built from the edited setup; FR-017 exception) / `c`·esc·ctrl+c Cancel (default highlight) / `d` Discard; enter activates the highlight;
+only esc/ctrl+c act for `unsavedKeyGrace` (a var, 150 ms; story tests zero it with `noKeyGrace(t)`) after it opens.
+`confirmState.onAccept func(*Model)` carries y-only effects (sources Save closes + resets the overlay; Rebuild → detail);
+never an `acceptTo screen` field, since `screenList` is the zero value. Builders are split into `fill…Vals` + `build…Form(spec, vals)` so `reopenForm` keeps edits;
+`View` applies the password/sign-in overlays last over every layer. Save = the surface's existing save/confirm, Discard =
+its esc path. MCP "register anyway?" back-out returns to the form; sources Save → removal confirm (decline = Cancel);
+a save failing on an enter-completed huh form rebuilds it (`reopenForm`); dialog/enlarge layers are closed by
+`reconcileGuardLayers` when their surface goes away; forced closes (host drop, sandbox/orchestrator removed) drop the guard with `unsaved edits lost: <reason>`, also when
+the surface is suspended under its own confirm (`suspendedGuard`); confirm lifecycle (research R7 C1–C4): only key handlers and the
+override queue open confirms, so a showing confirm is never replaced; every async add-override is queued and opens on
+a non-key message only on the plain list (not filtering) or its own sandbox's overlay, with no credential prompt up
+(queue purged on sandbox removal/host drop); guard-opened and queued confirms are
+`yOnly` (accept on y only; enter ignored; no timer). SC-006
+timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). See `research.md` (R1–R10),
+`data-model.md`, `contracts/forms-ui.md`, `quickstart.md`.
+
+Prior feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).
 **TUI-only**: the **Orchestrators** top-level screen is replaced by a **Jobs** screen (cycle Sandboxes →
 Daemons → Jobs, wrapping; `esc` → Sandboxes, `q` quits) with tabs **Overview · Actions · Events · Queue** covering every orchestrator on every
 connected daemon (rows labelled `name @ host`). Overview = Upcoming (enabled timed events, `n` Enqueue now)

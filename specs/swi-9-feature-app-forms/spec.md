@@ -44,6 +44,11 @@
 
 - Responsiveness also covers typing, cursor movement and scrolling **in** the long inline field itself, which is where focus lands after the enlarged view closes (FR-005). The textarea's wrap cache is only cut to 99 entries once the field is focused, so that is the worst case. (SC-006)
 
+### Plan review (2026-10-27, re-review run `run-c275c8f2-435`, resolved in pr-response run `run-c275c8f2-437`)
+
+- Rebuild in the unsaved-changes dialog always goes through a confirm built from the edited setup, whichever key chooses it. A dialog that interrupts typing must never destroy a sandbox on one key. (FR-017 exception)
+- Confirms that open without the developer pressing that confirm's own key accept only `y`; enter does not confirm them. These are the guard's follow-up confirms (the sources removal after Save, and the Rebuild confirm) and every low-disk add-override confirm (they all open from one queue, including one that opens at once on the sources overlay). A repeated or held enter must never carry through to a destructive or disk-filling action. Every other confirm keeps y/enter. (FR-017, FR-019; resolved in pr-response runs `run-c275c8f2-446` and `run-c275c8f2-450`)
+
 ## Background (current behaviour this feature changes)
 
 Switchboard's terminal UI edits its data through these surfaces:
@@ -74,7 +79,7 @@ Today every way out of these surfaces **discards their edits with no warning**:
 
 While a form has focus, every other key, including `q`, shift+←/→ and `,`, is typed into the focused field. Switching screens or quitting is therefore only possible once the form has closed.
 
-The UI already has a modal confirm dialog for destructive actions (y/enter to confirm, n/esc to cancel). It is a two-choice gate and is not used when leaving a form.
+The UI already has a modal confirm dialog for destructive actions (y/enter to confirm, n/esc to cancel; the confirms this feature opens on the developer's behalf accept only `y`, see FR-017). It is a two-choice gate and is not used when leaving a form.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -140,7 +145,7 @@ When the developer presses esc in any of these with something entered or selecte
 
 1. **Given** an inline single-line input whose value, trimmed as enter trims it, differs from its starting value, **When** the developer presses esc, **Then** the dialog appears. Save commits the value just as enter does; Discard closes the input with nothing committed. A value that only gains surrounding spaces is unchanged and closes with no dialog (FR-011a).
 2. **Given** the launch wizard or the reasoning-sandbox setup with any selection or value differing from how it opened, **When** the developer presses esc, **Then** the dialog appears. Save performs the flow's own confirm action, exactly as enter / ctrl+s would: in the launch wizard it launches; in the reasoning setup it starts the rebuild, and the choice is labelled **Rebuild** rather than Save so the destructive effect is explicit. Discard leaves without acting.
-3. **Given** the sources overlay with folders marked for removal, or the add-browser with folders selected, **When** the developer presses esc, **Then** the dialog appears. Save performs the pending removal, which shows its usual confirm dialog, or the add, which is sent immediately as enter does.
+3. **Given** the sources overlay with folders marked for removal, or the add-browser with folders selected, **When** the developer presses esc, **Then** the dialog appears. Save performs the pending removal, which shows its usual confirm dialog (accepting only `y` when reached this way, FR-017), or the add, which is sent immediately as enter does.
    - If the developer declines that removal confirm (n/esc), it behaves like Cancel: they return to the overlay with the folders still marked, and the requested exit is dropped.
    - If they confirm it, the removal is sent and the overlay closes, completing the requested exit.
 4. **Given** a nested item editor with changes, **When** the developer presses esc in it, **Then** Save applies the item to the parent (the item editor's normal apply) and Discard drops the item's changes. Either way, the developer returns to the parent.
@@ -237,10 +242,12 @@ A developer is editing a long text field, such as a kit's agent instructions, an
   - If the save fails on a surface that stays open while saving, it MUST stay open with its values and show the error.
   - On success, the surface closes as it does after a normal save.
   - Where the surface's confirm action is destructive (the reasoning-sandbox setup, whose confirm destroys and relaunches the reasoning sandbox), the Save choice MUST be labelled with that action ("Rebuild").
+  - Exception: choosing **Rebuild** in the dialog MUST NOT rebuild at once. It MUST open a destructive confirm that names the **edited** setup, even though the setup's own rebuild key has no confirm. Declining returns to the setup unchanged; confirming rebuilds with the edited setup.
+  - A follow-up confirm reached through the dialog's Save or Rebuild (the sources removal and the Rebuild confirm) MUST accept only `y`, never enter, so the enter that chose Save or Rebuild cannot also confirm it, however it is repeated or held. Every low-disk add-override confirm follows the same rule, whether it opens at once or after being held back while the developer was elsewhere.
 - **FR-018**: In nested editors the guard MUST apply at each level:
   - Leaving a changed item editor raises the dialog for that item; there, Save means "apply to the parent".
   - Leaving a parent that holds applied-but-unsaved item changes raises the dialog for the parent; there, Save means "save the parent".
-- **FR-019**: The dialog MUST be fully keyboard-operable, with a visible key for each choice. The highlighted choice when it opens MUST be Cancel, and pressing esc in the dialog MUST choose Cancel. Only Discard's key, or enter while Discard is highlighted, MAY discard edits. (This intentionally differs from the destructive-action confirm dialog, where enter confirms.)
+- **FR-019**: The dialog MUST be fully keyboard-operable, with a visible key for each choice. The highlighted choice when it opens MUST be Cancel, and pressing esc in the dialog MUST choose Cancel. Only Discard's key, or enter while Discard is highlighted, MAY discard edits. (This intentionally differs from the destructive-action confirm dialog, where enter confirms, except on the y-only confirms of FR-017: the guard's follow-up confirms and every low-disk add-override.)
 - **FR-020**: The dialog MUST look and behave the same on every guarded surface.
 - **FR-021**: The unsaved-changes dialog and the enlarged view MUST be fully visible, key hints included, on an 80×24 terminal.
 
