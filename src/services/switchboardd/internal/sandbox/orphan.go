@@ -123,6 +123,10 @@ type orphanState struct {
 	again     bool // a probe was asked for while one ran
 	retry     *time.Timer
 	refusedAt time.Time
+	// epoch counts drops (a reap, a confirmed stop, a clear): a probe records
+	// its result only if none happened since it took the runtime lock, so a
+	// stale "alive" never lands over a reap or stop that slipped in after it.
+	epoch uint64
 }
 
 type orphans struct {
@@ -329,6 +333,7 @@ func (o *orphans) drop(id string) bool {
 		return false
 	}
 	had := st.unknown || st.record != nil
+	st.epoch++
 	if st.retry != nil {
 		st.retry.Stop()
 		st.retry = nil
@@ -380,9 +385,9 @@ func (o *orphans) probe(id string) {
 	o.mu.Unlock()
 	for {
 		o.sem <- struct{}{}
-		out, res, err := o.probeOnce(id)
+		out, epoch, res, err := o.probeOnce(id)
 		<-o.sem
-		o.apply(id, out, res, err)
+		o.apply(id, epoch, out, res, err)
 		o.mu.Lock()
 		if !st.again {
 			st.probing = false
@@ -430,62 +435,77 @@ func (o *orphans) execScript(ctx context.Context, sb *pb.Sandbox, script string)
 }
 
 // probeOnce runs one probe under the runtime lock (try-lock: dropped while an
-// operation holds it, whose outcome rule settles the sandbox instead).
-func (o *orphans) probeOnce(id string) (probeOutcome, agent.ProbeResult, error) {
+// operation holds it, whose outcome rule settles the sandbox instead). It
+// returns the sandbox's epoch as of taking the lock.
+func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult, error) {
 	o.mu.Lock()
 	if st := o.st[id]; st != nil && st.firstTry.IsZero() {
 		st.firstTry = time.Now() // the clock starts at the first attempt
 	}
 	o.mu.Unlock()
 	if sb, err := o.m.store.Get(id); err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
-		return probeDropped, agent.ProbeResult{}, nil
+		return probeDropped, 0, agent.ProbeResult{}, nil
 	}
 	unlock, ok := o.m.TryLockRuntime(id)
 	if !ok {
-		return probeDropped, agent.ProbeResult{}, nil
+		return probeDropped, 0, agent.ProbeResult{}, nil
 	}
 	defer unlock()
+	o.mu.Lock()
+	epoch := o.of(id).epoch
+	o.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), orphanProbeTimeout)
 	defer cancel()
 	sb, out, err := o.running(ctx, id)
 	if out != probeAlive {
-		return out, agent.ProbeResult{}, err
+		return out, epoch, agent.ProbeResult{}, err
 	}
 	text, err := o.execScript(ctx, sb, agent.ProbeScript())
 	if err != nil {
-		return probeFailed, agent.ProbeResult{}, fmt.Errorf("probe: %w", err)
+		return probeFailed, epoch, agent.ProbeResult{}, fmt.Errorf("probe: %w", err)
 	}
 	res, err := agent.ParseProbe(text)
 	if err != nil {
-		return probeFailed, res, err
+		return probeFailed, epoch, res, err
 	}
 	if !res.Alive() {
-		return probeGone, res, nil
+		return probeGone, epoch, res, nil
 	}
-	return probeAlive, res, nil
+	return probeAlive, epoch, res, nil
 }
 
-// apply records a probe's outcome.
-func (o *orphans) apply(id string, out probeOutcome, res agent.ProbeResult, perr error) {
+// apply records a probe's outcome, unless the sandbox was dropped (reaped,
+// stopped or cleared) since the probe took the runtime lock: the result is
+// stale, and whatever dropped it has settled the sandbox.
+func (o *orphans) apply(id string, epoch uint64, out probeOutcome, res agent.ProbeResult, perr error) {
 	switch out {
 	case probeDropped:
 	case probeFailed:
-		o.failed(id, perr)
+		o.failed(id, epoch, perr)
 	case probeGone:
-		o.cleared(id, true)
+		if o.current(id, epoch) {
+			o.cleared(id, true)
+		}
 	case probeAlive:
-		o.alive(id, res)
+		o.alive(id, epoch, res)
 	}
+}
+
+// current reports whether no drop happened since epoch.
+func (o *orphans) current(id string, epoch uint64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.of(id).epoch == epoch
 }
 
 // failed leaves the sandbox unknown, retried with backoff (capped at
 // orphanRetryCap). After orphanMaxFailures in a row, or orphanUnknownLimit
 // since its first attempt, it is surfaced once as CHECK_FAILED (the row note;
 // tasks.md Deferred items: no notification, no run note).
-func (o *orphans) failed(id string, perr error) {
+func (o *orphans) failed(id string, epoch uint64, perr error) {
 	o.mu.Lock()
 	st := o.of(id)
-	if !st.unknown && st.record == nil {
+	if (!st.unknown && st.record == nil) || st.epoch != epoch {
 		o.mu.Unlock()
 		return // cleared meanwhile
 	}
@@ -543,7 +563,7 @@ func (o *orphans) cleared(id string, gone bool) {
 // hold, or a cleanup step) is held NEEDS_DEVELOPER: nothing can be typed into
 // an orphan. A probe binds the generation's main PID from agent.pid when none
 // is bound (BindFromProbe checks the process first).
-func (o *orphans) alive(id string, res agent.ProbeResult) {
+func (o *orphans) alive(id string, epoch uint64, res agent.ProbeResult) {
 	d := o.getDeps()
 	gen := res.FileGen
 	var liveGen int64
@@ -569,6 +589,10 @@ func (o *orphans) alive(id string, res agent.ProbeResult) {
 	}
 	o.mu.Lock()
 	st := o.of(id)
+	if st.epoch != epoch {
+		o.mu.Unlock()
+		return // reaped or stopped since the probe: stale
+	}
 	fresh := st.record == nil
 	rec := &orphanRecord{gen: gen, procs: len(res.Procs), lastStatus: sb.GetAgent().GetStatus(), lastSeen: sb.GetAgent().GetLastEventAt()}
 	if !fresh {
@@ -616,6 +640,25 @@ func (m *Manager) AgentClientExited(id string, _ int64) {
 func (m *Manager) RecheckOrphan(id string) {
 	if m.orphans.pending(id) {
 		go m.orphans.probe(id)
+	}
+}
+
+// MarkOrphanCandidates marks every sandbox that may have a surviving agent
+// (mayHaveAgent) unknown, in memory only, so the gate refuses a spawn beside
+// it from the daemon's first request on (research R14). It runs before the
+// hook server serves: an orphan's escape-hatch result delivery must not start
+// a second agent before CheckOrphansAtStart (which needs the runtime's
+// listing) settles each one. Its deps' Tokens are read, so they are set first.
+func (m *Manager) MarkOrphanCandidates() {
+	all, err := m.store.List()
+	if err != nil {
+		return // CheckOrphansAtStart logs it
+	}
+	d := m.orphans.getDeps()
+	for _, sb := range all {
+		if m.orphans.mayHaveAgent(sb, d) {
+			m.orphans.setUnknown(sb.GetId())
+		}
 	}
 }
 
@@ -753,6 +796,16 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 		return agent.ErrBusy
 	}
 	defer unlock()
+	// Again under the lock: a probe may have cleared the sandbox since, and
+	// the daemon's own fresh agent (a live session) is never stopped.
+	if !o.pending(id) {
+		return nil
+	}
+	if d := o.getDeps(); d.Agents != nil {
+		if _, live := d.Agents.LiveGen(id); live {
+			return errLiveSession
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, orphanKillWait+orphanProbeTimeout)
 	defer cancel()
 	sb, out, err := o.running(ctx, id)
@@ -789,6 +842,10 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	})
 	return nil
 }
+
+// errLiveSession refuses a reap while the daemon has a live agent session for
+// the sandbox: the script would find and stop that agent.
+var errLiveSession = errors.New("the sandbox's agent is not detached")
 
 // actionRun reports whether a run is in its action phase (or has no steps):
 // replacing its agent fails it.

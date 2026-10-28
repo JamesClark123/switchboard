@@ -217,6 +217,9 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 			"Notification":     curl("Notification"),
 			"Stop":             curl("Stop"),
 			"SessionStart":     curl("SessionStart"),
+			// SessionEnd changes no status; a main agent's re-probes an orphan
+			// (handle, research R14).
+			"SessionEnd": curl("SessionEnd"),
 		},
 	}
 }
@@ -534,6 +537,9 @@ func (s *HookServer) dispatch(p hookPayload) (needsInput bool) {
 		}
 	case "Notification":
 		return s.notification(p, now)
+	case "SessionEnd":
+		// The agent is exiting, not working: no status change. Its exec
+		// client's exit (or the orphan re-probe in handle) settles it.
 	case "PreToolUse", "PostToolUse":
 		if st, ok := s.agentStatus(p.SandboxID); ok && st == pb.AgentStatus_AGENT_STATUS_WAITING {
 			// A background subagent's own tool calls fire these too, with the

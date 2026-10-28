@@ -70,9 +70,12 @@ func pidRecord(gen int64) string {
 //   - file <gen> <pid> <start>, then proc … for that process only if
 //     /proc/<pid>/stat still has the recorded start time (a reused PID never
 //     matches);
-//   - with no parseable agent.pid, nofile, then proc … for every process whose
-//     executable is the agent binary and whose command line starts with the
-//     fixed flags, except those whose parent is such a process (nested ones).
+//   - with no parseable agent.pid, or one naming a live process that is not
+//     the agent binary with the fixed flags (the file is writable inside the
+//     sandbox, so a forged record never keeps a probe alive or steers a
+//     signal), nofile, then proc … for every process whose executable is the
+//     agent binary and whose command line starts with the fixed flags, except
+//     those whose parent is such a process (nested ones).
 //
 // The start time is read after the last ")" of the stat line, so a comm with
 // spaces never shifts the fields.
@@ -92,8 +95,16 @@ printf 'ref\t%s\t%s\n' "$PPID" "$(readlink "/proc/$PPID/exe" 2>/dev/null)"
 T=
 g= p= s=
 read -r g p s _ < "$HOME/.sxb/agent.pid" 2>/dev/null
+f=
 case "$g:$p:$s" in
-  *[!0-9:]*|:*|*::*|*:) printf 'nofile\n'
+  *[!0-9:]*|:*|*::*|*:) ;;
+  *) if [ "$(st "$p")" != "$s" ]; then f=gone; elif isagent "$p"; then f=live; fi ;;
+esac
+case $f in
+  gone) printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s" ;;
+  live) printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s"
+    show "$p"; T="$p:$s" ;;
+  *) printf 'nofile\n'
     m=
     for d in /proc/[0-9]*; do q=${d#/proc/}; isagent "$q" && m="$m $q"; done
     for q in $m; do
@@ -101,8 +112,6 @@ case "$g:$p:$s" in
       t=$(st "$q"); [ -n "$t" ] || continue
       show "$q"; T="$T $q:$t"
     done ;;
-  *) printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s"
-    if [ "$(st "$p")" = "$s" ]; then show "$p"; T="$p:$s"; fi ;;
 esac
 `
 
@@ -121,7 +130,7 @@ func ReapScript(wait time.Duration) string {
 	}
 	return probeDetect + fmt.Sprintf(`n=0
 live() { [ "$(st "${1%%%%:*}")" = "${1#*:}" ]; }
-for t in $T; do live "$t" && kill -TERM "${t%%%%:*}" 2>/dev/null; n=$((n+1)); done
+for t in $T; do if live "$t"; then kill -TERM "${t%%%%:*}" 2>/dev/null; n=$((n+1)); fi; done
 i=0
 while [ $i -lt %d ]; do
   left=0; for t in $T; do live "$t" && left=1; done

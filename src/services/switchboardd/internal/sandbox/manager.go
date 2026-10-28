@@ -568,7 +568,8 @@ func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 // clearing any stale container first.
 func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
-	defer m.runtimeOp(id)()
+	release := sync.OnceFunc(m.runtimeOp(id))
+	defer release()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -588,11 +589,14 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 		return nil, err
 	}
 	m.emit(out)
+	release()
 	m.broughtUp(out)
 	return out, nil
 }
 
 // broughtUp runs the bring-up observer for a controlled sandbox (feature 009).
+// Callers have released the runtime lock: the observer warm-starts the agent
+// (worker.WarmStart), whose spawn try-locks it (research R14).
 func (m *Manager) broughtUp(sb *pb.Sandbox) {
 	if m.onBringUp != nil && sb.GetController() != nil {
 		m.onBringUp(sb)
@@ -704,8 +708,10 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	}
 	defer m.ops.release(id)
 	// Held continuously from the stop through the re-seed and bring-up, so
-	// nothing spawns into the half-seeded workspace (research R14).
-	defer m.runtimeOp(id)()
+	// nothing spawns into the half-seeded workspace (research R14), and
+	// released before the bring-up observer starts the agent.
+	release := sync.OnceFunc(m.runtimeOp(id))
+	defer release()
 
 	sb, err := m.store.Get(id)
 	if err != nil {
@@ -789,6 +795,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 		return nil, err
 	}
 	m.emit(out)
+	release()
 	m.broughtUp(out)
 	return out, nil
 }

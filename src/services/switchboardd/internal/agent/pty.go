@@ -156,6 +156,9 @@ func (r *Registry) SetOrphanGate(g OrphanGate) {
 // SetOnClientExit registers the observer told that an agent's exec client
 // exited on its own (SWI-17, research R14). With one set, the registry no
 // longer writes EXITED itself: the observer probes whether the agent is gone.
+// It is called under the registry lock (as the gate is), so it must not call
+// back into the registry and must not block (Manager.AgentClientExited only
+// marks the sandbox unknown and probes asynchronously).
 func (r *Registry) SetOnClientExit(fn func(sandboxID string, gen int64)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -464,19 +467,24 @@ func (r *Registry) watch(sandboxID string, e *sessionEntry, w Waiter) {
 // onExit forgets an exited session (if it is still the current one) and, unless
 // the registry closed it on purpose, reports AGENT_STATUS_EXITED exactly once.
 // With a client-exit observer (research R14) the observer is told instead: the
-// agent may outlive its exec client, so only a probe says it is gone. done is
-// closed last, after the locks are released.
+// agent may outlive its exec client, so only a probe says it is gone. The
+// observer runs under mu, before the session leaves the table, so no spawn
+// asking the gate can slip in between and start a second agent beside a
+// surviving one. done is closed last, after the locks are released.
 func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
 	defer close(e.done)
 	r.statusMu.Lock() // EXITED lands after a STARTING write in flight
 	defer r.statusMu.Unlock()
 	r.mu.Lock()
+	lost, onLost := !e.closing, r.onLost
+	if lost && onLost != nil {
+		onLost(sandboxID, e.gen)
+	}
 	cur, ok := r.sessions[sandboxID]
 	if ok && cur == e {
 		delete(r.sessions, sandboxID)
 	}
 	e.stopTimer()
-	lost, onLost := !e.closing, r.onLost
 	report := lost && onLost == nil && r.status != nil
 	status := r.status
 	now := r.now()
@@ -484,10 +492,7 @@ func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
 	if ok && cur == e {
 		_ = e.s.Close() // release the PTY file; the child is already gone
 	}
-	switch {
-	case lost && onLost != nil:
-		onLost(sandboxID, e.gen)
-	case report:
+	if report {
 		_, _ = status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_EXITED, now)
 	}
 }

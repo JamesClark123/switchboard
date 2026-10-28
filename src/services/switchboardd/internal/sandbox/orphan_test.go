@@ -427,6 +427,31 @@ func TestOrphansAtStart(t *testing.T) {
 // sandbox stays unknown, its probes retry with backoff, and after 3 failures
 // it is CHECK_FAILED (t offers Restart sandbox / Wait). Once the runtime is
 // readable again a gone probe clears it.
+// Before the hook server serves, every sandbox that may have a surviving agent
+// is unknown at once, with no runtime call: the gate refuses a spawn there (an
+// orphan's escape-hatch result) until the start-up check settles it.
+func TestMarkOrphanCandidates(t *testing.T) {
+	e := newOrphanEnv(t)
+	running, idle := pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE
+	e.put(t, "maybe", running, idle, nil)
+	e.tokens.issue("maybe", 2)
+	e.put(t, "clear", running, idle, nil)
+	e.tokens.counter["clear"] = 3
+	e.m.MarkOrphanCandidates()
+	// The gate's decision, read without Admit's re-probe.
+	if err := e.m.orphans.refusal("maybe"); !errors.Is(err, agent.ErrChecking) {
+		t.Errorf("gate beside a possible orphan = %v, want ErrChecking", err)
+	}
+	release, err := e.m.Admit("clear")
+	if err != nil {
+		t.Fatalf("admit clear = %v", err)
+	}
+	release()
+	if n := len(e.run.callLog()); n != 0 {
+		t.Errorf("marking ran the runtime: %v", e.run.callLog())
+	}
+}
+
 func TestOrphansAtStartListingError(t *testing.T) {
 	e := newOrphanEnv(t)
 	e.put(t, "a", pb.SandboxState_SANDBOX_STATE_STOPPED, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
@@ -790,16 +815,23 @@ func TestClientExitProbes(t *testing.T) {
 	if e.get(t, "s").GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED {
 		t.Error("a gone agent is EXITED")
 	}
-	// A gone probe on an EXITED record changes nothing.
+	// A gone probe on an EXITED record changes nothing. (Waited for by its
+	// exec: the check reads CLEAR before the unknown mark is published.)
+	n := e.run.count("probe")
 	e.m.AgentClientExited("s", 2)
+	waitUntil(t, func() bool { return e.run.count("probe") > n })
 	e.waitState(t, "s", pb.AgentCheck_STATE_CLEAR)
 	if sb := e.get(t, "s"); sb.GetAgent().GetAgentCheck() != nil || sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED {
 		t.Errorf("a second gone probe wrote %v", sb.GetAgent())
 	}
 	// A live session of the probed generation is the daemon's own agent.
+	e.live.mu.Lock()
 	e.live.m["s"] = 2
+	e.live.mu.Unlock()
 	e.run.setOut("s", aliveOut(2))
+	n = e.run.count("probe")
 	e.m.AgentClientExited("s", 2)
+	waitUntil(t, func() bool { return e.run.count("probe") > n })
 	e.waitState(t, "s", pb.AgentCheck_STATE_CLEAR)
 }
 
@@ -892,6 +924,51 @@ func TestReapOrphan(t *testing.T) {
 	e.m.orphans.setUnknown("missing")
 	if err := e.m.ReapOrphan(ctx, "missing", ReapReplace); err == nil {
 		t.Error("an unknown sandbox id")
+	}
+}
+
+// A probe's result is recorded only if nothing dropped the sandbox since it
+// took the runtime lock: a reap (or stop) slipping in between its unlock and
+// its record is never overwritten by a stale "alive".
+func TestStaleProbeAfterReap(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("s", 4)
+	e.run.setOut("s", aliveOut(4))
+	e.m.orphans.setUnknown("s")
+	out, epoch, res, err := e.m.orphans.probeOnce("s")
+	if out != probeAlive || err != nil {
+		t.Fatalf("probe = %v, %v", out, err)
+	}
+	if err := e.m.ReapOrphan(context.Background(), "s", ReapReplace); err != nil {
+		t.Fatal(err)
+	}
+	e.m.orphans.apply("s", epoch, out, res, nil)
+	if e.state("s") != pb.AgentCheck_STATE_CLEAR || e.m.orphans.pending("s") || e.notes.n() != 0 {
+		t.Errorf("a stale probe landed after the reap: %v, %d notes", e.state("s"), e.notes.n())
+	}
+	// A stale failure is dropped too.
+	e.m.orphans.setUnknown("s")
+	e.m.orphans.drop("s")
+	e.m.orphans.setUnknown("s")
+	e.m.orphans.apply("s", epoch, probeFailed, agent.ProbeResult{}, errors.New("x"))
+	if e.m.orphans.check("s").GetState() != pb.AgentCheck_STATE_UNKNOWN {
+		t.Errorf("stale failure recorded: %v", e.m.orphans.check("s"))
+	}
+}
+
+// Under the lock, a reap refuses a sandbox with a live session: the script
+// would stop the daemon's own agent.
+func TestReapOrphanRechecksUnderTheLock(t *testing.T) {
+	e := newOrphanEnv(t)
+	ctx := context.Background()
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.m.orphans.setUnknown("s")
+	e.live.mu.Lock()
+	e.live.m["s"] = 5
+	e.live.mu.Unlock()
+	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, errLiveSession) || e.run.count("reap") != 0 {
+		t.Errorf("reap beside a live session = %v, %d reaps", err, e.run.count("reap"))
 	}
 }
 

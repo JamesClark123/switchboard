@@ -183,6 +183,34 @@ func TestOnDestroyAndBringUpHooks(t *testing.T) {
 	_ = runner
 }
 
+// The bring-up observer runs after the runtime lock is released: its warm
+// start's spawn asks the gate (Admit), which try-locks it (research R14).
+func TestBringUpHookCanStartTheAgent(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	var admitted []error
+	m.SetOnBringUp(func(sb *pb.Sandbox) {
+		release, err := m.Admit(sb.GetId())
+		if err == nil {
+			release()
+		}
+		admitted = append(admitted, err)
+	})
+	w := controlled(t, m, reg, dir, "worker", nil)
+	if _, err := m.Stop(ctx, w.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Restart(ctx, w.GetId(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Refresh(ctx, w.GetId(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(admitted) != 2 || admitted[0] != nil || admitted[1] != nil {
+		t.Errorf("bring-up spawns = %v, want two admitted (restart + refresh)", admitted)
+	}
+}
+
 func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 	ctx := context.Background()
 	m, reg, _, dir := newTestManager(t)

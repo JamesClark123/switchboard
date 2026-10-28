@@ -304,7 +304,7 @@ func TestInjectHooks(t *testing.T) {
 	// Every event the daemon maps to a status MUST be injected, or that status is
 	// never reached. In particular the work-start hooks (UserPromptSubmit /
 	// PreToolUse) are what drive the WORKING indicator — their absence was a bug.
-	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "Notification", "Stop", "SessionStart"} {
+	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "Notification", "Stop", "SessionStart", "SessionEnd"} {
 		hm, ok := s.Hooks[event]
 		if !ok || len(hm) == 0 || len(hm[0].Hooks) == 0 {
 			t.Fatalf("settings missing %s hook", event)
@@ -348,7 +348,7 @@ func TestInjectHooks(t *testing.T) {
 	if perms["defaultMode"] != "bypassPermissions" || perms["allow"] == nil || doc["env"] == nil {
 		t.Errorf("re-injection should keep the developer's keys and reset defaultMode: %s", b)
 	}
-	if hooks, _ := doc["hooks"].(map[string]any); len(hooks) != 5 {
+	if hooks, _ := doc["hooks"].(map[string]any); len(hooks) != 6 {
 		t.Errorf("re-injection should replace the hooks wholesale: %s", b)
 	}
 

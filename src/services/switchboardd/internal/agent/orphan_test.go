@@ -235,6 +235,34 @@ func TestReapScript(t *testing.T) {
 	}
 }
 
+// A forged agent.pid naming a live process that is not the agent (the file is
+// writable inside the sandbox) is ignored: the probe falls back to the binary
+// scan, so it never reads that process as alive, and a reap never signals it.
+func TestForgedAgentPIDIsIgnored(t *testing.T) {
+	e := newAgentEnv(t)
+	other := e.start(t, "plain", "--other") // the agent binary, not the fixed flags
+	sleeper := exec.Command("sleep", "30")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sleeper.Process.Kill(); _ = sleeper.Wait() })
+	for _, c := range []*exec.Cmd{other, sleeper} {
+		pid := c.Process.Pid
+		e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", pid, startTime(t, pid)))
+		if r := e.run(t, ProbeScript()); r.File || r.Alive() {
+			t.Errorf("pid %d: forged record read as %+v", pid, r)
+		}
+		if r := e.run(t, ReapScript(time.Second)); r.Reaped != 0 || !alive(pid) {
+			t.Errorf("pid %d: reap of a forged record signalled %d", pid, r.Reaped)
+		}
+	}
+	// The scan still finds a real agent beside the forged record.
+	a := e.start(t, "plain", agentFlag)
+	if r := e.run(t, ProbeScript()); r.File || len(r.Procs) != 1 || r.Procs[0].PID != a.Process.Pid {
+		t.Errorf("forged record hid the agent: %+v", r)
+	}
+}
+
 func TestParseProbe(t *testing.T) {
 	r, err := ParseProbe("agent\t/c\nref\t1\t/x\nfile\t4\t10\t99\nproc\t10\t99\t1\t/c\t/x\tclaude\x1f--dangerously-skip-permissions\x1f\nreaped\t1\nnoise\n")
 	if err != nil || r.FileGen != 4 || r.RefPPID != 1 || r.RefPPIDExe != "/x" || len(r.Procs) != 1 || len(r.Procs[0].Cmdline) != 2 || r.Reaped != 1 {
@@ -438,6 +466,37 @@ func TestClientExitGoesToTheObserver(t *testing.T) {
 	}
 }
 
+// The observer is told before the session leaves the table, under the
+// registry lock: a spawn asking the gate in between would find neither a
+// session nor the observer's unknown mark and start a second agent.
+func TestClientExitObserverRunsBeforeTheSessionGoes(t *testing.T) {
+	var sess *waitSession
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { sess = newWaitSession(); return sess, nil })
+	reg.SetStatusUpdater(&recorder{})
+	called := make(chan [2]bool, 1)
+	reg.SetOnClientExit(func(id string, _ int64) {
+		locked := !reg.mu.TryLock()
+		if !locked {
+			reg.mu.Unlock()
+		}
+		_, listed := reg.sessions[id]
+		called <- [2]bool{locked, listed}
+	})
+	if _, err := reg.Session("sb", &pb.AgentSpec{Kind: "bash"}); err != nil {
+		t.Fatal(err)
+	}
+	sess.exit()
+	select {
+	case got := <-called:
+		if !got[0] || !got[1] {
+			t.Errorf("observer ran with lock held %v, session listed %v; want both", got[0], got[1])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer never called")
+	}
+	waitFor(t, func() bool { return !reg.Live("sb") })
+}
+
 func TestPTYSessionTerminate(t *testing.T) {
 	p := &ptySession{cmd: exec.Command("sleep", "30")}
 	if err := p.Terminate(); err != nil {
@@ -457,9 +516,11 @@ func TestPTYSessionTerminate(t *testing.T) {
 }
 
 // A main-agent SessionEnd tells the orphan tracker (a detached agent that
-// exits normally is re-probed at once); other events don't.
+// exits normally is re-probed at once); other events don't. It changes no
+// status: an exiting agent is not WORKING.
 func TestSessionEndObserver(t *testing.T) {
-	hs := NewHookServer(NewHub("h"), &fakeStatus{})
+	st := &fakeStatus{}
+	hs := NewHookServer(NewHub("h"), st)
 	tokens, _ := openTokens(t, t.TempDir())
 	hs.SetTokens(tokens)
 	sp, err := tokens.Issue("sb1")
@@ -470,9 +531,13 @@ func TestSessionEndObserver(t *testing.T) {
 	var ended []string
 	hs.SetOnSessionEnd(func(id string) { ended = append(ended, id) })
 	hs.handle(hookPayload{Event: "Stop", SandboxID: "sb1", Tokened: true, Gen: sp.Gen, PID: 77})
+	calls := st.calls
 	hs.handle(hookPayload{Event: "SessionEnd", SandboxID: "sb1", Tokened: true, Gen: sp.Gen, PID: 78}) // a nested session
 	hs.handle(hookPayload{Event: "SessionEnd", SandboxID: "sb1", Tokened: true, Gen: sp.Gen, PID: 77})
 	if len(ended) != 1 || ended[0] != "sb1" {
 		t.Errorf("ended = %v", ended)
+	}
+	if st.calls != calls || st.last != pb.AgentStatus_AGENT_STATUS_IDLE {
+		t.Errorf("SessionEnd wrote a status: %d writes, last %v", st.calls-calls, st.last)
 	}
 }

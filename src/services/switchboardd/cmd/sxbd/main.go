@@ -232,6 +232,12 @@ func runServe(cfg *config.Config, debug bool) error {
 	agents.SetOrphanGate(mgr)
 	agents.SetOnClientExit(mgr.AgentClientExited)
 	hookServer.SetOnSessionEnd(mgr.RecheckOrphan)
+	// Before the hook server serves (an orphan's escape-hatch result would
+	// spawn an agent), every sandbox that may still have the previous
+	// daemon's agent is unknown; CheckOrphansAtStart settles each below. The
+	// deps are completed once the worker service exists.
+	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub})
+	mgr.MarkOrphanCandidates()
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
