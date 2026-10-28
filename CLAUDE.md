@@ -181,7 +181,6 @@ in run-590, bounded in run-595, tightened in run-601).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
-
 Prior feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
 replace the action worker tag**: a lane is a named worker group per orchestrator (`pb.Lane{id "ln-…", name, description}`
 on `Orchestrator.lanes`, ≤32, action-name rule, `open` reserved); `prompt` actions are **exclusive**/**inclusive** to

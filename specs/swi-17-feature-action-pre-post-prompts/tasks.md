@@ -403,22 +403,25 @@ sequence model. No user story can be delivered before this phase.
       there is no lock cycle with `r.mu`.
     - **A stop drains exec clients first, best effort** (research R14, simplified in run-629). `Stop` (and the stops
       inside `Destroy` and `Refresh`), under the lock and before `sbx stop`: closes the sandbox's agent session and
-      broadcaster with `closing` set and sends its client TERM, then KILL after `orphanKillWait`, waiting on the
-      watcher's `done` channel (closed by `onExit`), **never a second `cmd.Wait`** (`Registry.Close` returns it, and
-      the drain waits only after `Close` has released `r.mu` and the global lock); records every still-starting
-      service instance FAILED through `markFailed` (`LAUNCH_FAILED`, `start interrupted by a sandbox stop; if the
-      stop failed it may still be running in the sandbox`), which cancels its context and unpublishes its port;
-      sends each of their announced in-sandbox groups TERM through `sbx exec`, then KILL after `orphanKillWait`
-      unconditionally; leaves RUNNING services alone (`gone(h)` reads their clients); then runs `sbx stop`. Each
-      step is bounded, and anything still pending is logged and abandoned. No ordering against `sbx stop` and
-      nothing about a failed stop is promised. `bringUp` defers to whoever cancelled it: after cancellation it skips
-      `stopProc`, and its writes apply only while the instance is STARTING (checked inside the `insts.Update`
-      mutate). There is **no exec guard** (research R14, simplified in run-613): only developer requests are gated.
-      `bringUp`'s IN_SANDBOX launch and `Supervisor.Stop` try-lock `runtimeMu` like `Registry.Session` (a held lock
-      → `sandbox is busy; try again`). Execs from the lock holder or its on-change hook (`Restart`, probe/reap,
-      `StopAll` teardown on CREATING/ERROR) are never gated. A failed `sbx stop` afterwards surfaces its error and
-      leaves the sandbox RUNNING and *unknown*, so the outcome rule probes it; RUNNING services stay RUNNING and
-      tracked, and the interrupted ones are FAILED with the *may still be running* detail, never claimed stopped.
+      broadcaster with `closing` set and sends its client TERM, waiting on the watcher's `done` channel (closed by
+      `onExit`), **never a second `cmd.Wait`** (`Registry.Close` returns it, and the drain waits only after `Close`
+      has released `r.mu` and the global lock); reads `(ref, pgid)` from every still-starting service instance's
+      handle **before** recording it FAILED through `markFailed` (whose `release` deletes the handle)
+      (`LAUNCH_FAILED`, `start interrupted by a sandbox stop; if the stop failed it may still be running in the
+      sandbox`), which cancels its context and unpublishes its port; sends each collected in-sandbox group TERM
+      through `sbx exec`; waits **once**, up to `orphanKillWait` in total, then sends KILL to the agent client if
+      still alive and to every collected group unconditionally (TERM-all → one wait → KILL-all); leaves RUNNING
+      services alone (`gone(h)` reads their clients); then runs `sbx stop`. Each step is bounded, and anything still
+      pending is logged and abandoned. No ordering against `sbx stop` and nothing about a failed stop is promised.
+      `bringUp` defers to whoever cancelled it: after cancellation it skips `stopProc`, and its writes apply only
+      while the instance is STARTING (checked inside the `insts.Update` mutate); a skipped write is not published
+      (no event, no notification). There is **no exec guard** (research R14, simplified in run-613): only developer
+      requests are gated. `bringUp`'s IN_SANDBOX launch and `Supervisor.Stop` try-lock `runtimeMu` like
+      `Registry.Session` (a held lock → `sandbox is busy; try again`). Execs from the lock holder or its on-change
+      hook (`Restart`, probe/reap, `StopAll` teardown on CREATING/ERROR) are never gated. A failed `sbx stop`
+      afterwards surfaces its error and leaves the sandbox RUNNING and *unknown*, so the outcome rule probes it;
+      RUNNING services stay RUNNING and tracked, and the interrupted ones are FAILED with the *may still be running*
+      detail, never claimed stopped.
     - **Lifecycle operations block** on it, which waits out an in-flight probe or stop.
     - The agent session is closed by the on-change hook as today, except for the stop's drain above.
     - **Outcome rule**, applied as the operation releases the lock, from the state it wrote:
@@ -532,9 +535,11 @@ sequence model. No user story can be delivered before this phase.
       - `AddKit` (CREATING under the lock) with a running IN_SANDBOX service: the hook's teardown signals it through
         `sbx exec`, which is not refused; the same holds for a Refresh whose stop fails;
       - a `Stop` with one RUNNING IN_SANDBOX service and one whose PGID has arrived but whose readiness takes 30 s:
-        the second is FAILED (`start interrupted by a sandbox stop; …`) with its port unpublished, and its group
-        gets TERM and then KILL through `sbx exec` even though its host client has already exited; a fake readiness
-        that succeeds as it is cancelled leaves it FAILED, not RUNNING. If `sbx stop` then fails, the RUNNING one is
+        the second is FAILED (`start interrupted by a sandbox stop; …`) with its port unpublished, and the fake
+        `sbx exec` sees `kill -TERM -<pgid>` and then `kill -KILL -<pgid>` even though its host client has already
+        exited; a fake readiness that succeeds as it is cancelled leaves it FAILED, not RUNNING, with exactly one
+        `SERVICE_FAILED` notification. With three starting services the drain takes one `orphanKillWait`, not three.
+        If `sbx stop` then fails, the RUNNING one is
         still RUNNING, tracked and stoppable by `p` → stop, and the error is returned; if it succeeds, the hook
         records it STOPPED. A fake client that survives KILL is logged and doesn't block the stop;
       - under `-race`, a fake agent client that exits only on KILL: the drain waits outside `r.mu` (`onExit` runs),

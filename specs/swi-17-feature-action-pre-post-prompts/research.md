@@ -823,27 +823,31 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     *Proposed deferrals*. Under `runtimeMu`, before `sbx stop`, `Stop` (and the stop inside `Destroy` and
     `Refresh`):
     - closes the sandbox's agent session and its terminal broadcaster with `closing` set (no EXITED, no exit probe),
-      and sends its client process TERM, then KILL after `orphanKillWait`. It waits on the **existing watcher**,
+      and sends its client process TERM (KILL comes in the shared step below). It waits on the **existing watcher**,
       never with a second `Wait`: `Registry.Close` marks the entry `closing`, removes it and returns its `done`
       channel (closed by `onExit`), and the drain waits on it only after `Close` has released `r.mu` and the
       terminal registry's global lock, because `onExit` takes `r.mu` (`agent/pty.go:117`);
-    - records every service instance of the sandbox that is still **starting** (not RUNNING) FAILED through
-      `markFailed` (`LAUNCH_FAILED`, detail `start interrupted by a sandbox stop; if the stop failed it may still be
-      running in the sandbox`). `markFailed` releases the handle, which cancels the instance's context (so
+    - reads `(ref, pgid)` from the handle of every service instance of the sandbox that is still **starting** (not
+      RUNNING) **first**, because `markFailed`'s `release` deletes the handle (run-631), then records each FAILED
+      through `markFailed` (`LAUNCH_FAILED`, detail `start interrupted by a sandbox stop; if the stop failed it may
+      still be running in the sandbox`). `markFailed` releases the handle, which cancels the instance's context (so
       `exec.CommandContext` kills its launch client and any readiness exec, and starts no new one) and unpublishes
-      its port. For each of those with an announced PGID, the drain sends the in-sandbox group TERM through `sbx
-      exec`, then KILL after `orphanKillWait`. The KILL is sent whatever the host client did, because the client's
-      exit says nothing about the group (run-627's Medium);
+      its port. It sends each collected in-sandbox group (non-zero PGID) TERM through `sbx exec`;
+    - waits **once**, up to `orphanKillWait` in total, for the agent's `done` channel, then sends KILL to the agent
+      client if it is still alive and to **every** collected group (TERM-all → one bounded wait → KILL-all, run-631).
+      The group KILL is sent whatever the host client did, because the client's exit says nothing about the group
+      (run-627's Medium);
     - leaves RUNNING services alone. Their exec sessions are already up, so they can't start a stopped sandbox, and
       `gone(h)` reads those very clients (`portforward/stop.go:133`). They end with the container on `sbx stop`, and
       the hook's `StopAll(id, true)` records them STOPPED, as today;
-    - then runs `sbx stop`. Every step above is bounded (the `orphanKillWait` waits, and each exec's own 10 s
+    - then runs `sbx stop`. Every step above is bounded (the one `orphanKillWait`, and each exec's own 10 s
       timeout). Anything still pending, such as a client stuck in uninterruptible sleep on a hung host mount, is
       logged and abandoned. One stuck process must not block every stop.
 
     `bringUp` defers to whoever cancelled it, as `watchExit` already does on `ctx.Done`: once its context is
     cancelled it neither signals nor records anything (its `stopProc` calls are skipped, and its writes apply only
-    while the instance is STARTING, checked inside the `insts.Update` mutate). So a `bringUp` racing the drain,
+    while the instance is STARTING, checked inside the `insts.Update` mutate; a skipped write is **not published**,
+    so it emits no event and no second `SERVICE_FAILED` notification, run-631). So a `bringUp` racing the drain,
     including one whose readiness succeeds as it is cancelled, never overwrites FAILED. A developer's
     `Supervisor.Stop` of a starting instance already signals and records it itself through `stopInstance`.
 
