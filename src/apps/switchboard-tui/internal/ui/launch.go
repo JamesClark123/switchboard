@@ -808,7 +808,7 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	go func() {
 		if orchDaemon != nil {
 			bctx, cancel := ctxTimeout()
-			bundle, err := orchDaemon.GetWorkerBundle(bctx, orchID)
+			bundle, err := orchDaemon.GetWorkerBundle(bctx, orchID, "", nil)
 			cancel()
 			if err != nil {
 				ch <- launchResultMsg{id: tempID, err: fmt.Errorf("orchestrator %s: %w", orchName, err)}

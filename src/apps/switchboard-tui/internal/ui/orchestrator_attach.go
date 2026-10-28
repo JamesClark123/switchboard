@@ -176,7 +176,7 @@ func (m Model) attachWorkerCmd(od Daemon, orchID, orchName, sbHost string, sb *p
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
-		if _, err := od.AttachWorker(ctx, orchID, sbHost, sb.GetId()); err != nil {
+		if _, err := od.AttachWorker(ctx, orchID, sbHost, sb.GetId(), nil); err != nil {
 			return errMsg{err}
 		}
 		return statusMsg(fmt.Sprintf("attached %s to %s", sb.GetDisplayName(), orchName))
@@ -195,7 +195,7 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 		cmd = func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
-			if err := od.DetachWorker(ctx, c.GetOrchestratorId(), sb.GetId()); err != nil {
+			if err := od.DetachWorker(ctx, c.GetOrchestratorId(), sb.GetId(), nil); err != nil {
 				return errMsg{err}
 			}
 			return statusMsg(fmt.Sprintf("detached %s from %s", sb.GetDisplayName(), c.GetName()))
@@ -283,7 +283,7 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			onConfirm: func() tea.Msg {
 				ctx, cancel := ctxTimeout()
 				defer cancel()
-				if err := od.DetachWorker(ctx, id, sbID); err != nil {
+				if err := od.DetachWorker(ctx, id, sbID, nil); err != nil {
 					return orchDoneMsg{err: err}
 				}
 				return orchDoneMsg{status: "detached " + sbName, reload: true}

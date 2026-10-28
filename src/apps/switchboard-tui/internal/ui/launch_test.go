@@ -122,6 +122,13 @@ type fakeDaemon struct {
 	putActions     []*pb.Action
 	putEvents      []*pb.TimedEvent
 	disabledEvents []string
+	// SWI-18 lane fakes: laneErrs queues errors per method (popped one per
+	// call), laneCheck is what CheckLaneChange answers, laneApplied what
+	// DeleteLane returns.
+	laneErrs    map[string][]error
+	laneCheck   *pb.LaneChangeImpact
+	laneApplied *pb.LaneChangeImpact
+	laneSeq     int
 
 	// feature 007 fakes: source edits (see sources_test.go)
 	addedSources     map[string][]*pb.SourceRef

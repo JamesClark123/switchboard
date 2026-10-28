@@ -671,7 +671,7 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
-			if _, err := od.PutAction(ctx, id, a); err != nil {
+			if _, err := od.PutAction(ctx, id, a, nil); err != nil {
 				return orchFormErrMsg{err: err, sink: s}
 			}
 			return orchDoneMsg{status: "saved action " + a.GetName(), reload: true, closeForm: true, sink: s, target: t}

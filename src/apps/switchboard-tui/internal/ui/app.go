@@ -120,12 +120,12 @@ type Daemon interface {
 	RenameOrchestrator(ctx context.Context, id, name string) (*pb.Orchestrator, error)
 	RemoveOrchestrator(ctx context.Context, id string) (*pb.RemoveOrchestratorResponse, error)
 	SetOrchestratorHosts(ctx context.Context, id string, hosts []*pb.OrchestratorHost) (*pb.Orchestrator, error)
-	GetWorkerBundle(ctx context.Context, id string) (*pb.WorkerBundle, error)
-	AttachWorker(ctx context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error)
-	DetachWorker(ctx context.Context, id, sandboxID string) error
+	GetWorkerBundle(ctx context.Context, id, hostID string, laneIDs []string) (*pb.WorkerBundle, error)
+	AttachWorker(ctx context.Context, id, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error)
+	DetachWorker(ctx context.Context, id, sandboxID string, guard *pb.LaneGuardConfirm) error
 	DetachController(ctx context.Context, sandboxID, orchestratorID string, force bool) (*pb.Sandbox, error)
 	MarkWorkerFree(ctx context.Context, id, sandboxID string, failed bool, note string) (*pb.Run, error)
-	PutAction(ctx context.Context, id string, a *pb.Action) (*pb.Action, error)
+	PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error)
 	DeleteAction(ctx context.Context, id, name string) ([]string, error)
 	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, id, eventID string) error
@@ -136,6 +136,13 @@ type Daemon interface {
 	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	CancelRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	RebuildReasoningSandbox(ctx context.Context, id string, setup *pb.ReasoningSetup, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
+	// Lanes (SWI-18): only against a daemon with the "lanes" capability.
+	PutLane(ctx context.Context, id, laneID, name, description string) (*pb.Lane, error)
+	DeleteLane(ctx context.Context, id, laneID string, guard *pb.LaneGuardConfirm) (*pb.LaneChangeImpact, error)
+	SetWorkerLanes(ctx context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error)
+	SetLaneMembers(ctx context.Context, req *pb.SetLaneMembersRequest) (*pb.Lane, error)
+	CheckLaneChange(ctx context.Context, req *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error)
+	DismissDroppedWorkerTags(ctx context.Context, id string) (*pb.Orchestrator, error)
 }
 
 type screen int
