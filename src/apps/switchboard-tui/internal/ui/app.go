@@ -82,6 +82,9 @@ type Daemon interface {
 	SbxMinVersion() string
 	RuntimeBaselineMet() bool
 	McpGateway() (available bool, reason string)
+	// HasCapability reports a capability the daemon advertised at handshake
+	// (SWI-18: "lanes" gates the lane UI, FR-318a).
+	HasCapability(name string) bool
 	// MCP gateway (feature 008, FR-072..FR-100): the host's registrations with
 	// switchboard's marks; register/remove/authorize; marks and attach mode.
 	ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error)

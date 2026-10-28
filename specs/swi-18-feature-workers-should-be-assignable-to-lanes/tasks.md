@@ -25,7 +25,7 @@ Paths are relative to the repository root. `O/` = `src/services/switchboardd/int
 
 **Purpose**: The contract and constants every later task uses.
 
-- [ ] T001 Apply [contracts/proto-delta.md](./contracts/proto-delta.md) to `P`:
+- [X] T001 Apply [contracts/proto-delta.md](./contracts/proto-delta.md) to `P`:
   - the new messages (`Lane`, `LaneMode`, `AttachTicket`, `HighWaterMark`, `DroppedWorkerTag`, `KeptLaneSetting`,
     `WorkerLaneDisplay`, `LaneGuardConfirm`, `LaneChangeImpact`, `LaneActionUse`, `EventsDropped`);
   - the extended messages with the exact field numbers listed there;
@@ -37,11 +37,11 @@ Paths are relative to the repository root. `O/` = `src/services/switchboardd/int
   SWI-17's (`Action` 9, `Run` 20–30, `WorkerView` 12–14, `WorkerRun` 4–10, `UpdateWorkerRequest` 8,
   `NotificationKind` 9–10, `AgentSession` 5–11, `AgentInput.AttachInfo` 4); if SWI-17 has merged, rebase onto it
   first.
-- [ ] T002 [P] Add constants to `O/constants.go`: `maxLanes = 32`, `maxLaneDescription = 200`,
+- [X] T002 [P] Add constants to `O/constants.go`: `maxLanes = 32`, `maxLaneDescription = 200`,
   `attachTicketTTL = 24 * time.Hour`, `removedMarkTTL = 24 * time.Hour`, `laneIDPrefix = "ln-"`,
   `waitingNamesMax = 5`, `ticketSkew = 10 * time.Minute` (research R11), and the capability name
   `CapabilityLanes = "lanes"` (exported for the grpc server).
-- [ ] T003 [P] Advertise the capability: `G/server.go` sets
+- [X] T003 [P] Advertise the capability: `G/server.go` sets
   `DaemonInfo.Capabilities = []string{orchestrator.CapabilityLanes}` (T002);
   `src/libs/switchboard-dial/conn.go` adds `HasCapability(name string) bool`; the UI `Daemon` interface in
   `UI/app.go` and `fakeDaemon` (`UI/launch_test.go`) expose it. The fake defaults to having `lanes`, with a field to

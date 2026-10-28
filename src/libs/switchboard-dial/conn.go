@@ -54,6 +54,17 @@ func (c *Conn) McpGateway() (available bool, reason string) {
 	return c.Info.GetMcpGatewayAvailable(), c.Info.GetMcpGatewayReason()
 }
 
+// HasCapability reports whether the daemon advertised the named capability at
+// handshake (SWI-18 FR-318a: "lanes").
+func (c *Conn) HasCapability(name string) bool {
+	for _, have := range c.Info.GetCapabilities() {
+		if have == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Close releases the underlying connection (and, for a stdio-bridged dial,
 // terminates the child process).
 func (c *Conn) Close() error {

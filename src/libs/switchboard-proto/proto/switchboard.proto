@@ -344,6 +344,20 @@ service Switchboard {
   // The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
   // MUST be `hello`. See OrchestratorLinkFrame.
   rpc OrchestratorLink(stream OrchestratorLinkFrame) returns (stream OrchestratorLinkFrame);
+
+  // --- SWI-18: worker lanes (orchestrator-side) ---
+  // Create (empty lane_id) or rename/describe a lane. AlreadyExists when the name is taken.
+  rpc PutLane(PutLaneRequest) returns (Lane);
+  // Delete a lane; guarded by the open-lane guard (FR-305, FR-308a).
+  rpc DeleteLane(DeleteLaneRequest) returns (DeleteLaneResponse);
+  // Replace one worker's lanes (FR-306, FR-307a compare-and-set).
+  rpc SetWorkerLanes(SetWorkerLanesRequest) returns (WorkerView);
+  // Replace one lane's members (FR-307, FR-307a compare-and-set).
+  rpc SetLaneMembers(SetLaneMembersRequest) returns (Lane);
+  // What a guarded change would affect, without applying it.
+  rpc CheckLaneChange(CheckLaneChangeRequest) returns (LaneChangeImpact);
+  // Clear the dropped worker-tag notice (FR-318b).
+  rpc DismissDroppedWorkerTags(OrchestratorIdRequest) returns (Orchestrator);
 }
 
 // ---------- Enums ----------
@@ -390,6 +404,13 @@ enum NotificationKind {
   NOTIFICATION_KIND_RUN_FAILED = 6;
   NOTIFICATION_KIND_RUN_AWAITING_REVIEW = 7;
   NOTIFICATION_KIND_RUN_NEEDS_INPUT = 8;
+}
+
+// --- SWI-18 ---
+enum LaneMode {
+  LANE_MODE_UNSPECIFIED = 0;              // no lanes
+  LANE_MODE_EXCLUSIVE = 1;                // only workers in the lanes (FR-311)
+  LANE_MODE_INCLUSIVE = 2;                // workers in the lanes, else open-lane workers (FR-312)
 }
 
 // --- Escape hatch (feature 005) ---
@@ -596,6 +617,8 @@ message Sandbox {
   // The per-worker gateway token is daemon-local (bucket `worker_tokens`) and
   // NEVER carried here (I-C4).
   SandboxController controller = 23;
+  // --- SWI-18 ---
+  uint64 revision = 24;                  // stamped by the registry on every write (FR-308c)
 }
 
 // ---------- Agent kits (feature 004) ----------
@@ -803,6 +826,8 @@ message DaemonInfo {
   bool   runtime_baseline_met = 7;       // parsed `sbx version` >= sbx_min_version
   bool   mcp_gateway_available = 8;      // baseline met AND `sbx mcp` usable AND signed in
   string mcp_gateway_reason = 9;         // why not, when unavailable
+  // --- SWI-18 ---
+  repeated string capabilities = 10;     // optional features this daemon serves, e.g. "lanes" (FR-318a)
 }
 
 // UpdateDaemonRequest asks the daemon to self-update to an exact release tag so
@@ -978,12 +1003,15 @@ message Event {
     // actions, events, hosts, roster) or one of its runs transitioned. Clients
     // re-fetch its summary and whichever view is open.
     OrchestratorChanged orchestrator_changed = 8;
+    // SWI-18 (research R6): the hub dropped events for this subscriber; it re-reads.
+    EventsDropped events_dropped = 9;
   }
   message SandboxRemoved { string sandbox_id = 1; }
   message McpGatewayChanged { string host_id = 1; }
   message SecretsChanged { string host_id = 1; }
   message OrchestratorChanged { string host_id = 1; string orchestrator_id = 2; }
 }
+message EventsDropped {}
 
 message NotificationEvent {
   string id = 1;
@@ -1115,6 +1143,11 @@ message SandboxController {
   google.protobuf.Timestamp attached_at = 4;
   bool reasoning = 5;                    // this sandbox is the orchestrator's reasoning sandbox (FR-145)
   WorkerRun run = 6;                     // the run currently on the sandbox; unset when none
+  // --- SWI-18 ---
+  repeated string lane_names = 7;        // display only (FR-309a/b)
+  bool lanes_pending = 8;                // display only
+  string attach_ticket = 9;              // FR-306b; the orchestrator's token, not lane data
+  bool lanes_known = 10;                 // set by the first UpdateWorker{lanes}; lane text shown only when set
 }
 message WorkerRun {
   string id = 1;
@@ -1152,9 +1185,13 @@ message Action {
   ActionType type = 3;
   string body = 4;                       // non-empty; placeholders are {name} (R8)
   repeated ActionArgument arguments = 5;
-  string worker_tag = 6;                 // PROMPT only: eligible workers carry this Sandbox.tag
+  // SWI-18: read only on load to drop it (FR-318b); never written or reused.
+  string worker_tag = 6 [deprecated = true];
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+  // --- SWI-18 --- (9 is SWI-17's sequence)
+  repeated string lane_ids = 10;         // PROMPT only (FR-316)
+  LaneMode lane_mode = 11;
 }
 
 // FR-130/FR-157. `dedupe_disabled` is stored negated so an absent field means
@@ -1200,6 +1237,11 @@ message Worker {
   string host_id = 2;
   google.protobuf.Timestamp attached_at = 3;
   bool reasoning = 4;
+  // --- SWI-18 ---
+  repeated string lane_ids = 5;
+  bool lanes_pending = 6;                // adopted through an invalid ticket (FR-306b)
+  uint64 revision = 7;                   // sandbox revision this entry was written from (FR-308c)
+  uint64 written_seq = 8;                // Orchestrator.roster_seq at the write
 }
 
 // Persisted in the registry's `orchestrators` bucket (R9).
@@ -1214,7 +1256,75 @@ message Orchestrator {
   ReasoningSetup reasoning_setup = 8;
   string reasoning_sandbox_id = 9;       // "" until launched
   repeated Worker workers = 10;
+  // --- SWI-18 ---
+  repeated Lane lanes = 11;
+  repeated AttachTicket attach_tickets = 12;
+  map<string, HighWaterMark> high_water_marks = 13;  // keyed by sandbox id; cleared in summaries sent to clients
+  repeated DroppedWorkerTag dropped_worker_tags = 14;
+  uint64 roster_seq = 15;
 }
+
+// A named group of workers on one orchestrator (SWI-18 FR-301..FR-305). Referenced by id everywhere.
+message Lane {
+  string id = 1;                         // "ln-" + 12 hex; minted by the daemon; never changes
+  string name = 2;                       // FR-303 rule; unique per orchestrator; "open" reserved
+  string description = 3;                // one line, <= 200 runes; never sent to agents
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// Lanes picked at launch or attach, waiting for adoption (FR-306b).
+message AttachTicket {
+  string id = 1;                         // 16 hex
+  repeated string lane_ids = 2;
+  string host_id = 3;
+  string sandbox_id = 4;                 // attach only
+  google.protobuf.Timestamp issued_at = 5; // expires 24 h later
+}
+
+// Stops stale records re-adopting a dropped sandbox (FR-308c).
+message HighWaterMark {
+  uint64 revision = 1;
+  bool removed = 2;                      // terminal
+  uint64 set_seq = 3;                    // Orchestrator.roster_seq when set
+  google.protobuf.Timestamp removed_at = 4;
+  string host_id = 5;                    // host the sandbox lived on; scopes listing-based pruning
+}
+
+message DroppedWorkerTag {               // FR-318b
+  string action = 1;
+  string tag = 2;
+  google.protobuf.Timestamp dropped_at = 3;
+}
+
+// A deleted action's lane setting, copied onto its queued runs (FR-314b).
+message KeptLaneSetting {
+  repeated string lane_ids = 1;          // empty => un-laned
+  LaneMode mode = 2;
+}
+
+// Display copy pushed to a worker's owning daemon (FR-309a). Presence = set.
+message WorkerLaneDisplay {
+  repeated string names = 1;
+  bool pending = 2;
+}
+
+// The open-lane guard's list as the developer saw it (FR-308a).
+message LaneGuardConfirm {
+  repeated string unlaned_actions = 1;
+  repeated string unlaned_runs = 2;      // run ids of queued un-laned runs of deleted actions
+}
+
+// What a guarded change would affect (FR-305, FR-308a). Also the FailedPrecondition status detail of a refusal.
+message LaneChangeImpact {
+  repeated string unlaned_actions = 1;   // guard list; empty => guard does not fire
+  repeated string unlaned_runs = 2;
+  // lane delete only (FR-305):
+  repeated string workers = 3;           // display names of member workers
+  repeated LaneActionUse actions = 4;    // actions using the lane, with their mode
+  repeated string actions_left_unlaned = 5;
+  uint32 rerouted_runs = 6;              // queued runs whose routing changes, incl. kept copies
+}
+message LaneActionUse { string action = 1; LaneMode mode = 2; }
 
 message OrchestratorSummary {
   Orchestrator orchestrator = 1;
@@ -1239,6 +1349,10 @@ message WorkerView {
   string run_action = 9;
   bool reasoning = 10;
   bool host_reachable = 11;
+  // --- SWI-18 --- (12..14 are SWI-17's)
+  repeated string lane_ids = 15;
+  bool lanes_pending = 16;
+  bool detaching = 17;
 }
 
 // One call of an action (FR-125). `prompt` is the composed prompt, frozen at
@@ -1264,6 +1378,9 @@ message Run {
   bool closed_by_developer = 17;         // MarkWorkerFree closed it (FR-156)
   string reason = 18;                    // outcome reason for FAILED/CANCELLED
   uint32 position = 19;
+  // --- SWI-18 --- (20..30 are SWI-17's)
+  KeptLaneSetting kept_lanes = 31;       // set when the run's action was deleted (FR-314b)
+  string waiting_reason = 32;            // derived on read, never stored (FR-315)
 }
 
 // OrchestratorLinkFrame is one message on the call relay (research R6). One
@@ -1320,9 +1437,22 @@ message RenameOrchestratorRequest { string orchestrator_id = 1; string name = 2;
 message RemoveOrchestratorResponse { uint32 workers_detached = 1; uint32 runs_failed = 2; uint32 runs_cancelled = 3; }
 message SetOrchestratorHostsRequest { string orchestrator_id = 1; repeated OrchestratorHost hosts = 2; }
 
-message GetWorkerBundleRequest { string orchestrator_id = 1; }
-message AttachWorkerRequest { string orchestrator_id = 1; string host_id = 2; string sandbox_id = 3; }
-message DetachWorkerRequest { string orchestrator_id = 1; string sandbox_id = 2; }
+message GetWorkerBundleRequest {
+  string orchestrator_id = 1;
+  string host_id = 2;                    // target daemon's host id; required when lane_ids is set
+  repeated string lane_ids = 3;          // FR-306a; non-empty => an attach ticket is issued
+}
+message AttachWorkerRequest {
+  string orchestrator_id = 1;
+  string host_id = 2;
+  string sandbox_id = 3;
+  repeated string lane_ids = 4;          // FR-306a
+}
+message DetachWorkerRequest {
+  string orchestrator_id = 1;
+  string sandbox_id = 2;
+  LaneGuardConfirm guard = 3;            // FR-308a
+}
 message DetachWorkerResponse {}
 message MarkWorkerFreeRequest {
   string orchestrator_id = 1;
@@ -1331,7 +1461,12 @@ message MarkWorkerFreeRequest {
   string note = 4;                       // optional; recorded as the run's summary
 }
 
-message PutActionRequest { string orchestrator_id = 1; Action action = 2; }
+message PutActionRequest {
+  string orchestrator_id = 1;
+  Action action = 2;
+  bool sets_lanes = 3;                   // FR-318a: a lanes-aware client always sets it
+  LaneGuardConfirm guard = 4;            // FR-308a
+}
 message DeleteActionRequest { string orchestrator_id = 1; string name = 2; }
 message DeleteActionResponse { repeated string disabled_events = 1; }
 message PutTimedEventRequest { string orchestrator_id = 1; TimedEvent event = 2; }   // empty id => create
@@ -1374,6 +1509,8 @@ message UpdateWorkerRequest {
   optional string briefing = 6;          // rewrite the managed block
   bool clear_needs_input = 7;            // developer override (mark free): an agent recorded
                                          // NEEDS_INPUT with no run on it is set back to IDLE
+  // --- SWI-18 --- (8 is SWI-17's)
+  WorkerLaneDisplay lanes = 9;           // display copy of the worker's lanes (FR-309a); presence = set
 }
 message DeliverWorkerPromptRequest {
   string sandbox_id = 1;
@@ -1383,3 +1520,46 @@ message DeliverWorkerPromptRequest {
   string prompt = 5;                     // the COMPOSED prompt; the daemon applies the run frame
 }
 message DeliverWorkerPromptResponse { bool accepted = 1; }
+
+// --- SWI-18: lane payloads ---
+
+message PutLaneRequest {
+  string orchestrator_id = 1;
+  string lane_id = 2;                    // empty => create
+  string name = 3;
+  string description = 4;
+}
+message DeleteLaneRequest {
+  string orchestrator_id = 1;
+  string lane_id = 2;
+  LaneGuardConfirm guard = 3;
+}
+message DeleteLaneResponse { LaneChangeImpact applied = 1; }
+
+// FR-306 / FR-307a: refused unless the worker's lanes and pending flag equal the expected ones.
+message SetWorkerLanesRequest {
+  string orchestrator_id = 1;
+  string sandbox_id = 2;
+  repeated string lane_ids = 3;          // empty => open lane (also clears lanes_pending)
+  repeated string expected_lane_ids = 4;
+  bool expected_lanes_pending = 5;
+  LaneGuardConfirm guard = 6;
+}
+// FR-307 / FR-307a: refused unless the lane's members equal the expected ones.
+message SetLaneMembersRequest {
+  string orchestrator_id = 1;
+  string lane_id = 2;
+  repeated string sandbox_ids = 3;
+  repeated string expected_sandbox_ids = 4;
+  LaneGuardConfirm guard = 5;
+}
+message CheckLaneChangeRequest {
+  string orchestrator_id = 1;            // wins; a nested request's own id must be empty or equal
+  oneof change {
+    SetWorkerLanesRequest set_worker_lanes = 2;
+    SetLaneMembersRequest set_lane_members = 3;
+    PutActionRequest put_action = 4;
+    DeleteLaneRequest delete_lane = 5;
+    DetachWorkerRequest detach_worker = 6;
+  }
+}
