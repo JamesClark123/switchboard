@@ -22,19 +22,19 @@ type extTerminal struct {
 // (the user closed the window). The Update loop drops it from the tracking map so
 // a later `T` opens a fresh terminal instead of refusing it as a duplicate.
 type extTermClosedMsg struct {
-	sandboxID string
-	proc      *os.Process
+	key  string // the m.extTerm key (extTermKey)
+	proc *os.Process
 }
 
 // reapExtTermCmd waits for the spawned terminal to exit and then reports it closed.
 // The Wait is essential: without it the child is never reaped, and a zombie process
 // still answers signal 0 — so processAlive would report the closed terminal as still
 // running forever, wedging the single-instance guard and blocking every later `T`.
-func reapExtTermCmd(id string, cmd *exec.Cmd) tea.Cmd {
+func reapExtTermCmd(key string, cmd *exec.Cmd) tea.Cmd {
 	proc := cmd.Process
 	return func() tea.Msg {
 		_ = cmd.Wait()
-		return extTermClosedMsg{sandboxID: id, proc: proc}
+		return extTermClosedMsg{key: key, proc: proc}
 	}
 }
 
@@ -48,9 +48,10 @@ func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea
 		return m, nil
 	}
 	id, name := sb.GetId(), sb.GetDisplayName()
+	key := extTermKey(host, id)
 
 	// Already open from this TUI: focus it (best-effort) rather than spawn a second.
-	if et, ok := m.extTerm[id]; ok && processAlive(et.proc) {
+	if et, ok := m.extTerm[key]; ok && processAlive(et.proc) {
 		if err := focusWindow(et.proc); err == nil {
 			m.status = "brought " + name + "’s terminal to the front"
 		} else {
@@ -84,10 +85,14 @@ func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea
 	if err := cmd.Start(); err != nil {
 		return m, func() tea.Msg { return errMsg{err} }
 	}
-	m.extTerm[id] = &extTerminal{proc: cmd.Process, sandboxID: id}
+	m.extTerm[key] = &extTerminal{proc: cmd.Process, sandboxID: id}
 	m.status = "opened " + name + " in an external terminal"
-	return m, reapExtTermCmd(id, cmd)
+	return m, reapExtTermCmd(key, cmd)
 }
+
+// extTermKey keys m.extTerm by host and sandbox: Jobs opens workers on any
+// host, and two hosts can hold sandboxes with the same id (SWI-14).
+func extTermKey(host, id string) string { return host + "/" + id }
 
 // processAlive reports whether p is still running (signal 0 probes existence).
 func processAlive(p *os.Process) bool {

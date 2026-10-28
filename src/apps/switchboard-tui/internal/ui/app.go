@@ -243,7 +243,8 @@ type Model struct {
 
 	// US2/US3: in-place persistent terminal view + tracking of external terminals.
 	term    termState
-	extTerm map[string]*extTerminal // sandbox id -> spawned external terminal
+	termSeq uint64                  // numbers in-place attaches; only the latest may open (SWI-14)
+	extTerm map[string]*extTerminal // extTermKey(host, sandbox id) -> spawned external terminal
 
 	// US2: saved configurations + sbx option manifest.
 	configs *store.ConfigStore
@@ -648,8 +649,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The external terminal window was closed; forget it so a later `T` opens
 		// a fresh one rather than treating the dead process as still attached. Match
 		// on the exact process so a terminal reopened for the same sandbox survives.
-		if et, ok := m.extTerm[msg.sandboxID]; ok && et.proc == msg.proc {
-			delete(m.extTerm, msg.sandboxID)
+		if et, ok := m.extTerm[msg.key]; ok && et.proc == msg.proc {
+			delete(m.extTerm, msg.key)
 		}
 		return m, nil
 

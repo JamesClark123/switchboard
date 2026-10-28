@@ -214,7 +214,7 @@ func (m Model) updateOverviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch k {
-	case "enter", "x", "m", "o":
+	case "enter", "x", "m", "o", "t", "T":
 		return m.runKeyAction(surfaceJobs, it.run.target, it.run.run, k)
 	}
 	return m, nil
@@ -330,6 +330,54 @@ func (m Model) lookupWorkerName(r *pb.Run) string {
 		}
 	}
 	return short(r.GetSandboxId())
+}
+
+// runSandbox finds the record of a run's worker sandbox and the TUI host entry
+// it is on, to open its terminal (SWI-14). Unlike lookupWorkerName, which only
+// names the worker, it never guesses across hosts: the run's sandbox_host_id
+// must be a connected daemon's and only that host's sandboxes match; a run
+// without one matches only when exactly one host has the sandbox. When there is
+// no match, the last result says why, as the end of a "worker sandbox X …" line.
+func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, string) {
+	id := r.GetSandboxId()
+	if id == "" {
+		return nil, "", "has no worker sandbox"
+	}
+	entry, scoped := "", false
+	if hid := r.GetSandboxHostId(); hid != "" {
+		var ok bool
+		if entry, ok = m.entryForDaemonHost(hid); !ok {
+			// entryForDaemonHost skips a host without a connection object, which
+			// is how a manager can hold the adopted active host (connOf).
+			if m.daemon.HostID() != hid {
+				return nil, "", "is not on a connected daemon"
+			}
+			entry = m.activeHost
+		}
+		scoped = true
+	}
+	var found *pb.Sandbox
+	var host string
+	for _, row := range m.allRows() {
+		if row.sb.GetId() != id || (scoped && row.host != entry) {
+			continue
+		}
+		if found != nil {
+			return nil, "", "is on more than one host — open it from Sandboxes"
+		}
+		found, host = row.sb, row.host
+	}
+	if found == nil {
+		if scoped {
+			on := m.hostDisplayName(entry)
+			if on == "" { // the lone local daemon has no host entry
+				on = r.GetSandboxHostId()
+			}
+			return nil, "", "was not found on " + on + " (still loading, or destroyed)"
+		}
+		return nil, "", "was not found on a connected daemon"
+	}
+	return found, host, ""
 }
 
 // renderOverview renders the four sections; focus is the cursor's line.

@@ -347,6 +347,9 @@ func runRowHelp(r *pb.Run) helpBindings {
 	case runFinished(r):
 		hb = append(hb, hkey("o", "open results"))
 	}
+	if runInFlight(r) {
+		hb = append(hb, hkey("t", "terminal"), hkey("T", "external terminal"))
+	}
 	return hb
 }
 

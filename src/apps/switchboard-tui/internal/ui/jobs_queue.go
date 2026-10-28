@@ -139,7 +139,7 @@ func (m Model) updateJobsQueueKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			j.queuePage, j.cursors[jobsQueue] = page-1, 0
 		}
 		return m, nil
-	case "enter", "x", "m", "o":
+	case "enter", "x", "m", "o", "t", "T":
 		rows, _, _, _ := m.queuePageRows()
 		if c := j.cursors[jobsQueue]; c < len(rows) {
 			return m.runKeyAction(surfaceJobs, rows[c].target, rows[c].run, k)
