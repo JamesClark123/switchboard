@@ -571,7 +571,7 @@ func rosterTrial(t *testing.T, seed int64) {
 		// A sandbox dropped at a revision it never beat afterwards stays
 		// dropped until a newer record names us; with truth naming us at a
 		// newer revision a fresh listing must adopt it.
-		if got != want && !(want && !rev0 && truth[id].GetRevision() <= dropRev[id]) {
+		if got != want && (!want || rev0 || truth[id].GetRevision() > dropRev[id]) {
 			t.Fatalf("seed %d: %s on roster = %v, host says %v (rev %d, drop %d)", seed, id, got, want, truth[id].GetRevision(), dropRev[id])
 		}
 	}

@@ -57,8 +57,6 @@ const (
 	removedMarkTTL = 24 * time.Hour
 	// laneIDPrefix starts every minted lane id ("ln-" + 12 hex).
 	laneIDPrefix = "ln-"
-	// waitingNamesMax caps the lane names a waiting reason lists (FR-315).
-	waitingNamesMax = 5
 	// ticketSkew tolerates clock skew between hosts when an attach ticket's
 	// age is checked (research R11).
 	ticketSkew = 10 * time.Minute

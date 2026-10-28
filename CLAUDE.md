@@ -164,7 +164,10 @@ worker → later run's reservation; inclusive: unreserved lane worker → open-l
 Call + action delete share `registry.UpdateOrchestratorRuns`; deleted actions' settings are kept on queued runs
 (`Run.kept_lanes`). `CheckLaneChange` + `LaneGuardConfirm` implement the open-lane guard; `Run.waiting_reason` is derived
 on read. Lane names pushed to worker hosts for display only (`UpdateWorkerRequest.lanes`); briefings in the background.
-TUI: Lanes view, shared `lane_picker.go`, action form lanes + `ctrl+l` Manage lanes. See `research.md` (R1–R17),
+`DeliverWorkerPromptResponse.revision` returns the sandbox revision the delivery wrote, so the orchestrator's roster
+cache never goes stale after its own delivery. TUI: Lanes view, shared `lane_picker.go`, action form lanes + `ctrl+l`
+Manage lanes; one `lanesPanel` per `orchSurface` (`orchestrator_lanes.go`), every guarded write through `laneWrite`
+(check → confirm → write with the shown list → re-confirm a newer list); lane UI only when `HasCapability("lanes")`. See `research.md` (R1–R17),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 Prior feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes

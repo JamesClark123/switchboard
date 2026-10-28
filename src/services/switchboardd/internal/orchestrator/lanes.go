@@ -43,9 +43,6 @@ func validateLaneName(name string) error {
 	return nil
 }
 
-// validLaneName is validateLaneName as a predicate.
-func validLaneName(name string) bool { return validateLaneName(name) == nil }
-
 // validateLaneDescription trims a description and checks it is one line of at
 // most maxLaneDescription runes with no control characters (FR-302).
 func validateLaneDescription(desc string) (string, error) {

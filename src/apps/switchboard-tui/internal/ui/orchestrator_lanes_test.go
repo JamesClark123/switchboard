@@ -640,4 +640,3 @@ func TestLanePickerUnit(t *testing.T) {
 		t.Error("modeWord")
 	}
 }
-

@@ -301,8 +301,7 @@ func TestTUIActionRunE2E(t *testing.T) {
 	p.tab() // type select: prompt (default)
 	p.tab()
 	p.send("Review pull request {number} in {repo} and leave review comments.")
-	p.tab() // worker tag: blank
-	p.tab()
+	p.tab() // no lanes on review-bot: Lanes and Mode are hidden
 	p.send("number *\nrepo *\nfocus")
 	p.send("\x13")
 	p.expect(t, "saved action review-pr", 15*time.Second)
@@ -465,11 +464,89 @@ func addPingAction(t *testing.T, p *ptyProcess) {
 	p.tab() // type: prompt
 	p.tab()
 	p.send("Reply with pong.")
-	p.tab() // worker tag: blank
-	p.tab() // arguments: blank
+	p.tab() // arguments: blank (no lanes: Lanes and Mode are hidden)
 	m = p.mark()
 	p.send("\x13")
 	p.expectNew(t, m, "saved action ping", 15*time.Second)
+}
+
+// SWI-18 US1: a lane made in the Lanes view, the worker added to it, an action
+// exclusive to it; a call runs on that worker.
+func TestTUILanesE2E(t *testing.T) {
+	requireLocalTarget(t)
+	tui, daemon := buildBinaries(t)
+	sock := startDaemon(t, daemon, stubSbx(t))
+	p := spawnTUI(t, tui, sock, seedSource(t))
+	launchOne(t, p)
+	createOrchestrator(t, p)
+	backToList(t, p)
+	m := p.mark()
+	p.send("o")
+	p.expectNew(t, m, "to an orchestrator", 10*time.Second)
+	p.send("\r")
+	p.expect(t, "attached", 15*time.Second)
+
+	// Daemons › Orchestrators › review-bot › Lanes (← from Workers).
+	openDaemonOrchs(t, p, "review-bot")
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "Orchestrator review-bot", 10*time.Second)
+	m = p.mark()
+	p.send("\x1b[D")
+	p.expectNew(t, m, "no lanes yet — a to add one", 10*time.Second)
+	m = p.mark()
+	p.send("a")
+	p.expectNew(t, m, "New lane", 10*time.Second)
+	p.send("frontend")
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "saved lane frontend", 15*time.Second)
+	m = p.mark()
+	p.send("w")
+	p.expectNew(t, m, "Members of frontend", 10*time.Second)
+	p.send(" ")
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "saved members of frontend", 15*time.Second)
+	p.expect(t, "members: sandbox", 10*time.Second)
+
+	// Jobs › Actions: an action exclusive to frontend.
+	m = p.mark()
+	p.send("\x1b") // back to Orchestrators
+	p.expectNew(t, m, "review-bot", 10*time.Second)
+	m = p.mark()
+	p.send("\x1b[1;2C") // shift+→: jobs
+	p.expectNew(t, m, "Overview", 10*time.Second)
+	p.gotoView(t, "no actions — press a to add one")
+	m = p.mark()
+	p.send("a")
+	p.expectNew(t, m, "Body", 10*time.Second)
+	p.send("build")
+	p.tab()
+	p.tab() // type: prompt
+	p.tab()
+	p.send("Build it.")
+	p.tab()
+	p.expect(t, "Lanes (prompt only)", 10*time.Second)
+	p.send(" ") // tick frontend
+	p.tab()     // mode: exclusive (preselected)
+	p.tab()     // arguments
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "saved action build", 15*time.Second)
+	p.expect(t, "⇢ frontend · exclusive", 10*time.Second)
+
+	// Call it: it runs on the lane's worker.
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "build", 10*time.Second)
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "queued run-", 15*time.Second)
+	m = p.mark()
+	p.send("\x1b[D") // ← Overview
+	p.expectRow(t, m, `build +running +review-bot @.* on sandbox`, 20*time.Second)
+	p.send("q")
 }
 
 func TestTUIHiddenWorkersE2E(t *testing.T) {
