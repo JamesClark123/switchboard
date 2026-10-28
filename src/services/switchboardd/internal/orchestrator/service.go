@@ -130,9 +130,8 @@ func (s *Service) loadTidy(rec *pb.Orchestrator) *pb.Orchestrator {
 	now := s.clock.Now()
 	var dropped []*pb.DroppedWorkerTag
 	out, err := s.reg.UpdateOrchestrator(rec.GetId(), func(o *pb.Orchestrator) error {
-		n := len(o.GetDroppedWorkerTags())
-		changed := dropWorkerTags(o, timestamppb.New(now))
-		dropped = o.GetDroppedWorkerTags()[n:]
+		dropped = dropWorkerTags(o, timestamppb.New(now))
+		changed := len(dropped) > 0
 		changed = sweepTickets(o, now) || changed
 		changed = pruneRemovedMarks(o, now) || changed
 		if !changed {
@@ -147,7 +146,7 @@ func (s *Service) loadTidy(rec *pb.Orchestrator) *pb.Orchestrator {
 		return rec
 	}
 	for _, d := range dropped {
-		s.logf("orchestrator %s: action %s's worker tag %q was dropped — lanes replace worker tags; give it lanes instead", rec.GetName(), d.GetAction(), d.GetTag())
+		s.logf("orchestrator %s: dropped worker tag %q from action %q", rec.GetName(), d.GetTag(), d.GetAction())
 	}
 	return out
 }

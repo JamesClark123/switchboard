@@ -524,7 +524,7 @@ func TestDroppedWorkerTags(t *testing.T) {
 		t.Errorf("expired ticket kept: %+v", rec.GetAttachTickets())
 	}
 	env.setLogHook(nil)
-	if !slices.ContainsFunc(logged, func(l string) bool { return strings.Contains(l, `worker tag "ci" was dropped`) }) {
+	if !slices.ContainsFunc(logged, func(l string) bool { return strings.Contains(l, `dropped worker tag "ci" from action "review-pr"`) }) {
 		t.Errorf("log = %v", logged)
 	}
 	// Nothing to tidy: the record is returned as is.
@@ -587,4 +587,93 @@ func TestActionSaveTriggersDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return runOf(t, env, id, run.GetId()).GetSandboxId() == "wa" })
+}
+
+func TestDroppedWorkerTagsKeepTheNewest(t *testing.T) {
+	o := &pb.Orchestrator{}
+	for i := range maxDroppedTags {
+		o.DroppedWorkerTags = append(o.DroppedWorkerTags, &pb.DroppedWorkerTag{Action: fmt.Sprintf("old%d", i)})
+	}
+	a := reviewPR()
+	a.WorkerTag = "ci" //nolint:staticcheck // SA1019: a record written before lanes
+	o.Actions = []*pb.Action{a}
+	dropped := dropWorkerTags(o, timestamppb.Now())
+	if len(dropped) != 1 || len(o.GetDroppedWorkerTags()) != maxDroppedTags || o.GetDroppedWorkerTags()[maxDroppedTags-1].GetAction() != "review-pr" || o.GetDroppedWorkerTags()[0].GetAction() != "old1" {
+		t.Errorf("dropped = %v, list = %d ending %v", dropped, len(o.GetDroppedWorkerTags()), o.GetDroppedWorkerTags()[maxDroppedTags-1])
+	}
+}
+
+// FR-319: a sandbox's tag no longer affects dispatch.
+func TestSandboxTagDoesNotRoute(t *testing.T) {
+	env, w, o, rt := dispatchEnv(t, 2, false)
+	tagged := w.update("wa", func(sb *pb.Sandbox) { sb.Tag = "ci" })
+	rt.mu.Lock()
+	rt.sbs["wa"] = tagged
+	rt.mu.Unlock()
+	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
+		t.Fatal(err)
+	}
+	r1, r2 := call(t, env, o.GetId(), "1"), call(t, env, o.GetId(), "2")
+	settle(t, rt)
+	waitFor(t, func() bool {
+		a, b := runOf(t, env, o.GetId(), r1.GetId()), runOf(t, env, o.GetId(), r2.GetId())
+		return a.GetSandboxId() != "" && b.GetSandboxId() != "" && a.GetSandboxId() != b.GetSandboxId()
+	})
+}
+
+// FR-322: after a restart, lanes, lanes pending, tickets, removal marks,
+// action settings and kept settings are back; detaching, delivering and
+// waiting reasons are not (they are in memory or derived).
+func TestLanesSurviveRestart(t *testing.T) {
+	env, w, o, rt := dispatchEnv(t, 2, false)
+	id := o.GetId()
+	ids := seedLanes(t, rt, map[string][]string{"a": {"wa"}})
+	setAgent(rt, w, "wa", pb.AgentStatus_AGENT_STATUS_WORKING)
+	if _, err := putAction(env.svc, id, laned("review-pr", pb.LaneMode_LANE_MODE_INCLUSIVE, ids["a"])); err != nil {
+		t.Fatal(err)
+	}
+	setAgent(rt, w, "wb", pb.AgentStatus_AGENT_STATUS_WORKING)
+	run := call(t, env, id, "1")
+	if _, err := env.svc.DeleteAction(id, "review-pr"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.BundleFor(id, "box", []string{ids["a"]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.update(func(o *pb.Orchestrator) error {
+		onRosterEntry(o, "wb").LanesPending = true
+		o.HighWaterMarks = map[string]*pb.HighWaterMark{"gone": {Revision: 2, Removed: true, RemovedAt: timestamppb.New(env.clock.Now())}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	rt.detaching["wa"] = struct{}{}
+	rt.mu.Unlock()
+	settle(t, rt)
+	env.svc.Stop()
+
+	svc2 := NewService(Deps{Store: env.reg, Hub: env.hub, HostID: "host-m", Dial: env.dials.dial, Clock: env.clock, Logf: t.Logf, DaemonVersion: "test"})
+	if err := svc2.Start(bg()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc2.Stop)
+	rt2, _ := svc2.runtimeFor(id)
+	rec := rt2.record()
+	if laneByID(rec, ids["a"]) == nil || !slices.Equal(onRosterEntry(rec, "wa").GetLaneIds(), []string{ids["a"]}) || !onRosterEntry(rec, "wb").GetLanesPending() {
+		t.Errorf("roster lanes = %+v", rec.GetWorkers())
+	}
+	if len(rec.GetAttachTickets()) != 1 || rec.GetHighWaterMarks()["gone"] == nil {
+		t.Errorf("tickets %d, marks %v", len(rec.GetAttachTickets()), rec.GetHighWaterMarks())
+	}
+	stored, _ := env.reg.GetRun(id, run.GetId())
+	if kept := stored.GetKeptLanes(); kept == nil || kept.GetMode() != pb.LaneMode_LANE_MODE_INCLUSIVE || stored.GetWaitingReason() != "" {
+		t.Errorf("run = %+v", stored)
+	}
+	rt2.mu.Lock()
+	delivering := len(rt2.delivering)
+	rt2.mu.Unlock()
+	if rt2.isDetaching("wa") || delivering != 0 {
+		t.Error("in-memory marks survived the restart")
+	}
 }

@@ -660,27 +660,35 @@ func (s *Service) DismissDroppedWorkerTags(id string) (*pb.Orchestrator, error) 
 	return forClient(rec), nil
 }
 
+// maxDroppedTags is how many dropped-tag notices a record keeps (newest).
+const maxDroppedTags = 100
+
 // dropWorkerTags moves every action's retired worker tag into the notice
-// list (load time, FR-318b), reporting whether anything changed.
-func dropWorkerTags(o *pb.Orchestrator, now *timestamppb.Timestamp) bool {
-	changed := false
+// list (load time, FR-318b; the newest maxDroppedTags are kept) and returns
+// the tags it dropped.
+func dropWorkerTags(o *pb.Orchestrator, now *timestamppb.Timestamp) []*pb.DroppedWorkerTag {
+	var dropped []*pb.DroppedWorkerTag
 	for _, a := range o.GetActions() {
 		if tag := a.GetWorkerTag(); tag != "" { //nolint:staticcheck // SA1019: read only to drop the retired worker tag (FR-318b)
-			o.DroppedWorkerTags = append(o.DroppedWorkerTags, &pb.DroppedWorkerTag{Action: a.GetName(), Tag: tag, DroppedAt: now})
+			dropped = append(dropped, &pb.DroppedWorkerTag{Action: a.GetName(), Tag: tag, DroppedAt: now})
 			a.WorkerTag = "" //nolint:staticcheck // SA1019: clearing the retired worker tag (FR-318b)
-			changed = true
 		}
 	}
-	return changed
+	o.DroppedWorkerTags = append(o.DroppedWorkerTags, dropped...)
+	if n := len(o.DroppedWorkerTags); n > maxDroppedTags {
+		o.DroppedWorkerTags = o.DroppedWorkerTags[n-maxDroppedTags:]
+	}
+	return dropped
 }
 
-// forClient is a record as clients see it: high-water marks are internal.
+// forClient is a record as clients see it: high-water marks and attach
+// tickets are internal (T037).
 func forClient(rec *pb.Orchestrator) *pb.Orchestrator {
 	if rec == nil {
 		return nil
 	}
 	out := proto.Clone(rec).(*pb.Orchestrator)
-	out.HighWaterMarks = nil
+	out.HighWaterMarks, out.AttachTickets = nil, nil
 	return out
 }
 

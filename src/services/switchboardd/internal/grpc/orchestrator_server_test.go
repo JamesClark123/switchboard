@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -546,5 +547,65 @@ func TestFireTimedEventRPC(t *testing.T) {
 	}
 	if _, err := c.FireTimedEvent(ctx, &pb.FireTimedEventRequest{OrchestratorId: "nope", EventId: ev.GetId()}); status.Code(err) != codes.NotFound {
 		t.Errorf("unknown orchestrator = %v, want NOT_FOUND", err)
+	}
+}
+
+// SWI-18: the lane RPCs over gRPC, with the open-lane guard's refusal carrying
+// its impact as a status detail.
+func TestLaneRPCs(t *testing.T) {
+	env := startOrchServer(t)
+	ctx := context.Background()
+	c := env.client
+	o, err := c.CreateOrchestrator(ctx, &pb.CreateOrchestratorRequest{Name: "review-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := o.GetId()
+	ln, err := c.PutLane(ctx, &pb.PutLaneRequest{OrchestratorId: id, Name: "frontend", Description: "UI"})
+	if err != nil || ln.GetName() != "frontend" {
+		t.Fatalf("PutLane = %+v / %v", ln, err)
+	}
+	if _, err := c.PutLane(ctx, &pb.PutLaneRequest{OrchestratorId: id, Name: "frontend"}); status.Code(err) != codes.AlreadyExists {
+		t.Errorf("duplicate = %v", err)
+	}
+	// No open-lane worker: saving an un-laned action is guarded.
+	put := &pb.PutActionRequest{OrchestratorId: id, SetsLanes: true, Action: &pb.Action{Name: "check", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "check"}}
+	_, err = c.PutAction(ctx, put)
+	st, _ := status.FromError(err)
+	if st.Code() != codes.FailedPrecondition || len(st.Details()) != 1 {
+		t.Fatalf("guarded = %v %v", st.Code(), st.Details())
+	}
+	if impact, ok := st.Details()[0].(*pb.LaneChangeImpact); !ok || !slices.Equal(impact.GetUnlanedActions(), []string{"check"}) {
+		t.Errorf("detail = %+v", st.Details()[0])
+	}
+	impact, err := c.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: put}})
+	if err != nil || !slices.Equal(impact.GetUnlanedActions(), []string{"check"}) {
+		t.Fatalf("CheckLaneChange = %+v / %v", impact, err)
+	}
+	put.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions()}
+	if _, err := c.PutAction(ctx, put); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: id, Action: put.GetAction()}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("old client = %v", err)
+	}
+	if _, err := c.SetWorkerLanes(ctx, &pb.SetWorkerLanesRequest{OrchestratorId: id, SandboxId: "nope"}); status.Code(err) != codes.Aborted {
+		t.Errorf("SetWorkerLanes stale = %v", err)
+	}
+	if _, err := c.SetLaneMembers(ctx, &pb.SetLaneMembersRequest{OrchestratorId: id, LaneId: ln.GetId()}); err != nil {
+		t.Errorf("SetLaneMembers = %v", err)
+	}
+	del, err := c.DeleteLane(ctx, &pb.DeleteLaneRequest{OrchestratorId: id, LaneId: ln.GetId()})
+	if err != nil || del.GetApplied() == nil {
+		t.Errorf("DeleteLane = %+v / %v", del, err)
+	}
+	if _, err := c.DeleteLane(ctx, &pb.DeleteLaneRequest{OrchestratorId: id, LaneId: ln.GetId()}); status.Code(err) != codes.NotFound {
+		t.Errorf("DeleteLane again = %v", err)
+	}
+	if out, err := c.DismissDroppedWorkerTags(ctx, &pb.OrchestratorIdRequest{OrchestratorId: id}); err != nil || out.GetId() != id {
+		t.Errorf("Dismiss = %+v / %v", out, err)
+	}
+	if _, err := c.GetWorkerBundle(ctx, &pb.GetWorkerBundleRequest{OrchestratorId: id, HostId: "elsewhere", LaneIds: []string{"ln-x"}}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("bundle unknown host = %v", err)
 	}
 }
