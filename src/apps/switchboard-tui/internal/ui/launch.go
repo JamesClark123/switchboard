@@ -90,6 +90,10 @@ type launchState struct {
 	// here — once a launch starts it detaches to an optimistic list row (see
 	// launchInFlight) so the modal closes and the TUI stays usable.
 	progress string
+
+	// baseline is the launch as it opened (after any saved-setup prefill); the
+	// unsaved-changes guard compares against it (SWI-9 R3).
+	baseline launchSnapshot
 }
 
 // launchInFlight is one optimistic, still-streaming launch. Its placeholder shows
@@ -127,6 +131,7 @@ func (m Model) enterLaunch() (tea.Model, tea.Cmd) {
 		name:       newNameInput(),
 		targetHost: m.activeHost,
 	}
+	m.launch.baseline = snapshotLaunch(m.launch)
 	return m.startBrowse(m.launchRootFor(m.activeHost))
 }
 
@@ -142,6 +147,7 @@ func (m Model) enterLaunchWithConfig(cfg *store.Configuration) (tea.Model, tea.C
 		name:       newNameInput(),
 		targetHost: m.activeHost,
 	}
+	m.launch.baseline = snapshotLaunch(m.launch)
 	return m.startBrowse(m.launchRootFor(m.activeHost))
 }
 

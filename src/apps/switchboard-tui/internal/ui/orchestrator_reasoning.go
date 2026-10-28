@@ -145,26 +145,69 @@ func (m Model) enterReasoningSetup() (tea.Model, tea.Cmd) {
 		m.launch.srcRepo[s.GetPath()] = s.GetIsRepo()
 		m.launch.order = append(m.launch.order, s.GetPath())
 	}
+	m.launch.baseline = snapshotLaunch(m.launch)
 	return m.startBrowse(m.launchRootFor(d.host))
 }
 
 // startReasoningRebuildFromSetup turns the browser's selection into a setup
 // and starts the rebuild. Zero folders is the default empty context.
 func (m Model) startReasoningRebuildFromSetup() (tea.Model, tea.Cmd) {
+	setup, ok := m.reasoningSetupFromLaunch()
+	if !ok {
+		return m, nil
+	}
 	rt := m.launch.reasoning
+	m.screen = screenOrchDetail
+	return m.startReasoningRebuild(reasoningRebuildMsg{id: rt.id, host: rt.host, name: rt.name, setup: setup})
+}
+
+// reasoningSetupFromLaunch builds the setup the browser's selection describes.
+// A kit error is shown on the setup and reported as !ok.
+func (m *Model) reasoningSetupFromLaunch() (*pb.ReasoningSetup, bool) {
 	kitRefs, err := m.launch.selectedKitRefs()
 	if err != nil {
 		m.launch.progress = ""
 		m.launch.loadErr = "kit error: " + err.Error()
-		return m, nil
+		return nil, false
 	}
 	mode := pb.SeedingMode_SEEDING_MODE_DUPLICATE
 	if m.launch.cloneMode {
 		mode = pb.SeedingMode_SEEDING_MODE_CLONE
 	}
-	setup := &pb.ReasoningSetup{Sources: m.selectedSources(), Config: &pb.ConfigSnapshot{SeedingMode: mode}, Kits: kitRefs}
-	m.screen = screenOrchDetail
-	return m.startReasoningRebuild(reasoningRebuildMsg{id: rt.id, host: rt.host, name: rt.name, setup: setup})
+	return &pb.ReasoningSetup{Sources: m.selectedSources(), Config: &pb.ConfigSnapshot{SeedingMode: mode}, Kits: kitRefs}, true
+}
+
+// confirmRebuildFromSetup is the unsaved-changes dialog's Rebuild (SWI-9 R5):
+// a destructive confirm built from the EDITED setup, never a direct rebuild,
+// and never the `b` confirm (which rebuilds the saved setup). n returns to the
+// setup intact; y rebuilds and lands on the orchestrator detail, as the setup's
+// own enter does. yOnly, so the enter that chose Rebuild cannot also accept.
+func (m Model) confirmRebuildFromSetup() (Model, tea.Cmd) {
+	setup, ok := m.reasoningSetupFromLaunch()
+	if !ok {
+		return m, nil
+	}
+	rt := m.launch.reasoning
+	req := reasoningRebuildMsg{id: rt.id, host: rt.host, name: rt.name, setup: setup}
+	body := []string{"The current reasoning sandbox is destroyed and a new one is created from the edited setup:"}
+	for _, l := range reasoningSetupLines(setup) {
+		if strings.HasPrefix(l, "kits: ") {
+			l = "kits: " + strings.Join(m.launch.kitOrder, ", ")
+		}
+		body = append(body, "  "+sanitizeLine(l, 0))
+	}
+	body = append(body, "Its conversation and workspace are lost.")
+	m.confirm = confirmState{
+		title:     fmt.Sprintf("Rebuild the reasoning sandbox of %s?", rt.name),
+		body:      body,
+		warning:   "Refused while a run is on it.",
+		returnTo:  screenLaunch,
+		onConfirm: func() tea.Msg { return req },
+		onAccept:  func(m *Model) { m.screen = screenOrchDetail },
+		yOnly:     true,
+	}
+	m.screen = screenConfirm
+	return m, nil
 }
 
 // startReasoningRebuild runs RebuildReasoningSandbox in the background,

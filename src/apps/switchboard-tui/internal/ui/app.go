@@ -350,6 +350,9 @@ type Model struct {
 	jobs        jobsState
 	daemonOrchs daemonOrchsState
 
+	// --- SWI-9: the unsaved-changes dialog, a layer over a changed surface ---
+	unsaved unsavedState
+
 	quitting bool
 }
 
@@ -623,7 +626,18 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update routes messages by screen.
+// Update handles one message, then reconciles the guard's layers with whatever
+// surface the message left open (SWI-9: the lifetime invariant).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.handleMsg(msg)
+	if nm, ok := next.(Model); ok {
+		nm.reconcileGuardLayers()
+		return nm, cmd
+	}
+	return next, cmd
+}
+
+func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -945,6 +959,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.signIn.active && m.signIn.phase == signInFailed {
 		return m.updateSignInKey(msg)
 	}
+	// SWI-9: the unsaved-changes dialog owns the keyboard over its surface.
+	if m.unsaved.open {
+		return m.updateUnsavedKey(msg)
+	}
 	switch m.screen {
 	case screenLaunch:
 		return m.updateLaunchKey(msg)
@@ -1005,11 +1023,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// View renders the active screen wrapped in the shared chrome.
+// View renders the active screen wrapped in the shared chrome, then the layers
+// above it. The credential prompts are applied last, over every screen: the
+// password modal owns the keyboard whenever it is up (handleKey), so it must
+// never be hidden under a screen that draws itself without the chrome (SWI-9
+// R5) — typing would otherwise go into an invisible SSH password field.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	out := m.viewScreen()
+	if m.unsaved.open {
+		out = overlayCenter(out, m.unsavedModal(), m.width, m.height)
+	}
+	// Feature 008: the shared password prompt (daemon screen / startup sign-in)
+	// and the sign-in failure card float centered over whatever is showing.
+	switch {
+	case m.hosts.connecting && m.hosts.pwMode != pwHostsScreen:
+		return overlayCenter(out, m.hostPasswordModal(), m.width, m.height)
+	case m.signIn.active && m.signIn.phase == signInFailed:
+		return overlayCenter(out, m.signInModal(), m.width, m.height)
+	}
+	return out
+}
+
+// viewScreen renders the current screen and the overlays that belong to it.
+func (m Model) viewScreen() string {
 	// The launch flow is a modal layer floating over the list page.
 	if m.screen == screenLaunch {
 		bg := m.chrome(m.viewList(), m.launchHelp())
@@ -1028,6 +1067,9 @@ func (m Model) View() string {
 			bg = m.chrome(m.viewJobs(), m.confirmHelp())
 		case screenOrchDetail:
 			bg = m.chrome(m.viewOrchDetail(), m.confirmHelp())
+		case screenLaunch:
+			// the reasoning setup's Rebuild confirm keeps the setup in view
+			bg = overlayCenter(m.chrome(m.viewList(), m.confirmHelp()), m.launchModal(), m.width, m.height)
 		default:
 			bg = m.chrome(m.viewList(), m.confirmHelp())
 		}
@@ -1131,16 +1173,7 @@ func (m Model) View() string {
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
-	out := m.chrome(body, hb)
-	// Feature 008: the shared password prompt (daemon screen / startup sign-in)
-	// and the sign-in failure card float centered over whatever is showing.
-	switch {
-	case m.hosts.connecting && m.hosts.pwMode != pwHostsScreen:
-		return overlayCenter(out, m.hostPasswordModal(), m.width, m.height)
-	case m.signIn.active && m.signIn.phase == signInFailed:
-		return overlayCenter(out, m.signInModal(), m.width, m.height)
-	}
-	return out
+	return m.chrome(body, hb)
 }
 
 // --- chrome (header + body + footer) ---

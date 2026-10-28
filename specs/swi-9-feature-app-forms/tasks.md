@@ -68,7 +68,7 @@ snapshots (R3–R5).
 
 **⚠️ CRITICAL**: No user-story work can begin until this phase is complete.
 
-- [ ] T005 Add the `guardSurface` enum (data-model.md table) and these `Model` methods, each a `switch` over the enum,
+- [X] T005 Add the `guardSurface` enum (data-model.md table) and these `Model` methods, each a `switch` over the enum,
   in `UI/formguard.go`:
   - `activeGuard() (guardSurface, bool)`, with nested-before-parent precedence. Every case also checks `m.screen`
     (data-model.md), so a form stranded on a screen the user has left is never active;
@@ -86,7 +86,7 @@ snapshots (R3–R5).
 
   Unimplemented surfaces default to "never dirty" and are filled in by the stories. Every story task that adds a
   surface also adds its cases to these switches, so those tasks share `UI/formguard.go` and are not `[P]`.
-- [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
+- [X] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
   `openedAt`), plus package vars `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond` (vars, not
   consts). Add a `noKeyGrace(t)` test helper in `UI/unsaved_test.go` that sets `unsavedKeyGrace` to 0 and restores
   it with `t.Cleanup`. Moving `nowFunc` would not work, because `openedAt` is read from the same clock. Story tests
@@ -131,7 +131,7 @@ snapshots (R3–R5).
   - `unsavedModal()`: `modalInnerWidth()` wide in `modalStyle`. A ≤ 2-line body per surface kind, three buttons with
     the highlighted one marked, and the canonical hint `s save · d discard · esc cancel · ←/→ · enter` (or
     `r rebuild · …`). ≤ 11 rows; no line wraps at 80 columns.
-- [ ] T007 Wire the dialog layer into `UI/app.go`:
+- [X] T007 Wire the dialog layer into `UI/app.go`:
   - `handleKey` routes to `updateUnsavedKey` when `m.unsaved.open`, after the host-password modal and sign-in card
     and before the screen switch.
   - `Update` calls `reconcileGuardLayers()` after handling every message.
@@ -141,7 +141,7 @@ snapshots (R3–R5).
     through one final pass. That pass applies the host-password prompt and the sign-in failure card **last**. The
     prompt must never capture keys while hidden.
   - Add the dialog bindings to `UI/keys.go`.
-- [ ] T008 Add snapshot types and helpers in `UI/formguard.go`:
+- [X] T008 Add snapshot types and helpers in `UI/formguard.go`:
   - `launchSnapshot` with `snapshotLaunch(launchState)` and an `equal` method (`slices.Equal` for the slices): sources
     in selection order (`l.order`; **not** sorted, since order changes what is sent), name trimmed, kits in order,
     host, orchestrator id;
@@ -151,7 +151,7 @@ snapshots (R3–R5).
     - Do not go through `SpecYAML()`: it errors on an unnamed kit.
     - Do not normalise the live kit: `Normalize()` mutates `Permissions.Network` through a shared pointer.
     - See `src/apps/switchboard-tui/internal/store/kit.go`.
-- [ ] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
+- [X] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
   - the dialog opens on Cancel, and enter there cancels;
   - ←/→ wrap; `d` and enter@Discard discard; `s` and enter@Save save; esc and ctrl+c cancel; `y`/`n`/`q` are ignored;
   - the label reads Rebuild for `gReasoning`; `r` opens a confirm whose body lists the **edited** setup; n there

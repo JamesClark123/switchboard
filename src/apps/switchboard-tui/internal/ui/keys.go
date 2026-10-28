@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/bubbles/key"
+import (
+	"strings"
+
+	"github.com/charmbracelet/bubbles/key"
+)
 
 // keyMap collects every binding the TUI reacts to. Each screen exposes the subset
 // relevant to it for the help bar via the help* helpers below.
@@ -155,4 +159,25 @@ func (m Model) listHelp() helpBindings {
 		hb = append(hb, k.Update)
 	}
 	return append(hb, k.Quit)
+}
+
+// unsavedHelp is the unsaved-changes dialog's keys (SWI-9 contracts/forms-ui.md
+// §3), rendered as the dialog's own hint line. The reasoning setup's Save is
+// Rebuild, on r.
+func (m Model) unsavedHelp() helpBindings {
+	save := hkey("s", "save")
+	if m.unsaved.surface == gReasoning {
+		save = hkey("r", "rebuild")
+	}
+	return helpBindings{save, hkey("d", "discard"), hkey("esc", "cancel"), hkey("←/→", ""), hkey("enter", "")}
+}
+
+// helpLine renders bindings as one plain "key desc · key desc" line, for hints
+// drawn inside a modal rather than in the footer.
+func helpLine(hb helpBindings) string {
+	parts := make([]string, len(hb))
+	for i, b := range hb {
+		parts[i] = strings.TrimSpace(b.Help().Key + " " + b.Help().Desc)
+	}
+	return strings.Join(parts, " · ")
 }

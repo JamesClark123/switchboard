@@ -1,10 +1,15 @@
 package ui
 
 import (
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 // formKeyMap is the one keymap every huh form in the app uses (SWI-9 R1).
@@ -125,4 +130,272 @@ func flattenCallVals(v *callFormVals) map[string]string {
 		out[k] = *p
 	}
 	return out
+}
+
+// opValsEqual compares two snapshotOpVals results: the call form's flattened map
+// with maps.Equal, every other (scalar-only) vals struct with ==.
+func opValsEqual(a, b any) bool {
+	am, aok := a.(map[string]string)
+	bm, bok := b.(map[string]string)
+	if aok || bok {
+		return aok && bok && maps.Equal(am, bm)
+	}
+	return a == b
+}
+
+// launchSnapshot is what a launch or reasoning-setup rebuild would send (SWI-9
+// R3). Sources and kits keep selection order: a different order is a different
+// launch.
+type launchSnapshot struct {
+	sources   []string
+	cloneMode bool
+	name      string
+	kits      []string
+	host      string
+	orch      string
+}
+
+// snapshotLaunch copies the launch state's choices. The slices are cloned:
+// toggle removes entries in place, which would rewrite an aliased baseline.
+func snapshotLaunch(l launchState) launchSnapshot {
+	s := launchSnapshot{
+		sources:   slices.Clone(l.order),
+		cloneMode: l.cloneMode,
+		name:      strings.TrimSpace(l.name.Value()),
+		kits:      slices.Clone(l.kitOrder),
+		host:      l.targetHost,
+	}
+	if l.orchestrator != nil {
+		s.orch = l.orchestrator.summary.GetOrchestrator().GetId()
+	}
+	return s
+}
+
+func (s launchSnapshot) equal(o launchSnapshot) bool {
+	return slices.Equal(s.sources, o.sources) && s.cloneMode == o.cloneMode && s.name == o.name &&
+		slices.Equal(s.kits, o.kits) && s.host == o.host && s.orch == o.orch
+}
+
+// kitFingerprint is the kit as it would be saved: spec.yaml of a normalised
+// deep clone plus the two sidecar sections. It deliberately avoids SpecYAML
+// (which refuses an unnamed kit) and never normalises the live kit (Normalize
+// writes through the shared Permissions pointer). Marshal errors cannot happen
+// for these plain structs; one would only make the fingerprint coarser.
+func kitFingerprint(kit store.Kit) string {
+	b, _ := yaml.Marshal(&kit)
+	var clone store.Kit
+	_ = yaml.Unmarshal(b, &clone)
+	clone.Normalize()
+	spec, _ := yaml.Marshal(&clone)
+	out := string(spec)
+	if len(kit.EscapeHatch) > 0 {
+		eh, _ := yaml.Marshal(kit.EscapeHatch)
+		out += "\n--- escape hatch\n" + string(eh)
+	}
+	if len(kit.Services) > 0 {
+		svc, _ := yaml.Marshal(kit.Services)
+		out += "\n--- services\n" + string(svc)
+	}
+	return out
+}
+
+// guardSurface names one editing surface the unsaved-changes guard protects
+// (SWI-9 data-model.md). At most one is active at a time; activeGuard derives it
+// from the screen and that screen's sub-state. The op forms get one value per
+// orchSurface so a dialog on the Jobs form never outlives it onto the detail.
+type guardSurface int
+
+const (
+	gNone guardSurface = iota
+	gConfig
+	gMcp
+	gSecrets
+	gOrchAdmin
+	gOpJobs
+	gOpDetail
+	gKitItem
+	gKitOverview
+	gLaunch
+	gReasoning
+	gSources
+	gSourcesBrowse
+	gRename
+	gTag
+	gHostAdd
+	gGroupAdd
+)
+
+// activeGuard is the surface open now. Every case checks m.screen first, so a
+// form left behind on a screen the user has moved off is never active, and a
+// nested form (gKitItem) wins over its parent (gKitOverview). It is O(1): it
+// runs after every message.
+func (m Model) activeGuard() (guardSurface, bool) {
+	switch m.screen {
+	case screenConfigEditor:
+		if m.editor.form != nil {
+			return gConfig, true
+		}
+	case screenMcp:
+		if m.mcpView.form != nil {
+			return gMcp, true
+		}
+	case screenSecrets:
+		if m.secretsView.form != nil {
+			return gSecrets, true
+		}
+	case screenDaemonOrchs:
+		if m.orch.form != nil {
+			return gOrchAdmin, true
+		}
+	case screenJobs:
+		if m.jobs.form != nil {
+			return gOpJobs, true
+		}
+	case screenOrchDetail:
+		if m.orchDetail.form != nil {
+			return gOpDetail, true
+		}
+	case screenKitEditor:
+		if m.kitEditor.form != nil {
+			return gKitItem, true
+		}
+		return gKitOverview, true
+	case screenLaunch:
+		if m.launch.reasoning != nil {
+			return gReasoning, true
+		}
+		return gLaunch, true
+	case screenSources:
+		if m.sourcesView.browsing {
+			return gSourcesBrowse, true
+		}
+		return gSources, true
+	case screenRename:
+		return gRename, true
+	case screenTag:
+		return gTag, true
+	case screenHosts:
+		if m.hosts.adding {
+			return gHostAdd, true
+		}
+	case screenGroups:
+		if m.groups.adding {
+			return gGroupAdd, true
+		}
+	}
+	return gNone, false
+}
+
+// opSurfaceOf maps an op-form guard to the orchSurface hosting it.
+func opSurfaceOf(g guardSurface) orchSurface {
+	if g == gOpJobs {
+		return surfaceJobs
+	}
+	return surfaceDetail
+}
+
+// guardDirty reports whether g's current values differ from its baseline. It is
+// a pure comparison: an edit undone back to the original value is clean.
+// Surfaces without a baseline yet are never dirty.
+func (m Model) guardDirty(g guardSurface) bool {
+	switch g {
+	case gMcp:
+		return m.mcpView.vals != nil && *m.mcpView.vals != m.mcpView.baseline
+	case gOpJobs, gOpDetail:
+		op := m.opState(opSurfaceOf(g))
+		return op.form != nil && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
+	case gKitItem:
+		return m.kitEditor.vals != nil && *m.kitEditor.vals != m.kitEditor.formBaseline
+	case gLaunch, gReasoning:
+		return !snapshotLaunch(m.launch).equal(m.launch.baseline)
+	}
+	return false
+}
+
+// guardSave is the dialog's Save: the surface's own save or confirm, unchanged.
+// It re-checks dirty first: a background update can leave the surface clean
+// while the dialog is open, and then Save just leaves (research R4). The outcome
+// (closed, open with an error, waiting on a confirm) is read from the state.
+func (m Model) guardSave(g guardSurface) (Model, tea.Cmd) {
+	if !m.guardDirty(g) {
+		return m.guardLeave(g)
+	}
+	switch g {
+	case gLaunch:
+		return guardResult(m.startLaunch())
+	case gReasoning:
+		return m.confirmRebuildFromSetup()
+	}
+	return m, nil
+}
+
+// guardResult narrows a surface handler's result for the guard's switches, which
+// keep working on the Model.
+func guardResult(tm tea.Model, cmd tea.Cmd) (Model, tea.Cmd) {
+	return tm.(Model), cmd
+}
+
+// guardLeave is the surface's esc path: close without applying.
+func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
+	switch g {
+	case gLaunch:
+		m.screen = screenList
+	case gReasoning:
+		m.screen = screenOrchDetail
+	}
+	return m, nil
+}
+
+// requestExit is every guarded exit key: a clean surface leaves at once, a
+// changed one opens the unsaved-changes dialog.
+func (m Model) requestExit(g guardSurface) (tea.Model, tea.Cmd) {
+	if !m.guardDirty(g) {
+		return m.guardLeave(g)
+	}
+	m.openUnsaved(g, false)
+	return m, nil
+}
+
+// reopenForm rebuilds a form huh has completed (enter on its last field) from
+// the same vals, so a failed save never leaves a blank, dead form. The spec is
+// fresh (the rebuilt form has new *huh.Text pointers), normalize is skipped (the
+// vals are already normalised) and the surface baseline is kept (research R4).
+func (m *Model) reopenForm(g guardSurface) tea.Cmd {
+	switch g {
+	case gOpJobs, gOpDetail:
+		op := m.opState(opSurfaceOf(g))
+		if op.formBuild == nil {
+			return nil
+		}
+		op.formSpec = newFormSpec()
+		op.form = op.formBuild(*m, op.formSpec)
+		return op.form.Init()
+	case gKitItem:
+		ke := &m.kitEditor
+		if ke.vals == nil {
+			return nil
+		}
+		ke.spec = newFormSpec()
+		ke.form = m.buildKitForm(ke.formKind, ke.spec, ke.vals)
+		return ke.form.Init()
+	case gMcp:
+		if m.mcpView.vals == nil {
+			return nil
+		}
+		return m.buildMcpForm()
+	}
+	return nil
+}
+
+// reconcileGuardLayers keeps the guard's layers bound to a live surface: the
+// dialog closes when its surface is no longer the active one (an in-flight save
+// closed it, a screen change, a forced close). It runs after every message and
+// is O(1) — no sandbox-list walks.
+func (m *Model) reconcileGuardLayers() {
+	if !m.unsaved.open {
+		return
+	}
+	if g, ok := m.activeGuard(); !ok || g != m.unsaved.surface {
+		m.unsaved = unsavedState{}
+	}
 }
