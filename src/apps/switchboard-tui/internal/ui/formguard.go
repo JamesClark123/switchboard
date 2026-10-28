@@ -56,6 +56,8 @@ type textEntry struct {
 // field's pointer, and no Text can bring the external editor back.
 type formSpec struct {
 	texts map[*huh.Text]textEntry
+	// rewritten names the single-line Inputs settleInputs cleaned.
+	rewritten []string
 }
 
 func newFormSpec() *formSpec {
@@ -71,6 +73,25 @@ func (s *formSpec) text(ptr *string, title string) *huh.Text {
 	t := huh.NewText().ExternalEditor(false).Title(title).Value(ptr)
 	s.texts[t] = textEntry{ptr: ptr, title: title, original: original}
 	return t
+}
+
+// settleInputs pushes each single-line Input's cleaned value into its pointer
+// before a baseline is taken: huh's textinput turns tabs and newlines into
+// spaces and drops control characters, then writes that back on any update, so
+// an untouched form would otherwise read as changed. Rewritten fields are
+// recorded on s (nil s: none) for the surface's notice.
+func (s *formSpec) settleInputs(fields []huh.Field) {
+	for _, f := range fields {
+		in, ok := f.(*huh.Input)
+		if !ok {
+			continue
+		}
+		before := in.GetValue()
+		in.Update(nil)
+		if s != nil && in.GetValue() != before {
+			s.rewritten = append(s.rewritten, in.GetKey())
+		}
+	}
 }
 
 // lookup reports whether field is one of this spec's Text fields.
@@ -92,7 +113,7 @@ func (s *formSpec) lookup(field huh.Field) (*huh.Text, textEntry, bool) {
 // of fields whose value differs from what they were built with, so the surface
 // can tell the user the text will be rewritten when saved.
 func (s *formSpec) normalize() []string {
-	var changed []string
+	changed := s.rewritten
 	for t, e := range s.texts {
 		t.Update(nil)
 		if *e.ptr != e.original {
@@ -102,12 +123,15 @@ func (s *formSpec) normalize() []string {
 	return changed
 }
 
+// normalizeSuffix ends the notice, so a surface can drop it with its form.
+const normalizeSuffix = ": line endings/tabs/control characters will be rewritten when saved"
+
 // normalizeNotice is the status shown when normalize reports rewritten fields.
 func normalizeNotice(titles []string) string {
 	if len(titles) == 0 {
 		return ""
 	}
-	return strings.Join(titles, ", ") + ": line endings/tabs/control characters will be rewritten when saved"
+	return strings.Join(titles, ", ") + normalizeSuffix
 }
 
 // snapshotOpVals copies an op form's bound values so later edits can be compared
@@ -522,6 +546,9 @@ func (m Model) advanceForm(g guardSurface, msg tea.Msg) (tea.Model, tea.Cmd) {
 // enlarges only a focused registered Text; elsewhere it reaches the field (end
 // of line on an Input, nothing on a Select).
 func (m Model) formKey(g guardSurface, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if (g == gOpJobs || g == gOpDetail) && m.opState(opSurfaceOf(g)).formSaving {
+		return m, nil // its call is in flight; the reply closes or revives it
+	}
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		return m.requestExit(g)

@@ -70,6 +70,7 @@ func (m *Model) openEnlarge(g guardSurface, field *huh.Text, e textEntry) tea.Cm
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.MaxHeight = 0
+	ta.MaxWidth = 0 // the view is as wide as the terminal, however wide
 	ta.KeyMap = enlargeKeyMap()
 	st, cur, curText := enlargeStyles()
 	ta.FocusedStyle, ta.BlurredStyle = st, st
@@ -87,11 +88,22 @@ func (m *Model) openEnlarge(g guardSurface, field *huh.Text, e textEntry) tea.Cm
 }
 
 // writeBack puts the view's text into the field: the bound pointer, then the
-// field's own textarea from it, scrolled so its cursor is visible.
+// field's own textarea from it (cursor at the end, as huh sets it), rendered
+// once so its scroll bounds know the new length, then scrolled to the cursor.
 func (e *enlargeState) writeBack() {
 	*e.ptr = e.ta.Value()
 	e.field.Value(e.ptr)
+	_ = e.field.View()
 	e.field.Update(nil)
+}
+
+// reposition scrolls the view to its cursor after the line count changed. The
+// textarea clamps scrolling to the line count of its last render, so it is
+// rendered first; otherwise a paste or a revert to a longer text leaves the
+// cursor below the window until the next key.
+func (e *enlargeState) reposition() {
+	_ = e.ta.View()
+	e.ta, _ = e.ta.Update(nil)
 }
 
 // resize refits the view, keeping text, cursor and scroll.
@@ -108,8 +120,12 @@ func (m Model) updateEnlargeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+e":
 		e.writeBack()
+		field, g := e.field, e.surface
 		m.enlarge = enlargeState{}
-		return m, nil
+		if f := m.guardForm(g); f != nil {
+			f.Update(nil) // the form caches its group's layout; rebuild it with the new text
+		}
+		return m, field.Focus() // restarts its cursor blink, let lapse while enlarged
 	case "ctrl+s":
 		g := e.surface
 		e.writeBack()
@@ -129,7 +145,7 @@ func (m Model) updateEnlargeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return nm, cmd
 	case "ctrl+r":
 		e.ta.SetValue(e.baseline)
-		e.ta, _ = e.ta.Update(nil)
+		e.reposition()
 		return m, nil
 	case "pgup", "pgdown":
 		// Batched cursor moves and one reposition: an Update per line costs
@@ -146,9 +162,22 @@ func (m Model) updateEnlargeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "shift+tab":
 		return m, nil // FR-004: no field navigation from the view
 	}
+	if msg.Paste {
+		msg.Runes = foldCRLF(msg.Runes)
+	}
+	lines := e.ta.LineCount()
 	var cmd tea.Cmd
 	e.ta, cmd = e.ta.Update(msg)
+	if e.ta.LineCount() != lines {
+		e.reposition()
+	}
 	return m, cmd
+}
+
+// foldCRLF turns pasted CRLF line endings into LF: the textarea maps each \r
+// and \n to a newline, so a Windows paste would double every line break.
+func foldCRLF(r []rune) []rune {
+	return []rune(strings.ReplaceAll(string(r), "\r\n", "\n"))
 }
 
 // enlargeView draws the view over the whole terminal: a rounded border with
@@ -163,5 +192,7 @@ func (m Model) enlargeView() string {
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderTop(false).BorderForeground(colAccent).
 		Render(e.ta.View())
 	hint := dimStyle.Render(ansi.Truncate(enlargeHint, w, "…"))
-	return lipgloss.JoinVertical(lipgloss.Left, top, box, hint)
+	out := lipgloss.JoinVertical(lipgloss.Left, top, box, hint)
+	// Below the border's minimum (6×4) the frame is cut to the terminal.
+	return lipgloss.NewStyle().MaxWidth(max(m.width, 1)).MaxHeight(max(m.height, 1)).Render(out)
 }

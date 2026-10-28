@@ -388,3 +388,57 @@ func TestReconcileClosesAnEnlargedViewWhoseSurfaceIsGone(t *testing.T) {
 		t.Error("the view outlived its form")
 	}
 }
+
+// Review run-465: the view and the field stay on the cursor when the text's
+// length changes outside a keystroke's own repositioning.
+func TestEnlargeRepositionsWhenTheLengthChanges(t *testing.T) {
+	// A 200-line paste into an empty field.
+	m := enlargedOn(t, "")
+	_ = m.View()
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(numbered(200)), Paste: true})
+	if m.enlarge.ta.Line() != 199 || !cursorVisible(m) {
+		t.Errorf("paste: cursor line %d visible %v", m.enlarge.ta.Line(), cursorVisible(m))
+	}
+	// ctrl+r back to a longer text.
+	m = enlargedOn(t, numbered(300))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlEnd})
+	for range 250 {
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	_ = m.View()
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !cursorVisible(m) {
+		t.Errorf("ctrl+r to a longer text: cursor line %d not visible", m.enlarge.ta.Line())
+	}
+	// The inline field shows its text after a write-back that grew it.
+	m = enlargedOn(t, "")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(numbered(200)), Paste: true})
+	m, _ = update(m, keyEsc)
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "line-0199") {
+		t.Errorf("inline field shows none of its text after write-back:\n%s", v)
+	}
+}
+
+func TestEnlargePasteFoldsCRLF(t *testing.T) {
+	m := enlargedOn(t, "")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\r\nb\r\nc"), Paste: true})
+	if got := m.enlarge.ta.Value(); got != "a\nb\nc" {
+		t.Errorf("CRLF paste = %q", got)
+	}
+}
+
+func TestEnlargeFitsTinyTerminals(t *testing.T) {
+	for _, sz := range [][2]int{{1, 1}, {5, 4}, {7, 3}} {
+		m := enlargedOn(t, "x")
+		m, _ = update(m, tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) > sz[1] {
+			t.Errorf("%dx%d: %d rows", sz[0], sz[1], len(lines))
+		}
+		for _, l := range lines {
+			if ansi.StringWidth(l) > sz[0] {
+				t.Errorf("%dx%d: a %d-cell row", sz[0], sz[1], ansi.StringWidth(l))
+			}
+		}
+	}
+}

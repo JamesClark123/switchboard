@@ -23,9 +23,11 @@ func removedEvent(id string) eventMsg {
 	return eventMsg{ev: &pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: id}}}}
 }
 
-func listData(host string, state client.HostState, err error, sbs ...*pb.Sandbox) listDataMsg {
+// listData is one host's reload; listErr is its List failure (HostSandboxes.Err),
+// not a dial error.
+func listData(host string, state client.HostState, listErr error, sbs ...*pb.Sandbox) listDataMsg {
 	return listDataMsg{hosts: []client.HostSandboxes{{
-		Host: client.HostConn{Entry: client.HostEntry{ID: host, DisplayName: host}, State: state, Err: err}, Sandboxes: sbs,
+		Host: client.HostConn{Entry: client.HostEntry{ID: host, DisplayName: host}, State: state}, Sandboxes: sbs, Err: listErr,
 	}}}
 }
 
@@ -280,8 +282,8 @@ func TestTerminalOpeningElsewhereIsClosed(t *testing.T) {
 	default:
 		t.Error("done should be closed")
 	}
-	if r, _ = update(r, termClosedMsg{name: "feature-work", seq: r.termSeq}); r.screen != screenRename {
-		t.Error("termClosed must not move off rename")
+	if r, _ = update(r, termClosedMsg{name: "feature-work", err: errBoom{}, seq: r.termSeq}); r.screen != screenRename || !strings.Contains(r.status, "terminal: ") {
+		t.Errorf("a failed attach must report without moving off rename: screen %v status %q", r.screen, r.status)
 	}
 }
 

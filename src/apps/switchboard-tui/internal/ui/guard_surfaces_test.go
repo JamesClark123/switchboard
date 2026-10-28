@@ -452,16 +452,26 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 		t.Fatalf("refused save: form %v status %q", m.jobs.form != nil, m.jobs.status)
 	}
 	a.orchErr = nil
-	// ctrl+s, then esc while the call is in flight: the dialog opens over the
-	// form; the success reply closes the form and the dialog with it.
+	// ctrl+s, then keys while the call is in flight: nothing asks or sends it
+	// again (review run-465 #2); the success reply closes the form.
+	calls := strings.Count(a.orchCallsJoined(), "PutAction")
 	m, cmd = update(m, ctrlS())
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
-	if !m.unsaved.open {
-		t.Fatal("esc during the call should ask")
+	if !m.jobs.formSaving || m.jobs.status != savingText {
+		t.Fatalf("in flight: saving %v status %q", m.jobs.formSaving, m.jobs.status)
 	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyEsc}, ctrlS(), {Type: tea.KeyCtrlC}} {
+		var c tea.Cmd
+		if m, c = update(m, k); c != nil || m.unsaved.open {
+			t.Fatalf("%s during the call: cmd %v dialog %v", k, c != nil, m.unsaved.open)
+		}
+	}
+	m, _ = update(m, nudgeMsg{}) // a forwarded message never re-submits
 	m = settle(m, cmd)
-	if m.jobs.form != nil || m.unsaved.open {
+	if m.jobs.form != nil || m.unsaved.open || m.jobs.formSaving {
 		t.Fatalf("after success: form %v dialog %v", m.jobs.form != nil, m.unsaved.open)
+	}
+	if n := strings.Count(a.orchCallsJoined(), "PutAction") - calls; n != 1 {
+		t.Errorf("the save sent %d PutAction calls, want 1", n)
 	}
 	// A form completed by enter, whose reply is a refusal, comes back alive with
 	// the values typed.
@@ -877,5 +887,38 @@ func TestGuardSourcesAddBrowser(t *testing.T) {
 	m, _ = update(m, press("d"))
 	if m.unsaved.open || m.sourcesView.browsing || m.screen != screenSources {
 		t.Fatalf("Discard should return to the overlay: browsing %v screen %v", m.sourcesView.browsing, m.screen)
+	}
+}
+
+// Review run-465: values a widget cleans on build are the baseline, and the
+// notice about it goes with the form.
+func TestGuardBaselineIsTheCleanedValue(t *testing.T) {
+	noKeyGrace(t)
+	m := kitFormOn(t, &store.Kit{Name: "bare", Description: "line one\nline two"}, formIdentity)
+	if !strings.Contains(m.kitEditor.status, "description") {
+		t.Errorf("the rewrite should be announced: %q", m.kitEditor.status)
+	}
+	for range 5 {
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyTab})
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.kitEditor.form != nil {
+		t.Error("an untouched Identity form with a multi-line description should close at once")
+	}
+	if strings.Contains(m.kitEditor.status, "will be rewritten") {
+		t.Errorf("the notice outlived its form: %q", m.kitEditor.status)
+	}
+
+	d := &fakeDaemon{}
+	l := listModel(t, d)
+	sb := d.sandboxes[0]
+	sb.DisplayName, sb.Tag = "my\tbox", "a\tb"
+	r, _ := l.enterRename(sb, "")
+	if r, _ = update(r.(Model), tea.KeyMsg{Type: tea.KeyEsc}); r.(Model).unsaved.open {
+		t.Error("rename of a name with a tab should not ask when untouched")
+	}
+	tg, _ := l.enterTag(sb, "")
+	if tg, _ = update(tg.(Model), tea.KeyMsg{Type: tea.KeyEsc}); tg.(Model).unsaved.open {
+		t.Error("tag with a tab should not ask when untouched")
 	}
 }

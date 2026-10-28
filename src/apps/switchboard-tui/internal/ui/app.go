@@ -708,7 +708,7 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sandboxGone(func(id, host string) bool {
 			for _, row := range msg.hosts {
 				if row.Host.Entry.ID == host {
-					return row.Host.State == client.HostConnected && row.Host.Err == nil && !hasSandbox(row.Sandboxes, id)
+					return row.Host.State == client.HostConnected && row.Host.Err == nil && row.Err == nil && !hasSandbox(row.Sandboxes, id)
 				}
 			}
 			return false
@@ -907,10 +907,11 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.enlarge.open {
-		// The view's cursor blink; the form under it keeps its own messages.
+		// Only the view's own cursor blink runs. The form under it takes no keys
+		// meanwhile, so its blink loop is let lapse (one full render per frame,
+		// not two); writeBack refreshes the field on close.
 		m.enlarge.ta, cmd = m.enlarge.ta.Update(msg)
-		next, fcmd := m.forwardScreen(msg)
-		return next, tea.Batch(cmd, fcmd)
+		return m, cmd
 	}
 	return m.forwardScreen(msg)
 }
@@ -1459,7 +1460,7 @@ func (m Model) enterRename(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.renameHost = host
 	m.rename.SetValue(sb.GetDisplayName())
 	m.rename.CursorEnd()
-	m.renameInitial = strings.TrimSpace(sb.GetDisplayName())
+	m.renameInitial = strings.TrimSpace(m.rename.Value()) // as the input cleaned it
 	return m, m.rename.Focus()
 }
 

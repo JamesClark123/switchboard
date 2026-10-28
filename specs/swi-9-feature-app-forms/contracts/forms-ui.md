@@ -116,8 +116,9 @@ These close the surface without the guard. Any open dialog or enlarged view clos
 When the closing code already sets a status (e.g. `<host> disconnected — orchestrators closed`), `; unsaved edits lost`
 is appended instead.
 
-A background update that closes the surface while the dialog or enlarged view is open (e.g. an in-flight save
-succeeding) closes them too.
+A background update that closes the surface while the dialog or enlarged view is open (e.g. a forced close) closes them
+too. An op form whose save is in flight ignores its keys (`saving…`) until the reply, so it is never asked about or
+sent twice.
 
 An async low-resource add-override confirm never replaces anything. Every override queues in arrival order and
 opens one at a time, on a non-key message, only where the add belongs:

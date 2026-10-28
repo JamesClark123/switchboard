@@ -17,7 +17,7 @@ func (m Model) enterTag(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.tagHost = host
 	m.tagInput.SetValue(sb.GetTag())
 	m.tagInput.CursorEnd()
-	m.tagInitial = strings.TrimSpace(sb.GetTag())
+	m.tagInitial = strings.TrimSpace(m.tagInput.Value()) // as the input cleaned it
 	return m, m.tagInput.Focus()
 }
 

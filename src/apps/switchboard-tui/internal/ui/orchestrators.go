@@ -200,6 +200,12 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	op := m.opState(msg.sink)
+	if !msg.fire {
+		op.formSaving = false // the form's call answered
+		if op.status == savingText {
+			op.status = ""
+		}
+	}
 	if msg.fire {
 		// The call is over: release the model's in-flight record (only its own).
 		if m.orchFires[msg.fireKey] == msg.fireToken {
@@ -262,6 +268,7 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
+	m.opState(msg.sink).formSaving = false
 	if m.onSurface(msg.sink) {
 		m.opState(msg.sink).status = msg.err.Error()
 	} else {
@@ -301,7 +308,9 @@ func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd)
 	if m.jobs.started {
 		cmds = append(cmds, m.jobsReloadOrch(host, orchID))
 	}
-	if _, gh, gid, ok := m.guardOrch(); ok && gh == host && gid == orchID {
+	// Op forms learn of a removal from the Jobs and detail reloads above; only
+	// the reasoning setup and the rename form need their own read.
+	if g, gh, gid, ok := m.guardOrch(); ok && (g == gReasoning || g == gOrchAdmin) && gh == host && gid == orchID {
 		cmds = append(cmds, m.orchGoneCheckCmd(host, orchID))
 	}
 	if len(cmds) == 0 {
@@ -357,7 +366,7 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 	desc := "1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH."
 	m.orch.formKind = orchFormCreate
 	return m, m.setOrchForm(v, func(m Model) *huh.Form {
-		return m.newOrchForm(huh.NewInput().Key("name").Title("Name").Description(desc).Value(&v.name))
+		return m.newOrchForm(nil, huh.NewInput().Key("name").Title("Name").Description(desc).Value(&v.name))
 	})
 }
 
@@ -390,7 +399,7 @@ func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
 	m.orch.formHost = row.host
 	m.orch.formPrefill = v.name
 	return m, m.setOrchForm(v, func(m Model) *huh.Form {
-		return m.newOrchForm(huh.NewInput().Key("name").Title(title).Description(desc).Value(&v.name))
+		return m.newOrchForm(nil, huh.NewInput().Key("name").Title(title).Description(desc).Value(&v.name))
 	})
 }
 

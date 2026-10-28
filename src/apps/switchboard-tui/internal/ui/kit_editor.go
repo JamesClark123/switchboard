@@ -469,7 +469,7 @@ func (m *Model) fillKitVals(kind kitFormKind, idx int) {
 func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *huh.Form {
 	switch kind {
 	case formIdentity:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			huh.NewInput().Key("name").Title("Name").
 				Description("Kit id — lowercase, hyphens. Also the directory name.").Value(&v.name),
 			huh.NewInput().Key("displayName").Title("Display name").Value(&v.displayName),
@@ -479,31 +479,31 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 				Description("Optional. Pins the agent this mixin is designed for (e.g. claude).").Value(&v.requiresAgent),
 		)
 	case formNetwork:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			spec.text(&v.allowed, "Allow").Key("allowed").
 				Description("Domains the sandbox may reach, one per line (wildcards allowed). Credential\ninjection domains must be listed here too."),
 			spec.text(&v.denied, "Deny").Key("denied").
 				Description("One per line. Deny wins over allow, including across other kits."),
 		)
 	case formEnvironment:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			spec.text(&v.vars, "Variables").Key("vars").
 				Description("KEY=value, one per line. Set directly in the container."),
 		)
 	case formAgentInstructions:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			spec.text(&v.agentInstructions, "Agent instructions").Key("agentInstructions").
 				Description("Markdown the runtime writes into the agent's kit memory."),
 		)
 	case formInstall:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			spec.text(&v.itemCommand, "Command").Key("command").
 				Description("Shell string, run once at creation via sh -c."),
 			huh.NewInput().Key("user").Title("User").Description(`"0" = root, "1000" = agent.`).Value(&v.itemUser),
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
 		)
 	case formStartup:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			spec.text(&v.itemCommand, "Command (argv)").Key("command").
 				Description("One argument per line — no shell is involved.\nRuns at every start, so it MUST be idempotent."),
 			huh.NewInput().Key("user").Title("User").Value(&v.itemUser),
@@ -511,7 +511,7 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
 		)
 	case formInitFile:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			huh.NewInput().Key("path").Title("Path").Description("Absolute path in the container.").Value(&v.itemPath),
 			spec.text(&v.itemContent, "Content").Key("content").
 				Description("${WORKDIR} expands to the workspace path."),
@@ -520,7 +520,7 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
 		)
 	case formCredential:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			huh.NewNote().Title("Values stay on the host").
 				Description("A kit declares which credential a service needs and how it is injected.\nThe value itself is supplied and bound on the host (sbx secret set)."),
 			huh.NewInput().Key("service").Title("Service").
@@ -536,7 +536,7 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 				Description("One target per line: domain | header | format (format has one %s, e.g. Bearer %s).\nEach domain must also be allowed under Network permissions."),
 		)
 	case formEscapeHatch:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			huh.NewInput().Key("name").Title("Name").
 				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
 			spec.text(&v.itemCommand, "Command").Key("command").
@@ -557,7 +557,7 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
 		)
 	case formService:
-		return m.newKitForm(
+		return m.newKitForm(spec,
 			huh.NewInput().Key("name").Title("Name").
 				Description("kebab-case, e.g. web. You start the service by this name.").Value(&v.svcName),
 			spec.text(&v.itemCommand, "Start command").Key("command").
@@ -778,6 +778,9 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 func (m *Model) closeKitForm() {
 	ke := &m.kitEditor
 	ke.form, ke.vals, ke.spec, ke.formKind, ke.formItem = nil, nil, nil, formNone, -1
+	if strings.HasSuffix(ke.status, normalizeSuffix) {
+		ke.status = "" // it spoke of the form just closed
+	}
 }
 
 func (m *Model) ensureSetup() {
@@ -1129,7 +1132,8 @@ func parsePort(in string) (uint32, error) {
 
 // ---------- helpers ----------
 
-func (m Model) newKitForm(fields ...huh.Field) *huh.Form {
+func (m Model) newKitForm(spec *formSpec, fields ...huh.Field) *huh.Form {
+	spec.settleInputs(fields)
 	return huh.NewForm(huh.NewGroup(fields...)).
 		WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).

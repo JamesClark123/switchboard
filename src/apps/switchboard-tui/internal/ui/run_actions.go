@@ -106,6 +106,10 @@ type orchOpState struct {
 	formBuild    func(m Model, spec *formSpec) *huh.Form
 	formSpec     *formSpec
 	formBaseline any
+	// formSaving: the form's call is in flight. Its keys are ignored until the
+	// reply (orchDoneMsg / orchFormErrMsg), so it is never sent twice or asked
+	// about as unsaved (SWI-9 review).
+	formSaving bool
 	// status is the surface's own line (refusals, transient hints); the footer
 	// keeps the outcome of the last mutation.
 	status string
@@ -149,11 +153,13 @@ func (m *Model) closeOpForm(s orchSurface) {
 	op := m.opState(s)
 	op.form, op.formVals, op.formKind, op.formTarget = nil, nil, "", orchTarget{}
 	op.formBuild, op.formSpec, op.formBaseline = nil, nil, nil
+	op.formSaving = false
 }
 
 // newOrchForm builds a huh form in the package's form style (the 008 pattern:
 // heap-allocated values, ctrl+s saves, esc cancels).
-func (m Model) newOrchForm(fields ...huh.Field) *huh.Form {
+func (m Model) newOrchForm(spec *formSpec, fields ...huh.Field) *huh.Form {
+	spec.settleInputs(fields)
 	return huh.NewForm(huh.NewGroup(fields...)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
@@ -299,8 +305,8 @@ func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID string) (
 		return m, nil
 	}
 	v := &markFreeVals{outcome: "completed", sandboxID: sandboxID, host: t.host, orchID: t.id}
-	return m, m.setOpForm(s, t, "mark free", v, func(m Model, _ *formSpec) *huh.Form {
-		return m.newOrchForm(
+	return m, m.setOpForm(s, t, "mark free", v, func(m Model, spec *formSpec) *huh.Form {
+		return m.newOrchForm(spec,
 			huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
 			huh.NewInput().Key("note").Title("Note").Description("optional; recorded as the run's summary").Value(&v.note),
 		)

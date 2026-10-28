@@ -240,8 +240,8 @@ calls `reopenForm`.
   - type-and-delete back to the original → no dialog (US1 #7);
   - a create form with nothing typed → no dialog (US1 #8);
   - an op form whose save fails keeps the form open with the error (spec Edge Cases);
-  - ctrl+s on an op form, esc while the RPC is in flight (dialog open), then the success reply → the form, and with it
-    the dialog, are closed (spec Edge Cases, background update).
+  - ctrl+s on an op form, then esc, ctrl+s and ctrl+c while the RPC is in flight → ignored (status `saving…`, no
+    dialog, no second call); the success reply closes the form (amended in PR #19 review).
 
 **Checkpoint**: esc on every form is guarded. This is the MVP.
 

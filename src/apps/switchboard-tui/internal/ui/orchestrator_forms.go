@@ -84,7 +84,7 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 		v.args = strings.Join(lines, "\n")
 	}
 	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form {
-		return m.newOrchForm(
+		return m.newOrchForm(spec,
 			huh.NewInput().Key("name").Title("Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
 			huh.NewInput().Key("description").Title("Description").Value(&v.description),
 			huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
@@ -182,7 +182,7 @@ func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mode
 		val := arg.GetDefaultValue()
 		v.values[arg.GetName()] = &val
 	}
-	return m, m.setOpForm(s, t, "call "+a.GetName(), v, func(m Model, _ *formSpec) *huh.Form {
+	return m, m.setOpForm(s, t, "call "+a.GetName(), v, func(m Model, spec *formSpec) *huh.Form {
 		var fields []huh.Field
 		for _, arg := range a.GetArguments() {
 			title := sanitizeLine(arg.GetName(), 0)
@@ -194,7 +194,7 @@ func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mode
 		if len(fields) == 0 {
 			fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
 		}
-		return m.newOrchForm(fields...)
+		return m.newOrchForm(spec, fields...)
 	})
 }
 
@@ -407,7 +407,7 @@ func (m Model) openEventForm(s orchSurface, t orchTarget, ev *pb.TimedEvent) (te
 		opts = append(opts, huh.NewOption(a.GetName(), a.GetName()))
 	}
 	return m, m.setOpForm(s, t, "event", v, func(m Model, spec *formSpec) *huh.Form {
-		return m.newOrchForm(
+		return m.newOrchForm(spec,
 			huh.NewInput().Key("name").Title("Name").Value(&v.name),
 			huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
 			huh.NewInput().Key("interval").Title("Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
@@ -445,8 +445,8 @@ func parseKV(text string) (map[string]string, error) {
 // dropping it when the form completes or aborts.
 func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
-	if op.form == nil {
-		return m, nil
+	if op.form == nil || op.formSaving {
+		return m, nil // in flight: a completed form must not submit again per message
 	}
 	f, cmd := op.form.Update(msg)
 	if ff, ok := f.(*huh.Form); ok {
@@ -469,7 +469,26 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 // submitOrchOpForm validates and sends whichever form a surface opened, to the
 // orchestrator the form was opened for; a daemon refusal keeps the form open with
 // the text verbatim.
+// savingText is an op form's status while its call is in flight.
+const savingText = "saving…"
+
+// submitOrchOpForm sends the open form's call once: while it is in flight the
+// form is marked saving and nothing sends it again.
 func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
+	if op := m.opState(s); op.form == nil || op.formSaving {
+		return m, nil
+	}
+	next, cmd := m.sendOrchOpForm(s)
+	if cmd == nil {
+		return next, nil
+	}
+	nm := next.(Model)
+	op := nm.opState(s)
+	op.formSaving, op.status = true, savingText
+	return nm, cmd
+}
+
+func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
 	if op.form == nil {
 		return m, nil
