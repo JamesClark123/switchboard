@@ -47,7 +47,7 @@
 ### Plan review (2026-10-27, re-review run `run-c275c8f2-435`, resolved in pr-response run `run-c275c8f2-437`)
 
 - Rebuild in the unsaved-changes dialog always goes through a confirm built from the edited setup, whichever key chooses it. A dialog that interrupts typing must never destroy a sandbox on one key. (FR-017 exception)
-- Confirms that open without the developer pressing that confirm's own key accept only `y`; enter does not confirm them. These are the guard's follow-up confirms (the sources removal after Save, and the Rebuild confirm) and a low-disk add-override that was held back and shown later. A repeated or held enter must never carry through to a destructive or disk-filling action. Every other confirm keeps y/enter. (FR-017, FR-019; resolved in pr-response runs `run-c275c8f2-446` and `run-c275c8f2-450`)
+- Confirms that open without the developer pressing that confirm's own key accept only `y`; enter does not confirm them. These are the guard's follow-up confirms (the sources removal after Save, and the Rebuild confirm) and every low-disk add-override confirm (they all open from one queue, including one that opens at once on the sources overlay). A repeated or held enter must never carry through to a destructive or disk-filling action. Every other confirm keeps y/enter. (FR-017, FR-019; resolved in pr-response runs `run-c275c8f2-446` and `run-c275c8f2-450`)
 
 ## Background (current behaviour this feature changes)
 
@@ -243,11 +243,11 @@ A developer is editing a long text field, such as a kit's agent instructions, an
   - On success, the surface closes as it does after a normal save.
   - Where the surface's confirm action is destructive (the reasoning-sandbox setup, whose confirm destroys and relaunches the reasoning sandbox), the Save choice MUST be labelled with that action ("Rebuild").
   - Exception: choosing **Rebuild** in the dialog MUST NOT rebuild at once. It MUST open a destructive confirm that names the **edited** setup, even though the setup's own rebuild key has no confirm. Declining returns to the setup unchanged; confirming rebuilds with the edited setup.
-  - A follow-up confirm reached through the dialog's Save or Rebuild (the sources removal and the Rebuild confirm) MUST accept only `y`, never enter, so the enter that chose Save or Rebuild cannot also confirm it, however it is repeated or held. A low-disk add-override that was held back while the developer was elsewhere follows the same rule.
+  - A follow-up confirm reached through the dialog's Save or Rebuild (the sources removal and the Rebuild confirm) MUST accept only `y`, never enter, so the enter that chose Save or Rebuild cannot also confirm it, however it is repeated or held. Every low-disk add-override confirm follows the same rule, whether it opens at once or after being held back while the developer was elsewhere.
 - **FR-018**: In nested editors the guard MUST apply at each level:
   - Leaving a changed item editor raises the dialog for that item; there, Save means "apply to the parent".
   - Leaving a parent that holds applied-but-unsaved item changes raises the dialog for the parent; there, Save means "save the parent".
-- **FR-019**: The dialog MUST be fully keyboard-operable, with a visible key for each choice. The highlighted choice when it opens MUST be Cancel, and pressing esc in the dialog MUST choose Cancel. Only Discard's key, or enter while Discard is highlighted, MAY discard edits. (This intentionally differs from the destructive-action confirm dialog, where enter confirms, except on the follow-up confirms of FR-017, which accept only `y`.)
+- **FR-019**: The dialog MUST be fully keyboard-operable, with a visible key for each choice. The highlighted choice when it opens MUST be Cancel, and pressing esc in the dialog MUST choose Cancel. Only Discard's key, or enter while Discard is highlighted, MAY discard edits. (This intentionally differs from the destructive-action confirm dialog, where enter confirms, except on the y-only confirms of FR-017: the guard's follow-up confirms and every low-disk add-override.)
 - **FR-020**: The dialog MUST look and behave the same on every guarded surface.
 - **FR-021**: The unsaved-changes dialog and the enlarged view MUST be fully visible, key hints included, on an 80×24 terminal.
 

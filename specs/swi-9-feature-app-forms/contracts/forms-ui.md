@@ -129,7 +129,7 @@ the password or sign-in prompts, it waits, and the status reads `add to <name> n
 list`. When nothing is in the way it opens at once. If the sandbox is removed or its host drops while it waits, it
 is dropped with the status `add of <folders> to <name> cancelled: <reason>`.
 
-**y to accept** on the three confirms that open without the user pressing their key (a queued override, the guard's
+**y to accept** on the three confirms that open without the user pressing their key (every add-override, since all of them come through the queue, plus the guard's
 sources removal Save, Rebuild): only `y` accepts, and enter is ignored. A double, repeated or held enter, or the enter
 that submits a password prompt over the confirm, can never accept it. The modal's hint and the footer read
 `y confirm · n/esc cancel`. n/esc decline at once. Every other confirm still accepts y or enter.
