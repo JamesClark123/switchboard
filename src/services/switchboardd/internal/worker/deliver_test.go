@@ -449,3 +449,15 @@ func TestDeliverPutsAStrayIdleBackToStarting(t *testing.T) {
 		t.Errorf("deliver once ready = %v / %v", ok, err)
 	}
 }
+
+// Attaching gives the worker's broadcaster an agent screen even when it was
+// created without one (SWI-17, research R2).
+func TestAttachEnablesTheAgentScreen(t *testing.T) {
+	e, _, _ := deliverEnv(t, false)
+	sb := e.sandbox(t, "aaaaaaaa-5", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	attachReady(t, e, sb.GetId())
+	if _, _, ok := e.svc.terms.Screen(sb.GetId()); !ok {
+		t.Fatal("attach should enable the agent screen on the warm-started broadcaster")
+	}
+	e.svc.terms.Close(sb.GetId())
+}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -206,6 +207,22 @@ func (r *Registry) Live(sandboxID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.sessions[sandboxID]
 	return ok
+}
+
+// ErrNoLiveAgent is returned by Existing when the sandbox has no live session.
+var ErrNoLiveAgent = errors.New("no live agent")
+
+// Existing returns the sandbox's live session, or ErrNoLiveAgent, in one step
+// under the registry lock: there is no window between checking liveness and
+// using the session, and it never starts an agent (SWI-17: the step path's
+// broadcaster provider, terminal.Registry.BroadcasterExisting).
+func (r *Registry) Existing(sandboxID string) (Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[sandboxID]; ok {
+		return e.s, nil
+	}
+	return nil, ErrNoLiveAgent
 }
 
 // Ready reports whether the sandbox's live session has an agent that reported

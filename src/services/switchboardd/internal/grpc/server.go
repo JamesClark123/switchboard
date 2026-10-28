@@ -149,6 +149,17 @@ func NewServer(cfg Config) *Server {
 			0,
 			func(sandboxID string) { s.publishTerminalCounts(sandboxID) },
 		)
+		// SWI-17 (research R2): the step path creates a broadcaster only over a
+		// live agent, and a worker's broadcaster keeps the agent screen.
+		s.terms.SetExisting(func(sandboxID string) (terminal.PTY, error) {
+			return s.agents.Existing(sandboxID)
+		})
+		if cfg.Manager != nil {
+			s.terms.SetScreenFor(func(sandboxID string) bool {
+				sb, err := cfg.Manager.Get(sandboxID)
+				return err == nil && sb.GetController() != nil
+			})
+		}
 	}
 	// Publish manager sandbox-changes onto the event hub (US4 live updates), and
 	// end a sandbox's terminal session when it leaves the running state (FR-006).

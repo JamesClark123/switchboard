@@ -94,7 +94,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Daemon screen and UI reader (research R2)
 
-- [ ] T005 In `SBD/terminal/broadcaster.go`, keep a `termview.Screen` (no scrollback) per broadcaster **whose sandbox
+- [X] T005 In `SBD/terminal/broadcaster.go`, keep a `termview.Screen` (no scrollback) per broadcaster **whose sandbox
   has an orchestrator controller**; other sandboxes get none (research R2):
   - `readLoop` hands each chunk to a per-broadcaster parser goroutine through a bounded channel (`screenQueue`, 256)
     and goes straight on to fan-out. Parsing never runs under the broadcaster mutex; the screen has its own lock.

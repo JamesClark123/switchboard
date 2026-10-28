@@ -186,6 +186,11 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 	if launching == nil {
 		s.WarmStart(sb)
 	}
+	// A broadcaster created before the sandbox became a worker has no agent
+	// screen yet (SWI-17, research R2); one created from now on gets it.
+	if s.terms != nil {
+		s.terms.EnableScreen(sb.GetId())
+	}
 	return sb, nil
 }
 
