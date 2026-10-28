@@ -271,7 +271,7 @@ func (m Model) renderReasoningView() []string {
 	case busy:
 		lines = append(lines, name+"  "+agentWorkStyle.Render("rebuilding…")+dimStyle.Render("  "+rb.latest))
 	case w != nil && sum.GetReasoningReady():
-		line := name + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
+		line := name + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability(), w.GetAgentStatus())
 		if w.GetRunAction() != "" {
 			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + " · run " + sanitizeLine(w.GetRunId(), 0) + ")")
 		}

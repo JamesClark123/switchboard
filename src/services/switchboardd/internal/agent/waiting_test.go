@@ -195,13 +195,15 @@ func TestBackstopDisarmedWhenTheAgentMovesOn(t *testing.T) {
 		{Event: "UserPromptSubmit"},
 		{Event: "Stop"},
 		{Event: "Notification", NotificationType: "permission_prompt"},
+		{Event: "SessionStart", Source: "startup"}, // PR #17 review run-484
+		{Event: "SessionStart", Source: "clear"},
 	} {
 		w := newWaitingServer(nil)
 		w.dispatch(hookPayload{Event: "Stop", SandboxID: "sb1", PendingBackground: 1})
 		p.SandboxID = "sb1"
 		w.dispatch(p)
-		if !w.timers[0].stopped {
-			t.Errorf("%s/%s should disarm the backstop", p.Event, p.NotificationType)
+		if !w.timers[0].stopped || len(w.backstop) != 0 {
+			t.Errorf("%s/%s%s should disarm the backstop", p.Event, p.NotificationType, p.Source)
 		}
 	}
 }

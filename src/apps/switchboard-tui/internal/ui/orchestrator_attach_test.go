@@ -239,8 +239,16 @@ func TestWorkersViewDetach(t *testing.T) {
 		t.Errorf("reasoning row x: %v %q", m.screen, m.orchDetail.status)
 	}
 	for _, a := range []pb.WorkerAvailability{pb.WorkerAvailability_WORKER_AVAILABILITY_FREE, pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT, pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW, pb.WorkerAvailability_WORKER_AVAILABILITY_NOT_RUNNING, pb.WorkerAvailability_WORKER_AVAILABILITY_UNSPECIFIED} {
-		if availabilityBadge(a) == "" {
+		if availabilityBadge(a, pb.AgentStatus_AGENT_STATUS_IDLE) == "" {
 			t.Errorf("badge for %v", a)
 		}
+	}
+	// SWI-15: busy only because the agent is still starting says so.
+	busy := pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY
+	if got := availabilityBadge(busy, pb.AgentStatus_AGENT_STATUS_STARTING); !strings.Contains(got, "starting…") {
+		t.Errorf("starting worker badge = %q", got)
+	}
+	if got := availabilityBadge(busy, pb.AgentStatus_AGENT_STATUS_WORKING); !strings.Contains(got, "busy") {
+		t.Errorf("working worker badge = %q", got)
 	}
 }

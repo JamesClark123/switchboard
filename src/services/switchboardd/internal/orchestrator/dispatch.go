@@ -117,17 +117,22 @@ func (rt *runtime) dispatch() {
 			if live := rt.sandboxRecord(w.GetSandboxId()); !free(live, liveUp) || !eligible(run, w, live, tag) {
 				continue
 			}
-			rt.deliver(run, w)
-			break
+			// A refused delivery (the worker was not free after all, e.g. its
+			// agent is still starting) leaves the run for the next worker.
+			if rt.deliver(run, w) {
+				break
+			}
 		}
 	}
 }
 
-// deliver hands one run to one worker through its host link (R7).
-func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) {
+// deliver hands one run to one worker through its host link (R7), reporting
+// whether that settled the run (delivered, or failed); false leaves it queued
+// for another worker.
+func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
 	api, err := rt.apiFor(w.GetHostId())
 	if err != nil {
-		return // the link went down between the check and the call: the run waits
+		return false // the link went down between the check and the call
 	}
 	ctx, cancel := rt.callCtx(deliverTimeout)
 	defer cancel()
@@ -148,9 +153,11 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) {
 		// A developer got there first (or the record moved): the run stays
 		// queued and the sandbox is not free for this pass. The own host's
 		// in-process API returns the worker sentinel, not a gRPC status.
+		return false
 	case err != nil:
 		rt.failRun(run, "delivery failed: "+describe(err, w.GetHostId()))
 	default:
 		rt.failRun(run, "delivery refused")
 	}
+	return true
 }

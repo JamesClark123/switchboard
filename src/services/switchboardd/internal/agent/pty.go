@@ -31,11 +31,34 @@ type Waiter interface {
 }
 
 // sessionEntry is one live session plus whether the registry closed it on
-// purpose (so a deliberate Close is never reported as an agent exit).
+// purpose (so a deliberate Close is never reported as an agent exit), whether
+// the agent in it has reported ready (SessionStart, see MarkReady) and the
+// timer that parks it if it never does (nil for an agent kind that reports no
+// readiness, which counts as ready from the start).
 type sessionEntry struct {
-	s       Session
-	closing bool
+	s        Session
+	closing  bool
+	ready    bool
+	startT   *time.Timer
+	timedOut bool // the start timer parked it NEEDS_INPUT
 }
+
+// Notifier emits a developer notification (the agent Hub).
+type Notifier interface {
+	EmitNotification(sandboxID string, kind pb.NotificationKind, message string, now time.Time) *pb.NotificationEvent
+}
+
+// Agent readiness (SWI-15). A new session's Claude Code agent is STARTING until
+// its SessionStart hook fires, which it does only once its input box takes
+// typed input: after any first-run dialog (workspace trust, Bypass Permissions
+// mode) has been answered, never while one is showing (verified against Claude
+// Code 2.1.311 in a PTY; a paste written right after SessionStart lands in the
+// input box). Prompts are typed only into a ready agent (see Ready). One that
+// has not reported within agentStartTimeout is set NEEDS_INPUT with a
+// notification: something on its screen (most likely one of those dialogs)
+// needs the developer, whose mark-free also vouches for it. Another agent kind
+// fires no hooks and is ready at once. Package-level so tests can shorten it.
+var agentStartTimeout = 90 * time.Second
 
 // Registry holds one Session per sandbox, created on demand (R8: one PTY per
 // agent serves both programmatic prompting and interactive attach).
@@ -46,10 +69,17 @@ type sessionEntry struct {
 // A session the registry closed itself (sandbox stopped, refreshed, destroyed)
 // is forgotten silently. The next Session/Prompt starts a fresh agent either way.
 type Registry struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// statusMu orders the registry's own status writes (STARTING, the start
+	// timeout's NEEDS_INPUT, EXITED, Close's reset) against each other and
+	// against MarkReady, so the IDLE the ready hook writes after MarkReady
+	// returns always lands last. Taken before mu, never while holding it, and
+	// never by a path a status write's observers can reach (Close, Session).
+	statusMu sync.Mutex
 	sessions map[string]*sessionEntry
 	factory  SessionFactory
 	status   StatusUpdater
+	notify   Notifier
 	now      func() time.Time
 	logf     func(format string, args ...any)
 }
@@ -70,6 +100,14 @@ func (r *Registry) SetStatusUpdater(status StatusUpdater) {
 	r.status = status
 }
 
+// SetNotifier registers where an agent that never finished starting is
+// announced (nil = status only).
+func (r *Registry) SetNotifier(n Notifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notify = n
+}
+
 // SetLogger registers where the registry reports a submit retry (nil = silent).
 func (r *Registry) SetLogger(logf func(format string, args ...any)) {
 	r.mu.Lock()
@@ -86,23 +124,171 @@ func (r *Registry) log(format string, args ...any) {
 	}
 }
 
-// Session returns the sandbox's session, creating it on first use.
+// Session returns the sandbox's session, creating it on first use. A created
+// session's agent is recorded STARTING (SWI-15) until it reports ready.
 func (r *Registry) Session(sandboxID string, spec *pb.AgentSpec) (Session, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if e, ok := r.sessions[sandboxID]; ok {
+		r.mu.Unlock()
 		return e.s, nil
 	}
 	s, err := r.factory(sandboxID, spec)
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
-	e := &sessionEntry{s: s}
+	e := &sessionEntry{s: s, ready: !reportsReady(spec)}
 	r.sessions[sandboxID] = e
+	if !e.ready {
+		limit := agentStartTimeout
+		e.startT = time.AfterFunc(limit, func() { r.startTimedOut(sandboxID, e, limit) })
+	}
+	r.mu.Unlock()
 	if w, ok := s.(Waiter); ok {
 		go r.watch(sandboxID, e, w)
 	}
+	if e.ready {
+		return s, nil
+	}
+	// On its own goroutine: the status write publishes a sandbox change whose
+	// observers take locks a caller may hold here (the terminal registry creates
+	// a broadcaster's session under its own lock, and the gRPC server's emit
+	// reads its attachment counts), and may call back into the registry.
+	go r.writeUnready(sandboxID, e, pb.AgentStatus_AGENT_STATUS_STARTING)
 	return s, nil
+}
+
+// reportsReady reports whether the spec's agent fires the SessionStart hook
+// readiness is learned from (Claude Code); another kind is ready at once.
+func reportsReady(spec *pb.AgentSpec) bool {
+	switch spec.GetKind() {
+	case "", "claude", "claude-code":
+		return true
+	}
+	return false
+}
+
+// stopTimer stops an entry's start timer, if it has one.
+func (e *sessionEntry) stopTimer() {
+	if e.startT != nil {
+		e.startT.Stop()
+	}
+}
+
+// writeUnready records a not-ready status for e's agent unless it has already
+// reported ready or its session is gone, reporting whether it wrote. Holding
+// statusMu across the check and the write keeps a concurrent MarkReady (and so
+// the ready hook's IDLE) behind it.
+func (r *Registry) writeUnready(sandboxID string, e *sessionEntry, st pb.AgentStatus) bool {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	return r.writeUnreadyLocked(sandboxID, e, st)
+}
+
+func (r *Registry) writeUnreadyLocked(sandboxID string, e *sessionEntry, st pb.AgentStatus) bool {
+	r.mu.Lock()
+	cur, ok := r.sessions[sandboxID]
+	stale := !ok || cur != e || e.ready
+	status, now := r.status, r.now()
+	r.mu.Unlock()
+	if stale {
+		return false
+	}
+	if status != nil {
+		_, _ = status.SetAgentStatus(sandboxID, st, now)
+	}
+	return true
+}
+
+// Live reports whether the sandbox has a session, without creating one.
+func (r *Registry) Live(sandboxID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.sessions[sandboxID]
+	return ok
+}
+
+// Ready reports whether the sandbox's live session has an agent that reported
+// in (MarkReady) — the only kind a prompt may be typed into unattended.
+func (r *Registry) Ready(sandboxID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.sessions[sandboxID]
+	return ok && e.ready
+}
+
+// MarkReady records that the sandbox's agent is at its prompt: its SessionStart
+// hook fired (the HookServer's ready observer; Claude Code fires it only once
+// its input box takes input), or the developer vouched for it with mark-free.
+// No live session is a no-op. It returns after any STARTING / NEEDS_INPUT write
+// in flight, so a status the caller writes next lands after it.
+func (r *Registry) MarkReady(sandboxID string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[sandboxID]; ok && !e.ready {
+		e.ready = true
+		e.stopTimer()
+	}
+}
+
+// ReassertUnready rewrites the record of a live agent that has not reported
+// ready back to STARTING, or NEEDS_INPUT once its start timed out. Any hook can
+// write IDLE over those (a lost SessionStart, then a developer typing into the
+// agent and its Stop), which would leave the worker reading free while every
+// delivery is refused and mark-free has nothing to vouch for. A ready agent, or
+// no session, is left alone, and so is a record no longer reading seen (the
+// stray status the caller found): a hook that landed since, such as the
+// WORKING of the developer's next prompt, is not overwritten.
+func (r *Registry) ReassertUnready(sandboxID string, seen pb.AgentStatus) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.mu.Lock()
+	e, ok := r.sessions[sandboxID]
+	st := pb.AgentStatus_AGENT_STATUS_STARTING
+	if ok && e.timedOut {
+		st = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	}
+	g, canGet := r.status.(sandboxGetter)
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+	if canGet {
+		if sb, err := g.Get(sandboxID); err != nil || sb.GetAgent().GetStatus() != seen {
+			return
+		}
+	}
+	if r.writeUnreadyLocked(sandboxID, e, st) {
+		r.log("[agent] %s: agent never reported ready; status %s put back over a stray %s", sandboxID, statusWord(st), statusWord(seen))
+	}
+}
+
+// statusWord is an agent status for the log, e.g. "needs_input".
+func statusWord(st pb.AgentStatus) string {
+	return strings.ToLower(strings.TrimPrefix(st.String(), "AGENT_STATUS_"))
+}
+
+// startTimedOut parks an agent that never reported ready: NEEDS_INPUT plus a
+// notification, so the developer opens its terminal. A run queued for it stays
+// queued (the worker is not IDLE); the agent's first hook clears this.
+func (r *Registry) startTimedOut(sandboxID string, e *sessionEntry, limit time.Duration) {
+	// The notification goes out under statusMu too, so an agent that reports
+	// ready meanwhile is never told about after the fact.
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if !r.writeUnreadyLocked(sandboxID, e, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT) {
+		return
+	}
+	r.log("[agent] %s: agent did not report ready within %s; parking it NEEDS_INPUT", sandboxID, limit)
+	r.mu.Lock()
+	e.timedOut = true
+	notify, now := r.notify, r.now()
+	r.mu.Unlock()
+	if notify != nil {
+		notify.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING, "agent did not finish starting — open its terminal", now)
+	}
 }
 
 // watch waits for the session's child to exit and runs the exit hook.
@@ -114,11 +300,14 @@ func (r *Registry) watch(sandboxID string, e *sessionEntry, w Waiter) {
 // onExit forgets an exited session (if it is still the current one) and, unless
 // the registry closed it on purpose, reports AGENT_STATUS_EXITED exactly once.
 func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
+	r.statusMu.Lock() // EXITED lands after a STARTING write in flight
+	defer r.statusMu.Unlock()
 	r.mu.Lock()
 	cur, ok := r.sessions[sandboxID]
 	if ok && cur == e {
 		delete(r.sessions, sandboxID)
 	}
+	e.stopTimer()
 	report := !e.closing && r.status != nil
 	status := r.status
 	now := r.now()
@@ -281,9 +470,37 @@ func (r *Registry) Close(sandboxID string) {
 	defer r.mu.Unlock()
 	if e, ok := r.sessions[sandboxID]; ok {
 		e.closing = true
+		e.stopTimer()
 		_ = e.s.Close()
 		delete(r.sessions, sandboxID)
+		if !e.ready {
+			go r.resetUnready(sandboxID)
+		}
 	}
+}
+
+// resetUnready clears the STARTING (or start-timeout NEEDS_INPUT) an agent
+// closed before it reported ready leaves on its record, so the worker reads
+// IDLE again and the next delivery starts a fresh agent instead of waiting on
+// one that is gone. Asynchronous (Close runs inside status observers) and
+// ordered by statusMu: skipped once a new session exists, whose own STARTING
+// then lands after it.
+func (r *Registry) resetUnready(sandboxID string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.mu.Lock()
+	_, live := r.sessions[sandboxID]
+	status, now := r.status, r.now()
+	r.mu.Unlock()
+	g, ok := status.(sandboxGetter)
+	if live || !ok {
+		return
+	}
+	if sb, err := g.Get(sandboxID); err != nil ||
+		(sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_STARTING && sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT) {
+		return
+	}
+	_, _ = status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
 }
 
 // --- Production PTY-backed factory ---

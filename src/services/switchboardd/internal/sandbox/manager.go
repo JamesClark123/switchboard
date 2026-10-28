@@ -75,6 +75,14 @@ type Manager struct {
 	// to RUNNING, so a controlled sandbox's gateway registration can be
 	// re-loaded (the attach-time load is skipped while it is not running). MAY be nil.
 	onBringUp func(sb *pb.Sandbox)
+	// goBringUp, when set, replaces `go onBringUp` where the manager does not
+	// wait on the observer (Announce): it returns once the bring-up is under way,
+	// so nothing reads the sandbox as settled in between. MAY be nil.
+	goBringUp func(sb *pb.Sandbox)
+	// onLaunched, when set, is called once a controlled sandbox's Launch has
+	// turned it RUNNING, so the worker service can warm-start its agent (SWI-15:
+	// applyController runs before RUNNING, when no agent may start). MAY be nil.
+	onLaunched func(sb *pb.Sandbox)
 	// applyController, when set, is called by Launch after create and the MCP
 	// marks and BEFORE the record turns RUNNING (FR-110) with the launching
 	// record (container_ref filled in) and the LaunchRequest's controller +
@@ -89,6 +97,12 @@ func (m *Manager) SetOnDestroy(fn func(sb *pb.Sandbox)) { m.onDestroy = fn }
 
 // SetOnBringUp registers the bring-up observer (feature 009).
 func (m *Manager) SetOnBringUp(fn func(sb *pb.Sandbox)) { m.onBringUp = fn }
+
+// SetGoBringUp registers the non-blocking form of the bring-up observer (SWI-15).
+func (m *Manager) SetGoBringUp(fn func(sb *pb.Sandbox)) { m.goBringUp = fn }
+
+// SetOnLaunched registers the launched-worker observer (SWI-15).
+func (m *Manager) SetOnLaunched(fn func(sb *pb.Sandbox)) { m.onLaunched = fn }
 
 // SetControllerApplier registers the launch-attach step (feature 009, FR-110).
 func (m *Manager) SetControllerApplier(fn func(ctx context.Context, sb *pb.Sandbox, controller *pb.SandboxController, briefing string) error) {
@@ -398,6 +412,9 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		return nil, err
 	}
 	m.emit(out)
+	if m.onLaunched != nil && out.GetController() != nil {
+		m.onLaunched(out)
+	}
 	return out, nil
 }
 
@@ -1171,14 +1188,22 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 		if err != nil || !proto.Equal(cur.GetUpdatedAt(), sb.GetUpdatedAt()) {
 			continue
 		}
-		m.emit(cur)
 		if cur.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
+			// The bring-up is marked before the record is published: the emit is
+			// what wakes a local orchestrator's dispatch, which must find the
+			// agent start held until the gateway is reloaded (PR #17 run-505).
 			// The observer may take minutes; it never holds up the caller.
-			if fn := m.onBringUp; fn != nil && cur.GetController() != nil {
-				go fn(cur)
+			if cur.GetController() != nil {
+				if fn := m.goBringUp; fn != nil {
+					fn(cur)
+				} else if fn := m.onBringUp; fn != nil {
+					go fn(cur)
+				}
 			}
+			m.emit(cur)
 			continue
 		}
+		m.emit(cur)
 		// The teardown ran before the observer published, so a write that
 		// landed during it (a restart's RUNNING) was published first and is now
 		// behind this pass's state: publish the record as it is now.

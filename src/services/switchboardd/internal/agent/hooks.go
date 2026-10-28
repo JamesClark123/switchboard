@@ -88,11 +88,16 @@ type claudeSettings struct {
 //     running (SWI-12): Claude Code ends a turn while a background Bash, subagent
 //     or Monitor runs and wakes the agent again (UserPromptSubmit) when it
 //     finishes, so that Stop is a pause, not the end of the task.
+//   - SessionStart                  -> IDLE, silently: the agent finished
+//     starting (STARTING, SWI-15). Its source tells a fresh start or resume
+//     from a mid-session clear or compaction; see sessionStart.
 //
+// SessionStart (other than a compaction) also tells the agent Registry the
+// agent is ready (SetOnReady): Claude Code fires it once its input box is up.
 // The event and sandbox id ride on the callback URL's query; the Notification
-// and Stop hooks also forward Claude Code's hook input (stdin JSON, which
-// carries the notification_type and the Stop's background_tasks) as the
-// request body. Without the work-start hooks the
+// and Stop and SessionStart hooks also forward Claude Code's hook input (stdin
+// JSON, which carries the notification_type, the Stop's background_tasks and
+// the SessionStart source) as the request body. Without the work-start hooks the
 // status would never leave IDLE while the agent runs, so the "working" indicator
 // would never show.
 //
@@ -127,6 +132,7 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 			"PreToolUse":       curl("PreToolUse", false),
 			"Notification":     curl("Notification", true),
 			"Stop":             curl("Stop", true),
+			"SessionStart":     curl("SessionStart", true),
 		},
 	}
 }
@@ -175,6 +181,7 @@ type hookPayload struct {
 	SandboxID         string `json:"sandbox_id"`
 	Matcher           string `json:"matcher"`
 	NotificationType  string `json:"notification_type,omitempty"`
+	Source            string `json:"source,omitempty"` // SessionStart: startup | resume | clear | compact
 	PendingBackground int    `json:"-"`
 }
 
@@ -182,6 +189,7 @@ type hookPayload struct {
 type hookInput struct {
 	HookEventName    string           `json:"hook_event_name"`
 	NotificationType string           `json:"notification_type"`
+	Source           string           `json:"source"`           // SessionStart
 	BackgroundTasks  []backgroundTask `json:"background_tasks"` // Stop / SubagentStop
 }
 
@@ -214,6 +222,7 @@ type HookServer struct {
 	status    StatusUpdater
 	now       func() time.Time
 	afterFunc func(time.Duration, func()) stopper
+	onReady   func(sandboxID string)
 
 	mu       sync.Mutex
 	backstop map[string]backstopTimer // sandbox id -> its WAITING backstop
@@ -236,6 +245,11 @@ func NewHookServer(hub *Hub, status StatusUpdater) *HookServer {
 	}
 }
 
+// SetOnReady registers the observer told that a sandbox's agent reported in
+// with SessionStart (the agent Registry's MarkReady, SWI-15). It runs before the
+// event's own status write.
+func (s *HookServer) SetOnReady(fn func(sandboxID string)) { s.onReady = fn }
+
 // Handle processes one hook callback (POST /hook). The current hook command
 // names the event and sandbox in the query and posts Claude Code's hook input
 // as the body (empty for the events that forward nothing); the original one
@@ -252,7 +266,7 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 		p.Event, p.SandboxID = ev, q.Get("sandbox_id")
 		var in hookInput
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&in); err == nil {
-			p.NotificationType = in.NotificationType
+			p.NotificationType, p.Source = in.NotificationType, in.Source
 			p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		}
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
@@ -271,7 +285,16 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 // events) a notification. Exposed for direct testing.
 func (s *HookServer) dispatch(p hookPayload) {
 	now := s.now()
+	// Only SessionStart says the agent is at its prompt: after a daemon restart
+	// an agent that outlived the old client keeps sending its other hooks for
+	// the same sandbox while the new one is still booting.
+	// A compaction (possibly by such an agent, mid-turn) is not a start either.
+	if p.Event == "SessionStart" && p.Source != "compact" && s.onReady != nil {
+		s.onReady(p.SandboxID)
+	}
 	switch p.Event {
+	case "SessionStart":
+		s.sessionStart(p, now)
 	case "Stop":
 		if p.PendingBackground > 0 {
 			// The turn ended to wait on background work, not because the task is
@@ -399,6 +422,28 @@ func fmtWait(d time.Duration) string {
 		return fmt.Sprintf("%dh", d/time.Hour)
 	}
 	return fmt.Sprintf("%dm", d/time.Minute)
+}
+
+// sessionStart marks an agent that finished starting IDLE (no notification:
+// nothing happened that the developer must see). Claude Code also fires
+// SessionStart inside a running session — "clear" after /clear (at the prompt,
+// so IDLE is right) and "compact" after a compaction, which can happen mid-turn:
+// that one changes nothing, or a busy worker would read as free. An unknown
+// source counts only while the agent is still recorded starting.
+func (s *HookServer) sessionStart(p hookPayload, now time.Time) {
+	switch p.Source {
+	case "startup", "resume", "clear":
+	case "compact":
+		return
+	default:
+		if st, ok := s.agentStatus(p.SandboxID); !ok || (st != pb.AgentStatus_AGENT_STATUS_STARTING && st != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT) {
+			return
+		}
+	}
+	// Every way out of WAITING clears its backstop, this one too (a /clear or a
+	// replaced agent while background work was pending).
+	s.disarmBackstop(p.SandboxID)
+	_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
 }
 
 // notification maps a Notification hook by its notification_type.

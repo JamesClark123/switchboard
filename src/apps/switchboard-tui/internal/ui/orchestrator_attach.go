@@ -310,7 +310,7 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		}
 		// Remote text is sanitised and fitted like the Jobs rows (FR-029; review
 		// run-242 finding 4).
-		line := cursor(i) + fitCol(name, 24) + dimStyle.Render("  @"+fitCol(w.GetHostId(), 16)) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability())
+		line := cursor(i) + fitCol(name, 24) + dimStyle.Render("  @"+fitCol(w.GetHostId(), 16)) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability(), w.GetAgentStatus())
 		if w.GetRunAction() != "" {
 			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + ")")
 		}
@@ -325,12 +325,17 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 	return lines
 }
 
-// availabilityBadge renders a worker's derived availability.
-func availabilityBadge(a pb.WorkerAvailability) string {
+// availabilityBadge renders a worker's derived availability. A worker busy
+// only because its agent is still starting (SWI-15) says so, as the sandbox
+// list's badge does, rather than reading as taken by something else.
+func availabilityBadge(a pb.WorkerAvailability, agent pb.AgentStatus) string {
 	switch a {
 	case pb.WorkerAvailability_WORKER_AVAILABILITY_FREE:
 		return agentIdleStyle.Render("free")
 	case pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY:
+		if agent == pb.AgentStatus_AGENT_STATUS_STARTING {
+			return agentWorkStyle.Render("starting…")
+		}
 		return agentWorkStyle.Render("busy")
 	case pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT:
 		return agentWaitStyle.Render("needs input")
