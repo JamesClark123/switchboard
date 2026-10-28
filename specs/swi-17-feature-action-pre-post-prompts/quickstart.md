@@ -29,6 +29,13 @@ This is a run guide. The behaviour each scenario proves is defined in [spec.md](
    They must match: both 0, or the same non-shell executable. Record the shape in T045's test fixture. If they
    differ (a fresh parent process per exec with a different exe), stop and revise the R13 rule before relying on
    main-PID recovery.
+5. **Which `sbx` calls start a stopped sandbox (research R14, run-618).** Stop a scratch sandbox (`sbx stop <N>`),
+   then run each of the following and check `sbx ls` after each, stopping the sandbox again in between:
+   - `sbx mcp load <server> --sandbox <N>`, then `sbx mcp unload <server> --sandbox <N>`;
+   - `sbx ports <N> --publish 127.0.0.1:0:8080/tcp`, then `--unpublish`.
+
+   `sbx exec <N> true` is expected to start it (the known case). If any of the others also starts it, give that
+   call the same `runtimeMu` try-lock as the other developer requests (T047) before relying on stop ordering.
 
 ## Scenario 1 — defaults on a new and an existing action (US1 #1, #4, #5; FR-203, FR-210)
 
