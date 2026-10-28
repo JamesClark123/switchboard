@@ -554,7 +554,7 @@ func TestGuardOpFormLeaveWhileSaving(t *testing.T) {
 			t.Errorf("refused=%v: the old reply touched the new form (open %v saving %v status %q)", refused, m.jobs.form != nil, m.jobs.formSaving, m.jobs.status)
 		}
 		// Named, and saying its values are gone (review run-475).
-		if refused && (!strings.Contains(m.status, "save action on alpha-bot: ") || !strings.Contains(m.status, "boom") || !strings.Contains(m.status, "values were not kept")) {
+		if refused && (!strings.Contains(m.status, "save action triage on alpha-bot: ") || !strings.Contains(m.status, "boom") || !strings.Contains(m.status, "values were not kept")) {
 			t.Errorf("the old refusal should reach the footer, named: %q", m.status)
 		}
 		// Its own reply still closes it.
@@ -1076,6 +1076,34 @@ func TestGuardCallFormNoticeUsesTitles(t *testing.T) {
 	}
 }
 
+// Review run-502: a save names what it saves, so another action's reply never
+// settles a reopened form's refusal.
+func TestGuardSaveLabelNamesTheAction(t *testing.T) {
+	m, _ := jobsWith(t, jobsActions, nil, nil)
+	saveNew := func(m Model, name string) (Model, tea.Cmd) {
+		m, _ = update(m, press("a"))
+		v := m.jobs.formVals.(*actionFormVals)
+		v.name, v.body = name, "Look"
+		return update(m, ctrlS())
+	}
+	m, cmdX := saveNew(m, "x")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmdZ := saveNew(m, "z")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, again := saveNew(m, "x")
+	if again != nil || !strings.Contains(m.jobs.status, "the same save action x on alpha-bot is still saving") {
+		t.Fatalf("the reopened save should be refused, named: %q", m.jobs.status)
+	}
+	m, _ = update(m, runCmd(cmdZ))
+	if !strings.Contains(m.jobs.status, "save action x on alpha-bot is still saving") {
+		t.Errorf("z's reply settled x's refusal: %q", m.jobs.status)
+	}
+	m, _ = update(m, runCmd(cmdX))
+	if !strings.Contains(m.jobs.status, "the earlier save action x on alpha-bot finished") {
+		t.Errorf("x's reply should settle its refusal: %q", m.jobs.status)
+	}
+}
+
 // Review run-482: a call form reopened while the same call saves stops saying
 // so once that call answers.
 func TestGuardReopenedFormSettlesOnReply(t *testing.T) {
@@ -1180,5 +1208,17 @@ func TestEventSnapshotCompares(t *testing.T) {
 	v.days[0] = 2 // huh writing in place must not reach the snapshot
 	if opValsEqual(snap, snapshotOpVals(v)) {
 		t.Error("a changed day should make the form dirty")
+	}
+	// Days are a set (review run-502): huh rewrites them Monday first, a loaded
+	// window lists Sunday first, and neither reads as an edit or a new call.
+	sunMon, monSun := &eventFormVals{name: "e", days: []int{0, 1}}, &eventFormVals{name: "e", days: []int{1, 0}}
+	if !opValsEqual(snapshotOpVals(sunMon), snapshotOpVals(monSun)) {
+		t.Error("the same days in another order should compare equal")
+	}
+	if !reflect.DeepEqual(sentOpVals(sunMon), sentOpVals(monSun)) {
+		t.Error("the same days in another order should send the same call")
+	}
+	if sunMon.days[0] != 0 || monSun.days[0] != 1 {
+		t.Error("normalising must not reorder the form's own days")
 	}
 }

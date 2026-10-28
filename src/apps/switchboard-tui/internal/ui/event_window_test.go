@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -238,5 +239,27 @@ func TestCompactWindowLabelAndMidnightEnd(t *testing.T) {
 	}
 	if got := windowEnd(&pb.ActiveWindow{Start: "00:00", End: "00:00"}); got != "00:00" {
 		t.Errorf("00:00 start keeps 00:00, got %q", got)
+	}
+}
+
+// Review run-502: stepping through the Days field of an unedited event whose
+// window includes Sunday leaves the form clean, so esc closes it.
+func TestUneditedSundayEventClosesOnEsc(t *testing.T) {
+	ev := &pb.TimedEvent{Id: "tev-1", Name: "poll", Action: "review-pr", IntervalSeconds: 900, Enabled: true, Arguments: map[string]string{"number": "1", "repo": "r"},
+		Window: &pb.ActiveWindow{Start: "08:00", End: "17:00", Weekdays: []uint32{0, 1}, Timezone: "UTC"}}
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host", Actions: []*pb.Action{reviewAction()}, TimedEvents: []*pb.TimedEvent{ev}}}}}
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsEvents
+	m, _ = update(m, press("e"))
+	v := m.jobs.formVals.(*eventFormVals)
+	for i := 0; i < 8; i++ {
+		m.jobs.form.NextField()
+	}
+	if len(v.days) != 2 || v.days[0] != 1 {
+		t.Fatalf("the walk should pass the Days field, which huh rewrites Monday first: %v", v.days)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.jobs.form != nil || m.unsaved.open {
+		t.Errorf("an unedited form should close on esc: form %v dialog %v", m.jobs.form != nil, m.unsaved.open)
 	}
 }

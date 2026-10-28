@@ -571,6 +571,7 @@ func sentOpVals(vals any) any {
 		c := *v
 		c.name, c.intervalMinutes, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.intervalMinutes), trimLines(c.args)
 		c.activeFrom, c.activeUntil, c.timezone = strings.TrimSpace(c.activeFrom), strings.TrimSpace(c.activeUntil), strings.TrimSpace(c.timezone)
+		c.days = snapshotOpVals(v).(eventFormVals).days // a set: copied and sorted
 		return c
 	case *callFormVals:
 		out := map[string]string{}
@@ -595,13 +596,29 @@ func trimLines(s string) string {
 	return strings.Join(out, "\n")
 }
 
-// opCallLabel names an op form's call ("call review-pr on alpha-bot").
+// opCallLabel names an op form's call ("call review-pr on alpha-bot", "save
+// action triage on alpha-bot"). A save names what it saves, so a notice settled
+// by label never takes another save's outcome.
 func opCallLabel(op *orchOpState) string {
 	verb := op.formKind
 	if verb == "action" || verb == "event" {
 		verb = "save " + verb
+		if name := savedName(op.formVals); name != "" {
+			verb += " " + name
+		}
 	}
 	return verb + " on " + op.formTarget.name
+}
+
+// savedName is the name an action or event form saves under (trimmed, as sent).
+func savedName(vals any) string {
+	switch v := vals.(type) {
+	case *actionFormVals:
+		return strings.TrimSpace(v.name)
+	case *eventFormVals:
+		return strings.TrimSpace(v.name)
+	}
+	return ""
 }
 
 // releaseOpCall drops c's in-flight record, if it is still c's.

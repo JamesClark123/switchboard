@@ -160,9 +160,12 @@ func snapshotOpVals(vals any) any {
 	case *eventFormVals:
 		c := *v
 		// days is a slice huh may write in place: copied, and empty read as none.
+		// It is a set: sorted, since huh rewrites it in option order (Monday
+		// first) on focus and blur while a loaded window lists Sunday first.
 		c.days = nil
 		if len(v.days) > 0 {
 			c.days = slices.Clone(v.days)
+			slices.Sort(c.days)
 		}
 		return c
 	case *markFreeVals:
