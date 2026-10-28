@@ -118,6 +118,7 @@ func availability(sb *pb.Sandbox, hostUp bool) pb.WorkerAvailability {
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 		return pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING,
+		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WAITING, // on background work (SWI-12)
 		sb.GetController().GetRun() != nil,
 		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED:
 		return pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY

@@ -152,6 +152,7 @@ const (
 	AgentStatus_AGENT_STATUS_WORKING     AgentStatus = 2
 	AgentStatus_AGENT_STATUS_NEEDS_INPUT AgentStatus = 3 // needs prompting (FR-025)
 	AgentStatus_AGENT_STATUS_EXITED      AgentStatus = 4
+	AgentStatus_AGENT_STATUS_WAITING     AgentStatus = 5 // turn ended, background work (bash/agent/monitor) pending (SWI-12)
 )
 
 // Enum value maps for AgentStatus.
@@ -162,6 +163,7 @@ var (
 		2: "AGENT_STATUS_WORKING",
 		3: "AGENT_STATUS_NEEDS_INPUT",
 		4: "AGENT_STATUS_EXITED",
+		5: "AGENT_STATUS_WAITING",
 	}
 	AgentStatus_value = map[string]int32{
 		"AGENT_STATUS_UNSPECIFIED": 0,
@@ -169,6 +171,7 @@ var (
 		"AGENT_STATUS_WORKING":     2,
 		"AGENT_STATUS_NEEDS_INPUT": 3,
 		"AGENT_STATUS_EXITED":      4,
+		"AGENT_STATUS_WAITING":     5,
 	}
 )
 
@@ -10840,13 +10843,14 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x15SANDBOX_STATE_RUNNING\x10\x02\x12\x19\n" +
 	"\x15SANDBOX_STATE_STOPPED\x10\x03\x12\x1c\n" +
 	"\x18SANDBOX_STATE_DESTROYING\x10\x04\x12\x17\n" +
-	"\x13SANDBOX_STATE_ERROR\x10\x05*\x93\x01\n" +
+	"\x13SANDBOX_STATE_ERROR\x10\x05*\xad\x01\n" +
 	"\vAgentStatus\x12\x1c\n" +
 	"\x18AGENT_STATUS_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11AGENT_STATUS_IDLE\x10\x01\x12\x18\n" +
 	"\x14AGENT_STATUS_WORKING\x10\x02\x12\x1c\n" +
 	"\x18AGENT_STATUS_NEEDS_INPUT\x10\x03\x12\x17\n" +
-	"\x13AGENT_STATUS_EXITED\x10\x04*\xff\x02\n" +
+	"\x13AGENT_STATUS_EXITED\x10\x04\x12\x18\n" +
+	"\x14AGENT_STATUS_WAITING\x10\x05*\xff\x02\n" +
 	"\x10NotificationKind\x12!\n" +
 	"\x1dNOTIFICATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fNOTIFICATION_KIND_TASK_COMPLETE\x10\x01\x12%\n" +

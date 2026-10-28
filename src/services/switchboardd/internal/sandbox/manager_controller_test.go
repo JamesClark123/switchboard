@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -240,4 +241,49 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 		t.Errorf("without an applier: %v / %+v", err, sb3.GetController())
 	}
 	_ = filepath.Join
+}
+
+// SWI-12: a WORKING or WAITING agent does not survive leaving RUNNING (its
+// session is gone), so a worker stopped mid-wait and restarted is IDLE — free —
+// rather than busy forever with no agent left to report otherwise.
+func TestStopResetsABusyAgent(t *testing.T) {
+	for _, st := range []pb.AgentStatus{pb.AgentStatus_AGENT_STATUS_WAITING, pb.AgentStatus_AGENT_STATUS_WORKING, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT} {
+		t.Run(st.String(), func(t *testing.T) {
+			m, _, _, dir := newTestManager(t)
+			sb, err := m.Launch(context.Background(), LaunchRequest{
+				Config: &pb.ConfigSnapshot{Name: "w"}, Sources: []*pb.SourceRef{makeSource(t, dir, "proj")},
+			}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.SetAgentStatus(sb.GetId(), st, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			stopped, err := m.Stop(context.Background(), sb.GetId())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := stopped.GetAgent().GetStatus(); got != pb.AgentStatus_AGENT_STATUS_IDLE {
+				t.Errorf("agent after stop = %v, want IDLE", got)
+			}
+			restarted, err := m.Restart(context.Background(), sb.GetId(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restarted.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || restarted.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+				t.Errorf("after restart: %v / %v, want RUNNING / IDLE", restarted.GetState(), restarted.GetAgent().GetStatus())
+			}
+		})
+	}
+	// A NEEDS_INPUT asked by the stopped session is gone with it, but a run the
+	// orchestrator handed to the developer for review is kept, so what the
+	// developer must still act on stays visible.
+	s := &pb.Sandbox{
+		Agent:      &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
+		Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "run-1", NeedsReview: true}},
+	}
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || !s.GetController().GetRun().GetNeedsReview() {
+		t.Errorf("after leaving RUNNING: agent %v, run %v; want IDLE with the review run kept", s.GetAgent().GetStatus(), s.GetController().GetRun())
+	}
 }

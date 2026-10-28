@@ -42,7 +42,8 @@ func (rt *runtime) triggerDispatch() {
 	}()
 }
 
-// free reports whether a worker can take a run right now (R7).
+// free reports whether a worker can take a run right now (R7). Only an IDLE
+// agent is free: one WAITING on background work is still on its run (SWI-12).
 func free(sb *pb.Sandbox, hostUp bool) bool {
 	return hostUp && sb != nil &&
 		sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING &&

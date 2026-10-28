@@ -77,16 +77,22 @@ Eligibility: a `prompt` run may go to any worker when `worker_tag == ""`, else o
                  CallAction (user | timed | triggered): validate → compose → QUEUED
 QUEUED ──CancelRun──► CANCELLED
 QUEUED ──dispatch: DeliverWorkerPrompt accepted──► RUNNING
-RUNNING ◄──agent WORKING──┐
-RUNNING ──agent NEEDS_INPUT──► AWAITING_INPUT ──agent WORKING──► RUNNING
+RUNNING ◄──agent WORKING | WAITING──┐
+RUNNING ──agent NEEDS_INPUT──► AWAITING_INPUT ──agent WORKING | WAITING──► RUNNING
 RUNNING | AWAITING_INPUT ──report──► COMPLETED(summary)
 RUNNING | AWAITING_INPUT ──agent IDLE, no report, reviewGrace elapsed──► AWAITING_REVIEW
+AWAITING_REVIEW ──agent WORKING | WAITING (it resumed; needs_review cleared, SWI-12)──► RUNNING
 AWAITING_REVIEW ──report──► COMPLETED(summary)
 AWAITING_REVIEW ──MarkWorkerFree──► COMPLETED | FAILED (summary = note, closed_by_developer)
 RUNNING | AWAITING_INPUT ──agent EXITED | sandbox STOPPED/ERROR/removed | worker detached──► FAILED(reason)
 AWAITING_REVIEW ──sandbox removed | orchestrator removed──► FAILED(reason)   (stopped: stays)
 any in flight ──orchestrator removed──► FAILED ;  QUEUED ──orchestrator removed──► CANCELLED
 ```
+
+`WAITING` (SWI-12) is an agent whose turn ended with background work it started still running
+(the Stop hook's `background_tasks`); Claude Code wakes it when that work finishes. It never arms
+the review grace. The daemon's hook server turns a WAITING agent IDLE after `backgroundWaitMax`
+(30 min), so a background task that never ends cannot hold a run forever.
 
 Fields fixed at creation: `action`, `type`, `arguments`, `prompt` (composed, R8), `event_kind`,
 `origin`, `origin_label`, `received_at`. Set at start: `started_at`, `sandbox_id`,
@@ -122,7 +128,7 @@ Key Decision 8 (no head-of-line blocking).
 | `state != RUNNING` | NOT_RUNNING |
 | `controller.run.needs_review` | AWAITING_REVIEW |
 | `agent == NEEDS_INPUT` | AWAITING_INPUT |
-| `agent == WORKING` or `controller.run != nil` or `agent == EXITED` | BUSY |
+| `agent == WORKING` or `agent == WAITING` or `controller.run != nil` or `agent == EXITED` | BUSY |
 | otherwise | FREE |
 
 ## TimedEvent (persisted on the orchestrator; proto `TimedEvent`)

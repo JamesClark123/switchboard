@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -34,6 +35,22 @@ const (
 
 // maxHookBody bounds the forwarded hook input the daemon will read.
 const maxHookBody = 1 << 20
+
+// backgroundWaitMax bounds how long an agent stays WAITING on background work
+// (SWI-12). A background task that never ends — a dev server, a watcher — would
+// otherwise hold the agent there for good; past this the Stop is taken at its
+// word: IDLE and a task-complete notification, which lets the orchestrator's
+// review flow take over. A package constant like every other bound (009 R15).
+const backgroundWaitMax = 30 * time.Minute
+
+// finishedTaskStatus are background_tasks statuses that no longer hold the
+// agent. Claude Code does not document the status values and, as observed
+// (2.1.311), drops a task from the list once it ends ("running" is the only
+// value seen), so any other status is taken as still pending.
+var finishedTaskStatus = map[string]bool{
+	"completed": true, "done": true, "finished": true, "failed": true, "error": true,
+	"killed": true, "stopped": true, "cancelled": true, "canceled": true,
+}
 
 // --- Hook injection (research R2) ---
 
@@ -66,11 +83,16 @@ type claudeSettings struct {
 //     -> IDLE, because an idle agent is a free one — mapping it to NEEDS_INPUT
 //     parked every orchestrator worker a minute after its run finished and
 //     nothing ever un-parked it (feature 009).
-//   - Stop                          -> IDLE + a task-complete notification.
+//   - Stop                          -> IDLE + a task-complete notification, or
+//     WAITING (no notification) when the turn ended with background work still
+//     running (SWI-12): Claude Code ends a turn while a background Bash, subagent
+//     or Monitor runs and wakes the agent again (UserPromptSubmit) when it
+//     finishes, so that Stop is a pause, not the end of the task.
 //
 // The event and sandbox id ride on the callback URL's query; the Notification
-// hook also forwards Claude Code's hook input (stdin JSON, which carries the
-// notification_type) as the request body. Without the work-start hooks the
+// and Stop hooks also forward Claude Code's hook input (stdin JSON, which
+// carries the notification_type and the Stop's background_tasks) as the
+// request body. Without the work-start hooks the
 // status would never leave IDLE while the agent runs, so the "working" indicator
 // would never show.
 //
@@ -104,7 +126,7 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 			"UserPromptSubmit": curl("UserPromptSubmit", false),
 			"PreToolUse":       curl("PreToolUse", false),
 			"Notification":     curl("Notification", true),
-			"Stop":             curl("Stop", false),
+			"Stop":             curl("Stop", true),
 		},
 	}
 }
@@ -145,31 +167,73 @@ func InjectHooks(workspacePath, sandboxID, callbackURL string) error {
 
 // hookPayload is one hook callback as the daemon sees it: the event and sandbox
 // from the URL query (or, for sandboxes still running the original hook
-// command, the JSON body), plus the notification_type Claude Code forwarded.
+// command, the JSON body), plus what dispatch needs from Claude Code's
+// forwarded input: the notification_type, and how many background tasks a Stop
+// left running.
 type hookPayload struct {
-	Event            string `json:"event"`
-	SandboxID        string `json:"sandbox_id"`
-	Matcher          string `json:"matcher"`
-	NotificationType string `json:"notification_type,omitempty"`
+	Event             string `json:"event"`
+	SandboxID         string `json:"sandbox_id"`
+	Matcher           string `json:"matcher"`
+	NotificationType  string `json:"notification_type,omitempty"`
+	PendingBackground int    `json:"-"`
 }
 
 // hookInput is the part of Claude Code's own hook input the daemon reads.
 type hookInput struct {
-	HookEventName    string `json:"hook_event_name"`
-	NotificationType string `json:"notification_type"`
+	HookEventName    string           `json:"hook_event_name"`
+	NotificationType string           `json:"notification_type"`
+	BackgroundTasks  []backgroundTask `json:"background_tasks"` // Stop / SubagentStop
 }
+
+// backgroundTask is one entry of a Stop's background_tasks: a background Bash
+// ("shell"), subagent, monitor, … the session is still waiting on.
+type backgroundTask struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+// pendingBackground counts the tasks that still hold the agent.
+func pendingBackground(tasks []backgroundTask) int {
+	n := 0
+	for _, t := range tasks {
+		if !finishedTaskStatus[t.Status] {
+			n++
+		}
+	}
+	return n
+}
+
+// stopper is the part of a timer the backstop needs (*time.Timer has it).
+type stopper interface{ Stop() bool }
 
 // HookServer receives hook callbacks and translates them into agent-status
 // transitions + NotificationEvents.
 type HookServer struct {
-	hub    *Hub
-	status StatusUpdater
-	now    func() time.Time
+	hub       *Hub
+	status    StatusUpdater
+	now       func() time.Time
+	afterFunc func(time.Duration, func()) stopper
+
+	mu       sync.Mutex
+	backstop map[string]backstopTimer // sandbox id -> its WAITING backstop
+	seq      uint64
+}
+
+// backstopTimer is one armed WAITING backstop; gen tells a fired timer apart
+// from a newer one armed for the same sandbox since.
+type backstopTimer struct {
+	t   stopper
+	gen uint64
 }
 
 // NewHookServer constructs a HookServer.
 func NewHookServer(hub *Hub, status StatusUpdater) *HookServer {
-	return &HookServer{hub: hub, status: status, now: time.Now}
+	return &HookServer{
+		hub: hub, status: status, now: time.Now,
+		afterFunc: func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
+		backstop:  map[string]backstopTimer{},
+	}
 }
 
 // Handle processes one hook callback (POST /hook). The current hook command
@@ -189,6 +253,7 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 		var in hookInput
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&in); err == nil {
 			p.NotificationType = in.NotificationType
+			p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		}
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
 		http.Error(w, "bad payload", http.StatusBadRequest)
@@ -208,30 +273,158 @@ func (s *HookServer) dispatch(p hookPayload) {
 	now := s.now()
 	switch p.Event {
 	case "Stop":
+		if p.PendingBackground > 0 {
+			// The turn ended to wait on background work, not because the task is
+			// done: Claude Code wakes the agent when the work finishes.
+			_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_WAITING, now)
+			s.armBackstop(p.SandboxID)
+			return
+		}
+		s.disarmBackstop(p.SandboxID)
 		_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
 		s.hub.EmitNotification(p.SandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "agent task complete", now)
 	case "Notification":
 		s.notification(p, now)
+	case "PreToolUse", "PostToolUse":
+		if st, ok := s.agentStatus(p.SandboxID); ok && st == pb.AgentStatus_AGENT_STATUS_WAITING {
+			// A background subagent's own tool calls fire these too, with the
+			// same sandbox id, while the main turn waits on it: the wait (and
+			// its backstop) goes on. The main agent's wake-up is a
+			// UserPromptSubmit (the <task-notification>).
+			return
+		}
+		s.working(p.SandboxID, now)
 	default:
-		// UserPromptSubmit / PreToolUse / PostToolUse etc. => the agent is working.
-		_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_WORKING, now)
+		// UserPromptSubmit etc. => the agent is working (a WAITING agent woken
+		// by its finished background work lands here too).
+		s.working(p.SandboxID, now)
 	}
+}
+
+// working records the agent busy on a turn, ending any background wait.
+func (s *HookServer) working(sandboxID string, now time.Time) {
+	s.disarmBackstop(sandboxID)
+	_, _ = s.status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_WORKING, now)
+}
+
+// armBackstop (re)starts the WAITING backstop for a sandbox.
+func (s *HookServer) armBackstop(sandboxID string) {
+	s.armBackstopFor(sandboxID, backgroundWaitMax)
+}
+
+func (s *HookServer) armBackstopFor(sandboxID string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b, ok := s.backstop[sandboxID]; ok {
+		b.t.Stop()
+	}
+	s.seq++
+	gen := s.seq
+	s.backstop[sandboxID] = backstopTimer{t: s.afterFunc(d, func() { s.backstopExpired(sandboxID, gen) }), gen: gen}
+}
+
+// RearmWaiting restores the backstop of every sandbox recorded WAITING when
+// the daemon starts: the timers live in memory, and without this an agent
+// whose wake-up was missed while the daemon was down would wait forever. Each
+// gets what is left of backgroundWaitMax since its last hook event. A sandbox
+// that is not running has no agent left to wait: it is set IDLE instead (a
+// record a daemon stopped before a stop reset the status).
+func (s *HookServer) RearmWaiting(sandboxes []*pb.Sandbox) {
+	now := s.now()
+	for _, sb := range sandboxes {
+		if sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_WAITING {
+			continue
+		}
+		if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+			_, _ = s.status.SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, now)
+			continue
+		}
+		left := backgroundWaitMax
+		if at := sb.GetAgent().GetLastEventAt(); at != nil {
+			left -= now.Sub(at.AsTime())
+		}
+		s.armBackstopFor(sb.GetId(), max(left, 0))
+	}
+}
+
+// disarmBackstop cancels a sandbox's WAITING backstop (the agent moved on).
+func (s *HookServer) disarmBackstop(sandboxID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b, ok := s.backstop[sandboxID]; ok {
+		b.t.Stop()
+		delete(s.backstop, sandboxID)
+	}
+}
+
+// backstopExpired ends a wait that outlived backgroundWaitMax: an agent still
+// WAITING is treated as having stopped (IDLE), and the developer is told the
+// wait was given up — the background work may well still be running. gen names
+// the timer that fired; a newer one armed since then owns the sandbox instead.
+// A sandbox that stopped meanwhile needs nothing: leaving RUNNING already
+// reset its agent.
+func (s *HookServer) backstopExpired(sandboxID string, gen uint64) {
+	s.mu.Lock()
+	b, ok := s.backstop[sandboxID]
+	current := ok && b.gen == gen
+	if current {
+		delete(s.backstop, sandboxID)
+	}
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	// Only a running sandbox still waiting is ended: one removed, stopped or
+	// whose agent moved on since gets nothing.
+	g, ok := s.status.(sandboxGetter)
+	if !ok {
+		return
+	}
+	sb, err := g.Get(sandboxID)
+	if err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_WAITING {
+		return
+	}
+	now := s.now()
+	_, _ = s.status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
+	s.hub.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, backstopMessage, now)
+}
+
+// backstopMessage tells the developer the wait was given up, not that the work
+// finished: background work (a dev server, a long build) may still be running.
+var backstopMessage = fmt.Sprintf("stopped waiting on background work after %s — check the agent; it may still be running", fmtWait(backgroundWaitMax))
+
+// fmtWait renders a wait as "30m" / "2h" rather than time.Duration's "30m0s".
+func fmtWait(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", d/time.Hour)
+	}
+	return fmt.Sprintf("%dm", d/time.Minute)
 }
 
 // notification maps a Notification hook by its notification_type.
 func (s *HookServer) notification(p hookPayload, now time.Time) {
 	kind := p.NotificationType
-	if kind == "" && s.agentIdle(p.SandboxID) {
+	current, readable := s.agentStatus(p.SandboxID)
+	waiting := readable && current == pb.AgentStatus_AGENT_STATUS_WAITING
+	if kind == "" && readable && (current == pb.AgentStatus_AGENT_STATUS_IDLE || waiting) {
 		// The original hook command forwards no type. A notification that
-		// arrives while the agent is idle can only be the idle nudge: permission
-		// and elicitation prompts happen mid-turn, after UserPromptSubmit or
-		// PreToolUse moved the agent to WORKING.
+		// arrives while the agent is idle (or waiting on background work) can
+		// only be the idle nudge: permission and elicitation prompts happen
+		// mid-turn, after UserPromptSubmit or PreToolUse moved the agent to
+		// WORKING.
 		kind = notifyIdle
 	}
 	switch kind {
 	case notifyAuthSuccess:
 		return
 	case notifyIdle:
+		if waiting {
+			// Claude Code's idle nudge also fires while a turn waits on
+			// background work; the agent is not idle, so it stays WAITING and
+			// nobody is prompted.
+			return
+		}
+		s.disarmBackstop(p.SandboxID)
 		// Idle is not a request for input: the Stop already said so, and an
 		// orchestrator worker that is idle is free. The developer still gets the
 		// "needs prompting" nudge for a sandbox of their own (001 R2); a
@@ -244,18 +437,22 @@ func (s *HookServer) notification(p hookPayload, now time.Time) {
 		// permission_prompt, elicitation_dialog, a type this daemon does not
 		// know, or a legacy notification while the agent is busy: the agent
 		// waits for the developer.
+		s.disarmBackstop(p.SandboxID)
 		_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT, now)
 		s.hub.EmitNotification(p.SandboxID, pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING, "agent needs prompting", now)
 	}
 }
 
-// agentIdle reports whether the sandbox's agent is recorded IDLE, when the
-// status side can be read at all.
-func (s *HookServer) agentIdle(sandboxID string) bool {
+// agentStatus reads the sandbox's recorded agent status; ok is false when the
+// status side cannot be read at all.
+func (s *HookServer) agentStatus(sandboxID string) (pb.AgentStatus, bool) {
 	g, ok := s.status.(sandboxGetter)
 	if !ok {
-		return false
+		return 0, false
 	}
 	sb, err := g.Get(sandboxID)
-	return err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE
+	if err != nil {
+		return 0, false
+	}
+	return sb.GetAgent().GetStatus(), true
 }

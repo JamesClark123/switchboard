@@ -454,7 +454,8 @@ func itoa(n int) string {
 }
 
 // agentBadge renders a live indicator of the coding agent's status for a RUNNING
-// sandbox — working, waiting for a prompt, or idle — so users can see at a glance
+// sandbox — working, waiting on background work it started, waiting for a
+// prompt, or idle — so users can see at a glance
 // what each agent is doing without opening the sandbox. It returns "" for
 // non-running sandboxes and for sandboxes launched without an agent (nothing to
 // show). The WORKING indicator reuses the model spinner so it animates while the
@@ -466,6 +467,11 @@ func (m Model) agentBadge(sb *pb.Sandbox) string {
 	switch sb.GetAgent().GetStatus() {
 	case pb.AgentStatus_AGENT_STATUS_WORKING:
 		return m.spinner.View() + " " + agentWorkStyle.Render("working")
+	case pb.AgentStatus_AGENT_STATUS_WAITING:
+		// The turn ended but a background command, subagent or monitor still runs
+		// and will wake the agent (SWI-12): busy, not idle, and not asking for
+		// anything — so not the warn colour of needs input.
+		return agentBgStyle.Render("◷ waiting (background)")
 	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 		return agentWaitStyle.Render("◆ needs input")
 	case pb.AgentStatus_AGENT_STATUS_IDLE:

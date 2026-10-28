@@ -153,3 +153,20 @@ func TestPromptRetriesOnlyForTheLiveSession(t *testing.T) {
 		t.Errorf("busy agent typed = %q, want just the prompt", got)
 	}
 }
+
+// TestPromptIntoWaitingAgentIsVerified: an agent WAITING on background work
+// (SWI-12) sits at its input box like an idle one, so a prompt typed into it is
+// verified the same way — its Enter retried while nothing reports (a busy agent
+// is never verified; see TestPromptRetriesOnlyForTheLiveSession).
+func TestPromptIntoWaitingAgentIsVerified(t *testing.T) {
+	fastSubmit(t)
+	sess := &recSession{}
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
+	reg.SetStatusUpdater(&agentState{status: pb.AgentStatus_AGENT_STATUS_WAITING, lastAt: time.Now().Add(-time.Minute)})
+	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	want := Typed("hello") + submitKey + keypadEnter + keypadEnter
+	waitFor(t, func() bool { return sess.typed() == want })
+	time.Sleep(3 * submitCheckDelay) // let the retry goroutine finish before fastSubmit restores its knobs
+}

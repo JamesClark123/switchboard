@@ -34,6 +34,7 @@ func TestAgentBadge(t *testing.T) {
 	}{
 		{"working", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_WORKING), "working"},
 		{"needs-input", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT), "needs input"},
+		{"waiting on background work", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_WAITING), "waiting (background)"},
 		{"idle", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_IDLE), "idle"},
 		{"exited", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_EXITED), ""},
 		{"no-agent", agentSb("a", R, pb.AgentStatus_AGENT_STATUS_UNSPECIFIED), ""},
