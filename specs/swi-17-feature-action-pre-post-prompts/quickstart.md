@@ -83,10 +83,15 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
 
 1. With a **remote** worker, restart the orchestrator's daemon during a long setup skill turn. On reconnect the run
    continues to the action prompt, and nothing is re-sent.
-2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon) during a setup step. The
-   agent's PTY is gone, so the run fails naming the step ("agent lost when its daemon restarted…"), and no agent is
-   started by a step. Repeat during cleanup: the worker shows *needing the developer*, and `t` starts a fresh agent
-   that frees it.
+2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon). The agent keeps running in
+   the sandbox, but the daemon can no longer type into it.
+   - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. Its
+     cleanup then shows *needing the developer*.
+   - **During a setup step:** the step halts with `agent detached by a daemon restart`. `R` (after its warning)
+     kills the old agent, starts a fresh one, and retries the step.
+   - **During cleanup:** the worker shows *needing the developer*. `t` kills the old agent, starts a fresh one, and
+     that frees the worker.
+   - In every case, `ps` inside the sandbox never shows two agents.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
    the step resolves from the daemon's record to sent, then finishes as usual.
 
@@ -111,6 +116,9 @@ one framed prompt, and no step text in the row.
    `orchestrator_call_action`). The call is refused: `argument <name> contains a control character`. Nothing is
    typed.
 2. From inside a held worker's sandbox, `curl` the hook URL with `SessionStart` `source=clear` and the old session
-   id. The hold stays. With no token or another sandbox's token, the request gets 403.
-3. Run `claude -p "hi"` in a worker's workspace during a setup step. That nested session's hooks don't classify or
+   id. The hold stays. With another sandbox's token, the request gets 403; with no token, it changes only the status
+   display.
+3. Restart the daemon while a worker's agent is idle. Its hooks keep working afterwards (the token is stable).
+4. Have an escape-hatch command print coloured output. Its result still reaches the agent.
+5. Run `claude -p "hi"` in a worker's workspace during a setup step. That nested session's hooks don't classify or
    finish the step.

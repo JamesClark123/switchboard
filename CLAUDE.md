@@ -164,8 +164,10 @@ NEEDS_DEVELOPER — the last is ended live by the owning daemon on a corroborate
 records `last_submit_at`, `last_turn_end_at`, `last_session_start_at/source` (restart resolution, FR-217). New
 `ResolveRunStep` (`R` retry · `S` skip · `X` fail), `RUN_STEP_NOT_ACCEPTED`, TASK_COMPLETE suppressed for
 setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) for `SessionStart`; needs SWI-9's implementation for the form guard. Security
-(R13): control characters refused in call values, action text and at type time; hook callbacks carry a per-sandbox
-token, with daemon-side corroboration for hold release and Clear. An owning-daemon restart is an agent exit (R14).
+(R13): control characters and invalid UTF-8 refused in untrusted call values only (authored text and escape-hatch
+output untouched); a stable per-sandbox hook token, kept inside the sandbox and rotated only with a new agent PTY;
+daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
+orphan, so it can't be typed into or read; it is killed before any fresh spawn (R14).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

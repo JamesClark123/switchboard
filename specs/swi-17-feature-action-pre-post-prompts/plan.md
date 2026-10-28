@@ -42,24 +42,21 @@ judged by evidence after its submit.
      `last_session_start_at/source`.
 7. **Prerequisites (R12).** SWI-15 (PR #17: `SessionStart`, agent readiness) has merged. SWI-9's implementation
    (form guard, enlargeable text fields) must merge first.
-8. **Security (R13).** Control characters (ESC, so the paste-end marker too; C0 except `\n`/`\t`; DEL; C1) are refused
-   in call argument values, in action text, and again at type time. Hook callbacks carry a per-sandbox token, and the
-   decisions that could leak context (hold release, Clear's read-back) are corroborated by what the daemon itself
-   saw. `DeliverWorkerStep` derives built-in text itself and only accepts increasing step indices.
-9. **Daemon restarts (R14).** A restart of the owning daemon loses the agent's PTY, so it is treated as an agent exit:
-   setup fails the run, an action is handled as today's agent exit, and cleanup becomes *needing the developer*. The
-   step path never spawns an agent except for a run's first step on an unheld sandbox.
-5. **Holds (R7).** `WorkerRun.hold` shows on the sandbox list and surfaces the worker. The values are *cleaning up*,
-   *needs input (freeing)* and *needing the developer — open its terminal and run /clear*.
-   - A hold ends only when the owning daemon observes a `startup`/`clear` session start (FR-216). The daemon releases
-     it live from the hook, so no clocks are compared across machines; the spec's restart clarification is amended
-     to match.
-6. **Controls, notifications and TUI (R10–R11).**
-   - **Controls:** `R` retry, `S` skip and `X` fail through a new `ResolveRunStep`.
-   - **Notifications:** task-complete is suppressed for setup and cleanup turns on the owning daemon, and a new
-     `RUN_STEP_NOT_ACCEPTED` notification is added.
-   - **TUI:** the action form gains Model/Effort selects, a Clear toggle and one-per-line prompt lists. Run rows show
-     the step, and the prompt overlay shows the whole sequence.
+8. **Security (R13).**
+   - Control characters (ESC, so the paste-end marker too; C0 except `\n`/`\t`; DEL; C1) and invalid UTF-8 are
+     refused in the **untrusted substituted values** only: call argument values and defaults, after CRLF is
+     normalised, checked at call and compose time. Authored text and escape-hatch output are left as they are.
+   - Hook callbacks carry a **stable**, persisted per-sandbox token, stored inside the sandbox outside the workspace
+     mount. It is rotated only with a new agent PTY, with overlap.
+   - Hold release and Clear's read-back are corroborated by the daemon's own spawn generation and screen. Only the
+     main agent session counts.
+   - `DeliverWorkerStep` derives and checks built-in text, and accepts only increasing step indices.
+9. **Daemon restarts (R14).** The agent **survives** a daemon restart (`agentCommand`), but the daemon loses its
+   PTY, so the agent is an **orphan**: hooks and its MCP report still work, but it can't be typed into or read.
+   - An action in flight stays in flight.
+   - A setup step halts; `R`/`S` replace the orphan with a fresh agent.
+   - Cleanup becomes *needing the developer*.
+   - An orphan is killed (by its recorded PID) before any fresh spawn, so two agents never share a workspace.
 
 ## Technical Context
 
@@ -164,16 +161,17 @@ src/libs/switchboard-termview/            # NEW module: moved from apps/switchbo
 src/services/switchboardd/internal/
 ├── terminal/broadcaster.go   # controlled sandboxes only: chunks → parser goroutine (bounded, stale on overflow) →
 │                             #   termview.Screen (no scrollback; resized with the PTY; fixed 140×45 with no client,
-│                             #   plus a repaint nudge); Screen() snapshot; Registry.Screen/BroadcasterIfLive never spawn
+│                             #   plus a repaint nudge); Screen() snapshot; EnableScreen; Registry.Screen/BroadcasterExisting never spawn
 ├── agent/
 │   ├── claudeui.go           # NEW: InputBox, ConfirmationAfter, modal markers, built-in matchers (R2)
 │   ├── testdata/claudeui/    # NEW: R1 screen fixtures
 │   ├── hooks.go              # Tap(); evidence (last_submit_at, last_turn_end_at, session start); TASK_COMPLETE suppressed
 │   │                         #   for step_role SETUP/CLEANUP (Stop + backstop); SessionStart via SWI-15 (R12);
 │   │                         #   corroborated startup/clear SessionStart ends a NEEDS_DEVELOPER hold (R7, R13);
-│   │                         #   BuildSettings puts a per-sandbox token in the callback URL; main-session filter (R13)
-│   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); control-char refusal
-│                             #   (also in Registry.Prompt)
+│   │                         #   stable per-sandbox token (header, read from ~/.sxb/hook-token); every hook forwards
+│   │                         #   its input, streamed; PTY generation + main-session filter (R13)
+│   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); agents.Existing;
+│                             #   PID recorded at launch + KillOrphan (R14); no spawn from Prompt while held
 ├── worker/
 │   ├── step.go               # NEW: DeliverWorkerStep guard (step_index: never typed twice) + submit check + check_only
 │   ├── deliver.go            # unchanged path for runs without steps; Frame() reused
@@ -183,8 +181,8 @@ src/services/switchboardd/internal/
 ├── orchestrator/
 │   ├── sequence.go           # NEW: per-sandbox single-flight stepper (deliverStep, advance), hold handling,
 │   │                         #   ResolveRunStep, retry ticker
-│   ├── actions.go            # effectiveSequence, buildSteps, composeStep; validateAction FR-204 rules; control-char
-│   │                         #   refusal in action text and call values (validateCall, R13)
+│   ├── actions.go            # effectiveSequence, buildSteps, composeStep; validateAction FR-204 rules
+│   ├── values.go             # checkValue: untrusted call values only (CRLF→LF, UTF-8, control chars; R13)
 │   ├── runs.go               # callAction snapshots steps; foldStatus/armReview per step role; completeRun/MarkWorkerFree
 │   │                         #   start cleanup instead of clearing the worker run; holdingRunOn (runOn unchanged);
 │   │                         #   workerRunFor (every WorkerRun write keeps all fields); restart resolution

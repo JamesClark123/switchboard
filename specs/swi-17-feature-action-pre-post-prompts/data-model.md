@@ -87,6 +87,8 @@ PENDING ──persist──► SENDING ──deliver ok──► SENT ──MODE
 | `hold` | `WorkerHold` (NONE, CLEANING_UP, NEEDS_INPUT_FREEING, NEEDS_DEVELOPER) | Set by the orchestrator (the existing `UpdateWorker{set_run, run}`) after the run closes; see research R7. |
 | `halted` | bool | The run is halted at a not-accepted step, so the sandbox counts as needing the developer (FR-213). |
 | `step_index`, `step_sent_at` | int32, Timestamp | Written by the `DeliverWorkerStep` guard in the same `reg.Update` as the typing decision. A repeat for the same index is refused, so no step is typed twice (FR-217). |
+| `step_note` | string | A copy of the run's `waiting:` / not-accepted note, written through `workerRunFor` only when it changes, so the sandbox list can surface a stuck cleanup (FR-213). |
+| `hold_gen` | int64 | **Daemon-written only.** The agent PTY generation when `NEEDS_DEVELOPER` was set. A `startup` ends the hold only from a later generation, spawned by `AttachAgent` or guard 5 (research R13). |
 
 **Writers.** Every orchestrator write of `WorkerRun` (`deliver`'s local mirror, `syncReviewFlag`,
 `repairReviewFlag`, holds) goes through one helper, `workerRunFor(run, live)`, that copies **all** fields from the
@@ -121,7 +123,8 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `last_submit_at` | `UserPromptSubmit` |
 | `last_turn_end_at` | `Stop` with no background tasks pending, or the WAITING backstop expiring |
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
-| `session_id` | The main agent's session, from the last corroborated `startup`/`clear` SessionStart (research R13). Hook events from any other session are ignored for steps, evidence and holds. |
+| `session_id` | The main agent's session: the first non-`compact` SessionStart of each daemon-spawned PTY generation, rebound on a corroborated `clear` (research R13). Empty means "accept" (an agent from before an upgrade). Hook events from any other session are ignored for steps, evidence and holds. |
+| `last_needs_input_at` | A needs-input `Notification` from the main session (R8 rule 2). |
 | `input_idle_since` | Written **only when it changes** (set or unset), never per sample, so it doesn't flood `sandbox_changed`. Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
 
 ## Hold (sandbox) — state and display
@@ -143,6 +146,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `stepRetryEvery` | 2 s | orchestrator (research R6) |
 | `stepWaitNote` | 10 s | orchestrator: a guard refusal lasting longer shows as `step_note` (`waiting: <reason>`) |
 | `stepScreenSize` | 140×45 | daemon: the PTY and screen size set when a broadcaster is created with no client (research R2) |
-| `modalGrace` | 1 s | worker step delivery: how long a modal may wait for a needs-input report before NOT_ACCEPTED (T006 may raise it) |
+| `modalGrace` | 1 s, **capped at 2 s** | worker step delivery: how long a modal may wait for a needs-input report before NOT_ACCEPTED (T006 may raise it within the cap; contracts/worker-step.md §6) |
 | `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
-| `hookTokenBytes` | 32 | daemon: per-sandbox hook callback token (research R13) |
+| `hookTokenBytes` | 32 | daemon: the stable per-sandbox hook token, persisted; rotated only on a new agent PTY, with the previous one accepted until that agent is gone (research R13) |
+| `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent before a fresh spawn (research R14) |

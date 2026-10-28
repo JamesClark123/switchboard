@@ -7,9 +7,14 @@ through `WorkerAPI`, for local and remote hosts alike. It implements FR-206 and 
 
 **Before the guard**, the daemon reads the screen **without creating anything**: `terms.Screen(id)` returns the live
 broadcaster's screen, or nothing. Creating a broadcaster runs the agent factory (`agents.Session`), which **spawns
-`claude`** when none is live (`grpc/server.go`), so the step path creates one only when `agents.Live(id)` is true
-(`terms.BroadcasterIfLive`), where the factory returns the existing session. With no live agent the step is refused
-(guard 5); the only path that starts an agent is guard 5's explicit `first` on an unheld sandbox.
+`claude`** when none is live (`grpc/server.go`). So the step path creates a broadcaster only through
+`terms.BroadcasterExisting(id)`, whose provider is `agents.Existing(id)`: it returns the live session or an error,
+**atomically**, and never spawns. There is no window between checking liveness and creating the session. An existing
+broadcaster without a screen gets one through `EnableScreen` plus a repaint nudge (research R2).
+
+With no live agent the step is refused (guard 5). On the step path, only guard 5's explicit `first` on an unheld
+sandbox starts an agent. Elsewhere, only `AttachAgent` spawns while a sandbox is held: `Registry.Prompt` and
+`EnsureDrained` refuse to spawn for a held sandbox (research R13).
 
 A broadcaster created with no client attached sets the PTY and its screen to `stepScreenSize` (140×45) and nudges a
 resize, so the agent repaints and the input box is on the screen (research R2).
@@ -42,11 +47,11 @@ If typing fails, the guard's record is rolled back as `Deliver` does today (`rol
    - for `ACTION_PROMPT`, `worker.Frame(orchName, runID, action, step.text)`;
    - for `CUSTOM`, `step.text` as is.
 
-   `TypeStep` **refuses** (`INVALID_ARGUMENT`, nothing typed) any text containing ESC (0x1B), another C0 control
-   other than `\n` and `\t`, DEL (0x7F), or a C1 control (U+0080–U+009F). In particular the paste-end marker
-   `ESC[201~` can never appear inside the paste. This is defence in depth: the orchestrator already refuses such
-   characters in action text and in call argument values (research R13), and `Registry.Prompt` (runs without steps)
-   applies the same check.
+   The daemon does **not** filter the text. Control characters are refused in the **untrusted call values** before
+   they are substituted (at call and compose time, research R13). The developer-authored text and other content
+   typed into agents (such as escape-hatch results, which legitimately carry ANSI output) are left as they are. For
+   MODEL/EFFORT, an `expect` outside the fixed sets (`opus|fable|sonnet|haiku`, `low|medium|high|xhigh|max|auto`) is
+   refused `INVALID_ARGUMENT` before the guard commits, so nothing is recorded or typed.
 
    Either is sent as **one bracketed paste**, then `\r` after 50 ms (`agent.Registry.TypeStep`). This is
    `Registry.Prompt` **without** its blind `ensureSubmitted`.
@@ -63,7 +68,7 @@ workspace has its own session and is ignored (research R13).
 | A tap event `UserPromptSubmit` or `PreToolUse` | **MODEL_TURN**: accepted, return now |
 | A tap event `Notification` with a type other than `idle_prompt`/`auth_success` (needs input) | **MODEL_TURN_INPUT_ONLY**, unless a turn-start event also arrived (then MODEL_TURN). Return now. |
 | A tap event `SessionStart`/`SessionEnd` | **Not** a turn start. It is recorded as evidence (CLEAR read-back). |
-| Screen: a modal marker (picker or dialog) with **no** turn-start event yet | Wait up to `modalGrace` (1 s; T006 measures hook latency and may raise it) for a needs-input `Notification` or a turn start, pressing nothing. If one arrives, classify as above (a skill's own permission or question dialog). Otherwise **NOT_ACCEPTED** `picker opened`, with **no Enter** (FR-206d). |
+| Screen: a modal marker (picker or dialog) with **no** turn-start event yet | Wait up to `modalGrace` (1 s; T006 measures hook latency and may raise it, **capped at 2 s** by §6) for a needs-input `Notification` or a turn start, pressing nothing. If one arrives, classify as above (a skill's own permission or question dialog). Otherwise **NOT_ACCEPTED** `picker opened`, with **no Enter** (FR-206d). |
 | `window` ends and `InputBox` still shows `step.text`: the box's rows joined (a long step wraps) and prefix-matched after trimming, **or** a paste placeholder `[Pasted text #N …]` (a multi-line step such as the framed action prompt) | **Re-press** Enter if fewer than 3 re-presses so far (first `\r`, then keypad Enter, as today), and extend `window` by `submitWindow`. Otherwise NOT_ACCEPTED `text still in the input box`. |
 | `window` ends with no turn-start event, status IDLE, and `InputBox` empty and ready | **AGENT_LOCAL**, after the read-back below |
 | Anything else when `window` ends (box missing, status changed without a turn-start event) | **NOT_ACCEPTED** `not at an empty input box` |
@@ -96,8 +101,9 @@ and on the WAITING backstop while the role is `SETUP` or `CLEANUP`. `NEEDS_PROMP
 
 ## 6. Timing bound
 
-The worst case is `submitWindow × (1 + 3)` = 10 s, plus typing. That is inside the orchestrator's 15 s
-`deliverTimeout`. The check holds no registry lock while waiting.
+The worst case is `submitWindow × (1 + 3)` = 10 s, plus `modalGrace` (capped at 2 s), plus at most 1 s of
+stale-screen extension, plus the guard and typing (< 0.5 s): under 13.5 s. That is inside the orchestrator's 15 s
+`deliverTimeout`, and any change to these constants must keep that sum below it. The check holds no registry lock while waiting.
 
 ## 7. Test fixtures
 

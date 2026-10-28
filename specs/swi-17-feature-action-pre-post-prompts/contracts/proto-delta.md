@@ -127,9 +127,11 @@ message AgentSession {
   google.protobuf.Timestamp input_idle_since = 9;       // box empty + ready and agent not WORKING since (unset otherwise);
                                                         // sampled while controller.run is set (idle-nudge fallback, R1);
                                                         // written only when it is set or unset, never per sample
-  string session_id = 10;                               // the main agent's session, from the last corroborated
-                                                        // startup/clear SessionStart (research R13); hooks from any
-                                                        // other session (a nested `claude -p`) are ignored for steps
+  string session_id = 10;                               // the main agent's session: the first non-compact SessionStart
+                                                        // of each daemon-spawned PTY generation, rebound on a
+                                                        // corroborated clear (research R13); empty = accept any.
+                                                        // Other sessions (a nested `claude -p`) are ignored for steps
+  google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
 }
 
 message WorkerRun {
@@ -139,12 +141,17 @@ message WorkerRun {
   bool halted = 6;                       // run halted at a not-accepted step (surfacing, FR-213)
   int32 step_index = 7;                  // last step typed for this run, recorded by the guard (no double send, R3)
   google.protobuf.Timestamp step_sent_at = 8;  // when that step was typed (daemon clock)
+  string step_note = 9;                  // the run's `waiting: …` / not-accepted note, written only when it changes,
+                                         // so the sandbox list can surface a stuck cleanup (FR-213)
+  int64 hold_gen = 10;                   // daemon-written only: the agent PTY generation when NEEDS_DEVELOPER was set;
+                                         // a startup ends the hold only from a later generation (research R13)
 }
 
 message WorkerView {
   // … fields 1..11 unchanged …
   WorkerHold hold = 12;                  // the worker's controller.run.hold (Workers view, FR-213)
   bool halted = 13;                      // controller.run.halted
+  string step_note = 14;                 // controller.run.step_note
 }
 
 enum NotificationKind {
@@ -167,8 +174,8 @@ message DeliverWorkerStepRequest {
   string run_id = 3;
   string action = 4;
   RunStep step = 5;                      // MODEL/EFFORT/CLEAR: the daemon types the text it derives from kind + expect
-                                         // (`/model opus`…) and ignores step.text; CUSTOM/ACTION_PROMPT text must have
-                                         // no control characters (research R13)
+                                         // (`/model opus`…), refusing an expect outside the fixed sets, and ignores
+                                         // step.text (research R13)
   bool first = 6;                        // the run is not started: record controller.run if none (idempotent for the same run_id)
   bool check_only = 7;                   // restart resolution (research R8): read back without typing
   int32 step_index = 8;                  // must be greater than controller.run.step_index (monotonic), or equal with retry
@@ -223,10 +230,10 @@ message ResolveRunStepRequest {
 |---|---|
 | Sandbox not RUNNING; controller missing or another orchestrator's; agent not IDLE or not ready; input box not empty and ready; (`first`) another run already recorded; (not `first`) `controller.run.id ≠ run_id` | `FAILED_PRECONDITION` with the reason. Nothing is typed, and the orchestrator retries (research R6); a refusal lasting over `stepWaitNote` shows on the row. |
 | `req.step_index ≤ controller.run.step_index` without a valid `retry` (already typed, or a replay) | `ALREADY_EXISTS`. Nothing is typed; the orchestrator reads `controller.run.step_sent_at` from the sandbox record, treats the step as SENT and resolves it per research R8. |
-| CUSTOM or ACTION_PROMPT text containing a control character (research R13) | `INVALID_ARGUMENT`. Nothing is typed. |
+| MODEL/EFFORT `expect` outside the fixed sets (research R13) | `INVALID_ARGUMENT`, before the guard commits. Nothing is recorded or typed. The orchestrator halts the step with the error as its note (never retries it). |
 | No live agent (and not a `first` step on an unheld sandbox, which starts one) | `FAILED_PRECONDITION` `no live agent`. The broadcaster is never created for a sandbox with no live agent. |
 | Unknown sandbox | `NOT_FOUND` |
-| An older daemon | `UNIMPLEMENTED`. The orchestrator fails the first step's delivery with "worker daemon does not support pre/post prompts; update it" (research R6). |
+| An older daemon | `UNIMPLEMENTED`. The orchestrator **unclaims** the run, marks that worker unable to take sequenced runs until its link reconnects, and re-queues the run. It fails the run ("no worker supports pre/post prompts; update their daemons") only when no attached worker is eligible (research R6). |
 
 **`ResolveRunStep`**
 

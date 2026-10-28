@@ -97,8 +97,14 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
    controller keeps a screen; other sandboxes pay nothing. The read loop, the single PTY reader, hands each chunk to
    a per-broadcaster **parser goroutine** through a bounded channel and goes straight on to fan-out, so VT parsing
    never runs under the broadcaster mutex and never delays clients or `Attach`. On overflow (for example a large
-   `cat`) the channel drops chunks and marks the screen **stale**. A stale screen reads as *not ready* (guard 6
-   refuses `screen resyncing`) until a resize nudge makes the agent repaint. The daemon's screen uses termview with
+   `cat`) the channel drops chunks and marks the screen **stale**. The parser goroutine then recovers on its own:
+   it drains the channel, **resets** the screen (dropped chunks may have cut an escape sequence in half), and issues a
+   debounced resize nudge itself (at most one per second), so the agent repaints and the screen is fresh again. While
+   stale, the guard refuses (`screen resyncing`) and the submit check treats the screen as **unknown**: it extends
+   its window rather than deciding (bounded by contracts/worker-step.md §6). It never halts on a stale read.
+   - **A screen is enabled lazily.** Broadcasters persist across detach, so a sandbox whose terminal was opened before
+     it became a worker already has one without a screen. When a sandbox becomes controlled (attach) or first gets a
+     step, `EnableScreen` adds the screen to the existing broadcaster and nudges a repaint. The daemon's screen uses termview with
    **no scrollback** (a new option; the TUI keeps its 5000 lines). The screen is a `termview.Screen` sized to the PTY
    and resized with it (`applyResizeLocked`). Today a PTY gets no
    size until a client attaches (`pty.Start` sets no winsize), so a broadcaster created with no client sets both to
@@ -158,7 +164,8 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
    agent`) and starts nothing, so a retried Clear or a cleanup step can never spawn an agent whose `startup` would
    end a hold (FR-216).
 
-   Step text is checked for control characters, and built-in text is derived on the daemon (R13).
+   Built-in text is derived and checked on the daemon, and call values were checked for control characters at call
+   time (R13).
 
    A guard miss returns `FailedPrecondition` with the reason. Nothing is typed, and the orchestrator tries again on
    the next status change (R6). That is how *developer activity takes precedence* (009 FR-119): text the developer
@@ -248,8 +255,11 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
     `sandbox_changed` or reconnect, from the daemon's record: `controller.run.step_index` equal to the step → SENT
     with `controller.run.step_sent_at`, then finished or halted per R8; lower → PENDING (never typed). So a lost
     response never strands a run (tasks T022).
-  - **A response for a run that is no longer active** (cancelled or failed while its first step was in flight)
-    makes the stepper clear the daemon record with `UpdateWorker{set_run, expect_run_id = run}` (unset run). The
+  - **A response for a run cancelled or failed before delivery** (while its first step was in flight), with no hold
+    and no cleanup pending, makes the stepper clear the daemon record with `UpdateWorker{set_run, expect_run_id =
+    run}` (unset run). Any other late response goes through the normal path: for example, the action step's response
+    arriving after the report has closed the run and started cleanup only updates the step. It never clears the
+    record, which would skip cleanup and free a worker with its context (SC-001). The
     orchestrator's reconcile also clears any worker record naming a finished run that isn't holding, so a
     cancel/claim race can never leave a worker taken forever.
   - `startRun` (RUNNING, `StartedAt`, sandbox fields) runs on **any** outcome where the first step was typed,
@@ -283,15 +293,21 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
   step is TURN or AWAIT_CLOSE, **or** the daemon's `controller.run.step_index` equals the action step's index (it was
   typed, and only the response was lost). Otherwise: "the action prompt has not been delivered yet" (FR-211).
 - **A halted action step.** `S` is refused for ACTION_PROMPT: skipping it would close nothing and leave the run
-  waiting for a report that can't come. `X` fails the run (FR-212 wording, naming the step). Cleanup then runs as
-  after any close (FR-215), so the worker is still cleared.
+  waiting for a report that can't come. `X` fails the run (FR-212 wording, naming the step).
+- **After a failure before the action prompt was delivered** (FR-214, amended at planning, run-560), **no custom
+  post-prompt** is sent. Clear (if enabled) **is** sent, once the agent is idle, if any pre-step reached the agent.
+  The pre-prompts may have left context, and SC-001 says the sandbox never takes its next run until the previous
+  run's session is cleared. A run cancelled or failed before any step was typed sends nothing. If the agent can't
+  receive Clear (it exited, or is an orphan, R14), the agent's next session is fresh anyway after an exit, so no hold
+  is set; an orphan becomes `NEEDS_DEVELOPER`.
 - **Run close and cleanup.** `completeRun`/`MarkWorkerFree` close the run exactly as today (FR-215). When cleanup
   steps exist, they **don't clear the worker's run**: they set `controller.run.hold = CLEANING_UP` through
   `UpdateWorker`. The sandbox is then not free by the existing `free()` rule (`controller.run != nil`), so it takes no
   run of either type (FR-215, SC-004).
-  - If the sandbox isn't RUNNING or its agent is EXITED at close (for example a run awaiting review on a sandbox that
-    was stopped, which `leaveRunning` keeps), the cleanup steps can't run: they are dropped and the hold is
-    `NEEDS_DEVELOPER` straight away (FR-216), not a hidden `CLEANING_UP` that would stall.
+  - If the sandbox isn't RUNNING, or its agent can't be typed into at close (EXITED, or an orphan after a daemon
+    restart, R14), the cleanup steps can't run. They are dropped, and the hold is `NEEDS_DEVELOPER` straight away
+    (FR-216), not a hidden `CLEANING_UP` that would stall. This applies only to runs that **still have cleanup to
+    run**: a run with no cleanup steps (or one failed before delivery whose agent exited, above) sets no hold.
 - **Listing.** `Service.ListRuns` puts closed runs that hold a sandbox or are halted in `in_flight`, and keeps them
   out of `history`, so the TUI's *In progress* group, its *History* group and the orchestrator's own views agree
   (FR-213).
@@ -401,13 +417,16 @@ recorded evidence (R4) against `step_sent_at`. Every time compared here is the *
 comes from `DeliverWorkerStepResponse.sent_at` or the daemon record), so there is no cross-machine skew:
 
 This applies when the sandbox's **owning daemon kept running** (an orchestrator restart with a remote worker, or a
-lost link). When the owning daemon itself restarted, the agent's PTY is gone and R14 applies instead.
+lost link). When the owning daemon itself restarted, the agent may still be running, but the daemon has lost its PTY.
+R14 then decides what can be typed. Evidence from hooks keeps arriving from the orphan, so rules 1–2 still apply to
+it; rule 3 (screen read-back) does not.
 
 1. **A step already `TURN`** was classified before the restart, so the turn-start test is skipped: it is finished
    when the agent is IDLE with `last_turn_end_at > step_sent_at` (or, for MODEL_TURN_INPUT_ONLY, by the input-only
    rule, FR-206b), and otherwise awaited as usual.
 2. **A step `SENT`** (typed, not yet classified) is a model turn if `last_submit_at > step_sent_at`, **or** the
-   agent is NEEDS_INPUT with `last_event_at > step_sent_at` (a needs-input report after the send, FR-217). It is
+   main session reported needs-input after the send, `last_needs_input_at > step_sent_at` (FR-217). That field is
+   session-filtered (R13); status and `last_event_at` are not, so a nested `claude -p` can't satisfy the rule. It is
    then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
 3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`
@@ -419,8 +438,8 @@ lost link). When the owning daemon itself restarted, the agent's PTY is gone and
    does for the review flag, so a halt push lost on a down link doesn't strand a retry.
 
 **Rationale.** It applies the spec's rule literally, and the recorded evidence (R4) shrinks the developer-decides
-case to the minimum: a turn that ended with no recorded evidence. A restart of the owning daemon is a different case
-(the agent is gone) and is handled as an agent exit (R14).
+case to the minimum: a turn that ended with no recorded evidence. A restart of the owning daemon leaves an orphan
+agent that hooks still report from, but that can't be typed into or read (R14).
 
 ## R9 — Action storage and the upgrade default (FR-200–FR-204, FR-210)
 
@@ -496,80 +515,136 @@ case to the minimum: a turn that ended with no recorded evidence. A restart of t
   enlargeable `spec.text` fields (ctrl+e), which exist only on the unmerged SWI-9 implement branch. Implementation
   rebases on `main` after both merge.
 
-## R13 — Security: typed text, hook events and the step RPC
+## R13 — Security: substituted values, hook events and the step RPC
 
 **Context.** Steps are typed into an agent that can run slash commands and `!` shell lines. Three things decide what
 gets typed or what counts as evidence, and each needs a boundary.
 
 **Decision.**
 
-1. **Control characters never reach the PTY.** Steps are sent as a bracketed paste (`ESC[200~ … ESC[201~`). A
-   value containing `ESC[201~` would end the paste early, and a following `\r` would submit whatever comes next, a
-   slash command or a `!` shell line. That defeats FR-204, under which the action's **author**, not a call value,
-   decides the command. Call values come from worker agents that read untrusted ticket and PR text, so this is
-   reachable through prompt injection. The rule is applied at three layers:
-   - **Call time (`validateCall`).** Every argument value is refused (`argument <name> contains a control
-     character`) if it contains ESC (0x1B), another C0 control other than `\n` and `\t` (this includes `\r`), DEL
-     (0x7F), or a C1 control (U+0080–U+009F, which some terminals read as CSI). The same check applies to argument
-     defaults. Nothing is stripped silently: a refused call is visible to the caller.
-   - **Save time (`validateAction`).** The action body, pre-prompts and post-prompts are checked the same way.
-   - **Type time (`TypeStep`, and `Registry.Prompt` for runs without steps).** Text containing any of these
-     characters is refused before anything is written. This is defence in depth, for example against a stored action
-     saved by an older daemon.
+1. **Untrusted substituted values can't carry control sequences.** Steps are sent as a bracketed paste (`ESC[200~ …
+   ESC[201~`). A call **value** containing `ESC[201~` would end the paste early, and a following `\r` would submit
+   what came next as a slash command or a `!` shell line. That defeats FR-204, under which the action's **author**,
+   not a call value, decides the command. Call values come from worker agents that read untrusted ticket and PR
+   text, so this is reachable through prompt injection.
+
+   The rule applies **only to the untrusted substituted values**: call argument values and their defaults. It does
+   not apply to the developer-authored action text, nor to other content typed into agents, such as escape-hatch
+   results (which legitimately carry ANSI output and are delivered through `Registry.Prompt`, unchanged).
+   - **Call time (`validateCall`).** Each value is first normalised: CRLF and lone CR become LF, since ticket and PR
+     text routinely has CRLF. It is then refused if it is not valid UTF-8, or if it contains ESC (0x1B), another C0
+     control other than `\n` and `\t`, DEL (0x7F), or a C1 control (U+0080–U+009F, which some terminals read as
+     CSI). The error is `argument <name> contains a control character`. Invalid UTF-8 is refused because a raw 0x9B
+     byte would otherwise reach the PTY as an 8-bit CSI. A refused call is visible to its caller, and nothing is
+     stripped silently.
+   - **Compose time (`compose`, `composeStep`).** The same check runs again on each value just before it is
+     substituted. This is defence in depth for runs queued by an older daemon. A failure fails the run before
+     anything is typed ("argument <name> contains a control character").
+   - The daemon side (`TypeStep`, `Registry.Prompt`) doesn't re-check text. It can't tell substituted values from
+     authored text or escape-hatch output, and refusing there broke escape-hatch results.
 2. **Hook callbacks are bound to their sandbox.** `POST /hook` is reached from inside sandboxes over
    `host.docker.internal`, and today it trusts the `sandbox_id` query parameter.
-   - **Per-sandbox token.** The daemon generates a random 32-byte token per sandbox when it writes the agent's hook
-     settings (`BuildSettings`). The token is kept in the daemon's own store, never on `pb.Sandbox` (so
-     `ListSandboxes` doesn't expose it), and is put in the callback URL (`…/hook?sandbox=<id>&token=<t>`). The hook
-     server compares it in constant time and drops a mismatch with 403. One sandbox therefore can't forge or replay
-     events for another. The token is rotated whenever the settings are rewritten.
-   - **Self-forgery is corroborated, not trusted.** A process inside the sandbox can read its own settings, so the
-     token doesn't stop the sandbox's own agent (or a background process it started) from posting a fake
-     `SessionStart`. The decisions that would let context leak into the next run (SC-001) therefore need
-     daemon-observed evidence as well as the hook:
-     - **Ending a hold on `startup`**: the daemon itself spawned a new agent PTY for the sandbox after the hold began
-       (an `agent.Registry` generation counter).
-     - **Ending a hold on `clear`, and Clear's read-back**: the hook's `session_id` differs from the recorded
-       `AgentSession.session_id`, **and** the daemon's screen shows the post-clear state (an empty, ready box with no
-       conversation above it, fixture `clear-banner`).
-   - **Only the main agent counts.** A nested `claude -p` run in the workspace fires the same hooks with its own
-     `session_id`. `AgentSession.session_id` records the main session from the last corroborated
-     `startup`/`clear`. The submit check, the evidence fields and hold release ignore events from any other session,
-     though status display keeps today's behaviour.
+   - **A stable per-sandbox token.** The daemon generates a random 32-byte token for each sandbox **once** and
+     persists it in its own store (never on `pb.Sandbox`, so `ListSandboxes` doesn't expose it).
+     - **Not rotated with the settings.** Settings are rewritten at every daemon start (`RefreshHooks`), and an
+       agent keeps the hook command it was launched with, possibly across daemon restarts (R14). Rotating on rewrite
+       would break every surviving agent's hooks.
+     - **Rotated only when the daemon spawns a new agent PTY.** The previous token is still accepted until the agent
+       launched with it is known to be gone (exited, or killed as an orphan, R14).
+   - **Where the token lives.** Not in the hook command in the host-mounted `settings.local.json`, which is written
+     0644 into the workspace and may be readable through another sandbox's mount. The daemon writes it with `sbx
+     exec` to a file **inside the sandbox**, outside the workspace mount (`~/.sxb/hook-token`, mode 0600). The hook
+     command reads it (`-H "X-Sxb-Token: $(cat ~/.sxb/hook-token)"`).
+   - **Checking it.** The hook server compares the token in constant time. A call with a **wrong** token is dropped
+     (403). A call with **no** token (an agent launched before this feature, still on the old hook command) is
+     accepted for **status display only**: it never counts as evidence, ends a hold, or classifies a step.
+   - **The escape hatch** (`/escape-hatch/run`, which types its result into the named sandbox's PTY) requires the
+     same token.
+   - **Self-forgery is corroborated, not trusted.** A process inside the sandbox can read its own token, so the
+     decisions that would let context leak into the next run (SC-001) also need daemon-observed evidence:
+     - **Spawn generation.** The daemon numbers each agent PTY it spawns for a sandbox (`agent.Registry` generation).
+       When it writes a `NEEDS_DEVELOPER` hold (controller `Update`, `SetAgentStatus`, `leaveRunning`, R14), it
+       records the current generation on the run as `hold_gen` (daemon-written only).
+     - **Ending a hold on `startup`**: the event's generation is greater than `hold_gen`. Only an agent spawned by
+       `AttachAgent` (opening the terminal) or by guard 5 counts. While a hold is set, `Registry.Prompt` and
+       `EnsureDrained` refuse to spawn (`sandbox is held; open its terminal`), so an escape-hatch result arriving
+       after an agent exit can't spawn the agent that ends the hold.
+     - **Ending a hold on `clear`, and Clear's read-back**: the hook's `session_id` differs from the recorded main
+       session, **and** the daemon's screen shows the post-clear state (an empty, ready box with no conversation
+       above it, fixture `clear-banner`).
+   - **Only the main agent counts.** A nested `claude -p` in the workspace fires the same hooks with its own
+     `session_id`.
+     - Every hook now forwards its input (`--data-binary @-`); today `UserPromptSubmit` and `PreToolUse` post an
+       empty body and carry no `session_id`. The server reads the body as a JSON token stream and keeps only the
+       fields it needs (`session_id`, `hook_event_name`, `source`, `notification_type`, …). Large values such as
+       PreToolUse `tool_input` are skipped without being buffered, so the 1 MiB decode cap no longer drops events
+       (a 16 MiB hard read cap remains).
+     - The **main session** is bound to the first non-`compact` SessionStart, of any source, of each daemon-spawned
+       PTY generation, and is rebound on a corroborated `clear`. Later startups within the same generation (a nested
+       `claude -p`) are ignored.
+     - An agent with no recorded main session (one that survived an upgrade, or `/resume`d before one was bound) has
+       its events accepted until a SessionStart binds one.
+     - The submit check, the evidence fields (incl. `last_needs_input_at`) and hold release use main-session events
+       only. Status display keeps today's behaviour.
 3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as
    `DeliverWorkerPrompt`: the local daemon socket, and the orchestrator's SSH-dialled link. On top of that:
-   - **Built-ins are derived, not passed.** For MODEL, EFFORT and CLEAR the daemon types the text it derives from
-     `kind` + `expect` and ignores `step.text`, so a caller can't type `/anything` as a built-in.
-   - CUSTOM and ACTION_PROMPT text pass the control-character check.
+   - **Built-ins are derived and checked.** For MODEL, EFFORT and CLEAR the daemon types the text it derives from
+     `kind` + `expect`, and refuses (`INVALID_ARGUMENT`, before the guard commits) an `expect` outside the fixed
+     sets: model `opus|fable|sonnet|haiku`, effort `low|medium|high|xhigh|max|auto`. `step.text` is ignored, so a
+     caller can't type `/anything`. The orchestrator maps INVALID_ARGUMENT to a HALTED step with the error as its
+     note, never to a retry.
    - **Indices only grow.** `step_index` must be **greater** than the recorded one (skips leave gaps), or equal with
      `retry` on a halted run. A replayed or out-of-order request types nothing.
    - The run must be the one recorded on the sandbox for this orchestrator (guards 2–3), so a client that knows ids
      still can't type into a sandbox busy with another orchestrator's run, or with no run.
 
 **Alternatives considered.**
-- **Strip control characters silently.** Rejected: it would change what the author or caller wrote without telling
-  them. Refusing is visible and the fix is obvious.
-- **Trust hook events once the token matches.** Rejected: the token stops cross-sandbox forgery, not
-  self-forgery, and a fake `clear` is exactly what would carry context into the next run.
+- **Refuse control characters in all typed text.** Rejected: escape-hatch results and other legitimate content
+  carry ANSI output. Only the substituted values are untrusted.
+- **Strip control characters silently.** Rejected for values: it would change what the caller sent without telling
+  them.
+- **Rotate the token on every settings rewrite.** Rejected: surviving agents keep their launch-time hook command.
 
 ## R14 — Recovery when the owning daemon restarts
 
-**Context.** Agent sessions don't survive a restart of the sandbox's owning daemon. The `sbx exec` child is orphaned
-and the PTY is lost (SWI-15: "agent sessions do not survive a daemon restart"), and `WarmStart` skips sandboxes with
-a run. For a **local** worker the owning daemon is the orchestrator's daemon, so every orchestrator restart is also
-an owning-daemon restart.
+**Context, verified against the code.**
+- **The agent survives.** The agent is launched with `sbx exec -it … exec claude` and deliberately **not** wrapped
+  (`agent/pty.go` `agentCommand`). The `docker exec` child survives a hard kill of the host client and a
+  controlling-PTY hangup, so an in-flight prompt keeps running across a daemon restart (FR-002). `WarmStart`
+  (`worker/deliver.go`) skips a worker with a run for exactly this reason: its agent "may still be working".
+- **But the daemon loses its handle on it.** The daemon's PTY master is gone, so a restarted daemon can neither
+  type into the agent nor read its screen. `agents.Live(id)` is false.
+- **The agent's outbound channels keep working.** Hooks, with the stable token from R13, and its MCP completion
+  report.
+- **The daemon must not spawn a second agent next to it.** `t` or `Session()` would otherwise start another `claude`
+  in the same workspace.
 
-**Decision.** A lost PTY is an **agent exit**, with the rule for the phase the run was in. The daemon applies it at
-start, before `WarmStart`, to each sandbox whose `controller.run` has a `step_role` or `hold`:
-- **SETUP:** agent status EXITED. The orchestrator fails the run naming the step (FR-212): "agent lost when its
-  daemon restarted during setup step N/M (<text>)".
-- **ACTION:** agent status EXITED. The orchestrator handles it as an agent exit during a run today (`foldStatus`:
-  "agent exited"), and the cleanup that follows a close runs per FR-215/FR-216 (below).
-- **CLEANUP, or any hold:** `hold = NEEDS_DEVELOPER`, set by the daemon itself (as `leaveRunning` does). `WarmStart`
-  doesn't start an agent for a held sandbox. Opening its terminal (`t`) starts a fresh one, whose `startup` ends the
-  hold (FR-216).
+**Decision.** After a restart, such an agent is an **orphan**: alive but neither typeable nor readable. The daemon
+detects it: `!agents.Live(id)` while the recorded agent status is neither EXITED nor none. The recovery depends on the
+run's phase:
+- **ACTION** (the action step TURN or AWAIT_CLOSE): **left in flight**, exactly as for runs without steps today.
+  - Hooks keep the status current, and the agent's completion report closes the run normally.
+  - At close, cleanup can't be typed into an orphan, so the hold is `NEEDS_DEVELOPER` (R5's "close on a sandbox
+    whose agent can't be typed into" rule).
+- **SETUP**, or an action step not yet accepted: the current step **halts** with `step_sent_before_restart` (when it
+  had been sent) and the note `agent detached by a daemon restart; R or S starts a fresh agent`.
+  - A turn already running on the orphan may still finish; that changes nothing, since the next step can't be typed
+    into it anyway.
+  - `R` and `S` first **replace the orphan** (kill it, then start a fresh agent through guard 5's start path), then
+    retry or skip as usual. The halt's confirm warns that the setup context is lost.
+  - `X` fails the run (FR-212). A run whose action step is in SENDING/SENT resolves first from the daemon record
+    (R5), and becomes ACTION or SETUP accordingly.
+- **CLEANUP, or any hold:** `hold = NEEDS_DEVELOPER`, set by the daemon itself. Opening the terminal (`t`) kills the
+  orphan, then starts a fresh agent, whose `startup` ends the hold (FR-216).
 
-So no step waits on an agent that is gone, nothing is read back from a screen that no longer exists (`check_only`
-answers `no live agent`), and no second `claude` is spawned by the step path (guard 5 starts one only for a `first`
-step on an unheld sandbox). R8's evidence-based resolution covers the remaining case, where the owning daemon kept
-running (a remote worker while the orchestrator restarted, or a lost link).
+**Killing an orphan.** The launch command records the agent's in-sandbox PID before `exec` (`echo $$ >
+~/.sxb/agent.pid; exec claude …`; `exec` keeps the PID). To kill the orphan, the daemon sends `sbx exec <ref> sh -c
+'kill -TERM "$(cat ~/.sxb/agent.pid)"'` and waits up to 5 s, then sends KILL. This applies only:
+- before the spawns above (a step's `R`/`S` after a restart, and `t` on a held sandbox);
+- never to a sandbox whose orphan is working an ACTION step.
+
+After the kill, the previous hook token is retired (R13).
+
+**What is not claimed.** Nothing is read back from a screen that no longer exists: `check_only` answers `no live
+agent`. R8's evidence-based resolution still applies to steps whose evidence arrives by hook, which keeps working
+from an orphan.
