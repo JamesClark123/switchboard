@@ -13,8 +13,11 @@ import (
 // worker side writes it verbatim; the MCP server's instructions carry the
 // short form.
 
-// renderBriefing renders the block body for a worker (or the reasoning sandbox).
-func renderBriefing(name string, reasoning bool, actions []*pb.Action) string {
+// renderBriefing renders the block body for a worker (or the reasoning sandbox)
+// from the record: its name, actions and lanes (SWI-18 FR-321: lane names
+// only, never descriptions).
+func renderBriefing(rec *pb.Orchestrator, reasoning bool) string {
+	name, actions := rec.GetName(), rec.GetActions()
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Orchestrator: %s\n\n", name)
 	if reasoning {
@@ -60,8 +63,8 @@ func renderBriefing(name string, reasoning bool, actions []*pb.Action) string {
 			}
 			fmt.Fprintf(&b, " Arguments: %s.", strings.Join(args, ", "))
 		}
-		if a.GetWorkerTag() != "" {
-			fmt.Fprintf(&b, " Workers tagged #%s only.", a.GetWorkerTag())
+		if a.GetType() == pb.ActionType_ACTION_TYPE_PROMPT {
+			b.WriteString(" " + laneSentence(rec, a))
 		}
 	}
 	return b.String()
@@ -77,16 +80,19 @@ func RenderInstructions(name string, reasoning bool) string {
 	return fmt.Sprintf("This sandbox is %s of the switchboard orchestrator %q. Runs arrive as framed prompts; every run ends with orchestrator_report_completion (one short summary, once per run; retry if it fails). orchestrator_list_actions lists what you may delegate, orchestrator_call_action queues it on another sandbox, orchestrator_check_run reads a delegated run's outcome.", role, name)
 }
 
-// pushBriefings sends the current name + briefing to every reachable worker
-// (rename, action changes); hosts that are down catch up on reconnect.
-func (rt *runtime) pushBriefings() {
-	for _, h := range rt.hostIDs() {
-		api, err := rt.apiFor(h)
-		if err != nil {
-			continue
-		}
-		ctx, cancel := rt.callCtx(unaryTimeout)
-		rt.pushBriefingsTo(ctx, h, api)
-		cancel()
+// laneSentence is the briefing line for a prompt action's lanes
+// (contracts/dispatch.md "Agent-facing text").
+func laneSentence(rec *pb.Orchestrator, a *pb.Action) string {
+	names := laneNames(rec, a.GetLaneIds())
+	if len(names) == 0 {
+		return "Runs only on open-lane workers (workers in no lane)."
 	}
+	label := "lane " + names[0]
+	if len(names) > 1 {
+		label = "lanes " + strings.Join(names, ", ")
+	}
+	if a.GetLaneMode() == pb.LaneMode_LANE_MODE_INCLUSIVE {
+		return "Runs on workers in " + label + ", or on any open-lane worker."
+	}
+	return "Runs only on workers in " + label + "."
 }

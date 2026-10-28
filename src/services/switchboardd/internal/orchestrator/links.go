@@ -218,18 +218,24 @@ func (l *hostLink) connect(ctx context.Context) (WorkerAPI, *dial.Conn, error) {
 	return worker.Remote(conn.API()), conn, nil
 }
 
-// serve reconciles the host, then runs the status stream and the relay stream
-// until either ends. Returns the error that ended it.
+// serve subscribes to the host's events and starts reading them at once, then
+// reconciles it (off the reader, research R5), then opens the relay link, and
+// runs until a stream ends. An events_dropped marker on the subscription
+// re-runs a list-and-apply reconcile, coalesced. Returns the error that ended it.
 func (l *hostLink) serve(ctx context.Context, api WorkerAPI) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if err := l.rt.reconcile(sctx, l.hostID, api); err != nil {
-		return err
-	}
 	events, err := api.Subscribe(sctx)
 	if err != nil {
 		return err
 	}
+	errc := make(chan error, 4)
+	resync := make(chan struct{}, 1)
+	go func() { errc <- l.readEvents(sctx, events, resync) }()
+	if err := l.rt.reconcile(sctx, l.hostID, api, true); err != nil {
+		return err
+	}
+	go func() { errc <- l.resyncLoop(sctx, api, resync) }()
 	link, err := api.OpenLink(sctx)
 	if err != nil {
 		return err
@@ -245,8 +251,6 @@ func (l *hostLink) serve(ctx context.Context, api WorkerAPI) error {
 		l.link = nil
 		l.mu.Unlock()
 	}()
-	errc := make(chan error, 3)
-	go func() { errc <- l.readEvents(sctx, events) }()
 	go func() { errc <- l.readLink(sctx, link) }()
 	go func() { errc <- l.ping(sctx, link) }()
 	l.rt.triggerDispatch()
@@ -258,14 +262,37 @@ func (l *hostLink) serve(ctx context.Context, api WorkerAPI) error {
 	}
 }
 
-// readEvents folds the host's sandbox events into the runtime.
-func (l *hostLink) readEvents(ctx context.Context, events worker.EventStream) error {
+// readEvents folds the host's sandbox events into the runtime; an
+// events_dropped marker asks for a resync (coalesced: one pending at most).
+func (l *hostLink) readEvents(ctx context.Context, events worker.EventStream, resync chan<- struct{}) error {
 	for {
 		ev, err := events.Recv()
 		if err != nil {
 			return fmt.Errorf("status stream: %w", err)
 		}
+		if ev.GetEventsDropped() != nil {
+			select {
+			case resync <- struct{}{}:
+			default:
+			}
+			continue
+		}
 		l.rt.onSandboxEvent(ctx, l.hostID, ev)
+	}
+}
+
+// resyncLoop re-lists the host after the hub dropped events for this link: it
+// lists and applies only, pushing no names or briefings (research R6).
+func (l *hostLink) resyncLoop(ctx context.Context, api WorkerAPI, resync <-chan struct{}) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-resync:
+			if err := l.rt.reconcile(ctx, l.hostID, api, false); err != nil {
+				return err
+			}
+		}
 	}
 }
 

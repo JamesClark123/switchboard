@@ -341,7 +341,7 @@ func (s *Service) Rename(id, name string) (*pb.Orchestrator, error) {
 		return nil, err
 	}
 	s.emitChanged(id)
-	rt.pushBriefings()
+	rt.requestBriefing()
 	return rec, nil
 }
 

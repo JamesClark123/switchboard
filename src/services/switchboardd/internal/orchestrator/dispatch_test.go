@@ -353,11 +353,14 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Errorf("a refused delivery keeps the run queued: %v", got.GetState())
 	}
-	// The sandbox vanishes on the far side: delivery fails the run.
+	// The sandbox vanishes on the far side while the orchestrator's latest
+	// record (a status event that raced the delete) reads it idle: delivery
+	// fails the run.
+	idle := w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE })
 	w.mu.Lock()
 	delete(w.sbs, "wa")
 	w.mu.Unlock()
-	rt.triggerDispatch()
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: idle}}
 	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r1.GetId())
@@ -447,7 +450,13 @@ func TestRefusedDeliveryFallsThroughToTheNextWorker(t *testing.T) {
 	env, w, o, rt := dispatchEnv(t, 2, false)
 	// The worker side refuses wa (as for an agent not ready yet), while the
 	// orchestrator's cached record still reads it free.
-	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_STARTING })
+	w.mu.Lock()
+	w.onDeliver = func(req *pb.DeliverWorkerPromptRequest) {
+		if req.GetSandboxId() == "wa" {
+			w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_STARTING })
+		}
+	}
+	w.mu.Unlock()
 	r1 := call(t, env, o.GetId(), "1")
 	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), r1.GetId()) == pb.RunState_RUN_STATE_RUNNING })

@@ -150,6 +150,89 @@ func (r *Registry) UpdateOrchestrator(id string, mutate func(*pb.Orchestrator) e
 	return out, nil
 }
 
+// RunTx is the run bucket of one orchestrator inside an UpdateOrchestratorRuns
+// transaction (SWI-18 research R7).
+type RunTx interface {
+	// NextSeq increments and returns the receipt sequence, as NextRunSeq.
+	NextSeq() (uint64, error)
+	// Put inserts or replaces a run of this orchestrator.
+	Put(*pb.Run) error
+	// Get returns one run, or ErrRunNotFound.
+	Get(runID string) (*pb.Run, error)
+	// Queued returns the QUEUED runs in receipt order.
+	Queued() ([]*pb.Run, error)
+}
+
+type runTx struct {
+	b      *bolt.Bucket
+	orchID string
+}
+
+func (t runTx) NextSeq() (uint64, error) { return nextSeq(t.b, t.orchID) }
+
+func (t runTx) Put(run *pb.Run) error {
+	if run.GetOrchestratorId() != t.orchID {
+		return errors.New("run belongs to another orchestrator")
+	}
+	return putRun(t.b, run)
+}
+
+func (t runTx) Get(runID string) (*pb.Run, error) { return getRun(t.b, t.orchID, runID) }
+
+func (t runTx) Queued() ([]*pb.Run, error) { return queuedRuns(t.b, t.orchID) }
+
+// UpdateOrchestratorRuns runs fn with the record and its run bucket in one bolt
+// write transaction, then writes the record back (SWI-18 research R7). An error
+// from fn writes nothing to either bucket. fn must not call the registry: bolt's
+// writer lock is not re-entrant.
+func (r *Registry) UpdateOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, runs RunTx) error) (*pb.Orchestrator, error) {
+	var out *pb.Orchestrator
+	err := r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(orchestratorsBucket)
+		blob := b.Get([]byte(id))
+		if blob == nil {
+			return ErrOrchestratorNotFound
+		}
+		o := &pb.Orchestrator{}
+		if e := proto.Unmarshal(blob, o); e != nil {
+			return e
+		}
+		if e := fn(o, runTx{b: tx.Bucket(runsBucket), orchID: id}); e != nil {
+			return e
+		}
+		nb, e := proto.Marshal(o)
+		if e != nil {
+			return e
+		}
+		out = o
+		return b.Put([]byte(id), nb)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ViewOrchestratorRuns hands fn the record and its QUEUED runs (receipt order)
+// read in one bolt View, so both come from the same commit (SWI-18 research R7).
+func (r *Registry) ViewOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, queued []*pb.Run) error) error {
+	return r.db.View(func(tx *bolt.Tx) error {
+		blob := tx.Bucket(orchestratorsBucket).Get([]byte(id))
+		if blob == nil {
+			return ErrOrchestratorNotFound
+		}
+		o := &pb.Orchestrator{}
+		if e := proto.Unmarshal(blob, o); e != nil {
+			return e
+		}
+		queued, e := queuedRuns(tx.Bucket(runsBucket), id)
+		if e != nil {
+			return e
+		}
+		return fn(o, queued)
+	})
+}
+
 // DeleteOrchestrator removes the record and every run (and the sequence
 // counter) under its prefix in one transaction. A missing id is not an error.
 func (r *Registry) DeleteOrchestrator(id string) error {
@@ -180,22 +263,32 @@ func (r *Registry) DeleteOrchestrator(id string) error {
 func (r *Registry) NextRunSeq(orchID string) (uint64, error) {
 	var seq uint64
 	err := r.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(runsBucket)
-		key := []byte(orchID + "/" + runSeqSuffix)
-		if cur := b.Get(key); len(cur) == 8 {
-			seq = binary.BigEndian.Uint64(cur)
-		}
-		seq++
-		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf, seq)
-		return b.Put(key, buf)
+		var e error
+		seq, e = nextSeq(tx.Bucket(runsBucket), orchID)
+		return e
 	})
 	return seq, err
+}
+
+func nextSeq(b *bolt.Bucket, orchID string) (uint64, error) {
+	var seq uint64
+	key := []byte(orchID + "/" + runSeqSuffix)
+	if cur := b.Get(key); len(cur) == 8 {
+		seq = binary.BigEndian.Uint64(cur)
+	}
+	seq++
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, seq)
+	return seq, b.Put(key, buf)
 }
 
 // PutRun inserts or replaces a run under its receipt-ordered key. The run must
 // carry orchestrator_id and an id of the form run-<x>-<seq>.
 func (r *Registry) PutRun(run *pb.Run) error {
+	return r.db.Update(func(tx *bolt.Tx) error { return putRun(tx.Bucket(runsBucket), run) })
+}
+
+func putRun(b *bolt.Bucket, run *pb.Run) error {
 	if run.GetOrchestratorId() == "" || RunSeq(run.GetId()) == 0 {
 		return errors.New("run needs an orchestrator id and a sequenced run id")
 	}
@@ -203,28 +296,16 @@ func (r *Registry) PutRun(run *pb.Run) error {
 	if err != nil {
 		return fmt.Errorf("marshal run: %w", err)
 	}
-	return r.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(runsBucket).Put(runKey(run.GetOrchestratorId(), RunSeq(run.GetId())), blob)
-	})
+	return b.Put(runKey(run.GetOrchestratorId(), RunSeq(run.GetId())), blob)
 }
 
 // GetRun returns one run, or ErrRunNotFound.
 func (r *Registry) GetRun(orchID, runID string) (*pb.Run, error) {
 	var out *pb.Run
 	err := r.db.View(func(tx *bolt.Tx) error {
-		blob := tx.Bucket(runsBucket).Get(runKey(orchID, RunSeq(runID)))
-		if blob == nil {
-			return ErrRunNotFound
-		}
-		run := &pb.Run{}
-		if e := proto.Unmarshal(blob, run); e != nil {
-			return e
-		}
-		if run.GetId() != runID {
-			return ErrRunNotFound
-		}
-		out = run
-		return nil
+		var e error
+		out, e = getRun(tx.Bucket(runsBucket), orchID, runID)
+		return e
 	})
 	if err != nil {
 		return nil, err
@@ -232,29 +313,58 @@ func (r *Registry) GetRun(orchID, runID string) (*pb.Run, error) {
 	return out, nil
 }
 
+func getRun(b *bolt.Bucket, orchID, runID string) (*pb.Run, error) {
+	blob := b.Get(runKey(orchID, RunSeq(runID)))
+	if blob == nil {
+		return nil, ErrRunNotFound
+	}
+	run := &pb.Run{}
+	if e := proto.Unmarshal(blob, run); e != nil {
+		return nil, e
+	}
+	if run.GetId() != runID {
+		return nil, ErrRunNotFound
+	}
+	return run, nil
+}
+
 // ListRuns returns the orchestrator's runs in order of receipt (key order).
 func (r *Registry) ListRuns(orchID string) ([]*pb.Run, error) {
 	var out []*pb.Run
-	prefix := []byte(orchID + "/")
-	seqKey := []byte(orchID + "/" + runSeqSuffix)
 	err := r.db.View(func(tx *bolt.Tx) error {
-		c := tx.Bucket(runsBucket).Cursor()
-		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			if bytes.Equal(k, seqKey) {
-				continue
-			}
-			run := &pb.Run{}
-			if e := proto.Unmarshal(v, run); e != nil {
-				return e
-			}
-			out = append(out, run)
-		}
-		return nil
+		var e error
+		out, e = scanRuns(tx.Bucket(runsBucket), orchID, func(*pb.Run) bool { return true })
+		return e
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// scanRuns returns the orchestrator's runs that keep accepts, in receipt order.
+func scanRuns(b *bolt.Bucket, orchID string, keep func(*pb.Run) bool) ([]*pb.Run, error) {
+	var out []*pb.Run
+	prefix := []byte(orchID + "/")
+	seqKey := []byte(orchID + "/" + runSeqSuffix)
+	c := b.Cursor()
+	for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+		if bytes.Equal(k, seqKey) {
+			continue
+		}
+		run := &pb.Run{}
+		if e := proto.Unmarshal(v, run); e != nil {
+			return nil, e
+		}
+		if keep(run) {
+			out = append(out, run)
+		}
+	}
+	return out, nil
+}
+
+func queuedRuns(b *bolt.Bucket, orchID string) ([]*pb.Run, error) {
+	return scanRuns(b, orchID, func(r *pb.Run) bool { return r.GetState() == pb.RunState_RUN_STATE_QUEUED })
 }
 
 // DeleteRun removes one run. A missing run is not an error.

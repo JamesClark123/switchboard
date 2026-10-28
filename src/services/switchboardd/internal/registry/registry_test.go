@@ -140,3 +140,39 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Fatalf("reopened Get = %v / %q", err, got.GetDisplayName())
 	}
 }
+
+// SWI-18 (research R3): the registry stamps Sandbox.revision on every write —
+// monotonic across Put and Update, kept across a reopen, never caller-set.
+func TestSandboxRevisionStamped(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Put(&pb.Sandbox{Id: "a", Revision: 99}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Get("a"); got.GetRevision() != 1 {
+		t.Fatalf("first Put revision = %d, want 1 (caller value overwritten)", got.GetRevision())
+	}
+	up, err := r.Update("a", func(s *pb.Sandbox) error { s.Revision = 0; return nil })
+	if err != nil || up.GetRevision() != 2 {
+		t.Fatalf("Update revision = %d (%v), want 2", up.GetRevision(), err)
+	}
+	if err := r.Put(&pb.Sandbox{Id: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	r2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	if got, _ := r2.Get("a"); got.GetRevision() != 3 {
+		t.Fatalf("revision after reopen = %d, want 3", got.GetRevision())
+	}
+	up, _ = r2.Update("a", func(*pb.Sandbox) error { return nil })
+	if up.GetRevision() != 4 {
+		t.Fatalf("Update after reopen = %d, want 4", up.GetRevision())
+	}
+}

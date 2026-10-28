@@ -6,84 +6,110 @@ import (
 	"sort"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
-	"google.golang.org/protobuf/proto"
 )
 
-// reconcile re-reads a host's sandboxes on (re)connect (research R6): records
-// that name this orchestrator are adopted into the roster, roster entries whose
-// record no longer carries it are dropped (failing any run on them), the latest
-// name + briefing are pushed, and in-flight runs are re-checked (FR-134).
-func (rt *runtime) reconcile(ctx context.Context, hostID string, api WorkerAPI) error {
-	rt.reconcileMu.Lock()
-	defer rt.reconcileMu.Unlock()
+// reconcile re-reads a host's sandboxes (research R4/R5): roster_seq is read
+// before the listing, the listing is made with no lock held, and the result is
+// applied through applyRecords in one update — records naming this
+// orchestrator are adopted, roster entries whose record no longer names it (or
+// that the listing lacks) are dropped, failing any run on them. A full
+// reconcile (the link (re)connected) also pushes the host's workers their
+// name, briefing and lanes; one triggered by an events_dropped marker lists
+// and applies only. In-flight runs are re-checked either way (FR-134).
+func (rt *runtime) reconcile(ctx context.Context, hostID string, api WorkerAPI, full bool) error {
+	requested := rt.record().GetRosterSeq()
 	rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 	sbs, err := api.ListSandboxes(rctx)
 	if err != nil {
 		return fmt.Errorf("list sandboxes: %w", err)
 	}
-	mine := map[string]*pb.Sandbox{}
-	for _, sb := range sbs {
-		if sb.GetController().GetOrchestratorId() == rt.id {
-			mine[sb.GetId()] = sb
-		}
-	}
-	// Roster: adopt + drop.
-	var dropped []string
-	if _, err := rt.update(func(o *pb.Orchestrator) error {
-		kept := o.Workers[:0]
-		for _, w := range o.Workers {
-			if w.GetHostId() != hostID {
-				kept = append(kept, w)
-				continue
-			}
-			if _, ok := mine[w.GetSandboxId()]; ok {
-				kept = append(kept, w)
-			} else {
-				dropped = append(dropped, w.GetSandboxId())
-			}
-		}
-		o.Workers = kept
-		for id, sb := range mine {
-			if !rosterHas(o, id) {
-				o.Workers = append(o.Workers, &pb.Worker{SandboxId: id, HostId: hostID, AttachedAt: sb.GetController().GetAttachedAt(), Reasoning: sb.GetController().GetReasoning()})
-			}
-			if sb.GetController().GetReasoning() {
-				o.ReasoningSandboxId = id
-			}
-		}
-		return nil
-	}); err != nil {
+	if _, err := rt.applyRoster(rosterInput{source: srcListing, hostID: hostID, requestedSeq: requested, records: sbs}); err != nil {
 		return err
 	}
-	rt.mu.Lock()
-	for id, sb := range rt.sbs {
-		if sb.GetHostId() == hostID || hostOf(rt.rec, id) == hostID {
-			if _, ok := mine[id]; !ok {
-				delete(rt.sbs, id)
-			}
-		}
+	if full {
+		rt.pushWorkerStateTo(ctx, hostID, api)
 	}
-	for id, sb := range mine {
-		rt.sbs[id] = proto.Clone(sb).(*pb.Sandbox)
-	}
-	rt.mu.Unlock()
-	for _, id := range dropped {
-		rt.failRunsOn(id, "worker detached")
-	}
-	if hostID == rt.svc.hostID {
-		if rid := rt.record().GetReasoningSandboxId(); rid != "" {
-			if _, ok := mine[rid]; !ok {
-				rt.reasoningLost()
-			}
-		}
-	}
-	rt.pushBriefingsTo(ctx, hostID, api)
 	rt.reconcileInFlight(hostID)
-	if len(mine) > 0 || len(dropped) > 0 {
-		rt.svc.emitChanged(rt.id)
-	}
+	rt.svc.emitChanged(rt.id)
 	return nil
+}
+
+// applyRoster applies observed records through applyRecords in one update:
+// the records are cached first (the cache keeps the newest), the rules read a
+// snapshot of the cache, and removals evict their entries afterwards. Nothing
+// is written when nothing changed. The follow-ups run after the commit.
+func (rt *runtime) applyRoster(in rosterInput) (rosterResult, error) {
+	var res rosterResult
+	now := rt.svc.clock.Now()
+	_, err := rt.update(func(o *pb.Orchestrator) error {
+		rt.mu.Lock()
+		for _, sb := range in.records {
+			if sb.GetState() != pb.SandboxState_SANDBOX_STATE_DESTROYING && rt.relevantLocked(o, sb) {
+				rt.cacheLocked(sb)
+			}
+		}
+		in.cache = rt.snapshotCacheLocked(in.rosterIDs())
+		rt.mu.Unlock()
+		res = applyRecords(o, in, now)
+		if !res.changed {
+			return errNoChange
+		}
+		return nil
+	})
+	if len(res.evict) > 0 {
+		rt.mu.Lock()
+		for _, id := range res.evict {
+			delete(rt.sbs, id)
+		}
+		rt.mu.Unlock()
+	}
+	if err != nil {
+		return rosterResult{}, err
+	}
+	rt.afterRoster(res)
+	return res, nil
+}
+
+// relevantLocked reports whether a record concerns this orchestrator, so it is
+// worth caching: it names this orchestrator, is on the roster, is cached
+// already or has a (non-removed) high-water mark. Caller holds mu.
+func (rt *runtime) relevantLocked(o *pb.Orchestrator, sb *pb.Sandbox) bool {
+	id := sb.GetId()
+	if m := o.GetHighWaterMarks()[id]; m.GetRemoved() {
+		return false
+	} else if m != nil {
+		return true
+	}
+	if _, ok := rt.sbs[id]; ok {
+		return true
+	}
+	return sb.GetController().GetOrchestratorId() == rt.id || rosterHas(o, id)
+}
+
+// afterRoster runs a committed roster change's follow-ups: runs on dropped
+// workers fail, a lost reasoning sandbox is recorded, adopted workers get
+// their lanes shown and the briefing, and a dispatch pass is asked for.
+func (rt *runtime) afterRoster(res rosterResult) {
+	if !res.changed {
+		return
+	}
+	for _, d := range res.dropped {
+		reason := "worker detached"
+		if d.removedEvent {
+			reason = "sandbox removed"
+		}
+		rt.failRunsOn(d.id, reason)
+	}
+	if res.reasoningLost {
+		rt.setReasoningErr(reasoningLostReason)
+	}
+	if len(res.adopted) > 0 {
+		rt.markLanes(res.adopted...)
+		rt.requestBriefing()
+	}
+	rt.svc.emitChanged(rt.id)
+	rt.triggerDispatch()
 }
 
 func rosterHas(o *pb.Orchestrator, sandboxID string) bool {
@@ -162,12 +188,13 @@ func (rt *runtime) bundle() *pb.WorkerBundle {
 	rec := rt.record()
 	return &pb.WorkerBundle{
 		Controller: &pb.SandboxController{OrchestratorId: rt.id, Name: rec.GetName(), HostId: rt.svc.hostID},
-		Briefing:   renderBriefing(rec.GetName(), false, rec.GetActions()),
+		Briefing:   renderBriefing(rec, false),
 	}
 }
 
 // attach records this orchestrator as the controller of an existing sandbox
-// through its host's link (FR-107/FR-108).
+// through its host's link (FR-107/FR-108); the reply is applied through
+// applyRecords, so a newer record already seen (a direct detach) wins.
 func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string) (*pb.WorkerView, error) {
 	api, err := rt.awaitAPI(ctx, hostID)
 	if err != nil {
@@ -179,38 +206,33 @@ func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string) (*pb.Wo
 	sb, err := api.AttachController(cctx, &pb.AttachControllerRequest{
 		SandboxId:  sandboxID,
 		Controller: &pb.SandboxController{OrchestratorId: rt.id, Name: rec.GetName(), HostId: rt.svc.hostID},
-		Briefing:   renderBriefing(rec.GetName(), false, rec.GetActions()),
+		Briefing:   renderBriefing(rec, false),
 	})
 	if err != nil {
 		return nil, remoteErr(err, hostID)
 	}
-	// Committed under reconcileMu, like a reasoning launch: a reconcile whose
-	// listing predates the attach would otherwise drop the new worker.
-	rt.reconcileMu.Lock()
-	if _, err := rt.update(func(o *pb.Orchestrator) error {
-		if !rosterHas(o, sandboxID) {
-			o.Workers = append(o.Workers, &pb.Worker{SandboxId: sandboxID, HostId: hostID, AttachedAt: sb.GetController().GetAttachedAt()})
-		}
-		return nil
-	}); err != nil {
-		rt.reconcileMu.Unlock()
+	if _, err := rt.applyRoster(rosterInput{source: srcAttachReply, hostID: hostID, records: []*pb.Sandbox{sb}}); err != nil {
 		return nil, err
 	}
-	rt.mu.Lock()
-	rt.sbs[sandboxID] = proto.Clone(sb).(*pb.Sandbox)
-	rt.mu.Unlock()
-	rt.reconcileMu.Unlock()
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
-	up, _ := rt.reachability(hostID)
-	return &pb.WorkerView{
-		SandboxId: sandboxID, HostId: hostID, DisplayName: sb.GetDisplayName(), Tag: sb.GetTag(),
-		State: sb.GetState(), AgentStatus: sb.GetAgent().GetStatus(), Availability: availability(sb, up), HostReachable: up,
-	}, nil
+	return rt.workerView(sandboxID), nil
+}
+
+// workerView renders one roster entry (nil-safe: an entry that left the roster
+// renders from its id alone).
+func (rt *runtime) workerView(sandboxID string) *pb.WorkerView {
+	for _, v := range rt.workerViews() {
+		if v.GetSandboxId() == sandboxID {
+			return v
+		}
+	}
+	return &pb.WorkerView{SandboxId: sandboxID}
 }
 
 // detach clears the controller on a worker through its link (FR-111): refused
-// while a run is recorded on it and for the reasoning sandbox.
+// while a run is recorded on it and for the reasoning sandbox. The reply is
+// applied through applyRecords.
 func (rt *runtime) detach(ctx context.Context, sandboxID string) error {
 	rec := rt.record()
 	hostID := hostOf(rec, sandboxID)
@@ -231,33 +253,15 @@ func (rt *runtime) detach(ctx context.Context, sandboxID string) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, unaryTimeout)
 	defer cancel()
-	if _, err := api.DetachController(cctx, &pb.DetachControllerRequest{SandboxId: sandboxID, OrchestratorId: rt.id}); err != nil {
+	sb, err := api.DetachController(cctx, &pb.DetachControllerRequest{SandboxId: sandboxID, OrchestratorId: rt.id})
+	if err != nil {
 		return remoteErr(err, hostID)
 	}
-	// Under reconcileMu: a reconcile whose listing predates the detach would
-	// otherwise re-adopt the worker it still shows as controlled.
-	rt.reconcileMu.Lock()
-	rt.dropWorker(sandboxID)
-	rt.reconcileMu.Unlock()
+	if _, err := rt.applyRoster(rosterInput{source: srcDetachReply, hostID: hostID, records: []*pb.Sandbox{sb}}); err != nil {
+		return err
+	}
 	rt.svc.emitChanged(rt.id)
 	return nil
-}
-
-// dropWorker removes a sandbox from the roster and the record cache.
-func (rt *runtime) dropWorker(sandboxID string) {
-	_, _ = rt.update(func(o *pb.Orchestrator) error {
-		kept := o.Workers[:0]
-		for _, w := range o.Workers {
-			if w.GetSandboxId() != sandboxID {
-				kept = append(kept, w)
-			}
-		}
-		o.Workers = kept
-		return nil
-	})
-	rt.mu.Lock()
-	delete(rt.sbs, sandboxID)
-	rt.mu.Unlock()
 }
 
 // detachAll detaches every reachable worker with force (orchestrator removal,

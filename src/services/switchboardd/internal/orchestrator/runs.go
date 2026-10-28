@@ -209,7 +209,7 @@ func (rt *runtime) clearNeedsInput(hostID, sandboxID string) error {
 		return err
 	}
 	rt.mu.Lock()
-	rt.sbs[sandboxID] = sb
+	rt.cacheLocked(sb)
 	rt.mu.Unlock()
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
@@ -496,7 +496,7 @@ func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun) {
 		return
 	}
 	rt.mu.Lock()
-	rt.sbs[sandboxID] = sb
+	rt.cacheLocked(sb)
 	rt.mu.Unlock()
 	if run == nil {
 		// The worker may be free now; don't rely on its host's status event.
@@ -542,48 +542,63 @@ func (rt *runtime) closeAllRuns(reason string) (failed, cancelled uint32) {
 // --- status folding (research R7) ---
 
 // onSandboxEvent folds a host's sandbox event into the runtime: the latest
-// record per worker, and the in-flight run on it.
+// record per relevant sandbox, roster adoption and drops (through
+// applyRecords, research R4), and the in-flight run on it.
 func (rt *runtime) onSandboxEvent(_ context.Context, hostID string, ev *pb.Event) {
 	switch e := ev.GetEvent().(type) {
 	case *pb.Event_SandboxChanged:
 		sb := e.SandboxChanged
-		rt.mu.Lock()
-		mine := hostOf(rt.rec, sb.GetId()) != "" || sb.GetController().GetOrchestratorId() == rt.id
-		if mine {
-			rt.sbs[sb.GetId()] = sb
-		}
-		rt.mu.Unlock()
-		if !mine {
-			return
-		}
 		if sb.GetState() == pb.SandboxState_SANDBOX_STATE_DESTROYING {
-			rt.onSandboxRemoved(sb.GetId())
+			rt.onSandboxRemoved(hostID, sb.GetId())
 			return
 		}
-		rt.foldStatus(sb)
+		if !rt.observe(hostID, sb) {
+			return
+		}
+		if cur := rt.sandboxRecord(sb.GetId()); cur != nil {
+			rt.foldStatus(cur)
+		}
 		rt.triggerDispatch()
 	case *pb.Event_Removed:
-		rt.onSandboxRemoved(e.Removed.GetSandboxId())
+		rt.onSandboxRemoved(hostID, e.Removed.GetSandboxId())
 	}
 }
 
-// onSandboxRemoved fails any run on a removed sandbox and drops it.
-func (rt *runtime) onSandboxRemoved(sandboxID string) {
+// observe caches an event's record when it concerns this orchestrator and,
+// when applying it would change the roster, applies it. Status-only events
+// touch only the cache, under mu: they never wait on a record write.
+func (rt *runtime) observe(hostID string, sb *pb.Sandbox) bool {
+	in := rosterInput{source: srcEvent, hostID: hostID, records: []*pb.Sandbox{sb}}
 	rt.mu.Lock()
-	_, known := rt.sbs[sandboxID]
-	onRoster := hostOf(rt.rec, sandboxID) != ""
-	delete(rt.sbs, sandboxID)
+	if !rt.relevantLocked(rt.rec, sb) {
+		rt.mu.Unlock()
+		return false
+	}
+	rt.cacheLocked(sb)
+	in.cache = rt.snapshotCacheLocked(in.rosterIDs())
+	dry := applyRecords(proto.Clone(rt.rec).(*pb.Orchestrator), in, rt.svc.clock.Now())
 	rt.mu.Unlock()
-	if !known && !onRoster {
-		return
+	if dry.changed {
+		if _, err := rt.applyRoster(in); err != nil {
+			rt.svc.logf("[orchestrator %s] apply event for %s: %v", rt.name(), sb.GetId(), err)
+		}
 	}
-	rt.failRunsOn(sandboxID, "sandbox removed")
-	rt.dropWorker(sandboxID)
-	if rt.record().GetReasoningSandboxId() == sandboxID {
-		rt.reasoningLost()
+	return true
+}
+
+// onSandboxRemoved applies a removal: terminal for a roster sandbox (runs on
+// it fail, the entry and cache go, a removed mark stops re-adoption).
+func (rt *runtime) onSandboxRemoved(hostID, sandboxID string) {
+	rt.mu.Lock()
+	_, cached := rt.sbs[sandboxID]
+	tracked := cached || hostOf(rt.rec, sandboxID) != "" || rt.rec.GetHighWaterMarks()[sandboxID] != nil
+	rt.mu.Unlock()
+	if !tracked {
+		return // an unrelated sandbox: nothing to write
 	}
-	rt.svc.emitChanged(rt.id)
-	rt.triggerDispatch()
+	if _, err := rt.applyRoster(rosterInput{source: srcRemoval, hostID: hostID, ids: []string{sandboxID}}); err != nil {
+		rt.svc.logf("[orchestrator %s] apply removal of %s: %v", rt.name(), sandboxID, err)
+	}
 }
 
 // foldStatus maps a worker's record onto the run on it (data-model state machine).

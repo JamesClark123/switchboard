@@ -135,7 +135,7 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.reconcile(context.Background(), "box", api); err != nil {
+	if err := rt.reconcile(context.Background(), "box", api, true); err != nil {
 		t.Fatal(err)
 	}
 	rec, _ := env.reg.GetOrchestrator(o.GetId())
@@ -163,9 +163,8 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	if _, err := env.svc.Rename(o.GetId(), "rb2"); err != nil {
 		t.Fatal(err)
 	}
-	if w.get("sb-launched").GetController().GetName() != "rb2" {
-		t.Errorf("remote name after rename = %q", w.get("sb-launched").GetController().GetName())
-	}
+	// The push runs in the background (SWI-18 FR-321).
+	waitFor(t, func() bool { return w.get("sb-launched").GetController().GetName() == "rb2" })
 	// Status events fold into the record cache; removal drops it.
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: &pb.Sandbox{Id: "sb-launched", State: pb.SandboxState_SANDBOX_STATE_STOPPED, Controller: launched.Controller}}}
 	waitFor(t, func() bool {
@@ -178,20 +177,26 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	}
 	w.events <- &pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: "sb-launched"}}}
 	waitFor(t, func() bool { return rt.sandboxRecord("sb-launched") == nil })
+	// A removal is terminal (SWI-18 FR-308c): a record for the id is ignored.
+	if rec, _ := env.reg.GetOrchestrator(o.GetId()); !rec.GetHighWaterMarks()["sb-launched"].GetRemoved() {
+		t.Errorf("removal should leave a removed mark: %v", rec.GetHighWaterMarks())
+	}
 	// Removing the orchestrator force-detaches reachable workers.
-	w.put(launched)
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-launched"); err != nil {
+	again := running("sb-again", "again")
+	w.put(again)
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-again"); err != nil {
 		t.Fatal(err)
 	}
+	quiesce(t, rt)
 	resp, err := env.svc.Remove(o.GetId())
 	if err != nil || resp.GetWorkersDetached() != 1 {
 		t.Errorf("remove = %+v / %v", resp, err)
 	}
-	if w.get("sb-launched").GetController() != nil {
+	if w.get("sb-again").GetController() != nil {
 		t.Error("remove should detach the remote worker")
 	}
 	last := w.recorded()[len(w.recorded())-1]
-	if last != "detach sb-launched force=true" {
+	if last != "detach sb-again force=true" {
 		t.Errorf("last remote call = %q", last)
 	}
 }
@@ -250,7 +255,7 @@ func reconcileAround(t *testing.T, w *fakeWorker, rt *runtime, op func()) {
 	}
 	stale := staleListAPI{WorkerAPI: api, listed: make(chan struct{}), release: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- rt.reconcile(bg(), "box", stale) }()
+	go func() { done <- rt.reconcile(bg(), "box", stale, true) }()
 	<-stale.listed
 	opDone := make(chan struct{})
 	go func() { op(); close(opDone) }()

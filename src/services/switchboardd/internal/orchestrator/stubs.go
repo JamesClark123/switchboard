@@ -17,29 +17,57 @@ func statusOf(err error) (error, bool) {
 	return nil, false
 }
 
-// --- user story 6 ---
-
-// pushBriefingsTo sends UpdateWorker{name, briefing} to this orchestrator's
-// workers on one host.
-func (rt *runtime) pushBriefingsTo(ctx context.Context, hostID string, api WorkerAPI) {
-	rec := rt.record()
-	for _, w := range rec.GetWorkers() {
+// pushWorkerStateTo sends UpdateWorker{name, briefing, lanes} to this
+// orchestrator's workers on one host (a reconnect, or a briefing refresh).
+// Each push holds the worker's pushMu and reads the record while holding it,
+// so of racing pushes the last to land carries the latest value (R12).
+func (rt *runtime) pushWorkerStateTo(ctx context.Context, hostID string, api WorkerAPI) {
+	for _, w := range rt.record().GetWorkers() {
 		if w.GetHostId() != hostID {
 			continue
 		}
-		name := rec.GetName()
-		briefing := renderBriefing(name, w.GetReasoning(), rec.GetActions())
-		cctx, cancel := context.WithTimeout(ctx, unaryTimeout)
-		sb, err := api.UpdateWorker(cctx, &pb.UpdateWorkerRequest{SandboxId: w.GetSandboxId(), OrchestratorId: rt.id, Name: &name, Briefing: &briefing})
-		cancel()
-		if err != nil {
-			rt.svc.logf("[orchestrator %s] update worker %s on %s: %v", name, w.GetSandboxId(), hostID, err)
-			continue
-		}
-		rt.mu.Lock()
-		rt.sbs[w.GetSandboxId()] = sb
-		rt.mu.Unlock()
+		rt.pushWorker(ctx, api, w.GetSandboxId(), true)
 	}
+}
+
+// pushWorker pushes one worker's display state: its lanes, and with full also
+// its orchestrator name and briefing. It reports whether the push failed.
+func (rt *runtime) pushWorker(ctx context.Context, api WorkerAPI, sandboxID string, full bool) error {
+	l := rt.workerPushLock(sandboxID)
+	l.Lock()
+	defer l.Unlock()
+	rec := rt.record()
+	var w *pb.Worker
+	for _, x := range rec.GetWorkers() {
+		if x.GetSandboxId() == sandboxID {
+			w = x
+		}
+	}
+	if w == nil {
+		return nil // left the roster meanwhile
+	}
+	req := &pb.UpdateWorkerRequest{SandboxId: sandboxID, OrchestratorId: rt.id}
+	if full {
+		name := rec.GetName()
+		briefing := renderBriefing(rec, w.GetReasoning())
+		req.Name, req.Briefing = &name, &briefing
+	}
+	if !w.GetReasoning() {
+		req.Lanes = &pb.WorkerLaneDisplay{Names: laneNames(rec, w.GetLaneIds()), Pending: w.GetLanesPending()}
+	} else if !full {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, unaryTimeout)
+	sb, err := api.UpdateWorker(cctx, req)
+	cancel()
+	if err != nil {
+		rt.svc.logf("[orchestrator %s] update worker %s on %s: %v", rec.GetName(), sandboxID, w.GetHostId(), err)
+		return err
+	}
+	rt.mu.Lock()
+	rt.cacheLocked(sb)
+	rt.mu.Unlock()
+	return nil
 }
 
 // hostIDs lists the hosts the runtime has links for.

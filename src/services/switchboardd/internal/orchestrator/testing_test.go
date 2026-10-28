@@ -220,6 +220,23 @@ func newEnv(t *testing.T) *testEnv {
 // 2-core CI runners, where a 3 s deadline proved flaky.
 const testWaitTimeout = 15 * time.Second
 
+// quiesce waits until the runtime's background pushes (briefings, lane
+// displays) are done.
+func quiesce(t *testing.T, rt *runtime) {
+	t.Helper()
+	waitFor(t, func() bool {
+		rt.brief.mu.Lock()
+		busy := rt.brief.running
+		rt.brief.mu.Unlock()
+		rt.lanes.mu.Lock()
+		for _, r := range rt.lanes.running {
+			busy = busy || r
+		}
+		rt.lanes.mu.Unlock()
+		return !busy
+	})
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(testWaitTimeout)
@@ -252,6 +269,19 @@ type fakeWorker struct {
 	// onDeliver, when set (under mu), runs at the start of each
 	// DeliverWorkerPrompt, before the fake decides; it may change records.
 	onDeliver func(req *pb.DeliverWorkerPromptRequest)
+	// noRevisions makes the fake a host that predates lanes: its records
+	// carry no revision (SWI-18 research R16). Otherwise every write stamps
+	// one, as the registry does (R3).
+	noRevisions bool
+}
+
+// stamp bumps a record's revision as the registry would (caller holds mu).
+func (w *fakeWorker) stamp(sb *pb.Sandbox, prev uint64) {
+	if w.noRevisions {
+		sb.Revision = 0
+		return
+	}
+	sb.Revision = prev + 1
 }
 
 func newFakeWorker(hostID string) *fakeWorker {
@@ -340,6 +370,7 @@ func (w *fakeWorker) AttachController(_ context.Context, req *pb.AttachControlle
 		return nil, status.Errorf(codes.AlreadyExists, "sandbox is controlled by %s", c.GetName())
 	}
 	sb.Controller = proto.Clone(req.GetController()).(*pb.SandboxController)
+	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
@@ -352,6 +383,7 @@ func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControlle
 		return nil, status.Error(codes.NotFound, "sandbox not found")
 	}
 	sb.Controller = nil
+	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
@@ -380,6 +412,12 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
 		}
 	}
+	if req.GetLanes() != nil {
+		sb.Controller.LaneNames = req.GetLanes().GetNames()
+		sb.Controller.LanesPending = req.GetLanes().GetPending()
+		sb.Controller.LanesKnown = true
+	}
+	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
@@ -406,6 +444,7 @@ func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorke
 		return nil, status.Error(codes.FailedPrecondition, "not free")
 	}
 	sb.Controller.Run = &pb.WorkerRun{Id: req.GetRunId(), Action: req.GetAction()}
+	w.stamp(sb, sb.GetRevision())
 	return &pb.DeliverWorkerPromptResponse{Accepted: true}, nil
 }
 
@@ -437,6 +476,7 @@ func (w *fakeWorker) recorded() []string {
 func (w *fakeWorker) put(sb *pb.Sandbox) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.stamp(sb, w.sbs[sb.GetId()].GetRevision())
 	w.sbs[sb.GetId()] = sb
 }
 
@@ -457,7 +497,9 @@ func (w *fakeWorker) update(id string, fn func(sb *pb.Sandbox)) *pb.Sandbox {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb := w.sbs[id]
+	prev := sb.GetRevision()
 	fn(sb)
+	w.stamp(sb, prev)
 	return proto.Clone(sb).(*pb.Sandbox)
 }
 

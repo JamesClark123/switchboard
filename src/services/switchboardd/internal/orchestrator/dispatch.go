@@ -143,7 +143,14 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
 	case err == nil && resp.GetAccepted():
 		rt.mu.Lock()
 		if sb, ok := rt.sbs[w.GetSandboxId()]; ok && sb.GetController() != nil {
+			// The worker took the run: it is busy until its record says
+			// otherwise. The delivery was a write on the host, so the record
+			// is at least one revision newer: a reply to a call made before
+			// it (a background push) can no longer read the worker free.
 			sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
+			if sb.GetRevision() != 0 {
+				sb.Revision++
+			}
 		}
 		rt.mu.Unlock()
 		if err := rt.startRun(run, w.GetSandboxId(), w.GetHostId()); err != nil {

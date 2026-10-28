@@ -22,10 +22,24 @@ type Hub struct {
 	mu     sync.Mutex
 	hostID string
 	buffer []*bufferedNotification
-	subs   map[int]chan *pb.Event
+	subs   map[int]*subscriber
 	nextID int
 	seq    int
 }
+
+// subscriber is one Subscribe stream's channel. The channel's last slot is kept
+// in reserve for the overflow marker (SWI-18 research R6): an event that does
+// not fit in the other slots is dropped, overflowed is set and one
+// Event{EventsDropped} takes the reserved slot. While overflowed, further
+// events are dropped (the marker covers them); the flag clears at the next
+// fan-out that finds the channel empty, i.e. once the reader caught up.
+type subscriber struct {
+	ch         chan *pb.Event
+	overflowed bool
+}
+
+// subBuffer is each subscriber's channel capacity, the reserved slot included.
+const subBuffer = 64
 
 type bufferedNotification struct {
 	ev        *pb.NotificationEvent
@@ -34,7 +48,7 @@ type bufferedNotification struct {
 
 // NewHub constructs a Hub for the given host.
 func NewHub(hostID string) *Hub {
-	return &Hub{hostID: hostID, subs: map[int]chan *pb.Event{}}
+	return &Hub{hostID: hostID, subs: map[int]*subscriber{}}
 }
 
 // Subscribe registers a subscriber. When replayUndelivered is set, the returned
@@ -45,8 +59,8 @@ func (h *Hub) Subscribe(replayUndelivered bool) (int, <-chan *pb.Event, []*pb.Ev
 	defer h.mu.Unlock()
 	id := h.nextID
 	h.nextID++
-	ch := make(chan *pb.Event, 64)
-	h.subs[id] = ch
+	ch := make(chan *pb.Event, subBuffer)
+	h.subs[id] = &subscriber{ch: ch}
 
 	var replay []*pb.Event
 	if replayUndelivered {
@@ -63,18 +77,32 @@ func (h *Hub) Subscribe(replayUndelivered bool) (int, <-chan *pb.Event, []*pb.Ev
 func (h *Hub) Unsubscribe(id int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if ch, ok := h.subs[id]; ok {
-		close(ch)
+	if s, ok := h.subs[id]; ok {
+		close(s.ch)
 		delete(h.subs, id)
 	}
 }
 
-// fanout delivers ev to every subscriber, dropping it for any whose buffer is
-// full (a slow client must not block the daemon).
+// fanout delivers ev to every subscriber without blocking (a slow client must
+// not block the daemon). A subscriber whose buffer is full but for the reserved
+// slot gets one EventsDropped marker instead, and nothing more until it has
+// drained its channel (research R6). Caller holds h.mu, so the channel only
+// shrinks between the length check and the send.
 func (h *Hub) fanout(ev *pb.Event) {
-	for _, ch := range h.subs {
+	for _, s := range h.subs {
+		if s.overflowed {
+			if len(s.ch) > 0 {
+				continue // still behind: the pending marker covers this event
+			}
+			s.overflowed = false
+		}
+		if len(s.ch) < cap(s.ch)-1 {
+			s.ch <- ev
+			continue
+		}
+		s.overflowed = true
 		select {
-		case ch <- ev:
+		case s.ch <- &pb.Event{Event: &pb.Event_EventsDropped{EventsDropped: &pb.EventsDropped{}}}:
 		default:
 		}
 	}

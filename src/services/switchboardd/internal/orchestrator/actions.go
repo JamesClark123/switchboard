@@ -205,7 +205,7 @@ func (s *Service) PutAction(id string, a *pb.Action) (*pb.Action, error) {
 		return nil, err
 	}
 	s.emitChanged(id)
-	rt.pushBriefings()
+	rt.requestBriefing()
 	rt.rearmScheduler()
 	return proto.Clone(saved).(*pb.Action), nil
 }
@@ -241,7 +241,7 @@ func (s *Service) DeleteAction(id, name string) ([]string, error) {
 		return nil, err
 	}
 	s.emitChanged(id)
-	rt.pushBriefings()
+	rt.requestBriefing()
 	rt.rearmScheduler()
 	return disabled, nil
 }
