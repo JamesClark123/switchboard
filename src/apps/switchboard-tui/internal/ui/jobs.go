@@ -329,7 +329,7 @@ func (m Model) jobsHelp() helpBindings {
 		return m.lanesHelp(surfaceJobs)
 	case j.form != nil:
 		hb := helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save")}
-		if _, ok := j.formVals.(*actionFormVals); ok {
+		if _, ok := j.formVals.(*actionFormVals); ok && m.hostHasLanes(j.formTarget.host) {
 			hb = append(hb, hkey("ctrl+l", "manage lanes"))
 		}
 		return append(hb, hkey("esc", "cancel"))

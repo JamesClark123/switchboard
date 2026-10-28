@@ -177,10 +177,36 @@ func (a *applier) dropFor(w *pb.Worker, removed, removedEvent bool) {
 	}
 }
 
+// foreign reports whether a roster entry or mark on host belongs to another
+// host than the one the input came from: a host never drops, removes or marks
+// another host's worker. Inputs with no host (local replies) are trusted.
+func (a *applier) foreign(host string) bool {
+	return a.in.hostID != "" && host != "" && host != a.in.hostID
+}
+
+// foreignTo reports whether sandbox id's roster entry or mark on rec belongs
+// to another host than host (the cache must not take such a record either).
+func foreignTo(rec *pb.Orchestrator, id, host string) bool {
+	if host == "" {
+		return false
+	}
+	if h := hostOf(rec, id); h != "" {
+		return h != host
+	}
+	h := rec.GetHighWaterMarks()[id].GetHostId()
+	return h != "" && h != host
+}
+
 // remove applies a removal (removed event, DESTROYING record, reasoning
 // destroy): terminal, whatever the revision (research R4).
 func (a *applier) remove(id string) {
 	cached := a.in.cache[id]
+	if w := a.entry(id); w != nil && a.foreign(w.GetHostId()) {
+		return
+	}
+	if m := a.mark(id); m != nil && a.foreign(m.GetHostId()) {
+		return
+	}
 	a.res.evict = append(a.res.evict, id)
 	if w := a.entry(id); w != nil {
 		a.dropFor(w, true, true)
@@ -290,6 +316,9 @@ func (a *applier) apply(sb *pb.Sandbox) {
 		host = r.GetHostId()
 	}
 	if w := a.entry(id); w != nil {
+		if a.foreign(w.GetHostId()) {
+			return // only the worker's own host speaks for it
+		}
 		if rev != 0 && (rev <= w.GetRevision() || rev < cached.GetRevision()) {
 			return // stale or repeated
 		}
@@ -304,7 +333,7 @@ func (a *applier) apply(sb *pb.Sandbox) {
 		return
 	}
 	m := a.mark(id)
-	if m.GetRemoved() {
+	if m.GetRemoved() || (m != nil && a.foreign(m.GetHostId())) {
 		return
 	}
 	if rev != 0 && ((m != nil && rev <= m.GetRevision()) || rev < cached.GetRevision()) {

@@ -76,7 +76,6 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 	var impact *pb.LaneChangeImpact
 	marked := false
 	rec, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
-		marked = false
 		queued, err := runs.Queued()
 		if err != nil {
 			return err
@@ -95,15 +94,14 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 				return err
 			}
 		}
-		if ch.detaching != "" {
+		if ch.detaching != "" && !marked {
 			rt.mu.Lock()
-			_, already := rt.detaching[ch.detaching]
 			err := rt.markDetachingLocked(ch.detaching, rt.displayNameLocked(ch.detaching))
 			rt.mu.Unlock()
 			if err != nil {
 				return err
 			}
-			marked = !already
+			marked = true
 		}
 		return nil
 	})
@@ -181,8 +179,10 @@ func checkLanesExist(o *pb.Orchestrator, ids []string) error {
 // dedupe keeps the first occurrence of each id, in order.
 func dedupe(ids []string) []string {
 	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		if !slices.Contains(out, id) {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
 			out = append(out, id)
 		}
 	}
@@ -195,8 +195,12 @@ func sameSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
+	in := make(map[string]struct{}, len(b))
+	for _, x := range b {
+		in[x] = struct{}{}
+	}
 	for _, x := range a {
-		if !slices.Contains(b, x) {
+		if _, ok := in[x]; !ok {
 			return false
 		}
 	}

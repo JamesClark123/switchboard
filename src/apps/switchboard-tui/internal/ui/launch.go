@@ -1085,7 +1085,8 @@ func (m Model) launchModal() string {
 	case m.launch.orchPick:
 		content = m.launchOrchPicker()
 	case m.launch.lanePick != nil:
-		content = m.launch.lanePick.view(m.modalInnerWidth(), m.height)
+		// The modal's border, title and spacing sit around the picker.
+		content = m.launch.lanePick.view(m.modalInnerWidth(), m.height-6)
 	default:
 		content = m.launchBrowser()
 	}
@@ -1100,7 +1101,7 @@ func (m Model) launchModal() string {
 
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", content)
 	if m.launch.progress != "" {
-		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(m.launch.progress))
+		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", statusErrStyle.Render(sanitizeTerminalText(m.launch.progress)))
 	}
 	help := "space select · →/← open/up · N name · m mode · K kits · H host · O orchestrator · enter launch · esc cancel"
 	if m.launch.reasoning != nil {
@@ -1116,11 +1117,13 @@ func (m Model) launchModal() string {
 	case m.launch.orchPick:
 		help = "↑/↓ move · enter select orchestrator · esc cancel"
 	case m.launch.lanePick != nil:
-		help = "space toggle · enter continue · esc back"
+		help = "" // the picker shows its own
 	case m.launch.fetching:
 		help = "esc stop waiting"
 	}
-	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
+	if help != "" {
+		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
+	}
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
 }
 

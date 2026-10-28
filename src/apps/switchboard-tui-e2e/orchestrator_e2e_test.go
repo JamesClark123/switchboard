@@ -545,7 +545,7 @@ func TestTUILanesE2E(t *testing.T) {
 	// Call it: it runs on the lane's worker.
 	m = p.mark()
 	p.send("\r")
-	p.expectNew(t, m, "build", 10*time.Second)
+	p.expectNew(t, m, "ctrl+s calls build", 10*time.Second) // the call form's own text
 	m = p.mark()
 	p.send("\x13")
 	p.expectNew(t, m, "queued run-", 15*time.Second)

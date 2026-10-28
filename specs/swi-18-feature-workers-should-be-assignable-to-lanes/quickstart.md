@@ -76,7 +76,7 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    **Expect**: the form keeps every value; `docs` is offered. Tick it, save. Time it: under 2 minutes (SC-003).
 2. Edit the action, tick `docs`; in a second client delete `docs`; save in the first.
    **Expect**: refused (`lane … no longer exists`), the form stays open with its values and no longer offers `docs`.
-3. Switch Kind to `reason`: ticks cleared with `lanes cleared: reason actions have no lanes`.
+3. Switch Kind to `reason`: the lanes hide, with `lanes not saved: reason actions have no lanes`; switching back to `prompt` shows the ticks again, and a save as `reason` stores no lanes.
 
 ## Scenario 6 — renames, deletes, deleted actions (FR-304, FR-305, FR-314b, L7)
 

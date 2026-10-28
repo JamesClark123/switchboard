@@ -37,6 +37,8 @@ type lanesPanel struct {
 	// load reloads the picker from it and shows the message.
 	stale  string
 	status string
+	// saving is set while the lane form's PutLane is out: keys but esc wait.
+	saving bool
 }
 
 // laneFormVals backs the lane form.
@@ -153,8 +155,13 @@ func (m Model) updateLanesKey(s orchSurface, msg tea.KeyMsg) (Model, tea.Cmd, bo
 		switch msg.String() {
 		case "esc":
 			p.form, p.formVals, p.status = nil, nil, ""
-			p.pickAfterForm = false
+			p.pickAfterForm, p.saving = false, false
 			return m, nil, true
+		}
+		if p.saving {
+			return m, nil, true // the save is out
+		}
+		switch msg.String() {
 		case "ctrl+s":
 			mm, cmd := m.submitLaneForm(s)
 			return mm, cmd, true
@@ -187,6 +194,10 @@ func (m Model) updateLanesKey(s orchSurface, msg tea.KeyMsg) (Model, tea.Cmd, bo
 		}
 		return m, nil, true
 	case "a":
+		if t := m.lanesTarget(s); !m.hostHasLanes(t.host) {
+			p.status = m.tooOldForLanes(t.host)
+			return m, nil, true
+		}
 		return m, m.openLaneForm(s, nil), true
 	case "D":
 		if len(rec.GetDroppedWorkerTags()) == 0 {
@@ -230,6 +241,7 @@ func (m Model) laneForm(v *laneFormVals) *huh.Form {
 // laneFormMsg is a lane form's outcome.
 type laneFormMsg struct {
 	sink orchSurface
+	key  string // the orchestrator it was saved on
 	lane *pb.Lane
 	err  error
 }
@@ -243,20 +255,28 @@ func (m Model) submitLaneForm(s orchSurface) (Model, tea.Cmd) {
 		p.form = m.laneForm(p.formVals)
 		return m, p.form.Init()
 	}
-	v, laneID, id := *p.formVals, p.formLane, t.id
+	v, laneID, id, key := *p.formVals, p.formLane, t.id, t.key()
+	p.saving = true
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		l, err := od.PutLane(ctx, id, laneID, strings.TrimSpace(v.name), strings.TrimSpace(v.description))
-		return laneFormMsg{sink: s, lane: l, err: err}
+		return laneFormMsg{sink: s, key: key, lane: l, err: err}
 	}
 }
 
 func (m Model) applyLaneForm(msg laneFormMsg) (tea.Model, tea.Cmd) {
 	p := m.lanes(msg.sink)
-	if p.formVals == nil {
-		return m, nil // closed meanwhile
+	if p.formVals == nil || !p.saving || m.lanesTarget(msg.sink).key() != msg.key {
+		// Closed meanwhile, or another orchestrator's form: the footer only.
+		if msg.err != nil {
+			m.status = "error: " + msg.err.Error()
+		} else {
+			m.status = "saved lane " + msg.lane.GetName()
+		}
+		return m, nil
 	}
+	p.saving = false
 	if msg.err != nil {
 		// The form stays open with every value and the daemon's text.
 		p.status = msg.err.Error()
@@ -595,6 +615,51 @@ func wrapBody(lines []string) []string {
 	return out
 }
 
+// atOrigin reports whether the user is still where a guarded write started:
+// on its orchestrator, with its form, picker or Manage lanes dialog open. A
+// result arriving anywhere else changes nothing but the footer.
+func (m Model) atOrigin(w laneWrite) bool {
+	if w.list {
+		return true
+	}
+	t := m.lanesTarget(w.sink)
+	switch {
+	case w.closeForm:
+		op := m.opState(w.sink)
+		if op.form == nil {
+			return false
+		}
+		t = op.formTarget
+	case w.sink == surfaceJobs && !m.jobs.manage.open:
+		return false
+	case w.closePicker && m.lanes(w.sink).picker == nil:
+		return false
+	}
+	return t.key() == w.target.key()
+}
+
+// laneConfirm opens a write's confirm only while the user is still on the
+// screen it started from (no other confirm showing); otherwise the confirm is
+// dropped with a footer note, and the user starts the change again.
+func (m Model) laneConfirm(w laneWrite, st confirmState) (tea.Model, tea.Cmd) {
+	here := m.atOrigin(w)
+	if p := m.lanes(w.sink); here && p.picker != nil && !w.list {
+		p.picker.busy = false
+	}
+	if m.screen != w.back() || !here {
+		m.status = "lane check for " + sanitizeLine(w.target.name, 0) + " came back after you left — not applied; start it again"
+		return m, nil
+	}
+	if v, ok := m.opState(w.sink).formVals.(*actionFormVals); ok && w.closeForm {
+		// A declined confirm returns to an editable form (a completed huh form
+		// takes no more keys).
+		cmd := m.rebuildActionForm(w.sink, v)
+		mm, ccmd := m.enterConfirm(st)
+		return mm, tea.Batch(cmd, ccmd)
+	}
+	return m.enterConfirm(st)
+}
+
 // applyLaneResult advances a guarded write.
 func (m Model) applyLaneResult(msg laneResultMsg) (tea.Model, tea.Cmd) {
 	w := msg.w
@@ -609,39 +674,38 @@ func (m Model) applyLaneResult(msg laneResultMsg) (tea.Model, tea.Cmd) {
 		if w.list {
 			st.sandboxID, st.verb = w.busyID, "detaching"
 		}
-		if p.picker != nil && !w.list {
-			p.picker.busy = false
-		}
-		return m.enterConfirm(st)
+		return m.laneConfirm(w, st)
 	}
 	if w.list {
 		if imp, ok := client.ImpactFromError(msg.err); ok && guardText(imp) != "" {
 			st := w.confirm(imp)
 			st.returnTo, st.onConfirm = w.back(), laneWriteCmd(w, guardOf(imp), false)
 			st.sandboxID, st.verb = w.busyID, "detaching"
-			m.busy = map[string]string{}
-			return m.enterConfirm(st)
+			delete(m.busy, w.busyID)
+			return m.laneConfirm(w, st)
 		}
 		if msg.err != nil {
 			return m.Update(errMsg{msg.err})
 		}
 		return m.Update(statusMsg(w.done))
 	}
+	here := m.atOrigin(w)
 	if msg.err == nil {
-		if w.closePicker {
+		if w.closePicker && here {
 			p.picker = nil
 		}
-		return m.applyOrchDone(orchDoneMsg{status: w.done, reload: true, closeForm: w.closeForm, sink: w.sink, target: w.target})
+		return m.applyOrchDone(orchDoneMsg{status: w.done, reload: true, closeForm: w.closeForm && here, sink: w.sink, target: w.target})
 	}
 	if imp, ok := client.ImpactFromError(msg.err); ok && guardText(imp) != "" {
 		// The daemon's list changed since the confirm: confirm the new one.
 		st := guardConfirm(imp)
 		st.returnTo = w.back()
 		st.onConfirm = laneWriteCmd(w, guardOf(imp), false)
-		if p.picker != nil {
-			p.picker.busy = false
-		}
-		return m.enterConfirm(st)
+		return m.laneConfirm(w, st)
+	}
+	if !here {
+		m.status = "error: " + sanitizeLine(w.target.name, 0) + ": " + msg.err.Error()
+		return m, nil
 	}
 	m.status = "error: " + msg.err.Error()
 	text := msg.err.Error()
@@ -823,6 +887,7 @@ func (m Model) lanesView(s orchSurface) []string {
 		lines = append(lines, dimStyle.Render("no lanes yet — a to add one"))
 	}
 	half := max((m.bodyWidth()-6)/2, 12)
+	var rows []string
 	for i, l := range rec.GetLanes() {
 		cursor := "  "
 		if i == p.cursor {
@@ -849,9 +914,12 @@ func (m Model) lanesView(s orchSurface) []string {
 		if len(uses) > 0 {
 			act = capNames(uses)
 		}
-		lines = append(lines, m.fitLine(head),
+		rows = append(rows, m.fitLine(head),
 			m.fitLine(dimStyle.Render("    "+fitCol("members: "+mem, half)+"  "+sanitizeLine("actions: "+act, 0))))
 	}
+	// Windowed around the cursor (two lines a lane), under the detail's or the
+	// dialog's header, the notice and the status.
+	lines = append(lines, windowLines(rows, 2*p.cursor+1, m.bodyHeight()-len(lines)-6)...)
 	if p.status != "" {
 		lines = append(lines, "", statusErrStyle.Render(sanitizeTerminalText(p.status)))
 	}

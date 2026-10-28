@@ -109,7 +109,7 @@ exclusive, hidden when no lane is ticked or for `reason`), Arguments. The worker
   (where the action form lives) for the same orchestrator, with the same keys. Its changes are saved as made. `esc`
   closes it and returns to the form with every value intact; lane options are rebuilt by id, a deleted lane's tick is
   dropped, a renamed lane shows its new name (FR-317).
-- Switching Kind to `reason` clears the ticks and sets the form status `lanes cleared: reason actions have no lanes`.
+- Switching Kind to `reason` hides the lanes and sets the form status `lanes not saved: reason actions have no lanes`; the save sends no lanes. The ticks stay in the form until it is saved, so moving the Type cursor across `reason` and back loses nothing (PR #24 review: huh's Select writes its value on every cursor move).
 - Save sends `PutAction{sets_lanes: true}`. If the action ends up un-laned, it first calls `CheckLaneChange{put_action}`
   and confirms as above.
 - `NotFound` for a lane (FR-316a): the form stays open with every value, reloads its lane options, drops ticks for

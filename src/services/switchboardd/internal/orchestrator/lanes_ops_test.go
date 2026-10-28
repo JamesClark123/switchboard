@@ -157,6 +157,12 @@ func TestOpenLaneGuard(t *testing.T) {
 	if v := rt.workerView("wa"); len(v.GetLaneIds()) != 0 {
 		t.Errorf("refused write changed lanes: %v", v.GetLaneIds())
 	}
+	// A confirmation of another (older) list does not cover the current one:
+	// refused again, with the current list to re-confirm.
+	req.Guard = &pb.LaneGuardConfirm{UnlanedActions: []string{"gone-action"}}
+	if _, err := env.svc.SetWorkerLanes(req); !errors.As(err, &ge) || !slices.Equal(ge.Impact.GetUnlanedActions(), []string{"review-pr"}) {
+		t.Fatalf("stale confirm = %v", err)
+	}
 	// A confirmation covering the list lets it through.
 	req.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions()}
 	v, err := env.svc.SetWorkerLanes(req)
@@ -417,6 +423,17 @@ func TestDetachGuardAndMark(t *testing.T) {
 		t.Errorf("mid-delivery = %v", err)
 	}
 	rt.endDelivery("wa")
+	// A second detach while one is out is refused and leaves the first's mark.
+	rt.mu.Lock()
+	rt.detaching["wa"] = struct{}{}
+	rt.mu.Unlock()
+	if err := env.svc.DetachWorker(bg(), id, "wa", &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "already being detached") {
+		t.Errorf("concurrent detach = %v", err)
+	}
+	if !rt.isDetaching("wa") {
+		t.Error("the refused detach cleared the first one's mark")
+	}
+	rt.clearDetaching("wa")
 	if err := env.svc.DetachWorker(bg(), id, "wa", &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -721,5 +738,28 @@ func TestDeleteLaneGuardsAKeptRun(t *testing.T) {
 	}
 	if _, err := env.svc.DeleteLane(id, ids["b"], nil); !errors.Is(err, ErrPrecondition) {
 		t.Errorf("unconfirmed delete = %v", err)
+	}
+}
+
+// confirmCovers needs every current entry confirmed (current ⊆ confirmed):
+// a confirmation of a shorter list is refused, a longer one accepted.
+func TestConfirmCoversPartialLists(t *testing.T) {
+	imp := &pb.LaneChangeImpact{UnlanedActions: []string{"a", "b"}, UnlanedRuns: []string{"r1"}}
+	for _, tc := range []struct {
+		confirm *pb.LaneGuardConfirm
+		want    bool
+	}{
+		{nil, false},
+		{&pb.LaneGuardConfirm{UnlanedActions: []string{"a"}, UnlanedRuns: []string{"r1"}}, false},
+		{&pb.LaneGuardConfirm{UnlanedActions: []string{"a", "b"}}, false},
+		{&pb.LaneGuardConfirm{UnlanedActions: []string{"b", "a"}, UnlanedRuns: []string{"r1"}}, true},
+		{&pb.LaneGuardConfirm{UnlanedActions: []string{"a", "b", "c"}, UnlanedRuns: []string{"r0", "r1"}}, true},
+	} {
+		if got := confirmCovers(tc.confirm, imp); got != tc.want {
+			t.Errorf("confirmCovers(%v) = %v, want %v", tc.confirm, got, tc.want)
+		}
+		if err := refuseGuard(tc.confirm, imp); (err == nil) != tc.want {
+			t.Errorf("refuseGuard(%v) = %v", tc.confirm, err)
+		}
 	}
 }

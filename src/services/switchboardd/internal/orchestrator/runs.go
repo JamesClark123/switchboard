@@ -586,7 +586,7 @@ func (rt *runtime) onSandboxEvent(_ context.Context, hostID string, ev *pb.Event
 func (rt *runtime) observe(hostID string, sb *pb.Sandbox) bool {
 	in := rosterInput{source: srcEvent, hostID: hostID, records: []*pb.Sandbox{sb}}
 	rt.mu.Lock()
-	if !rt.relevantLocked(rt.rec, sb) {
+	if !rt.relevantLocked(rt.rec, sb) || foreignTo(rt.rec, sb.GetId(), hostID) {
 		rt.mu.Unlock()
 		return false
 	}

@@ -157,9 +157,8 @@ func (p *lanePicker) update(msg tea.KeyMsg) pickAction {
 			p.ticked[id] = !p.ticked[id]
 		}
 	case "enter":
-		if p.mode == pickLaneMembers || len(p.rows) > 0 || p.mode == pickWorkerLanes {
-			return pickSave
-		}
+		// With no rows, attach and launch go on to the open lane.
+		return pickSave
 	case "a":
 		if len(p.rows) == 0 && p.mode == pickWorkerLanes {
 			return pickAdd

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -344,15 +346,24 @@ func TestActionFormLanes(t *testing.T) {
 	}
 	a.laneCheck = nil
 
-	// Switching to reason clears the ticks.
+	// Switching to reason hides the lanes and saves none; switching back
+	// keeps the ticks.
 	m = keys(m, press("e"))
 	fv = m.jobs.formVals.(*actionFormVals)
+	fv.lanes = []string{"ln-fe"}
 	fv.kind = "reason"
 	m, _ = update(m, struct{}{})
-	if len(fv.lanes) != 0 || !strings.Contains(m.jobs.status, "lanes cleared: reason actions have no lanes") {
+	if len(fv.lanes) != 1 || m.jobs.status != reasonLanesText {
 		t.Errorf("reason: lanes %v status %q", fv.lanes, m.jobs.status)
 	}
+	if a := fv.action(nil); a.GetType() != pb.ActionType_ACTION_TYPE_REASON || len(a.GetLaneIds()) != 0 {
+		t.Errorf("a reason action saves no lanes: %+v", a)
+	}
 	fv.kind = "prompt"
+	m, _ = update(m, struct{}{})
+	if len(fv.lanes) != 1 || m.jobs.status != "" {
+		t.Errorf("back to prompt: lanes %v status %q", fv.lanes, m.jobs.status)
+	}
 
 	// A lane gone meanwhile: the form stays open, its options reloaded.
 	fv.lanes = []string{"ln-fe"}
@@ -580,9 +591,19 @@ func TestQueuedRunShowsWaitingReason(t *testing.T) {
 func TestEventsDroppedReloadsTheList(t *testing.T) {
 	m := sized(New(&fakeDaemon{}, "/work"))
 	m.listLoading = false
+	// Jobs knows an orchestrator on this host (off screen: a reload marks it
+	// stale) and one on another host (untouched).
+	m.jobs.started = true
+	hk := m.subHostKey("")
+	m.jobs.metaOf(hk, "o-a")
+	m.jobs.metaOf("elsewhere", "o-b")
 	out, cmd := m.handleEvent("", &pb.Event{Event: &pb.Event_EventsDropped{EventsDropped: &pb.EventsDropped{}}})
-	if mm := out.(Model); !mm.listLoading || cmd == nil {
+	mm := out.(Model)
+	if !mm.listLoading || cmd == nil {
 		t.Error("events_dropped should reload the list")
+	}
+	if !mm.jobs.meta[hk+"/o-a"].stale || mm.jobs.meta["elsewhere/o-b"].stale {
+		t.Errorf("events_dropped should reload this host's Jobs orchestrators only: %+v", mm.jobs.meta)
 	}
 }
 
@@ -638,5 +659,74 @@ func TestLanePickerUnit(t *testing.T) {
 	}
 	if modeWord(pb.LaneMode_LANE_MODE_INCLUSIVE) != "inclusive" {
 		t.Error("modeWord")
+	}
+}
+
+// A guarded write's result opens a confirm only where it started; elsewhere it
+// lands on the footer, and a late result never touches another orchestrator's
+// picker (PR #24 review).
+func TestLaneResultsStayWithTheirOrigin(t *testing.T) {
+	a := lanesDaemon()
+	m := openDetail(t, sized(New(a, "/work")))
+	a.laneCheck = &pb.LaneChangeImpact{UnlanedActions: []string{"deploy"}}
+	m, _ = update(m, press("j"))
+	m, cmd := update(m, press("x"))
+	if cmd == nil || m.screen == screenConfirm {
+		t.Fatalf("x should start the check: %v", m.screen)
+	}
+	msg := cmd()
+	m.screen = screenList // the user moved on before the check came back
+	m, _ = update(m, msg)
+	if m.screen != screenList || !strings.Contains(m.status, "came back after you left") {
+		t.Fatalf("late check: screen %v status %q", m.screen, m.status)
+	}
+	if strings.Contains(a.orchCallsJoined(), "DetachWorker o-a w2") {
+		t.Errorf("nothing should be detached: %q", a.orchCallsJoined())
+	}
+
+	// A late success for another orchestrator leaves this picker open.
+	m.screen = screenOrchDetail
+	m = keys(m, press("l"))
+	if m.orchDetail.lanes.picker == nil {
+		t.Fatal("l should open the worker's lane picker")
+	}
+	other := laneWrite{sink: surfaceDetail, target: orchTarget{host: "elsewhere", id: "o-z", name: "zeta"}, closePicker: true, done: "saved"}
+	m, _ = update(m, laneResultMsg{w: other})
+	if m.orchDetail.lanes.picker == nil {
+		t.Error("another orchestrator's result closed this picker")
+	}
+	m, _ = update(m, laneResultMsg{w: other, err: errors.New("boom")})
+	if p := m.orchDetail.lanes.picker; p == nil || p.status != "" || m.orchDetail.lanes.stale != "" {
+		t.Errorf("another orchestrator's refusal landed on this picker: %+v", p)
+	}
+}
+
+// Declining the guard on an action form completed by tab returns to an
+// editable form, not one that re-submits on every key.
+func TestDeclinedGuardKeepsTheFormEditable(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("j"), press("e")) // deploy: un-laned
+	fv, ok := m.jobs.formVals.(*actionFormVals)
+	if !ok || fv.name != "deploy" {
+		t.Fatalf("form = %+v", m.jobs.formVals)
+	}
+	a.laneCheck = &pb.LaneChangeImpact{UnlanedActions: []string{"deploy"}}
+	// Tabbed past the last field: huh completes the form, which submits.
+	m.jobs.form.State = huh.StateCompleted
+	m, cmd := update(m, struct{}{})
+	m = feed2(m, cmd)
+	if m.screen != screenConfirm {
+		t.Fatalf("guard should confirm: %v", m.screen)
+	}
+	m = keys(m, press("n"))
+	if m.screen != screenJobs || m.jobs.form == nil || m.jobs.form.State != huh.StateNormal {
+		t.Fatalf("declined: screen %v form %v", m.screen, m.jobs.form)
+	}
+	m = keys(m, press("x"))
+	if m.screen == screenConfirm {
+		t.Error("a key on the form re-submitted it")
 	}
 }

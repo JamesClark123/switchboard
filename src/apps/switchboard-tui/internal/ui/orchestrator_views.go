@@ -195,7 +195,7 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.hostPick {
 		return m.updateHostPickKey(msg)
 	}
-	if d.lanes.form != nil || d.lanes.picker != nil || d.view == viewLanes {
+	if d.lanes.form != nil || d.lanes.picker != nil || (d.view == viewLanes && d.detail != nil) {
 		if mm, cmd, handled := m.updateLanesKey(surfaceDetail, msg); handled {
 			return mm, cmd
 		}

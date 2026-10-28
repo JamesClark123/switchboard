@@ -242,17 +242,20 @@ func laneDeleteImpact(out *pb.LaneChangeImpact, rec *pb.Orchestrator, queued []*
 // confirmCovers reports whether the developer's confirmation covers the
 // current guard list (current ⊆ confirmed).
 func confirmCovers(confirm *pb.LaneGuardConfirm, impact *pb.LaneChangeImpact) bool {
-	for _, a := range impact.GetUnlanedActions() {
-		if !slices.Contains(confirm.GetUnlanedActions(), a) {
-			return false
+	covers := func(confirmed, current []string) bool {
+		set := make(map[string]struct{}, len(confirmed))
+		for _, x := range confirmed {
+			set[x] = struct{}{}
 		}
-	}
-	for _, r := range impact.GetUnlanedRuns() {
-		if !slices.Contains(confirm.GetUnlanedRuns(), r) {
-			return false
+		for _, x := range current {
+			if _, ok := set[x]; !ok {
+				return false
+			}
 		}
+		return true
 	}
-	return true
+	return covers(confirm.GetUnlanedActions(), impact.GetUnlanedActions()) &&
+		covers(confirm.GetUnlanedRuns(), impact.GetUnlanedRuns())
 }
 
 // guardFired reports whether an impact carries a guard list.
@@ -272,7 +275,7 @@ func (e *GuardError) Error() string {
 	if r := e.Impact.GetUnlanedRuns(); len(r) > 0 {
 		parts = append(parts, "queued runs "+strings.Join(r, ", "))
 	}
-	return "no open-lane worker would be left for " + strings.Join(parts, " and ") + " — confirm to continue"
+	return "no open-lane worker would be left for " + strings.Join(parts, " and ") + " — confirm to continue (a client that predates lanes cannot: update it)"
 }
 
 func (e *GuardError) Is(target error) bool { return target == ErrPrecondition }

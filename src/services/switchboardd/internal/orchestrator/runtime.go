@@ -182,8 +182,12 @@ func (rt *runtime) cacheLocked(sb *pb.Sandbox) {
 }
 
 // markDetachingLocked marks a worker as detaching (caller holds mu): refused while a
-// run is being delivered to it (research R8/R10).
+// run is being delivered to it (research R8/R10), and while another detach of
+// it is out, so each detach clears only its own mark.
 func (rt *runtime) markDetachingLocked(sandboxID, display string) error {
+	if _, ok := rt.detaching[sandboxID]; ok {
+		return fmt.Errorf("%w: %s is already being detached", ErrPrecondition, display)
+	}
 	if _, ok := rt.delivering[sandboxID]; ok {
 		return fmt.Errorf("%w: %s is receiving a run — try again in a moment", ErrPrecondition, display)
 	}

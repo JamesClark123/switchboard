@@ -112,6 +112,9 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form { return m.actionForm(spec, v) })
 }
 
+// reasonLanesText is the action form's note while a reason action has ticks.
+const reasonLanesText = "lanes not saved: reason actions have no lanes"
+
 // actionForm builds the action editor over v. Lanes and Mode are their own
 // groups (stacked, so the form reads as one page) to hide them: Lanes for a
 // reason action or an orchestrator with none, Mode while no lane is ticked.
@@ -531,13 +534,16 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 	if ff, ok := f.(*huh.Form); ok {
 		op.form = ff
 	}
-	if v, ok := op.formVals.(*actionFormVals); ok && v.kind == "reason" && len(v.lanes) > 0 && op.form.State == huh.StateNormal {
-		// Reason actions have no lanes (FR-316): the ticks go, and the form is
-		// rebuilt so the hidden picker holds none either; focus stays on Type.
-		v.lanes = nil
-		op.status = "lanes cleared: reason actions have no lanes"
-		init := m.rebuildActionForm(s, v)
-		return m, tea.Batch(init, op.form.NextField(), op.form.NextField())
+	if v, ok := op.formVals.(*actionFormVals); ok && op.form.State == huh.StateNormal {
+		// Reason actions have no lanes (FR-316): the Lanes group hides and the
+		// save sends none. The ticks are kept, not cleared, so moving the Type
+		// cursor across reason and back loses nothing.
+		switch {
+		case v.kind == "reason" && len(v.lanes) > 0:
+			op.status = reasonLanesText
+		case op.status == reasonLanesText:
+			op.status = ""
+		}
 	}
 	switch op.form.State {
 	case huh.StateCompleted:

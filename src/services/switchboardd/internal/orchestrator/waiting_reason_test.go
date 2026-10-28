@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -137,4 +138,39 @@ func TestWaitingReasonThroughReads(t *testing.T) {
 		t.Errorf("stored reason = %q", stored.GetWaitingReason())
 	}
 	rt.clearDetaching("wa")
+}
+
+// rt.laneCounts itself: the reasoning sandbox is not counted, a stopped
+// worker or one on an unreachable host is live but not available, and a
+// lanes-pending worker is counted apart (PR #24 review).
+func TestLaneCountsFromTheRuntime(t *testing.T) {
+	_, w, _, rt := dispatchEnv(t, 2, true)
+	ids := seedLanes(t, rt, map[string][]string{"fe": {"wa"}})
+	quiesce(t, rt) // no push reply refreshes the cache below
+	w.update("wb", func(sb *pb.Sandbox) { sb.State = pb.SandboxState_SANDBOX_STATE_STOPPED })
+	rt.mu.Lock()
+	if rt.sbs["wb"] == nil {
+		rt.mu.Unlock()
+		t.Fatal("wb is not cached")
+	}
+	rt.sbs["wb"].State = pb.SandboxState_SANDBOX_STATE_STOPPED
+	rt.mu.Unlock()
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Workers = append(x.Workers,
+			&pb.Worker{SandboxId: "wg", HostId: "ghost"},
+			&pb.Worker{SandboxId: "wp", HostId: "box", LanesPending: true})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := rt.laneCounts()
+	if c.live[""] != 2 || c.avail[""] != 0 || !slices.Equal(c.names[""], []string{"worker-wb", "wg"}) {
+		t.Errorf("open lane: live %d avail %d names %v", c.live[""], c.avail[""], c.names[""])
+	}
+	if c.live[ids["fe"]] != 1 || c.avail[ids["fe"]] != 1 {
+		t.Errorf("fe: live %d avail %d", c.live[ids["fe"]], c.avail[ids["fe"]])
+	}
+	if c.pending != 1 {
+		t.Errorf("pending = %d", c.pending)
+	}
 }

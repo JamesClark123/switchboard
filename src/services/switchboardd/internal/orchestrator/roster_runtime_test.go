@@ -57,8 +57,7 @@ func TestAttachDetachLeavesMark(t *testing.T) {
 	stale := ours(o, running("wa", "a"))
 	stale.Revision = 1
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: stale}}
-	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: running("other", "o")}}
-	time.Sleep(50 * time.Millisecond)
+	eventBarrier(t, w, o, rt, "sentinel-1")
 	if onRoster(rt.record(), "wa") != nil {
 		t.Fatal("a stale event re-adopted a detached worker")
 	}
@@ -154,7 +153,7 @@ func TestEventsAdoptAndDrop(t *testing.T) {
 	newer := proto.Clone(back).(*pb.Sandbox)
 	newer.Revision += 10
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: newer}}
-	time.Sleep(50 * time.Millisecond)
+	eventBarrier(t, w, o, rt, "sentinel-2")
 	if onRoster(rt.record(), "ev") != nil {
 		t.Fatal("a removed sandbox was re-adopted")
 	}
@@ -414,4 +413,49 @@ func TestLanePushRetryIsPerWorker(t *testing.T) {
 	if n := pa.Load(); n != 4 {
 		t.Errorf("wa pushes = %d, want no retry after the reconnect push", n)
 	}
+}
+
+// A reconnect push that fails transiently while the host is up is retried
+// like a lane push, not left for the next reconnect (PR #24 review).
+func TestReconnectPushFailureIsRetried(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Lanes = []*pb.Lane{{Id: "ln-1", Name: "fast"}}
+		onRoster(x, "wa").LaneIds = []string{"ln-1"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var fails sync.Once
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		var err error
+		if req.Name != nil { // the full push
+			fails.Do(func() { err = status.Error(codes.Unavailable, "blip") })
+		}
+		return err
+	}
+	w.mu.Unlock()
+	api, _ := rt.apiFor("box")
+	rt.pushWorkerStateTo(bg(), "box", api)
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 1) })
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
+	quiesce(t, rt)
+}
+
+// eventBarrier sends an event adopting a fresh sandbox id and waits for it:
+// the link applies events in order, so every event sent before it has been
+// applied too.
+func eventBarrier(t *testing.T, w *fakeWorker, o *pb.Orchestrator, rt *runtime, id string) {
+	t.Helper()
+	sb := ours(o, running(id, id))
+	sb.Revision = 1
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: sb}}
+	waitFor(t, func() bool { return onRoster(rt.record(), id) != nil })
 }

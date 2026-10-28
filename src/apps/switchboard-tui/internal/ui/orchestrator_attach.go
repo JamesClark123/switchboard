@@ -224,9 +224,14 @@ type attachLaneErrMsg struct {
 }
 
 func (m Model) applyAttachLaneErr(msg attachLaneErrMsg) (tea.Model, tea.Cmd) {
-	m.busy = map[string]string{}
+	delete(m.busy, msg.sb.GetId())
 	m.refreshListItems()
 	m.status = "error: " + msg.err.Error()
+	if m.screen != screenList {
+		// The user moved on: the refusal is on the footer only; the picker
+		// reopens only where the attach was started.
+		return m, nil
+	}
 	rec := msg.row.summary.GetOrchestrator()
 	m.attach = attachState{sandbox: msg.sb, host: msg.host, choices: m.reachableOrchestrators(), row: msg.row}
 	var kept []string
@@ -389,7 +394,7 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 func (m Model) attachModal() string {
 	a := m.attach
 	if a.lanes != nil {
-		return modalStyle.Width(m.modalInnerWidth()).Render(a.lanes.view(m.modalInnerWidth(), m.height))
+		return modalStyle.Width(m.modalInnerWidth()).Render(a.lanes.view(m.modalInnerWidth(), m.height-2))
 	}
 	rows := []string{sectionStyle.Render("Attach " + sanitizeLine(a.sandbox.GetDisplayName(), 32) + " to an orchestrator"), ""}
 	if len(a.choices) == 0 {

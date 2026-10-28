@@ -576,3 +576,32 @@ func rosterTrial(t *testing.T, seed int64) {
 		}
 	}
 }
+
+// Another host cannot drop, remove or mark a worker that lives on h1, nor
+// adopt over h1's mark (PR #24 review: a host speaks only for its own
+// sandboxes).
+func TestApplyRecordsIgnoresForeignHosts(t *testing.T) {
+	foreign := func(in rosterInput) rosterInput { in.hostID = "h2"; return in }
+	rec := rrec(rworker("s", 3, 1))
+	res := applyRecords(rec, foreign(event(rsb("s", ^uint64(0), "other"))), rNow)
+	if res.changed || onRoster(rec, "s") == nil || rec.GetHighWaterMarks()["s"] != nil {
+		t.Fatalf("a foreign event dropped or marked the worker: %+v", rec)
+	}
+	res = applyRecords(rec, rosterInput{source: srcRemoval, hostID: "h2", ids: []string{"s"}}, rNow)
+	if res.changed || onRoster(rec, "s") == nil {
+		t.Fatalf("a foreign removal dropped the worker: %+v", rec)
+	}
+	marked := rrec()
+	marked.HighWaterMarks = map[string]*pb.HighWaterMark{"s": {Revision: 5, HostId: "h1"}}
+	res = applyRecords(marked, foreign(event(rsb("s", 9, rOrch))), rNow)
+	if res.changed || onRoster(marked, "s") != nil {
+		t.Fatalf("a foreign event adopted over h1's mark: %+v", marked)
+	}
+	if !foreignTo(rec, "s", "h2") || foreignTo(rec, "s", "h1") || foreignTo(rec, "s", "") || foreignTo(rec, "new", "h2") {
+		t.Error("foreignTo")
+	}
+	// h1 itself still applies.
+	if res := applyRecords(rec, event(rsb("s", 4, "other")), rNow); !res.changed || onRoster(rec, "s") != nil {
+		t.Errorf("h1's own event should drop: %+v", rec)
+	}
+}

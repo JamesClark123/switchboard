@@ -219,6 +219,7 @@ func TestMissingSettingFails(t *testing.T) {
 // by the record committed when it was claimed. Writes happen only inside the
 // delivery hook, so the record seen there is the one its claim checked.
 func TestDispatchLaneRaceSeeded(t *testing.T) {
+	delivered := 0 // across seeds: a dispatch that stopped delivering fails
 	for seed := int64(0); seed < 30; seed++ {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
@@ -251,6 +252,7 @@ func TestDispatchLaneRaceSeeded(t *testing.T) {
 			w.onDeliver = func(req *pb.DeliverWorkerPromptRequest) {
 				mu.Lock()
 				defer mu.Unlock()
+				delivered++
 				rec := rt.record()
 				wk := onRosterEntry(rec, req.GetSandboxId())
 				a := findAction(rec, req.GetAction())
@@ -289,5 +291,8 @@ func TestDispatchLaneRaceSeeded(t *testing.T) {
 				t.Errorf("deliveries not allowed at their claim: %v", bad)
 			}
 		})
+	}
+	if delivered == 0 {
+		t.Error("no seed delivered any run: the test checked nothing")
 	}
 }
