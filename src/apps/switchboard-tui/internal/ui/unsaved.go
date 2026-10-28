@@ -94,6 +94,9 @@ func (m Model) updateUnsavedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // Discard its esc path, Cancel nothing at all.
 func (m Model) unsavedChoose(choice int) (tea.Model, tea.Cmd) {
 	g := m.unsaved.surface
+	if m.unsaved.fromEnlarge && choice != unsavedCancel {
+		m.enlarge = enlargeState{} // its text was written back when ctrl+c asked
+	}
 	m.unsaved = unsavedState{}
 	switch choice {
 	case unsavedSave:

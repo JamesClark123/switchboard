@@ -154,13 +154,7 @@ func (m Model) orchDetailHelp() helpBindings {
 func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
 	if d.form != nil {
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			return m.requestExit(gOpDetail)
-		case "ctrl+s":
-			return m.submitOrchDetailForm()
-		}
-		return m.advanceOrchOpForm(surfaceDetail, msg)
+		return m.formKey(gOpDetail, msg)
 	}
 	if d.hostPick {
 		return m.updateHostPickKey(msg)

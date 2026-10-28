@@ -147,13 +147,7 @@ func (m Model) updateEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	switch msg.String() {
-	case "esc", "ctrl+c":
-		return m.requestExit(gConfig)
-	case "ctrl+s":
-		return m.saveConfig()
-	}
-	return m.advanceEditorForm(msg)
+	return m.formKey(gConfig, msg)
 }
 
 // advanceEditorForm feeds a message to the editor form (key or huh follow-up).

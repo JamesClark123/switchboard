@@ -355,6 +355,8 @@ type Model struct {
 
 	// --- SWI-9: the unsaved-changes dialog, a layer over a changed surface ---
 	unsaved unsavedState
+	// --- SWI-9: the enlarged view of a form's multi-line field ---
+	enlarge enlargeState
 
 	quitting bool
 }
@@ -650,6 +652,9 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeTerminal()
 		}
 		m.fitRunResults()
+		if m.enlarge.open {
+			m.enlarge.resize(m.width, m.height)
+		}
 		return m, nil
 
 	case termOpenedMsg:
@@ -881,6 +886,18 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 // current screen so its internal async work (blink, field advance) completes.
 func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	if m.enlarge.open {
+		// The view's cursor blink; the form under it keeps its own messages.
+		m.enlarge.ta, cmd = m.enlarge.ta.Update(msg)
+		next, fcmd := m.forwardScreen(msg)
+		return next, tea.Batch(cmd, fcmd)
+	}
+	return m.forwardScreen(msg)
+}
+
+// forwardScreen is forward for the current screen's component.
+func (m Model) forwardScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch m.screen {
 	case screenLaunch:
 		// The browser is synchronous; only the name field (when editing) has
@@ -966,6 +983,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.unsaved.open {
 		return m.updateUnsavedKey(msg)
 	}
+	// SWI-9: the enlarged view owns the keyboard over its form.
+	if m.enlarge.open {
+		return m.updateEnlargeKey(msg)
+	}
 	switch m.screen {
 	case screenLaunch:
 		return m.updateLaunchKey(msg)
@@ -1035,7 +1056,12 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	out := m.viewScreen()
+	var out string
+	if m.enlarge.open {
+		out = m.enlargeView() // drawn instead of the screen chrome (R2)
+	} else {
+		out = m.viewScreen()
+	}
 	if m.unsaved.open {
 		out = overlayCenter(out, m.unsavedModal(), m.width, m.height)
 	}
@@ -1176,7 +1202,7 @@ func (m Model) viewScreen() string {
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
-	return m.chrome(body, hb)
+	return m.chrome(body, m.withEnlargeHint(hb))
 }
 
 // --- chrome (header + body + footer) ---

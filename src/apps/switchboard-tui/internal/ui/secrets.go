@@ -139,15 +139,9 @@ func (m Model) highlightedSecret() (*pb.Secret, bool) {
 func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.secretsView
 	if v.form != nil {
-		// Like the register form: esc aborts and ctrl+s submits from any field,
-		// before huh sees the key (its own submit is enter on the last field).
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			return m.requestExit(gSecrets)
-		case "ctrl+s":
-			return m.applySecretsForm()
-		}
-		return m.advanceSecretsForm(msg)
+		// esc/ctrl+c ask before dropping changes and ctrl+s submits from any
+		// field, before huh sees the key (its own submit is enter on the last field).
+		return m.formKey(gSecrets, msg)
 	}
 	switch msg.String() {
 	case "esc", "q":

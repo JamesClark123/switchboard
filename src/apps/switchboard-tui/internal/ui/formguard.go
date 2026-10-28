@@ -386,6 +386,12 @@ func (m Model) guardSave(g guardSurface) (Model, tea.Cmd) {
 	if !m.guardDirty(g) {
 		return m.guardLeave(g)
 	}
+	return m.surfaceSave(g)
+}
+
+// surfaceSave is g's own save (a form's ctrl+s), with no clean check: ctrl+s
+// on an untouched call form still sends the call.
+func (m Model) surfaceSave(g guardSurface) (Model, tea.Cmd) {
 	switch g {
 	case gConfig:
 		return guardResult(m.saveConfig())
@@ -479,6 +485,76 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// guardSpec is the Text registry of g's form (nil when it has no Text).
+func (m Model) guardSpec(g guardSurface) *formSpec {
+	switch g {
+	case gMcp:
+		return m.mcpView.spec
+	case gOpJobs, gOpDetail:
+		return m.opState(opSurfaceOf(g)).formSpec
+	case gKitItem:
+		return m.kitEditor.spec
+	}
+	return nil
+}
+
+// advanceForm feeds a message to g's form.
+func (m Model) advanceForm(g guardSurface, msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch g {
+	case gConfig:
+		return m.advanceEditorForm(msg)
+	case gMcp:
+		return m.advanceMcpForm(msg)
+	case gSecrets:
+		return m.advanceSecretsForm(msg)
+	case gOrchAdmin:
+		return m.advanceOrchForm(msg)
+	case gOpJobs, gOpDetail:
+		return m.advanceOrchOpForm(opSurfaceOf(g), msg)
+	case gKitItem:
+		return m.advanceKitForm(msg)
+	}
+	return m, nil
+}
+
+// formKey is the guard's pre-handler for a key on an open form (research
+// R2/R4): it owns esc, ctrl+c, ctrl+s and ctrl+e before huh sees them. ctrl+e
+// enlarges only a focused registered Text; elsewhere it reaches the field (end
+// of line on an Input, nothing on a Select).
+func (m Model) formKey(g guardSurface, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		return m.requestExit(g)
+	case "ctrl+s":
+		return m.surfaceSave(g)
+	case "ctrl+e":
+		if txt, e, ok := m.focusedText(g); ok {
+			return m, m.openEnlarge(g, txt, e)
+		}
+	}
+	return m.advanceForm(g, msg)
+}
+
+// focusedText is g's focused field when it is a registered multi-line Text.
+func (m Model) focusedText(g guardSurface) (*huh.Text, textEntry, bool) {
+	f := m.guardForm(g)
+	if f == nil {
+		return nil, textEntry{}, false
+	}
+	return m.guardSpec(g).lookup(f.GetFocusedField())
+}
+
+// withEnlargeHint adds "ctrl+e enlarge" to a form screen's footer while, and
+// only while, the focused field can be enlarged (FR-002).
+func (m Model) withEnlargeHint(hb helpBindings) helpBindings {
+	if g, ok := m.activeGuard(); ok {
+		if _, _, ok := m.focusedText(g); ok {
+			return append(hb, hkey("ctrl+e", "enlarge"))
+		}
+	}
+	return hb
+}
+
 // requestExit is every guarded exit key: a clean surface leaves at once, a
 // changed one opens the unsaved-changes dialog.
 func (m Model) requestExit(g guardSurface) (tea.Model, tea.Cmd) {
@@ -539,14 +615,18 @@ func (m *Model) reopenForm(g guardSurface) tea.Cmd {
 }
 
 // reconcileGuardLayers keeps the guard's layers bound to a live surface: the
-// dialog closes when its surface is no longer the active one (an in-flight save
-// closed it, a screen change, a forced close). It runs after every message and
+// dialog and the enlarged view close when their surface is no longer the
+// active one (an in-flight save closed it, a screen change, a forced close). It runs after every message and
 // is O(1) — no sandbox-list walks.
 func (m *Model) reconcileGuardLayers() {
-	if !m.unsaved.open {
+	if !m.unsaved.open && !m.enlarge.open {
 		return
 	}
-	if g, ok := m.activeGuard(); !ok || g != m.unsaved.surface {
+	g, ok := m.activeGuard()
+	if m.unsaved.open && (!ok || g != m.unsaved.surface) {
 		m.unsaved = unsavedState{}
+	}
+	if m.enlarge.open && (!ok || g != m.enlarge.surface) {
+		m.enlarge = enlargeState{}
 	}
 }

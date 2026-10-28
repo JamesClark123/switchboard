@@ -356,7 +356,7 @@ external editor anywhere.
 **Independent Test**: Kit agent instructions with 50 lines → ctrl+e shows far more lines; edit, esc → the inline
 field holds the edit and focus stays on it, with no dialog.
 
-- [ ] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
+- [X] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
   - `openEnlarge(g, field, entry)`: a textarea with `MaxHeight 0`, `CharLimit 0`, `ShowLineNumbers false`,
     `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, value `*ptr`,
     `baseline = *ptr`. Then, in this order: `ta.Focus()`, and only then the cursor to the top via
@@ -372,7 +372,7 @@ field holds the edit and focus stays on it, with no dialog.
   - `enlargeView(w, h)`: a rounded border at full size with the title in the top border, the textarea, and the hint
     line from contracts/forms-ui.md §2 (76 cells).
   - Size constants that give 21 text lines at 80×24 and at least one line on smaller terminals.
-- [ ] T027 [US4] Add `updateEnlargeKey` in `UI/enlarge.go`:
+- [X] T027 [US4] Add `updateEnlargeKey` in `UI/enlarge.go`:
   - esc/ctrl+e → write back and close;
   - ctrl+s → write back, close, then `guardSave(surface)`;
   - ctrl+c → write back, then `requestExit(surface)`; if that opens the dialog, set `fromEnlarge` and keep the view
@@ -383,7 +383,7 @@ field holds the edit and focus stays on it, with no dialog.
   - everything else → `ta.Update`.
 
   Discard or Save from a dialog with `fromEnlarge` closes the view first (T006).
-- [ ] T028 [US4] Add the form key pre-handler `formKeys(g, form, spec, msg)` in `UI/formguard.go`, used by every form
+- [X] T028 [US4] Add the form key pre-handler `formKeys(g, form, spec, msg)` in `UI/formguard.go`, used by every form
   surface's key branch from US1/US2:
   - ctrl+e on a focused registered Text → `openEnlarge`;
   - esc/ctrl+c → `requestExit`;
@@ -391,13 +391,13 @@ field holds the edit and focus stays on it, with no dialog.
   - otherwise → the form.
 
   This consolidates the per-surface esc/ctrl+s branches added in T010–T018 into one path.
-- [ ] T029 [US4] Wire the enlarged view into `UI/app.go`:
+- [X] T029 [US4] Wire the enlarged view into `UI/app.go`:
   - `handleKey` routes to `updateEnlargeKey` when `m.enlarge.open`, after the dialog layer.
   - `View` returns `enlargeView` instead of the screen chrome (the dialog overlays it).
   - `tea.WindowSizeMsg` calls `resize`.
   - `forward()` passes non-key messages (cursor blink) to the enlarged textarea while it is open.
   - The footer help for form screens adds `ctrl+e enlarge` only while the focused field is a registered Text (FR-002).
-- [ ] T030 [US4] Tests in `UI/enlarge_test.go`:
+- [X] T030 [US4] Tests in `UI/enlarge_test.go`:
   - ctrl+e opens on each of the 17 fields (table over kit/MCP/action/event forms) and the footer hint is present;
   - no hint on an Input; ctrl+e on an Input moves to end of line; on a Select it is a no-op;
   - edit + esc writes back, focus stays on the same field, the form is dirty, and there is no dialog;
@@ -417,7 +417,7 @@ field holds the edit and focus stays on it, with no dialog.
   - a value with a tab: open and close with no edit → the form stays clean;
   - 150 lines + enter at end → 151, close, the kit saves 151 lines; inline enter at line 99+ adds none (FR-009a,
     US4 #8).
-- [ ] T031 [US4] (after T029) Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
+- [X] T031 [US4] (after T029) Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
   `BenchmarkSC006OtherField` in `UI/enlarge_perf_test.go`:
   - 200×50, 5,000 lines of ~85 chars, `Update` + `View` per op, driven through the real `Model` key path;
   - a doc comment cites SC-006 and R9's reference numbers;

@@ -22,7 +22,7 @@ func notionServer() *pb.McpServer {
 
 // mcpModel opens the gateway view for the (single, local) daemon and drains the
 // initial load.
-func mcpModel(t *testing.T, d *fakeDaemon) Model {
+func mcpModel(t testing.TB, d *fakeDaemon) Model {
 	t.Helper()
 	d.mcpAvail = true
 	m := sized(New(d, "/work"))

@@ -236,13 +236,7 @@ func (m Model) kitEditorHelp() helpBindings {
 func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A form owns all input while open.
 	if m.kitEditor.form != nil {
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			return m.requestExit(gKitItem)
-		case "ctrl+s":
-			return m.applyKitForm()
-		}
-		return m.advanceKitForm(msg)
+		return m.formKey(gKitItem, msg)
 	}
 
 	if m.kitEditor.inSection {

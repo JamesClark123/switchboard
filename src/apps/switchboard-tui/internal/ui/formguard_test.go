@@ -61,7 +61,7 @@ func textForms(t *testing.T) []textForm {
 
 // focusField moves the form's focus onto target, searching forward and then
 // back (huh does not wrap, and callers visit fields in map order).
-func focusField(t *testing.T, f *huh.Form, target huh.Field) {
+func focusField(t testing.TB, f *huh.Form, target huh.Field) {
 	t.Helper()
 	for _, step := range []func() tea.Cmd{f.NextField, f.PrevField} {
 		for range 20 {
