@@ -54,6 +54,11 @@ type eventFormVals struct {
 	intervalMinutes  string
 	args             string // name = value, one per line
 	enabled, dedupe  bool
+	// The active window (SWI-10, event_window.go): both times blank = around
+	// the clock; days empty = every day.
+	activeFrom, activeUntil string
+	days                    []int // 0=Sunday … 6=Saturday
+	timezone                string
 }
 
 // --- actions ---
@@ -375,8 +380,9 @@ func (m Model) openEventForm(s orchSurface, t orchTarget, ev *pb.TimedEvent) (te
 		m.opState(s).status = "add an action to " + t.label() + " first — a timed event calls one"
 		return m, nil
 	}
-	v := &eventFormVals{intervalMinutes: "5", enabled: true, dedupe: true, action: actions[0].GetName()}
+	v := &eventFormVals{intervalMinutes: "5", enabled: true, dedupe: true, action: actions[0].GetName(), timezone: localZoneName()}
 	if ev != nil {
+		windowToForm(v, ev.GetWindow())
 		v.id, v.name, v.action = ev.GetId(), ev.GetName(), ev.GetAction()
 		v.intervalMinutes = strconv.Itoa(int(ev.GetIntervalSeconds()) / 60)
 		v.enabled, v.dedupe = ev.GetEnabled(), !ev.GetDedupeDisabled()
@@ -399,6 +405,10 @@ func (m Model) openEventForm(s orchSurface, t orchTarget, ev *pb.TimedEvent) (te
 		huh.NewInput().Key("name").Title("Name").Value(&v.name),
 		huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
 		huh.NewInput().Key("interval").Title("Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
+		huh.NewInput().Key("activeFrom").Title("Active from").Description("HH:MM, 24-hour — blank: around the clock").Value(&v.activeFrom),
+		huh.NewInput().Key("activeUntil").Title("Active until").Description("HH:MM, exclusive; 24:00 = midnight; earlier than from = overnight").Value(&v.activeUntil),
+		huh.NewMultiSelect[int]().Key("days").Title("Days").Description("none: every day (an overnight window's day is the day it opens)").Options(dayOptions()...).Value(&v.days),
+		huh.NewInput().Key("timezone").Title("Timezone").Description("IANA name, e.g. America/Los_Angeles (not PST/EST)").Value(&v.timezone),
 		huh.NewText().Key("args").Title("Fixed arguments").Lines(3).Description("name = value, one per line (the action's declared arguments)").Value(&v.args),
 		huh.NewConfirm().Key("enabled").Title("Enabled").Value(&v.enabled),
 		huh.NewConfirm().Key("dedupe").Title("Dedupe").Description("skip a firing while a run of this event is queued or in flight").Value(&v.dedupe),
@@ -538,7 +548,12 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			op.status = err.Error()
 			return m, nil
 		}
-		ev := &pb.TimedEvent{Id: v.id, Name: strings.TrimSpace(v.name), Action: v.action, IntervalSeconds: uint32(minutes * 60), Arguments: args, Enabled: v.enabled, DedupeDisabled: !v.dedupe}
+		win, err := windowFromForm(v)
+		if err != nil {
+			op.status = err.Error()
+			return m, nil
+		}
+		ev := &pb.TimedEvent{Id: v.id, Name: strings.TrimSpace(v.name), Action: v.action, IntervalSeconds: uint32(minutes * 60), Arguments: args, Enabled: v.enabled, DedupeDisabled: !v.dedupe, Window: win}
 		return m, func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
@@ -588,8 +603,8 @@ func actionLine(a *pb.Action) string {
 }
 
 // eventLine renders one timed event: [on|off] name → action · any disabled
-// reason · every · next · waiting/skipped counts, with the dedupe badge. waiting
-// is how many of its runs are queued.
+// reason · every · any active window · next · waiting/skipped counts, with the
+// dedupe badge. waiting is how many of its runs are queued.
 func eventLine(ev *pb.TimedEvent, waiting int) string {
 	onOff := statusOKStyle.Render("[on]")
 	if !ev.GetEnabled() {
@@ -600,7 +615,11 @@ func eventLine(ev *pb.TimedEvent, waiting int) string {
 		// Before the counters, so a row cut to the width still says why.
 		line += "  " + statusErrStyle.Render("disabled: "+sanitizeLine(ev.GetDisabledReason(), 60))
 	}
-	line += fmt.Sprintf("  %s  %s  %s", dimStyle.Render(fmt.Sprintf("every %dm", ev.GetIntervalSeconds()/60)), dimStyle.Render("next "+nextFire(ev)),
+	every := fmt.Sprintf("every %dm", ev.GetIntervalSeconds()/60)
+	if w := windowLabel(ev.GetWindow()); w != "" {
+		every += " · " + sanitizeLine(w, 48)
+	}
+	line += fmt.Sprintf("  %s  %s  %s", dimStyle.Render(every), dimStyle.Render("next "+nextFire(ev)),
 		dimStyle.Render(fmt.Sprintf("waiting %d · skipped %d", waiting, ev.GetSkippedCount())))
 	if !ev.GetDedupeDisabled() {
 		line += "  " + tagBadgeStyle.Render("dedupe")
@@ -666,6 +685,10 @@ func nextFire(ev *pb.TimedEvent) string {
 		return "in <1m"
 	case d < time.Hour:
 		return fmt.Sprintf("in %dm", int(d.Minutes()))
+	case d >= 24*time.Hour:
+		// A windowed event can sleep for days (a weekend).
+		d = d.Round(time.Hour)
+		return fmt.Sprintf("in %dd%dh", int(d.Hours())/24, int(d.Hours())%24)
 	}
 	return "in " + d.Round(time.Minute).String()
 }

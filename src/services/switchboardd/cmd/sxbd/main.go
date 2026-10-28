@@ -25,6 +25,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // IANA zones for timed-event windows (SWI-10) on hosts without a zoneinfo database
 
 	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"

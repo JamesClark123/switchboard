@@ -235,13 +235,20 @@ func (m Model) overviewRowHelp() helpBindings {
 // --- rendering ---
 
 // upcomingLine renders an Upcoming row: name → action · orchestrator @ host ·
-// next in … (· next firing skipped — run open). Columns are cut and padded to
-// fixed display widths (contracts/jobs-ui.md).
+// next in … (· next firing skipped — run open) (· window). Columns are cut and
+// padded to fixed display widths (contracts/jobs-ui.md). The skip note comes
+// first: it is the row's one actionable signal, and the row is cut at the
+// screen's width.
 func upcomingLine(e jobsEventRow) string {
 	line := selectedStyle.Render(fitCol(e.event.GetName(), 14)) + " " + dimStyle.Render(fitCol("→ "+e.event.GetAction(), 16)) + " " +
 		fitCol(e.target.label(), 24) + "  " + dimStyle.Render("next "+nextFire(e.event))
 	if e.willSkip {
 		line += dimStyle.Render(" · next firing skipped — run open")
+	}
+	// A windowed event can be days from its next firing; the window says why.
+	// Compact here (no zone when it is local's); the Events tab has it in full.
+	if w := compactWindowLabel(e.event.GetWindow(), localZone()); w != "" {
+		line += dimStyle.Render(" · " + sanitizeLine(w, 48))
 	}
 	return line
 }
