@@ -10,6 +10,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func running(id, name string) *pb.Sandbox {
@@ -327,21 +328,29 @@ func TestRepliesForAnotherSandboxAreIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	quiesce(t, rt)
-	cached := rt.sandboxRecord("wa").GetRevision()
+	// wb's record is newer than wa's cached one, so a forged reply (wb's
+	// record named wa) would replace the cache if it were applied.
+	for range 3 {
+		w.update("wb", func(*pb.Sandbox) {})
+	}
+	before := proto.Clone(rt.sandboxRecord("wa")).(*pb.Sandbox)
 	w.mu.Lock()
 	w.replyAs = "wa"
 	w.mu.Unlock()
 	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wb", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
-		t.Fatalf("attach with a foreign reply = %v", err)
+		t.Errorf("attach with a foreign reply = %v", err)
 	}
-	if onRoster(rt.record(), "wb") != nil || rt.sandboxRecord("wa").GetRevision() != cached {
+	if got := rt.sandboxRecord("wa"); !proto.Equal(got, before) || got.GetDisplayName() != "a" {
+		t.Errorf("the reply was applied to wa's cache: %+v, want %+v", got, before)
+	}
+	if onRoster(rt.record(), "wb") != nil {
 		t.Errorf("the reply was applied: roster %+v", rt.record().GetWorkers())
 	}
 	w.mu.Lock()
 	w.replyAs = "wb"
 	w.mu.Unlock()
 	if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", &pb.LaneGuardConfirm{}); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
-		t.Fatalf("detach with a foreign reply = %v", err)
+		t.Errorf("detach with a foreign reply = %v", err)
 	}
 	if rt.isDetaching("wa") {
 		t.Error("a refused reply left the detaching mark")

@@ -264,7 +264,7 @@ func (rt *runtime) replyFor(hostID, sandboxID string, sb *pb.Sandbox) error {
 		return nil
 	}
 	rt.svc.logf("[orchestrator %s] host %s replied for sandbox %q, not %s: ignored", rt.name(), hostID, sb.GetId(), sandboxID)
-	return fmt.Errorf("%w: host %s replied for another sandbox than %s — the reply was ignored", ErrPrecondition, hostID, sandboxID)
+	return fmt.Errorf("%w: host %s replied for another sandbox than %s — the reply was ignored; the change may still have taken effect on the host, and its next listing settles it", ErrPrecondition, hostID, sandboxID)
 }
 
 // detach clears the controller on a worker through its link (FR-111): refused
