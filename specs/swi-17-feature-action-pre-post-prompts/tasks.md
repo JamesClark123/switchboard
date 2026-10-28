@@ -308,7 +308,7 @@ sequence model. No user story can be delivered before this phase.
   - an invalid-UTF-8 0x9B byte is refused;
   - an action body containing ANSI is saved unchanged;
   - an escape-hatch result with ANSI output is still delivered.
-- [ ] T045 **Per-agent hook token (R13 §2).** In `SBD/agent/pty.go`, `SBD/agent/hooks.go`,
+- [X] T045 **Per-agent hook token (R13 §2).** In `SBD/agent/pty.go`, `SBD/agent/hooks.go`,
   `SBD/escapehatch/inject.go` and the daemon store:
   - **Generation and token.** `agent.Registry` numbers each PTY it spawns per sandbox from a counter **persisted** in
     the daemon store (it only grows, across restarts too), and draws a random `hookTokenBytes` token for it. The
@@ -365,7 +365,7 @@ sequence model. No user story can be delivered before this phase.
   - a generated wrapper's call carries the token and runs; a tokenless call to `/escape-hatch/run` gets 403;
   - a 5 MiB PreToolUse body is read and its `session_id` found;
   - `ListSandboxes` output contains no token.
-- [ ] T046 **Corroboration and the main session (R13 §2).** In `SBD/agent/hooks.go`, `SBD/agent/pty.go`,
+- [X] T046 **Corroboration and the main session (R13 §2).** In `SBD/agent/hooks.go`, `SBD/agent/pty.go`,
   `SBD/worker/controller.go` and `SBD/worker/deliver.go`:
   - **`hold_gen`.** Written by the daemon only on the **transition into** NEEDS_DEVELOPER (controller `Update`,
     `SetAgentStatus`, `leaveRunning`, T047), with the current generation. The controller `Update` always keeps the
@@ -823,7 +823,7 @@ needs a custom post-prompt, which arrives in US2.
 
 ### Notifications (FR-223, research R10)
 
-- [ ] T026 [P] [US1] In `SBD/agent/hooks.go`, skip `EmitNotification(TASK_COMPLETE, …)` on `Stop` and in
+- [X] T026 [P] [US1] In `SBD/agent/hooks.go`, skip `EmitNotification(TASK_COMPLETE, …)` on `Stop` and in
   `backstopExpired` when the sandbox's `controller.run.step_role` is SETUP or CLEANUP. Read it through the status
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
 - [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
