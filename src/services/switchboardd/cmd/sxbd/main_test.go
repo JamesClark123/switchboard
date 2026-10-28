@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,26 +48,33 @@ func (f *fakeReconciler) Reconcile(context.Context) ([]*pb.Sandbox, error) {
 	return f.moved, nil
 }
 
+func noLog(string, ...any) {}
+
 // The warm start waits for a retry that reads the runtime, and gets what it moved.
 func TestRetryReconcileReportsTheFirstRead(t *testing.T) {
 	r := &fakeReconciler{errs: []error{errors.New("runtime down")}, moved: []*pb.Sandbox{ctlSandbox("a", pb.SandboxState_SANDBOX_STATE_RUNNING)}}
 	var got [][]*pb.Sandbox
-	retryReconcile(context.Background(), r, []time.Duration{0, 0, 0}, func(m []*pb.Sandbox) { got = append(got, m) })
+	retryReconcile(context.Background(), r, []time.Duration{0, 0, 0}, noLog, func(m []*pb.Sandbox) { got = append(got, m) })
 	if r.calls != 2 || len(got) != 1 || len(got[0]) != 1 || got[0][0].GetId() != "a" {
 		t.Errorf("calls %d, reported %v", r.calls, got)
 	}
 	// Never read: nothing is reported.
 	r = &fakeReconciler{errs: []error{errors.New("x"), errors.New("x")}}
 	got = nil
-	retryReconcile(context.Background(), r, []time.Duration{0, 0}, func(m []*pb.Sandbox) { got = append(got, m) })
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	retryReconcile(context.Background(), r, []time.Duration{0, 0}, logf, func(m []*pb.Sandbox) { got = append(got, m) })
 	if r.calls != 2 || got != nil {
 		t.Errorf("unread runtime: calls %d, reported %v", r.calls, got)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "first delivery") {
+		t.Errorf("running out of retries should be logged once: %q", logged)
 	}
 	// A stopped daemon stops retrying.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r = &fakeReconciler{}
-	retryReconcile(ctx, r, []time.Duration{time.Hour}, func([]*pb.Sandbox) { t.Error("reported after stop") })
+	retryReconcile(ctx, r, []time.Duration{time.Hour}, noLog, func([]*pb.Sandbox) { t.Error("reported after stop") })
 	if r.calls != 0 {
 		t.Errorf("reconciled after stop: %d", r.calls)
 	}

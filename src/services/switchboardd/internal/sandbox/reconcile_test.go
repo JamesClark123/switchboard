@@ -283,6 +283,28 @@ func TestReconcileBringsUpARestartedWorker(t *testing.T) {
 	}
 }
 
+// With the non-blocking observer set (SWI-15), Announce calls it in line, before
+// Reconcile returns, and never spawns the blocking one.
+func TestReconcileCallsGoBringUpInLine(t *testing.T) {
+	m, reg, runner, _ := newTestManager(t)
+	if err := reg.Put(&pb.Sandbox{
+		Id: "id-w", DisplayName: "w", ContainerRef: "w", State: pb.SandboxState_SANDBOX_STATE_STOPPED,
+		Controller: &pb.SandboxController{OrchestratorId: "orch"}, UpdatedAt: timestamppb.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.running = map[string]bool{"w": true}
+	var started []string
+	m.SetOnBringUp(func(*pb.Sandbox) { t.Error("the blocking observer ran") })
+	m.SetGoBringUp(func(sb *pb.Sandbox) { started = append(started, sb.GetId()) })
+	if _, err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0] != "id-w" {
+		t.Errorf("started %v before Reconcile returned; want [id-w]", started)
+	}
+}
+
 // A record written while the runtime was being read (a Stop or Restart that
 // finished in between) keeps the newer write.
 func TestReconcileSkipsARecordWrittenMeanwhile(t *testing.T) {

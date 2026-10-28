@@ -287,6 +287,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	})
 	mgr.SetOnDestroy(workerSvc.OnDestroy)
 	mgr.SetOnBringUp(workerSvc.OnBringUp)
+	mgr.SetGoBringUp(workerSvc.GoBringUp)
 	mgr.SetOnLaunched(workerSvc.WarmStart)
 	mgr.SetControllerApplier(workerSvc.Apply)
 	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
@@ -356,7 +357,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	if readoptErr == nil {
 		// Workers re-adopted RUNNING at startup were moved before the bring-up
 		// observer existed: they are brought up now, as after a Restart.
-		startWorkers(readopted, sbs, func(sb *pb.Sandbox) { go workerSvc.OnBringUp(sb) }, workerSvc.WarmStart)
+		startWorkers(readopted, sbs, workerSvc.GoBringUp, workerSvc.WarmStart)
 	}
 	if readoptErr != nil {
 		// Started only now: the manager's change and bring-up observers are set,
@@ -364,7 +365,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		// The records are last-known until a retry reads the runtime, and a warm
 		// start would bring a sandbox stopped meanwhile back up (sbx exec), so
 		// workers start only once one does; the observer brings up what it moved.
-		go retryReconcile(ctx, mgr, readoptRetries, func(moved []*pb.Sandbox) {
+		go retryReconcile(ctx, mgr, readoptRetries, logf, func(moved []*pb.Sandbox) {
 			if sbs, err := mgr.List(); err == nil {
 				startWorkers(moved, sbs, func(*pb.Sandbox) {}, workerSvc.WarmStart)
 			}
@@ -675,9 +676,11 @@ type reconciler interface {
 
 // retryReconcile reconciles at each delay until one reads the runtime, the
 // daemon stops, or the delays run out. onRead runs once, with the records the
-// successful pass moved.
-func retryReconcile(ctx context.Context, mgr reconciler, delays []time.Duration, onRead func(moved []*pb.Sandbox)) {
+// successful pass moved. Running out is logged: no worker is warm-started, so
+// each agent starts on its worker's first delivery instead.
+func retryReconcile(ctx context.Context, mgr reconciler, delays []time.Duration, logf func(string, ...any), onRead func(moved []*pb.Sandbox)) {
 	start := time.Now()
+	var err error
 	for _, d := range delays {
 		select {
 		case <-ctx.Done():
@@ -685,11 +688,13 @@ func retryReconcile(ctx context.Context, mgr reconciler, delays []time.Duration,
 		case <-time.After(time.Until(start.Add(d))):
 		}
 		rctx, cancel := context.WithTimeout(ctx, readoptTimeout)
-		moved, err := mgr.Reconcile(rctx)
+		var moved []*pb.Sandbox
+		moved, err = mgr.Reconcile(rctx)
 		cancel()
 		if err == nil {
 			onRead(moved)
 			return
 		}
 	}
+	logf("[sxbd] runtime still unreadable after %d retries (%v): no warm starts, each worker's agent starts on its first delivery", len(delays), err)
 }

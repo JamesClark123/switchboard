@@ -2,10 +2,13 @@ package worker
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
@@ -364,11 +367,19 @@ func TestBringUpStartsTheAgentAfterTheGatewayLoad(t *testing.T) {
 		}
 		return newRecSession(), nil
 	})
-	// While a bring-up is loading the gateway, a warm start does nothing.
+	// While a bring-up is loading the gateway, neither a warm start nor a
+	// delivery (run-495: the orchestrator dispatches from startup) starts the
+	// agent; the delivery is refused, so the run waits for the bring-up's start.
 	e.svc.markBringUp(stored.GetId(), 1)
 	e.svc.WarmStart(stored)
 	if starts != 0 {
 		t.Fatal("a warm start during the gateway load started the agent")
+	}
+	if ok, err := e.svc.Deliver(bg, deliverReq(stored.GetId())); ok || !errors.Is(err, ErrPrecondition) {
+		t.Errorf("delivery during the gateway load = %v / %v", ok, err)
+	}
+	if starts != 0 {
+		t.Fatal("a delivery during the gateway load started the agent")
 	}
 	e.svc.markBringUp(stored.GetId(), -1)
 	if e.svc.bringingUp(stored.GetId()) || len(e.svc.bringing) != 0 {
@@ -380,5 +391,36 @@ func TestBringUpStartsTheAgentAfterTheGatewayLoad(t *testing.T) {
 	}
 	if e.svc.bringingUp(stored.GetId()) {
 		t.Error("the bring-up mark outlived the bring-up")
+	}
+}
+
+// PR #17 review run-495: GoBringUp marks the sandbox before it returns, so a
+// start that follows it never runs ahead of the gateway load; nothing is marked
+// for a sandbox with no bring-up to do.
+func TestGoBringUpMarksBeforeReturning(t *testing.T) {
+	release := filepath.Join(t.TempDir(), "release")
+	e := newEnv(t, "  \"mcp load\"*) while [ ! -e "+release+" ]; do sleep 0.01; done ;;")
+	sb := e.sandbox(t, "abababab-cdcd", "readopted", pb.SandboxState_SANDBOX_STATE_STOPPED)
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := e.reg.Get(sb.GetId())
+	e.svc.GoBringUp(stored)
+	if !e.svc.bringingUp(stored.GetId()) {
+		t.Error("GoBringUp returned before marking the bring-up")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for e.svc.bringingUp(stored.GetId()) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if e.svc.bringingUp(stored.GetId()) {
+		t.Error("the bring-up mark outlived the bring-up")
+	}
+	e.svc.GoBringUp(&pb.Sandbox{Id: "plain"})
+	if e.svc.bringingUp("plain") {
+		t.Error("an uncontrolled sandbox should not be marked")
 	}
 }

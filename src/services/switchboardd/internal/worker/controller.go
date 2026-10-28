@@ -306,24 +306,43 @@ func (s *Service) OnDestroy(sb *pb.Sandbox) {
 
 // OnBringUp re-loads a controlled sandbox's registration after a restart or
 // refresh (the attach-time load is skipped while it is not running) — the
-// manager's bring-up hook.
+// manager's bring-up hook. It returns once the gateway is loaded.
 func (s *Service) OnBringUp(sb *pb.Sandbox) {
+	if run := s.beginBringUp(sb); run != nil {
+		run()
+	}
+}
+
+// GoBringUp is OnBringUp on its own goroutine, for callers that never wait on
+// it. The sandbox is marked as bringing up before it returns, so no agent start
+// lands between the caller's decision and the gateway load.
+func (s *Service) GoBringUp(sb *pb.Sandbox) {
+	if run := s.beginBringUp(sb); run != nil {
+		go run()
+	}
+}
+
+// beginBringUp marks a controlled sandbox with a gateway token as bringing up
+// and returns the rest of its bring-up, or nil when there is none to do.
+func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
 	if sb.GetController() == nil {
-		return
+		return nil
 	}
 	if _, err := s.reg.GetWorkerToken(sb.GetId()); err != nil {
-		return
+		return nil
 	}
 	s.markBringUp(sb.GetId(), 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
-	cancel()
-	s.markBringUp(sb.GetId(), -1)
-	if err != nil {
-		s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
+		cancel()
+		s.markBringUp(sb.GetId(), -1)
+		if err != nil {
+			s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
+		}
+		// After the gateway load, so the agent starts with the orchestrator's tools.
+		s.WarmStart(sb)
 	}
-	// After the gateway load, so the agent starts with the orchestrator's tools.
-	s.WarmStart(sb)
 }
 
 // markBringUp adds delta to the sandbox's count of bring-ups in progress.

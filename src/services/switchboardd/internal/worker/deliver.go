@@ -108,9 +108,12 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 // startAgent starts the sandbox's agent through its persistent terminal
 // session (so the PTY is drained from the start, research R7) unless one is
 // already live. The agent comes up STARTING and reports IDLE through its
-// SessionStart hook. Best-effort: a failure is logged.
+// SessionStart hook. Best-effort: a failure is logged. Nothing starts while a
+// bring-up is reloading the sandbox's gateway server, whatever the caller: the
+// agent would come up without the orchestrator's tools, and OnBringUp starts it
+// once the load is done.
 func (s *Service) startAgent(sandboxID, why string) {
-	if s.agents == nil || s.agents.Live(sandboxID) {
+	if s.agents == nil || s.agents.Live(sandboxID) || s.bringingUp(sandboxID) {
 		return
 	}
 	var err error
@@ -139,9 +142,6 @@ func (s *Service) startAgent(sandboxID, why string) {
 func (s *Service) WarmStart(sb *pb.Sandbox) {
 	if sb.GetController() == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetController().GetRun() != nil {
 		return
-	}
-	if s.bringingUp(sb.GetId()) {
-		return // OnBringUp starts it once the gateway server is loaded
 	}
 	s.startAgent(sb.GetId(), "warm start")
 }

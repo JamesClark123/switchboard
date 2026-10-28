@@ -75,6 +75,10 @@ type Manager struct {
 	// to RUNNING, so a controlled sandbox's gateway registration can be
 	// re-loaded (the attach-time load is skipped while it is not running). MAY be nil.
 	onBringUp func(sb *pb.Sandbox)
+	// goBringUp, when set, replaces `go onBringUp` where the manager does not
+	// wait on the observer (Announce): it returns once the bring-up is under way,
+	// so nothing reads the sandbox as settled in between. MAY be nil.
+	goBringUp func(sb *pb.Sandbox)
 	// onLaunched, when set, is called once a controlled sandbox's Launch has
 	// turned it RUNNING, so the worker service can warm-start its agent (SWI-15:
 	// applyController runs before RUNNING, when no agent may start). MAY be nil.
@@ -93,6 +97,9 @@ func (m *Manager) SetOnDestroy(fn func(sb *pb.Sandbox)) { m.onDestroy = fn }
 
 // SetOnBringUp registers the bring-up observer (feature 009).
 func (m *Manager) SetOnBringUp(fn func(sb *pb.Sandbox)) { m.onBringUp = fn }
+
+// SetGoBringUp registers the non-blocking form of the bring-up observer (SWI-15).
+func (m *Manager) SetGoBringUp(fn func(sb *pb.Sandbox)) { m.goBringUp = fn }
 
 // SetOnLaunched registers the launched-worker observer (SWI-15).
 func (m *Manager) SetOnLaunched(fn func(sb *pb.Sandbox)) { m.onLaunched = fn }
@@ -1184,8 +1191,12 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 		m.emit(cur)
 		if cur.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
 			// The observer may take minutes; it never holds up the caller.
-			if fn := m.onBringUp; fn != nil && cur.GetController() != nil {
-				go fn(cur)
+			if cur.GetController() != nil {
+				if fn := m.goBringUp; fn != nil {
+					fn(cur)
+				} else if fn := m.onBringUp; fn != nil {
+					go fn(cur)
+				}
 			}
 			continue
 		}
