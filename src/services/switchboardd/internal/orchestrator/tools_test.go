@@ -98,7 +98,7 @@ func TestToolListCheckAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"orchestrator":"review-bot","actions":[{"name":"review-pr","description":"","type":"prompt","worker_tag":"","arguments":[{"name":"number","description":"","required":true,"default":""},{"name":"repo","description":"","required":true,"default":""},{"name":"focus","description":"","required":false,"default":""}]}]}`
+	want := `{"orchestrator":"review-bot","actions":[{"name":"review-pr","description":"","type":"prompt","arguments":[{"name":"number","description":"","required":true,"default":""},{"name":"repo","description":"","required":true,"default":""},{"name":"focus","description":"","required":false,"default":""}]}]}`
 	if body != want {
 		t.Errorf("list_actions =\n%s\nwant\n%s", body, want)
 	}

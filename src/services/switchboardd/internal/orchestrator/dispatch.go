@@ -108,51 +108,17 @@ func (rt *runtime) dispatch() {
 		ids, mode, ok := effectiveLanes(rec, run)
 		runs[i] = planRun{run: run, ids: ids, mode: mode, ok: ok, mask: plan.maskOf(ids)}
 	}
-	plan.reserve(runs)
 	reasoningClaimed := false
-	for i, r := range runs {
-		run := r.run
-		if run.GetType() == pb.ActionType_ACTION_TYPE_REASON {
+	plan.pass(runs, passHooks{
+		reason: func(run *pb.Run) {
 			if !reasoningClaimed {
 				reasoningClaimed = rt.dispatchReason(run, rec, sbs, ups)
 			}
-			continue
-		}
-		if !r.ok {
-			rt.failIfMissing(run)
-			continue
-		}
-		skip := map[*planWorker]bool{}
-		for {
-			pw := plan.next(i, r, skip)
-			if pw == nil {
-				plan.release(i)
-				break
-			}
-			switch rt.recheckAndClaim(pw.w, r, gen0) {
-			case claimOut:
-				plan.drop(pw)
-				continue
-			case claimLaneFail:
-				skip[pw] = true
-				continue
-			}
-			res := rt.deliver(run, pw.w)
-			if res == refused {
-				// The worker was not free after all (e.g. its agent is still
-				// starting): the run tries its next candidate.
-				plan.drop(pw)
-				continue
-			}
-			if res == delivered {
-				plan.claim(i, pw)
-			} else {
-				plan.drop(pw)
-				plan.release(i)
-			}
-			break
-		}
-	}
+		},
+		missing: rt.failIfMissing,
+		claim:   func(w *pb.Worker, r planRun) claimResult { return rt.recheckAndClaim(w, r, gen0) },
+		deliver: rt.deliver,
+	})
 }
 
 // dispatchReason hands a reason run to the reasoning sandbox when it is free,

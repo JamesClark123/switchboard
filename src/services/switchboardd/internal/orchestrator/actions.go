@@ -56,9 +56,6 @@ func validateAction(a *pb.Action, existing []*pb.Action) error {
 	if strings.TrimSpace(a.GetBody()) == "" {
 		return fmt.Errorf("%w: body is empty", ErrInvalid)
 	}
-	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON && strings.TrimSpace(a.GetWorkerTag()) != "" {
-		return fmt.Errorf("%w: reason actions take no worker requirement", ErrInvalid)
-	}
 	declared := map[string]bool{}
 	for _, arg := range a.GetArguments() {
 		n := strings.TrimSpace(arg.GetName())
@@ -85,7 +82,6 @@ func validateAction(a *pb.Action, existing []*pb.Action) error {
 func normalizeAction(a *pb.Action) *pb.Action {
 	out := proto.Clone(a).(*pb.Action)
 	out.Name = strings.TrimSpace(out.GetName())
-	out.WorkerTag = strings.TrimSpace(out.GetWorkerTag())
 	for _, arg := range out.GetArguments() {
 		arg.Name = strings.TrimSpace(arg.GetName())
 	}

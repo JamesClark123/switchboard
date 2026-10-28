@@ -34,10 +34,6 @@ func TestValidateActionRefusals(t *testing.T) {
 		"undeclared placeholder": {func(a *pb.Action) {
 			a.Body = "Look at {nope}"
 		}, "placeholder {nope} names no argument"},
-		"tag on reason": {func(a *pb.Action) {
-			a.Type = pb.ActionType_ACTION_TYPE_REASON
-			a.WorkerTag = "ci"
-		}, "reason actions take no worker requirement"},
 	}
 	for name, c := range cases {
 		a := reviewPR()

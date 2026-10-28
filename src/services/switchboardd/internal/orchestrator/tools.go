@@ -32,7 +32,8 @@ type toolAction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Type        string         `json:"type"`
-	WorkerTag   string         `json:"worker_tag"`
+	Lanes       []string       `json:"lanes,omitempty"`
+	LaneMode    string         `json:"lane_mode,omitempty"`
 	Arguments   []toolArgument `json:"arguments"`
 }
 
@@ -63,6 +64,7 @@ type checkRunOut struct {
 	Reason            string `json:"reason"`
 	Summary           string `json:"summary"`
 	ClosedByDeveloper bool   `json:"closed_by_developer"`
+	WaitingReason     string `json:"waiting_reason,omitempty"`
 }
 
 type reportIn struct {
@@ -149,7 +151,11 @@ func actionTypeLabel(t pb.ActionType) string {
 func (rt *runtime) toolListActions(rec *pb.Orchestrator) listActionsOut {
 	out := listActionsOut{Orchestrator: rec.GetName(), Actions: []toolAction{}}
 	for _, a := range rec.GetActions() {
-		ta := toolAction{Name: a.GetName(), Description: a.GetDescription(), Type: actionTypeLabel(a.GetType()), WorkerTag: a.GetWorkerTag(), Arguments: []toolArgument{}}
+		ta := toolAction{Name: a.GetName(), Description: a.GetDescription(), Type: actionTypeLabel(a.GetType()), Arguments: []toolArgument{}}
+		// Lane names only: descriptions are never sent to agents (FR-321).
+		if names := laneNames(rec, a.GetLaneIds()); len(names) > 0 {
+			ta.Lanes, ta.LaneMode = names, laneModeLabel(a.GetLaneMode())
+		}
 		for _, arg := range a.GetArguments() {
 			ta.Arguments = append(ta.Arguments, toolArgument{Name: arg.GetName(), Description: arg.GetDescription(), Required: arg.GetRequired(), Default: arg.GetDefaultValue()})
 		}
@@ -176,7 +182,10 @@ func (rt *runtime) toolCheckRun(in checkRunIn) (checkRunOut, error) {
 	if err != nil {
 		return checkRunOut{}, fmt.Errorf("unknown run %s", in.RunID)
 	}
-	return checkRunOut{RunID: run.GetId(), Action: run.GetAction(), State: stateLabel(run.GetState()), Reason: run.GetReason(), Summary: run.GetSummary(), ClosedByDeveloper: run.GetClosedByDeveloper()}, nil
+	return checkRunOut{
+		RunID: run.GetId(), Action: run.GetAction(), State: stateLabel(run.GetState()), Reason: run.GetReason(), Summary: run.GetSummary(),
+		ClosedByDeveloper: run.GetClosedByDeveloper(), WaitingReason: waitingReason(run, rt.laneCounts(), true),
+	}, nil
 }
 
 // toolReportCompletion closes the run recorded on the calling sandbox (FR-155).
@@ -202,4 +211,11 @@ func (rt *runtime) toolReportCompletion(sandboxID string, in reportIn) (reportOu
 		return reportOut{}, err
 	}
 	return reportOut{OK: true, RunID: closed.GetId(), State: stateLabel(closed.GetState())}, nil
+}
+
+func laneModeLabel(m pb.LaneMode) string {
+	if m == pb.LaneMode_LANE_MODE_INCLUSIVE {
+		return "inclusive"
+	}
+	return "exclusive"
 }

@@ -107,11 +107,14 @@ func (rt *runtime) position(runID string) uint32 {
 	return 0
 }
 
-// ListRuns returns the three Queue-view groups (FR-131).
+// ListRuns returns the three Queue-view groups (FR-131), queued prompt runs
+// with their waiting reasons (FR-315).
 func (s *Service) ListRuns(id string) (*pb.ListRunsResponse, error) {
-	if _, err := s.runtimeFor(id); err != nil {
+	rt, err := s.runtimeFor(id)
+	if err != nil {
 		return nil, err
 	}
+	counts := rt.laneCounts()
 	runs, err := s.reg.ListRuns(id)
 	if err != nil {
 		return nil, err
@@ -123,6 +126,7 @@ func (s *Service) ListRuns(id string) (*pb.ListRunsResponse, error) {
 		case r.GetState() == pb.RunState_RUN_STATE_QUEUED:
 			pos++
 			r.Position = pos
+			r.WaitingReason = waitingReason(r, counts, false)
 			out.Queued = append(out.Queued, r)
 		case inFlight(r):
 			out.InFlight = append(out.InFlight, r)
@@ -149,6 +153,7 @@ func (s *Service) GetRun(id, runID string) (*pb.Run, error) {
 	if run.GetState() == pb.RunState_RUN_STATE_QUEUED {
 		rt, _ := s.runtimeFor(id)
 		run.Position = rt.position(runID)
+		run.WaitingReason = waitingReason(run, rt.laneCounts(), false)
 	}
 	return run, nil
 }
@@ -235,6 +240,7 @@ func stateLabel(st pb.RunState) string {
 
 // putRun persists a run and announces the change.
 func (rt *runtime) putRun(run *pb.Run) error {
+	run.WaitingReason = "" // derived on read, never stored (FR-315)
 	if err := rt.svc.reg.PutRun(run); err != nil {
 		return err
 	}

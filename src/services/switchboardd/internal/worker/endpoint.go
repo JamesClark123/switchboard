@@ -49,7 +49,8 @@ type ActionInfo struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Type        string         `json:"type" jsonschema:"prompt (runs on a free worker) or reason (runs on the reasoning sandbox)"`
-	WorkerTag   string         `json:"worker_tag"`
+	Lanes       []string       `json:"lanes,omitempty" jsonschema:"the lanes whose workers run it (omitted: open-lane workers only)"`
+	LaneMode    string         `json:"lane_mode,omitempty" jsonschema:"exclusive (only workers in the lanes) or inclusive (also open-lane workers)"`
 	Arguments   []ArgumentInfo `json:"arguments"`
 }
 
@@ -80,6 +81,7 @@ type CheckRunOut struct {
 	Reason            string `json:"reason"`
 	Summary           string `json:"summary"`
 	ClosedByDeveloper bool   `json:"closed_by_developer"`
+	WaitingReason     string `json:"waiting_reason,omitempty"`
 }
 
 type ReportIn struct {
