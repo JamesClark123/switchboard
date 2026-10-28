@@ -230,7 +230,7 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) deliverResult {
 			// background push) can no longer read the worker free, while the
 			// host's next write still reads as newer.
 			if rev := resp.GetRevision(); rev == 0 || rev > sb.GetRevision() {
-				sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
+				sb.Controller.Run = workerRunFor(run, sb.GetController().GetRun())
 				sb.Revision = max(sb.GetRevision(), rev)
 			}
 		}

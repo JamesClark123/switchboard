@@ -41,6 +41,8 @@ const (
 	// maxArgumentBytes / maxPromptBytes bound a call's values and the composed prompt.
 	maxArgumentBytes = 16 * 1024
 	maxPromptBytes   = 64 * 1024
+	// maxStepPrompts bounds each of an action's custom pre/post prompt lists (FR-204).
+	maxStepPrompts = 10
 	// maxNameLen bounds an orchestrator's name (FR-105).
 	maxNameLen = 64
 

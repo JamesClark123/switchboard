@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -41,6 +42,8 @@ func (s *Service) CallAction(id, action string, args map[string]string, kind pb.
 }
 
 func (rt *runtime) callAction(action string, args map[string]string, kind pb.EventKind, origin, originLabel string) (*pb.Run, error) {
+	// validateCall normalises the values in place; the caller's map is theirs.
+	args = maps.Clone(args)
 	if args == nil {
 		args = map[string]string{}
 	}
@@ -60,6 +63,12 @@ func (rt *runtime) callAction(action string, args map[string]string, kind pb.Eve
 		if err != nil {
 			return err
 		}
+		// The sequence is snapshotted beside the prompt: later edits to the
+		// action never change this run (FR-207).
+		steps, err := buildSteps(a, args, prompt)
+		if err != nil {
+			return err
+		}
 		queued, err := runs.Queued()
 		if err != nil {
 			return err
@@ -70,7 +79,7 @@ func (rt *runtime) callAction(action string, args map[string]string, kind pb.Eve
 		}
 		run = &pb.Run{
 			Id: newRunID(rt.id, seq), OrchestratorId: rt.id, Action: a.GetName(), Type: a.GetType(),
-			Arguments: args, Prompt: prompt, EventKind: kind, Origin: origin, OriginLabel: originLabel,
+			Arguments: args, Prompt: prompt, Steps: steps, EventKind: kind, Origin: origin, OriginLabel: originLabel,
 			ReceivedAt: timestamppb.New(rt.svc.clock.Now()), State: pb.RunState_RUN_STATE_QUEUED,
 		}
 		// The position is taken before dispatch can pick the run up, so the
@@ -360,7 +369,25 @@ func (rt *runtime) clearWorkerRun(run *pb.Run) {
 	l := rt.workerPushLock(run.GetSandboxId())
 	l.Lock()
 	defer l.Unlock()
-	rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), nil)
+	rt.setWorkerRun(run.GetSandboxHostId(), run.GetSandboxId(), nil, run.GetId())
+}
+
+// workerRunFor builds the controller.run the orchestrator writes for run: every
+// field of the worker's live record (step_role, step_index, step_sent_at,
+// hold_gen, … — set_run replaces the whole message, so a writer building a
+// fresh WorkerRun would drop them), overlaid with the fields the orchestrator
+// owns: needs_review, hold and halted. A live record of another run (or none)
+// contributes nothing.
+func workerRunFor(run *pb.Run, live *pb.WorkerRun) *pb.WorkerRun {
+	out := &pb.WorkerRun{}
+	if live.GetId() == run.GetId() {
+		out = proto.Clone(live).(*pb.WorkerRun)
+	}
+	out.Id, out.Action = run.GetId(), run.GetAction()
+	out.NeedsReview = run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW
+	out.Hold = run.GetHold()
+	out.Halted = run.GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED
+	return out
 }
 
 // syncReviewFlag pushes a worker's controller.run with needs_review set exactly
@@ -379,9 +406,8 @@ func (rt *runtime) syncReviewFlag(runID string) {
 	if err != nil || !inFlight(live) || live.GetSandboxId() == "" {
 		return
 	}
-	rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), &pb.WorkerRun{
-		Id: live.GetId(), Action: live.GetAction(), NeedsReview: live.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW,
-	})
+	cur := rt.sandboxRecord(live.GetSandboxId()).GetController().GetRun()
+	rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), workerRunFor(live, cur), live.GetId())
 }
 
 // repairReviewFlag re-pushes the worker's needs_review flag when its record
@@ -494,8 +520,10 @@ func (rt *runtime) closedRun(run *pb.Run) {
 }
 
 // setWorkerRun pushes the run flag (or its clearing) onto the worker's record
-// through its host link; a down link is retried by the next reconcile.
-func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun) {
+// through its host link; a down link is retried by the next reconcile. The
+// write applies only while the record still holds expectRunID (R7), so a late
+// write never re-creates a run the worker's daemon already released.
+func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun, expectRunID string) {
 	if sandboxID == "" {
 		return
 	}
@@ -506,7 +534,7 @@ func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun) {
 	}
 	ctx, cancel := rt.callCtx(unaryTimeout)
 	defer cancel()
-	sb, err := api.UpdateWorker(ctx, &pb.UpdateWorkerRequest{SandboxId: sandboxID, OrchestratorId: rt.id, SetRun: true, Run: run})
+	sb, err := api.UpdateWorker(ctx, &pb.UpdateWorkerRequest{SandboxId: sandboxID, OrchestratorId: rt.id, SetRun: true, Run: run, ExpectRunId: expectRunID})
 	if err != nil {
 		rt.svc.logf("[orchestrator %s] update worker %s on %s: %v", rt.name(), sandboxID, hostID, err)
 		return

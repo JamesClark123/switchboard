@@ -164,3 +164,199 @@ func TestPutAndDeleteAction(t *testing.T) {
 		t.Errorf("delete on unknown = %v", err)
 	}
 }
+
+// withSequence returns review-pr with an explicit sequence (all built-ins on)
+// and the given custom prompts; ticket and skill are declared too.
+func withSequence(pre, post []string) *pb.Action {
+	a := reviewPR()
+	a.Arguments = append(a.Arguments, &pb.ActionArgument{Name: "ticket"}, &pb.ActionArgument{Name: "skill", DefaultValue: "review"})
+	a.Sequence = &pb.ActionSequence{
+		ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_OPUS,
+		EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM,
+		ClearEnabled: true, PrePrompts: pre, PostPrompts: post,
+	}
+	return a
+}
+
+func TestValidateSequence(t *testing.T) {
+	eleven := make([]string, maxStepPrompts+1)
+	for i := range eleven {
+		eleven[i] = "step"
+	}
+	cases := map[string]struct {
+		mutate func(*pb.Action)
+		want   string // "" = accepted
+	}{
+		"legacy action":           {func(a *pb.Action) { a.Sequence = nil }, ""},
+		"plain words":             {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"Look at {ticket} with {skill}"} }, ""},
+		"slash command":           {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"/review {ticket}"} }, ""},
+		"shell escape, no values": {func(a *pb.Action) { a.Sequence.PostPrompts = []string{"!git status"} }, ""},
+		"literal brace first":     {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"{{ticket} is {ticket}"} }, ""},
+		"exactly ten":             {func(a *pb.Action) { a.Sequence.PrePrompts = eleven[:maxStepPrompts] }, ""},
+		"first-word placeholder":  {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"{skill} for {ticket}"} }, "pre-prompt 1: placeholder {skill} is in the first word"},
+		"placeholder alone":       {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"ok", "{ticket}"} }, "pre-prompt 2: placeholder {ticket} is in the first word"},
+		"slash placeholder":       {func(a *pb.Action) { a.Sequence.PostPrompts = []string{"/{skill}"} }, "post-prompt 1: placeholder {skill} is in the first word"},
+		"shell with placeholder":  {func(a *pb.Action) { a.Sequence.PostPrompts = []string{"!git checkout {ticket}"} }, "post-prompt 1: a prompt starting with ! may not contain a placeholder ({ticket})"},
+		"indented shell":          {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"  !echo {ticket}"} }, "pre-prompt 1: a prompt starting with !"},
+		"newline before command":  {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"\n/foo{skill}"} }, "placeholder {skill} is in the first word"},
+		"eleven entries":          {func(a *pb.Action) { a.Sequence.PostPrompts = eleven }, "more than 10 post-prompts"},
+		"empty":                   {func(a *pb.Action) { a.Sequence.PrePrompts = []string{""} }, "pre-prompt 1 is empty"},
+		"whitespace only":         {func(a *pb.Action) { a.Sequence.PostPrompts = []string{"ok", " \n\t"} }, "post-prompt 2 is empty"},
+		"oversized":               {func(a *pb.Action) { a.Sequence.PrePrompts = []string{strings.Repeat("x", maxArgumentBytes+1)} }, "pre-prompt 1 is larger than"},
+		"undeclared":              {func(a *pb.Action) { a.Sequence.PrePrompts = []string{"Use {nope}"} }, "pre-prompt 1: placeholder {nope} names no argument"},
+		"model unspecified":       {func(a *pb.Action) { a.Sequence.Model = pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED }, "model must be one of"},
+		"model unknown":           {func(a *pb.Action) { a.Sequence.Model = 99 }, "model must be one of"},
+		"model off, unspecified":  {func(a *pb.Action) { a.Sequence.ModelEnabled, a.Sequence.Model = false, 0 }, "model must be one of"},
+		"effort unspecified":      {func(a *pb.Action) { a.Sequence.Effort = pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED }, "effort must be one of"},
+		"effort unknown":          {func(a *pb.Action) { a.Sequence.Effort = 99 }, "effort must be one of"},
+	}
+	for name, c := range cases {
+		a := withSequence(nil, nil)
+		c.mutate(a)
+		err := validateAction(a, nil)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: refused: %v", name, err)
+		case c.want != "" && (!errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: %v, want ErrInvalid containing %q", name, err, c.want)
+		}
+	}
+}
+
+func TestNormalizeActionTrimsStepPrompts(t *testing.T) {
+	a := normalizeAction(withSequence([]string{"  /review now \n"}, []string{"\tdone "}))
+	if seq := a.GetSequence(); seq.GetPrePrompts()[0] != "/review now" || seq.GetPostPrompts()[0] != "done" {
+		t.Errorf("sequence = %+v", seq)
+	}
+	if normalizeAction(reviewPR()).GetSequence() != nil {
+		t.Error("a legacy action must stay without a sequence")
+	}
+}
+
+func TestEffectiveSequence(t *testing.T) {
+	legacy := effectiveSequence(reviewPR())
+	if !legacy.GetModelEnabled() || legacy.GetModel() != pb.ModelChoice_MODEL_CHOICE_OPUS ||
+		!legacy.GetEffortEnabled() || legacy.GetEffort() != pb.EffortChoice_EFFORT_CHOICE_MEDIUM ||
+		!legacy.GetClearEnabled() || len(legacy.GetPrePrompts())+len(legacy.GetPostPrompts()) != 0 {
+		t.Errorf("legacy = %+v", legacy)
+	}
+	a := withSequence([]string{"x"}, nil)
+	if effectiveSequence(a) != a.GetSequence() {
+		t.Error("an explicit sequence is read as stored")
+	}
+}
+
+// stepsOf renders steps as role/kind/text/expect lines.
+func stepsOf(steps []*pb.RunStep) []string {
+	var out []string
+	for _, s := range steps {
+		out = append(out, s.GetRole().String()+" "+s.GetKind().String()+" "+s.GetText()+"|"+s.GetExpect())
+	}
+	return out
+}
+
+func TestBuildSteps(t *testing.T) {
+	args := map[string]string{"number": "7", "repo": "r", "ticket": "SWI-1"}
+	cases := map[string]struct {
+		mutate func(*pb.ActionSequence)
+		want   []string
+	}{
+		"all on": {nil, []string{
+			"STEP_ROLE_SETUP STEP_KIND_MODEL /model opus|Opus",
+			"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort medium|medium",
+			"STEP_ROLE_SETUP STEP_KIND_CUSTOM /review SWI-1|",
+			"STEP_ROLE_SETUP STEP_KIND_CUSTOM Use review twice: review|",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|",
+			"STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|",
+			"STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|",
+		}},
+		"all off": {func(s *pb.ActionSequence) {
+			s.ModelEnabled, s.EffortEnabled, s.ClearEnabled, s.PrePrompts, s.PostPrompts = false, false, false, nil, nil
+		}, nil},
+		"only clear": {func(s *pb.ActionSequence) {
+			s.ModelEnabled, s.EffortEnabled, s.PrePrompts, s.PostPrompts = false, false, nil, nil
+		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|", "STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|"}},
+		"only a post-prompt": {func(s *pb.ActionSequence) {
+			s.ModelEnabled, s.EffortEnabled, s.ClearEnabled, s.PrePrompts = false, false, false, nil
+		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|", "STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|"}},
+		"fable, auto": {func(s *pb.ActionSequence) {
+			s.Model, s.Effort, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, pb.EffortChoice_EFFORT_CHOICE_AUTO, false, nil, nil
+		}, []string{
+			"STEP_ROLE_SETUP STEP_KIND_MODEL /model fable|Fable",
+			"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort auto|auto",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|",
+		}},
+	}
+	for name, c := range cases {
+		a := withSequence([]string{"/review {ticket}", "Use {skill} twice: {skill}"}, []string{"Summarise {ticket}"})
+		if c.mutate != nil {
+			c.mutate(a.Sequence)
+		}
+		steps, err := buildSteps(a, args, "PROMPT")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := stepsOf(steps); strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+	}
+	// A legacy action gets the default built-ins around its prompt (FR-210).
+	steps, _ := buildSteps(reviewPR(), args, "P")
+	if len(steps) != 4 || steps[0].GetExpect() != "Opus" || steps[1].GetExpect() != "medium" || steps[3].GetKind() != pb.StepKind_STEP_KIND_CLEAR {
+		t.Errorf("legacy steps = %q", stepsOf(steps))
+	}
+}
+
+func TestBuildStepsComposeFailure(t *testing.T) {
+	// A value that bypassed validateCall (a run queued by an older daemon) fails
+	// the snapshot with the entry named.
+	bad := map[string]string{"number": "1", "repo": "r", "ticket": "\x1b[201~"}
+	for name, a := range map[string]*pb.Action{
+		"pre-prompt 1":  withSequence([]string{"Look at {ticket}"}, nil),
+		"post-prompt 1": withSequence(nil, []string{"Look at {ticket}"}),
+	} {
+		if _, err := buildSteps(a, bad, "P"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), name+": ") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestComposeStep(t *testing.T) {
+	a := withSequence(nil, nil)
+	cases := map[string]struct {
+		text string
+		args map[string]string
+		want string
+	}{
+		"value, every occurrence": {"Use {ticket} and {ticket}", map[string]string{"ticket": "T-1"}, "Use T-1 and T-1"},
+		"default":                 {"Run {skill}", nil, "Run review"},
+		"empty value -> default":  {"Run {skill}", map[string]string{"skill": ""}, "Run review"},
+		"missing optional":        {"Look at {ticket}.", nil, "Look at ."},
+		"literal brace":           {"Keep {{ticket} {ticket}", map[string]string{"ticket": "x"}, "Keep {ticket} x"},
+		"nothing appended":        {"Plain step", map[string]string{"number": "1", "repo": "r", "focus": "tests"}, "Plain step"},
+	}
+	for name, c := range cases {
+		got, err := composeStep(c.text, a, c.args)
+		if err != nil || got != c.want {
+			t.Errorf("%s: %q / %v, want %q", name, got, err, c.want)
+		}
+	}
+	if _, err := composeStep("Use {ticket}", a, map[string]string{"ticket": strings.Repeat("x", maxPromptBytes+1)}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("oversized step = %v", err)
+	}
+}
+
+// An argument referenced only by a pre-prompt is still appended to the action
+// prompt: appending depends on the body alone (FR-207).
+func TestArgumentOnlyInPrePromptIsAppended(t *testing.T) {
+	a := withSequence([]string{"Open {ticket}"}, nil)
+	args := map[string]string{"number": "1", "repo": "r", "ticket": "SWI-9"}
+	prompt, err := compose(a, args)
+	if err != nil || !strings.HasSuffix(prompt, "\n\nticket: SWI-9") {
+		t.Fatalf("prompt = %q / %v", prompt, err)
+	}
+	steps, _ := buildSteps(a, args, prompt)
+	if steps[2].GetText() != "Open SWI-9" || steps[3].GetText() != prompt {
+		t.Errorf("steps = %q", stepsOf(steps))
+	}
+}

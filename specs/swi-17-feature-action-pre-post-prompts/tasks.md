@@ -255,7 +255,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Action sequence model (research R9)
 
-- [ ] T014 In `SBD/orchestrator/actions.go`, add:
+- [X] T014 In `SBD/orchestrator/actions.go`, add:
   - `effectiveSequence(a *pb.Action) *pb.ActionSequence` (absent = Opus, medium, Clear, empty lists; FR-210);
   - `buildSteps(a, args) []*pb.RunStep`, in FR-205 order, with `expect` set for Model/Effort and the text from
     `composeStep`;
@@ -271,7 +271,7 @@ sequence model. No user story can be delivered before this phase.
   - refuse UNSPECIFIED enums.
 
   Errors name the entry (`pre-prompt 2: …`). `normalizeAction` stores the trimmed text.
-- [ ] T015 Tests in `SBD/orchestrator/actions_test.go`, covering every FR-204 rule and every edge case in the spec's
+- [X] T015 Tests in `SBD/orchestrator/actions_test.go`, covering every FR-204 rule and every edge case in the spec's
   list:
   - `{skill} for {ticket}`, `{cmd}`, `/{skill}`, `!git checkout {branch}`, `  !echo {x}` after trimming, and an 11th
     entry;
@@ -279,10 +279,10 @@ sequence model. No user story can be delivered before this phase.
   - `buildSteps` order for all built-ins on and all off (no steps);
   - placeholder fill with defaults and with a missing optional argument;
   - an argument referenced only by a pre-prompt is still appended to the action prompt (FR-207).
-- [ ] T016 In `SBD/orchestrator/runs.go` `callAction`, snapshot `Run.steps = buildSteps(...)` next to `Run.prompt`.
+- [X] T016 In `SBD/orchestrator/runs.go` `callAction`, snapshot `Run.steps = buildSteps(...)` next to `Run.prompt`.
   The `ACTION_PROMPT` step's text is the composed prompt. Test: a later `PutAction` doesn't change a queued run's
   steps (FR-207).
-- [ ] T017 Add `workerRunFor(run, live *pb.WorkerRun) *pb.WorkerRun` in `SBD/orchestrator/runs.go`. It copies
+- [X] T017 Add `workerRunFor(run, live *pb.WorkerRun) *pb.WorkerRun` in `SBD/orchestrator/runs.go`. It copies
   **every** field from the live record and overlays the orchestrator's (`needs_review`, `hold`, `halted`). Route
   every existing `WorkerRun` write through it: `deliver`'s local mirror, `syncReviewFlag`, `repairReviewFlag`. Every
   write to an existing run sends `expect_run_id`.
@@ -291,7 +291,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Security and restart recovery (research R13, R14)
 
-- [ ] T044 [P] **Untrusted values (R13 §1).** Add `checkValue(v string) (string, error)` in
+- [X] T044 [P] **Untrusted values (R13 §1).** Add `checkValue(v string) (string, error)` in
   `SBD/orchestrator/values.go`; the orchestrator is its only user, so there's no import cycle. It:
   1. normalises CRLF and lone CR to LF;
   2. refuses invalid UTF-8;

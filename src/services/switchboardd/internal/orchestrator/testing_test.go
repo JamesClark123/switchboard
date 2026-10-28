@@ -435,6 +435,10 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 	if sb.Controller == nil {
 		return nil, status.Error(codes.PermissionDenied, "not a worker")
 	}
+	// As the real worker side (R7): expect_run_id is a compare-and-set key.
+	if e := req.GetExpectRunId(); e != "" && sb.GetController().GetRun().GetId() != e {
+		return nil, status.Error(codes.FailedPrecondition, "run moved")
+	}
 	if req.Name != nil {
 		sb.Controller.Name = req.GetName()
 	}
