@@ -84,8 +84,8 @@ func fakeGitHubNoChecksums(t *testing.T, archive []byte) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	mux.HandleFunc("/repos/"+RepoOwner+"/"+RepoName+"/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q}]}`,
-			AssetName("linux", "amd64"), srv.URL+"/dl/asset")))
+		_, _ = fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q}]}`,
+			AssetName("linux", "amd64"), srv.URL+"/dl/asset")
 	})
 	mux.HandleFunc("/dl/asset", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
 	orig := apiBase

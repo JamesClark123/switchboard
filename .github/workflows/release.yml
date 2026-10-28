@@ -24,11 +24,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-          cache-dependency-path: |
-            src/libs/switchboard-proto/go.sum
-            src/libs/switchboard-update/go.sum
-            src/services/switchboardd/go.sum
-            src/apps/switchboard-tui/go.sum
+          # Every module's go.sum, so a new module is cached too (SWI-11).
+          cache-dependency-path: src/*/*/go.sum
 
       - uses: goreleaser/goreleaser-action@v6
         with:

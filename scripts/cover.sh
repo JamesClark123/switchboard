@@ -8,12 +8,22 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 floor="${COVER_FLOOR:-90}"
-modules=(
-  src/libs/switchboard-proto
-  src/libs/switchboard-dial
-  src/services/switchboardd
-  src/apps/switchboard-tui
-)
+# The modules come from `make cover` (COVER_MODULES, the Makefile's MODULES) or,
+# run directly, from go.work the same way as the Makefile's GO_MODULES (keep the
+# two sed expressions in step); E2E modules are never measured.
+# Space-separated like the Makefile's list, so a module path has no spaces.
+if [ -n "${COVER_MODULES:-}" ]; then
+  read -r -a modules <<<"$COVER_MODULES"
+else
+  # Read into a variable first: set -e cannot see a failure inside a process
+  # substitution, so a broken go.work would otherwise yield an empty list.
+  listed=$(go work edit -json | sed -n 's|.*"DiskPath": "\(\./\)\{0,1\}\(.*\)".*|\2|p' | sed 's|/$||' | grep -v -- '-e2e$' || true)
+  read -r -d '' -a modules <<<"$listed" || true
+fi
+if [ "${#modules[@]}" -eq 0 ]; then
+  echo "cover: no go.work modules found (GOWORK off, go.work unreadable, or none match)"
+  exit 1
+fi
 
 log=""
 trap 'rm -f "$log"' EXIT

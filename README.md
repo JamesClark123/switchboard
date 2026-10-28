@@ -45,7 +45,7 @@ existing SSH with no new network port or auth system.
 
 ## Repository layout
 
-A Go `go.work` workspace with four modules (plus E2E siblings), placed under the constitution's
+A Go `go.work` workspace with five modules (plus E2E siblings), placed under the constitution's
 category taxonomy:
 
 ```
@@ -495,11 +495,11 @@ up to date with minimal effort.
 The project uses the Go toolchain throughout, driven by a top-level `Makefile`. Common targets:
 
 ```bash
-make build        # compile every module
+make build        # compile every module (the lists come from go.work)
 make fmt          # golangci-lint fmt across all modules (gofmt + goimports)
 make fmt-check    # fail if any file needs formatting (golangci-lint fmt --diff)
-make vet          # go vet across modules
-make lint         # golangci-lint across modules
+make vet          # go vet across all modules, E2E suites included (e2e tag)
+make lint         # golangci-lint across all modules, E2E suites included (e2e tag)
 make test         # unit + integration tests (go test)
 make cover        # tests with the 90% per-module coverage floor enforced
 make env-check    # env-schema ↔ .env.example lockstep (Rule VIII)
@@ -511,7 +511,7 @@ make e2e          # end-to-end suites (see below)
   client↔daemon tests over an in-process socket, two-daemon orchestrator tests (an orchestrator
   on one in-process daemon driving workers on another over a real link), MCP endpoint tests with
   the official SDK client, and `teatest` golden/interaction tests for the TUI.
-  Coverage is enforced at **≥90% per module** (proto, dial, daemon, TUI).
+  Coverage is enforced at **≥90% per module** (proto, dial, update, daemon, TUI).
 - **End-to-end** (`make e2e`, gated behind the `e2e` build tag):
   - The **TUI E2E** builds the real binaries and drives `sxb` through a PTY against a
     daemon backed by a stub `sbx` — it runs anywhere, no Docker required.
@@ -524,7 +524,10 @@ Run a single test from within a module, e.g.:
 cd src/services/switchboardd && go test ./internal/sandbox/ -run TestLaunch -v
 ```
 
-A Husky `pre-commit` hook runs the fast subset (`fmt-check`, `vet`, `lint`, `test`, `env-check`);
+A Husky `pre-commit` hook runs the fast subset (`fmt-check`, `vet`, `lint`, `test`, `env-check`).
+`vet` and `lint` cover every go.work module, so the hook also type-checks and lints the E2E suites
+(with the `e2e` tag) without running them; on a cold golangci-lint cache that adds noticeably to a
+commit. Running the E2E suites is CI-only (`make e2e`);
 CI (`.github/workflows/ci.yml`) runs `fmt-check`, `vet`, `lint` and `env-check`, then the unit +
 integration tests of the `MODULES` once via `make cover` (every package except generated stubs;
 `cmd/` packages are tested but not counted towards coverage; any failing test's output is
