@@ -94,11 +94,13 @@ const (
 	Switchboard_ListRuns_FullMethodName                 = "/switchboard.v1.Switchboard/ListRuns"
 	Switchboard_GetRun_FullMethodName                   = "/switchboard.v1.Switchboard/GetRun"
 	Switchboard_CancelRun_FullMethodName                = "/switchboard.v1.Switchboard/CancelRun"
+	Switchboard_ResolveRunStep_FullMethodName           = "/switchboard.v1.Switchboard/ResolveRunStep"
 	Switchboard_RebuildReasoningSandbox_FullMethodName  = "/switchboard.v1.Switchboard/RebuildReasoningSandbox"
 	Switchboard_AttachController_FullMethodName         = "/switchboard.v1.Switchboard/AttachController"
 	Switchboard_DetachController_FullMethodName         = "/switchboard.v1.Switchboard/DetachController"
 	Switchboard_UpdateWorker_FullMethodName             = "/switchboard.v1.Switchboard/UpdateWorker"
 	Switchboard_DeliverWorkerPrompt_FullMethodName      = "/switchboard.v1.Switchboard/DeliverWorkerPrompt"
+	Switchboard_DeliverWorkerStep_FullMethodName        = "/switchboard.v1.Switchboard/DeliverWorkerStep"
 	Switchboard_OrchestratorLink_FullMethodName         = "/switchboard.v1.Switchboard/OrchestratorLink"
 	Switchboard_PutLane_FullMethodName                  = "/switchboard.v1.Switchboard/PutLane"
 	Switchboard_DeleteLane_FullMethodName               = "/switchboard.v1.Switchboard/DeleteLane"
@@ -374,6 +376,11 @@ type SwitchboardClient interface {
 	GetRun(ctx context.Context, in *GetRunRequest, opts ...grpc.CallOption) (*Run, error)
 	// Cancels a QUEUED run (FR-126); FAILED_PRECONDITION for any other state.
 	CancelRun(ctx context.Context, in *CancelRunRequest, opts ...grpc.CallOption) (*Run, error)
+	// Retry, skip or fail a run's halted step (SWI-17, FR-222). NOT_FOUND for an
+	// unknown run; FAILED_PRECONDITION when the run is not halted at `step` (except
+	// RETRY of a CLEAR step under a NEEDS_DEVELOPER hold), on SKIP of a CLEAR step
+	// or SKIP of the ACTION_PROMPT step (contracts/proto-delta.md, Errors).
+	ResolveRunStep(ctx context.Context, in *ResolveRunStepRequest, opts ...grpc.CallOption) (*Run, error)
 	// Rebuilds the reasoning sandbox — destroy + launch with the saved setup, or
 	// with `setup` when given (saved first) (FR-146). Streams LaunchProgress like
 	// LaunchSandbox. FAILED_PRECONDITION while a run is on the sandbox.
@@ -398,6 +405,12 @@ type SwitchboardClient interface {
 	// PTY is drained, types the framed prompt through the developer's own prompt
 	// path, records controller.run and emits Event.sandbox_changed.
 	DeliverWorkerPrompt(ctx context.Context, in *DeliverWorkerPromptRequest, opts ...grpc.CallOption) (*DeliverWorkerPromptResponse, error)
+	// Types one step of a sequenced run and runs its submit check locally (SWI-17,
+	// contracts/worker-step.md): guard (FAILED_PRECONDITION with the reason; nothing
+	// typed), ALREADY_EXISTS for a step_index already sent, INVALID_ARGUMENT for a
+	// MODEL/EFFORT expect outside the fixed sets. Runs without steps keep
+	// DeliverWorkerPrompt.
+	DeliverWorkerStep(ctx context.Context, in *DeliverWorkerStepRequest, opts ...grpc.CallOption) (*DeliverWorkerStepResponse, error)
 	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
 	// MUST be `hello`. See OrchestratorLinkFrame.
 	OrchestratorLink(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame], error)
@@ -1102,6 +1115,16 @@ func (c *switchboardClient) CancelRun(ctx context.Context, in *CancelRunRequest,
 	return out, nil
 }
 
+func (c *switchboardClient) ResolveRunStep(ctx context.Context, in *ResolveRunStepRequest, opts ...grpc.CallOption) (*Run, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Run)
+	err := c.cc.Invoke(ctx, Switchboard_ResolveRunStep_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) RebuildReasoningSandbox(ctx context.Context, in *RebuildReasoningSandboxRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LaunchProgress], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &Switchboard_ServiceDesc.Streams[10], Switchboard_RebuildReasoningSandbox_FullMethodName, cOpts...)
@@ -1155,6 +1178,16 @@ func (c *switchboardClient) DeliverWorkerPrompt(ctx context.Context, in *Deliver
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeliverWorkerPromptResponse)
 	err := c.cc.Invoke(ctx, Switchboard_DeliverWorkerPrompt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DeliverWorkerStep(ctx context.Context, in *DeliverWorkerStepRequest, opts ...grpc.CallOption) (*DeliverWorkerStepResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeliverWorkerStepResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DeliverWorkerStep_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1500,6 +1533,11 @@ type SwitchboardServer interface {
 	GetRun(context.Context, *GetRunRequest) (*Run, error)
 	// Cancels a QUEUED run (FR-126); FAILED_PRECONDITION for any other state.
 	CancelRun(context.Context, *CancelRunRequest) (*Run, error)
+	// Retry, skip or fail a run's halted step (SWI-17, FR-222). NOT_FOUND for an
+	// unknown run; FAILED_PRECONDITION when the run is not halted at `step` (except
+	// RETRY of a CLEAR step under a NEEDS_DEVELOPER hold), on SKIP of a CLEAR step
+	// or SKIP of the ACTION_PROMPT step (contracts/proto-delta.md, Errors).
+	ResolveRunStep(context.Context, *ResolveRunStepRequest) (*Run, error)
 	// Rebuilds the reasoning sandbox — destroy + launch with the saved setup, or
 	// with `setup` when given (saved first) (FR-146). Streams LaunchProgress like
 	// LaunchSandbox. FAILED_PRECONDITION while a run is on the sandbox.
@@ -1524,6 +1562,12 @@ type SwitchboardServer interface {
 	// PTY is drained, types the framed prompt through the developer's own prompt
 	// path, records controller.run and emits Event.sandbox_changed.
 	DeliverWorkerPrompt(context.Context, *DeliverWorkerPromptRequest) (*DeliverWorkerPromptResponse, error)
+	// Types one step of a sequenced run and runs its submit check locally (SWI-17,
+	// contracts/worker-step.md): guard (FAILED_PRECONDITION with the reason; nothing
+	// typed), ALREADY_EXISTS for a step_index already sent, INVALID_ARGUMENT for a
+	// MODEL/EFFORT expect outside the fixed sets. Runs without steps keep
+	// DeliverWorkerPrompt.
+	DeliverWorkerStep(context.Context, *DeliverWorkerStepRequest) (*DeliverWorkerStepResponse, error)
 	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
 	// MUST be `hello`. See OrchestratorLinkFrame.
 	OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error
@@ -1730,6 +1774,9 @@ func (UnimplementedSwitchboardServer) GetRun(context.Context, *GetRunRequest) (*
 func (UnimplementedSwitchboardServer) CancelRun(context.Context, *CancelRunRequest) (*Run, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelRun not implemented")
 }
+func (UnimplementedSwitchboardServer) ResolveRunStep(context.Context, *ResolveRunStepRequest) (*Run, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveRunStep not implemented")
+}
 func (UnimplementedSwitchboardServer) RebuildReasoningSandbox(*RebuildReasoningSandboxRequest, grpc.ServerStreamingServer[LaunchProgress]) error {
 	return status.Error(codes.Unimplemented, "method RebuildReasoningSandbox not implemented")
 }
@@ -1744,6 +1791,9 @@ func (UnimplementedSwitchboardServer) UpdateWorker(context.Context, *UpdateWorke
 }
 func (UnimplementedSwitchboardServer) DeliverWorkerPrompt(context.Context, *DeliverWorkerPromptRequest) (*DeliverWorkerPromptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeliverWorkerPrompt not implemented")
+}
+func (UnimplementedSwitchboardServer) DeliverWorkerStep(context.Context, *DeliverWorkerStepRequest) (*DeliverWorkerStepResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeliverWorkerStep not implemented")
 }
 func (UnimplementedSwitchboardServer) OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error {
 	return status.Error(codes.Unimplemented, "method OrchestratorLink not implemented")
@@ -2789,6 +2839,24 @@ func _Switchboard_CancelRun_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_ResolveRunStep_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveRunStepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ResolveRunStep(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ResolveRunStep_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ResolveRunStep(ctx, req.(*ResolveRunStepRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_RebuildReasoningSandbox_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(RebuildReasoningSandboxRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -2868,6 +2936,24 @@ func _Switchboard_DeliverWorkerPrompt_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SwitchboardServer).DeliverWorkerPrompt(ctx, req.(*DeliverWorkerPromptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DeliverWorkerStep_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeliverWorkerStepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DeliverWorkerStep(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DeliverWorkerStep_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DeliverWorkerStep(ctx, req.(*DeliverWorkerStepRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3195,6 +3281,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Switchboard_CancelRun_Handler,
 		},
 		{
+			MethodName: "ResolveRunStep",
+			Handler:    _Switchboard_ResolveRunStep_Handler,
+		},
+		{
 			MethodName: "AttachController",
 			Handler:    _Switchboard_AttachController_Handler,
 		},
@@ -3209,6 +3299,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeliverWorkerPrompt",
 			Handler:    _Switchboard_DeliverWorkerPrompt_Handler,
+		},
+		{
+			MethodName: "DeliverWorkerStep",
+			Handler:    _Switchboard_DeliverWorkerStep_Handler,
 		},
 		{
 			MethodName: "PutLane",

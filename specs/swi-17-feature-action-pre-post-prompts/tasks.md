@@ -73,7 +73,7 @@ Tests that exist only for a deferred item are dropped.
   - Add `func (s *Screen) Lines() []Line`, where `Line{Text string; Faint []bool}` is the live screen without
     scrollback, with each cell's faint attribute, and a `WithoutScrollback()` option for the daemon (the TUI keeps
     its 5000 lines). Test both in `termview_test.go`. Coverage must stay ≥ 90% for the new module.
-- [ ] T003 Apply contracts/proto-delta.md to `PROTO`, then run `make proto` (`src/libs/switchboard-proto/gen.sh`).
+- [X] T003 Apply contracts/proto-delta.md to `PROTO`, then run `make proto` (`src/libs/switchboard-proto/gen.sh`).
   - **Enums:** `ModelChoice`, `EffortChoice`, `StepRole`, `StepKind`, `StepStatus` (incl. `SENDING = 7`),
     `StepObserved`, `WorkerHold`, `StepOutcome`, `StepResolution`, `AgentCheck.State`.
   - **Messages:** `ActionSequence`, `RunStep`, `AgentCheck`, `DeliverWorkerStepRequest/Response`,
@@ -83,7 +83,7 @@ Tests that exist only for a deferred item are dropped.
     `AGENT_CHECK_FAILED`).
   - **RPCs:** `DeliverWorkerStep`, `ResolveRunStep`, `ReplaceDetachedAgent`.
   - Add labels for the new enums in `src/libs/switchboard-proto/types.go`, alongside `AgentStatusLabel`.
-- [ ] T004 [P] Mirror the proto delta in `specs/001-sandbox-session-manager/contracts/switchboard.proto`.
+- [X] T004 [P] Mirror the proto delta in `specs/001-sandbox-session-manager/contracts/switchboard.proto`.
 
 ---
 
