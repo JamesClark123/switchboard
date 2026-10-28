@@ -269,8 +269,7 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case v.form != nil:
 		switch msg.String() {
 		case "esc":
-			v.form, v.vals = nil, nil
-			return m, nil
+			return m.requestExit(gMcp)
 		case "ctrl+s":
 			return m.applyMcpForm()
 		}
@@ -382,7 +381,7 @@ func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch v.form.State {
 	case huh.StateCompleted:
-		return m.applyMcpForm()
+		return reviveCompleted(gMcp)(m.applyMcpForm())
 	case huh.StateAborted:
 		v.form, v.vals = nil, nil
 		return m, nil

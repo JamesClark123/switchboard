@@ -24,6 +24,19 @@ func noKeyGrace(t *testing.T) {
 
 var ctrlC = tea.KeyMsg{Type: tea.KeyCtrlC}
 
+// escDiscard is esc on a changed surface, which now asks first (SWI-9), then
+// Discard in the dialog: the old "esc throws the edits away".
+func escDiscard(t *testing.T, m Model) Model {
+	t.Helper()
+	noKeyGrace(t)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open {
+		t.Fatal("esc on a changed surface should open the unsaved-changes dialog")
+	}
+	m, _ = update(m, press("d"))
+	return m
+}
+
 // editedReasoningSetup opens the reasoning setup of o-a (saved setup: one
 // folder) and edits it: proj added, clone mode on.
 func editedReasoningSetup(t *testing.T) (Model, string) {

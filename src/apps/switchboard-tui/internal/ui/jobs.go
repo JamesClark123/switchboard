@@ -251,9 +251,7 @@ func (m Model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if j.form != nil {
 		switch msg.String() {
 		case "esc":
-			m.closeOpForm(surfaceJobs)
-			j.status = ""
-			return m, nil
+			return m.requestExit(gOpJobs)
 		case "ctrl+s":
 			return m.submitOrchOpForm(surfaceJobs)
 		}

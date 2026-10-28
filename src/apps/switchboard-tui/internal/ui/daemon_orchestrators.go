@@ -81,8 +81,7 @@ func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.orch.form != nil {
 		switch msg.String() {
 		case "esc":
-			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-			return m, nil
+			return m.requestExit(gOrchAdmin)
 		case "ctrl+s":
 			return m.applyOrchForm()
 		}

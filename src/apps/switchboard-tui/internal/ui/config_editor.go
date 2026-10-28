@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -16,14 +17,59 @@ import (
 
 // ---- Config editor (US2: FR-013/014/015/016) ----
 
-// editorState backs the huh-driven configuration editor. Field values live
-// inside the (pointer) huh.Form and are read back by key — never via external
-// pointers, which would dangle as the value-type model is copied each Update.
+// editorState backs the huh-driven configuration editor. The form binds into
+// vals, which is heap-allocated and held by pointer: pointers into the
+// value-type model itself would dangle as it is copied each Update. baseline is
+// vals as the form opened, for the unsaved-changes guard (SWI-9).
 type editorState struct {
-	form    *huh.Form
-	options []*pb.OptionManifest_Option
-	loading bool
-	status  string
+	form     *huh.Form
+	vals     *configFormVals
+	baseline configSnapshot
+	options  []*pb.OptionManifest_Option
+	loading  bool
+	status   string
+}
+
+// configFormVals are the editor's bound values. The option fields come from
+// the host's manifest, so they are maps of pointers by option key.
+type configFormVals struct {
+	name, mode string
+	strs       map[string]*string
+	bools      map[string]*bool
+}
+
+// configSnapshot is configFormVals flattened to plain values.
+type configSnapshot struct {
+	name, mode string
+	strs       map[string]string
+	bools      map[string]bool
+}
+
+func newConfigFormVals(options []*pb.OptionManifest_Option) *configFormVals {
+	v := &configFormVals{strs: map[string]*string{}, bools: map[string]*bool{}}
+	for _, opt := range options {
+		if opt.GetType() == "bool" {
+			v.bools[opt.GetKey()] = new(bool)
+		} else {
+			v.strs[opt.GetKey()] = new(string)
+		}
+	}
+	return v
+}
+
+func (v *configFormVals) snapshot() configSnapshot {
+	s := configSnapshot{name: v.name, mode: v.mode, strs: map[string]string{}, bools: map[string]bool{}}
+	for k, p := range v.strs {
+		s.strs[k] = *p
+	}
+	for k, p := range v.bools {
+		s.bools[k] = *p
+	}
+	return s
+}
+
+func (s configSnapshot) equal(o configSnapshot) bool {
+	return s.name == o.name && s.mode == o.mode && maps.Equal(s.strs, o.strs) && maps.Equal(s.bools, o.bools)
 }
 
 // enterConfigEditor opens a fresh config editor and loads the option manifest.
@@ -54,26 +100,31 @@ func (m Model) manifestCmd() tea.Cmd {
 func (m Model) applyManifest(man *pb.OptionManifest) (tea.Model, tea.Cmd) {
 	m.editor.options = man.GetOptions()
 	m.editor.loading = false
-	m.editor.form = m.buildEditorForm()
+	m.editor.vals = newConfigFormVals(m.editor.options)
+	m.editor.form = m.buildEditorForm(m.editor.vals)
+	// After the build: the mode Select writes its first option into the vals.
+	m.editor.baseline = m.editor.vals.snapshot()
 	return m, m.editor.form.Init()
 }
 
-func (m Model) buildEditorForm() *huh.Form {
+// buildEditorForm builds the form bound to v; it never fills v, so reopenForm
+// keeps what the user typed.
+func (m Model) buildEditorForm(v *configFormVals) *huh.Form {
 	fields := []huh.Field{
 		huh.NewInput().Key("__name").Title("Configuration name").
-			Placeholder("e.g. backend-dev"),
+			Placeholder("e.g. backend-dev").Value(&v.name),
 		huh.NewSelect[string]().Key("__mode").Title("Seeding mode").
-			Options(huh.NewOption("duplicate (default)", "duplicate"), huh.NewOption("clone", "clone")),
+			Options(huh.NewOption("duplicate (default)", "duplicate"), huh.NewOption("clone", "clone")).Value(&v.mode),
 	}
 	for _, opt := range m.editor.options {
 		key := opt.GetKey()
 		switch opt.GetType() {
 		case "bool":
 			fields = append(fields, huh.NewConfirm().Key(key).
-				Title(key).Description(opt.GetDescription()))
+				Title(key).Description(opt.GetDescription()).Value(v.bools[key]))
 		default:
 			fields = append(fields, huh.NewInput().Key(key).
-				Title(key+" ("+opt.GetType()+")").Description(opt.GetDescription()))
+				Title(key+" ("+opt.GetType()+")").Description(opt.GetDescription()).Value(v.strs[key]))
 		}
 	}
 	return huh.NewForm(huh.NewGroup(fields...)).
@@ -98,8 +149,7 @@ func (m Model) updateEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc":
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gConfig)
 	case "ctrl+s":
 		return m.saveConfig()
 	}
@@ -116,7 +166,7 @@ func (m Model) advanceEditorForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editor.form = ff
 	}
 	if m.editor.form.State == huh.StateCompleted {
-		return m.saveConfig()
+		return reviveCompleted(gConfig)(m.saveConfig())
 	}
 	if m.editor.form.State == huh.StateAborted {
 		m.screen = screenList
@@ -126,10 +176,11 @@ func (m Model) advanceEditorForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) saveConfig() (tea.Model, tea.Cmd) {
-	if m.editor.form == nil {
+	v := m.editor.vals
+	if m.editor.form == nil || v == nil {
 		return m, nil
 	}
-	name := strings.TrimSpace(m.editor.form.GetString("__name"))
+	name := strings.TrimSpace(v.name)
 	if name == "" {
 		m.editor.status = "name required"
 		return m, nil
@@ -138,16 +189,18 @@ func (m Model) saveConfig() (tea.Model, tea.Cmd) {
 	for _, opt := range m.editor.options {
 		key := opt.GetKey()
 		if opt.GetType() == "bool" {
-			if m.editor.form.GetBool(key) {
+			if p := v.bools[key]; p != nil && *p {
 				values[key] = "true"
 			}
 			continue
 		}
-		if raw := strings.TrimSpace(m.editor.form.GetString(key)); raw != "" {
-			values[key] = encodeOption(opt.GetType(), raw)
+		if p := v.strs[key]; p != nil {
+			if raw := strings.TrimSpace(*p); raw != "" {
+				values[key] = encodeOption(opt.GetType(), raw)
+			}
 		}
 	}
-	mode := m.editor.form.GetString("__mode")
+	mode := v.mode
 	if mode == "" {
 		mode = "duplicate"
 	}

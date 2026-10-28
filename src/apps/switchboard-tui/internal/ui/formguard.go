@@ -294,13 +294,61 @@ func opSurfaceOf(g guardSurface) orchSurface {
 	return surfaceDetail
 }
 
+// opGuard is the inverse of opSurfaceOf.
+func opGuard(s orchSurface) guardSurface {
+	if s == surfaceJobs {
+		return gOpJobs
+	}
+	return gOpDetail
+}
+
+// guardForm is g's open huh form, or nil (inline and browser surfaces have none).
+func (m Model) guardForm(g guardSurface) *huh.Form {
+	switch g {
+	case gConfig:
+		return m.editor.form
+	case gMcp:
+		return m.mcpView.form
+	case gSecrets:
+		return m.secretsView.form
+	case gOrchAdmin:
+		return m.orch.form
+	case gOpJobs, gOpDetail:
+		return m.opState(opSurfaceOf(g)).form
+	case gKitItem:
+		return m.kitEditor.form
+	}
+	return nil
+}
+
+// reviveCompleted wraps a save run after huh completed g's form (enter on the
+// last field): huh then ignores input and renders nothing, so if the save left
+// the form open — a validation error — it is rebuilt from the same vals with
+// the error still showing (research R4). Use as reviveCompleted(g)(m.save()).
+func reviveCompleted(g guardSurface) func(tea.Model, tea.Cmd) (tea.Model, tea.Cmd) {
+	return func(tm tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+		m := tm.(Model)
+		if f := m.guardForm(g); f == nil || f.State != huh.StateCompleted {
+			return m, cmd
+		}
+		reopen := m.reopenForm(g)
+		return m, tea.Batch(cmd, reopen)
+	}
+}
+
 // guardDirty reports whether g's current values differ from its baseline. It is
 // a pure comparison: an edit undone back to the original value is clean.
 // Surfaces without a baseline yet are never dirty.
 func (m Model) guardDirty(g guardSurface) bool {
 	switch g {
+	case gConfig:
+		return m.editor.vals != nil && !m.editor.vals.snapshot().equal(m.editor.baseline)
 	case gMcp:
 		return m.mcpView.vals != nil && *m.mcpView.vals != m.mcpView.baseline
+	case gSecrets:
+		return m.secretsView.vals != nil && *m.secretsView.vals != m.secretsView.baseline
+	case gOrchAdmin:
+		return m.orch.vals != nil && *m.orch.vals != m.orch.baseline
 	case gOpJobs, gOpDetail:
 		op := m.opState(opSurfaceOf(g))
 		return op.form != nil && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
@@ -321,6 +369,20 @@ func (m Model) guardSave(g guardSurface) (Model, tea.Cmd) {
 		return m.guardLeave(g)
 	}
 	switch g {
+	case gConfig:
+		return guardResult(m.saveConfig())
+	case gMcp:
+		return guardResult(m.applyMcpForm())
+	case gSecrets:
+		return guardResult(m.applySecretsForm())
+	case gOrchAdmin:
+		return guardResult(m.applyOrchForm())
+	case gOpJobs:
+		return guardResult(m.submitOrchOpForm(surfaceJobs))
+	case gOpDetail:
+		return guardResult(m.submitOrchDetailForm())
+	case gKitItem:
+		return guardResult(m.applyKitForm())
 	case gLaunch:
 		return guardResult(m.startLaunch())
 	case gReasoning:
@@ -338,6 +400,26 @@ func guardResult(tm tea.Model, cmd tea.Cmd) (Model, tea.Cmd) {
 // guardLeave is the surface's esc path: close without applying.
 func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 	switch g {
+	case gConfig:
+		m.screen = screenList
+	case gMcp:
+		m.mcpView.form, m.mcpView.vals, m.mcpView.spec = nil, nil, nil
+	case gSecrets:
+		m.secretsView.form, m.secretsView.vals = nil, nil
+	case gOrchAdmin:
+		m.closeOrchForm()
+	case gOpJobs:
+		m.closeOpForm(surfaceJobs)
+		m.jobs.status = ""
+	case gOpDetail:
+		m.closeOpForm(surfaceDetail)
+		m.orchDetail.status = ""
+		if m.markFreeFromList {
+			m.markFreeFromList = false
+			m.screen = screenList
+		}
+	case gKitItem:
+		m.closeKitForm()
 	case gLaunch:
 		m.screen = screenList
 	case gReasoning:
@@ -383,6 +465,24 @@ func (m *Model) reopenForm(g guardSurface) tea.Cmd {
 			return nil
 		}
 		return m.buildMcpForm()
+	case gConfig:
+		if m.editor.vals == nil {
+			return nil
+		}
+		m.editor.form = m.buildEditorForm(m.editor.vals)
+		return m.editor.form.Init()
+	case gSecrets:
+		if m.secretsView.vals == nil {
+			return nil
+		}
+		m.secretsView.form = m.secretsForm(m.secretsView.vals)
+		return m.secretsView.form.Init()
+	case gOrchAdmin:
+		if m.orch.formBuild == nil {
+			return nil
+		}
+		m.orch.form = m.orch.formBuild(*m)
+		return m.orch.form.Init()
 	}
 	return nil
 }

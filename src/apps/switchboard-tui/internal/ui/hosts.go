@@ -437,7 +437,7 @@ func (m *Model) closeOrchAdminOnDrop(msg hostsMsg) {
 			back = screenList
 		}
 		m.daemons.options = false
-		m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+		m.closeOrchForm()
 		m.closeOpForm(surfaceDetail)
 		m.markFreeFromList = false
 		switch m.screen {

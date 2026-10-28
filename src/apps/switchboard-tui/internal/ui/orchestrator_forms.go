@@ -454,7 +454,14 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 	}
 	switch op.form.State {
 	case huh.StateCompleted:
-		return m.submitOrchOpForm(s)
+		// A submit that sent its call (cmd) waits for the reply with the form
+		// dead; only a refusal before sending revives it here (the reply's
+		// refusal does in applyOrchFormErr).
+		mm, cmd := m.submitOrchOpForm(s)
+		if cmd != nil {
+			return mm, cmd
+		}
+		return reviveCompleted(opGuard(s))(mm, nil)
 	case huh.StateAborted:
 		m.closeOpForm(s)
 		return m, nil

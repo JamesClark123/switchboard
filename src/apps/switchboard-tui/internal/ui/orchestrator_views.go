@@ -156,13 +156,7 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.form != nil {
 		switch msg.String() {
 		case "esc":
-			m.closeOpForm(surfaceDetail)
-			d.status = ""
-			if m.markFreeFromList {
-				m.markFreeFromList = false
-				m.screen = screenList
-			}
-			return m, nil
+			return m.requestExit(gOpDetail)
 		case "ctrl+s":
 			return m.submitOrchDetailForm()
 		}

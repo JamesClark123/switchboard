@@ -232,9 +232,7 @@ func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.kitEditor.form != nil {
 		switch msg.String() {
 		case "esc":
-			m.kitEditor.form = nil
-			m.kitEditor.formKind = formNone
-			return m, nil
+			return m.requestExit(gKitItem)
 		case "ctrl+s":
 			return m.applyKitForm()
 		}
@@ -376,10 +374,9 @@ func (m Model) advanceKitForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch m.kitEditor.form.State {
 	case huh.StateCompleted:
-		return m.applyKitForm()
+		return reviveCompleted(gKitItem)(m.applyKitForm())
 	case huh.StateAborted:
-		m.kitEditor.form = nil
-		m.kitEditor.formKind = formNone
+		m.closeKitForm()
 		return m, nil
 	}
 	return m, cmd
@@ -772,15 +769,18 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			k.Services = append(k.Services, it)
 		}
 	}
-	m.kitEditor.form = nil
-	m.kitEditor.vals = nil
-	m.kitEditor.formKind = formNone
-	m.kitEditor.formItem = -1
+	m.closeKitForm()
 	m.kitEditor.status = ""
 	// The kit changed, so any previous validation result no longer describes it.
 	m.kitEditor.validation = nil
 	m.kitEditor.validOK = false
 	return m, nil
+}
+
+// closeKitForm drops the open section or item form; the kit is untouched.
+func (m *Model) closeKitForm() {
+	ke := &m.kitEditor
+	ke.form, ke.vals, ke.spec, ke.formKind, ke.formItem = nil, nil, nil, formNone, -1
 }
 
 func (m *Model) ensureSetup() {

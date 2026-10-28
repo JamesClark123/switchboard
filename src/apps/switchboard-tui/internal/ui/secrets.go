@@ -31,6 +31,7 @@ type secretsState struct {
 	status         string
 	form           *huh.Form
 	vals           *secretFormVals
+	baseline       secretFormVals // vals as the form opened (SWI-9)
 }
 
 type secretFormVals struct {
@@ -142,8 +143,7 @@ func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// before huh sees the key (its own submit is enter on the last field).
 		switch msg.String() {
 		case "esc":
-			v.form, v.vals = nil, nil
-			return m, nil
+			return m.requestExit(gSecrets)
 		case "ctrl+s":
 			return m.applySecretsForm()
 		}
@@ -179,6 +179,7 @@ func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		v.vals = &secretFormVals{}
 		v.form = m.secretsForm(v.vals)
+		v.baseline = *v.vals
 		v.status = ""
 		return m, v.form.Init()
 	case "d":
@@ -231,7 +232,7 @@ func (m Model) advanceSecretsForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch v.form.State {
 	case huh.StateCompleted:
-		return m.applySecretsForm()
+		return reviveCompleted(gSecrets)(m.applySecretsForm())
 	case huh.StateAborted:
 		v.form, v.vals = nil, nil
 		return m, nil

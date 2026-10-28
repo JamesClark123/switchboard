@@ -190,7 +190,7 @@ with nothing applied; Save behaves as ctrl+s; an unchanged form or an edit undon
 `spec.normalize()`. A form rebuilt by `reopenForm` keeps its baseline. A save that fails on a form completed by enter
 calls `reopenForm`.
 
-- [ ] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
+- [X] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
   `reopenForm`; **never fills `vals` from the source**. huh `Select` and `spec.text` still write the bound pointer
   while building, which is expected) (research R4):
   - `UI/kit_editor.go`: the section forms (`identityForm`, `networkForm`, `environmentForm`,
@@ -203,29 +203,29 @@ calls `reopenForm`.
   split is part of T010.
 
   Register the per-surface builder in the `reopenForm` switch.
-- [ ] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
+- [X] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
   - Add a heap-allocated `*configFormVals{name, mode string; strs map[string]*string; bools map[string]*bool}`, held
     as a pointer on `editorState`. The option maps follow the manifest's options that `buildEditorForm` creates.
   - Add `snapshot()` flattening it to a `configSnapshot`, compared with `maps.Equal`. The baseline is taken after
     `applyManifest` builds the form.
   - `saveConfig` reads the vals instead of `GetString`/`GetBool` (fixing the pre-blur read).
   - esc → `requestExit(gConfig)`; Save = `saveConfig`; Leave = today's esc.
-- [ ] T011 [US1] MCP registration (`gMcp`) in `UI/mcp.go`: baseline = a copy of `mcpFormVals` once the form is built; esc →
+- [X] T011 [US1] MCP registration (`gMcp`) in `UI/mcp.go`: baseline = a copy of `mcpFormVals` once the form is built; esc →
   `requestExit`; Save = `applyMcpForm`; Leave = close the form.
-- [ ] T012 [US1] Secrets (`gSecrets`) in `UI/secrets.go`: baseline = a copy of `secretFormVals`; esc →
+- [X] T012 [US1] Secrets (`gSecrets`) in `UI/secrets.go`: baseline = a copy of `secretFormVals`; esc →
   `requestExit`; Save = `applySecretsForm`; Leave = close the form.
-- [ ] T013 [US1] Orchestrator create/rename (`gOrchAdmin`) in `UI/orchestrators.go` and
+- [X] T013 [US1] Orchestrator create/rename (`gOrchAdmin`) in `UI/orchestrators.go` and
   `UI/daemon_orchestrators.go`: baseline = a copy of `orchFormVals` (the prefill for rename); esc → `requestExit`;
   Save = `applyOrchForm`; Leave = reset the form.
-- [ ] T014 [US1] Op forms (`gOpForm` for each `orchSurface`), routed from `UI/jobs.go` and `UI/orchestrator_views.go`:
+- [X] T014 [US1] Op forms (`gOpForm` for each `orchSurface`), routed from `UI/jobs.go` and `UI/orchestrator_views.go`:
   - Add a `baseline` on `orchOpState` set by `setOpForm` in `UI/run_actions.go`: a value copy of
     `actionFormVals`/`eventFormVals`/`markFreeVals`, or `flattenCallVals` for the call form.
   - Dirty compares the same form of the current vals.
   - esc → `requestExit`; Save = `submitOrchOpForm`; Leave = `closeOpForm` plus today's status reset and the
     mark-free return to the list.
-- [ ] T015 [US1] Kit section and item forms (`gKitItem`) in `UI/kit_editor.go`: baseline = a copy of `kitFormVals`
+- [X] T015 [US1] Kit section and item forms (`gKitItem`) in `UI/kit_editor.go`: baseline = a copy of `kitFormVals`
   after the form fills it; esc → `requestExit`; Save = `applyKitForm`; Leave = close the form with the kit untouched.
-- [ ] T016 [US1] Guard tests in `UI/guard_surfaces_test.go`: one table-driven walk over config, MCP, secrets,
+- [X] T016 [US1] Guard tests in `UI/guard_surfaces_test.go`: one table-driven walk over config, MCP, secrets,
   orchestrator create, orchestrator rename, action, event, call, mark-free and a kit item form. Each case covers:
   - an unchanged esc closes with no dialog;
   - a changed esc opens the dialog;

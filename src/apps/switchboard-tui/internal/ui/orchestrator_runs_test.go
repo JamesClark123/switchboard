@@ -86,9 +86,9 @@ func TestActionFormRoundTripAndRefusal(t *testing.T) {
 	if !strings.Contains(m.jobs.status, "must be letters, digits and underscores") {
 		t.Errorf("bad argument line status = %q", m.jobs.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	if m.jobs.form != nil || m.jobs.status != "" {
-		t.Error("esc closes the form and its refusal")
+		t.Error("esc, discard closes the form and its refusal")
 	}
 	// d is confirm-gated and shows the disabled events.
 	a.disabledEvents = []string{"poll"}
@@ -404,7 +404,7 @@ func TestEventFormAndView(t *testing.T) {
 	if !strings.Contains(m.jobs.status, "must be name = value") {
 		t.Errorf("bad kv = %q", m.jobs.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	m, _ = update(m, press("d"))
 	if m.screen != screenConfirm {
 		t.Fatal("d confirms")

@@ -61,6 +61,10 @@ type orchState struct {
 	// formPrefill is the rename input's starting value: submitting it unedited
 	// renames nothing.
 	formPrefill string
+	// formBuild rebuilds the open form from vals (open and reopenForm); it
+	// captures only vals and plain strings. baseline is vals as it opened (SWI-9).
+	formBuild func(m Model) *huh.Form
+	baseline  orchFormVals
 }
 
 // orchRowsMsg carries one fan-out result.
@@ -261,7 +265,8 @@ func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.status = "error: " + msg.err.Error()
 	}
-	return m, nil
+	// A form enter completed waited dead for this reply: bring it back, values kept.
+	return reviveCompleted(opGuard(msg.sink))(m, nil)
 }
 
 // applyRunPrompt opens the read-only prompt overlay for a run on its surface.
@@ -323,13 +328,24 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	v := &orchFormVals{host: host}
-	m.orch.vals = v
+	desc := "1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH."
 	m.orch.formKind = orchFormCreate
-	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
-	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
-	return m, m.orch.form.Init()
+	return m, m.setOrchForm(v, func(m Model) *huh.Form {
+		return m.newOrchForm(huh.NewInput().Key("name").Title("Name").Description(desc).Value(&v.name))
+	})
+}
+
+// setOrchForm opens a create/rename form bound to v and records its baseline.
+func (m *Model) setOrchForm(v *orchFormVals, build func(Model) *huh.Form) tea.Cmd {
+	m.orch.vals, m.orch.formBuild = v, build
+	m.orch.form = build(*m)
+	m.orch.baseline = *v
+	return m.orch.form.Init()
+}
+
+// closeOrchForm drops the open create/rename form.
+func (m *Model) closeOrchForm() {
+	m.orch.form, m.orch.vals, m.orch.formKind, m.orch.formBuild = nil, nil, orchFormNone, nil
 }
 
 func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
@@ -342,16 +358,14 @@ func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
 	if v.name != raw {
 		desc += " The current name has control or invisible characters; saving an edit drops them."
 	}
-	m.orch.vals = v
+	title := "Rename " + sanitizeLine(raw, 0)
 	m.orch.formKind = orchFormRename
 	m.orch.formID = row.summary.GetOrchestrator().GetId()
 	m.orch.formHost = row.host
 	m.orch.formPrefill = v.name
-	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(raw, 0)).Description(desc).Value(&v.name),
-	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
-	return m, m.orch.form.Init()
+	return m, m.setOrchForm(v, func(m Model) *huh.Form {
+		return m.newOrchForm(huh.NewInput().Key("name").Title(title).Description(desc).Value(&v.name))
+	})
 }
 
 func (m Model) advanceOrchForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -364,9 +378,9 @@ func (m Model) advanceOrchForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch m.orch.form.State {
 	case huh.StateCompleted:
-		return m.applyOrchForm()
+		return reviveCompleted(gOrchAdmin)(m.applyOrchForm())
 	case huh.StateAborted:
-		m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+		m.closeOrchForm()
 		return m, nil
 	}
 	return m, cmd
@@ -402,7 +416,7 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 	if m.orch.formKind == orchFormRename {
 		exceptID = m.orch.formID
 		if name == strings.TrimSpace(m.orch.formPrefill) {
-			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+			m.closeOrchForm()
 			m.status = "name unchanged"
 			return m, nil
 		}
@@ -422,7 +436,7 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 		m.status = "error: " + err.Error()
 		return m, nil
 	}
-	m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+	m.closeOrchForm()
 	hostName := m.hostDisplayName(host)
 	if kind == orchFormCreate {
 		return m, func() tea.Msg {

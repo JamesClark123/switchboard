@@ -173,9 +173,9 @@ func TestKitEditorCancelItemForm(t *testing.T) {
 	out, _ = update(out, press("enter"))
 	out = pressCmd(out, "a")
 	out = typeIn(out, "should not persist")
-	out, _ = update(out, tea.KeyMsg{Type: tea.KeyEsc})
+	out = escDiscard(t, out)
 	if out.kitEditor.form != nil {
-		t.Error("esc should close the form")
+		t.Error("esc, discard should close the form")
 	}
 	if out.kitEditor.kit.Setup != nil && len(out.kitEditor.kit.Setup.Install) != 0 {
 		t.Error("cancelled item was still added")

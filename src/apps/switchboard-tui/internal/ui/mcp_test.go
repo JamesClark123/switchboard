@@ -282,6 +282,7 @@ func TestSandboxRowShowsAttachedMcpServers(t *testing.T) {
 
 // Branch coverage for the register form's validation and the view's lesser states.
 func TestMcpFormValidationAndLesserStates(t *testing.T) {
+	noKeyGrace(t)
 	d := &fakeDaemon{}
 	m := mcpModel(t, d)
 	m = pressCmd(m, "a")
@@ -297,9 +298,14 @@ func TestMcpFormValidationAndLesserStates(t *testing.T) {
 	if !strings.Contains(m.mcpView.status, "URL") {
 		t.Errorf("status = %q", m.mcpView.status)
 	}
+	// The form is changed, so esc asks first (SWI-9); d discards.
 	m, _ = update(m, press("esc"))
+	if !m.unsaved.open || m.mcpView.form == nil {
+		t.Fatal("esc on a changed form should open the unsaved-changes dialog")
+	}
+	m, _ = update(m, press("d"))
 	if m.mcpView.form != nil {
-		t.Error("esc should close the form")
+		t.Error("discard should close the form")
 	}
 	// Messages for another host or a stale wait are ignored.
 	before := m.mcpView.status
@@ -387,7 +393,7 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "must be Name: value") {
 		t.Errorf("malformed header should keep the form open; status %q", m.mcpView.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	m = pressCmd(m, "a")
 	m.mcpView.vals.name = "pw"
 	m.mcpView.vals.kind = "command"

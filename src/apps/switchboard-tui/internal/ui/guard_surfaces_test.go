@@ -1,0 +1,476 @@
+package ui
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+)
+
+// formCase is one multi-field form for the US1 walk (SWI-9 T016).
+type formCase struct {
+	name string
+	g    guardSurface
+	// open returns the model with the form open and unchanged, and a probe
+	// reporting whether a save reached the store or the daemon.
+	open func(t *testing.T) (Model, func(Model) bool)
+	// edit changes the form through the keys.
+	edit func(m Model) Model
+	// valid and invalid set values that save, or that the save refuses (nil:
+	// the form has no client-side validation). Both leave the form changed.
+	valid, invalid func(m *Model)
+	// status is where the surface shows a refusal.
+	status func(m Model) string
+	// typed: the first field takes text, so type-and-delete applies.
+	typed bool
+}
+
+func jobsStatus(m Model) string { return m.jobs.status }
+
+func formCases() []formCase {
+	typeX := func(m Model) Model { return typeIn(m, "x") }
+	return []formCase{
+		{
+			name: "config", g: gConfig, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				cs := newConfigStore(t)
+				m := sized(New(&fakeDaemon{manifest: testManifest()}, "/work").WithConfigs(cs))
+				m, cmd := update(m, press("c"))
+				m, _ = update(m, runCmd(cmd))
+				return m, func(Model) bool { l, _ := cs.List(); return len(l) > 0 }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.editor.vals.name = "backend" },
+			invalid: func(m *Model) { m.editor.vals.name, m.editor.vals.mode = "", "clone" },
+			status:  func(m Model) string { return m.editor.status },
+		},
+		{
+			name: "mcp", g: gMcp, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				d := &fakeDaemon{}
+				m := pressCmd(mcpModel(t, d), "a")
+				return m, func(Model) bool { return len(d.addedMcp) > 0 }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.mcpView.vals.name, m.mcpView.vals.url = "gh", "https://x/mcp" },
+			invalid: func(m *Model) { m.mcpView.vals.name = "bad name" },
+			status:  func(m Model) string { return m.mcpView.status },
+		},
+		{
+			name: "secrets", g: gSecrets, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				d := &fakeDaemon{}
+				m := pressCmd(secretsModel(t, d), "a")
+				return m, func(Model) bool { return len(d.setSecrets) > 0 }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.secretsView.vals.name, m.secretsView.vals.value = "tok", "v" },
+			invalid: func(m *Model) { m.secretsView.vals.name, m.secretsView.vals.value = "a b", "v" },
+			status:  func(m Model) string { return m.secretsView.status },
+		},
+		{
+			name: "orchestrator create", g: gOrchAdmin, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+				b := &fakeDaemon{}
+				m, _, _ := twoFakeHosts(t, a, b)
+				m, _ = update(openDaemonOrchs(t, m, "hostb"), press("n"))
+				return m, func(Model) bool { return strings.Contains(b.orchCallsJoined(), "CreateOrchestrator") }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.orch.vals.name = "new-bot" },
+			invalid: func(m *Model) { m.orch.vals.name = strings.Repeat("y", 65) },
+			status:  func(m Model) string { return m.status },
+		},
+		{
+			name: "orchestrator rename", g: gOrchAdmin, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+				m, _, _ := twoFakeHosts(t, a, &fakeDaemon{})
+				m, _ = update(openDaemonOrchs(t, m, "hosta"), press("R"))
+				return m, func(Model) bool { return strings.Contains(a.orchCallsJoined(), "RenameOrchestrator") }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.orch.vals.name = "renamed" },
+			invalid: func(m *Model) { m.orch.vals.name = " " },
+			status:  func(m Model) string { return m.status },
+		},
+		{
+			name: "action", g: gOpJobs, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				m, a := jobsWith(t, jobsActions, nil, nil)
+				m, _ = update(m, press("a"))
+				return m, func(Model) bool { return strings.Contains(a.orchCallsJoined(), "PutAction") }
+			},
+			edit: typeX,
+			valid: func(m *Model) {
+				v := m.jobs.formVals.(*actionFormVals)
+				v.name, v.body = "triage", "Look"
+			},
+			invalid: func(m *Model) { m.jobs.formVals.(*actionFormVals).args = "1st-arg * bad name" },
+			status:  jobsStatus,
+		},
+		{
+			name: "event", g: gOpJobs, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				m, a := jobsWith(t, jobsEvents, []*pb.Action{reviewAction()}, nil)
+				m, _ = update(m, press("a"))
+				return m, func(Model) bool { return strings.Contains(a.orchCallsJoined(), "PutTimedEvent") }
+			},
+			edit: typeX,
+			valid: func(m *Model) {
+				v := m.jobs.formVals.(*eventFormVals)
+				v.name, v.intervalMinutes = "poll", "5"
+			},
+			invalid: func(m *Model) { m.jobs.formVals.(*eventFormVals).args = "nonsense" },
+			status:  jobsStatus,
+		},
+		{
+			name: "call", g: gOpJobs, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				m, a := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+				m, _ = update(m, press("enter"))
+				return m, func(Model) bool { return strings.Contains(a.orchCallsJoined(), "CallAction") }
+			},
+			edit:  func(m Model) Model { return typeIn(m, "7") },
+			valid: func(m *Model) { *m.jobs.formVals.(*callFormVals).values["number"] = "7" },
+			invalid: func(m *Model) {
+				v := m.jobs.formVals.(*callFormVals)
+				*v.values["number"], *v.values["repo"] = "", "x/y"
+			},
+			status: jobsStatus,
+		},
+		{
+			name: "mark free", g: gOpJobs,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				runs := &pb.ListRunsResponse{InFlight: []*pb.Run{{Id: "run-r", Action: "review-pr", State: pb.RunState_RUN_STATE_AWAITING_REVIEW, SandboxId: "sb-review"}}}
+				m, a := jobsWith(t, jobsOverview, []*pb.Action{reviewAction()}, runs)
+				m, _ = update(m, press("m"))
+				if m.jobs.formKind != "mark free" {
+					t.Fatalf("m opened %q", m.jobs.formKind)
+				}
+				return m, func(Model) bool { return strings.Contains(a.orchCallsJoined(), "MarkWorkerFree") }
+			},
+			edit:   func(m Model) Model { m, _ = update(m, tea.KeyMsg{Type: tea.KeyDown}); return m },
+			valid:  func(m *Model) { m.jobs.formVals.(*markFreeVals).note = "done" },
+			status: jobsStatus,
+		},
+		{
+			name: "kit section", g: gKitItem, typed: true,
+			open: func(t *testing.T) (Model, func(Model) bool) {
+				m := editorOn(t, &store.Kit{Name: "bare"})
+				for m.kitEditor.section != secEnvironment {
+					m, _ = update(m, press("j"))
+				}
+				m = pressCmd(m, "enter")
+				if m.kitEditor.form == nil {
+					t.Fatal("enter should open the environment form")
+				}
+				return m, func(m Model) bool { return m.kitEditor.kit.Environment != nil }
+			},
+			edit:    typeX,
+			valid:   func(m *Model) { m.kitEditor.vals.vars = "A=1" },
+			invalid: func(m *Model) { m.kitEditor.vals.vars = "NOEQUALS" },
+			status:  func(m Model) string { return m.kitEditor.status },
+		},
+	}
+}
+
+// completeForm tabs to the last field and presses enter there, as a user
+// finishing the form does, until the surface reports something. It returns
+// false when the last field is a Text (enter inserts a newline there).
+func completeForm(t *testing.T, m *Model, g guardSurface, status func(Model) string) bool {
+	t.Helper()
+	for range 25 {
+		if status(*m) != "" {
+			return true
+		}
+		f := m.guardForm(g)
+		if f == nil {
+			t.Fatalf("the form closed; status %q", status(*m))
+		}
+		before := f.GetFocusedField()
+		mm, cmd := update(*m, tea.KeyMsg{Type: tea.KeyTab})
+		*m = settle(mm, cmd)
+		if f := m.guardForm(g); f != nil && f.GetFocusedField() == before {
+			if _, ok := before.(*huh.Text); ok {
+				return false
+			}
+			mm, cmd = update(*m, tea.KeyMsg{Type: tea.KeyEnter})
+			*m = settle(mm, cmd)
+		}
+	}
+	t.Fatalf("the form never completed; status %q", status(*m))
+	return false
+}
+
+// onGuard reports whether g is still the open surface.
+func onGuard(m Model, g guardSurface) bool {
+	a, ok := m.activeGuard()
+	return ok && a == g
+}
+
+// rebaseline makes the current values the surface's baseline, as a background
+// update that changed the values under the dialog would leave it.
+func rebaseline(m *Model, g guardSurface) {
+	switch g {
+	case gConfig:
+		m.editor.baseline = m.editor.vals.snapshot()
+	case gMcp:
+		m.mcpView.baseline = *m.mcpView.vals
+	case gSecrets:
+		m.secretsView.baseline = *m.secretsView.vals
+	case gOrchAdmin:
+		m.orch.baseline = *m.orch.vals
+	case gOpJobs:
+		m.jobs.formBaseline = snapshotOpVals(m.jobs.formVals)
+	case gKitItem:
+		m.kitEditor.formBaseline = *m.kitEditor.vals
+	}
+}
+
+// specOf is the Text registry of g's form, when it has one.
+func specOf(m Model, g guardSurface) *formSpec {
+	switch g {
+	case gMcp:
+		return m.mcpView.spec
+	case gOpJobs:
+		return m.jobs.formSpec
+	case gKitItem:
+		return m.kitEditor.spec
+	}
+	return nil
+}
+
+// settle runs a key's commands and feeds their messages back, following the
+// commands those updates return for a few rounds: huh completes a form two
+// hops after the key (nextField, then nextGroup), and async saves reply after.
+// Commands that do not return promptly (cursor blink ticks) are dropped.
+func settle(m Model, cmd tea.Cmd) Model {
+	for range 6 {
+		if cmd == nil {
+			break
+		}
+		var next []tea.Cmd
+		for _, msg := range quickMsgs(cmd) {
+			var c tea.Cmd
+			m, c = update(m, msg)
+			next = append(next, c)
+		}
+		cmd = tea.Batch(next...)
+	}
+	return m
+}
+
+// quickMsgs runs cmd (and any batch or sequence inside it) with a short timeout.
+func quickMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	var msg tea.Msg
+	select {
+	case msg = <-done:
+	case <-time.After(50 * time.Millisecond):
+		return nil
+	}
+	if msg == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(msg); v.Kind() == reflect.Slice {
+		var out []tea.Msg
+		for i := range v.Len() {
+			if c, ok := v.Index(i).Interface().(tea.Cmd); ok {
+				out = append(out, quickMsgs(c)...)
+			}
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func TestGuardedFormsUS1(t *testing.T) {
+	noKeyGrace(t)
+	for _, c := range formCases() {
+		t.Run(c.name, func(t *testing.T) {
+			// Unchanged: esc closes at once.
+			m, _ := c.open(t)
+			if !onGuard(m, c.g) || m.guardDirty(c.g) {
+				t.Fatalf("form not open clean: dirty=%v", m.guardDirty(c.g))
+			}
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			if m.unsaved.open || onGuard(m, c.g) {
+				t.Fatal("esc on an unchanged form should close it with no dialog")
+			}
+
+			// Type-and-delete back to the original is unchanged (US1 #7).
+			if c.typed {
+				m, _ = c.open(t)
+				m = typeIn(m, "zz")
+				m, _ = update(m, tea.KeyMsg{Type: tea.KeyBackspace})
+				m, _ = update(m, tea.KeyMsg{Type: tea.KeyBackspace})
+				m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+				if m.unsaved.open || onGuard(m, c.g) {
+					t.Error("an edit undone back to the original should not ask")
+				}
+			}
+
+			// Changed: esc opens the dialog; Cancel leaves the form identical.
+			m, saved := c.open(t)
+			m = c.edit(m)
+			if !m.guardDirty(c.g) {
+				t.Fatal("edit did not change the form")
+			}
+			form := m.guardForm(c.g)
+			focused, view := form.GetFocusedField(), form.View()
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			if !m.unsaved.open || m.unsaved.surface != c.g {
+				t.Fatal("esc on a changed form should open the dialog")
+			}
+			m, _ = update(m, press("c"))
+			if m.unsaved.open || m.guardForm(c.g) != form || form.GetFocusedField() != focused || form.View() != view || !m.guardDirty(c.g) {
+				t.Fatal("Cancel should return to the form exactly as it was")
+			}
+
+			// Discard closes with nothing saved.
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			m, _ = update(m, press("d"))
+			if m.unsaved.open || onGuard(m, c.g) || saved(m) {
+				t.Fatalf("Discard: open=%v saved=%v", onGuard(m, c.g), saved(m))
+			}
+
+			// Save performs the surface's save.
+			m, saved = c.open(t)
+			m = c.edit(m)
+			c.valid(&m)
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			m, cmd := update(m, press("s"))
+			m = settle(m, cmd)
+			if !saved(m) || onGuard(m, c.g) {
+				t.Fatalf("Save: saved=%v still open=%v status %q", saved(m), onGuard(m, c.g), c.status(m))
+			}
+
+			// Save after a background update left it unchanged just leaves.
+			m, saved = c.open(t)
+			m = c.edit(m)
+			c.valid(&m)
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			rebaseline(&m, c.g)
+			m, cmd = update(m, press("s"))
+			m = settle(m, cmd)
+			if saved(m) || onGuard(m, c.g) {
+				t.Fatalf("Save on a clean surface: saved=%v open=%v", saved(m), onGuard(m, c.g))
+			}
+
+			if c.invalid == nil {
+				return
+			}
+			// A refused Save keeps the form open with the error (US1 #6).
+			m, saved = c.open(t)
+			m = c.edit(m)
+			c.invalid(&m)
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+			m, cmd = update(m, press("s"))
+			m = settle(m, cmd)
+			if saved(m) || !onGuard(m, c.g) || m.unsaved.open || c.status(m) == "" {
+				t.Fatalf("refused Save: saved=%v open=%v status %q", saved(m), onGuard(m, c.g), c.status(m))
+			}
+
+			// Completing the form with enter on its last field and failing
+			// validation leaves a live, editable form with the typed values.
+			m, _ = c.open(t)
+			m = c.edit(m)
+			c.invalid(&m)
+			// Show the set values in the widgets: huh writes a focused field's
+			// text back into its pointer as focus moves through it.
+			m.reopenForm(c.g)
+			if !completeForm(t, &m, c.g, c.status) {
+				return // ends on a Text: enter is a newline there, nothing to complete
+			}
+			f := m.guardForm(c.g)
+			if c.status(m) == "" || f == nil || f.State != huh.StateNormal || strings.TrimSpace(f.View()) == "" || !m.guardDirty(c.g) {
+				t.Fatalf("completed + refused: status %q form %v", c.status(m), f != nil)
+			}
+			if spec := specOf(m, c.g); spec != nil {
+				if txt, ok := f.GetFocusedField().(*huh.Text); ok {
+					if _, _, found := spec.lookup(txt); !found {
+						t.Error("the reopened form's Text is not registered")
+					}
+				}
+			}
+			// …and it still takes keys.
+			before := f.View()
+			m = typeIn(m, "q")
+			if m.guardForm(c.g).View() == before {
+				t.Error("the reopened form ignores typing")
+			}
+		})
+	}
+}
+
+// A stored value the textarea would rewrite (a tab) is normalised before the
+// baseline: tabbing past it without editing is not a change (FR-011), and the
+// surface says the text will be rewritten.
+func TestGuardTabbedPastTextIsUnchanged(t *testing.T) {
+	m := editorOn(t, &store.Kit{Name: "k", Environment: &store.KitEnvironment{Variables: map[string]string{"A": "b\tc"}}})
+	for m.kitEditor.section != secEnvironment {
+		m, _ = update(m, press("j"))
+	}
+	m = pressCmd(m, "enter")
+	if !strings.Contains(m.kitEditor.status, "will be rewritten when saved") {
+		t.Errorf("status %q should announce the rewrite", m.kitEditor.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.kitEditor.form != nil {
+		t.Fatal("a normalised text tabbed past should close with no dialog")
+	}
+}
+
+// An op form whose save the daemon refuses stays open with the refusal; one
+// whose save succeeds while the dialog is up closes, dialog and all.
+func TestGuardOpFormAsyncOutcomes(t *testing.T) {
+	noKeyGrace(t)
+	m, a := jobsWith(t, jobsActions, nil, nil)
+	m, _ = update(m, press("a"))
+	v := m.jobs.formVals.(*actionFormVals)
+	v.name, v.body = "triage", "Look"
+	a.orchErr = errBoom{}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd := update(m, press("s"))
+	m = settle(m, cmd)
+	if m.jobs.form == nil || !strings.Contains(m.jobs.status, "boom") {
+		t.Fatalf("refused save: form %v status %q", m.jobs.form != nil, m.jobs.status)
+	}
+	a.orchErr = nil
+	// ctrl+s, then esc while the call is in flight: the dialog opens over the
+	// form; the success reply closes the form and the dialog with it.
+	m, cmd = update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open {
+		t.Fatal("esc during the call should ask")
+	}
+	m = settle(m, cmd)
+	if m.jobs.form != nil || m.unsaved.open {
+		t.Fatalf("after success: form %v dialog %v", m.jobs.form != nil, m.unsaved.open)
+	}
+	// A form completed by enter, whose reply is a refusal, comes back alive with
+	// the values typed.
+	m, a = jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	m, _ = update(m, press("enter"))
+	m = typeIn(m, "7")
+	a.orchErr = errBoom{}
+	if !completeForm(t, &m, gOpJobs, jobsStatus) {
+		t.Fatal("the call form should complete on enter")
+	}
+	cv := m.jobs.formVals.(*callFormVals)
+	if m.jobs.form == nil || m.jobs.form.State != huh.StateNormal || *cv.values["number"] != "7" || !strings.Contains(m.jobs.status, "boom") {
+		t.Fatalf("refused after completion: form %v status %q", m.jobs.form != nil, m.jobs.status)
+	}
+}
