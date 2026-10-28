@@ -45,13 +45,14 @@ existing SSH with no new network port or auth system.
 
 ## Repository layout
 
-A Go `go.work` workspace with five modules (plus E2E siblings), placed under the constitution's
+A Go `go.work` workspace with six modules (plus E2E siblings), placed under the constitution's
 category taxonomy:
 
 ```
 src/
 ├── libs/switchboard-proto/      # shared gRPC/protobuf contract + domain helpers
 ├── libs/switchboard-dial/       # daemon dialer shared by the TUI and the daemon (local socket, `ssh … sxbd dial-stdio`)
+├── libs/switchboard-termview/   # VT renderer shared by the TUI's terminal view and the daemon's agent screen
 ├── services/switchboardd/       # the daemon  (cmd/sxbd, internal/…)
 ├── services/switchboardd-e2e/   # daemon E2E (real Docker, gated)
 ├── libs/switchboard-update/     # shared self-update core (release lookup, verify, apply)

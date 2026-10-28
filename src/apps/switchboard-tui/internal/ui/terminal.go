@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
-	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/termview"
+	"github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 

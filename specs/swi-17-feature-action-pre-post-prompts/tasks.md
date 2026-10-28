@@ -56,7 +56,7 @@ Tests that exist only for a deferred item are dropped.
 
 **Purpose**: Start from the prerequisites, move the VT renderer to a library, and land the proto delta.
 
-- [ ] T001 **Prerequisites (research R12).** **PR #17 (SWI-15) has merged.** Start the implement branch from `main`
+- [X] T001 **Prerequisites (research R12).** **PR #17 (SWI-15) has merged.** Start the implement branch from `main`
   once **SWI-9's implementation** has merged too. Check both are there:
   - from SWI-15, in `SBD/agent/hooks.go`: the `SessionStart` registration, `hookPayload.Source`, `sessionStart()`;
     also `Ready`/`MarkReady`, `AGENT_STATUS_STARTING` and `startAgent`;
@@ -64,7 +64,7 @@ Tests that exist only for a deferred item are dropped.
 
   If SWI-9 is still open, stop and ask the developer. A partial cherry-pick would leave step guard 5 or the form
   guard with nothing to call.
-- [ ] T002 Create the library module `src/libs/switchboard-termview` (`go.mod` module path
+- [X] T002 Create the library module `src/libs/switchboard-termview` (`go.mod` module path
   `github.com/jamesclark123/switchboard/libs/switchboard-termview`) by **moving**
   `src/apps/switchboard-tui/internal/termview/{termview.go,termview_test.go}`, with `git mv` so history is kept.
   - Add it to `go.work`. The Makefile's module list derives from `go.work` (SWI-11), so check that `make lint test
