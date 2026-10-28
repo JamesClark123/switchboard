@@ -179,7 +179,18 @@ func (f *fakeDaemon) MarkWorkerFree(_ context.Context, id, sandboxID string, fai
 	if failed {
 		st = pb.RunState_RUN_STATE_FAILED
 	}
-	return &pb.Run{Id: "run-reviewed", State: st, Summary: note, ClosedByDeveloper: true}, nil
+	f.mu.Lock()
+	closed := "run-reviewed"
+	for _, sb := range f.sandboxes {
+		if sb.GetId() == sandboxID && sb.GetController().GetRun() != nil {
+			closed = sb.GetController().GetRun().GetId()
+		}
+	}
+	if f.freedRunID != "" {
+		closed = f.freedRunID
+	}
+	f.mu.Unlock()
+	return &pb.Run{Id: closed, State: st, Summary: note, ClosedByDeveloper: true}, nil
 }
 
 func (f *fakeDaemon) PutAction(_ context.Context, id string, a *pb.Action) (*pb.Action, error) {

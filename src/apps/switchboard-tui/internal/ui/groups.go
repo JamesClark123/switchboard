@@ -164,25 +164,34 @@ func (m Model) toggleMembership() (tea.Model, tea.Cmd) {
 func (m Model) updateGroupAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		m.groups.adding = false
-		m.groups.input.Blur()
-		return m, nil
+		return m.requestExit(gGroupAdd)
 	case tea.KeyEnter:
-		name := strings.TrimSpace(m.groups.input.Value())
-		m.groups.adding = false
-		m.groups.input.Blur()
-		if name == "" {
-			return m, nil
-		}
-		if _, err := m.groupStore.Save(store.Group{Name: name}); err != nil {
-			m.groups.status = "add failed: " + err.Error()
-			return m, nil
-		}
-		return m, m.groupsCmd()
+		return m.submitGroupAdd()
 	}
 	var cmd tea.Cmd
 	m.groups.input, cmd = m.groups.input.Update(msg)
 	return m, cmd
+}
+
+// submitGroupAdd is enter: create the named group (empty adds nothing).
+func (m Model) submitGroupAdd() (Model, tea.Cmd) {
+	name := strings.TrimSpace(m.groups.input.Value())
+	m = m.leaveGroupAdd()
+	if name == "" {
+		return m, nil
+	}
+	if _, err := m.groupStore.Save(store.Group{Name: name}); err != nil {
+		m.groups.status = "add failed: " + err.Error()
+		return m, nil
+	}
+	return m, m.groupsCmd()
+}
+
+// leaveGroupAdd closes the input with nothing added.
+func (m Model) leaveGroupAdd() Model {
+	m.groups.adding = false
+	m.groups.input.Blur()
+	return m
 }
 
 func (m Model) groupsCurrent() *store.Group {

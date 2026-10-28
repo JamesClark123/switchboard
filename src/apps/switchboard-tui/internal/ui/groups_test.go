@@ -111,9 +111,9 @@ func TestGroupsDeleteAddCancelAndNav(t *testing.T) {
 	if m.groups.input.Value() != "x " {
 		t.Errorf("input value = %q", m.groups.input.Value())
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	if m.groups.adding {
-		t.Error("esc should cancel add")
+		t.Error("esc, discard should cancel add")
 	}
 
 	// Delete the cursored group.

@@ -21,7 +21,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
 
 **Purpose**: Remove the external editor and give every form one keymap and one Text constructor (R1).
 
-- [ ] T001 Rename `kitFormKeyMap()` to `formKeyMap()` and move it to the new file `UI/formguard.go`. Keep its
+- [X] T001 Rename `kitFormKeyMap()` to `formKeyMap()` and move it to the new file `UI/formguard.go`. Keep its
   NewLine/Next/Prev/Submit bindings and add a keyless `Text.Editor = key.NewBinding()`. Doc comment: why it is keyless
   (`Text.Update` matches `Editor` unconditionally; `ExternalEditor(false)` only disables it when help renders). `Quit`
   stays ctrl+c until T017 routes ctrl+c through the guard, so ctrl+c keeps working in between.
@@ -30,7 +30,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
     `UI/run_actions.go`.
   - Apply it to the config editor form in `UI/config_editor.go`, which used huh's default keymap.
   - Rename the keymap test in `UI/kit_editor_keymap_test.go`.
-- [ ] T002 Add `formSpec{texts map[*huh.Text]textEntry{ptr *string; title string}}` in `UI/formguard.go`, with:
+- [X] T002 Add `formSpec{texts map[*huh.Text]textEntry{ptr *string; title string}}` in `UI/formguard.go`, with:
   - `newFormSpec()`;
   - `text(ptr *string, title string) *huh.Text`: `huh.NewText().ExternalEditor(false).Title(title).Value(ptr)`,
     recorded;
@@ -41,7 +41,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
     `<title>: line endings/tabs/control characters will be rewritten when saved`.
   - `text` records the original value in its `textEntry`, then converts `\r\n` to `\n` in `*ptr` before building,
     so CRLF content is not doubled by the sanitizer (which maps each `\r` and `\n` to a newline).
-- [ ] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
+- [X] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
   with the form:
   - the 13 kit fields in `UI/kit_editor.go`, on `kitEditorState`;
   - MCP Headers in `UI/mcp.go`, on `mcpState`;
@@ -50,7 +50,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
 
   Each `.Title(...)` moves into the `text(ptr, title)` call. No `huh.NewText()` call may remain outside
   `UI/formguard.go`.
-- [ ] T004 Tests in `UI/formguard_test.go`:
+- [X] T004 Tests in `UI/formguard_test.go`:
   - `formKeyMap()` has a keyless Editor.
   - For every form with a Text field (kit agent instructions, MCP, action, event), sending ctrl+e straight to
     `form.Update` returns no `tea.ExecProcess` command, with `EDITOR` set and `WithShowHelp(false)`.
@@ -68,7 +68,7 @@ snapshots (R3–R5).
 
 **⚠️ CRITICAL**: No user-story work can begin until this phase is complete.
 
-- [ ] T005 Add the `guardSurface` enum (data-model.md table) and these `Model` methods, each a `switch` over the enum,
+- [X] T005 Add the `guardSurface` enum (data-model.md table) and these `Model` methods, each a `switch` over the enum,
   in `UI/formguard.go`:
   - `activeGuard() (guardSurface, bool)`, with nested-before-parent precedence. Every case also checks `m.screen`
     (data-model.md), so a form stranded on a screen the user has left is never active;
@@ -86,7 +86,7 @@ snapshots (R3–R5).
 
   Unimplemented surfaces default to "never dirty" and are filled in by the stories. Every story task that adds a
   surface also adds its cases to these switches, so those tasks share `UI/formguard.go` and are not `[P]`.
-- [ ] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
+- [X] T006 Add `unsavedState` to `UI/unsaved.go` (`open`, `surface`, `fromEnlarge`, `highlight`, `saveLabel`,
   `openedAt`), plus package vars `nowFunc = time.Now` and `unsavedKeyGrace = 150 * time.Millisecond` (vars, not
   consts). Add a `noKeyGrace(t)` test helper in `UI/unsaved_test.go` that sets `unsavedKeyGrace` to 0 and restores
   it with `t.Cleanup`. Moving `nowFunc` would not work, because `openedAt` is read from the same clock. Story tests
@@ -131,7 +131,7 @@ snapshots (R3–R5).
   - `unsavedModal()`: `modalInnerWidth()` wide in `modalStyle`. A ≤ 2-line body per surface kind, three buttons with
     the highlighted one marked, and the canonical hint `s save · d discard · esc cancel · ←/→ · enter` (or
     `r rebuild · …`). ≤ 11 rows; no line wraps at 80 columns.
-- [ ] T007 Wire the dialog layer into `UI/app.go`:
+- [X] T007 Wire the dialog layer into `UI/app.go`:
   - `handleKey` routes to `updateUnsavedKey` when `m.unsaved.open`, after the host-password modal and sign-in card
     and before the screen switch.
   - `Update` calls `reconcileGuardLayers()` after handling every message.
@@ -141,7 +141,7 @@ snapshots (R3–R5).
     through one final pass. That pass applies the host-password prompt and the sign-in failure card **last**. The
     prompt must never capture keys while hidden.
   - Add the dialog bindings to `UI/keys.go`.
-- [ ] T008 Add snapshot types and helpers in `UI/formguard.go`:
+- [X] T008 Add snapshot types and helpers in `UI/formguard.go`:
   - `launchSnapshot` with `snapshotLaunch(launchState)` and an `equal` method (`slices.Equal` for the slices): sources
     in selection order (`l.order`; **not** sorted, since order changes what is sent), name trimmed, kits in order,
     host, orchestrator id;
@@ -151,7 +151,7 @@ snapshots (R3–R5).
     - Do not go through `SpecYAML()`: it errors on an unnamed kit.
     - Do not normalise the live kit: `Normalize()` mutates `Permissions.Network` through a shared pointer.
     - See `src/apps/switchboard-tui/internal/store/kit.go`.
-- [ ] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
+- [X] T009 Unit tests in `UI/unsaved_test.go` and `UI/formguard_test.go`:
   - the dialog opens on Cancel, and enter there cancels;
   - ←/→ wrap; `d` and enter@Discard discard; `s` and enter@Save save; esc and ctrl+c cancel; `y`/`n`/`q` are ignored;
   - the label reads Rebuild for `gReasoning`; `r` opens a confirm whose body lists the **edited** setup; n there
@@ -190,7 +190,7 @@ with nothing applied; Save behaves as ctrl+s; an unchanged form or an edit undon
 `spec.normalize()`. A form rebuilt by `reopenForm` keeps its baseline. A save that fails on a form completed by enter
 calls `reopenForm`.
 
-- [ ] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
+- [X] T039 [US1] Split every form builder into `fill…Vals(source)` (open only) and `build…Form(spec, vals)` (open and
   `reopenForm`; **never fills `vals` from the source**. huh `Select` and `spec.text` still write the bound pointer
   while building, which is expected) (research R4):
   - `UI/kit_editor.go`: the section forms (`identityForm`, `networkForm`, `environmentForm`,
@@ -203,29 +203,29 @@ calls `reopenForm`.
   split is part of T010.
 
   Register the per-surface builder in the `reopenForm` switch.
-- [ ] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
+- [X] T010 [US1] Config editor (`gConfig`) in `UI/config_editor.go`:
   - Add a heap-allocated `*configFormVals{name, mode string; strs map[string]*string; bools map[string]*bool}`, held
     as a pointer on `editorState`. The option maps follow the manifest's options that `buildEditorForm` creates.
   - Add `snapshot()` flattening it to a `configSnapshot`, compared with `maps.Equal`. The baseline is taken after
     `applyManifest` builds the form.
   - `saveConfig` reads the vals instead of `GetString`/`GetBool` (fixing the pre-blur read).
   - esc → `requestExit(gConfig)`; Save = `saveConfig`; Leave = today's esc.
-- [ ] T011 [US1] MCP registration (`gMcp`) in `UI/mcp.go`: baseline = a copy of `mcpFormVals` once the form is built; esc →
+- [X] T011 [US1] MCP registration (`gMcp`) in `UI/mcp.go`: baseline = a copy of `mcpFormVals` once the form is built; esc →
   `requestExit`; Save = `applyMcpForm`; Leave = close the form.
-- [ ] T012 [US1] Secrets (`gSecrets`) in `UI/secrets.go`: baseline = a copy of `secretFormVals`; esc →
+- [X] T012 [US1] Secrets (`gSecrets`) in `UI/secrets.go`: baseline = a copy of `secretFormVals`; esc →
   `requestExit`; Save = `applySecretsForm`; Leave = close the form.
-- [ ] T013 [US1] Orchestrator create/rename (`gOrchAdmin`) in `UI/orchestrators.go` and
+- [X] T013 [US1] Orchestrator create/rename (`gOrchAdmin`) in `UI/orchestrators.go` and
   `UI/daemon_orchestrators.go`: baseline = a copy of `orchFormVals` (the prefill for rename); esc → `requestExit`;
   Save = `applyOrchForm`; Leave = reset the form.
-- [ ] T014 [US1] Op forms (`gOpForm` for each `orchSurface`), routed from `UI/jobs.go` and `UI/orchestrator_views.go`:
+- [X] T014 [US1] Op forms (`gOpForm` for each `orchSurface`), routed from `UI/jobs.go` and `UI/orchestrator_views.go`:
   - Add a `baseline` on `orchOpState` set by `setOpForm` in `UI/run_actions.go`: a value copy of
     `actionFormVals`/`eventFormVals`/`markFreeVals`, or `flattenCallVals` for the call form.
   - Dirty compares the same form of the current vals.
   - esc → `requestExit`; Save = `submitOrchOpForm`; Leave = `closeOpForm` plus today's status reset and the
     mark-free return to the list.
-- [ ] T015 [US1] Kit section and item forms (`gKitItem`) in `UI/kit_editor.go`: baseline = a copy of `kitFormVals`
+- [X] T015 [US1] Kit section and item forms (`gKitItem`) in `UI/kit_editor.go`: baseline = a copy of `kitFormVals`
   after the form fills it; esc → `requestExit`; Save = `applyKitForm`; Leave = close the form with the kit untouched.
-- [ ] T016 [US1] Guard tests in `UI/guard_surfaces_test.go`: one table-driven walk over config, MCP, secrets,
+- [X] T016 [US1] Guard tests in `UI/guard_surfaces_test.go`: one table-driven walk over config, MCP, secrets,
   orchestrator create, orchestrator rename, action, event, call, mark-free and a kit item form. Each case covers:
   - an unchanged esc closes with no dialog;
   - a changed esc opens the dialog;
@@ -240,8 +240,10 @@ calls `reopenForm`.
   - type-and-delete back to the original → no dialog (US1 #7);
   - a create form with nothing typed → no dialog (US1 #8);
   - an op form whose save fails keeps the form open with the error (spec Edge Cases);
-  - ctrl+s on an op form, esc while the RPC is in flight (dialog open), then the success reply → the form, and with it
-    the dialog, are closed (spec Edge Cases, background update).
+  - ctrl+s on an op form, then ctrl+s or typing while the RPC is in flight → ignored (status `saving…`, no second
+    call); esc/ctrl+c leave at once with no dialog and the save finishes in the background; only that call's reply
+    (matched by token) clears or closes the form; reopening it and sending the same call while the first is in flight
+    is refused, and a late refusal names its call (amended in PR #19 review).
 
 **Checkpoint**: esc on every form is guarded. This is the MVP.
 
@@ -255,24 +257,24 @@ and the app never quits from inside a form.
 **Independent Test**: With changes, ctrl+c in each form and esc/q on the kit overview raise the dialog. "register
 anyway?" n returns to the form intact. Text keys like `q`, `,` and shift+→ are typed.
 
-- [ ] T017 [US2] Make `formKeyMap()`'s `Quit` keyless (doc comment: ctrl+c is routed by the guard) and route ctrl+c
+- [X] T017 [US2] Make `formKeyMap()`'s `Quit` keyless (doc comment: ctrl+c is routed by the guard) and route ctrl+c
   through `requestExit` exactly like esc on every form surface. huh then never aborts, so delete the `StateAborted`
   branches. Extend T004's test: ctrl+c sent straight to `form.Update` does not abort.
   - Files: `UI/config_editor.go`, `UI/mcp.go`, `UI/secrets.go`, `UI/orchestrators.go`, `UI/daemon_orchestrators.go`,
     `UI/orchestrator_forms.go` (`advanceOrchOpForm`), `UI/jobs.go`, `UI/orchestrator_views.go`, `UI/kit_editor.go`.
   - Mark-free ctrl+c now returns to the sandbox list when opened from it, as esc does.
-- [ ] T018 [US2] Kit overview (`gKitOverview`) in `UI/kit_editor.go`:
+- [X] T018 [US2] Kit overview (`gKitOverview`) in `UI/kit_editor.go`:
   - Set `kitEditorState.baseline = kitFingerprint(kit)` when the editor opens, after migration. `saveKit` returns to
     the picker, so no reset is needed.
   - Overview esc and q → `requestExit(gKitOverview)`; Save = `saveKit`; Leave = `enterKitPicker`.
   - The item list's esc/q stay as they are (not exits).
-- [ ] T019 [US2] FR-012a in `UI/mcp.go`:
+- [X] T019 [US2] FR-012a in `UI/mcp.go`:
   - `applyMcpForm` keeps `vals` and the baseline while `pending` is set.
   - Backing out of "register anyway?" (n/esc/q) calls `reopenForm(gMcp)` and shows no "registration cancelled"
     status.
   - y registers and clears the vals as today.
   - Change "esc cancel" to "esc back to form" in both `mcpModal` and `mcpHelp` (mcp.go:197).
-- [ ] T020 [US2] Tests in `UI/guard_surfaces_test.go` and `UI/mcp_test.go`:
+- [X] T020 [US2] Tests in `UI/guard_surfaces_test.go` and `UI/mcp_test.go`:
   - ctrl+c on each form: dialog when changed, closes when not, never `tea.Quit`;
   - Discard after ctrl+c returns to the opening screen;
   - kit: apply an item then esc/q on the overview → dialog; `d` returns to the picker and the kit on disk is
@@ -297,17 +299,17 @@ dialog, with the step-back keys untouched.
 dialog; the reasoning setup's Save is labelled Rebuild; sources Save → removal confirm, decline returns, confirm
 closes.
 
-- [ ] T021 [US3] Rename (`gRename`) in `UI/app.go`:
+- [X] T021 [US3] Rename (`gRename`) in `UI/app.go`:
   - Record `renameInitial = TrimSpace(display name)` in `enterRename`.
   - Dirty = `TrimSpace(value) != renameInitial`; esc → `requestExit`.
   - Save = the enter path, except an empty trimmed value keeps the input open with status "name can't be empty"
     (FR-011a). enter's own behaviour is unchanged.
   - Leave = today's esc.
-- [ ] T022 [US3] Tag (`gTag`) in `UI/tageditor.go`, add host (`gHostAdd`) in `UI/hosts.go` and add group
+- [X] T022 [US3] Tag (`gTag`) in `UI/tageditor.go`, add host (`gHostAdd`) in `UI/hosts.go` and add group
   (`gGroupAdd`) in `UI/groups.go`:
   - trimmed-initial dirty checks: the tag; `""` for host and group;
   - esc → `requestExit`; Save = the enter path (an empty tag clears it); Leave = today's esc.
-- [ ] T023 [US3] Launch wizard (`gLaunch`) and reasoning setup (`gReasoning`) in `UI/launch.go` and
+- [X] T023 [US3] Launch wizard (`gLaunch`) and reasoning setup (`gReasoning`) in `UI/launch.go` and
   `UI/orchestrator_reasoning.go`:
   - Add `launchState.baseline = snapshotLaunch(...)` set in `enterLaunch`, `enterLaunchWithConfig` and
     `enterReasoningSetup` (after the saved-setup prefill).
@@ -318,7 +320,7 @@ closes.
     `startReasoningRebuildFromSetup`.
   - Leave = today's esc (list or orchestrator detail).
   - Align `launchHelp` in reasoning mode with the modal help: no N/H/O, and "enter rebuild" (R8).
-- [ ] T024 [US3] Sources overlay (`gSources`) and add browser (`gSourcesBrowse`) in `UI/sources.go` and
+- [X] T024 [US3] Sources overlay (`gSources`) and add browser (`gSourcesBrowse`) in `UI/sources.go` and
   `UI/confirm.go`:
   - Overlay dirty = `len(marked) > 0`; esc/q → `requestExit`. Save = `confirmRemoveSources(exitAfter=true)`, which sets
     `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` (T006's hook; not an
@@ -327,7 +329,7 @@ closes.
     returns to `screenSources` with marks kept.
   - Browser dirty = `len(launch.selected) > 0`; esc → `requestExit`. Save = `dispatchAddSources`; Leave = back to the
     overlay.
-- [ ] T025 [US3] Tests in `UI/guard_surfaces_test.go`, `UI/sources_test.go` and `UI/launch_test.go`, covering US3
+- [X] T025 [US3] Tests in `UI/guard_surfaces_test.go`, `UI/sources_test.go` and `UI/launch_test.go`, covering US3
   #1–#7:
   - rename: whitespace-only change → no dialog; empty Save → stays open with the message, Discard keeps the name;
   - tag: cleared → Save clears it;
@@ -356,7 +358,7 @@ external editor anywhere.
 **Independent Test**: Kit agent instructions with 50 lines → ctrl+e shows far more lines; edit, esc → the inline
 field holds the edit and focus stays on it, with no dialog.
 
-- [ ] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
+- [X] T026 [US4] Add `enlargeState` (data-model.md) with these methods in `UI/enlarge.go`:
   - `openEnlarge(g, field, entry)`: a textarea with `MaxHeight 0`, `CharLimit 0`, `ShowLineNumbers false`,
     `Prompt ""`, the default keymap with `LineEnd = end` and `InsertNewline = enter/alt+enter/ctrl+j`, value `*ptr`,
     `baseline = *ptr`. Then, in this order: `ta.Focus()`, and only then the cursor to the top via
@@ -372,7 +374,7 @@ field holds the edit and focus stays on it, with no dialog.
   - `enlargeView(w, h)`: a rounded border at full size with the title in the top border, the textarea, and the hint
     line from contracts/forms-ui.md §2 (76 cells).
   - Size constants that give 21 text lines at 80×24 and at least one line on smaller terminals.
-- [ ] T027 [US4] Add `updateEnlargeKey` in `UI/enlarge.go`:
+- [X] T027 [US4] Add `updateEnlargeKey` in `UI/enlarge.go`:
   - esc/ctrl+e → write back and close;
   - ctrl+s → write back, close, then `guardSave(surface)`;
   - ctrl+c → write back, then `requestExit(surface)`; if that opens the dialog, set `fromEnlarge` and keep the view
@@ -383,7 +385,7 @@ field holds the edit and focus stays on it, with no dialog.
   - everything else → `ta.Update`.
 
   Discard or Save from a dialog with `fromEnlarge` closes the view first (T006).
-- [ ] T028 [US4] Add the form key pre-handler `formKeys(g, form, spec, msg)` in `UI/formguard.go`, used by every form
+- [X] T028 [US4] Add the form key pre-handler `formKeys(g, form, spec, msg)` in `UI/formguard.go`, used by every form
   surface's key branch from US1/US2:
   - ctrl+e on a focused registered Text → `openEnlarge`;
   - esc/ctrl+c → `requestExit`;
@@ -391,13 +393,13 @@ field holds the edit and focus stays on it, with no dialog.
   - otherwise → the form.
 
   This consolidates the per-surface esc/ctrl+s branches added in T010–T018 into one path.
-- [ ] T029 [US4] Wire the enlarged view into `UI/app.go`:
+- [X] T029 [US4] Wire the enlarged view into `UI/app.go`:
   - `handleKey` routes to `updateEnlargeKey` when `m.enlarge.open`, after the dialog layer.
   - `View` returns `enlargeView` instead of the screen chrome (the dialog overlays it).
   - `tea.WindowSizeMsg` calls `resize`.
   - `forward()` passes non-key messages (cursor blink) to the enlarged textarea while it is open.
   - The footer help for form screens adds `ctrl+e enlarge` only while the focused field is a registered Text (FR-002).
-- [ ] T030 [US4] Tests in `UI/enlarge_test.go`:
+- [X] T030 [US4] Tests in `UI/enlarge_test.go`:
   - ctrl+e opens on each of the 17 fields (table over kit/MCP/action/event forms) and the footer hint is present;
   - no hint on an Input; ctrl+e on an Input moves to end of line; on a Select it is a no-op;
   - edit + esc writes back, focus stays on the same field, the form is dirty, and there is no dialog;
@@ -417,7 +419,7 @@ field holds the edit and focus stays on it, with no dialog.
   - a value with a tab: open and close with no edit → the form stays clean;
   - 150 lines + enter at end → 151, close, the kit saves 151 lines; inline enter at line 99+ adds none (FR-009a,
     US4 #8).
-- [ ] T031 [US4] (after T029) Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
+- [X] T031 [US4] (after T029) Add `BenchmarkSC006Enlarged{Type,Cursor,Page}`, `BenchmarkSC006InlineFocused{Type,Cursor}` and
   `BenchmarkSC006OtherField` in `UI/enlarge_perf_test.go`:
   - 200×50, 5,000 lines of ~85 chars, `Update` + `View` per op, driven through the real `Model` key path;
   - a doc comment cites SC-006 and R9's reference numbers;
@@ -429,7 +431,7 @@ field holds the edit and focus stays on it, with no dialog.
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T032 Forced close (R7). Add `forceClose(g, reason)` in `UI/formguard.go`: close the surface and drop the
+- [X] T032 Forced close (R7). Add `forceClose(g, reason)` in `UI/formguard.go`: close the surface and drop the
   dialog and enlarged view. When the surface was dirty, set `unsaved edits lost: <reason>`, or append
   `; unsaved edits lost` to a status the caller already set. Call it from:
   - the MCP view drop (`UI/hosts.go`, `UI/daemons.go`);
@@ -454,7 +456,7 @@ field holds the edit and focus stays on it, with no dialog.
     or `screenSources` with `sourcesView.sandboxID != ""`). Every trigger above matches on `activeOrSuspendedGuard()`.
     Force-closing a suspended surface also clears `m.confirm` (its `onConfirm` and `onAccept` never run) and moves to
     the surface's leave destination. `activeGuard()` is unchanged.
-- [ ] T033 Route async add-overrides through one queue and guard terminal screen switches (research R7 "Confirm
+- [X] T033 Route async add-overrides through one queue and guard terminal screen switches (research R7 "Confirm
   lifecycle", C1–C4):
   - The `sourcesAddResultMsg` handler in `UI/sources.go` **always** appends `parkedOverride{msg, name}` to the FIFO
     `m.pendingOverrides` and never calls `confirmAddOverride` itself (C2). There is no separate arrival test.
@@ -484,7 +486,7 @@ field holds the edit and focus stays on it, with no dialog.
     detaches the new session itself (`msg.session.Close()`, `msg.cancel()`, `close(msg.done)`) and sets the status
     `terminal for <name> ready — closed because you left the list; press t again`. `termClosedMsg` changes the screen
     only when `m.screen == screenTerminal`.
-- [ ] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
+- [X] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
   - host drop with the MCP form dirty and the dialog open → closed, with the status naming "daemon disconnected";
   - orchestrator admin drop with a dirty rename → "<host> disconnected — orchestrators closed; unsaved edits lost";
   - clean → no "lost" status;
@@ -521,14 +523,14 @@ field holds the edit and focus stays on it, with no dialog.
     is dropped, never opens, and the status says `add of … cancelled: …`;
   - an override parked while the same sandbox's add browser was open, dequeued after the overlay closed, has
     `returnTo = screenList`.
-- [ ] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
+- [X] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
   editor), the enlarged-view keys, the unsaved-changes dialog keys, and ctrl+c in forms ≡ esc.
 - [ ] T036 Run quickstart.md scenarios 1–7 at 80×24 and 200×50, and record the `BenchmarkSC006*` results in the PR
   description.
-- [ ] T037 Gates: `PATH=$HOME/go/bin:$PATH make fmt-check vet lint cover` (≥ 90% for `switchboard-tui`) and
+- [X] T037 Gates: `PATH=$HOME/go/bin:$PATH make fmt-check vet lint cover` (≥ 90% for `switchboard-tui`) and
   `go clean -testcache && make e2e`. Fix any regressions in existing esc/ctrl+c tests whose expectations change by
   design (list the changed expectations in the PR).
-- [ ] T038 Mark tasks complete and sync `CLAUDE.md`'s SPECKIT block if the implementation deviates from the plan.
+- [X] T038 Mark tasks complete and sync `CLAUDE.md`'s SPECKIT block if the implementation deviates from the plan.
 
 ---
 

@@ -31,6 +31,7 @@ type secretsState struct {
 	status         string
 	form           *huh.Form
 	vals           *secretFormVals
+	baseline       secretFormVals // vals as the form opened (SWI-9)
 }
 
 type secretFormVals struct {
@@ -138,16 +139,9 @@ func (m Model) highlightedSecret() (*pb.Secret, bool) {
 func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.secretsView
 	if v.form != nil {
-		// Like the register form: esc aborts and ctrl+s submits from any field,
-		// before huh sees the key (its own submit is enter on the last field).
-		switch msg.String() {
-		case "esc":
-			v.form, v.vals = nil, nil
-			return m, nil
-		case "ctrl+s":
-			return m.applySecretsForm()
-		}
-		return m.advanceSecretsForm(msg)
+		// esc/ctrl+c ask before dropping changes and ctrl+s submits from any
+		// field, before huh sees the key (its own submit is enter on the last field).
+		return m.formKey(gSecrets, msg)
 	}
 	switch msg.String() {
 	case "esc", "q":
@@ -179,6 +173,7 @@ func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		v.vals = &secretFormVals{}
 		v.form = m.secretsForm(v.vals)
+		v.baseline = *v.vals
 		v.status = ""
 		return m, v.form.Init()
 	case "d":
@@ -217,7 +212,7 @@ func (m Model) secretsForm(v *secretFormVals) *huh.Form {
 		huh.NewInput().Key("sandbox").Title("Sandbox (optional)").
 			Description("Leave empty for a global secret, or name one sandbox to scope it there.").Value(&v.sandbox),
 	)).WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
 func (m Model) advanceSecretsForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -231,10 +226,7 @@ func (m Model) advanceSecretsForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch v.form.State {
 	case huh.StateCompleted:
-		return m.applySecretsForm()
-	case huh.StateAborted:
-		v.form, v.vals = nil, nil
-		return m, nil
+		return reviveCompleted(gSecrets)(m.applySecretsForm())
 	}
 	return m, cmd
 }

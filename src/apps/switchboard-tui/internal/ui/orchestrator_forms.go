@@ -44,6 +44,7 @@ type markFreeVals struct {
 	outcome   string // "completed" | "failed"
 	note      string
 	sandboxID string
+	runID     string // the run awaiting review the dialog was opened for
 	host      string // host entry id of the orchestrator's daemon
 	orchID    string
 }
@@ -83,15 +84,16 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 		}
 		v.args = strings.Join(lines, "\n")
 	}
-	form := m.newOrchForm(
-		huh.NewInput().Key("name").Title("Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
-		huh.NewInput().Key("description").Title("Description").Value(&v.description),
-		huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
-		huh.NewText().Key("body").Title("Body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {").Value(&v.body),
-		huh.NewInput().Key("tag").Title("Worker tag (prompt only)").Description("only workers tagged #<tag> are eligible; blank = any worker").Value(&v.workerTag),
-		huh.NewText().Key("args").Title("Arguments").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required").Value(&v.args),
-	)
-	return m, m.setOpForm(s, t, "action", v, form)
+	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form {
+		return m.newOrchForm(spec,
+			spec.input("name", "Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
+			spec.input("description", "Description").Value(&v.description),
+			huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
+			spec.text(&v.body, "Body").Key("body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {"),
+			spec.input("tag", "Worker tag (prompt only)").Description("only workers tagged #<tag> are eligible; blank = any worker").Value(&v.workerTag),
+			spec.text(&v.args, "Arguments").Key("args").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required"),
+		)
+	})
 }
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.
@@ -177,20 +179,25 @@ func parseArgLines(text string) ([]*pb.ActionArgument, error) {
 // openCallForm builds a form from the action's declared arguments (FR-129).
 func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
 	v := &callFormVals{action: a, values: map[string]*string{}}
-	var fields []huh.Field
 	for _, arg := range a.GetArguments() {
 		val := arg.GetDefaultValue()
 		v.values[arg.GetName()] = &val
-		title := sanitizeLine(arg.GetName(), 0)
-		if arg.GetRequired() {
-			title += " *"
+	}
+	return m, m.setOpForm(s, t, "call "+a.GetName(), v, func(m Model, spec *formSpec) *huh.Form {
+		var fields []huh.Field
+		for _, arg := range a.GetArguments() {
+			name := sanitizeLine(arg.GetName(), 0)
+			title := name
+			if arg.GetRequired() {
+				title += " *"
+			}
+			fields = append(fields, spec.input(arg.GetName(), name).Title(title).Description(sanitizeTerminalText(arg.GetDescription())).Value(v.values[arg.GetName()]))
 		}
-		fields = append(fields, huh.NewInput().Key(arg.GetName()).Title(title).Description(sanitizeTerminalText(arg.GetDescription())).Value(v.values[arg.GetName()]))
-	}
-	if len(fields) == 0 {
-		fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
-	}
-	return m, m.setOpForm(s, t, "call "+a.GetName(), v, m.newOrchForm(fields...))
+		if len(fields) == 0 {
+			fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
+		}
+		return m.newOrchForm(spec, fields...)
+	})
 }
 
 // --- timed events (user story 5 of feature 009) ---
@@ -401,19 +408,20 @@ func (m Model) openEventForm(s orchSurface, t orchTarget, ev *pb.TimedEvent) (te
 	for _, a := range actions {
 		opts = append(opts, huh.NewOption(a.GetName(), a.GetName()))
 	}
-	form := m.newOrchForm(
-		huh.NewInput().Key("name").Title("Name").Value(&v.name),
-		huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
-		huh.NewInput().Key("interval").Title("Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
-		huh.NewInput().Key("activeFrom").Title("Active from").Description("HH:MM, 24-hour — blank: around the clock").Value(&v.activeFrom),
-		huh.NewInput().Key("activeUntil").Title("Active until").Description("HH:MM, exclusive; 24:00 = midnight; earlier than from = overnight").Value(&v.activeUntil),
-		huh.NewMultiSelect[int]().Key("days").Title("Days").Description("none: every day (an overnight window's day is the day it opens)").Options(dayOptions()...).Value(&v.days),
-		huh.NewInput().Key("timezone").Title("Timezone").Description("IANA name, e.g. America/Los_Angeles (not PST/EST)").Value(&v.timezone),
-		huh.NewText().Key("args").Title("Fixed arguments").Lines(3).Description("name = value, one per line (the action's declared arguments)").Value(&v.args),
-		huh.NewConfirm().Key("enabled").Title("Enabled").Value(&v.enabled),
-		huh.NewConfirm().Key("dedupe").Title("Dedupe").Description("skip a firing while a run of this event is queued or in flight").Value(&v.dedupe),
-	)
-	return m, m.setOpForm(s, t, "event", v, form)
+	return m, m.setOpForm(s, t, "event", v, func(m Model, spec *formSpec) *huh.Form {
+		return m.newOrchForm(spec,
+			spec.input("name", "Name").Value(&v.name),
+			huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
+			spec.input("interval", "Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
+			spec.input("activeFrom", "Active from").Description("HH:MM, 24-hour — blank: around the clock").Value(&v.activeFrom),
+			spec.input("activeUntil", "Active until").Description("HH:MM, exclusive; 24:00 = midnight; earlier than from = overnight").Value(&v.activeUntil),
+			huh.NewMultiSelect[int]().Key("days").Title("Days").Description("none: every day (an overnight window's day is the day it opens)").Options(dayOptions()...).Value(&v.days),
+			spec.input("timezone", "Timezone").Description("IANA name, e.g. America/Los_Angeles (not PST/EST)").Value(&v.timezone),
+			spec.text(&v.args, "Fixed arguments").Key("args").Lines(3).Description("name = value, one per line (the action's declared arguments)"),
+			huh.NewConfirm().Key("enabled").Title("Enabled").Value(&v.enabled),
+			huh.NewConfirm().Key("dedupe").Title("Dedupe").Description("skip a firing while a run of this event is queued or in flight").Value(&v.dedupe),
+		)
+	})
 }
 
 // parseKV turns "name = value" lines into a map.
@@ -439,8 +447,8 @@ func parseKV(text string) (map[string]string, error) {
 // dropping it when the form completes or aborts.
 func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
-	if op.form == nil {
-		return m, nil
+	if op.form == nil || op.formSaving {
+		return m, nil // in flight: a completed form must not submit again per message
 	}
 	f, cmd := op.form.Update(msg)
 	if ff, ok := f.(*huh.Form); ok {
@@ -448,10 +456,14 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 	}
 	switch op.form.State {
 	case huh.StateCompleted:
-		return m.submitOrchOpForm(s)
-	case huh.StateAborted:
-		m.closeOpForm(s)
-		return m, nil
+		// A submit that sent its call (cmd) waits for the reply with the form
+		// dead; only a refusal before sending revives it here (the reply's
+		// refusal does in applyOrchFormErr).
+		mm, cmd := m.submitOrchOpForm(s)
+		if cmd != nil {
+			return mm, cmd
+		}
+		return reviveCompleted(opGuard(s))(mm, nil)
 	}
 	return m, cmd
 }
@@ -459,7 +471,178 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 // submitOrchOpForm validates and sends whichever form a surface opened, to the
 // orchestrator the form was opened for; a daemon refusal keeps the form open with
 // the text verbatim.
+// savingText is an op form's status while its call is in flight.
+const savingText = "saving…"
+
+// formCallSeq numbers op-form calls, so each reply names the call it answers.
+var formCallSeq atomic.Uint64
+
+// submitOrchOpForm sends the open form's call once: while it is in flight the
+// form is marked saving and nothing sends it again. The reply is stamped with
+// the call's token, the only reply that may clear the mark or close the form.
 func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
+	op := m.opState(s)
+	if op.form == nil || op.formSaving {
+		return m, nil
+	}
+	// The same call from a form left mid-save is still in flight.
+	key := opCallKey(op)
+	if tok, busy := m.opCalls[key]; busy {
+		op.status = "the same " + opCallLabel(op) + " is still saving; its result will show on the footer"
+		op.refusedFor = tok
+		return m, nil
+	}
+	label := opCallLabel(op)
+	// A mark-free opened from the sandbox list reloads the list when it lands,
+	// even if the dialog was left meanwhile.
+	reloadList := s == surfaceDetail && m.markFreeFromList
+	next, cmd := m.sendOrchOpForm(s)
+	if cmd == nil {
+		return next, nil
+	}
+	nm := next.(Model)
+	op = nm.opState(s)
+	tok := formCallSeq.Add(1)
+	op.formSaving, op.formToken, op.status = true, tok, savingText
+	if nm.opCalls == nil {
+		nm.opCalls = map[string]uint64{}
+	}
+	nm.opCalls[key] = tok
+	call := formCall{token: tok, key: key, label: label, reloadList: reloadList}
+	return nm, func() tea.Msg {
+		switch msg := cmd().(type) {
+		case orchDoneMsg:
+			msg.formCall = call
+			return msg
+		case orchFormErrMsg:
+			msg.formCall = call
+			return msg
+		default:
+			return msg
+		}
+	}
+}
+
+// formCall identifies the op-form call a reply answers.
+type formCall struct {
+	token uint64 // 0: not a form's call
+	key   string // its opCalls entry
+	label string // names it in a refusal that lands after its form was left
+	// reloadList: a mark-free opened from the sandbox list, which reloads the
+	// list on success whether or not its dialog is still open.
+	reloadList bool
+}
+
+// opCallKey names the call the open form would send, so the same call is not
+// sent again while it is in flight. A mark-free is keyed by its worker and run (a
+// run is closed once, whatever the outcome or note); any other form by its kind,
+// orchestrator and the values it sends (trimmed as sendOrchOpForm trims them).
+func opCallKey(op *orchOpState) string {
+	t := op.formTarget
+	if v, ok := op.formVals.(*markFreeVals); ok {
+		return markFreeCallKey(v)
+	}
+	return fmt.Sprintf("%s|%s|%s|%v", op.formKind, t.host, t.id, sentOpVals(op.formVals))
+}
+
+// markFreeMismatch reports a mark-free that closed another run (or none) than
+// runID, the run its dialog was opened for.
+func markFreeMismatch(runID string, closed *pb.Run) string {
+	if closed.GetId() == "" {
+		return "error: " + runID + " was no longer awaiting review; the worker was marked free instead"
+	}
+	return fmt.Sprintf("error: mark free closed %s as %s, not %s (%s was no longer awaiting review) — check %s's outcome", closed.GetId(), runState(closed), runID, runID, closed.GetId())
+}
+
+// markFreeCallKey names a mark-free of one run on one worker.
+func markFreeCallKey(v *markFreeVals) string {
+	return "mark free|" + v.host + "|" + v.orchID + "|" + v.sandboxID + "|" + v.runID
+}
+
+// sentOpVals is a form's values as its call sends them: surrounding whitespace
+// dropped, and a call form's empty arguments left out. The dirty guard keeps
+// comparing the raw values (snapshotOpVals).
+func sentOpVals(vals any) any {
+	switch v := vals.(type) {
+	case *actionFormVals:
+		c := *v
+		c.name, c.description, c.workerTag, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.description), strings.TrimSpace(c.workerTag), trimLines(c.args)
+		return c
+	case *eventFormVals:
+		c := *v
+		c.name, c.intervalMinutes, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.intervalMinutes), trimLines(c.args)
+		c.activeFrom, c.activeUntil, c.timezone = strings.TrimSpace(c.activeFrom), strings.TrimSpace(c.activeUntil), strings.TrimSpace(c.timezone)
+		c.days = snapshotOpVals(v).(eventFormVals).days // a set: copied and sorted
+		return c
+	case *callFormVals:
+		out := map[string]string{}
+		for k, p := range v.values {
+			if val := strings.TrimSpace(*p); val != "" {
+				out[k] = val
+			}
+		}
+		return out
+	}
+	return snapshotOpVals(vals)
+}
+
+// trimLines trims each line of s and drops blank ones.
+func trimLines(s string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// opCallLabel names an op form's call ("call review-pr on alpha-bot", "save
+// action triage on alpha-bot", "save event poll (tev-1) on alpha-bot"). A save
+// names what it saves, and an edited event adds its id since event names need
+// not be unique. Labels are for display only: a refusal is settled by the
+// refused-for call's token (orchOpState.refusedFor), never by its label.
+func opCallLabel(op *orchOpState) string {
+	verb := op.formKind
+	if verb == "action" || verb == "event" {
+		verb = "save " + verb
+		if name := savedName(op.formVals); name != "" {
+			verb += " " + name
+		}
+	}
+	return verb + " on " + op.formTarget.name
+}
+
+// savedName is the name an action or event form saves under (trimmed, as sent).
+func savedName(vals any) string {
+	switch v := vals.(type) {
+	case *actionFormVals:
+		return strings.TrimSpace(v.name)
+	case *eventFormVals:
+		name := strings.TrimSpace(v.name)
+		if v.id != "" {
+			name = strings.TrimSpace(name + " (" + v.id + ")")
+		}
+		return name
+	}
+	return ""
+}
+
+// releaseOpCall drops c's in-flight record, if it is still c's.
+func (m Model) releaseOpCall(c formCall) {
+	if c.token != 0 && m.opCalls[c.key] == c.token {
+		delete(m.opCalls, c.key)
+	}
+}
+
+// ownsFormReply reports whether a reply with token answers the call the open
+// form on s is waiting for.
+func (m Model) ownsFormReply(s orchSurface, token uint64) bool {
+	op := m.opState(s)
+	return token != 0 && op.formSaving && op.formToken == token
+}
+
+func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
 	if op.form == nil {
 		return m, nil
@@ -522,13 +705,19 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		failed := v.outcome == "failed"
-		note, sbID, orchID := strings.TrimSpace(v.note), v.sandboxID, v.orchID
+		note, sbID, orchID, runID := strings.TrimSpace(v.note), v.sandboxID, v.orchID, v.runID
 		return m, func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
 			run, err := md.MarkWorkerFree(ctx, orchID, sbID, failed, note)
 			if err != nil {
 				return orchFormErrMsg{err: err, sink: s}
+			}
+			if runID != "" && run.GetId() != runID {
+				// The daemon closes whatever is awaiting review on the worker (its
+				// request names no run): the dialog's run was closed meanwhile, and
+				// this call went to another run, or to none (review run-491).
+				return orchDoneMsg{status: markFreeMismatch(runID, run), reload: true, closeForm: true, sink: s, target: t}
 			}
 			if run.GetId() == "" {
 				// Nothing was awaiting review after all; the daemon freed the
@@ -571,6 +760,8 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 type orchFormErrMsg struct {
 	err  error
 	sink orchSurface
+	// formCall is the op-form call refused (see orchOpState.formToken).
+	formCall formCall
 }
 
 // --- renderers ---

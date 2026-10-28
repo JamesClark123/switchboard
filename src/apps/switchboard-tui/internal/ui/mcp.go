@@ -53,9 +53,12 @@ type mcpState struct {
 	status      string
 	notes       []string // runtime notes from the last removal (credential material left behind)
 
-	// add form
-	form *huh.Form
-	vals *mcpFormVals
+	// add form; spec registers its Text field and baseline is vals as the form
+	// opened (SWI-9)
+	form     *huh.Form
+	vals     *mcpFormVals
+	spec     *formSpec
+	baseline mcpFormVals
 	// pending is a host-command registration awaiting the outside-isolation
 	// acknowledgement (FR-076); shown as a modal until confirmed or dismissed.
 	pending *pb.AddMcpServerRequest
@@ -194,7 +197,7 @@ func (m Model) mcpHelp() helpBindings {
 	case m.mcpView.auth != nil:
 		return helpBindings{hkey("esc", "cancel wait")}
 	case m.mcpView.pending != nil:
-		return helpBindings{hkey("y", "register anyway"), hkey("esc", "cancel")}
+		return helpBindings{hkey("y", "register anyway"), hkey("esc", "back to form")}
 	case m.mcpView.form != nil:
 		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "register"), hkey("esc", "cancel")}
 	case m.mcpView.unavailable != "":
@@ -255,23 +258,18 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y", "Y":
 			req := v.pending
-			v.pending = nil
+			v.pending, v.vals, v.spec = nil, nil, nil
 			req.AcknowledgeLocalExecution = true
 			return m, m.mcpAddCmd(v.daemon, v.host, req)
 		case "esc", "n", "N", "q":
+			// Back to the form with every value (FR-012a): backing out of the
+			// warning is not a discard.
 			v.pending = nil
-			v.status = "registration cancelled"
+			return m, m.reopenForm(gMcp)
 		}
 		return m, nil
 	case v.form != nil:
-		switch msg.String() {
-		case "esc":
-			v.form, v.vals = nil, nil
-			return m, nil
-		case "ctrl+s":
-			return m.applyMcpForm()
-		}
-		return m.advanceMcpForm(msg)
+		return m.formKey(gMcp, msg)
 	}
 	switch msg.String() {
 	case "esc", "q":
@@ -295,8 +293,12 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a":
 		v.vals = &mcpFormVals{kind: "remote"}
-		v.form = m.mcpForm(v.vals)
-		return m, v.form.Init()
+		cmd := m.buildMcpForm()
+		if notice := normalizeNotice(v.spec.normalize()); notice != "" {
+			v.status = notice
+		}
+		v.baseline = *v.vals
+		return m, cmd
 	case "d":
 		if srv, ok := m.highlightedMcp(); ok {
 			return m.enterConfirm(confirmState{
@@ -336,22 +338,32 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // --- the add form ---
 
-func (m Model) mcpForm(v *mcpFormVals) *huh.Form {
+// buildMcpForm builds the add form from the open vals with a fresh registry; it
+// never fills the vals, so reopenForm keeps what the user typed. The baseline is
+// only taken when the form first opens.
+func (m *Model) buildMcpForm() tea.Cmd {
+	v := &m.mcpView
+	v.spec = newFormSpec()
+	v.form = m.mcpForm(v.spec, v.vals)
+	return v.form.Init()
+}
+
+func (m Model) mcpForm(spec *formSpec, v *mcpFormVals) *huh.Form {
 	return huh.NewForm(huh.NewGroup(
 		huh.NewInput().Key("name").Title("Name").
 			Description("Letters, digits, dots, hyphens, underscores. Unique on this host.").Value(&v.name),
 		huh.NewSelect[string]().Key("kind").Title("Kind").
 			Options(huh.NewOption("Remote endpoint (URL)", "remote"), huh.NewOption("Host command (runs on the daemon's host)", "command")).Value(&v.kind),
 		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp").Value(&v.url),
-		huh.NewText().Key("headers").Title("Headers (remote only)").Lines(3).
-			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets). Tool-name collisions between servers (e.g. list_issues in both GitHub and Linear) are avoided with the server's own tool-filter headers, e.g. GitHub X-MCP-Toolsets / X-MCP-Tools.").Value(&v.headers),
+		spec.text(&v.headers, "Headers (remote only)").Key("headers").Lines(3).
+			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets). Tool-name collisions between servers (e.g. list_issues in both GitHub and Linear) are avoided with the server's own tool-filter headers, e.g. GitHub X-MCP-Toolsets / X-MCP-Tools."),
 		huh.NewInput().Key("command").Title("Command").Description("Host command, e.g. npx").Value(&v.command),
 		huh.NewInput().Key("args").Title("Arguments").Description("Comma-separated, e.g. @playwright/mcp@latest").Value(&v.args),
 		huh.NewInput().Key("dir").Title("Working directory").Description("Optional, host command only.").Value(&v.dir),
 		huh.NewConfirm().Key("attach").Title("Attach to every sandbox").
 			Description("On = every sandbox launched on this daemon gets this server (FR-080).").Value(&v.attach),
 	)).WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
 func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -365,10 +377,7 @@ func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch v.form.State {
 	case huh.StateCompleted:
-		return m.applyMcpForm()
-	case huh.StateAborted:
-		v.form, v.vals = nil, nil
-		return m, nil
+		return reviveCompleted(gMcp)(m.applyMcpForm())
 	}
 	return m, cmd
 }
@@ -405,8 +414,10 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 			}
 		}
 		req.Definition = &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: cmd, Args: args, Dir: strings.TrimSpace(vals.dir)}}
-		v.form, v.vals = nil, nil
-		v.pending = req // the warning modal takes it from here
+		// The warning modal takes it from here; vals and the baseline stay so
+		// backing out reopens the form as it was (FR-012a).
+		v.form = nil
+		v.pending = req
 		return m, nil
 	default:
 		url := strings.TrimSpace(vals.url)
@@ -869,7 +880,7 @@ func (m Model) mcpModal() string {
 			"It can reach the host's files, network and any credentials it is given.",
 			"Only register commands and images you trust.",
 			"",
-			helpStyle.Render("y register anyway · esc cancel"),
+			helpStyle.Render("y register anyway · esc back to form"),
 		)
 	}
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)

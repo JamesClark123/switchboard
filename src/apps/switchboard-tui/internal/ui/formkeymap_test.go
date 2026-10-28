@@ -7,13 +7,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestKitFormKeyMapEnterInsertsNewline guards the fix for multi-line list fields:
+// TestFormKeyMapEnterInsertsNewline guards the fix for multi-line list fields:
 // Enter must insert a newline (each line is a distinct list entry), not advance to
 // the next field the way huh's default keymap does. huh drives the textarea's
 // newline key from Text.NewLine and dispatches Text.Next/Submit before it, so the
 // fix hinges on Enter being on NewLine and off Next/Submit.
-func TestKitFormKeyMapEnterInsertsNewline(t *testing.T) {
-	km := kitFormKeyMap()
+func TestFormKeyMapEnterInsertsNewline(t *testing.T) {
+	km := formKeyMap()
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
 	tab := tea.KeyMsg{Type: tea.KeyTab}
 

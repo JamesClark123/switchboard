@@ -35,6 +35,17 @@ type confirmState struct {
 	// The zero value is the sandbox list; the sources overlay sets itself so a
 	// removal lands the user back on the editor (feature 007).
 	returnTo screen
+	// onAccept runs on y/enter only, after screen = returnTo and before
+	// onConfirm, with the live model: a per-answer effect (the guard's sources
+	// Save closes the overlay; its Rebuild lands on the orchestrator detail).
+	// It captures plain values only, never a Model. Not a destination screen
+	// field: screenList is the zero value, so "go to the list" would read as
+	// unset (SWI-9 R6).
+	onAccept func(m *Model)
+	// yOnly accepts on y alone; enter is ignored (SWI-9 R7 C3). Set on the
+	// confirms that open without the user pressing their key, so a repeated or
+	// held enter, or one submitting a prompt above, can never accept them.
+	yOnly bool
 }
 
 // enterConfirm opens the dialog over the sandbox list. The caller supplies the
@@ -46,7 +57,15 @@ func (m Model) enterConfirm(st confirmState) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) confirmHelp() helpBindings {
-	return helpBindings{hkey("y/enter", "confirm"), hkey("n/esc", "cancel")}
+	return helpBindings{hkey(m.confirmAcceptKeys(), "confirm"), hkey("n/esc", "cancel")}
+}
+
+// confirmAcceptKeys names the keys that accept the showing confirm.
+func (m Model) confirmAcceptKeys() string {
+	if m.confirm.yOnly {
+		return "y"
+	}
+	return "y/enter"
 }
 
 // updateConfirmKey answers the dialog. Cancel is the default: esc, n, and q all
@@ -54,10 +73,16 @@ func (m Model) confirmHelp() helpBindings {
 func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
-		cmd := m.confirm.onConfirm
+		if msg.String() == "enter" && m.confirm.yOnly {
+			return m, nil
+		}
+		cmd, accept := m.confirm.onConfirm, m.confirm.onAccept
 		id, verb := m.confirm.sandboxID, m.confirm.verb
 		m.screen = m.confirm.returnTo
 		m.confirm = confirmState{}
+		if accept != nil {
+			accept(&m)
+		}
 		if cmd == nil {
 			return m, nil
 		}
@@ -90,7 +115,7 @@ func (m Model) confirmModal() string {
 		"",
 		line,
 		"",
-		dimStyle.Render("y/enter confirm · n/esc cancel"),
+		dimStyle.Render(helpLine(m.confirmHelp())),
 	)
 	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)

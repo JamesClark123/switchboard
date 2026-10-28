@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The orchestrator detail (feature 009, research R13) is one orchestrator's
@@ -91,6 +93,9 @@ func (m Model) applyOrchDetail(msg orchDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	m.orchDetail.loading = false
 	if msg.err != nil {
+		if status.Code(msg.err) == codes.NotFound {
+			m.closeOrchGuard(m.orchDetail.host, msg.id)
+		}
 		m.orchDetail.status = msg.err.Error()
 		return m, nil
 	}
@@ -154,19 +159,7 @@ func (m Model) orchDetailHelp() helpBindings {
 func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
 	if d.form != nil {
-		switch msg.String() {
-		case "esc":
-			m.closeOpForm(surfaceDetail)
-			d.status = ""
-			if m.markFreeFromList {
-				m.markFreeFromList = false
-				m.screen = screenList
-			}
-			return m, nil
-		case "ctrl+s":
-			return m.submitOrchDetailForm()
-		}
-		return m.advanceOrchOpForm(surfaceDetail, msg)
+		return m.formKey(gOpDetail, msg)
 	}
 	if d.hostPick {
 		return m.updateHostPickKey(msg)

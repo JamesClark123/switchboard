@@ -17,6 +17,7 @@ func (m Model) enterTag(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.tagHost = host
 	m.tagInput.SetValue(sb.GetTag())
 	m.tagInput.CursorEnd()
+	m.tagInitial = strings.TrimSpace(m.tagInput.Value()) // as the input cleaned it
 	return m, m.tagInput.Focus()
 }
 
@@ -27,21 +28,30 @@ func (m Model) tagHelp() helpBindings {
 func (m Model) updateTagKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		m.tagInput.Blur()
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gTag)
 	case tea.KeyEnter:
-		id, tag := m.tagID, strings.TrimSpace(m.tagInput.Value())
-		host := m.tagHost
-		m.tagInput.Blur()
-		m.screen = screenList
-		m.busy[id] = "tagging"
-		m.refreshListItems()
-		return m, m.setTagCmd(m.daemonForHost(host), id, tag)
+		return m.submitTag()
 	}
 	var cmd tea.Cmd
 	m.tagInput, cmd = m.tagInput.Update(msg)
 	return m, cmd
+}
+
+// submitTag is enter: set the trimmed tag (empty clears it).
+func (m Model) submitTag() (Model, tea.Cmd) {
+	id, tag := m.tagID, strings.TrimSpace(m.tagInput.Value())
+	host := m.tagHost
+	m = m.leaveTag()
+	m.busy[id] = "tagging"
+	m.refreshListItems()
+	return m, m.setTagCmd(m.daemonForHost(host), id, tag)
+}
+
+// leaveTag closes the input with the tag unchanged.
+func (m Model) leaveTag() Model {
+	m.tagInput.Blur()
+	m.screen = screenList
+	return m
 }
 
 func (m Model) setTagCmd(d Daemon, id, tag string) tea.Cmd {

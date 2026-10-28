@@ -22,7 +22,7 @@ func notionServer() *pb.McpServer {
 
 // mcpModel opens the gateway view for the (single, local) daemon and drains the
 // initial load.
-func mcpModel(t *testing.T, d *fakeDaemon) Model {
+func mcpModel(t testing.TB, d *fakeDaemon) Model {
 	t.Helper()
 	d.mcpAvail = true
 	m := sized(New(d, "/work"))
@@ -282,6 +282,7 @@ func TestSandboxRowShowsAttachedMcpServers(t *testing.T) {
 
 // Branch coverage for the register form's validation and the view's lesser states.
 func TestMcpFormValidationAndLesserStates(t *testing.T) {
+	noKeyGrace(t)
 	d := &fakeDaemon{}
 	m := mcpModel(t, d)
 	m = pressCmd(m, "a")
@@ -297,9 +298,14 @@ func TestMcpFormValidationAndLesserStates(t *testing.T) {
 	if !strings.Contains(m.mcpView.status, "URL") {
 		t.Errorf("status = %q", m.mcpView.status)
 	}
+	// The form is changed, so esc asks first (SWI-9); d discards.
 	m, _ = update(m, press("esc"))
+	if !m.unsaved.open || m.mcpView.form == nil {
+		t.Fatal("esc on a changed form should open the unsaved-changes dialog")
+	}
+	m, _ = update(m, press("d"))
 	if m.mcpView.form != nil {
-		t.Error("esc should close the form")
+		t.Error("discard should close the form")
 	}
 	// Messages for another host or a stale wait are ignored.
 	before := m.mcpView.status
@@ -387,7 +393,7 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "must be Name: value") {
 		t.Errorf("malformed header should keep the form open; status %q", m.mcpView.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	m = pressCmd(m, "a")
 	m.mcpView.vals.name = "pw"
 	m.mcpView.vals.kind = "command"
@@ -752,5 +758,38 @@ func TestMcpAuthHintOffersThePortForwardOnlyForSSHRows(t *testing.T) {
 			t.Errorf("%s: the host-side fallback must remain:\n%s", name, v)
 		}
 		close(d.mcpAuthGate)
+	}
+}
+
+// Backing out of "register anyway?" returns to the form with every value, and
+// it is still the changed form the guard protects (FR-012a).
+func TestMcpRegisterAnywayBackOutReturnsToForm(t *testing.T) {
+	noKeyGrace(t)
+	d := &fakeDaemon{}
+	m := pressCmd(mcpModel(t, d), "a")
+	m.mcpView.vals.name, m.mcpView.vals.kind, m.mcpView.vals.command, m.mcpView.vals.args = "pw", "command", "npx", "-y, pw"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.pending == nil || !strings.Contains(m.View(), "esc back to form") {
+		t.Fatalf("a host command should ask first:\n%s", m.View())
+	}
+	m, _ = update(m, press("n"))
+	v := m.mcpView.vals
+	if m.mcpView.pending != nil || m.mcpView.form == nil || v == nil || v.name != "pw" || v.command != "npx" || v.args != "-y, pw" || len(d.addedMcp) != 0 {
+		t.Fatalf("n should reopen the form with its values: form %v vals %+v", m.mcpView.form != nil, v)
+	}
+	if strings.Contains(m.mcpView.status, "cancelled") {
+		t.Errorf("backing out is not a cancel: status %q", m.mcpView.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open {
+		t.Fatal("the reopened form is still changed: esc should ask")
+	}
+	// y registers and clears the form.
+	m, _ = update(m, press("c"))
+	m, _ = update(m, ctrlS())
+	m, cmd := update(m, press("y"))
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 1 || m.mcpView.vals != nil {
+		t.Errorf("y should register: added %d vals %+v", len(d.addedMcp), m.mcpView.vals)
 	}
 }

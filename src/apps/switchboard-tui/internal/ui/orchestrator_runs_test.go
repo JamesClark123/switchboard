@@ -86,9 +86,9 @@ func TestActionFormRoundTripAndRefusal(t *testing.T) {
 	if !strings.Contains(m.jobs.status, "must be letters, digits and underscores") {
 		t.Errorf("bad argument line status = %q", m.jobs.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	if m.jobs.form != nil || m.jobs.status != "" {
-		t.Error("esc closes the form and its refusal")
+		t.Error("esc, discard closes the form and its refusal")
 	}
 	// d is confirm-gated and shows the disabled events.
 	a.disabledEvents = []string{"poll"}
@@ -209,9 +209,10 @@ func TestOverviewRunsPromptCancelAndMarkFree(t *testing.T) {
 	}
 	v := m.jobs.formVals.(*markFreeVals)
 	v.outcome, v.note = "failed", "did not finish"
+	a.freedRunID = "run-r" // the daemon closes the run the dialog was opened for
 	m, cmd = update(m, ctrlS())
 	m = feed2(m, cmd)
-	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a sb-review true "did not finish"`) || !strings.Contains(m.status, "closed run-reviewed as failed") {
+	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a sb-review true "did not finish"`) || !strings.HasPrefix(m.status, "closed run-r as failed") {
 		t.Errorf("mark free: calls %q status %q", a.orchCallsJoined(), m.status)
 	}
 	if m.jobs.form != nil || m.screen != screenJobs {
@@ -322,7 +323,7 @@ func TestMarkFreeFromSandboxListAndWorkersView(t *testing.T) {
 	}
 	m, cmd = update(m, ctrlS())
 	m = feed2(m, cmd)
-	if m.orchDetail.form != nil || m.screen != screenOrchDetail || !strings.Contains(m.status, "closed run-reviewed") {
+	if m.orchDetail.form != nil || m.screen != screenOrchDetail || !strings.Contains(m.status, "closed run-1") {
 		t.Errorf("a detail mark free closes the dialog on the detail: form %v screen %v status %q", m.orchDetail.form != nil, m.screen, m.status)
 	}
 }
@@ -404,7 +405,7 @@ func TestEventFormAndView(t *testing.T) {
 	if !strings.Contains(m.jobs.status, "must be name = value") {
 		t.Errorf("bad kv = %q", m.jobs.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	m, _ = update(m, press("d"))
 	if m.screen != screenConfirm {
 		t.Fatal("d confirms")

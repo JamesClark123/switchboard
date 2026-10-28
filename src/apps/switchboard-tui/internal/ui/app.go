@@ -222,15 +222,18 @@ type Model struct {
 
 	// launch wizard state (launch.go)
 	launch launchState
-	// rename input
-	rename     textinput.Model
-	renameID   string
-	renameHost string
+	// rename input; renameInitial is the trimmed name it opened with, for the
+	// unsaved-changes guard (SWI-9).
+	rename        textinput.Model
+	renameID      string
+	renameHost    string
+	renameInitial string
 
 	// US5: tag editor (mirrors rename).
-	tagInput textinput.Model
-	tagID    string
-	tagHost  string
+	tagInput   textinput.Model
+	tagID      string
+	tagHost    string
+	tagInitial string
 
 	// confirm backs the modal yes/no gate in front of destructive actions
 	// (feature 004); valid only while screen == screenConfirm.
@@ -341,7 +344,10 @@ type Model struct {
 	// the call's token. On the model (a shared map) so the guard holds across every
 	// tab and surface, and across leaving and re-entering the screen (research R9).
 	orchFires map[string]uint64
-	attach    attachState
+	// opCalls are the op-form calls in flight, by opCallKey -> the call's token:
+	// a form left mid-save and opened again cannot send the same call twice.
+	opCalls map[string]uint64
+	attach  attachState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -349,6 +355,13 @@ type Model struct {
 	// --- feature 010: the Jobs screen and Daemons › Orchestrators ---
 	jobs        jobsState
 	daemonOrchs daemonOrchsState
+
+	// --- SWI-9: the unsaved-changes dialog, a layer over a changed surface ---
+	unsaved unsavedState
+	// --- SWI-9: the enlarged view of a form's multi-line field ---
+	enlarge enlargeState
+	// pendingOverrides are low-resource add confirms waiting to open (R7 C2).
+	pendingOverrides []parkedOverride
 
 	quitting bool
 }
@@ -390,6 +403,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		forwards:         forward.NewManager(),
 		sandboxMcpOps:    map[string]sandboxMcpOp{},
 		orchFires:        map[string]uint64{},
+		opCalls:          map[string]uint64{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},
@@ -623,7 +637,19 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update routes messages by screen.
+// Update handles one message, then reconciles the guard's layers with whatever
+// surface the message left open (SWI-9: the lifetime invariant).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.handleMsg(msg)
+	if nm, ok := next.(Model); ok {
+		nm.reconcileGuardLayers()
+		nm, ocmd := nm.openParkedOverride(msg)
+		return nm, tea.Batch(cmd, ocmd)
+	}
+	return next, cmd
+}
+
+func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -633,6 +659,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeTerminal()
 		}
 		m.fitRunResults()
+		if m.enlarge.open {
+			m.enlarge.resize(m.width, m.height)
+		}
 		return m, nil
 
 	case termOpenedMsg:
@@ -667,6 +696,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sandboxesMsg:
 		m.sandboxes = []*pb.Sandbox(msg)
+		if m.manager == nil {
+			// Single-host: this list is the whole truth (its errors arrive as errMsg).
+			m.sandboxGone(func(id, _ string) bool { return !hasSandbox(m.sandboxes, id) })
+		}
 		m.listLoading = false
 		m.rebuildTabs()
 		m.refreshListItems()
@@ -674,6 +707,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case listDataMsg:
 		m.hostAgg = msg.hosts
+		// A connected host that listed without error and lacks the sandbox has
+		// removed it; a failed or disconnected host proves nothing.
+		m.sandboxGone(func(id, host string) bool {
+			for _, row := range msg.hosts {
+				if row.Host.Entry.ID == host {
+					return row.Host.State == client.HostConnected && row.Host.Err == nil && row.Err == nil && !hasSandbox(row.Sandboxes, id)
+				}
+			}
+			return false
+		})
 		m.userGroups = msg.groups
 		m.listLoading = false
 		m.rebuildTabs()
@@ -736,6 +779,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case jobsHostMsg:
 		return m.applyJobsHost(msg)
+	case orchGoneMsg:
+		m.closeOrchGuard(msg.host, msg.id)
+		return m, nil
 	case jobsOrchMsg:
 		return m.applyJobsOrch(msg)
 	case orchDoneMsg:
@@ -864,6 +910,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // current screen so its internal async work (blink, field advance) completes.
 func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	if m.enlarge.open {
+		// Only the view's own cursor blink runs. The form under it takes no keys
+		// meanwhile, so its blink loop is let lapse (one full render per frame,
+		// not two); writeBack refreshes the field on close.
+		m.enlarge.ta, cmd = m.enlarge.ta.Update(msg)
+		return m, cmd
+	}
+	return m.forwardScreen(msg)
+}
+
+// forwardScreen is forward for the current screen's component.
+func (m Model) forwardScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch m.screen {
 	case screenLaunch:
 		// The browser is synchronous; only the name field (when editing) has
@@ -945,6 +1004,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.signIn.active && m.signIn.phase == signInFailed {
 		return m.updateSignInKey(msg)
 	}
+	// SWI-9: the unsaved-changes dialog owns the keyboard over its surface.
+	if m.unsaved.open {
+		return m.updateUnsavedKey(msg)
+	}
+	// SWI-9: the enlarged view owns the keyboard over its form.
+	if m.enlarge.open {
+		return m.updateEnlargeKey(msg)
+	}
 	switch m.screen {
 	case screenLaunch:
 		return m.updateLaunchKey(msg)
@@ -1005,11 +1072,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// View renders the active screen wrapped in the shared chrome.
+// View renders the active screen wrapped in the shared chrome, then the layers
+// above it. The credential prompts are applied last, over every screen: the
+// password modal owns the keyboard whenever it is up (handleKey), so it must
+// never be hidden under a screen that draws itself without the chrome (SWI-9
+// R5) — typing would otherwise go into an invisible SSH password field.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	var out string
+	if m.enlarge.open {
+		out = m.enlargeView() // drawn instead of the screen chrome (R2)
+	} else {
+		out = m.viewScreen()
+	}
+	if m.unsaved.open {
+		out = overlayCenter(out, m.unsavedModal(), m.width, m.height)
+	}
+	// Feature 008: the shared password prompt (daemon screen / startup sign-in)
+	// and the sign-in failure card float centered over whatever is showing.
+	switch {
+	case m.hosts.connecting && m.hosts.pwMode != pwHostsScreen:
+		return overlayCenter(out, m.hostPasswordModal(), m.width, m.height)
+	case m.signIn.active && m.signIn.phase == signInFailed:
+		return overlayCenter(out, m.signInModal(), m.width, m.height)
+	}
+	return out
+}
+
+// viewScreen renders the current screen and the overlays that belong to it.
+func (m Model) viewScreen() string {
 	// The launch flow is a modal layer floating over the list page.
 	if m.screen == screenLaunch {
 		bg := m.chrome(m.viewList(), m.launchHelp())
@@ -1028,6 +1121,9 @@ func (m Model) View() string {
 			bg = m.chrome(m.viewJobs(), m.confirmHelp())
 		case screenOrchDetail:
 			bg = m.chrome(m.viewOrchDetail(), m.confirmHelp())
+		case screenLaunch:
+			// the reasoning setup's Rebuild confirm keeps the setup in view
+			bg = overlayCenter(m.chrome(m.viewList(), m.confirmHelp()), m.launchModal(), m.width, m.height)
 		default:
 			bg = m.chrome(m.viewList(), m.confirmHelp())
 		}
@@ -1131,16 +1227,7 @@ func (m Model) View() string {
 	default:
 		body, hb = m.viewList(), m.listHelp()
 	}
-	out := m.chrome(body, hb)
-	// Feature 008: the shared password prompt (daemon screen / startup sign-in)
-	// and the sign-in failure card float centered over whatever is showing.
-	switch {
-	case m.hosts.connecting && m.hosts.pwMode != pwHostsScreen:
-		return overlayCenter(out, m.hostPasswordModal(), m.width, m.height)
-	case m.signIn.active && m.signIn.phase == signInFailed:
-		return overlayCenter(out, m.signInModal(), m.width, m.height)
-	}
-	return out
+	return m.chrome(body, m.withEnlargeHint(hb))
 }
 
 // --- chrome (header + body + footer) ---
@@ -1377,6 +1464,7 @@ func (m Model) enterRename(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.renameHost = host
 	m.rename.SetValue(sb.GetDisplayName())
 	m.rename.CursorEnd()
+	m.renameInitial = strings.TrimSpace(m.rename.Value()) // as the input cleaned it
 	return m, m.rename.Focus()
 }
 
@@ -1387,24 +1475,34 @@ func (m Model) renameHelp() helpBindings {
 func (m Model) updateRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		m.rename.Blur()
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gRename)
 	case tea.KeyEnter:
-		id, name := m.renameID, strings.TrimSpace(m.rename.Value())
-		host := m.renameHost
-		m.rename.Blur()
-		m.screen = screenList
-		if name == "" {
-			return m, nil
-		}
-		m.busy[id] = "renaming"
-		m.refreshListItems()
-		return m, m.renameCmd(m.daemonForHost(host), id, name)
+		return m.submitRename()
 	}
 	var cmd tea.Cmd
 	m.rename, cmd = m.rename.Update(msg)
 	return m, cmd
+}
+
+// submitRename is enter: rename to the trimmed value (an empty one renames
+// nothing) and return to the list.
+func (m Model) submitRename() (Model, tea.Cmd) {
+	id, name := m.renameID, strings.TrimSpace(m.rename.Value())
+	host := m.renameHost
+	m = m.leaveRename()
+	if name == "" {
+		return m, nil
+	}
+	m.busy[id] = "renaming"
+	m.refreshListItems()
+	return m, m.renameCmd(m.daemonForHost(host), id, name)
+}
+
+// leaveRename closes the input without renaming.
+func (m Model) leaveRename() Model {
+	m.rename.Blur()
+	m.screen = screenList
+	return m
 }
 
 func (m Model) viewRename() string {

@@ -185,9 +185,9 @@ func TestHostsAddCancelAndEmptyAndNav(t *testing.T) {
 	if m.hosts.input.Value() != "a " {
 		t.Errorf("input value = %q", m.hosts.input.Value())
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	if m.hosts.adding {
-		t.Error("esc should cancel add mode")
+		t.Error("esc, discard should cancel add mode")
 	}
 	// esc leaves the screen.
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})

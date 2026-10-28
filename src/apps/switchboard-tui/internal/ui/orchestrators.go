@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The orchestrator list (feature 009, FR-142/FR-143): every orchestrator hosted
@@ -61,6 +63,10 @@ type orchState struct {
 	// formPrefill is the rename input's starting value: submitting it unedited
 	// renames nothing.
 	formPrefill string
+	// formBuild rebuilds the open form from vals (open and reopenForm); it
+	// captures only vals and plain strings. baseline is vals as it opened (SWI-9).
+	formBuild func(m Model) *huh.Form
+	baseline  orchFormVals
 }
 
 // orchRowsMsg carries one fan-out result.
@@ -91,6 +97,8 @@ type orchDoneMsg struct {
 	// fireToken identifies the Enqueue now this reply belongs to; only the reply
 	// whose token is the model's in-flight record for fireKey releases it.
 	fireToken uint64
+	// formCall is the op-form call this reply answers (zero: not a form's call).
+	formCall formCall
 	// fireKey / fireLabel say which orchestrator the fire was for: the key releases
 	// the model's in-flight record, the label names it in a refusal.
 	fireKey   string
@@ -194,6 +202,27 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	op := m.opState(msg.sink)
+	m.releaseOpCall(msg.formCall)
+	reloadList := false
+	if tok := msg.formCall.token; tok != 0 {
+		if m.ownsFormReply(msg.sink, tok) {
+			op.formSaving, op.formToken = false, 0
+			if op.status == savingText {
+				op.status = ""
+			}
+		} else {
+			// The form that sent it was left or replaced: the outcome goes on the
+			// footer only, never closing the form open now. A list-opened mark-free
+			// still refreshes the list it returned to.
+			msg.closeForm = false
+			reloadList = msg.formCall.reloadList && msg.err == nil
+			outcome := msg.status
+			if msg.err != nil {
+				outcome = "error: " + msg.err.Error()
+			}
+			m.settleDuplicateForm(msg.sink, msg.formCall, outcome)
+		}
+	}
 	if msg.fire {
 		// The call is over: release the model's in-flight record (only its own).
 		if m.orchFires[msg.fireKey] == msg.fireToken {
@@ -243,6 +272,10 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmds []tea.Cmd
+	if reloadList {
+		m.listLoading = true
+		cmds = append(cmds, m.reloadCmd())
+	}
 	m.orch.loading = true
 	cmds = append(cmds, m.orchLoadCmd())
 	if m.screen == screenOrchDetail {
@@ -254,14 +287,39 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// settleDuplicateForm replaces the "still saving" refusal on the open form once
+// the call it was refused for has answered. Matched by that call's token, never
+// by label (two saves can share one), so it settles even if the form was edited
+// since and no other call's reply ever does.
+func (m *Model) settleDuplicateForm(s orchSurface, c formCall, outcome string) {
+	op := m.opState(s)
+	if op.form != nil && !op.formSaving && c.token != 0 && op.refusedFor == c.token && strings.Contains(op.status, " is still saving") {
+		op.status = "the earlier " + c.label + " finished: " + outcome
+		op.refusedFor = 0
+	}
+}
+
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
+	m.releaseOpCall(msg.formCall)
+	if tok := msg.formCall.token; tok != 0 {
+		if !m.ownsFormReply(msg.sink, tok) {
+			// Its form was left or replaced: report it, named, and that its values
+			// went with it; touch nothing open now.
+			m.status = "error: " + msg.formCall.label + ": " + msg.err.Error() + " (the form was closed; its values were not kept)"
+			m.settleDuplicateForm(msg.sink, msg.formCall, "error: "+msg.err.Error())
+			return m, nil
+		}
+		op := m.opState(msg.sink)
+		op.formSaving, op.formToken = false, 0
+	}
 	if m.onSurface(msg.sink) {
 		m.opState(msg.sink).status = msg.err.Error()
 	} else {
 		m.status = "error: " + msg.err.Error()
 	}
-	return m, nil
+	// A form enter completed waited dead for this reply: bring it back, values kept.
+	return reviveCompleted(opGuard(msg.sink))(m, nil)
 }
 
 // applyRunPrompt opens the read-only prompt overlay for a run on its surface.
@@ -294,10 +352,36 @@ func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd)
 	if m.jobs.started {
 		cmds = append(cmds, m.jobsReloadOrch(host, orchID))
 	}
+	// Op forms learn of a removal from the Jobs and detail reloads above; only
+	// the reasoning setup and the rename form need their own read.
+	if g, gh, gid, ok := m.guardOrch(); ok && (g == gReasoning || g == gOrchAdmin) && gh == host && gid == orchID {
+		cmds = append(cmds, m.orchGoneCheckCmd(host, orchID))
+	}
 	if len(cmds) == 0 {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// orchGoneMsg reports that an orchestrator a guarded surface acts on answered
+// NotFound (SWI-9 R7).
+type orchGoneMsg struct{ host, id string }
+
+// orchGoneCheckCmd reads the orchestrator and reports orchGoneMsg on NotFound
+// only; any other outcome leaves the surface as it is.
+func (m Model) orchGoneCheckCmd(host, id string) tea.Cmd {
+	d, err := m.connectedDaemon(host)
+	if err != nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		if _, err := d.GetOrchestrator(ctx, id); status.Code(err) == codes.NotFound {
+			return orchGoneMsg{host: host, id: id}
+		}
+		return nil
+	}
 }
 
 // forwardOrchestrators routes non-key messages to an open form.
@@ -323,13 +407,24 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	v := &orchFormVals{host: host}
-	m.orch.vals = v
+	desc := "1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH."
 	m.orch.formKind = orchFormCreate
-	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
-	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
-	return m, m.orch.form.Init()
+	return m, m.setOrchForm(v, func(m Model) *huh.Form {
+		return m.newOrchForm(nil, huh.NewInput().Key("name").Title("Name").Description(desc).Value(&v.name))
+	})
+}
+
+// setOrchForm opens a create/rename form bound to v and records its baseline.
+func (m *Model) setOrchForm(v *orchFormVals, build func(Model) *huh.Form) tea.Cmd {
+	m.orch.vals, m.orch.formBuild = v, build
+	m.orch.form = build(*m)
+	m.orch.baseline = *v
+	return m.orch.form.Init()
+}
+
+// closeOrchForm drops the open create/rename form.
+func (m *Model) closeOrchForm() {
+	m.orch.form, m.orch.vals, m.orch.formKind, m.orch.formBuild = nil, nil, orchFormNone, nil
 }
 
 func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
@@ -342,16 +437,14 @@ func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
 	if v.name != raw {
 		desc += " The current name has control or invisible characters; saving an edit drops them."
 	}
-	m.orch.vals = v
+	title := "Rename " + sanitizeLine(raw, 0)
 	m.orch.formKind = orchFormRename
 	m.orch.formID = row.summary.GetOrchestrator().GetId()
 	m.orch.formHost = row.host
 	m.orch.formPrefill = v.name
-	m.orch.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(raw, 0)).Description(desc).Value(&v.name),
-	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
-	return m, m.orch.form.Init()
+	return m, m.setOrchForm(v, func(m Model) *huh.Form {
+		return m.newOrchForm(nil, huh.NewInput().Key("name").Title(title).Description(desc).Value(&v.name))
+	})
 }
 
 func (m Model) advanceOrchForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -364,10 +457,7 @@ func (m Model) advanceOrchForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch m.orch.form.State {
 	case huh.StateCompleted:
-		return m.applyOrchForm()
-	case huh.StateAborted:
-		m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-		return m, nil
+		return reviveCompleted(gOrchAdmin)(m.applyOrchForm())
 	}
 	return m, cmd
 }
@@ -402,7 +492,7 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 	if m.orch.formKind == orchFormRename {
 		exceptID = m.orch.formID
 		if name == strings.TrimSpace(m.orch.formPrefill) {
-			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+			m.closeOrchForm()
 			m.status = "name unchanged"
 			return m, nil
 		}
@@ -422,7 +512,7 @@ func (m Model) applyOrchForm() (tea.Model, tea.Cmd) {
 		m.status = "error: " + err.Error()
 		return m, nil
 	}
-	m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
+	m.closeOrchForm()
 	hostName := m.hostDisplayName(host)
 	if kind == orchFormCreate {
 		return m, func() tea.Msg {

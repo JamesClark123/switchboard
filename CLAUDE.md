@@ -172,7 +172,10 @@ override queue open confirms, so a showing confirm is never replaced; every asyn
 a non-key message only on the plain list (not filtering) or its own sandbox's overlay, with no credential prompt up
 (queue purged on sandbox removal/host drop); guard-opened and queued confirms are
 `yOnly` (accept on y only; enter ignored; no timer). SC-006
-timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). See `research.md` (R1–R10),
+timings are `BenchmarkSC006*` (worst measured 55 ms/keystroke at 5,000 lines). As built: the form key pre-handler is
+`formKey(g, msg)`; `forceClose(g, reason, close)` takes the surface's close step (`forceCloseOr` when g may not be the
+guard), `closeSandboxGuard`/`closeOrchGuard` find the target; the queue is `pendingOverrides`, opened by
+`openParkedOverride` in the `Update` wrapper; R7 tests live in `force_close_test.go`. See `research.md` (R1–R10),
 `data-model.md`, `contracts/forms-ui.md`, `quickstart.md`.
 
 Prior feature: `specs/010-jobs-screen/plan.md` (Jobs Screen & Orchestrator UI Reorganisation, SWI-5).

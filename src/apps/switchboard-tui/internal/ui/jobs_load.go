@@ -567,6 +567,7 @@ func (m Model) applyJobsOrch(msg jobsOrchMsg) (tea.Model, tea.Cmd) {
 	case msg.gone:
 		// NotFound: the orchestrator was removed (R3).
 		m.applyJobsRead(jobsOrch{target: orchTarget{host: msg.host, id: msg.id}}, msg.recSeq, msg.runsSeq, true)
+		m.closeOrchGuard(msg.host, msg.id)
 	case msg.orch == nil:
 		// The record could not be read: keep what was last read, with the error.
 		if msg.recSeq > md.seq() {

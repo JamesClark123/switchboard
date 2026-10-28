@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
 
@@ -158,12 +157,19 @@ type kitEditorState struct {
 	// load (feature 008, FR-092); shown as a banner until the kit is saved.
 	migration *store.Migration
 	// section is the highlighted section; inSection is true once drilled in.
+	// baseline is the kit's fingerprint as the editor opened: the overview is
+	// changed while kitFingerprint(kit) differs, which includes applied but
+	// unsaved item forms (SWI-9).
+	baseline  string
 	section   kitSection
 	inSection bool
 	// item is the highlighted item index within an itemized section.
 	item int
-	// form is non-nil while a form (section-level or item-level) is open.
-	form *huh.Form
+	// form is non-nil while a form (section-level or item-level) is open. spec
+	// registers its Text fields; formBaseline is vals as the form opened (SWI-9).
+	form         *huh.Form
+	spec         *formSpec
+	formBaseline kitFormVals
 	// formKind records what the open form edits, so save routes correctly.
 	formKind kitFormKind
 	// formItem is the index being edited, or -1 when appending a new item.
@@ -209,6 +215,8 @@ func (m Model) enterKitEditor(k *store.Kit) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	// After migration (the kit arrives migrated): an untouched v1 kit is clean.
+	st.baseline = kitFingerprint(st.kit)
 	m.kitEditor = st
 	m.screen = screenKitEditor
 	return m, nil
@@ -228,15 +236,7 @@ func (m Model) kitEditorHelp() helpBindings {
 func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A form owns all input while open.
 	if m.kitEditor.form != nil {
-		switch msg.String() {
-		case "esc":
-			m.kitEditor.form = nil
-			m.kitEditor.formKind = formNone
-			return m, nil
-		case "ctrl+s":
-			return m.applyKitForm()
-		}
-		return m.advanceKitForm(msg)
+		return m.formKey(gKitItem, msg)
 	}
 
 	if m.kitEditor.inSection {
@@ -245,7 +245,7 @@ func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q":
-		return m.enterKitPicker()
+		return m.requestExit(gKitOverview)
 	case "ctrl+s":
 		return m.saveKit()
 	case "v":
@@ -316,23 +316,49 @@ func (m Model) openKitSection() (tea.Model, tea.Cmd) {
 		m.kitEditor.item = 0
 		return m, nil
 	}
-	m.kitEditor.vals = &kitFormVals{}
 	switch s {
 	case secIdentity:
-		return m.openKitForm(formIdentity, m.identityForm())
+		return m.openKitForm(formIdentity, -1)
 	case secNetwork:
-		return m.openKitForm(formNetwork, m.networkForm())
+		return m.openKitForm(formNetwork, -1)
 	case secEnvironment:
-		return m.openKitForm(formEnvironment, m.environmentForm())
+		return m.openKitForm(formEnvironment, -1)
 	case secAgentInstructions:
-		return m.openKitForm(formAgentInstructions, m.agentInstructionsForm())
+		return m.openKitForm(formAgentInstructions, -1)
 	}
 	return m, nil
 }
 
-func (m Model) openKitForm(kind kitFormKind, f *huh.Form) (tea.Model, tea.Cmd) {
-	m.kitEditor.form = f
-	m.kitEditor.formKind = kind
+// openKitItemForm opens the form for one item of the current section; idx < 0
+// appends a new one.
+func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
+	kind, ok := map[kitSection]kitFormKind{
+		secInstall:     formInstall,
+		secStartup:     formStartup,
+		secSetupFiles:  formInitFile,
+		secCredentials: formCredential,
+		secEscapeHatch: formEscapeHatch,
+		secServices:    formService,
+	}[m.kitEditor.section]
+	if !ok {
+		return m, nil
+	}
+	return m.openKitForm(kind, idx)
+}
+
+// openKitForm fills fresh vals from the kit, builds the form, and records its
+// baseline once the form is built and its Text values normalised (SWI-9 R3).
+func (m Model) openKitForm(kind kitFormKind, idx int) (tea.Model, tea.Cmd) {
+	m.kitEditor.formItem = idx
+	m.kitEditor.vals = &kitFormVals{}
+	m.fillKitVals(kind, idx)
+	spec := newFormSpec()
+	f := m.buildKitForm(kind, spec, m.kitEditor.vals)
+	m.kitEditor.form, m.kitEditor.formKind, m.kitEditor.spec = f, kind, spec
+	if notice := normalizeNotice(spec.normalize()); notice != "" {
+		m.kitEditor.status = notice
+	}
+	m.kitEditor.formBaseline = *m.kitEditor.vals
 	return m, f.Init()
 }
 
@@ -348,150 +374,71 @@ func (m Model) advanceKitForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch m.kitEditor.form.State {
 	case huh.StateCompleted:
-		return m.applyKitForm()
-	case huh.StateAborted:
-		m.kitEditor.form = nil
-		m.kitEditor.formKind = formNone
-		return m, nil
+		return reviveCompleted(gKitItem)(m.applyKitForm())
 	}
 	return m, cmd
 }
 
-// ---------- section forms ----------
-
-func (m *Model) identityForm() *huh.Form {
+// fillKitVals copies the kit's current values for one form into the open vals.
+// It runs once when the form opens; reopenForm never calls it, so a rebuilt form
+// keeps what the user typed.
+func (m *Model) fillKitVals(kind kitFormKind, idx int) {
 	v := m.kitEditor.vals
 	k := m.kitEditor.kit
-	v.name, v.displayName, v.description, v.version = k.Name, k.DisplayName, k.Description, k.Version
-	if k.Requires != nil {
-		v.requiresAgent = k.Requires.Agent
-	}
-	return m.newKitForm(
-		huh.NewInput().Key("name").Title("Name").
-			Description("Kit id — lowercase, hyphens. Also the directory name.").Value(&v.name),
-		huh.NewInput().Key("displayName").Title("Display name").Value(&v.displayName),
-		huh.NewInput().Key("description").Title("Description").Value(&v.description),
-		huh.NewInput().Key("version").Title("Version").Description("Optional kit version, e.g. 1.0.0.").Value(&v.version),
-		huh.NewInput().Key("requiresAgent").Title("Base agent").
-			Description("Optional. Pins the agent this mixin is designed for (e.g. claude).").Value(&v.requiresAgent),
-	)
-}
-
-func (m *Model) networkForm() *huh.Form {
-	v := m.kitEditor.vals
-	if p := m.kitEditor.kit.Permissions; p != nil && p.Network != nil {
-		v.allowed = strings.Join(p.Network.Allow, "\n")
-		v.denied = strings.Join(p.Network.Deny, "\n")
-	}
-	return m.newKitForm(
-		huh.NewText().Key("allowed").Title("Allow").
-			Description("Domains the sandbox may reach, one per line (wildcards allowed). Credential\ninjection domains must be listed here too.").Value(&v.allowed),
-		huh.NewText().Key("denied").Title("Deny").
-			Description("One per line. Deny wins over allow, including across other kits.").Value(&v.denied),
-	)
-}
-
-func (m *Model) environmentForm() *huh.Form {
-	v := m.kitEditor.vals
-	if e := m.kitEditor.kit.Environment; e != nil {
-		v.vars = joinEnv(e.Variables)
-	}
-	return m.newKitForm(
-		huh.NewText().Key("vars").Title("Variables").
-			Description("KEY=value, one per line. Set directly in the container.").Value(&v.vars),
-	)
-}
-
-func (m *Model) agentInstructionsForm() *huh.Form {
-	v := m.kitEditor.vals
-	if a := m.kitEditor.kit.AgentInstructions; a != nil {
-		v.agentInstructions = a.Content
-	}
-	return m.newKitForm(
-		huh.NewText().Key("agentInstructions").Title("Agent instructions").
-			Description("Markdown the runtime writes into the agent's kit memory.").Value(&v.agentInstructions),
-	)
-}
-
-// ---------- item forms ----------
-
-// openKitItemForm opens the form for one item; idx < 0 appends a new one.
-func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
-	m.kitEditor.formItem = idx
-	m.kitEditor.vals = &kitFormVals{}
-	v := m.kitEditor.vals
-	setup := m.kitEditor.kit.Setup
-	switch m.kitEditor.section {
-	case secInstall:
+	setup := k.Setup
+	switch kind {
+	case formIdentity:
+		v.name, v.displayName, v.description, v.version = k.Name, k.DisplayName, k.Description, k.Version
+		if k.Requires != nil {
+			v.requiresAgent = k.Requires.Agent
+		}
+	case formNetwork:
+		if p := k.Permissions; p != nil && p.Network != nil {
+			v.allowed = strings.Join(p.Network.Allow, "\n")
+			v.denied = strings.Join(p.Network.Deny, "\n")
+		}
+	case formEnvironment:
+		if e := k.Environment; e != nil {
+			v.vars = joinEnv(e.Variables)
+		}
+	case formAgentInstructions:
+		if a := k.AgentInstructions; a != nil {
+			v.agentInstructions = a.Content
+		}
+	case formInstall:
 		var it store.KitInstallCommand
 		if setup != nil && idx >= 0 && idx < len(setup.Install) {
 			it = setup.Install[idx]
 		}
 		v.itemCommand, v.itemUser, v.itemDesc = it.Command, defaultStr(it.User, "0"), it.Description
-		return m.openKitForm(formInstall, m.newKitForm(
-			huh.NewText().Key("command").Title("Command").
-				Description("Shell string, run once at creation via sh -c.").Value(&v.itemCommand),
-			huh.NewInput().Key("user").Title("User").Description(`"0" = root, "1000" = agent.`).Value(&v.itemUser),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
-		))
-	case secStartup:
+	case formStartup:
 		var it store.KitStartupCommand
 		if setup != nil && idx >= 0 && idx < len(setup.Startup) {
 			it = setup.Startup[idx]
 		}
 		v.itemCommand = strings.Join(it.Command, "\n")
 		v.itemUser, v.itemDesc, v.itemBackground = defaultStr(it.User, "1000"), it.Description, it.Background
-		return m.openKitForm(formStartup, m.newKitForm(
-			huh.NewText().Key("command").Title("Command (argv)").
-				Description("One argument per line — no shell is involved.\nRuns at every start, so it MUST be idempotent.").Value(&v.itemCommand),
-			huh.NewInput().Key("user").Title("User").Value(&v.itemUser),
-			huh.NewConfirm().Key("background").Title("Background").Value(&v.itemBackground),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
-		))
-	case secSetupFiles:
+	case formInitFile:
 		var it store.KitInitFile
 		if setup != nil && idx >= 0 && idx < len(setup.Files) {
 			it = setup.Files[idx]
 		}
 		v.itemPath, v.itemContent = it.Path, it.Content
 		v.itemMode, v.itemOnlyIfMissing, v.itemDesc = defaultStr(it.Mode, "0644"), it.OnlyIfMissing, it.Description
-		return m.openKitForm(formInitFile, m.newKitForm(
-			huh.NewInput().Key("path").Title("Path").Description("Absolute path in the container.").Value(&v.itemPath),
-			huh.NewText().Key("content").Title("Content").
-				Description("${WORKDIR} expands to the workspace path.").Value(&v.itemContent),
-			huh.NewInput().Key("mode").Title("Mode").Description("Octal, e.g. 0755.").Value(&v.itemMode),
-			huh.NewConfirm().Key("onlyIfMissing").Title("Only if missing").Value(&v.itemOnlyIfMissing),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
-		))
-	case secCredentials:
+	case formCredential:
 		var it store.KitCredential
-		if idx >= 0 && idx < len(m.kitEditor.kit.Credentials) {
-			it = m.kitEditor.kit.Credentials[idx]
+		if idx >= 0 && idx < len(k.Credentials) {
+			it = k.Credentials[idx]
 		}
 		v.credService, v.credDesc, v.credRequired = it.Service, it.Description, it.Required
 		if it.APIKey != nil {
 			v.credEnvName, v.credProxyManaged = it.APIKey.Name, it.APIKey.ProxyManaged
 			v.credInject = joinInject(it.APIKey.Inject)
 		}
-		return m.openKitForm(formCredential, m.newKitForm(
-			huh.NewNote().Title("Values stay on the host").
-				Description("A kit declares which credential a service needs and how it is injected.\nThe value itself is supplied and bound on the host (sbx secret set)."),
-			huh.NewInput().Key("service").Title("Service").
-				Description("kebab-case id, e.g. github. Matches the secret stored on the host.").Value(&v.credService),
-			huh.NewInput().Key("description").Title("Description").Value(&v.credDesc),
-			huh.NewConfirm().Key("required").Title("Required").
-				Description("On = the agent cannot do its job without it (the runtime warns when unbound).").Value(&v.credRequired),
-			huh.NewInput().Key("envName").Title("API-key env var").
-				Description("Variable name the agent sees, e.g. GITHUB_TOKEN. Blank = no API-key mechanism.").Value(&v.credEnvName),
-			huh.NewConfirm().Key("proxyManaged").Title("Proxy-managed").
-				Description("On = the container only sees a placeholder; the proxy injects the real value.").Value(&v.credProxyManaged),
-			huh.NewText().Key("inject").Title("Inject into").
-				Description("One target per line: domain | header | format (format has one %s, e.g. Bearer %s).\nEach domain must also be allowed under Network permissions.").Value(&v.credInject),
-		))
-	case secEscapeHatch:
+	case formEscapeHatch:
 		var it store.KitEscapeHatchCommand
-		if idx >= 0 && idx < len(m.kitEditor.kit.EscapeHatch) {
-			it = m.kitEditor.kit.EscapeHatch[idx]
+		if idx >= 0 && idx < len(k.EscapeHatch) {
+			it = k.EscapeHatch[idx]
 		}
 		v.ehName, v.itemCommand, v.ehWhenToUse = it.Name, it.Command, it.WhenToUse
 		v.ehRequiresApproval, v.ehWorkingDir = it.RequiresApproval, it.WorkingDir
@@ -501,30 +448,10 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 		if it.MaxDurationSecs > 0 {
 			v.ehMaxDuration = strconv.Itoa(int(it.MaxDurationSecs))
 		}
-		return m.openKitForm(formEscapeHatch, m.newKitForm(
-			huh.NewInput().Key("name").Title("Name").
-				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
-			huh.NewText().Key("command").Title("Command").
-				Description("The fixed command prefix, run on the host via sh -c. The agent cannot change it.").Value(&v.itemCommand),
-			huh.NewText().Key("whenToUse").Title("When to use").
-				Description("Plain-language guidance the agent's rule shows for this command.").Value(&v.ehWhenToUse),
-			huh.NewText().Key("subcommands").Title("Allowed subcommands (one per line)").
-				Description("Optional. The agent may pass one of these as arguments (e.g. install, dev). Leave blank for none.").Value(&v.ehSubcommands),
-			huh.NewInput().Key("argsPattern").Title("Args regex (advanced)").
-				Description("Optional alternative to subcommands. WARNING: a loose regex lets the agent pass more arguments to the command and lowers safety.").Value(&v.ehArgsPattern),
-			huh.NewText().Key("workspaces").Title("Targetable workspaces (one per line)").
-				Description("Optional. Workspace-relative paths or globs (e.g. src/apps/*). If set, the agent picks one with --workspace.").Value(&v.ehWorkspaces),
-			huh.NewConfirm().Key("requiresApproval").Title("Requires approval").
-				Description("On = the developer must approve each run. Off = auto-run.").Value(&v.ehRequiresApproval),
-			huh.NewInput().Key("workingDir").Title("Default working dir").
-				Description("Optional, relative to the workspace. Used when no targetable workspaces are set.").Value(&v.ehWorkingDir),
-			huh.NewInput().Key("maxDuration").Title("Max duration (seconds)").
-				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
-		))
-	case secServices:
+	case formService:
 		var it store.KitService
-		if idx >= 0 && idx < len(m.kitEditor.kit.Services) {
-			it = m.kitEditor.kit.Services[idx]
+		if idx >= 0 && idx < len(k.Services) {
+			it = k.Services[idx]
 		}
 		v.svcName, v.itemCommand = it.Name, it.Command
 		v.svcOnHost, v.svcIsWebsite, v.svcWorkingDir = it.OnHost, it.IsWebsite, it.WorkingDir
@@ -534,24 +461,120 @@ func (m Model) openKitItemForm(idx int) (tea.Model, tea.Cmd) {
 		if it.ReadinessTimeoutSecs > 0 {
 			v.svcReadiness = strconv.Itoa(int(it.ReadinessTimeoutSecs))
 		}
-		return m.openKitForm(formService, m.newKitForm(
-			huh.NewInput().Key("name").Title("Name").
+	}
+}
+
+// buildKitForm builds the form for kind from v, registering its Text fields in
+// spec. It never reads the kit, so reopenForm can rebuild from the same vals.
+func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *huh.Form {
+	switch kind {
+	case formIdentity:
+		return m.newKitForm(spec,
+			spec.input("name", "Name").
+				Description("Kit id — lowercase, hyphens. Also the directory name.").Value(&v.name),
+			spec.input("displayName", "Display name").Value(&v.displayName),
+			spec.input("description", "Description").Value(&v.description),
+			spec.input("version", "Version").Description("Optional kit version, e.g. 1.0.0.").Value(&v.version),
+			spec.input("requiresAgent", "Base agent").
+				Description("Optional. Pins the agent this mixin is designed for (e.g. claude).").Value(&v.requiresAgent),
+		)
+	case formNetwork:
+		return m.newKitForm(spec,
+			spec.text(&v.allowed, "Allow").Key("allowed").
+				Description("Domains the sandbox may reach, one per line (wildcards allowed). Credential\ninjection domains must be listed here too."),
+			spec.text(&v.denied, "Deny").Key("denied").
+				Description("One per line. Deny wins over allow, including across other kits."),
+		)
+	case formEnvironment:
+		return m.newKitForm(spec,
+			spec.text(&v.vars, "Variables").Key("vars").
+				Description("KEY=value, one per line. Set directly in the container."),
+		)
+	case formAgentInstructions:
+		return m.newKitForm(spec,
+			spec.text(&v.agentInstructions, "Agent instructions").Key("agentInstructions").
+				Description("Markdown the runtime writes into the agent's kit memory."),
+		)
+	case formInstall:
+		return m.newKitForm(spec,
+			spec.text(&v.itemCommand, "Command").Key("command").
+				Description("Shell string, run once at creation via sh -c."),
+			spec.input("user", "User").Description(`"0" = root, "1000" = agent.`).Value(&v.itemUser),
+			spec.input("description", "Description").Value(&v.itemDesc),
+		)
+	case formStartup:
+		return m.newKitForm(spec,
+			spec.text(&v.itemCommand, "Command (argv)").Key("command").
+				Description("One argument per line — no shell is involved.\nRuns at every start, so it MUST be idempotent."),
+			spec.input("user", "User").Value(&v.itemUser),
+			huh.NewConfirm().Key("background").Title("Background").Value(&v.itemBackground),
+			spec.input("description", "Description").Value(&v.itemDesc),
+		)
+	case formInitFile:
+		return m.newKitForm(spec,
+			spec.input("path", "Path").Description("Absolute path in the container.").Value(&v.itemPath),
+			spec.text(&v.itemContent, "Content").Key("content").
+				Description("${WORKDIR} expands to the workspace path."),
+			spec.input("mode", "Mode").Description("Octal, e.g. 0755.").Value(&v.itemMode),
+			huh.NewConfirm().Key("onlyIfMissing").Title("Only if missing").Value(&v.itemOnlyIfMissing),
+			spec.input("description", "Description").Value(&v.itemDesc),
+		)
+	case formCredential:
+		return m.newKitForm(spec,
+			huh.NewNote().Title("Values stay on the host").
+				Description("A kit declares which credential a service needs and how it is injected.\nThe value itself is supplied and bound on the host (sbx secret set)."),
+			spec.input("service", "Service").
+				Description("kebab-case id, e.g. github. Matches the secret stored on the host.").Value(&v.credService),
+			spec.input("description", "Description").Value(&v.credDesc),
+			huh.NewConfirm().Key("required").Title("Required").
+				Description("On = the agent cannot do its job without it (the runtime warns when unbound).").Value(&v.credRequired),
+			spec.input("envName", "API-key env var").
+				Description("Variable name the agent sees, e.g. GITHUB_TOKEN. Blank = no API-key mechanism.").Value(&v.credEnvName),
+			huh.NewConfirm().Key("proxyManaged").Title("Proxy-managed").
+				Description("On = the container only sees a placeholder; the proxy injects the real value.").Value(&v.credProxyManaged),
+			spec.text(&v.credInject, "Inject into").Key("inject").
+				Description("One target per line: domain | header | format (format has one %s, e.g. Bearer %s).\nEach domain must also be allowed under Network permissions."),
+		)
+	case formEscapeHatch:
+		return m.newKitForm(spec,
+			spec.input("name", "Name").
+				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
+			spec.text(&v.itemCommand, "Command").Key("command").
+				Description("The fixed command prefix, run on the host via sh -c. The agent cannot change it."),
+			spec.text(&v.ehWhenToUse, "When to use").Key("whenToUse").
+				Description("Plain-language guidance the agent's rule shows for this command."),
+			spec.text(&v.ehSubcommands, "Allowed subcommands (one per line)").Key("subcommands").
+				Description("Optional. The agent may pass one of these as arguments (e.g. install, dev). Leave blank for none."),
+			spec.input("argsPattern", "Args regex (advanced)").
+				Description("Optional alternative to subcommands. WARNING: a loose regex lets the agent pass more arguments to the command and lowers safety.").Value(&v.ehArgsPattern),
+			spec.text(&v.ehWorkspaces, "Targetable workspaces (one per line)").Key("workspaces").
+				Description("Optional. Workspace-relative paths or globs (e.g. src/apps/*). If set, the agent picks one with --workspace."),
+			huh.NewConfirm().Key("requiresApproval").Title("Requires approval").
+				Description("On = the developer must approve each run. Off = auto-run.").Value(&v.ehRequiresApproval),
+			spec.input("workingDir", "Default working dir").
+				Description("Optional, relative to the workspace. Used when no targetable workspaces are set.").Value(&v.ehWorkingDir),
+			spec.input("maxDuration", "Max duration (seconds)").
+				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
+		)
+	case formService:
+		return m.newKitForm(spec,
+			spec.input("name", "Name").
 				Description("kebab-case, e.g. web. You start the service by this name.").Value(&v.svcName),
-			huh.NewText().Key("command").Title("Start command").
-				Description("Run via sh -c. Must listen on ALL interfaces (e.g. --host 0.0.0.0), or it\nwill be unreachable from outside its environment.").Value(&v.itemCommand),
-			huh.NewInput().Key("listenPort").Title("Listen port").
+			spec.text(&v.itemCommand, "Start command").Key("command").
+				Description("Run via sh -c. Must listen on ALL interfaces (e.g. --host 0.0.0.0), or it\nwill be unreachable from outside its environment."),
+			spec.input("listenPort", "Listen port").
 				Description("The port THIS COMMAND binds in its own environment — not the one you\nconnect to. A free local port is assigned for you when it starts.").Value(&v.svcPort),
 			huh.NewConfirm().Key("onHost").Title("Run on the host").
 				Description("Off = inside the sandbox. On = on the host supervising it, in this\nsandbox's workspace. On-host commands may use {{port}} for a fresh port.").Value(&v.svcOnHost),
 			huh.NewConfirm().Key("isWebsite").Title("Serves a website").
 				Description("On = offer to open it in a browser. Off = show a copyable address.").Value(&v.svcIsWebsite),
-			huh.NewInput().Key("workingDir").Title("Working dir").
+			spec.input("workingDir", "Working dir").
 				Description("Optional, relative to the workspace.").Value(&v.svcWorkingDir),
-			huh.NewInput().Key("readiness").Title("Readiness timeout (seconds)").
+			spec.input("readiness", "Readiness timeout (seconds)").
 				Description("Optional; blank = 60s. How long it may take to start listening.").Value(&v.svcReadiness),
-		))
+		)
 	}
-	return m, nil
+	return nil
 }
 
 // applyKitForm folds the open form's values back into the kit under edit.
@@ -743,15 +766,21 @@ func (m Model) applyKitForm() (tea.Model, tea.Cmd) {
 			k.Services = append(k.Services, it)
 		}
 	}
-	m.kitEditor.form = nil
-	m.kitEditor.vals = nil
-	m.kitEditor.formKind = formNone
-	m.kitEditor.formItem = -1
+	m.closeKitForm()
 	m.kitEditor.status = ""
 	// The kit changed, so any previous validation result no longer describes it.
 	m.kitEditor.validation = nil
 	m.kitEditor.validOK = false
 	return m, nil
+}
+
+// closeKitForm drops the open section or item form; the kit is untouched.
+func (m *Model) closeKitForm() {
+	ke := &m.kitEditor
+	ke.form, ke.vals, ke.spec, ke.formKind, ke.formItem = nil, nil, nil, formNone, -1
+	if strings.HasSuffix(ke.status, normalizeSuffix) {
+		ke.status = "" // it spoke of the form just closed
+	}
 }
 
 func (m *Model) ensureSetup() {
@@ -1103,30 +1132,12 @@ func parsePort(in string) (uint32, error) {
 
 // ---------- helpers ----------
 
-func (m Model) newKitForm(fields ...huh.Field) *huh.Form {
+func (m Model) newKitForm(spec *formSpec, fields ...huh.Field) *huh.Form {
+	spec.settleInputs(fields)
 	return huh.NewForm(huh.NewGroup(fields...)).
 		WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).
-		WithKeyMap(kitFormKeyMap())
-}
-
-// kitFormKeyMap makes Enter insert a newline in the editor's multi-line Text fields
-// (subcommands, workspaces, allowed/denied domains, env vars, … — one list entry per
-// line) instead of advancing to the next field. huh's default binds Enter to "next"
-// and puts newline on alt+enter/ctrl+j, which is unintuitive for these list fields.
-//
-// Tab still moves between fields; the editor applies the whole form with ctrl+s
-// (intercepted before the form sees it), so Enter is freed up for newlines. Enter is
-// removed from Text.Next/Submit because huh dispatches those before the textarea's
-// newline, and the textarea's newline key is driven from Text.NewLine. Single-line
-// Input/Confirm fields keep huh's default (Enter advances).
-func kitFormKeyMap() *huh.KeyMap {
-	km := huh.NewDefaultKeyMap()
-	km.Text.NewLine = key.NewBinding(key.WithKeys("enter", "alt+enter", "ctrl+j"), key.WithHelp("enter", "new line"))
-	km.Text.Next = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next"))
-	km.Text.Prev = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
-	km.Text.Submit = key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "apply"))
-	return km
+		WithKeyMap(formKeyMap())
 }
 
 // splitLines turns a text-area value into a trimmed, non-empty list.

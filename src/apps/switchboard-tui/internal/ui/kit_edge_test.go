@@ -165,14 +165,20 @@ func TestKitSectionEnterOnEmptyAdds(t *testing.T) {
 	}
 }
 
-// Aborting a form via huh (ctrl+c inside the form) closes it without applying.
+// ctrl+c in a changed form asks first (SWI-9); discarding closes it without
+// applying.
 func TestKitEditorFormAbort(t *testing.T) {
+	noKeyGrace(t)
 	out := openSection(t, &store.Kit{Name: "bare"}, secInstall)
 	out = pressCmd(out, "a")
 	out = typeIn(out, "discard me")
 	out, _ = update(out, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !out.unsaved.open {
+		t.Fatal("ctrl+c on a changed form should open the dialog")
+	}
+	out, _ = update(out, press("d"))
 	if out.kitEditor.form != nil {
-		t.Error("aborting should close the form")
+		t.Error("discarding should close the form")
 	}
 	if out.kitEditor.kit.Setup != nil && len(out.kitEditor.kit.Setup.Install) != 0 {
 		t.Error("an aborted form must not apply")

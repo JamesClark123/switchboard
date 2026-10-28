@@ -79,14 +79,7 @@ func (m Model) daemonOrchsHelp() helpBindings {
 
 func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.orch.form != nil {
-		switch msg.String() {
-		case "esc":
-			m.orch.form, m.orch.vals, m.orch.formKind = nil, nil, orchFormNone
-			return m, nil
-		case "ctrl+s":
-			return m.applyOrchForm()
-		}
-		return m.advanceOrchForm(msg)
+		return m.formKey(gOrchAdmin, msg)
 	}
 	// The screen cycle and settings work here as on the old Orchestrators screen (R8).
 	switch {

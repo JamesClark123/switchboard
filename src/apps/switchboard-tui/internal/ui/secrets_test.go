@@ -168,9 +168,9 @@ func TestSecretsStoreFormSendsValueOnce(t *testing.T) {
 	if m.secretsView.form == nil || !strings.Contains(m.secretsView.status, "value is required") {
 		t.Errorf("empty value should keep the form open; status %q", m.secretsView.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = escDiscard(t, m)
 	if m.secretsView.form != nil {
-		t.Error("esc should abort the form")
+		t.Error("esc, discard should abort the form")
 	}
 }
 

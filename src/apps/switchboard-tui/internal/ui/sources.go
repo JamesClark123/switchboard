@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
@@ -155,9 +156,7 @@ func (m Model) updateSourcesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc", "q":
-		m.sourcesView = sourcesState{}
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gSources)
 	case "up", "k":
 		if m.sourcesView.cursor > 0 {
 			m.sourcesView.cursor--
@@ -177,9 +176,16 @@ func (m Model) updateSourcesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		return m.startSourcesBrowse()
 	case "d":
-		return m.confirmRemoveSources()
+		return m.confirmRemoveSources(false)
 	}
 	return m, nil
+}
+
+// leaveSources closes the overlay, dropping any marks.
+func (m Model) leaveSources() Model {
+	m.sourcesView = sourcesState{}
+	m.screen = screenList
+	return m
 }
 
 func (m Model) highlightedSource() (*pb.SourceRef, bool) {
@@ -214,8 +220,7 @@ func (m Model) startSourcesBrowse() (tea.Model, tea.Cmd) {
 func (m Model) updateSourcesBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.sourcesView.browsing = false
-		return m, nil
+		return m.requestExit(gSourcesBrowse)
 	case "up", "k":
 		m.launch.moveCursor(-1)
 	case "down", "j":
@@ -229,14 +234,19 @@ func (m Model) updateSourcesBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		m.launch.toggle()
 	case "enter":
-		sources := m.selectedSources()
-		if len(sources) == 0 {
-			m.sourcesView.status = "select at least one directory (space), then enter"
-			return m, nil
-		}
-		return m.dispatchAddSources(m.sourcesView.sandboxID, m.sourcesView.host, sources, false)
+		return m.submitSourcesBrowse()
 	}
 	return m, nil
+}
+
+// submitSourcesBrowse is the browser's enter: add the selected folders.
+func (m Model) submitSourcesBrowse() (tea.Model, tea.Cmd) {
+	sources := m.selectedSources()
+	if len(sources) == 0 {
+		m.sourcesView.status = "select at least one directory (space), then enter"
+		return m, nil
+	}
+	return m.dispatchAddSources(m.sourcesView.sandboxID, m.sourcesView.host, sources, false)
 }
 
 // folderNames renders the workspace folder names of a source set.
@@ -336,8 +346,10 @@ func (m Model) handleSourcesAddResult(msg sourcesAddResultMsg) (tea.Model, tea.C
 		m.refreshListItems()
 		return m, nil
 	case msg.blocked != nil:
+		// Queued, never opened here: Update opens the head where it may (R7 C2).
 		m.refreshListItems()
-		return m.confirmAddOverride(msg, name)
+		m.pendingOverrides = append(m.pendingOverrides, parkedOverride{msg: msg, name: name})
+		return m, nil
 	}
 	m.err = nil
 	m.status = "added " + folderNames(msg.sources) + " to " + name
@@ -359,6 +371,74 @@ func (m Model) sandboxName(id string) string {
 		return m.sourcesView.sandbox
 	}
 	return short(id)
+}
+
+// parkedOverride is an add blocked on low resources, waiting for a place where
+// its confirm may open (SWI-9 R7 C2).
+type parkedOverride struct {
+	msg  sourcesAddResultMsg
+	name string
+}
+
+// overrideMayOpen reports whether the queue's head may open now, after msg: on
+// a non-key message, on the plain sandbox list or its own sandbox's overlay
+// with no dialog over it, and with no credential prompt up. Everywhere else
+// (confirms, approvals, the terminal, other surfaces) it stays queued.
+func (m Model) overrideMayOpen(head parkedOverride, msg tea.Msg) bool {
+	if _, ok := msg.(tea.KeyMsg); ok {
+		return false
+	}
+	if (m.hosts.connecting && m.hosts.pwMode != pwHostsScreen) || (m.signIn.active && m.signIn.phase == signInFailed) {
+		return false
+	}
+	switch m.screen {
+	case screenList:
+		return m.list.FilterState() != list.Filtering
+	case screenSources:
+		g, ok := m.activeGuard()
+		return ok && g == gSources && m.sourcesView.sandboxID == head.msg.id && !m.unsaved.open
+	}
+	return false
+}
+
+// openParkedOverride opens the queue's head when it may (Update calls it after
+// every message). An override that arrived with msg and could not open says so.
+func (m Model) openParkedOverride(msg tea.Msg) (Model, tea.Cmd) {
+	if len(m.pendingOverrides) == 0 {
+		return m, nil
+	}
+	head := m.pendingOverrides[0]
+	if !m.overrideMayOpen(head, msg) {
+		if r, ok := msg.(sourcesAddResultMsg); ok && r.blocked != nil {
+			// Said once, as it arrives (it is the queue's tail).
+			last := m.pendingOverrides[len(m.pendingOverrides)-1]
+			m.status = "add to " + last.name + " needs confirmation — back on the list"
+		}
+		return m, nil
+	}
+	m.pendingOverrides = m.pendingOverrides[1:]
+	return guardResult(m.confirmAddOverride(head.msg, head.name))
+}
+
+// purgeOverrides drops queued overrides whose sandbox or host went away. With
+// appendTo the note follows the status this message already set (a forced
+// close's) rather than replacing it.
+func (m *Model) purgeOverrides(gone func(parkedOverride) bool, reason string, appendTo bool) {
+	kept := m.pendingOverrides[:0]
+	for _, o := range m.pendingOverrides {
+		if gone(o) {
+			note := "add of " + folderNames(o.msg.sources) + " to " + o.name + " cancelled: " + reason
+			if appendTo && m.status != "" {
+				m.status += "; " + note
+			} else {
+				m.status = note
+			}
+			appendTo = true
+			continue
+		}
+		kept = append(kept, o)
+	}
+	m.pendingOverrides = kept
 }
 
 // confirmAddOverride mirrors the launch-time low-resource gate (FR-012f/FR-057):
@@ -383,6 +463,7 @@ func (m Model) confirmAddOverride(msg sourcesAddResultMsg, name string) (tea.Mod
 		body:     body,
 		warning:  "The copy may fail partway or fill the disk.",
 		returnTo: returnTo,
+		yOnly:    true, // it opens on its own, never from a key the user aimed at it (R7 C3)
 		onConfirm: func() tea.Msg {
 			return sourcesOverrideMsg{id: id, host: host, sources: sources}
 		},
@@ -394,7 +475,11 @@ func (m Model) confirmAddOverride(msg sourcesAddResultMsg, name string) (tea.Mod
 // consequence. Marked folders are the targets; with none marked, the highlighted
 // folder is. The at-least-one floor is checked here too so the developer is told
 // before a round-trip (the daemon enforces it regardless, FR-061).
-func (m Model) confirmRemoveSources() (tea.Model, tea.Cmd) {
+//
+// exitAfter is the unsaved-changes dialog's Save: accepting also closes and
+// resets the overlay (onAccept), and the confirm takes y only (it opened from
+// a dialog key, not its own). Declining returns to the overlay, marks kept.
+func (m Model) confirmRemoveSources(exitAfter bool) (tea.Model, tea.Cmd) {
 	var targets []*pb.SourceRef
 	for _, src := range m.sourcesView.sources {
 		if m.sourcesView.marked[src.GetPath()] {
@@ -433,14 +518,19 @@ func (m Model) confirmRemoveSources() (tea.Model, tea.Cmd) {
 		dimStyle.Render("The sandbox keeps running; nothing restarts."),
 	)
 	id, host := m.sourcesView.sandboxID, m.sourcesView.host
-	return m.enterConfirm(confirmState{
+	st := confirmState{
 		title:     "Remove seeded folders?",
 		body:      body,
 		verb:      "removing",
 		sandboxID: id,
 		returnTo:  screenSources,
 		onConfirm: m.removeSourcesCmd(m.daemonForHost(host), id, paths),
-	})
+	}
+	if exitAfter {
+		st.onAccept = func(m *Model) { *m = m.leaveSources() }
+		st.yOnly = true
+	}
+	return m.enterConfirm(st)
 }
 
 // removeSourcesCmd performs one confirmed removal. The daemon is captured as a
@@ -545,4 +635,21 @@ func (m Model) sourcesModal() string {
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
+}
+
+// sandboxGone closes a guarded surface on, and drops queued overrides for, a
+// sandbox gone reports removed.
+func (m *Model) sandboxGone(gone func(id, host string) bool) {
+	before := m.status
+	m.closeSandboxGuard(gone, "sandbox removed")
+	m.purgeOverrides(func(o parkedOverride) bool { return gone(o.msg.id, o.msg.host) }, "sandbox removed", m.status != before)
+}
+
+func hasSandbox(sbs []*pb.Sandbox, id string) bool {
+	for _, sb := range sbs {
+		if sb.GetId() == id {
+			return true
+		}
+	}
+	return false
 }

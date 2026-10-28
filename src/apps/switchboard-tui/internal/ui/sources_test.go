@@ -258,6 +258,12 @@ func TestSourcesAddBlockedOverrideRoundTrip(t *testing.T) {
 	if strings.Contains(v, "cannot be undone") {
 		t.Error("the override prompt must not claim irreversibility")
 	}
+	// Enter never accepts it (it opens on its own, R7 C3).
+	if _, cmd := update(m, tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		if _, ok := runCmd(cmd).(sourcesOverrideMsg); ok {
+			t.Error("enter must not accept the override")
+		}
+	}
 	// Decline: back on the overlay, nothing added.
 	m, _ = update(m, press("n"))
 	if m.screen != screenSources {
