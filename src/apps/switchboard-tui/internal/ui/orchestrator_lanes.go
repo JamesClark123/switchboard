@@ -91,7 +91,15 @@ func (m Model) hostHasLanes(host string) bool {
 
 // tooOldForLanes is the local refusal against a daemon without lanes (FR-318a).
 func (m Model) tooOldForLanes(host string) string {
-	return "the daemon on " + sanitizeLine(m.hostDisplayName(host), 0) + " predates lanes — update with u"
+	return "the daemon on " + sanitizeLine(m.hostLabel(host), 0) + " predates lanes — update with u"
+}
+
+// hostLabel names a host entry: its display name, else its daemon's host id.
+func (m Model) hostLabel(host string) string {
+	if n := m.hostDisplayName(host); n != "" {
+		return n
+	}
+	return m.daemonHostID(host)
 }
 
 // laneByID finds a lane of an orchestrator.
@@ -637,7 +645,7 @@ func (m Model) applyLaneResult(msg laneResultMsg) (tea.Model, tea.Cmd) {
 	}
 	m.status = "error: " + msg.err.Error()
 	text := msg.err.Error()
-	stale := errors.Is(msg.err, client.ErrLaneStale)
+	stale := errors.Is(msg.err, client.ErrLaneStale) || status.Code(msg.err) == codes.Aborted
 	switch {
 	case p.picker != nil && w.closePicker && stale:
 		p.stale = text

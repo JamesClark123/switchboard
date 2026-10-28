@@ -145,18 +145,20 @@ func (m Model) chooseAttachRow(row orchRow) (tea.Model, tea.Cmd) {
 		m.screen = screenList
 		return m.attachTo(row, a.sandbox, a.host, nil)
 	}
-	old := ""
+	old, predates := "", true
 	switch {
 	case !m.hostHasLanes(row.host):
 		old = row.host
 	case !m.hostHasLanes(a.host):
 		old = a.host
+	default:
+		predates = false
 	}
-	if old != "" {
+	if predates {
 		// y attaches with no lanes; n leaves things as they were.
 		sb, host := a.sandbox, a.host
 		return m.enterConfirm(confirmState{
-			title:     "The daemon on " + sanitizeLine(m.hostDisplayName(old), 0) + " predates lanes: attach to the open lane?",
+			title:     "The daemon on " + sanitizeLine(m.hostLabel(old), 0) + " predates lanes: attach to the open lane?",
 			body:      []string{sanitizeLine(rec.GetName(), 0) + " has lanes, but lanes picked now could not reach the worker."},
 			notice:    "It can be put in lanes later, once both daemons are updated (u).",
 			onConfirm: func() tea.Msg { return attachOpenLaneMsg{row: row, sb: sb, host: host} },

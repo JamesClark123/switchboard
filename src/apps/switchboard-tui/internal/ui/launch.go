@@ -468,16 +468,18 @@ func (m Model) chooseLaunchOrch(row orchRow) (tea.Model, tea.Cmd) {
 		m.launch.orchestrator = &row
 		return m, nil
 	}
-	old := ""
+	old, predates := "", true
 	switch {
 	case !m.hostHasLanes(row.host):
 		old = row.host
 	case !m.hostHasLanes(m.launchHost()):
 		old = m.launchHost()
+	default:
+		predates = false
 	}
-	if old != "" {
+	if predates {
 		return m.enterConfirm(confirmState{
-			title:     "The daemon on " + sanitizeLine(m.hostDisplayName(old), 0) + " predates lanes: attach to the open lane?",
+			title:     "The daemon on " + sanitizeLine(m.hostLabel(old), 0) + " predates lanes: attach to the open lane?",
 			body:      []string{sanitizeLine(rec.GetName(), 0) + " has lanes, but lanes picked now could not reach the worker."},
 			notice:    "It can be put in lanes later, once both daemons are updated (u).",
 			returnTo:  screenLaunch,
