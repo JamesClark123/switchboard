@@ -66,13 +66,15 @@ judged by evidence after its submit.
      never left hanging.
    - **Detect and surface only** (simplified in run-590). The daemon never stops an orphan on its own. It emits an
      *agent detached* notification (one aggregated per daemon start) and notes the row, and dispatch skips an orphaned
-     worker until the developer acts. `R` on the Workers view replaces every idle detached worker at once
+     worker until the developer acts. `R` on the Workers view replaces every detached worker last seen idle (with no run) at once
      (`ReplaceDetachedAgent`).
    - **One per-sandbox lock, `runtimeMu`,** is held by Stop, Destroy, Refresh, kit attach and Restart for their
      runtime calls (Refresh continuously, stop through bring-up). Every probe and stop try-locks it, so none can
      overlap or follow `sbx stop`, and `Registry.Session` holds it from the gate check until `cmd.Start` returns, so
-     no spawn can race a stop. Each operation settles the orphan record from the state it wrote (STOPPED drops it;
-     RUNNING re-probes); external stops are settled by the on-change hook.
+     no spawn can race a stop; a stop also drains the sandbox's `sbx exec` clients before `sbx stop`. Each operation
+     settles the orphan record from the state it wrote (STOPPED drops it; RUNNING re-probes). The on-change hook
+     settles external stops, but only on a confirmed stop or destroy (STOPPED, or DESTROYING after the delete),
+     never on CREATING or ERROR.
    - `t` on any sandbox with one opens a Wait/Replace dialog; replacing an ACTION run's agent fails the run.
    - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
      again on the fresh agent.

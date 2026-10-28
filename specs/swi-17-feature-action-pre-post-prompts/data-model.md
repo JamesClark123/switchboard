@@ -139,7 +139,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | NEEDS_DEVELOPER | `needing the developer — open its terminal and run /clear · <run>` | yes |
 | (run halted not accepted) | `<run> halted: <step> not accepted` | yes |
 | (agent_check DETACHED) | `agent detached by a daemon restart — t to Replace or Wait` (Workers view: `R` replaces every idle one) | yes |
-| (agent_check CHECK_FAILED) | `can't check for a detached agent: <error>` (+ the run note `can't confirm the agent is still running … x cancels the run`) | yes |
+| (agent_check CHECK_FAILED) | `can't check for a detached agent: <error>` (+ the run note `can't confirm the agent is still running … Restart sandbox (fails the run)`, an overlay restored when the check resolves) | yes |
 
 ## Constants (no env vars)
 
@@ -158,5 +158,5 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `orphanProbeConcurrency` | 8 | daemon: start-up probes run at once, after the servers start (research R14) |
 | `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run asynchronously once the servers have started); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff; after `orphanUnknownLimit` (60 s) or 3 failures it is CHECK_FAILED and `t` offers *Restart sandbox* or *Wait* (research R14) |
 | `orphanBackstop` | 60 s | daemon: re-probe interval while an orphan record **or an *unknown* sandbox** holds a run (research R14, run-595) |
-| `orphanUnknownLimit` | 60 s | daemon: a sandbox still *unknown* this long (or after 3 failed probes, whichever is first) becomes CHECK_FAILED and is surfaced once (`AGENT_CHECK_FAILED`, row and run notes); probing continues with backoff capped at 60 s (research R14, run-595) |
+| `orphanUnknownLimit` | 60 s | daemon: a sandbox still *unknown* this long after its first probe attempt (time queued for a probe doesn't count; or after 3 failed probes, whichever is first) becomes CHECK_FAILED and is surfaced once (`AGENT_CHECK_FAILED`, row and run notes); probing continues with backoff capped at 60 s (research R14, run-595) |
 | `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, stopped only by the developer (`t` → Replace, `R` Restart setup), under the sandbox's `runtimeMu`; the daemon never stops one on its own (research R14) |

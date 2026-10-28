@@ -106,8 +106,9 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
      dispatchable at once: a queued run is delivered with no `checking for a detached agent` note.
    - **A check that can't complete:** make the probe fail (for example, block `sbx exec` on the host). Within 60 s the
      row reads `can't check for a detached agent: <error>`, a *can't check* notification appears, and a run on it
-     shows `can't confirm the agent is still running: … — t to Wait or Restart sandbox; x cancels the run`. The run
-     is not failed on its own.
+     shows `can't confirm the agent is still running: … — t to Wait or Restart sandbox (fails the run)`. The run
+     is not failed on its own. Unblock `sbx exec`: the note goes back to what it was. Block it again and kill the
+     agent: the run fails with `agent exited`.
    - **A plain sandbox** where you were mid-turn: `t` shows the dialog with default **Wait**; the turn is not
      killed unless you choose Replace.
    - **A sandbox stopped while the daemon was down** is not started by the restart, and gets no dialog.

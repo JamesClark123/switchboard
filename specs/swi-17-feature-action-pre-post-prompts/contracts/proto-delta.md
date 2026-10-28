@@ -187,7 +187,9 @@ enum NotificationKind {
                                                  // state and its run. The daemon never stops it; t → Replace or Wait
                                                  // (research R14). The start-up probes send ONE aggregated
                                                  // notification per daemon start ("N agents detached … M on idle
-                                                 // workers — R on the Workers view replaces the idle ones")
+                                                 // workers — R on the Workers view replaces the idle ones") with an
+                                                 // EMPTY sandbox_id and the daemon's host_id; later finds (incl.
+                                                 // retries) are individual
   NOTIFICATION_KIND_AGENT_CHECK_FAILED = 11;     // owning daemon: a sandbox stayed unknown for orphanUnknownLimit or 3
                                                  // failed probes; names the sandbox, the error and its run, once per
                                                  // episode (research R14, run-595)
@@ -200,7 +202,7 @@ service Switchboard {
   rpc DeliverWorkerStep(DeliverWorkerStepRequest) returns (DeliverWorkerStepResponse);
   // Orchestrator side. Retry, skip or fail a halted step (FR-222).
   rpc ResolveRunStep(ResolveRunStepRequest) returns (Run);
-  // Owning daemon. Developer-initiated stop of one detached agent with no run, then WarmStart for a worker; the bulk
+  // Owning daemon. Developer-initiated stop of one detached agent last seen IDLE with no run, then WarmStart for a worker; the bulk
   // `R` on the Workers view calls it once per selected sandbox (research R14, run-595). Never called by a daemon.
   rpc ReplaceDetachedAgent(ReplaceDetachedAgentRequest) returns (Sandbox);
 }
@@ -311,6 +313,7 @@ message ResolveRunStepRequest {
 |---|---|
 | Unknown sandbox | `NOT_FOUND` |
 | `agent_check.state` is not DETACHED, or the sandbox holds a run (`t` → Replace handles runs, with its own confirm) | `FAILED_PRECONDITION` (`no idle detached agent; reload`) |
+| `agent_check.last_status` is not IDLE (it was last seen working or waiting for input, which may be the developer's turn) | `FAILED_PRECONDITION` (`detached agent was last seen <state>; use t → Replace`), run-601 |
 | `runtimeMu` held by a lifecycle operation | `FAILED_PRECONDITION` (`sandbox is busy (<operation>); try again`) |
 | The stop's `sbx exec` fails | `UNAVAILABLE` with the error; nothing is stopped or spawned |
 | Stopped | OK with the updated sandbox (`agent_check` clear, agent EXITED); a worker is then warm-started as today |

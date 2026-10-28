@@ -69,18 +69,25 @@ stops it:
   detached by a daemon restart — t to Replace or Wait`, dispatch skips the worker, and a closed run's hold is
   *needing the developer* until Replace.
 - **Bulk Replace: `R` on the orchestrator's Workers view** (run-595). It opens one confirm listing every worker whose
-  `agent_check` is DETACHED with no run, all ticked (space toggles):
+  `agent_check` is DETACHED, whose agent was **last seen idle** (`agent_check.last_status` IDLE), and which has no
+  run, all ticked (space toggles):
   `Replace N idle detached agents? Each is stopped and a fresh agent starts.`
   - `y` calls `ReplaceDetachedAgent` on each worker's owning daemon (`connectedDaemon(host)`) and reports
     `replaced 5 · busy 1 (stopping) · failed 1: <error>`.
   - With none, the status reads `no idle detached agents`.
   - Workers with a run are not listed; they go through `t` → Replace with its own confirm, because that fails the
     run.
+  - Workers whose detached agent was last seen working or waiting for input are not listed either, because that
+    may be the developer's own turn in the worker's terminal. The confirm adds `K more detached agents were busy —
+    use t on each` when there are any. The daemon refuses them too (run-601).
+  - The key is only on the Workers view. On the sandbox list (including its Orchestrator Sandboxes tab), `R` stays
+    Rename.
   - Help: `R replace idle detached`.
 - **A sandbox whose detached-agent check keeps failing** (still unknown after `orphanUnknownLimit`, 60 s, or 3 probe
   failures) raises one *agent check failed* notification and shows `can't check for a detached agent: <error>`. A run
-  it holds gets the note `can't confirm the agent is still running: <error> — t to Wait or Restart sandbox; x cancels
-  the run`, so it is never silently in flight. `t` offers **Restart sandbox** (behind a confirm naming the run it
+  it holds gets the note `can't confirm the agent is still running: <error> — t to Wait or Restart sandbox (fails the
+  run)`, so it is never silently in flight. There is no `x` here: only queued runs can be cancelled. The note
+  replaces the run's previous note only while the check is failing, and that note is restored when it resolves. `t` offers **Restart sandbox** (behind a confirm naming the run it
   fails, if any) and **Wait**. A stop
   of the agent alone would need the same failing `sbx exec`; restarting the sandbox ends every process in it.
 - **A worker whose detached agent asks for input** has the note `detached agent asks for input; it can't be answered
