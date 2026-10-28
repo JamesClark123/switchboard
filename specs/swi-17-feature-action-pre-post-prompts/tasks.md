@@ -919,7 +919,7 @@ needs a custom post-prompt, which arrives in US2.
   - `actionLine` appends the FR-219 summary (`pre: /model opus · /effort medium · 1 custom — post: 1 custom ·
     /clear`), omitted when there are no steps. It is used by `UI/jobs_groups.go` `renderGroups` and the
     orchestrator Actions view.
-- [ ] T034 [US2] Freeing during cleanup (FR-216):
+- [X] T034 [US2] Freeing during cleanup (FR-216):
   - In `SBD/orchestrator/runs.go` `MarkWorkerFree` and `SBD/orchestrator/sequence.go`: when a run holds a sandbox
     in CLEANING_UP and the agent is NEEDS_INPUT, the custom cleanup steps are dropped and the hold becomes
     `NEEDS_INPUT_FREEING`.
@@ -929,7 +929,7 @@ needs a custom post-prompt, which arrives in US2.
   - In `UI/run_actions.go` `markFreeKey`, also accept a sandbox with `hold == CLEANING_UP` whose agent is NEEDS_INPUT
     (contracts/jobs-ui.md). The run is already closed, so this frees directly: **no outcome/note dialog**, and the
     run's outcome is never changed.
-- [ ] T035 [US2] Tests:
+- [X] T035 [US2] Tests:
   - in `SBD/orchestrator/sequence_test.go`: custom pre and post order around the built-ins (US2 #2); placeholders
     filled per call; a needs-input during a pre-prompt gives an AWAITING_INPUT run that continues after idle
     (US2 #4); FR-216 freeing with and without Clear;
@@ -937,7 +937,7 @@ needs a custom post-prompt, which arrives in US2.
     `actionLine` summary;
   - in `UI/run_actions_test.go`: mark free is offered on a cleaning-up worker asking for input, and frees it with no
     outcome dialog.
-- [ ] T036 [P] [US2] e2e in `src/services/switchboardd-e2e/`: `PutAction` with prompts that break each FR-204 rule
+- [X] T036 [P] [US2] e2e in `src/services/switchboardd-e2e/`: `PutAction` with prompts that break each FR-204 rule
   is refused naming the entry; a valid action round-trips its `sequence`; a legacy action without `sequence` reads
   back with no `sequence`, and the orchestrator applies the defaults.
 
@@ -952,7 +952,7 @@ the run surfaces.
 
 **Independent Test**: quickstart Scenarios 7 and 9, and US3 #1–#6.
 
-- [ ] T037 [US3] Restart resolution (research R8) in `SBD/orchestrator/runs.go` `reconcileInFlight` and at
+- [X] T037 [US3] Restart resolution (research R8) in `SBD/orchestrator/runs.go` `reconcileInFlight` and at
   orchestrator start. Hook evidence keeps arriving from an orphan after an owning-daemon restart (T047), so rules 1–2
   apply to it too; the screen read-back does not.
   SENDING was already resolved by T022:
@@ -966,7 +966,7 @@ the run surfaces.
     through `workerRunFor` with `expect_run_id`) so that `R` passes guard 3a.
 
   It never re-sends, and it only compares daemon-clock times.
-- [ ] T038 [US3] Tests in `SBD/orchestrator/sequence_test.go` for restarts:
+- [X] T038 [US3] Tests in `SBD/orchestrator/sequence_test.go` for restarts:
   - a TURN step classified INPUT_ONLY finishes or waits, never halting;
   - a SENT step with a needs-input report after the send is awaited;
   - a restart halt sets `controller.run.halted`, and `R` then types it once;
@@ -976,7 +976,7 @@ the run surfaces.
   - a lost response on a later step resolved on reconnect.
 - [X] T039 [P] [US3] Prompt overlay in `UI/run_actions.go` `promptView`: steps in order, marking `▶` current and `✓`
   done; without steps it is unchanged (FR-220). Tests in `UI/run_actions_test.go`.
-- [ ] T040 [P] [US3] e2e in `src/apps/switchboard-tui-e2e/`: an action form with built-ins and prompts saves and
+- [X] T040 [P] [US3] e2e in `src/apps/switchboard-tui-e2e/`: an action form with built-ins and prompts saves and
   reloads; a halted run shows `R`/`S`/`X`.
 
 **Checkpoint**: all stories work. Run quickstart Scenarios 7 and 9.

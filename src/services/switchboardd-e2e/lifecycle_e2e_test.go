@@ -57,7 +57,8 @@ type daemonProc struct {
 	sock string
 }
 
-func startDaemon(t *testing.T, bin, dataDir, wsDir string) *daemonProc {
+// startDaemon starts `sxbd serve`; env adds (or overrides) variables.
+func startDaemon(t *testing.T, bin, dataDir, wsDir string, env ...string) *daemonProc {
 	t.Helper()
 	sock := fmt.Sprintf("/tmp/sbd-e2e-%d.sock", os.Getpid())
 	_ = os.Remove(sock)
@@ -75,6 +76,7 @@ func startDaemon(t *testing.T, bin, dataDir, wsDir string) *daemonProc {
 		// tests and any real daemon stay isolated.
 		"SWITCHBOARDD_PID_FILE="+filepath.Join(dataDir, "switchboard.pid"),
 	)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
