@@ -18,6 +18,33 @@ Paths are relative to the repository root:
 - `UI/` = `src/apps/switchboard-tui/internal/ui/`
 - `PROTO` = `src/libs/switchboard-proto/proto/switchboard.proto`
 
+## Deferred items (accepted by the developer, 2026-10-28; follow-up SWI-19)
+
+The developer accepted PR #21's *Proposed deferrals*. **This list overrides the task text below** wherever they
+conflict; research R14 lists the same items as known limitations.
+
+- **No bulk Replace.** No `ReplaceDetachedAgent` RPC (T003, T047) and no `R` on the Workers view (T031). Each
+  detached worker is replaced with `t` → Replace (`AttachAgent.replace_orphan`). The `ReapOrphan` call-site guard
+  test (T047) allows two callers: `AttachAgent` with `replace_orphan` and `DeliverWorkerStep.restart`.
+- **No aggregated start-up notification.** Every orphan record gets its own `NOTIFICATION_KIND_AGENT_DETACHED` once
+  (T047 *Surfacing*); there is no host-level notice or `enter` → Workers routing (T027).
+- **No `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and no run-note overlay.** Field number 11 of `NotificationKind` is
+  reserved, not added (T003). After `orphanUnknownLimit` or 3 failures the sandbox becomes `agent_check`
+  CHECK_FAILED and the row note reads `can't check for a detached agent: <error>`; `controller.run.step_note` is
+  **not** touched, and the `t` dialog offers *Restart sandbox* / *Wait* (T047, T027, T029).
+- **No probe priority order.** Start-up probes run in list order (T047).
+- **Generic busy message.** Every `runtimeMu` refusal is `ErrBusy` with the text `sandbox is busy; try again`; it
+  doesn't name the operation (T047, T048).
+- **Plain orphan notes.** The row note is `agent detached by a daemon restart — t to Replace or Wait`, and halt notes
+  say `agent detached by a daemon restart`, without the last-seen state or time. `AgentCheck` keeps its fields;
+  `last_status` is still filled (for the `t` dialog), `processes` may stay 0.
+- **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise), **no shared rate-limited
+  `ListStatuses`** for probe pre-checks, and **no `runtimeMu` gating of `sbx mcp load/unload` or `sbx ports`**.
+- **The pre-stop drain is best effort** (T047, as already written): no ordering against `sbx stop`, and nothing
+  promised about what survives a failed stop.
+
+Tests that exist only for a deferred item are dropped.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: can run in parallel (different files, no dependency on an incomplete task)

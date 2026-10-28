@@ -719,6 +719,24 @@ gets typed or what counts as evidence, and each needs a boundary.
 
 ## R14 — Recovery when the owning daemon restarts
 
+**Known limitations (deferred, accepted 2026-10-28; follow-up SWI-19).** The implementation ships this section's
+safety core without:
+- bulk Replace (`ReplaceDetachedAgent`, `R` on the Workers view): detached workers are replaced one at a time with
+  `t` → Replace;
+- the aggregated start-up notification: one *agent detached* notification per orphan;
+- `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and the run-note overlay: a failing check shows only on the row and in the
+  `t` dialog;
+- the probe priority order: start-up probes run in list order;
+- operation-specific `ErrBusy` messages: a generic `sandbox is busy; try again` (this includes the ~20 s hold during
+  a developer's service stop);
+- detailed orphan notes: no last-seen state or time in notes;
+- the PID-1/subreaper first-bind refusal, a shared rate-limited `ListStatuses`, and `runtimeMu` gating of
+  `sbx mcp`/`sbx ports` (pending quickstart Scenario 0 step 5);
+- the best-effort drain's guarantees: no ordering against `sbx stop`, nothing promised after a failed stop.
+
+Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence.
+
+
 **Context, verified against the code.**
 - **The agent survives.** The agent is launched with `sbx exec -it … exec claude` and deliberately **not** wrapped
   (`agent/pty.go` `agentCommand`). The `docker exec` child survives a hard kill of the host client and a

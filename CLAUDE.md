@@ -169,15 +169,15 @@ output untouched); a per-agent hook token passed in the agent's environment at l
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
 orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start (only
 sandboxes with an unretired token; the rest are clear at once), on an `sbx exec` client exit and on gate refusals;
-*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED,
-`NOTIFICATION_KIND_AGENT_CHECK_FAILED`). `agent.Registry.Session` is the one choke point that refuses to spawn beside
+*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED, row note only). `agent.Registry.Session` is the one choke point that refuses to spawn beside
 it, and try-locks the sandbox's `runtimeMu` (held by stop/recreate ops, and ordering every probe and stop) from the
-gate check through `cmd.Start` (`ErrBusy` names the operation); a stop drains the sandbox's `sbx exec` clients
+gate check through `cmd.Start` (generic `ErrBusy` `sandbox is busy; try again`); a stop drains the sandbox's `sbx exec` clients
 best effort before `sbx stop` (the agent's, plus still-starting services, recorded FAILED `may still be running`, groups TERM then KILL; RUNNING services keep their clients; bounded, no ordering promise; only developer-initiated execs try-lock `runtimeMu`, there is no exec guard), and the on-change hook clears orphan state only on a confirmed stop/destroy (never CREATING/ERROR).
 The daemon only detects and surfaces an orphan
-(*agent detached* notification, aggregated per start) and never stops one itself: only the developer (`t` →
-Replace, `R`, the Workers view's bulk `R` → `ReplaceDetachedAgent`, idle-last-seen only) or a sandbox stop/restart does (R14, simplified
-in run-590, bounded in run-595, tightened in run-601).
+(one *agent detached* notification per orphan) and never stops one itself: only the developer (`t` →
+Replace, `R`) or a sandbox stop/restart does (R14). **Deferred to SWI-19** (tasks.md *Deferred items*): bulk Replace /
+`ReplaceDetachedAgent`, the aggregated start-up notice, `AGENT_CHECK_FAILED` + run-note overlay, probe priority,
+operation-specific busy messages, detailed orphan notes.
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

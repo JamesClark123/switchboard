@@ -1,5 +1,8 @@
 # Contract: proto delta (SWI-17)
 
+> **Deferred (2026-10-28, SWI-19):** `ReplaceDetachedAgent` (RPC and request) and
+> `NOTIFICATION_KIND_AGENT_CHECK_FAILED` are **not** added; `NotificationKind` 11 is reserved. See tasks.md *Deferred items*.
+
 This change is additive to `src/libs/switchboard-proto/proto/switchboard.proto`. It is mirrored in
 `specs/001-sandbox-session-manager/contracts/switchboard.proto`, and the code is regenerated with `make proto`.
 
