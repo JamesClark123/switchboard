@@ -826,7 +826,7 @@ needs a custom post-prompt, which arrives in US2.
 - [X] T026 [P] [US1] In `SBD/agent/hooks.go`, skip `EmitNotification(TASK_COMPLETE, …)` on `Stop` and in
   `backstopExpired` when the sandbox's `controller.run.step_role` is SETUP or CLEANUP. Read it through the status
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
-- [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
+- [X] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
   like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_DETACHED` ("<sandbox>: agent detached by a daemon restart (last
   seen <state>)[ on <run>] — t to Replace or Wait"; the start-up aggregate, which has an empty `sandbox_id`, reads "N agents detached by a daemon
   restart (M on idle workers) — R on the Workers view replaces the idle ones" and is shown at host level. It is
@@ -839,7 +839,7 @@ needs a custom post-prompt, which arrives in US2.
 
 ### TUI: built-ins, run rows and controls (contracts/jobs-ui.md)
 
-- [ ] T028 [US1] In `UI/orchestrator_forms.go`:
+- [X] T028 [US1] In `UI/orchestrator_forms.go`:
   - `actionFormVals` gains `model`, `effort` (strings incl. `off`) and `clearAfter bool`;
   - `openActionForm` adds the Model Select, the Effort Select and the `Clear after run` Confirm after Arguments;
   - new actions get `opus`/`medium`/yes (FR-203);
@@ -847,7 +847,7 @@ needs a custom post-prompt, which arrives in US2.
   - `off` keeps the stored value (`*_enabled = false`);
   - `submitOrchOpForm` always sends `Action.sequence`;
   - in `UI/formguard.go` (SWI-9), the action snapshot includes the new fields, so the guard sees them.
-- [ ] T029 [US1] Run rows in `UI/jobs_overview.go` `jobsRunLine` and `UI/run_actions.go` `runState`: show
+- [X] T029 [US1] Run rows in `UI/jobs_overview.go` `jobsRunLine` and `UI/run_actions.go` `runState`: show
   setting up n/m, cleaning up n/m, `not accepted: <note>`, `waiting: <reason>`, sent before a restart, and the holds
   (contracts/jobs-ui.md).
   - Holding and halted closed runs arrive in `in_flight` from the server (T021), so *In progress* shows them once and
@@ -856,7 +856,7 @@ needs a custom post-prompt, which arrives in US2.
   - `t`/`T` (`runTerminal`) also open the terminal of a closed run that holds its sandbox, not only one in flight.
   - `openRunOfEvent` (`UI/orchestrator_forms.go`) skips closed runs, so a holding run in `in_flight` never triggers a
     spurious "already open" prompt for its timed event.
-- [ ] T030 [US1] Keys in `UI/run_actions.go` `runKeyAction` and `UI/jobs.go` help (after T029, same file):
+- [X] T030 [US1] Keys in `UI/run_actions.go` `runKeyAction` and `UI/jobs.go` help (after T029, same file):
   - `R` retry, `S` skip (hidden for Clear) and `X` fail, only on halted runs;
   - the confirms use `UI/confirm.go`, defaulting to **No**. `X` is only offered on halted runs and `x` only on queued
     ones, so a Shift slip opens a confirm or does nothing, never an action. For a step sent before a restart, `S` is
@@ -880,7 +880,7 @@ needs a custom post-prompt, which arrives in US2.
     Orchestrator Sandboxes tab) it stays Rename. Test both, with the fake daemon.
 
   Add `ResolveRunStep` and `ReplaceDetachedAgent` to the TUI `Daemon` interface and its fakes.
-- [ ] T031 [P] [US1] Sandbox list and Workers view:
+- [X] T031 [P] [US1] Sandbox list and Workers view:
   - `UI/sandbox_list.go` `needsDeveloper` adds `hold ∈ {NEEDS_INPUT_FREEING, NEEDS_DEVELOPER}` and
     `controller.run.halted`;
   - `sandboxItem`'s worker suffix shows each hold, incl. `needing the developer — open its terminal and run /clear`;
@@ -890,7 +890,7 @@ needs a custom post-prompt, which arrives in US2.
     sandbox list can see;
   - `UI/orchestrator_views.go` Workers view shows the same text from `WorkerView.hold`/`halted`/`step_note`, set in
     `SBD/orchestrator/workers.go` alongside `availability()`.
-- [ ] T032 [US1] TUI tests with the `jobsWith`/`fakeDaemon` helpers:
+- [X] T032 [US1] TUI tests with the `jobsWith`/`fakeDaemon` helpers:
   - in `UI/orchestrator_forms_test.go`: the defaults on a new action; a legacy action shows the defaults and saves
     them explicitly; the option lists match the spec (no ultracode, US1 #5); `off` round-trips and keeps the value;
     the guard reports dirty after a Model change;
@@ -911,7 +911,7 @@ needs a custom post-prompt, which arrives in US2.
 
 **Independent Test**: quickstart Scenarios 2, 3, 5 (step 1) and 6.
 
-- [ ] T033 [US2] In `UI/orchestrator_forms.go`:
+- [X] T033 [US2] In `UI/orchestrator_forms.go`:
   - add `Pre-prompts` and `Post-prompts` Text fields through `spec.text` (enlargeable). They hold one prompt per
     line; the description says so and notes that a prompt can't span lines;
   - on save, trim lines and drop empty ones, then send `pre_prompts`/`post_prompts`;
@@ -974,7 +974,7 @@ the run surfaces.
   - a built-in confirmed; Clear confirmed;
   - no evidence → halted with the marker;
   - a lost response on a later step resolved on reconnect.
-- [ ] T039 [P] [US3] Prompt overlay in `UI/run_actions.go` `promptView`: steps in order, marking `▶` current and `✓`
+- [X] T039 [P] [US3] Prompt overlay in `UI/run_actions.go` `promptView`: steps in order, marking `▶` current and `✓`
   done; without steps it is unchanged (FR-220). Tests in `UI/run_actions_test.go`.
 - [ ] T040 [P] [US3] e2e in `src/apps/switchboard-tui-e2e/`: an action form with built-ins and prompts saves and
   reloads; a halted run shows `R`/`S`/`X`.

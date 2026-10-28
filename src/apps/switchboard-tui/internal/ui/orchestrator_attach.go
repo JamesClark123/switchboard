@@ -461,6 +461,8 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.openWorkerPicker(surfaceDetail, w)
 		return m, nil
+	case "t":
+		return m.workerTerminal(w)
 	}
 	return m, nil
 }
@@ -518,6 +520,29 @@ func laneCell(w *pb.WorkerView, rec *pb.Orchestrator) string {
 	return "open lane"
 }
 
+// workerTerminal is `t` in the Workers view (SWI-17): the worker's terminal,
+// the way out of a hold, through the same detached-agent gate as everywhere
+// (Replace / Wait, or Restart sandbox / Wait). Detaching returns to the view.
+func (m Model) workerTerminal(w *pb.WorkerView) (tea.Model, tea.Cmd) {
+	d := &m.orchDetail
+	name := w.GetDisplayName()
+	if name == "" {
+		name = short(w.GetSandboxId())
+	}
+	sb, host, why := m.runSandbox(&pb.Run{SandboxId: w.GetSandboxId(), SandboxHostId: w.GetHostId()})
+	if why != "" {
+		d.status = "worker sandbox " + sanitizeLine(name, 0) + " " + why
+		return m, nil
+	}
+	od, err := m.connectedDaemon(host)
+	if err != nil {
+		d.status = "worker sandbox " + sanitizeLine(name, 0) + ": " + err.Error()
+		return m, nil
+	}
+	d.status = ""
+	return m.enterTerminalFrom(sb, host, od, screenOrchDetail)
+}
+
 // renderWorkersView lists the roster: name · @host · state · availability
 // (run action); reasoning rows are marked (FR-132).
 func (m Model) renderWorkersView(cursor func(int) string) []string {
@@ -537,6 +562,14 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		line := cursor(i) + fitCol(name, 24) + dimStyle.Render("  @"+fitCol(w.GetHostId(), 16)) + "  " + stateBadge(w.GetState()) + " " + availabilityBadge(w.GetAvailability(), w.GetAgentStatus())
 		if w.GetRunAction() != "" {
 			line += dimStyle.Render("  (" + sanitizeLine(w.GetRunAction(), 40) + ")")
+		}
+		// SWI-17 (FR-213): the hold or halt, as the sandbox list words it.
+		if note, surfaced := holdNote(w.GetHold(), w.GetHalted(), w.GetStepNote(), w.GetRunId()); note != "" {
+			style := dimStyle
+			if surfaced {
+				style = agentWaitStyle
+			}
+			line += "  " + style.Render("⚑ "+note)
 		}
 		if w.GetReasoning() {
 			line += "  " + tagBadgeStyle.Render("reasoning")
