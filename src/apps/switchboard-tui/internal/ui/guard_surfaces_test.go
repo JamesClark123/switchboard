@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -472,5 +474,156 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 	cv := m.jobs.formVals.(*callFormVals)
 	if m.jobs.form == nil || m.jobs.form.State != huh.StateNormal || *cv.values["number"] != "7" || !strings.Contains(m.jobs.status, "boom") {
 		t.Fatalf("refused after completion: form %v status %q", m.jobs.form != nil, m.jobs.status)
+	}
+}
+
+// quits reports whether cmd (or a batch inside it) would quit the program.
+func quits(cmd tea.Cmd) bool {
+	for _, msg := range quickMsgs(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ctrl+c in a form is the same guarded exit as esc, and never quits (US2).
+func TestGuardCtrlCOnForms(t *testing.T) {
+	noKeyGrace(t)
+	for _, c := range formCases() {
+		t.Run(c.name, func(t *testing.T) {
+			m, _ := c.open(t)
+			m, cmd := update(m, ctrlC)
+			if m.unsaved.open || onGuard(m, c.g) || quits(cmd) {
+				t.Fatalf("ctrl+c on an unchanged form: dialog=%v open=%v quit=%v", m.unsaved.open, onGuard(m, c.g), quits(cmd))
+			}
+			m, saved := c.open(t)
+			from := m.screen
+			m = c.edit(m)
+			m, cmd = update(m, ctrlC)
+			if !m.unsaved.open || quits(cmd) {
+				t.Fatal("ctrl+c on a changed form should open the dialog, not quit")
+			}
+			m, _ = update(m, press("d"))
+			want := from
+			if c.g == gConfig {
+				want = screenList // the editor's esc goes back to the list
+			}
+			if onGuard(m, c.g) || saved(m) || m.screen != want {
+				t.Fatalf("Discard after ctrl+c: open=%v screen=%v, want %v", onGuard(m, c.g), m.screen, want)
+			}
+		})
+	}
+}
+
+// The kit overview is guarded by the kit's fingerprint: an applied but unsaved
+// item makes esc/q ask; d leaves the stored kit alone, s writes it.
+func TestGuardKitOverview(t *testing.T) {
+	noKeyGrace(t)
+	open := func(t *testing.T) Model {
+		m := openSection(t, &store.Kit{Name: "k"}, secInstall)
+		m = pressCmd(m, "a")
+		m = typeIn(m, "make deps")
+		m, _ = update(m, ctrlS())
+		m, _ = update(m, press("esc")) // the item list's esc: back to the overview, not an exit
+		if m.unsaved.open || m.kitEditor.inSection || m.screen != screenKitEditor {
+			t.Fatalf("esc on the item list should return to the overview: dialog=%v inSection=%v", m.unsaved.open, m.kitEditor.inSection)
+		}
+		return m
+	}
+	for _, k := range []string{"esc", "q"} {
+		m := open(t)
+		m, _ = update(m, press(k))
+		if !m.unsaved.open || m.unsaved.surface != gKitOverview {
+			t.Fatalf("%s on a changed overview should ask", k)
+		}
+	}
+	m := open(t)
+	m, _ = update(m, press("q"))
+	m, _ = update(m, press("d"))
+	if m.screen != screenKitPicker {
+		t.Fatalf("Discard should return to the picker, screen %v", m.screen)
+	}
+	if k, err := m.kits.Get("k"); err != nil || k.Setup != nil && len(k.Setup.Install) != 0 {
+		t.Errorf("Discard wrote the kit: %+v %v", k, err)
+	}
+	m = open(t)
+	m, _ = update(m, press("q"))
+	m, _ = update(m, press("s"))
+	if k, err := m.kits.Get("k"); err != nil || k.Setup == nil || len(k.Setup.Install) != 1 || m.screen != screenKitPicker {
+		t.Errorf("Save should write the kit and return to the picker: %+v %v screen %v", k, err, m.screen)
+	}
+}
+
+func TestGuardKitOverviewCleanCases(t *testing.T) {
+	noKeyGrace(t)
+	// Applying an item form unchanged leaves the overview clean.
+	m := openSection(t, &store.Kit{Name: "k", Setup: &store.KitSetup{Install: []store.KitInstallCommand{{Command: "make"}}}}, secInstall)
+	m = pressCmd(m, "enter")
+	if m.kitEditor.form == nil {
+		t.Fatal("enter should edit the item")
+	}
+	m, _ = update(m, ctrlS())
+	m, _ = update(m, press("q")) // item list → overview
+	m, _ = update(m, press("q"))
+	if m.unsaved.open || m.screen != screenKitPicker {
+		t.Fatalf("an unchanged apply should leave the kit clean: dialog=%v screen=%v", m.unsaved.open, m.screen)
+	}
+
+	// A migrated v1 kit opened and left is not a change.
+	m = editorOn(t, &store.Kit{Name: "legacy"})
+	dir := m.kits.Dir("legacy")
+	if err := os.WriteFile(filepath.Join(dir, "spec.yaml"), []byte("schemaVersion: \"1\"\nkind: mixin\nname: legacy\ncommands:\n  install:\n    - command: echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k, err := m.kits.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm, _ := m.enterKitEditor(k)
+	m, _ = update(mm.(Model), press("q"))
+	if m.unsaved.open || m.screen != screenKitPicker {
+		t.Fatalf("a migrated kit left untouched should not ask: dialog=%v", m.unsaved.open)
+	}
+
+	// A new unnamed kit with an install command is a change; Save keeps it
+	// open with the name error.
+	m = kitModel(t, &fakeDaemon{})
+	mm, _ = m.enterKitEditor(nil)
+	m = mm.(Model)
+	m.kitEditor.section = secInstall
+	m, _ = update(m, press("enter"))
+	m = pressCmd(m, "a")
+	m = typeIn(m, "make")
+	m, _ = update(m, ctrlS())
+	m, _ = update(m, press("q"))
+	m, _ = update(m, press("q"))
+	if !m.unsaved.open {
+		t.Fatal("an unnamed kit with an item should ask")
+	}
+	m, _ = update(m, press("s"))
+	if m.screen != screenKitEditor || m.kitEditor.status != "name required (Identity)" {
+		t.Fatalf("Save of an unnamed kit: screen %v status %q", m.screen, m.kitEditor.status)
+	}
+}
+
+// Keys a guard or the app uses elsewhere are typed into text fields (US2 #5).
+func TestGuardTextKeysAreTyped(t *testing.T) {
+	for _, name := range []string{"Input", "Text"} {
+		var m Model
+		var get func(Model) string
+		if name == "Input" {
+			m = pressCmd(secretsModel(t, &fakeDaemon{}), "a")
+			get = func(m Model) string { return m.secretsView.vals.name }
+		} else {
+			m = openSection(t, &store.Kit{Name: "k"}, secEnvironment)
+			get = func(m Model) string { return m.kitEditor.vals.vars }
+		}
+		screen := m.screen
+		m = typeIn(m, "q,")
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyShiftRight})
+		if got := get(m); got != "q," || m.screen != screen || m.unsaved.open {
+			t.Errorf("%s: value %q screen %v dialog %v, want q, typed and nothing else", name, got, m.screen, m.unsaved.open)
+		}
 	}
 }

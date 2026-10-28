@@ -760,3 +760,36 @@ func TestMcpAuthHintOffersThePortForwardOnlyForSSHRows(t *testing.T) {
 		close(d.mcpAuthGate)
 	}
 }
+
+// Backing out of "register anyway?" returns to the form with every value, and
+// it is still the changed form the guard protects (FR-012a).
+func TestMcpRegisterAnywayBackOutReturnsToForm(t *testing.T) {
+	noKeyGrace(t)
+	d := &fakeDaemon{}
+	m := pressCmd(mcpModel(t, d), "a")
+	m.mcpView.vals.name, m.mcpView.vals.kind, m.mcpView.vals.command, m.mcpView.vals.args = "pw", "command", "npx", "-y, pw"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.pending == nil || !strings.Contains(m.View(), "esc back to form") {
+		t.Fatalf("a host command should ask first:\n%s", m.View())
+	}
+	m, _ = update(m, press("n"))
+	v := m.mcpView.vals
+	if m.mcpView.pending != nil || m.mcpView.form == nil || v == nil || v.name != "pw" || v.command != "npx" || v.args != "-y, pw" || len(d.addedMcp) != 0 {
+		t.Fatalf("n should reopen the form with its values: form %v vals %+v", m.mcpView.form != nil, v)
+	}
+	if strings.Contains(m.mcpView.status, "cancelled") {
+		t.Errorf("backing out is not a cancel: status %q", m.mcpView.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open {
+		t.Fatal("the reopened form is still changed: esc should ask")
+	}
+	// y registers and clears the form.
+	m, _ = update(m, press("c"))
+	m, _ = update(m, ctrlS())
+	m, cmd := update(m, press("y"))
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 1 || m.mcpView.vals != nil {
+		t.Errorf("y should register: added %d vals %+v", len(d.addedMcp), m.mcpView.vals)
+	}
+}

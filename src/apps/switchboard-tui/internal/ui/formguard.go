@@ -28,6 +28,9 @@ import (
 // ExternalEditor is set to (ExternalEditor(false) only hides the binding when
 // help renders), so any key left on it would still launch $EDITOR on a form that
 // hides help. ctrl+e opens the in-app enlarged view instead.
+//
+// Quit is keyless too: ctrl+c is routed by the unsaved-changes guard
+// (requestExit, like esc), so huh never aborts a form behind it.
 func formKeyMap() *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
 	km.Text.NewLine = key.NewBinding(key.WithKeys("enter", "alt+enter", "ctrl+j"), key.WithHelp("enter", "new line"))
@@ -35,6 +38,7 @@ func formKeyMap() *huh.KeyMap {
 	km.Text.Prev = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
 	km.Text.Submit = key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "apply"))
 	km.Text.Editor = key.NewBinding()
+	km.Quit = key.NewBinding()
 	return km
 }
 
@@ -354,6 +358,8 @@ func (m Model) guardDirty(g guardSurface) bool {
 		return op.form != nil && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
 	case gKitItem:
 		return m.kitEditor.vals != nil && *m.kitEditor.vals != m.kitEditor.formBaseline
+	case gKitOverview:
+		return kitFingerprint(m.kitEditor.kit) != m.kitEditor.baseline
 	case gLaunch, gReasoning:
 		return !snapshotLaunch(m.launch).equal(m.launch.baseline)
 	}
@@ -383,6 +389,8 @@ func (m Model) guardSave(g guardSurface) (Model, tea.Cmd) {
 		return guardResult(m.submitOrchDetailForm())
 	case gKitItem:
 		return guardResult(m.applyKitForm())
+	case gKitOverview:
+		return guardResult(m.saveKit())
 	case gLaunch:
 		return guardResult(m.startLaunch())
 	case gReasoning:
@@ -420,6 +428,8 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 		}
 	case gKitItem:
 		m.closeKitForm()
+	case gKitOverview:
+		return guardResult(m.enterKitPicker())
 	case gLaunch:
 		m.screen = screenList
 	case gReasoning:

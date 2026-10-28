@@ -462,9 +462,6 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 			return mm, cmd
 		}
 		return reviveCompleted(opGuard(s))(mm, nil)
-	case huh.StateAborted:
-		m.closeOpForm(s)
-		return m, nil
 	}
 	return m, cmd
 }

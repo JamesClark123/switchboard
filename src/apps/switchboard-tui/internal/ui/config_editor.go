@@ -148,7 +148,7 @@ func (m Model) updateEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "esc":
+	case "esc", "ctrl+c":
 		return m.requestExit(gConfig)
 	case "ctrl+s":
 		return m.saveConfig()
@@ -167,10 +167,6 @@ func (m Model) advanceEditorForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.editor.form.State == huh.StateCompleted {
 		return reviveCompleted(gConfig)(m.saveConfig())
-	}
-	if m.editor.form.State == huh.StateAborted {
-		m.screen = screenList
-		return m, nil
 	}
 	return m, cmd
 }

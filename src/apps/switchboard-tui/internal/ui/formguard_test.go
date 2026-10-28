@@ -200,3 +200,18 @@ func TestNoTextBuiltOutsideFormSpec(t *testing.T) {
 		}
 	}
 }
+
+// Quit is keyless: ctrl+c reaching a form directly never aborts it (the guard
+// routes ctrl+c before the form, like esc).
+func TestCtrlCNeverAbortsAForm(t *testing.T) {
+	if keys := formKeyMap().Quit.Keys(); len(keys) != 0 {
+		t.Fatalf("Quit keys = %v, want none", keys)
+	}
+	for _, tf := range textForms(t) {
+		tf.form.Init()
+		tf.form.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if tf.form.State != huh.StateNormal {
+			t.Errorf("%s: ctrl+c moved the form to state %v", tf.name, tf.form.State)
+		}
+	}
+}

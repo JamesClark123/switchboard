@@ -197,7 +197,7 @@ func (m Model) mcpHelp() helpBindings {
 	case m.mcpView.auth != nil:
 		return helpBindings{hkey("esc", "cancel wait")}
 	case m.mcpView.pending != nil:
-		return helpBindings{hkey("y", "register anyway"), hkey("esc", "cancel")}
+		return helpBindings{hkey("y", "register anyway"), hkey("esc", "back to form")}
 	case m.mcpView.form != nil:
 		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "register"), hkey("esc", "cancel")}
 	case m.mcpView.unavailable != "":
@@ -258,17 +258,19 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y", "Y":
 			req := v.pending
-			v.pending = nil
+			v.pending, v.vals, v.spec = nil, nil, nil
 			req.AcknowledgeLocalExecution = true
 			return m, m.mcpAddCmd(v.daemon, v.host, req)
 		case "esc", "n", "N", "q":
+			// Back to the form with every value (FR-012a): backing out of the
+			// warning is not a discard.
 			v.pending = nil
-			v.status = "registration cancelled"
+			return m, m.reopenForm(gMcp)
 		}
 		return m, nil
 	case v.form != nil:
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			return m.requestExit(gMcp)
 		case "ctrl+s":
 			return m.applyMcpForm()
@@ -382,9 +384,6 @@ func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v.form.State {
 	case huh.StateCompleted:
 		return reviveCompleted(gMcp)(m.applyMcpForm())
-	case huh.StateAborted:
-		v.form, v.vals = nil, nil
-		return m, nil
 	}
 	return m, cmd
 }
@@ -421,8 +420,10 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 			}
 		}
 		req.Definition = &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: cmd, Args: args, Dir: strings.TrimSpace(vals.dir)}}
-		v.form, v.vals = nil, nil
-		v.pending = req // the warning modal takes it from here
+		// The warning modal takes it from here; vals and the baseline stay so
+		// backing out reopens the form as it was (FR-012a).
+		v.form = nil
+		v.pending = req
 		return m, nil
 	default:
 		url := strings.TrimSpace(vals.url)
@@ -885,7 +886,7 @@ func (m Model) mcpModal() string {
 			"It can reach the host's files, network and any credentials it is given.",
 			"Only register commands and images you trust.",
 			"",
-			helpStyle.Render("y register anyway · esc cancel"),
+			helpStyle.Render("y register anyway · esc back to form"),
 		)
 	}
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)

@@ -157,6 +157,10 @@ type kitEditorState struct {
 	// load (feature 008, FR-092); shown as a banner until the kit is saved.
 	migration *store.Migration
 	// section is the highlighted section; inSection is true once drilled in.
+	// baseline is the kit's fingerprint as the editor opened: the overview is
+	// changed while kitFingerprint(kit) differs, which includes applied but
+	// unsaved item forms (SWI-9).
+	baseline  string
 	section   kitSection
 	inSection bool
 	// item is the highlighted item index within an itemized section.
@@ -211,6 +215,8 @@ func (m Model) enterKitEditor(k *store.Kit) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	// After migration (the kit arrives migrated): an untouched v1 kit is clean.
+	st.baseline = kitFingerprint(st.kit)
 	m.kitEditor = st
 	m.screen = screenKitEditor
 	return m, nil
@@ -231,7 +237,7 @@ func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A form owns all input while open.
 	if m.kitEditor.form != nil {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			return m.requestExit(gKitItem)
 		case "ctrl+s":
 			return m.applyKitForm()
@@ -245,7 +251,7 @@ func (m Model) updateKitEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q":
-		return m.enterKitPicker()
+		return m.requestExit(gKitOverview)
 	case "ctrl+s":
 		return m.saveKit()
 	case "v":
@@ -375,9 +381,6 @@ func (m Model) advanceKitForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.kitEditor.form.State {
 	case huh.StateCompleted:
 		return reviveCompleted(gKitItem)(m.applyKitForm())
-	case huh.StateAborted:
-		m.closeKitForm()
-		return m, nil
 	}
 	return m, cmd
 }

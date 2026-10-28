@@ -379,9 +379,6 @@ func (m Model) advanceOrchForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.orch.form.State {
 	case huh.StateCompleted:
 		return reviveCompleted(gOrchAdmin)(m.applyOrchForm())
-	case huh.StateAborted:
-		m.closeOrchForm()
-		return m, nil
 	}
 	return m, cmd
 }

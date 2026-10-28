@@ -80,7 +80,7 @@ func (m Model) daemonOrchsHelp() helpBindings {
 func (m Model) updateDaemonOrchsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.orch.form != nil {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			return m.requestExit(gOrchAdmin)
 		case "ctrl+s":
 			return m.applyOrchForm()

@@ -155,7 +155,7 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
 	if d.form != nil {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			return m.requestExit(gOpDetail)
 		case "ctrl+s":
 			return m.submitOrchDetailForm()

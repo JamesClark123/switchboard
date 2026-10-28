@@ -255,24 +255,24 @@ and the app never quits from inside a form.
 **Independent Test**: With changes, ctrl+c in each form and esc/q on the kit overview raise the dialog. "register
 anyway?" n returns to the form intact. Text keys like `q`, `,` and shift+→ are typed.
 
-- [ ] T017 [US2] Make `formKeyMap()`'s `Quit` keyless (doc comment: ctrl+c is routed by the guard) and route ctrl+c
+- [X] T017 [US2] Make `formKeyMap()`'s `Quit` keyless (doc comment: ctrl+c is routed by the guard) and route ctrl+c
   through `requestExit` exactly like esc on every form surface. huh then never aborts, so delete the `StateAborted`
   branches. Extend T004's test: ctrl+c sent straight to `form.Update` does not abort.
   - Files: `UI/config_editor.go`, `UI/mcp.go`, `UI/secrets.go`, `UI/orchestrators.go`, `UI/daemon_orchestrators.go`,
     `UI/orchestrator_forms.go` (`advanceOrchOpForm`), `UI/jobs.go`, `UI/orchestrator_views.go`, `UI/kit_editor.go`.
   - Mark-free ctrl+c now returns to the sandbox list when opened from it, as esc does.
-- [ ] T018 [US2] Kit overview (`gKitOverview`) in `UI/kit_editor.go`:
+- [X] T018 [US2] Kit overview (`gKitOverview`) in `UI/kit_editor.go`:
   - Set `kitEditorState.baseline = kitFingerprint(kit)` when the editor opens, after migration. `saveKit` returns to
     the picker, so no reset is needed.
   - Overview esc and q → `requestExit(gKitOverview)`; Save = `saveKit`; Leave = `enterKitPicker`.
   - The item list's esc/q stay as they are (not exits).
-- [ ] T019 [US2] FR-012a in `UI/mcp.go`:
+- [X] T019 [US2] FR-012a in `UI/mcp.go`:
   - `applyMcpForm` keeps `vals` and the baseline while `pending` is set.
   - Backing out of "register anyway?" (n/esc/q) calls `reopenForm(gMcp)` and shows no "registration cancelled"
     status.
   - y registers and clears the vals as today.
   - Change "esc cancel" to "esc back to form" in both `mcpModal` and `mcpHelp` (mcp.go:197).
-- [ ] T020 [US2] Tests in `UI/guard_surfaces_test.go` and `UI/mcp_test.go`:
+- [X] T020 [US2] Tests in `UI/guard_surfaces_test.go` and `UI/mcp_test.go`:
   - ctrl+c on each form: dialog when changed, closes when not, never `tea.Quit`;
   - Discard after ctrl+c returns to the opening screen;
   - kit: apply an item then esc/q on the overview → dialog; `d` returns to the picker and the kit on disk is

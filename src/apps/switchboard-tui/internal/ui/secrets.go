@@ -142,7 +142,7 @@ func (m Model) updateSecretsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Like the register form: esc aborts and ctrl+s submits from any field,
 		// before huh sees the key (its own submit is enter on the last field).
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			return m.requestExit(gSecrets)
 		case "ctrl+s":
 			return m.applySecretsForm()
@@ -233,9 +233,6 @@ func (m Model) advanceSecretsForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v.form.State {
 	case huh.StateCompleted:
 		return reviveCompleted(gSecrets)(m.applySecretsForm())
-	case huh.StateAborted:
-		v.form, v.vals = nil, nil
-		return m, nil
 	}
 	return m, cmd
 }
