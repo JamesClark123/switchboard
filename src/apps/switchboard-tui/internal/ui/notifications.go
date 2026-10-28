@@ -134,9 +134,11 @@ func (m Model) handleEvent(hostID string, ev *pb.Event) (tea.Model, tea.Cmd) {
 		m.syncSandboxMcpOverlay(e.SandboxChanged)
 		out = m
 	case *pb.Event_Removed:
-		if m.removeSandbox(e.Removed.GetSandboxId()) {
+		id := e.Removed.GetSandboxId()
+		if m.removeSandbox(id) {
 			m.refreshListItems()
 		}
+		m.sandboxGone(func(sid, _ string) bool { return sid == id })
 		out = m
 	case *pb.Event_EscapeHatchRun:
 		out, cmd = m.handleEscapeHatchRun(e.EscapeHatchRun)

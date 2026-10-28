@@ -127,16 +127,30 @@ func (m Model) applyHosts(msg hostsMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenMcp {
 		for _, row := range msg {
 			if row.Host.Entry.ID == m.mcpView.host && row.Host.State != client.HostConnected {
-				m.screen = screenDaemons
-				m.daemons.options = false
-				m.status = m.mcpView.hostName + " disconnected — gateway view closed"
-				m.mcpView = mcpState{}
+				m.forceCloseOr(gMcp, "daemon disconnected", func(m *Model) {
+					m.screen = screenDaemons
+					m.daemons.options = false
+					m.status = m.mcpView.hostName + " disconnected — gateway view closed"
+					m.mcpView = mcpState{}
+				})
 			}
 		}
 	}
 	// Daemons › Orchestrators and the detail act on one daemon only; when it
 	// drops they close rather than reach any other (FR-030).
 	m.closeOrchAdminOnDrop(msg)
+	// A rename, tag or sources surface, or a queued add override, whose
+	// sandbox's host dropped goes with it (SWI-9 R7).
+	dropped := func(host string) bool {
+		for _, row := range msg {
+			if row.Host.Entry.ID == host {
+				return row.Host.State != client.HostConnected
+			}
+		}
+		return false
+	}
+	m.closeSandboxGuard(func(_, host string) bool { return dropped(host) }, "daemon disconnected")
+	m.purgeOverrides(func(o parkedOverride) bool { return dropped(o.msg.host) }, "daemon disconnected")
 	if !m.hosts.ready {
 		return m, nil
 	}
@@ -432,6 +446,12 @@ func (m *Model) closeOrchAdminOnDrop(msg hostsMsg) {
 		if name == "" {
 			name = m.hostDisplayName(host)
 		}
+	case screenLaunch:
+		if m.launch.reasoning == nil {
+			return
+		}
+		host = m.launch.reasoning.host
+		name = m.hostDisplayName(host)
 	default:
 		return
 	}
@@ -446,17 +466,27 @@ func (m *Model) closeOrchAdminOnDrop(msg hostsMsg) {
 		if under == screenOrchDetail && m.markFreeFromList {
 			back = screenList
 		}
-		m.daemons.options = false
-		m.closeOrchForm()
-		m.closeOpForm(surfaceDetail)
-		m.markFreeFromList = false
-		switch m.screen {
-		case screenSettings:
-			m.settingsView.returnTo = back // settings stays open; esc lands safely
-		default:
-			m.screen = back // a confirm over it is dropped with it
+		g := gNone
+		if ag, ok := m.activeOrSuspendedGuard(); ok && (ag == gOrchAdmin || ag == gOpDetail || ag == gReasoning) {
+			g = ag
 		}
-		m.status = name + " disconnected — orchestrators closed"
+		m.forceCloseOr(g, "daemon disconnected", func(m *Model) {
+			m.daemons.options = false
+			m.closeOrchForm()
+			m.closeOpForm(surfaceDetail)
+			m.markFreeFromList = false
+			m.launch.reasoning = nil
+			switch m.screen {
+			case screenSettings:
+				m.settingsView.returnTo = back // settings stays open; esc lands safely
+			default:
+				if m.screen == screenConfirm {
+					m.confirm = confirmState{} // dropped with it, never answered (R7 C4)
+				}
+				m.screen = back
+			}
+			m.status = name + " disconnected — orchestrators closed"
+		})
 		return
 	}
 }

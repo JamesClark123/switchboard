@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The orchestrator detail (feature 009, research R13) is one orchestrator's
@@ -91,6 +93,9 @@ func (m Model) applyOrchDetail(msg orchDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	m.orchDetail.loading = false
 	if msg.err != nil {
+		if status.Code(msg.err) == codes.NotFound {
+			m.closeOrchGuard(m.orchDetail.host, msg.id)
+		}
 		m.orchDetail.status = msg.err.Error()
 		return m, nil
 	}

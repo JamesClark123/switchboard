@@ -357,6 +357,8 @@ type Model struct {
 	unsaved unsavedState
 	// --- SWI-9: the enlarged view of a form's multi-line field ---
 	enlarge enlargeState
+	// pendingOverrides are low-resource add confirms waiting to open (R7 C2).
+	pendingOverrides []parkedOverride
 
 	quitting bool
 }
@@ -637,7 +639,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.handleMsg(msg)
 	if nm, ok := next.(Model); ok {
 		nm.reconcileGuardLayers()
-		return nm, cmd
+		nm, ocmd := nm.openParkedOverride(msg)
+		return nm, tea.Batch(cmd, ocmd)
 	}
 	return next, cmd
 }
@@ -689,6 +692,10 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sandboxesMsg:
 		m.sandboxes = []*pb.Sandbox(msg)
+		if m.manager == nil {
+			// Single-host: this list is the whole truth (its errors arrive as errMsg).
+			m.sandboxGone(func(id, _ string) bool { return !hasSandbox(m.sandboxes, id) })
+		}
 		m.listLoading = false
 		m.rebuildTabs()
 		m.refreshListItems()
@@ -696,6 +703,16 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case listDataMsg:
 		m.hostAgg = msg.hosts
+		// A connected host that listed without error and lacks the sandbox has
+		// removed it; a failed or disconnected host proves nothing.
+		m.sandboxGone(func(id, host string) bool {
+			for _, row := range msg.hosts {
+				if row.Host.Entry.ID == host {
+					return row.Host.State == client.HostConnected && row.Host.Err == nil && !hasSandbox(row.Sandboxes, id)
+				}
+			}
+			return false
+		})
 		m.userGroups = msg.groups
 		m.listLoading = false
 		m.rebuildTabs()
@@ -758,6 +775,9 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case jobsHostMsg:
 		return m.applyJobsHost(msg)
+	case orchGoneMsg:
+		m.closeOrchGuard(msg.host, msg.id)
+		return m, nil
 	case jobsOrchMsg:
 		return m.applyJobsOrch(msg)
 	case orchDoneMsg:

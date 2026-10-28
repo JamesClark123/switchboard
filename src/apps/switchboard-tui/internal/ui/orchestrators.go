@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The orchestrator list (feature 009, FR-142/FR-143): every orchestrator hosted
@@ -299,10 +301,34 @@ func (m Model) syncOrchestratorChanged(host, orchID string) (tea.Model, tea.Cmd)
 	if m.jobs.started {
 		cmds = append(cmds, m.jobsReloadOrch(host, orchID))
 	}
+	if _, gh, gid, ok := m.guardOrch(); ok && gh == host && gid == orchID {
+		cmds = append(cmds, m.orchGoneCheckCmd(host, orchID))
+	}
 	if len(cmds) == 0 {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// orchGoneMsg reports that an orchestrator a guarded surface acts on answered
+// NotFound (SWI-9 R7).
+type orchGoneMsg struct{ host, id string }
+
+// orchGoneCheckCmd reads the orchestrator and reports orchGoneMsg on NotFound
+// only; any other outcome leaves the surface as it is.
+func (m Model) orchGoneCheckCmd(host, id string) tea.Cmd {
+	d, err := m.connectedDaemon(host)
+	if err != nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		if _, err := d.GetOrchestrator(ctx, id); status.Code(err) == codes.NotFound {
+			return orchGoneMsg{host: host, id: id}
+		}
+		return nil
+	}
 }
 
 // forwardOrchestrators routes non-key messages to an open form.

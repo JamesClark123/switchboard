@@ -630,3 +630,133 @@ func (m *Model) reconcileGuardLayers() {
 		m.enlarge = enlargeState{}
 	}
 }
+
+// suspendedGuard is a guarded surface waiting under one of its own confirms:
+// the reasoning setup under Rebuild, or the sources overlay under its removal
+// confirm (research R7). activeGuard does not see it; forced closes must.
+func (m Model) suspendedGuard() (guardSurface, bool) {
+	if m.screen != screenConfirm {
+		return gNone, false
+	}
+	switch {
+	case m.confirm.returnTo == screenLaunch && m.launch.reasoning != nil:
+		return gReasoning, true
+	case m.confirm.returnTo == screenSources && m.sourcesView.sandboxID != "":
+		return gSources, true
+	}
+	return gNone, false
+}
+
+// activeOrSuspendedGuard is the guarded surface that is open, or suspended.
+func (m Model) activeOrSuspendedGuard() (guardSurface, bool) {
+	if g, ok := m.activeGuard(); ok {
+		return g, true
+	}
+	return m.suspendedGuard()
+}
+
+// forceClose closes g because what it edits went away (R7): the dialog and the
+// enlarged view go, a confirm it is suspended under is dropped unanswered, and
+// close leaves the surface. Changed values are reported lost: appended to a
+// status close set, or as "unsaved edits lost: <reason>".
+func (m *Model) forceClose(g guardSurface, reason string, close func(m *Model)) {
+	lost := m.guardDirty(g)
+	if sg, ok := m.suspendedGuard(); ok && sg == g {
+		m.screen = m.confirm.returnTo
+		m.confirm = confirmState{}
+	}
+	m.unsaved, m.enlarge = unsavedState{}, enlargeState{}
+	before := m.status
+	close(m)
+	switch {
+	case !lost:
+	case m.status != before:
+		m.status += "; unsaved edits lost"
+	default:
+		m.status = "unsaved edits lost: " + reason
+	}
+}
+
+// guardSandbox is the sandbox the open or suspended rename, tag or sources
+// surface edits.
+func (m Model) guardSandbox() (g guardSurface, id, host string, ok bool) {
+	g, ok = m.activeOrSuspendedGuard()
+	if !ok {
+		return gNone, "", "", false
+	}
+	switch g {
+	case gRename:
+		return g, m.renameID, m.renameHost, true
+	case gTag:
+		return g, m.tagID, m.tagHost, true
+	case gSources, gSourcesBrowse:
+		return g, m.sourcesView.sandboxID, m.sourcesView.host, true
+	}
+	return gNone, "", "", false
+}
+
+// closeSandboxGuard force-closes a rename, tag or sources surface whose
+// sandbox gone reports as no longer there.
+func (m *Model) closeSandboxGuard(gone func(id, host string) bool, reason string) {
+	g, id, host, ok := m.guardSandbox()
+	if !ok || id == "" || !gone(id, host) {
+		return
+	}
+	if g == gSourcesBrowse {
+		g = gSources // the add browser leaves with its overlay
+	}
+	m.forceClose(g, reason, func(m *Model) {
+		status := m.status
+		*m, _ = m.guardLeave(g)
+		m.status = status
+	})
+}
+
+// guardOrch is the orchestrator the open or suspended reasoning setup,
+// orchestrator rename or op form acts on.
+func (m Model) guardOrch() (g guardSurface, host, id string, ok bool) {
+	g, ok = m.activeOrSuspendedGuard()
+	if !ok {
+		return gNone, "", "", false
+	}
+	switch g {
+	case gReasoning:
+		return g, m.launch.reasoning.host, m.launch.reasoning.id, true
+	case gOrchAdmin:
+		if m.orch.formKind == orchFormRename {
+			return g, m.orch.formHost, m.orch.formID, true
+		}
+	case gOpJobs, gOpDetail:
+		t := m.opState(opSurfaceOf(g)).formTarget
+		return g, t.host, t.id, t.id != ""
+	}
+	return gNone, "", "", false
+}
+
+// closeOrchGuard force-closes a surface acting on an orchestrator that was
+// removed.
+func (m *Model) closeOrchGuard(host, id string) {
+	g, gh, gid, ok := m.guardOrch()
+	if !ok || gh != host || gid != id {
+		return
+	}
+	m.forceClose(g, "orchestrator removed", func(m *Model) {
+		*m, _ = m.guardLeave(g)
+		if g == gReasoning {
+			m.screen = screenOrchDetail
+		}
+	})
+}
+
+// forceCloseOr is forceClose when g is a guarded surface, else just close.
+func (m *Model) forceCloseOr(g guardSurface, reason string, close func(m *Model)) {
+	if g == gNone {
+		close(m)
+		return
+	}
+	if ag, ok := m.activeOrSuspendedGuard(); !ok || ag != g {
+		close(m)
+		return
+	}
+	m.forceClose(g, reason, close)
+}

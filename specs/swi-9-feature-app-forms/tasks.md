@@ -429,7 +429,7 @@ field holds the edit and focus stays on it, with no dialog.
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T032 Forced close (R7). Add `forceClose(g, reason)` in `UI/formguard.go`: close the surface and drop the
+- [X] T032 Forced close (R7). Add `forceClose(g, reason)` in `UI/formguard.go`: close the surface and drop the
   dialog and enlarged view. When the surface was dirty, set `unsaved edits lost: <reason>`, or append
   `; unsaved edits lost` to a status the caller already set. Call it from:
   - the MCP view drop (`UI/hosts.go`, `UI/daemons.go`);
@@ -454,7 +454,7 @@ field holds the edit and focus stays on it, with no dialog.
     or `screenSources` with `sourcesView.sandboxID != ""`). Every trigger above matches on `activeOrSuspendedGuard()`.
     Force-closing a suspended surface also clears `m.confirm` (its `onConfirm` and `onAccept` never run) and moves to
     the surface's leave destination. `activeGuard()` is unchanged.
-- [ ] T033 Route async add-overrides through one queue and guard terminal screen switches (research R7 "Confirm
+- [X] T033 Route async add-overrides through one queue and guard terminal screen switches (research R7 "Confirm
   lifecycle", C1–C4):
   - The `sourcesAddResultMsg` handler in `UI/sources.go` **always** appends `parkedOverride{msg, name}` to the FIFO
     `m.pendingOverrides` and never calls `confirmAddOverride` itself (C2). There is no separate arrival test.
@@ -484,7 +484,7 @@ field holds the edit and focus stays on it, with no dialog.
     detaches the new session itself (`msg.session.Close()`, `msg.cancel()`, `close(msg.done)`) and sets the status
     `terminal for <name> ready — closed because you left the list; press t again`. `termClosedMsg` changes the screen
     only when `m.screen == screenTerminal`.
-- [ ] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
+- [X] T034 Tests for T032/T033 in `UI/guard_surfaces_test.go`:
   - host drop with the MCP form dirty and the dialog open → closed, with the status naming "daemon disconnected";
   - orchestrator admin drop with a dirty rename → "<host> disconnected — orchestrators closed; unsaved edits lost";
   - clean → no "lost" status;
@@ -521,14 +521,14 @@ field holds the edit and focus stays on it, with no dialog.
     is dropped, never opens, and the status says `add of … cancelled: …`;
   - an override parked while the same sandbox's add browser was open, dequeued after the overlay closed, has
     `returnTo = screenList`.
-- [ ] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
+- [X] T035 [P] Update the key documentation in the repo-root `README.md` ("Using the TUI" section): ctrl+e enlarge (no external
   editor), the enlarged-view keys, the unsaved-changes dialog keys, and ctrl+c in forms ≡ esc.
 - [ ] T036 Run quickstart.md scenarios 1–7 at 80×24 and 200×50, and record the `BenchmarkSC006*` results in the PR
   description.
-- [ ] T037 Gates: `PATH=$HOME/go/bin:$PATH make fmt-check vet lint cover` (≥ 90% for `switchboard-tui`) and
+- [X] T037 Gates: `PATH=$HOME/go/bin:$PATH make fmt-check vet lint cover` (≥ 90% for `switchboard-tui`) and
   `go clean -testcache && make e2e`. Fix any regressions in existing esc/ctrl+c tests whose expectations change by
   design (list the changed expectations in the PR).
-- [ ] T038 Mark tasks complete and sync `CLAUDE.md`'s SPECKIT block if the implementation deviates from the plan.
+- [X] T038 Mark tasks complete and sync `CLAUDE.md`'s SPECKIT block if the implementation deviates from the plan.
 
 ---
 

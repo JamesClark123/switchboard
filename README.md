@@ -233,6 +233,36 @@ The sandbox list is the home screen. Keys:
 | `,` | Settings — TUI-persisted preferences (`settings.toml` in the config dir) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
 
+**Forms and unsaved changes.** In every form `ctrl+s` saves, and `esc` and `ctrl+c` are the
+same key: they close a form you haven't changed straight away. A changed form, inline input
+(rename, tag, add host, add group), kit, launch, reasoning setup or set of marked folders asks
+first:
+
+| Key | Unsaved-changes dialog |
+|-----|------------------------|
+| `s` | Save (the surface's own save or confirm; `r` **Rebuild** on the reasoning setup) |
+| `c` · `esc` · `ctrl+c` | Cancel — back to exactly what you were editing (the default) |
+| `d` | Discard the changes and leave |
+| `←`/`→` · `h`/`l` · `tab`, `enter` | Move the highlight, activate it |
+
+Keys typed in the first 150 ms after the dialog opens are ignored, apart from Cancel.
+
+Multi-line fields (kit instructions and commands, MCP headers, action bodies and arguments,
+event arguments) show `ctrl+e enlarge` while focused. There is no external editor: `ctrl+e` opens
+the field's text in a full-terminal editor over the screen.
+
+| Key | Enlarged view |
+|-----|---------------|
+| `esc` · `ctrl+e` | Close, keeping the edits in the field (focus stays on it) |
+| `ctrl+s` | Close and save the form |
+| `ctrl+r` | Revert to the text as it was when the view opened |
+| `pgup` / `pgdn` | Page; `enter` inserts a newline (no line limit; inline fields stop at 99) |
+| `ctrl+c` | Leave the form (asks first if it changed) |
+
+A form, input or overlay whose sandbox, host or orchestrator goes away closes, and the status line
+says `unsaved edits lost` if it had changes. A low-resource add override that arrives while you're
+elsewhere waits until you're back on the list, and it accepts on `y` only.
+
 **Agent kits are schema version 2.** The kit editor (`K`) authors Docker's current kit grammar
 (`permissions.network`, `credentials` services, `setup.install/files/startup`, `agentInstructions`).
 A kit saved by an earlier release (schema 1) opens migrated in place with a banner listing anything

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
@@ -345,8 +346,10 @@ func (m Model) handleSourcesAddResult(msg sourcesAddResultMsg) (tea.Model, tea.C
 		m.refreshListItems()
 		return m, nil
 	case msg.blocked != nil:
+		// Queued, never opened here: Update opens the head where it may (R7 C2).
 		m.refreshListItems()
-		return m.confirmAddOverride(msg, name)
+		m.pendingOverrides = append(m.pendingOverrides, parkedOverride{msg: msg, name: name})
+		return m, nil
 	}
 	m.err = nil
 	m.status = "added " + folderNames(msg.sources) + " to " + name
@@ -368,6 +371,66 @@ func (m Model) sandboxName(id string) string {
 		return m.sourcesView.sandbox
 	}
 	return short(id)
+}
+
+// parkedOverride is an add blocked on low resources, waiting for a place where
+// its confirm may open (SWI-9 R7 C2).
+type parkedOverride struct {
+	msg  sourcesAddResultMsg
+	name string
+}
+
+// overrideMayOpen reports whether the queue's head may open now, after msg: on
+// a non-key message, on the plain sandbox list or its own sandbox's overlay
+// with no dialog over it, and with no credential prompt up. Everywhere else
+// (confirms, approvals, the terminal, other surfaces) it stays queued.
+func (m Model) overrideMayOpen(head parkedOverride, msg tea.Msg) bool {
+	if _, ok := msg.(tea.KeyMsg); ok {
+		return false
+	}
+	if (m.hosts.connecting && m.hosts.pwMode != pwHostsScreen) || (m.signIn.active && m.signIn.phase == signInFailed) {
+		return false
+	}
+	switch m.screen {
+	case screenList:
+		return m.list.FilterState() != list.Filtering
+	case screenSources:
+		g, ok := m.activeGuard()
+		return ok && g == gSources && m.sourcesView.sandboxID == head.msg.id && !m.unsaved.open
+	}
+	return false
+}
+
+// openParkedOverride opens the queue's head when it may (Update calls it after
+// every message). An override that arrived with msg and could not open says so.
+func (m Model) openParkedOverride(msg tea.Msg) (Model, tea.Cmd) {
+	if len(m.pendingOverrides) == 0 {
+		return m, nil
+	}
+	head := m.pendingOverrides[0]
+	if !m.overrideMayOpen(head, msg) {
+		if r, ok := msg.(sourcesAddResultMsg); ok && r.blocked != nil {
+			// Said once, as it arrives (it is the queue's tail).
+			last := m.pendingOverrides[len(m.pendingOverrides)-1]
+			m.status = "add to " + last.name + " needs confirmation — back on the list"
+		}
+		return m, nil
+	}
+	m.pendingOverrides = m.pendingOverrides[1:]
+	return guardResult(m.confirmAddOverride(head.msg, head.name))
+}
+
+// purgeOverrides drops queued overrides whose sandbox or host went away.
+func (m *Model) purgeOverrides(gone func(parkedOverride) bool, reason string) {
+	kept := m.pendingOverrides[:0]
+	for _, o := range m.pendingOverrides {
+		if gone(o) {
+			m.status = "add of " + folderNames(o.msg.sources) + " to " + o.name + " cancelled: " + reason
+			continue
+		}
+		kept = append(kept, o)
+	}
+	m.pendingOverrides = kept
 }
 
 // confirmAddOverride mirrors the launch-time low-resource gate (FR-012f/FR-057):
@@ -392,6 +455,7 @@ func (m Model) confirmAddOverride(msg sourcesAddResultMsg, name string) (tea.Mod
 		body:     body,
 		warning:  "The copy may fail partway or fill the disk.",
 		returnTo: returnTo,
+		yOnly:    true, // it opens on its own, never from a key the user aimed at it (R7 C3)
 		onConfirm: func() tea.Msg {
 			return sourcesOverrideMsg{id: id, host: host, sources: sources}
 		},
@@ -563,4 +627,20 @@ func (m Model) sourcesModal() string {
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)
+}
+
+// sandboxGone closes a guarded surface on, and drops queued overrides for, a
+// sandbox gone reports removed.
+func (m *Model) sandboxGone(gone func(id, host string) bool) {
+	m.closeSandboxGuard(gone, "sandbox removed")
+	m.purgeOverrides(func(o parkedOverride) bool { return gone(o.msg.id, o.msg.host) }, "sandbox removed")
+}
+
+func hasSandbox(sbs []*pb.Sandbox, id string) bool {
+	for _, sb := range sbs {
+		if sb.GetId() == id {
+			return true
+		}
+	}
+	return false
 }
