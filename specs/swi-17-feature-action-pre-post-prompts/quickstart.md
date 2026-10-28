@@ -86,12 +86,15 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
 2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon). The agent keeps running in
    the sandbox, but the daemon can no longer type into it.
    - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. Its
-     cleanup then shows *needing the developer*.
-   - **During a setup step:** the step halts with `agent detached by a daemon restart`. `R` (after its warning)
-     kills the old agent, starts a fresh one, and retries the step.
+     cleanup then shows *needing the developer*. Pressing `t` meanwhile shows the Wait/Replace dialog; **Replace**
+     fails the run and starts one fresh agent.
+   - **During a setup step:** the step halts with `agent detached by a daemon restart`. `R` (*Restart setup*, after
+     its confirm) kills the old agent, starts a fresh one, and sends every pre-step again from the first; the action
+     prompt is typed only after `/model` and `/effort` were confirmed on the new agent. `S` isn't offered.
    - **During cleanup:** the worker shows *needing the developer*. `t` kills the old agent, starts a fresh one, and
      that frees the worker.
-   - In every case, `ps` inside the sandbox never shows two agents.
+   - In every case, `ps` inside the sandbox never shows two agents: also not after the restart while workers are
+     idle (`WarmStart`), nor when an escape-hatch result arrives.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
    the step resolves from the daemon's record to sent, then finishes as usual.
 
@@ -118,7 +121,10 @@ one framed prompt, and no step text in the row.
 2. From inside a held worker's sandbox, `curl` the hook URL with `SessionStart` `source=clear` and the old session
    id. The hold stays. With another sandbox's token, the request gets 403; with no token, it changes only the status
    display.
-3. Restart the daemon while a worker's agent is idle. Its hooks keep working afterwards (the token is stable).
+3. Restart the daemon while a worker's agent is working an action step. Its hooks keep working afterwards (its
+   generation's token is persisted), and its escape hatch still runs (the re-injected wrapper sends the token).
+   Inside the sandbox, `grep -c SXB_HOOK_TOKEN .claude/settings.local.json` finds only the variable, never a
+   token.
 4. Have an escape-hatch command print coloured output. Its result still reaches the agent.
 5. Run `claude -p "hi"` in a worker's workspace during a setup step. That nested session's hooks don't classify or
    finish the step.

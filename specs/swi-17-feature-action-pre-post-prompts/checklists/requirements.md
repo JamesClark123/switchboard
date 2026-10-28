@@ -47,3 +47,4 @@
 - Planning amendment (run-542): `ultracode` removed from the Effort options after probing Claude Code 2.1.312 showed it is a sticky session toggle, not an effort level (developer's choice: drop it). FR-202, US1 #5, Clarifications, Assumptions.
 - Planning amendment (run-542): the *needing the developer* hold is ended by the sandbox's own daemon observing the session start live, so a session start while the orchestrator is down still ends it (FR-216, run-534 restart clarification).
 - Planning amendment (run-560): a run that failed before its action prompt was delivered still gets Clear (if enabled and a pre-step was typed), never custom post-prompts, so FR-214 and SC-001 agree.
+- Planning amendment (run-566): FR-214's Clear-only exception now covers any typed step (a pre-step, or the action prompt typed but not accepted), matching contracts/jobs-ui.md and research R5.

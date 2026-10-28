@@ -165,9 +165,10 @@ records `last_submit_at`, `last_turn_end_at`, `last_session_start_at/source` (re
 `ResolveRunStep` (`R` retry · `S` skip · `X` fail), `RUN_STEP_NOT_ACCEPTED`, TASK_COMPLETE suppressed for
 setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) for `SessionStart`; needs SWI-9's implementation for the form guard. Security
 (R13): control characters and invalid UTF-8 refused in untrusted call values only (authored text and escape-hatch
-output untouched); a stable per-sandbox hook token, kept inside the sandbox and rotated only with a new agent PTY;
+output untouched); a per-agent hook token passed in the agent's environment at launch (`SXB_HOOK_TOKEN`), persisted per generation;
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
-orphan, so it can't be typed into or read; it is killed before any fresh spawn (R14).
+orphan, so it can't be typed into or read; `agent.Registry.Session` is the one choke point that refuses to spawn
+beside it and reaps it where the run's phase allows (R14).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

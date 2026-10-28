@@ -98,10 +98,17 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
    a per-broadcaster **parser goroutine** through a bounded channel and goes straight on to fan-out, so VT parsing
    never runs under the broadcaster mutex and never delays clients or `Attach`. On overflow (for example a large
    `cat`) the channel drops chunks and marks the screen **stale**. The parser goroutine then recovers on its own:
-   it drains the channel, **resets** the screen (dropped chunks may have cut an escape sequence in half), and issues a
-   debounced resize nudge itself (at most one per second), so the agent repaints and the screen is fresh again. While
-   stale, the guard refuses (`screen resyncing`) and the submit check treats the screen as **unknown**: it extends
-   its window rather than deciding (bounded by contracts/worker-step.md §6). It never halts on a stale read.
+   it drains the channel and **resets** the screen (dropped chunks may have cut an escape sequence in half). It does
+   **not** nudge on its own: a resize nudge repaints every attached client's terminal, so heavy output would make a
+   developer's terminal flicker. Recovery is **lazy**: when the guard or the submit check reads a stale screen, it
+   requests a resize nudge (debounced, at most one per second per sandbox), the agent repaints, and the screen is
+   fresh again. While stale, the guard refuses (`screen resyncing`; the stepper retries) and the submit check treats
+   the screen as **unknown**: it extends its window by at most 1 s (contracts/worker-step.md §6).
+   - **Still stale when the extension ends:** the check returns **UNCONFIRMED** (`screen resyncing`): the step was
+     typed, but nothing confirms it was accepted. The orchestrator treats it like a lost response: SENT, resolved by
+     R8's evidence rules (a turn-start or turn-end hook finishes it; a built-in is read back with `check_only` once
+     the screen is fresh, and halts as not accepted only if that read-back fails). It never halts on a stale read
+     alone.
    - **A screen is enabled lazily.** Broadcasters persist across detach, so a sandbox whose terminal was opened before
      it became a worker already has one without a screen. When a sandbox becomes controlled (attach) or first gets a
      step, `EnableScreen` adds the screen to the existing broadcaster and nudges a repaint. The daemon's screen uses termview with
@@ -256,8 +263,14 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
     with `controller.run.step_sent_at`, then finished or halted per R8; lower → PENDING (never typed). So a lost
     response never strands a run (tasks T022).
   - **A response for a run cancelled or failed before delivery** (while its first step was in flight), with no hold
-    and no cleanup pending, makes the stepper clear the daemon record with `UpdateWorker{set_run, expect_run_id =
-    run}` (unset run). Any other late response goes through the normal path: for example, the action step's response
+    and no cleanup pending, depends on whether that step was **typed**:
+    - **Not typed** (FailedPrecondition or INVALID_ARGUMENT): the stepper clears the daemon record with
+      `UpdateWorker{set_run, expect_run_id = run}` (unset run).
+    - **Typed** (any other outcome, or `ALREADY_EXISTS`, or a SENDING step later resolved as typed from the daemon
+      record): the step reached the agent, so under amended FR-214 the run gets **Clear-only cleanup** when Clear is
+      enabled: `hold = CLEANING_UP`, Clear sent once the agent is idle, then the record is cleared as for any
+      finished cleanup. With Clear disabled the record is cleared at once.
+    Any other late response goes through the normal path: for example, the action step's response
     arriving after the report has closed the run and started cleanup only updates the step. It never clears the
     record, which would skip cleanup and free a worker with its context (SC-001). The
     orchestrator's reconcile also clears any worker record naming a finished run that isn't holding, so a
@@ -295,7 +308,8 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
 - **A halted action step.** `S` is refused for ACTION_PROMPT: skipping it would close nothing and leave the run
   waiting for a report that can't come. `X` fails the run (FR-212 wording, naming the step).
 - **After a failure before the action prompt was delivered** (FR-214, amended at planning, run-560), **no custom
-  post-prompt** is sent. Clear (if enabled) **is** sent, once the agent is idle, if any pre-step reached the agent.
+  post-prompt** is sent. Clear (if enabled) **is** sent, once the agent is idle, if any step reached the agent:
+  a pre-step, or the action prompt itself (typed but not accepted, then failed with `X`).
   The pre-prompts may have left context, and SC-001 says the sandbox never takes its next run until the previous
   run's session is cleared. A run cancelled or failed before any step was typed sends nothing. If the agent can't
   receive Clear (it exited, or is an orphan, R14), the agent's next session is fresh anyway after an exit, so no hold
@@ -544,34 +558,53 @@ gets typed or what counts as evidence, and each needs a boundary.
      authored text or escape-hatch output, and refusing there broke escape-hatch results.
 2. **Hook callbacks are bound to their sandbox.** `POST /hook` is reached from inside sandboxes over
    `host.docker.internal`, and today it trusts the `sandbox_id` query parameter.
-   - **A stable per-sandbox token.** The daemon generates a random 32-byte token for each sandbox **once** and
-     persists it in its own store (never on `pb.Sandbox`, so `ListSandboxes` doesn't expose it).
-     - **Not rotated with the settings.** Settings are rewritten at every daemon start (`RefreshHooks`), and an
-       agent keeps the hook command it was launched with, possibly across daemon restarts (R14). Rotating on rewrite
-       would break every surviving agent's hooks.
-     - **Rotated only when the daemon spawns a new agent PTY.** The previous token is still accepted until the agent
-       launched with it is known to be gone (exited, or killed as an orphan, R14).
-   - **Where the token lives.** Not in the hook command in the host-mounted `settings.local.json`, which is written
-     0644 into the workspace and may be readable through another sandbox's mount. The daemon writes it with `sbx
-     exec` to a file **inside the sandbox**, outside the workspace mount (`~/.sxb/hook-token`, mode 0600). The hook
-     command reads it (`-H "X-Sxb-Token: $(cat ~/.sxb/hook-token)"`).
-   - **Checking it.** The hook server compares the token in constant time. A call with a **wrong** token is dropped
-     (403). A call with **no** token (an agent launched before this feature, still on the old hook command) is
-     accepted for **status display only**: it never counts as evidence, ends a hold, or classifies a step.
-   - **The escape hatch** (`/escape-hatch/run`, which types its result into the named sandbox's PTY) requires the
-     same token.
+   - **A per-agent token, passed in the agent's environment** (revised in run-566). Each time the daemon spawns an
+     agent PTY for a sandbox, it numbers it (the **generation**: a per-sandbox counter persisted in the daemon's store,
+     so it only grows, across daemon restarts too) and draws a random 32-byte token for it. Both go into the launch
+     string (`export SXB_HOOK_TOKEN=<token> SXB_AGENT_GEN=<n>; … exec claude`). The agent has them before its first
+     hook fires, and every process it starts (hooks, the escape-hatch wrapper, a nested `claude -p`) inherits them.
+     There is no file to write, so nothing races the spawn.
+     - **Persisted, never on `pb.Sandbox`.** The daemon keeps `{generation → token}` per sandbox in its own store, so
+       `ListSandboxes` doesn't expose it. A generation's token stays accepted, across daemon restarts too, until that
+       agent is known to be gone: its PTY exited, or it was reaped as an orphan (R14). An agent that survives a
+       restart therefore keeps working hooks.
+     - **The settings carry no secret.** `settings.local.json` is rewritten at every daemon start (`RefreshHooks`),
+       written 0644 into the workspace mount. It only references the variable (`-H "X-Sxb-Token:
+       $SXB_HOOK_TOKEN"`), so rewriting it never changes any agent's token.
+     - **Exposure.** The token is in the `sbx exec` argv on the daemon's own host, visible to that host's users, who
+       already control the daemon. It is also in the agent's environment inside its own sandbox. Another sandbox can
+       read neither.
+   - **Checking it.** The hook server compares the token in constant time against each live generation's token for
+     that sandbox; the match also gives the event's **generation**. A call with a token the sandbox doesn't have is
+     dropped (403). A call with **no** token (an agent launched before this feature) is accepted for **status
+     display only**: it never counts as evidence, ends a hold or classifies a step. After an upgrade such an agent is
+     an orphan anyway (its daemon restarted), so it is replaced before any step is typed into a sandbox (R14).
+   - **The escape hatch** (`/escape-hatch/run`, which types its result into the named sandbox's PTY) requires a live
+     generation's token.
+     - The generated wrapper (`escapehatch/inject.go` `writeWrapper`, whose `curl` sends no token today) sends the
+       same header from `$SXB_HOOK_TOKEN`, which it inherits from the agent.
+     - Wrappers are re-injected at daemon start alongside `RefreshHooks` (today they are written only at bring-up),
+       so no workspace keeps a tokenless wrapper.
+     - A tokenless call gets 403 with `escape hatch needs a current agent; open the terminal to restart it`.
    - **Self-forgery is corroborated, not trusted.** A process inside the sandbox can read its own token, so the
      decisions that would let context leak into the next run (SC-001) also need daemon-observed evidence:
-     - **Spawn generation.** The daemon numbers each agent PTY it spawns for a sandbox (`agent.Registry` generation).
-       When it writes a `NEEDS_DEVELOPER` hold (controller `Update`, `SetAgentStatus`, `leaveRunning`, R14), it
-       records the current generation on the run as `hold_gen` (daemon-written only).
-     - **Ending a hold on `startup`**: the event's generation is greater than `hold_gen`. Only an agent spawned by
+     - **Spawn generation.** `hold_gen` is the generation current when a `NEEDS_DEVELOPER` hold **begins**.
+       - It is written by the daemon only on the **transition into** that hold (controller `Update`, `SetAgentStatus`,
+         `leaveRunning`, R14), never re-recorded by a later write of the same hold (a `step_note` mirror, a re-sent
+         hold).
+       - It is never taken from a request: the controller `Update` always keeps the stored value, so an
+         orchestrator write built from a stale view can't zero or lower it.
+       - The generation counter is persisted (above), so a generation after a restart is always greater than any
+         recorded `hold_gen`.
+     - **Ending a hold on `startup`**: the event's generation (from its token) is greater than `hold_gen`. Only an agent spawned by
        `AttachAgent` (opening the terminal) or by guard 5 counts. While a hold is set, `Registry.Prompt` and
        `EnsureDrained` refuse to spawn (`sandbox is held; open its terminal`), so an escape-hatch result arriving
        after an agent exit can't spawn the agent that ends the hold.
-     - **Ending a hold on `clear`, and Clear's read-back**: the hook's `session_id` differs from the recorded main
-       session, **and** the daemon's screen shows the post-clear state (an empty, ready box with no conversation
-       above it, fixture `clear-banner`).
+     - **Ending a hold on `clear`, and Clear's read-back**: the hook carries the current generation's token, its
+       `session_id` differs from the recorded main session, **and** the daemon's screen shows the post-clear state
+       (an empty, ready box with no conversation above it, fixture `clear-banner`). The hook can arrive before the
+       redraw, so the screen is **polled** for up to `clearSettle` (1 s) after the hook (with a lazy nudge if it is
+       stale, R2), not read once at the instant of the hook.
    - **Only the main agent counts.** A nested `claude -p` in the workspace fires the same hooks with its own
      `session_id`.
      - Every hook now forwards its input (`--data-binary @-`); today `UserPromptSubmit` and `PreToolUse` post an
@@ -579,11 +612,18 @@ gets typed or what counts as evidence, and each needs a boundary.
        fields it needs (`session_id`, `hook_event_name`, `source`, `notification_type`, …). Large values such as
        PreToolUse `tool_input` are skipped without being buffered, so the 1 MiB decode cap no longer drops events
        (a 16 MiB hard read cap remains).
-     - The **main session** is bound to the first non-`compact` SessionStart, of any source, of each daemon-spawned
-       PTY generation, and is rebound on a corroborated `clear`. Later startups within the same generation (a nested
-       `claude -p`) are ignored.
-     - An agent with no recorded main session (one that survived an upgrade, or `/resume`d before one was bound) has
-       its events accepted until a SessionStart binds one.
+     - The **main session** is bound to the first non-`compact` SessionStart, of any source, carrying the **current
+       generation's** token.
+       - A process left behind by an earlier agent carries that agent's token (or none), so it can't bind.
+       - A nested `claude -p` inherits the current token, but it can only start after the agent's own SessionStart,
+         and later startups within a generation are ignored.
+       - **Any** `clear` SessionStart of the current generation rebinds it, without waiting for the screen, so a
+         developer's `/clear` during a resync is never missed. Screen corroboration is required only to end a hold
+         or to pass Clear's read-back.
+       - Until a session is bound (the agent is still starting, and no step can be typed yet), its events count for
+         status only.
+     - The session id is a filter against nested sessions, **not** a security boundary: it is readable inside the
+       sandbox (`~/.claude/projects`). The token and the corroboration above are the boundary.
      - The submit check, the evidence fields (incl. `last_needs_input_at`) and hold release use main-session events
        only. Status display keeps today's behaviour.
 3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as
@@ -604,6 +644,11 @@ gets typed or what counts as evidence, and each needs a boundary.
 - **Strip control characters silently.** Rejected for values: it would change what the caller sent without telling
   them.
 - **Rotate the token on every settings rewrite.** Rejected: surviving agents keep their launch-time hook command.
+- **A token file inside the sandbox** (`~/.sxb/hook-token`, the run-560 design). Rejected in run-566: it was written
+  by a separate `sbx exec` that could land after the agent's first hook, and a missed write made every hook
+  tokenless, cutting a new agent off from readiness, holds and evidence.
+- **Bind the main session with `--session-id <uuid>`.** Not needed: `/clear` changes the id anyway, and the
+  generation's token already tells this agent from a left-over process.
 
 ## R14 — Recovery when the owning daemon restarts
 
@@ -614,36 +659,91 @@ gets typed or what counts as evidence, and each needs a boundary.
   (`worker/deliver.go`) skips a worker with a run for exactly this reason: its agent "may still be working".
 - **But the daemon loses its handle on it.** The daemon's PTY master is gone, so a restarted daemon can neither
   type into the agent nor read its screen. `agents.Live(id)` is false.
-- **The agent's outbound channels keep working.** Hooks, with the stable token from R13, and its MCP completion
-  report.
+- **The agent's outbound channels keep working.** Hooks, with their generation's token from R13 (persisted, so it
+  survives the restart), and its MCP completion report.
 - **The daemon must not spawn a second agent next to it.** `t` or `Session()` would otherwise start another `claude`
   in the same workspace.
 
-**Decision.** After a restart, such an agent is an **orphan**: alive but neither typeable nor readable. The daemon
-detects it: `!agents.Live(id)` while the recorded agent status is neither EXITED nor none. The recovery depends on the
-run's phase:
+**Decision.** After a restart, such an agent is an **orphan**: alive but neither typeable nor readable.
+
+**Detection.** At daemon start, before `WarmStart`, the daemon marks a sandbox **orphan-suspect** when it has no live
+session and its recorded agent status is neither EXITED nor none. The mark is in memory. It is cleared when the
+orphan is reaped, or found already gone (below).
+
+**Recovery by the run's phase:**
 - **ACTION** (the action step TURN or AWAIT_CLOSE): **left in flight**, exactly as for runs without steps today.
   - Hooks keep the status current, and the agent's completion report closes the run normally.
   - At close, cleanup can't be typed into an orphan, so the hold is `NEEDS_DEVELOPER` (R5's "close on a sandbox
     whose agent can't be typed into" rule).
+  - **It can't be inspected.** Nothing may spawn next to it (the choke point below), so `t` is refused: `agent
+    detached by a daemon restart and still working run <id>; wait for its report, or replace it (fails the run)`.
+    The TUI turns that refusal into a choice (contracts/jobs-ui.md). **Replace** re-attaches with
+    `AttachInfo.replace_orphan`: the daemon reaps the orphan, which writes the agent status EXITED, so the
+    orchestrator fails the run as it does today on an exit (`agent exited`), with cleanup per FR-214; then the
+    fresh agent starts.
+  - **If it asks for input** (a permission or a question), its `Notification` hook still sets NEEDS_INPUT, so the
+    worker is surfaced as today. Nobody can answer it, so the row's note reads `detached agent asks for input; it
+    can't be answered here — replace it (fails the run) or wait`.
 - **SETUP**, or an action step not yet accepted: the current step **halts** with `step_sent_before_restart` (when it
-  had been sent) and the note `agent detached by a daemon restart; R or S starts a fresh agent`.
-  - A turn already running on the orphan may still finish; that changes nothing, since the next step can't be typed
-    into it anyway.
-  - `R` and `S` first **replace the orphan** (kill it, then start a fresh agent through guard 5's start path), then
-    retry or skip as usual. The halt's confirm warns that the setup context is lost.
-  - `X` fails the run (FR-212). A run whose action step is in SENDING/SENT resolves first from the daemon record
-    (R5), and becomes ACTION or SETUP accordingly.
-- **CLEANUP, or any hold:** `hold = NEEDS_DEVELOPER`, set by the daemon itself. Opening the terminal (`t`) kills the
-  orphan, then starts a fresh agent, whose `startup` ends the hold (FR-216).
+  had been sent) and the note `agent detached by a daemon restart; R restarts setup with a fresh agent`.
+  - A turn already running on the orphan may still finish. That changes nothing.
+  - The setup already done (model, effort, custom pre-steps) lives in the orphan's session and dies with it. So `R`
+    here is a **restart**, not a retry. Through `DeliverWorkerStep.restart` it reaps the orphan, starts a fresh agent, and **restarts the sequence from
+    step 0**: every pre-step is sent again as a new send. `step_index` is a send number (contracts/proto-delta.md),
+    so the re-sends pass guard 3a. The action prompt therefore never reaches an agent on the default model or effort
+    (SC-001).
+  - `S` is not offered for such a halt. `R`'s confirm reads `Replace the detached agent and restart setup from the
+    first step? (y/N)`.
+  - `X` fails the run (FR-212), with Clear-only cleanup per FR-214 on the fresh agent after the reap.
+  - A run whose action step is in SENDING/SENT resolves first from the daemon record (R5), and becomes ACTION or
+    SETUP accordingly.
+- **CLEANUP, or any hold:** `hold = NEEDS_DEVELOPER`, set by the daemon itself, with `hold_gen` = the orphan's
+  generation. Opening the terminal (`t`) reaps the orphan, then starts a fresh agent, whose `startup` ends the hold
+  (FR-216).
 
-**Killing an orphan.** The launch command records the agent's in-sandbox PID before `exec` (`echo $$ >
-~/.sxb/agent.pid; exec claude …`; `exec` keeps the PID). To kill the orphan, the daemon sends `sbx exec <ref> sh -c
-'kill -TERM "$(cat ~/.sxb/agent.pid)"'` and waits up to 5 s, then sends KILL. This applies only:
-- before the spawns above (a step's `R`/`S` after a restart, and `t` on a held sandbox);
-- never to a sandbox whose orphan is working an ACTION step.
+**One choke point for every spawn** (revised in run-566). Every path that starts an agent goes through
+`agent.Registry.Session` (verified on main):
+- `WarmStart` and `Deliver`, via `startAgent`, which creates the broadcaster;
+- `AttachAgent` and the gRPC terminal path, via the broadcaster's factory (`grpc/server.go`);
+- `Registry.Prompt`, and `EnsureDrained` (which creates the broadcaster).
 
-After the kill, the previous hook token is retired (R13).
+So the orphan check lives **in `Registry.Session`, before the factory runs**, and not in each caller:
+- `Session` asks an `OrphanGate` (set by the daemon) about the sandbox. The gate never blocks: the terminal registry
+  calls `Session` under its global lock.
+  - **No suspect mark** → spawn as today.
+  - **Suspect, with a run in ACTION** (or a run whose phase isn't known yet) → refuse with `ErrOrphanWorking` (the
+    message above). Nothing spawns. Only an explicit replace reaps it.
+  - **Suspect, with a run halted in setup** → refuse with `ErrOrphanHalted` (`R restarts setup with a fresh
+    agent`). Only `R` reaps it, so an escape-hatch result can't end the setup behind the developer's back.
+  - **Suspect, otherwise** (cleanup, a hold, no run, an uncontrolled sandbox) → refuse with `ErrOrphanReaping` and
+    start an asynchronous, single-flight **reap**. When the reap finishes, the mark is
+    cleared and a `sandbox_changed` is emitted, which re-kicks the stepper and `WarmStart`.
+- **Callers with a developer waiting** (`AttachAgent`, and `ResolveRunStep`'s restart) first call the blocking
+  `agents.ReapOrphan(ctx, id, mode)`, outside any lock. The following `Session` then finds no mark, so the developer
+  sees one action rather than an error and a retry. `mode` is `replace` for an ACTION orphan, or `restart` for a
+  setup halt; plain `t` on a hold needs neither.
+- **Best-effort callers** (`WarmStart`, `Deliver`'s start, `Registry.Prompt`, `EnsureDrained`) just get the error,
+  log it, and are retried by the re-kick.
+- **An uncontrolled sandbox's orphan** (a plain sandbox whose daemon restarted) is reaped too: it can't be reached,
+  and leaving it would put two agents in one workspace as soon as `t` is pressed.
+
+**Recording and reaping an orphan.**
+- **The launch string records the PID and its start time** before `exec`, creating the directory first:
+  `mkdir -p ~/.sxb; echo "$$ $(cut -d' ' -f22 /proc/$$/stat)" > ~/.sxb/agent.pid; … exec claude …`.
+  - `exec` keeps both the PID and the start time.
+  - The comm of `bash` has no spaces, so field 22 is the start time.
+  - The write is best-effort (`;`), so an agent still starts if it fails.
+- **A reap** is one `sbx exec <ref> sh -c …` script that:
+  1. reads `pid start` from the file. It does nothing, and reports **gone**, unless `/proc/<pid>/stat` exists with
+     the same start time. A reused PID is therefore never signalled: sandbox PIDs are small and reused quickly, and
+     an agent that died while the daemon was down still reads non-EXITED.
+  2. sends TERM, waits up to `orphanKillWait` (5 s) for `/proc/<pid>` to go, then sends KILL.
+  3. with no PID file (an agent launched before this feature), falls back to processes whose full command line
+     equals the agent argv (`agentArgv`). A nested `claude -p` never matches it.
+- **After a reap** (gone or killed), the daemon retires the generation's token (R13) and clears the suspect mark. It
+  writes the agent status EXITED, which the orchestrator reads as an exit (failing an ACTION run that was replaced),
+  **except** for a `restart`. There the fresh agent's STARTING follows directly, so the orchestrator doesn't read the
+  reap as the agent exiting during setup (FR-212).
 
 **What is not claimed.** Nothing is read back from a screen that no longer exists: `check_only` answers `no live
 agent`. R8's evidence-based resolution still applies to steps whose evidence arrives by hook, which keeps working

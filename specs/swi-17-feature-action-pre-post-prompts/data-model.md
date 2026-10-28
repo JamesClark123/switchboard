@@ -46,6 +46,7 @@ action has no enabled built-in and no custom prompts gets **no steps**, and is d
 | `step_sent_before_restart` | bool | FR-217 marker (FR-213, FR-222). |
 | `hold` | `WorkerHold` | Mirrors `WorkerRun.hold` while this run holds its sandbox (FR-213). |
 | `hold_since` | Timestamp | When the current hold began (display only; the daemon ends the hold, research R7). |
+| `step_send` | int32 | Send number of the current step's latest send. Incremented for every new send (a retry reuses it) and sent as `step_index`, so guard 3a stays monotonic even when setup is restarted from step 0 after an orphan reap (research R14). |
 
 ### StepStatus transitions
 
@@ -86,9 +87,9 @@ PENDING ──persist──► SENDING ──deliver ok──► SENT ──MODE
 | `step_role` | `StepRole` | The role of the step last delivered. The daemon suppresses task-complete notifications while it is SETUP or CLEANUP (FR-223). |
 | `hold` | `WorkerHold` (NONE, CLEANING_UP, NEEDS_INPUT_FREEING, NEEDS_DEVELOPER) | Set by the orchestrator (the existing `UpdateWorker{set_run, run}`) after the run closes; see research R7. |
 | `halted` | bool | The run is halted at a not-accepted step, so the sandbox counts as needing the developer (FR-213). |
-| `step_index`, `step_sent_at` | int32, Timestamp | Written by the `DeliverWorkerStep` guard in the same `reg.Update` as the typing decision. A repeat for the same index is refused, so no step is typed twice (FR-217). |
+| `step_index`, `step_sent_at` | int32, Timestamp | Written by the `DeliverWorkerStep` guard in the same `reg.Update` as the typing decision. `step_index` is the send number (`Run.step_send`). A repeat for the same number is refused, so no step is typed twice (FR-217). |
 | `step_note` | string | A copy of the run's `waiting:` / not-accepted note, written through `workerRunFor` only when it changes, so the sandbox list can surface a stuck cleanup (FR-213). |
-| `hold_gen` | int64 | **Daemon-written only.** The agent PTY generation when `NEEDS_DEVELOPER` was set. A `startup` ends the hold only from a later generation, spawned by `AttachAgent` or guard 5 (research R13). |
+| `hold_gen` | int64 | **Daemon-written only**, on the **transition into** `NEEDS_DEVELOPER`: the agent PTY generation then. The generation counter is persisted, so it only grows across restarts. The controller `Update` keeps the stored value and ignores the request's, and re-writing an existing hold doesn't re-record it. A `startup` ends the hold only from a later generation (read from the hook's token), spawned by `AttachAgent` or guard 5 (research R13). |
 
 **Writers.** Every orchestrator write of `WorkerRun` (`deliver`'s local mirror, `syncReviewFlag`,
 `repairReviewFlag`, holds) goes through one helper, `workerRunFor(run, live)`, that copies **all** fields from the
@@ -123,7 +124,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `last_submit_at` | `UserPromptSubmit` |
 | `last_turn_end_at` | `Stop` with no background tasks pending, or the WAITING backstop expiring |
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
-| `session_id` | The main agent's session: the first non-`compact` SessionStart of each daemon-spawned PTY generation, rebound on a corroborated `clear` (research R13). Empty means "accept" (an agent from before an upgrade). Hook events from any other session are ignored for steps, evidence and holds. |
+| `session_id` | The main agent's session: the first non-`compact` SessionStart carrying the **current generation's** hook token, rebound on any current-generation `clear` (research R13). Empty means none is bound yet, and events count for status only. Hook events from any other session are ignored for steps, evidence and holds. |
 | `last_needs_input_at` | A needs-input `Notification` from the main session (R8 rule 2). |
 | `input_idle_since` | Written **only when it changes** (set or unset), never per sample, so it doesn't flood `sandbox_changed`. Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
 
@@ -148,5 +149,6 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `stepScreenSize` | 140×45 | daemon: the PTY and screen size set when a broadcaster is created with no client (research R2) |
 | `modalGrace` | 1 s, **capped at 2 s** | worker step delivery: how long a modal may wait for a needs-input report before NOT_ACCEPTED (T006 may raise it within the cap; contracts/worker-step.md §6) |
 | `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
-| `hookTokenBytes` | 32 | daemon: the stable per-sandbox hook token, persisted; rotated only on a new agent PTY, with the previous one accepted until that agent is gone (research R13) |
-| `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent before a fresh spawn (research R14) |
+| `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token}` and accepted until that agent is gone (research R13) |
+| `clearSettle` | 1 s | daemon: how long the screen is polled for the post-clear state after a `clear` SessionStart (research R13) |
+| `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, reaped through `Registry.Session`'s orphan gate before any fresh spawn (research R14) |

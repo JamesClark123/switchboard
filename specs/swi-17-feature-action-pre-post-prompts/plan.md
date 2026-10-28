@@ -46,17 +46,23 @@ judged by evidence after its submit.
    - Control characters (ESC, so the paste-end marker too; C0 except `\n`/`\t`; DEL; C1) and invalid UTF-8 are
      refused in the **untrusted substituted values** only: call argument values and defaults, after CRLF is
      normalised, checked at call and compose time. Authored text and escape-hatch output are left as they are.
-   - Hook callbacks carry a **stable**, persisted per-sandbox token, stored inside the sandbox outside the workspace
-     mount. It is rotated only with a new agent PTY, with overlap.
+   - Hook callbacks carry a **per-agent token**, drawn for each spawned PTY generation and passed in the agent's
+     environment (`SXB_HOOK_TOKEN`), so it is set before the first hook. The daemon persists `{generation → token}`,
+     so an agent that survives a restart keeps working hooks. The escape-hatch wrapper sends the same header and is
+     re-injected at daemon start.
    - Hold release and Clear's read-back are corroborated by the daemon's own spawn generation and screen. Only the
      main agent session counts.
    - `DeliverWorkerStep` derives and checks built-in text, and accepts only increasing step indices.
 9. **Daemon restarts (R14).** The agent **survives** a daemon restart (`agentCommand`), but the daemon loses its
    PTY, so the agent is an **orphan**: hooks and its MCP report still work, but it can't be typed into or read.
    - An action in flight stays in flight.
-   - A setup step halts; `R`/`S` replace the orphan with a fresh agent.
+   - Its terminal can't be opened beside it; the developer may **replace** it, which fails the run.
+   - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
+     again on the fresh agent.
    - Cleanup becomes *needing the developer*.
-   - An orphan is killed (by its recorded PID) before any fresh spawn, so two agents never share a workspace.
+   - **One choke point:** every spawn goes through `agent.Registry.Session`, whose orphan gate refuses to start an
+     agent beside an unreaped orphan, and reaps it (by its recorded PID and start time) where the phase allows. So
+     two agents never share a workspace, whichever path spawns.
 
 ## Technical Context
 
@@ -168,10 +174,11 @@ src/services/switchboardd/internal/
 │   ├── hooks.go              # Tap(); evidence (last_submit_at, last_turn_end_at, session start); TASK_COMPLETE suppressed
 │   │                         #   for step_role SETUP/CLEANUP (Stop + backstop); SessionStart via SWI-15 (R12);
 │   │                         #   corroborated startup/clear SessionStart ends a NEEDS_DEVELOPER hold (R7, R13);
-│   │                         #   stable per-sandbox token (header, read from ~/.sxb/hook-token); every hook forwards
+│   │                         #   per-agent token (header from $SXB_HOOK_TOKEN, set at launch); every hook forwards
 │   │                         #   its input, streamed; PTY generation + main-session filter (R13)
 │   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); agents.Existing;
-│                             #   PID recorded at launch + KillOrphan (R14); no spawn from Prompt while held
+│                             #   PID + start time recorded at launch; orphan gate in Session + ReapOrphan (R14);
+│                             #   no spawn from Prompt while held
 ├── worker/
 │   ├── step.go               # NEW: DeliverWorkerStep guard (step_index: never typed twice) + submit check + check_only
 │   ├── deliver.go            # unchanged path for runs without steps; Frame() reused

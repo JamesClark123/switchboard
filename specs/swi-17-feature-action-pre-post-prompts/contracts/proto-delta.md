@@ -114,6 +114,9 @@ message Run {
   bool step_sent_before_restart = 26;
   WorkerHold hold = 27;
   google.protobuf.Timestamp hold_since = 28;
+  int32 step_send = 29;                  // send number of the current step's latest send: incremented for every new
+                                         // send (a retry reuses it), sent as DeliverWorkerStepRequest.step_index, so a
+                                         // setup restarted from step 0 after an orphan reap re-sends (research R14)
 }
 
 // ---- Worker-side records (research R4, R7, R10) ---------------------------
@@ -128,9 +131,9 @@ message AgentSession {
                                                         // sampled while controller.run is set (idle-nudge fallback, R1);
                                                         // written only when it is set or unset, never per sample
   string session_id = 10;                               // the main agent's session: the first non-compact SessionStart
-                                                        // of each daemon-spawned PTY generation, rebound on a
-                                                        // corroborated clear (research R13); empty = accept any.
-                                                        // Other sessions (a nested `claude -p`) are ignored for steps
+                                                        // carrying the current generation's hook token, rebound on any
+                                                        // current-generation clear (research R13); empty = none bound
+                                                        // yet (status only). Other sessions are ignored for steps
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
 }
 
@@ -139,12 +142,15 @@ message WorkerRun {
   StepRole step_role = 4;                // suppresses TASK_COMPLETE unless ACTION (FR-223)
   WorkerHold hold = 5;                   // set via UpdateWorker{set_run, run}
   bool halted = 6;                       // run halted at a not-accepted step (surfacing, FR-213)
-  int32 step_index = 7;                  // last step typed for this run, recorded by the guard (no double send, R3)
+  int32 step_index = 7;                  // send number of the last step typed for this run (Run.step_send), recorded
+                                         // by the guard (no double send, R3)
   google.protobuf.Timestamp step_sent_at = 8;  // when that step was typed (daemon clock)
   string step_note = 9;                  // the run's `waiting: …` / not-accepted note, written only when it changes,
                                          // so the sandbox list can surface a stuck cleanup (FR-213)
-  int64 hold_gen = 10;                   // daemon-written only: the agent PTY generation when NEEDS_DEVELOPER was set;
-                                         // a startup ends the hold only from a later generation (research R13)
+  int64 hold_gen = 10;                   // daemon-written only, on the transition into NEEDS_DEVELOPER: the agent PTY
+                                         // generation then (a persisted counter). Update keeps the stored value and
+                                         // ignores the request's; a startup ends the hold only from a later
+                                         // generation, read from its hook token (research R13)
 }
 
 message WorkerView {
@@ -178,9 +184,23 @@ message DeliverWorkerStepRequest {
                                          // step.text (research R13)
   bool first = 6;                        // the run is not started: record controller.run if none (idempotent for the same run_id)
   bool check_only = 7;                   // restart resolution (research R8): read back without typing
-  int32 step_index = 8;                  // must be greater than controller.run.step_index (monotonic), or equal with retry
+  int32 step_index = 8;                  // Run.step_send: must be greater than controller.run.step_index (monotonic),
+                                         // or equal with retry
   bool retry = 9;                        // ResolveRunStep RETRY: a repeated step_index is allowed only while controller.run.halted
                                          // (or, for CLEAR, while hold == NEEDS_DEVELOPER)
+  bool restart = 10;                     // R on a step halted by an owning-daemon restart: the daemon reaps the orphan
+                                         // (mode restart), starts a fresh agent as guard 5 does and refuses "agent is
+                                         // starting"; accepted only while the run is halted that way (research R14)
+}
+
+message AgentInput {
+  // … fields 1..4 unchanged …
+  message AttachInfo {
+    // … fields 1..3 unchanged …
+    bool replace_orphan = 4;             // `t` → Replace on an agent detached by a daemon restart and still working an
+                                         // ACTION step: reap it (the run fails as on an exit), then start a fresh
+                                         // agent. Without it, attaching beside an orphan is refused (research R14)
+  }
 }
 
 message UpdateWorkerRequest {
@@ -198,6 +218,8 @@ enum StepOutcome {
   STEP_OUTCOME_MODEL_TURN_INPUT_ONLY = 2;
   STEP_OUTCOME_AGENT_LOCAL = 3;          // accepted and finished (read-back passed for built-ins)
   STEP_OUTCOME_NOT_ACCEPTED = 4;
+  STEP_OUTCOME_UNCONFIRMED = 5;          // typed, but the screen stayed stale past the extension (research R2): the
+                                         // orchestrator treats the step as SENT and resolves it by evidence (R8)
 }
 
 message DeliverWorkerStepResponse {
@@ -232,6 +254,8 @@ message ResolveRunStepRequest {
 | `req.step_index ≤ controller.run.step_index` without a valid `retry` (already typed, or a replay) | `ALREADY_EXISTS`. Nothing is typed; the orchestrator reads `controller.run.step_sent_at` from the sandbox record, treats the step as SENT and resolves it per research R8. |
 | MODEL/EFFORT `expect` outside the fixed sets (research R13) | `INVALID_ARGUMENT`, before the guard commits. Nothing is recorded or typed. The orchestrator halts the step with the error as its note (never retries it). |
 | No live agent (and not a `first` step on an unheld sandbox, which starts one) | `FAILED_PRECONDITION` `no live agent`. The broadcaster is never created for a sandbox with no live agent. |
+| `restart` on a run not halted by a daemon restart | `FAILED_PRECONDITION` (`not a restart halt`) |
+| Beside an unreaped orphan (`Registry.Session`'s gate, research R14) | `FAILED_PRECONDITION` with the gate's reason (`agent detached by a daemon restart …`); nothing spawns |
 | Unknown sandbox | `NOT_FOUND` |
 | An older daemon | `UNIMPLEMENTED`. The orchestrator **unclaims** the run, marks that worker unable to take sequenced runs until its link reconnects, and re-queues the run. It fails the run ("no worker supports pre/post prompts; update their daemons") only when no attached worker is eligible (research R6). |
 
