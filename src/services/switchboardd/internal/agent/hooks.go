@@ -318,6 +318,7 @@ type HookServer struct {
 	now       func() time.Time
 	afterFunc func(time.Duration, func()) stopper
 	onReady   func(sandboxID string)
+	onEnd     func(sandboxID string)
 	screen    ScreenFunc
 	repaint   func(sandboxID string) bool
 	tokens    *HookTokens
@@ -414,6 +415,11 @@ func (s *HookServer) publish(sandboxID string, ev HookEvent) {
 // event's own status write.
 func (s *HookServer) SetOnReady(fn func(sandboxID string)) { s.onReady = fn }
 
+// SetOnSessionEnd registers the observer told of a main-agent SessionEnd
+// (SWI-17, research R14: a detached agent exiting normally is re-probed at
+// once). It runs after the event is dispatched.
+func (s *HookServer) SetOnSessionEnd(fn func(sandboxID string)) { s.onEnd = fn }
+
 // Handle processes one hook callback (POST /hook). The current hook command
 // names the event and sandbox in the query and posts Claude Code's hook input
 // as the body; the original one posts {"event","sandbox_id"} as the body. Both
@@ -480,6 +486,9 @@ func (s *HookServer) handle(p hookPayload) {
 				Event: p.Event, Source: p.Source, NotificationType: p.NotificationType, NeedsInput: needsInput,
 				BackgroundTasks: p.PendingBackground, At: now, SessionID: p.SessionID, PID: p.PID, Gen: p.Gen,
 			})
+		}
+		if p.Event == "SessionEnd" && s.onEnd != nil {
+			s.onEnd(p.SandboxID)
 		}
 	}
 	s.sampleIdle(p.SandboxID)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -49,6 +50,11 @@ type sessionEntry struct {
 	ready    bool
 	startT   *time.Timer
 	timedOut bool // the start timer parked it NEEDS_INPUT
+	// gen is the agent's generation (0 without a token index); done is closed
+	// once its exec client has exited (onExit), or at once for a session that
+	// cannot be waited on.
+	gen  int64
+	done chan struct{}
 }
 
 // Notifier emits a developer notification (the agent Hub).
@@ -94,6 +100,12 @@ type Registry struct {
 	notify Notifier
 	now    func() time.Time
 	logf   func(format string, args ...any)
+	// gate is asked before every spawn (SWI-17, research R14; nil = none).
+	gate OrphanGate
+	// onLost, when set, is told that an agent's exec client exited without the
+	// registry closing it, instead of the registry writing EXITED: the agent
+	// may outlive its client (research R14), so a probe decides.
+	onLost func(sandboxID string, gen int64)
 }
 
 // NewRegistry constructs a Registry using the given session factory. Exit
@@ -131,6 +143,23 @@ func (r *Registry) Generation(sandboxID string) int64 {
 		return 0
 	}
 	return t.Generation(sandboxID)
+}
+
+// SetOrphanGate registers the gate every spawn asks first (SWI-17, research
+// R14; nil = none).
+func (r *Registry) SetOrphanGate(g OrphanGate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gate = g
+}
+
+// SetOnClientExit registers the observer told that an agent's exec client
+// exited on its own (SWI-17, research R14). With one set, the registry no
+// longer writes EXITED itself: the observer probes whether the agent is gone.
+func (r *Registry) SetOnClientExit(fn func(sandboxID string, gen int64)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onLost = fn
 }
 
 // SetStatusUpdater registers where an agent's spontaneous exit is reported as
@@ -195,12 +224,24 @@ func (r *Registry) session(sandboxID string, spec *pb.AgentSpec, refuseHeld bool
 		r.mu.Unlock()
 		return nil, ErrHeld
 	}
+	// The gate never blocks, so asking it under mu is safe; a pass holds the
+	// sandbox's runtime lock until the session is registered (research R14).
+	release := func() {}
+	if r.gate != nil {
+		rel, err := r.gate.Admit(sandboxID)
+		if err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+		release = rel
+	}
 	var sp Spawn
 	tokens := r.tokens.Load()
 	if tokens != nil {
 		var err error
 		if sp, err = tokens.Issue(sandboxID); err != nil {
 			// An agent without a token would never count for steps or holds.
+			release()
 			r.mu.Unlock()
 			return nil, err
 		}
@@ -210,18 +251,22 @@ func (r *Registry) session(sandboxID string, spec *pb.AgentSpec, refuseHeld bool
 		if tokens != nil {
 			tokens.Retire(sandboxID, sp.Gen) // never started
 		}
+		release()
 		r.mu.Unlock()
 		return nil, err
 	}
-	e := &sessionEntry{s: s, ready: !reportsReady(spec)}
+	e := &sessionEntry{s: s, ready: !reportsReady(spec), gen: sp.Gen, done: make(chan struct{})}
 	r.sessions[sandboxID] = e
 	if !e.ready {
 		limit := agentStartTimeout
 		e.startT = time.AfterFunc(limit, func() { r.startTimedOut(sandboxID, e, limit) })
 	}
+	release()
 	r.mu.Unlock()
 	if w, ok := s.(Waiter); ok {
 		go r.watch(sandboxID, e, w)
+	} else {
+		close(e.done)
 	}
 	if e.ready {
 		return s, nil
@@ -299,6 +344,16 @@ func (r *Registry) Live(sandboxID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.sessions[sandboxID]
 	return ok
+}
+
+// LiveGen reports the generation of the sandbox's live session, if it has one.
+func (r *Registry) LiveGen(sandboxID string) (gen int64, live bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[sandboxID]; ok {
+		return e.gen, true
+	}
+	return 0, false
 }
 
 // ErrNoLiveAgent is returned by Existing when the sandbox has no live session.
@@ -408,7 +463,11 @@ func (r *Registry) watch(sandboxID string, e *sessionEntry, w Waiter) {
 
 // onExit forgets an exited session (if it is still the current one) and, unless
 // the registry closed it on purpose, reports AGENT_STATUS_EXITED exactly once.
+// With a client-exit observer (research R14) the observer is told instead: the
+// agent may outlive its exec client, so only a probe says it is gone. done is
+// closed last, after the locks are released.
 func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
+	defer close(e.done)
 	r.statusMu.Lock() // EXITED lands after a STARTING write in flight
 	defer r.statusMu.Unlock()
 	r.mu.Lock()
@@ -417,14 +476,18 @@ func (r *Registry) onExit(sandboxID string, e *sessionEntry) {
 		delete(r.sessions, sandboxID)
 	}
 	e.stopTimer()
-	report := !e.closing && r.status != nil
+	lost, onLost := !e.closing, r.onLost
+	report := lost && onLost == nil && r.status != nil
 	status := r.status
 	now := r.now()
 	r.mu.Unlock()
 	if ok && cur == e {
 		_ = e.s.Close() // release the PTY file; the child is already gone
 	}
-	if report {
+	switch {
+	case lost && onLost != nil:
+		onLost(sandboxID, e.gen)
+	case report:
 		_, _ = status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_EXITED, now)
 	}
 }
@@ -633,6 +696,39 @@ func (r *Registry) Close(sandboxID string) {
 	}
 }
 
+// Terminator is implemented by a Session whose exec client can be asked to
+// end (SIGTERM) before it is killed: a sandbox stop's drain (research R14).
+type Terminator interface {
+	Terminate() error
+}
+
+// CloseForStop is Close for a sandbox about to be stopped (research R14): the
+// session is marked closing (no EXITED, no probe) and forgotten, and its exec
+// client is sent TERM, not killed. done is closed once the client has exited
+// (by the existing watcher's onExit; never a second Wait), and finish kills it
+// if it is still alive and releases the PTY. The caller waits on done only
+// after this returns, outside every registry lock: onExit takes mu. No session
+// returns a nil done and a no-op finish.
+func (r *Registry) CloseForStop(sandboxID string) (done <-chan struct{}, finish func()) {
+	r.mu.Lock()
+	e, ok := r.sessions[sandboxID]
+	if !ok {
+		r.mu.Unlock()
+		return nil, func() {}
+	}
+	e.closing = true
+	e.stopTimer()
+	delete(r.sessions, sandboxID)
+	if !e.ready {
+		go r.resetUnready(sandboxID)
+	}
+	r.mu.Unlock()
+	if t, ok := e.s.(Terminator); ok {
+		_ = t.Terminate()
+	}
+	return e.done, func() { _ = e.s.Close() }
+}
+
 // resetUnready clears the STARTING (or start-timeout NEEDS_INPUT) an agent
 // closed before it reported ready leaves on its record, so the worker reads
 // IDLE again and the next delivery starts a fresh agent instead of waiting on
@@ -675,6 +771,14 @@ func (p *ptySession) Close() error {
 		_ = p.cmd.Process.Kill()
 	}
 	return p.f.Close()
+}
+
+// Terminate asks the exec client to end (Terminator): SIGTERM.
+func (p *ptySession) Terminate() error {
+	if p.cmd.Process == nil {
+		return nil
+	}
+	return p.cmd.Process.Signal(syscall.SIGTERM)
 }
 
 // Wait blocks until the agent child exits (Waiter). The registry calls it once
@@ -746,8 +850,13 @@ func agentArgv(spec *pb.AgentSpec) []string {
 // list. ⚠ The `-e NAME` form is documentation-derived like the rest of `sbx
 // exec`'s argv; TestAgentCommandPassesTheTokenByName pins it. Neither the
 // launch string nor the environment is ever logged.
+//
+// Just before the `exec` (after the cd, which stays first), the launch string
+// records the agent's generation, PID, start time and PTY in ~/.sxb/agent.pid
+// (pidRecord, research R14), which is how a restarted daemon finds an agent
+// that outlived it.
 func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec, sp Spawn) *exec.Cmd {
-	launch := "exec"
+	launch := pidRecord(sp.Gen) + "exec"
 	for _, a := range agentArgv(spec) {
 		launch += " " + shellQuote(a)
 	}
