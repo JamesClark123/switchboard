@@ -483,7 +483,7 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 	// Recorded by the step guard: daemon-written fields.
 	sent := timestamppb.New(time.Unix(5, 0))
 	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
-		x.Controller.Run = &pb.WorkerRun{Id: "r1", StepIndex: 4, StepSentAt: sent, HoldGen: 3}
+		x.Controller.Run = &pb.WorkerRun{Id: "r1", StepRole: pb.StepRole_STEP_ROLE_CLEANUP, StepIndex: 4, StepSentAt: sent, HoldGen: 3}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -495,11 +495,13 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 	if _, err := set(nil, "r2"); !errors.Is(err, ErrPrecondition) || run().GetId() != "r1" {
 		t.Errorf("mismatched clear = %v / %+v", err, run())
 	}
-	// A matching write keeps the daemon-written fields whatever it sends.
-	if _, err := set(&pb.WorkerRun{Id: "r1", NeedsReview: true, StepIndex: 1, HoldGen: 0}, "r1"); err != nil {
+	// A matching write keeps the daemon-written fields whatever it sends: a
+	// stale view's ACTION never relabels the cleanup step (FR-223).
+	if _, err := set(&pb.WorkerRun{Id: "r1", NeedsReview: true, StepRole: pb.StepRole_STEP_ROLE_ACTION, StepIndex: 1, HoldGen: 0}, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	if r := run(); !r.GetNeedsReview() || r.GetStepIndex() != 4 || !proto.Equal(r.GetStepSentAt(), sent) || r.GetHoldGen() != 3 {
+	if r := run(); !r.GetNeedsReview() || r.GetStepRole() != pb.StepRole_STEP_ROLE_CLEANUP || r.GetStepIndex() != 4 ||
+		!proto.Equal(r.GetStepSentAt(), sent) || r.GetHoldGen() != 3 {
 		t.Errorf("kept fields = %+v", r)
 	}
 	// Into NEEDS_DEVELOPER, then never lowered: only cleared. The transition

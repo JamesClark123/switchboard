@@ -388,6 +388,7 @@ func (rt *runtime) stepTx(seen *pb.Run, fn func(live *pb.Run) bool) (*pb.Run, bo
 	if err != nil || !sameStep(live, seen) {
 		return nil, false
 	}
+	accepted := actionAccepted(live)
 	if !fn(live) {
 		return live, true
 	}
@@ -395,7 +396,23 @@ func (rt *runtime) stepTx(seen *pb.Run, fn func(live *pb.Run) bool) (*pb.Run, bo
 		rt.svc.logf("[orchestrator %s] record step of %s: %v", rt.name(), live.GetId(), err)
 		return nil, false
 	}
+	if !accepted && actionAccepted(live) {
+		rt.armIdleReview(live)
+	}
+	if st := live.GetStepStatus(); st == pb.StepStatus_STEP_STATUS_HALTED || st == pb.StepStatus_STEP_STATUS_DONE {
+		rt.dropMarks(live.GetId()) // nothing is timed on a halted or finished step
+	}
 	return live, true
+}
+
+// armIdleReview starts the review grace of a run whose action prompt the
+// stepper just accepted while its agent is already idle (a send resolved after
+// a restart or reconnect): no further status may come to arm it (FR-156).
+func (rt *runtime) armIdleReview(run *pb.Run) {
+	if inFlight(run) && run.GetState() != pb.RunState_RUN_STATE_AWAITING_REVIEW &&
+		rt.sandboxRecord(run.GetSandboxId()).GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE {
+		rt.armReview(run)
+	}
 }
 
 // refreshLocked re-reads a caller's copy of a run from the store (caller holds
@@ -673,6 +690,7 @@ func (rt *runtime) endHoldingOn(sandboxID string) {
 			r.Hold = pb.WorkerHold_WORKER_HOLD_NONE
 			moveTo(r, int(r.GetStep()), pb.StepStatus_STEP_STATUS_DONE)
 			_ = rt.putRun(r)
+			rt.dropMarks(r.GetId())
 		}
 	}
 }

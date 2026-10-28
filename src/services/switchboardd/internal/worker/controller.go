@@ -342,8 +342,9 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 //   - a NEEDS_DEVELOPER hold is never lowered, only cleared: an orchestrator
 //     that has not yet seen the daemon's escalation cannot downgrade it;
 //   - the daemon-written fields of the same run are kept: hold_gen, and the
-//     step_index / step_sent_at the step guard recorded (a write built from a
-//     stale view must not reopen a step it already typed);
+//     step_role / step_index / step_sent_at the step guard recorded (a write
+//     built from a stale view must not reopen a step it already typed, nor
+//     relabel a cleanup step ACTION, FR-223);
 //   - hold_gen is never taken from the request (research R13): a write that
 //     moves a run into NEEDS_DEVELOPER records gen, the sandbox's agent
 //     generation now; one that keeps an existing hold keeps its value.
@@ -372,7 +373,7 @@ func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.Wor
 		next.HoldGen = 0 // daemon-written only
 	}
 	if same {
-		next.StepIndex, next.StepSentAt = cur.GetStepIndex(), cur.GetStepSentAt()
+		next.StepRole, next.StepIndex, next.StepSentAt = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt()
 	}
 	return next, nil
 }

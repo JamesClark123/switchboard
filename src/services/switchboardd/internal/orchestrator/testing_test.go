@@ -460,7 +460,7 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 			return nil, status.Error(codes.FailedPrecondition, "held for the developer")
 		}
 		if next != nil && cur.GetId() == next.GetId() {
-			next.StepIndex, next.StepSentAt, next.HoldGen = cur.GetStepIndex(), cur.GetStepSentAt(), cur.GetHoldGen()
+			next.StepRole, next.StepIndex, next.StepSentAt, next.HoldGen = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt(), cur.GetHoldGen()
 		}
 		sb.Controller.Run = next
 	}

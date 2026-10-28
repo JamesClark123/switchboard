@@ -35,6 +35,9 @@ type fakeDaemon struct {
 	check func(req *pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse
 	// hold, when set, is waited on by each typed call before it answers.
 	hold func(req *pb.DeliverWorkerStepRequest)
+	// commits counts the guard's commits: each records its own step_sent_at,
+	// as the real daemon's clock moves between a send and its retry.
+	commits int
 }
 
 func (d *fakeDaemon) set(fn func(d *fakeDaemon)) {
@@ -135,7 +138,10 @@ func (d *fakeDaemon) script(ctx context.Context, w *fakeWorker, req *pb.DeliverW
 		}
 		return nil, err
 	}
-	sentAt := timestamppb.New(d.clock.Now())
+	d.mu.Lock()
+	d.commits++
+	sentAt := timestamppb.New(d.clock.Now().Add(time.Duration(d.commits) * time.Millisecond))
+	d.mu.Unlock()
 	if run == nil {
 		run = &pb.WorkerRun{Id: req.GetRunId(), Action: req.GetAction()}
 		c.Run = run
@@ -151,6 +157,9 @@ func (d *fakeDaemon) script(ctx context.Context, w *fakeWorker, req *pb.DeliverW
 	if hold != nil {
 		hold(req)
 	}
+	// Every answer carries the step_sent_at the guard recorded (never the
+	// Enter's time): the orchestrator compares the two to tell a retry that
+	// typed from one that didn't.
 	if outcome != nil {
 		resp, err := outcome(req)
 		if resp != nil && resp.SentAt == nil {
@@ -1954,4 +1963,87 @@ func TestRestartLostAnswerOnALaterStep(t *testing.T) {
 	if got := d.typedTexts(); len(got) != 3 {
 		t.Errorf("nothing re-typed: %q", got)
 	}
+}
+
+// A retry's lost answer is resolved against the step_sent_at the daemon
+// recorded: a retry dropped before the guard (the record still names the
+// first send) was not typed and is sent again; one typed whose answer was
+// lost (a new record) is SENT, never typed twice.
+func TestLostRetryResolvesFromTheRecord(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = notAccepted(pb.StepKind_STEP_KIND_ACTION_PROMPT, "text still in the input box")
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+	w.mu.Lock()
+	inner := w.steps
+	retries := 0
+	w.steps = func(ctx context.Context, w *fakeWorker, req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+		if !req.GetRetry() || req.GetCheckOnly() {
+			return inner(ctx, w, req)
+		}
+		w.mu.Lock()
+		retries++
+		n := retries
+		w.mu.Unlock()
+		if n == 1 {
+			return nil, status.Error(codes.Unavailable, "connection reset") // never reached the guard
+		}
+		if _, err := inner(ctx, w, req); err != nil {
+			return nil, err
+		}
+		return nil, status.Error(codes.Unavailable, "connection reset") // typed, answer lost
+	}
+	w.mu.Unlock()
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 2, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
+		t.Fatal(err)
+	}
+	// Each lost answer waits in SENDING for the next look (a status event).
+	waitFor(t, func() bool {
+		if runNow(env, o, run.GetId()).GetStepStatus() == pb.StepStatus_STEP_STATUS_SENDING {
+			emit(w, "wa", nil)
+		}
+		return runNow(env, o, run.GetId()).GetStepStatus() == pb.StepStatus_STEP_STATUS_SENT
+	})
+	r := runNow(env, o, run.GetId())
+	if !proto.Equal(r.GetStepSentAt(), w.get("wa").GetController().GetRun().GetStepSentAt()) {
+		t.Errorf("SENT at %v, recorded %v", r.GetStepSentAt().AsTime(), w.get("wa").GetController().GetRun().GetStepSentAt().AsTime())
+	}
+	w.mu.Lock()
+	got := retries
+	w.mu.Unlock()
+	if got != 2 || len(d.typedTexts()) != 4 {
+		t.Errorf("retries %d, typed %q (want the action typed twice)", got, d.typedTexts())
+	}
+}
+
+// An action step resolved by the stepper after a restart, its agent already
+// idle with no further status to come, still goes to review (FR-156).
+func TestReviewAfterActionResolvedOnRestart(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return nil, status.Error(codes.Unavailable, "link blip")
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	rt := restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+			sb.Agent.LastSubmitAt = sentAfter(sb, time.Second)
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 2*time.Second)
+		})
+		env.clock.Advance(5 * time.Second)
+	})
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	waitFor(t, func() bool {
+		env.clock.Advance(reviewGrace)
+		settle(t, rt)
+		return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_REVIEW
+	})
 }

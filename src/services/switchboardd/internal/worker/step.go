@@ -191,7 +191,8 @@ type readSpec struct {
 type stepCheck struct {
 	id          string
 	read        readSpec
-	sentAt      time.Time
+	sentAt      time.Time // the Enter: reports from before it belong to something else
+	recorded    time.Time // step_sent_at as committed, the time every answer carries
 	tap         <-chan agent.HookEvent
 	priorSessID string // the session recorded before typing (Clear, T046)
 }
@@ -217,6 +218,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 	var (
 		name, priorSess string
 		recordedFirst   bool
+		recorded        time.Time // step_sent_at as committed: the answer's sent_at, so a retry compares like with like
 		prev            *pb.WorkerRun
 		startFirst      bool
 		restart         bool
@@ -273,7 +275,8 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		}
 		run.StepRole = req.GetStep().GetRole()
 		run.StepIndex = req.GetStepIndex()
-		run.StepSentAt = timestamppb.New(s.now())
+		recorded = s.now()
+		run.StepSentAt = timestamppb.New(recorded)
 		run.Halted = false
 		name, priorSess = c.GetName(), x.GetAgent().GetSessionId()
 		x.UpdatedAt = timestamppb.New(s.now())
@@ -311,7 +314,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		return nil, fmt.Errorf("deliver step to %s: %w", id, err)
 	}
 	// 3. The submit check.
-	return s.submitCheck(stepCheck{id: id, read: read, sentAt: sentAt, tap: tap, priorSessID: priorSess}), nil
+	return s.submitCheck(stepCheck{id: id, read: read, sentAt: sentAt, recorded: recorded, tap: tap, priorSessID: priorSess}), nil
 }
 
 // readScreen reads the sandbox's screen for the guard: a live agent gets a
@@ -442,7 +445,7 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 		}
 	}
 	resp := func(o pb.StepOutcome) *pb.DeliverWorkerStepResponse {
-		r := &pb.DeliverWorkerStepResponse{Outcome: o, SentAt: timestamppb.New(c.sentAt)}
+		r := &pb.DeliverWorkerStepResponse{Outcome: o, SentAt: timestamppb.New(c.recorded)}
 		if !submitAt.IsZero() {
 			r.SubmitAt = timestamppb.New(submitAt)
 		}
@@ -481,7 +484,7 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 				modalSince = now
 			}
 			if now.Sub(modalSince) >= t.modalGrace {
-				return notAccepted("picker opened", c.sentAt)
+				return notAccepted("picker opened", c.recorded)
 			}
 		case now.Before(deadline):
 			modalSince = time.Time{}
@@ -494,28 +497,28 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 			}
 			deadline, extension = now.Add(extension), 0
 		case !ok:
-			return notAccepted("not at an empty input box", c.sentAt)
+			return notAccepted("not at an empty input box", c.recorded)
 		default:
 			modalSince = time.Time{}
 			text, present, ready := agent.InputBox(lines)
 			switch {
 			case present && agent.StepInBox(text, c.read.text):
 				if presses >= t.rePresses {
-					return notAccepted("text still in the input box", c.sentAt)
+					return notAccepted("text still in the input box", c.recorded)
 				}
 				if err := s.stepTyper().RePress(c.id, presses); err != nil {
-					return notAccepted("text still in the input box", c.sentAt)
+					return notAccepted("text still in the input box", c.recorded)
 				}
 				s.logf("[worker] step %s: still in the input box; pressing Enter again (%d/%d)", c.id, presses+1, t.rePresses)
 				presses++
 				deadline = now.Add(t.window)
 			case present && ready && strings.TrimSpace(text) == "" && s.agentIdle(c.id):
 				if note, passed := s.readBack(c, lines, clearEv, extension); !passed {
-					return notAccepted(note, c.sentAt)
+					return notAccepted(note, c.recorded)
 				}
 				return resp(pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL)
 			default:
-				return notAccepted("not at an empty input box", c.sentAt)
+				return notAccepted("not at an empty input box", c.recorded)
 			}
 		}
 		select {

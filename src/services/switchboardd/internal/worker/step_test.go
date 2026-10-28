@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -318,6 +319,12 @@ func TestStepModelTurnOnUserPromptSubmit(t *testing.T) {
 	if run.GetId() != "run-1" || run.GetAction() != "review-pr" || run.GetStepIndex() != 1 || run.GetStepSentAt() == nil ||
 		run.GetStepRole() != pb.StepRole_STEP_ROLE_SETUP {
 		t.Errorf("recorded run = %+v", run)
+	}
+	// The answer carries the step_sent_at the guard committed (before the
+	// Enter), never the Enter time: the orchestrator tells a retry that typed
+	// from one that didn't by comparing the two.
+	if !proto.Equal(resp.GetSentAt(), run.GetStepSentAt()) {
+		t.Errorf("sent_at %v, recorded step_sent_at %v", resp.GetSentAt().AsTime(), run.GetStepSentAt().AsTime())
 	}
 	if h.e.mgr.emitted() == 0 {
 		t.Error("the guard's record is published")
