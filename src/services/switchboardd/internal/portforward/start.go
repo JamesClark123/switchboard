@@ -66,7 +66,7 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 
 	effPort, command, err := s.effectivePort(declared)
 	if err != nil {
-		s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NO_LOCAL_PORT,
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NO_LOCAL_PORT,
 			"could not allocate a port on the host: "+err.Error())
 		return
 	}
@@ -75,14 +75,27 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 	// copy. Probing first turns "you are silently talking to someone else's process"
 	// into a reported failure (US3-4).
 	if !inSandbox && !portFree(effPort) {
-		s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_PORT_IN_USE,
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_PORT_IN_USE,
 			fmt.Sprintf("port %d is already in use on this host; use %s in the command to let switchboard pick a free port", effPort, PortPlaceholder))
 		return
 	}
 
+	// An in-sandbox launch is a developer request that starts a new `sbx exec`
+	// client: refused while a lifecycle operation holds the sandbox's runtime
+	// lock, held from the launch until the handle has its process (SWI-17,
+	// research R14). No port is kept (FR-046).
+	unlock := func() {}
+	if inSandbox {
+		var ok bool
+		if unlock, ok = s.lockRuntime(sb.GetId()); !ok {
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, ErrSandboxBusy.Error())
+			return
+		}
+	}
 	proc, err := s.launch(ctx, sb, declared, command, inSandbox, effPort)
 	if err != nil {
-		s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
+		unlock()
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
 			"failed to launch command: "+err.Error())
 		return
 	}
@@ -93,6 +106,7 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		h.sbxPort = effPort
 	}
 	s.mu.Unlock()
+	unlock()
 
 	window := time.Duration(declared.GetReadinessTimeoutSeconds()) * time.Second
 	if window <= 0 {
@@ -111,8 +125,10 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		}
 		hostPort, err = s.publishSandboxPort(ctx, sb.GetContainerRef(), effPort)
 		if err != nil {
-			s.stopProc(proc, sb.GetContainerRef(), inSandbox)
-			s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
+			if ctx.Err() == nil {
+				s.stopProc(proc, sb.GetContainerRef(), inSandbox)
+			}
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
 				"could not publish the sandbox port: "+err.Error())
 			return
 		}
@@ -123,7 +139,7 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		s.mu.Unlock()
 	}
 
-	s.transition(instID, func(i *pb.ServiceInstance) {
+	s.transitionStarting(instID, func(i *pb.ServiceInstance) {
 		i.EffectivePort = effPort
 		i.HostEndpointPort = hostPort
 		i.StartedAt = timestamppb.New(s.now())
@@ -137,10 +153,15 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		return
 	}
 
-	s.transition(instID, func(i *pb.ServiceInstance) {
+	// Once cancelled (a stop's drain, a developer's stop) it defers to whoever
+	// cancelled it: a readiness that succeeded as it was cancelled never
+	// overwrites their outcome.
+	if ctx.Err() != nil || !s.transitionStarting(instID, func(i *pb.ServiceInstance) {
 		i.State = pb.ServiceState_SERVICE_STATE_RUNNING
 		i.Output, i.OutputTruncated = proc.output()
-	})
+	}) {
+		return
+	}
 
 	// From here the only thing that ends the service is a stop or its own death.
 	go s.watchExit(ctx, instID, proc)
@@ -155,35 +176,41 @@ func (s *Supervisor) launch(ctx context.Context, sb *pb.Sandbox, declared *pb.Ki
 }
 
 // readinessFailed classifies why a service never became reachable and records it
-// with a reason the developer can act on (FR-051).
+// with a reason the developer can act on (FR-051). Once the attempt is
+// cancelled it signals nothing (whoever cancelled it owns the processes), and
+// every write applies only while the instance is still STARTING.
 func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declared *pb.KitService, instID string, proc *runningProc, cause error, inSandbox bool, effPort uint32) {
 	out, truncated := proc.output()
 	s.insts.Update(instID, func(i *pb.ServiceInstance) {
-		i.Output, i.OutputTruncated = out, truncated
+		if i.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
+			i.Output, i.OutputTruncated = out, truncated
+		}
 	})
-	s.stopProc(proc, sb.GetContainerRef(), inSandbox)
+	if ctx.Err() == nil {
+		s.stopProc(proc, sb.GetContainerRef(), inSandbox)
+	}
 
 	switch {
 	case errors.Is(cause, context.Canceled):
-		s.transition(instID, func(i *pb.ServiceInstance) {
+		s.transitionStarting(instID, func(i *pb.ServiceInstance) {
 			i.State = pb.ServiceState_SERVICE_STATE_STOPPED
 			i.EndedAt = timestamppb.New(s.now())
 		})
 		s.release(instID)
 	case errors.Is(cause, errProcessExited):
-		s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_EXITED_EARLY,
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_EXITED_EARLY,
 			exitDetail(proc))
 	default:
 		// The window elapsed with the process still alive. Inside a sandbox that is
 		// most often a loopback-only bind — diagnosable, and with a concrete fix —
 		// so look before reporting a bare "never listened" (research R5).
 		if inSandbox && s.sandboxListenState(ctx, sb.GetContainerRef(), effPort) == listenLoopbackOnly {
-			s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING_LOOPBACK,
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING_LOOPBACK,
 				fmt.Sprintf("%q is listening on 127.0.0.1:%d inside the sandbox, which is unreachable from outside it — bind all interfaces instead (e.g. --host 0.0.0.0)",
 					declared.GetName(), effPort))
 			return
 		}
-		s.markFailed(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING,
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING,
 			fmt.Sprintf("nothing was listening on port %d within the readiness window", effPort))
 	}
 }

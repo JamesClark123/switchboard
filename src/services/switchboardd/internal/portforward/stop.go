@@ -42,6 +42,14 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 	if IsTerminal(inst.GetState()) {
 		return inst, nil
 	}
+	// A developer's stop is refused while a lifecycle operation holds the
+	// sandbox's runtime lock: that operation is stopping the service anyway
+	// (SWI-17, research R14).
+	unlock, ok := s.lockRuntime(sandboxID)
+	if !ok {
+		return nil, ErrSandboxBusy
+	}
+	defer unlock()
 	s.stopInstance(inst.GetId(), false)
 	stopped, _ := s.insts.Get(inst.GetId())
 	return stopped, nil
@@ -180,6 +188,51 @@ func (s *Supervisor) stopProc(proc *runningProc, ref string, inSbx bool) {
 	}
 	if !proc.hasExited() {
 		s.signalGroup(h, true, false)
+	}
+}
+
+// Group is an in-sandbox process group a stop's drain signals (research R14).
+type Group struct {
+	Ref  string
+	PGID int
+}
+
+// startInterruptedDetail is the FAILED detail of a start a sandbox stop
+// interrupted: the stop may fail, leaving its process running.
+const startInterruptedDetail = "start interrupted by a sandbox stop; if the stop failed it may still be running in the sandbox"
+
+// InterruptStarting is a sandbox stop's drain of its still-starting services
+// (SWI-17, research R14, best effort): each one's in-sandbox group (ref,
+// pgid) is read from its handle first, because release deletes the handle;
+// then it is recorded FAILED (LAUNCH_FAILED, the may-still-be-running detail),
+// which cancels its context (its launch client and readiness execs end, and no
+// new one starts) and unpublishes its port; then every collected group is sent
+// TERM through `sbx exec`. RUNNING services are left alone: their clients are
+// up and end with the container. The groups are returned for KillGroups.
+func (s *Supervisor) InterruptStarting(sandboxID string) []Group {
+	var groups []Group
+	for _, inst := range s.insts.ActiveBySandbox(sandboxID) {
+		if inst.GetState() != pb.ServiceState_SERVICE_STATE_STARTING {
+			continue
+		}
+		s.mu.Lock()
+		if h := s.handles[inst.GetId()]; h != nil && h.inSbx && h.pgid > 0 && h.ref != "" {
+			groups = append(groups, Group{Ref: h.ref, PGID: h.pgid})
+		}
+		s.mu.Unlock()
+		s.failStarting(inst.GetId(), pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, startInterruptedDetail)
+	}
+	s.signalGroups(groups, false)
+	return groups
+}
+
+// KillGroups sends KILL to every group InterruptStarting collected, whatever
+// its host client did: the client's exit says nothing about the group.
+func (s *Supervisor) KillGroups(groups []Group) { s.signalGroups(groups, true) }
+
+func (s *Supervisor) signalGroups(groups []Group, force bool) {
+	for _, g := range groups {
+		s.signalGroup(&procHandle{inSbx: true, ref: g.Ref, pgid: g.PGID}, force, false)
 	}
 }
 
