@@ -294,14 +294,27 @@ func TestReconcileCallsGoBringUpInLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.running = map[string]bool{"w": true}
-	var started []string
+	var started, order []string
 	m.SetOnBringUp(func(*pb.Sandbox) { t.Error("the blocking observer ran") })
-	m.SetGoBringUp(func(sb *pb.Sandbox) { started = append(started, sb.GetId()) })
+	m.SetGoBringUp(func(sb *pb.Sandbox) {
+		started = append(started, sb.GetId())
+		order = append(order, "bring-up")
+	})
+	m.onChange = func(sb *pb.Sandbox) {
+		if sb.GetId() == "id-w" {
+			order = append(order, "emit")
+		}
+	}
 	if _, err := m.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(started) != 1 || started[0] != "id-w" {
 		t.Errorf("started %v before Reconcile returned; want [id-w]", started)
+	}
+	// Marked before it is published (PR #17 run-505): the emit wakes a local
+	// dispatch, which must find the bring-up already holding the agent start.
+	if len(order) != 2 || order[0] != "bring-up" || order[1] != "emit" {
+		t.Errorf("order %v; want [bring-up emit]", order)
 	}
 }
 

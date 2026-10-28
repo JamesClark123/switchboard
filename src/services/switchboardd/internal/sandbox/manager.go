@@ -1188,8 +1188,10 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 		if err != nil || !proto.Equal(cur.GetUpdatedAt(), sb.GetUpdatedAt()) {
 			continue
 		}
-		m.emit(cur)
 		if cur.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
+			// The bring-up is marked before the record is published: the emit is
+			// what wakes a local orchestrator's dispatch, which must find the
+			// agent start held until the gateway is reloaded (PR #17 run-505).
 			// The observer may take minutes; it never holds up the caller.
 			if cur.GetController() != nil {
 				if fn := m.goBringUp; fn != nil {
@@ -1198,8 +1200,10 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 					go fn(cur)
 				}
 			}
+			m.emit(cur)
 			continue
 		}
+		m.emit(cur)
 		// The teardown ran before the observer published, so a write that
 		// landed during it (a restart's RUNNING) was published first and is now
 		// behind this pass's state: publish the record as it is now.
