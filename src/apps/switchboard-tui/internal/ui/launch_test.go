@@ -21,6 +21,7 @@ import (
 type fakeDaemon struct {
 	mu          sync.Mutex
 	hostID      string // overrides the default "test-host" when set
+	freedRunID  string // the run MarkWorkerFree reports closed, when set
 	workspace   string // WorkspaceRoot() override
 	sandboxes   []*pb.Sandbox
 	candidates  []*pb.SourceRef

@@ -209,9 +209,10 @@ func TestOverviewRunsPromptCancelAndMarkFree(t *testing.T) {
 	}
 	v := m.jobs.formVals.(*markFreeVals)
 	v.outcome, v.note = "failed", "did not finish"
+	a.freedRunID = "run-r" // the daemon closes the run the dialog was opened for
 	m, cmd = update(m, ctrlS())
 	m = feed2(m, cmd)
-	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a sb-review true "did not finish"`) || !strings.Contains(m.status, "closed run-reviewed as failed") {
+	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a sb-review true "did not finish"`) || !strings.HasPrefix(m.status, "closed run-r as failed") {
 		t.Errorf("mark free: calls %q status %q", a.orchCallsJoined(), m.status)
 	}
 	if m.jobs.form != nil || m.screen != screenJobs {
@@ -322,7 +323,7 @@ func TestMarkFreeFromSandboxListAndWorkersView(t *testing.T) {
 	}
 	m, cmd = update(m, ctrlS())
 	m = feed2(m, cmd)
-	if m.orchDetail.form != nil || m.screen != screenOrchDetail || !strings.Contains(m.status, "closed run-reviewed") {
+	if m.orchDetail.form != nil || m.screen != screenOrchDetail || !strings.Contains(m.status, "closed run-1") {
 		t.Errorf("a detail mark free closes the dialog on the detail: form %v screen %v status %q", m.orchDetail.form != nil, m.screen, m.status)
 	}
 }

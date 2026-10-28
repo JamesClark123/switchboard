@@ -544,6 +544,15 @@ func opCallKey(op *orchOpState) string {
 	return fmt.Sprintf("%s|%s|%s|%v", op.formKind, t.host, t.id, sentOpVals(op.formVals))
 }
 
+// markFreeMismatch reports a mark-free that closed another run (or none) than
+// runID, the run its dialog was opened for.
+func markFreeMismatch(runID string, closed *pb.Run) string {
+	if closed.GetId() == "" {
+		return "error: " + runID + " was no longer awaiting review; the worker was marked free instead"
+	}
+	return fmt.Sprintf("error: mark free closed %s as %s, not %s (%s was no longer awaiting review) — check %s's outcome", closed.GetId(), runState(closed), runID, runID, closed.GetId())
+}
+
 // markFreeCallKey names a mark-free of one run on one worker.
 func markFreeCallKey(v *markFreeVals) string {
 	return "mark free|" + v.host + "|" + v.orchID + "|" + v.sandboxID + "|" + v.runID
@@ -561,6 +570,7 @@ func sentOpVals(vals any) any {
 	case *eventFormVals:
 		c := *v
 		c.name, c.intervalMinutes, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.intervalMinutes), trimLines(c.args)
+		c.activeFrom, c.activeUntil, c.timezone = strings.TrimSpace(c.activeFrom), strings.TrimSpace(c.activeUntil), strings.TrimSpace(c.timezone)
 		return c
 	case *callFormVals:
 		out := map[string]string{}
@@ -671,13 +681,19 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		failed := v.outcome == "failed"
-		note, sbID, orchID := strings.TrimSpace(v.note), v.sandboxID, v.orchID
+		note, sbID, orchID, runID := strings.TrimSpace(v.note), v.sandboxID, v.orchID, v.runID
 		return m, func() tea.Msg {
 			ctx, cancel := ctxTimeout()
 			defer cancel()
 			run, err := md.MarkWorkerFree(ctx, orchID, sbID, failed, note)
 			if err != nil {
 				return orchFormErrMsg{err: err, sink: s}
+			}
+			if runID != "" && run.GetId() != runID {
+				// The daemon closes whatever is awaiting review on the worker (its
+				// request names no run): the dialog's run was closed meanwhile, and
+				// this call went to another run, or to none (review run-491).
+				return orchDoneMsg{status: markFreeMismatch(runID, run), reload: true, closeForm: true, sink: s, target: t}
 			}
 			if run.GetId() == "" {
 				// Nothing was awaiting review after all; the daemon freed the

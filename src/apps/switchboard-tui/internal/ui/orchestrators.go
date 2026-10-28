@@ -287,16 +287,17 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// applyOrchFormErr shows a form refusal verbatim and keeps the form open.
-// settleDuplicateForm replaces the "still saving" refusal on a form reopened with
-// the same call as c, now that c has answered, so it no longer says so.
+// settleDuplicateForm replaces the "still saving" refusal naming c on the open
+// form, now that c has answered, so it no longer says so. Matched by the call
+// the refusal names, so it settles even if the form was edited since.
 func (m *Model) settleDuplicateForm(s orchSurface, c formCall, outcome string) {
 	op := m.opState(s)
-	if op.form != nil && !op.formSaving && strings.Contains(op.status, "still saving") && opCallKey(op) == c.key {
+	if op.form != nil && !op.formSaving && strings.Contains(op.status, "the same "+c.label+" is still saving") {
 		op.status = "the earlier " + c.label + " finished: " + outcome
 	}
 }
 
+// applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
 	m.releaseOpCall(msg.formCall)
 	if tok := msg.formCall.token; tok != 0 {

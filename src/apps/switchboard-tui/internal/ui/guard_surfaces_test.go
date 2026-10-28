@@ -1124,3 +1124,61 @@ func TestOpCallKeyTrimsLikeSend(t *testing.T) {
 		t.Error("a mark-free is keyed by its run")
 	}
 }
+
+// Review run-491: a dialog left open while its run was closed elsewhere says so
+// when its ctrl+s closes another run instead.
+func TestMarkFreeFlagsAnotherRunClosed(t *testing.T) {
+	a := &fakeDaemon{hostID: "test-host", orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host"}}}}
+	a.sandboxes = []*pb.Sandbox{{Id: "w1", DisplayName: "worker-one", State: pb.SandboxState_SANDBOX_STATE_RUNNING,
+		Controller: &pb.SandboxController{OrchestratorId: "o-a", Name: "alpha-bot", HostId: "test-host", Run: &pb.WorkerRun{Id: "run-1", Action: "review-pr", NeedsReview: true}}}}
+	m := withSandboxes(sized(New(a, "/work")), a.sandboxes)
+	m, _ = update(m, press("m"))
+	m, cmd := update(m, ctrlS())
+	m, _ = update(m, runCmd(cmd))
+	if strings.HasPrefix(m.status, "error") || !strings.Contains(m.status, "closed run-1") {
+		t.Fatalf("the dialog's own run closing is a plain success: %q", m.status)
+	}
+	a.freedRunID = "run-2" // run-1 was closed elsewhere; run-2 now awaits review
+	m, _ = update(m, press("m"))
+	m, cmd = update(m, ctrlS())
+	m, _ = update(m, runCmd(cmd))
+	if !strings.HasPrefix(m.status, "error: mark free closed run-2 as completed, not run-1") {
+		t.Errorf("closing another run should be flagged: %q", m.status)
+	}
+	if got := markFreeMismatch("run-1", &pb.Run{}); !strings.Contains(got, "run-1 was no longer awaiting review; the worker was marked free") {
+		t.Errorf("closing no run should be flagged too: %q", got)
+	}
+}
+
+// Review run-491: the reopened form's notice settles even when the form was
+// edited after the refusal.
+func TestGuardReopenedFormSettlesAfterEdit(t *testing.T) {
+	act := &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "x",
+		Arguments: []*pb.ActionArgument{{Name: "who"}}}
+	m, _ := jobsWith(t, jobsActions, []*pb.Action{act}, nil)
+	m, _ = update(m, press("enter"))
+	m, cmd := update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, press("enter"))
+	m, _ = update(m, ctrlS())
+	*m.jobs.formVals.(*callFormVals).values["who"] = "someone" // edited after the refusal
+	m, _ = update(m, runCmd(cmd))
+	if !strings.Contains(m.jobs.status, "the earlier call triage on alpha-bot finished") {
+		t.Errorf("the notice should name the earlier call's outcome: %q", m.jobs.status)
+	}
+}
+
+// The event form's snapshot holds its days slice: comparing must not panic, and
+// an empty selection reads as none.
+func TestEventSnapshotCompares(t *testing.T) {
+	base := snapshotOpVals(&eventFormVals{name: "e", days: []int{}})
+	if !opValsEqual(base, snapshotOpVals(&eventFormVals{name: "e"})) {
+		t.Error("no days and an empty selection should compare equal")
+	}
+	v := &eventFormVals{name: "e", days: []int{1, 3}}
+	snap := snapshotOpVals(v)
+	v.days[0] = 2 // huh writing in place must not reach the snapshot
+	if opValsEqual(snap, snapshotOpVals(v)) {
+		t.Error("a changed day should make the form dirty")
+	}
+}
