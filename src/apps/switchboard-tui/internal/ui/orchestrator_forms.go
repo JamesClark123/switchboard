@@ -760,7 +760,7 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			return m, m.rebuildActionForm(s, v)
 		}
 		a := v.action(args)
-		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true,
+		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true, owner: v,
 			save: func(ctx context.Context, g *pb.LaneGuardConfirm) error {
 				_, err := od.PutAction(ctx, id, a, g)
 				return err

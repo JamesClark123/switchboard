@@ -38,7 +38,9 @@ type lanesPanel struct {
 	stale  string
 	status string
 	// saving is set while the lane form's PutLane is out: keys but esc wait.
-	saving bool
+	// saveSeq numbers the saves, so a reply applies only to its own.
+	saving  bool
+	saveSeq int
 }
 
 // laneFormVals backs the lane form.
@@ -242,6 +244,7 @@ func (m Model) laneForm(v *laneFormVals) *huh.Form {
 type laneFormMsg struct {
 	sink orchSurface
 	key  string // the orchestrator it was saved on
+	seq  int    // the panel's saveSeq when it was sent
 	lane *pb.Lane
 	err  error
 }
@@ -257,17 +260,19 @@ func (m Model) submitLaneForm(s orchSurface) (Model, tea.Cmd) {
 	}
 	v, laneID, id, key := *p.formVals, p.formLane, t.id, t.key()
 	p.saving = true
+	p.saveSeq++
+	seq := p.saveSeq
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		l, err := od.PutLane(ctx, id, laneID, strings.TrimSpace(v.name), strings.TrimSpace(v.description))
-		return laneFormMsg{sink: s, key: key, lane: l, err: err}
+		return laneFormMsg{sink: s, key: key, seq: seq, lane: l, err: err}
 	}
 }
 
 func (m Model) applyLaneForm(msg laneFormMsg) (tea.Model, tea.Cmd) {
 	p := m.lanes(msg.sink)
-	if p.formVals == nil || !p.saving || m.lanesTarget(msg.sink).key() != msg.key {
+	if p.formVals == nil || !p.saving || msg.seq != p.saveSeq || m.lanesTarget(msg.sink).key() != msg.key {
 		// Closed meanwhile, or another orchestrator's form: the footer only.
 		if msg.err != nil {
 			m.status = "error: " + msg.err.Error()
@@ -360,7 +365,7 @@ func (m Model) pickerWrite(s orchSurface) (laneWrite, bool) {
 		return laneWrite{}, false
 	}
 	sel := pk.selected()
-	w := laneWrite{sink: s, target: t, closePicker: true}
+	w := laneWrite{sink: s, target: t, closePicker: true, owner: pk}
 	switch pk.mode {
 	case pickWorkerLanes:
 		req := func() *pb.SetWorkerLanesRequest {
@@ -540,6 +545,9 @@ type laneWrite struct {
 	// list's way (statusMsg / errMsg), busyID's row spinning once confirmed.
 	list   bool
 	busyID string
+	// owner is the picker or action-form values the write was started from:
+	// its outcome applies to that one only, not to one opened since.
+	owner any
 }
 
 // back is the screen a write's confirms return to.
@@ -626,13 +634,13 @@ func (m Model) atOrigin(w laneWrite) bool {
 	switch {
 	case w.closeForm:
 		op := m.opState(w.sink)
-		if op.form == nil {
+		if op.form == nil || (w.owner != nil && op.formVals != w.owner) {
 			return false
 		}
 		t = op.formTarget
 	case w.sink == surfaceJobs && !m.jobs.manage.open:
 		return false
-	case w.closePicker && m.lanes(w.sink).picker == nil:
+	case w.closePicker && (m.lanes(w.sink).picker == nil || m.lanes(w.sink).picker != w.owner):
 		return false
 	}
 	return t.key() == w.target.key()
@@ -914,12 +922,15 @@ func (m Model) lanesView(s orchSurface) []string {
 		if len(uses) > 0 {
 			act = capNames(uses)
 		}
-		rows = append(rows, m.fitLine(head),
+		// One entry per lane (its two lines), so the window never splits one.
+		rows = append(rows, m.fitLine(head)+"\n"+
 			m.fitLine(dimStyle.Render("    "+fitCol("members: "+mem, half)+"  "+sanitizeLine("actions: "+act, 0))))
 	}
-	// Windowed around the cursor (two lines a lane), under the detail's or the
+	// Windowed around the cursor by whole lanes, under the detail's or the
 	// dialog's header, the notice and the status.
-	lines = append(lines, windowLines(rows, 2*p.cursor+1, m.bodyHeight()-len(lines)-6)...)
+	for _, r := range windowLines(rows, p.cursor, (m.bodyHeight()-len(lines)-6)/2) {
+		lines = append(lines, strings.Split(r, "\n")...)
+	}
 	if p.status != "" {
 		lines = append(lines, "", statusErrStyle.Render(sanitizeTerminalText(p.status)))
 	}

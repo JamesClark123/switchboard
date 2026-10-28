@@ -26,14 +26,9 @@ func (rt *runtime) pushWorkerStateTo(ctx context.Context, hostID string, api Wor
 		if w.GetHostId() != hostID {
 			continue
 		}
-		// A failure is logged by pushWorker. A transient one while the host is
-		// up gets the lane retry (its lanes; the name and briefing follow on the
-		// next refresh or reconnect); otherwise the next reconnect retries.
-		if err := rt.pushWorker(ctx, api, w.GetSandboxId(), true); err != nil && transient(err) {
-			if up, _ := rt.reachability(hostID); up {
-				rt.lanePushed(hostID, w.GetSandboxId(), true)
-			}
-		}
+		// A failure is logged by pushWorker, which arms the lane retry for a
+		// transient one; otherwise the next reconnect retries.
+		_ = rt.pushWorker(ctx, api, w.GetSandboxId(), true)
 	}
 }
 
@@ -69,6 +64,15 @@ func (rt *runtime) pushWorker(ctx context.Context, api WorkerAPI, sandboxID stri
 	cancel()
 	if err != nil {
 		rt.svc.logf("[orchestrator %s] update worker %s on %s: %v", rec.GetName(), sandboxID, w.GetHostId(), err)
+		if full && !w.GetReasoning() && transient(err) {
+			// A full push that failed transiently while the host is up gets the
+			// lane retry, armed under the push lock like its drop below. It
+			// re-sends the lanes; the name and briefing follow on the next
+			// briefing refresh or reconnect.
+			if up, _ := rt.reachability(w.GetHostId()); up {
+				rt.lanePushed(w.GetHostId(), sandboxID, true)
+			}
+		}
 		return err
 	}
 	rt.mu.Lock()

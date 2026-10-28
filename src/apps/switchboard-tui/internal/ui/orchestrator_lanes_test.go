@@ -699,6 +699,12 @@ func TestLaneResultsStayWithTheirOrigin(t *testing.T) {
 	if p := m.orchDetail.lanes.picker; p == nil || p.status != "" || m.orchDetail.lanes.stale != "" {
 		t.Errorf("another orchestrator's refusal landed on this picker: %+v", p)
 	}
+	// So does a late success of an earlier picker on this same orchestrator.
+	earlier := laneWrite{sink: surfaceDetail, target: m.detailTarget(), closePicker: true, done: "saved", owner: &lanePicker{}}
+	m, _ = update(m, laneResultMsg{w: earlier})
+	if m.orchDetail.lanes.picker == nil {
+		t.Error("an earlier picker's result closed this one")
+	}
 }
 
 // Declining the guard on an action form completed by tab returns to an
