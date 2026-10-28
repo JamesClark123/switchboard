@@ -1047,13 +1047,12 @@ func TestGuardMarkFreeLeftWhileSaving(t *testing.T) {
 	if m.screen != screenList {
 		t.Fatalf("esc while saving returns to the list, got %v", m.screen)
 	}
-	// The row still offers m; the reopened dialog refuses the same call.
+	// The row still offers m, but no second dialog opens for the run being
+	// closed: one would outlive it (review run-482).
 	m, _ = update(m, press("m"))
-	m, cmd2 := update(m, ctrlS())
-	if cmd2 != nil || !strings.Contains(m.orchDetail.status, "still saving") {
-		t.Errorf("a second mark free went out mid-call (status %q)", m.orchDetail.status)
+	if m.screen != screenList || m.orchDetail.form != nil || !strings.Contains(m.status, "mark free of run-1 is still saving") {
+		t.Errorf("a second mark-free dialog opened mid-call (screen %v, status %q)", m.screen, m.status)
 	}
-	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
 	m, reload := update(m, runCmd(cmd))
 	if n := strings.Count(a.orchCallsJoined(), "MarkWorkerFree"); n != 1 {
 		t.Errorf("%d MarkWorkerFree calls, want 1", n)
@@ -1072,7 +1071,56 @@ func TestGuardCallFormNoticeUsesTitles(t *testing.T) {
 		Arguments: []*pb.ActionArgument{{Name: "sandboxID", Required: true, DefaultValue: "a\tb"}}}
 	m, _ := jobsWith(t, jobsActions, []*pb.Action{act}, nil)
 	m, _ = update(m, press("enter"))
-	if m.jobs.form == nil || !strings.Contains(m.jobs.status, "sandboxID: ") {
+	if m.jobs.form == nil || !strings.HasPrefix(m.jobs.status, "sandboxID: line endings") || strings.Contains(m.jobs.status, "sandboxID *") {
 		t.Errorf("the notice should name the argument as titled: %q", m.jobs.status)
+	}
+}
+
+// Review run-482: a call form reopened while the same call saves stops saying
+// so once that call answers.
+func TestGuardReopenedFormSettlesOnReply(t *testing.T) {
+	act := &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "x"}
+	m, _ := jobsWith(t, jobsActions, []*pb.Action{act}, nil)
+	m, _ = update(m, press("enter"))
+	m, cmd := update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, press("enter"))
+	m, cmd2 := update(m, ctrlS())
+	if cmd2 != nil || !strings.Contains(m.jobs.status, "still saving") {
+		t.Fatalf("the same call went out twice (status %q)", m.jobs.status)
+	}
+	m, _ = update(m, runCmd(cmd))
+	if m.jobs.form == nil || strings.Contains(m.jobs.status, "still saving") || !strings.Contains(m.jobs.status, "the earlier call triage on alpha-bot finished: queued") {
+		t.Errorf("the reopened form should name the earlier call's outcome: %q", m.jobs.status)
+	}
+	if len(m.opCalls) != 0 {
+		t.Errorf("the reply should release its in-flight record: %v", m.opCalls)
+	}
+}
+
+// Review run-482: the in-flight key holds the values as sent, so a form
+// differing only in surrounding whitespace is the same call.
+func TestOpCallKeyTrimsLikeSend(t *testing.T) {
+	a, b, empty := " x ", "x", " "
+	call := func(v, w *string) *orchOpState {
+		return &orchOpState{formKind: "call", formVals: &callFormVals{values: map[string]*string{"a": v, "b": w}}}
+	}
+	if opCallKey(call(&a, &empty)) != opCallKey(call(&b, &empty)) {
+		t.Error("call values differing only in whitespace should share a key")
+	}
+	act := func(name string) *orchOpState {
+		return &orchOpState{formKind: "action", formVals: &actionFormVals{name: name, args: "x *\n"}}
+	}
+	if opCallKey(act("deploy ")) != opCallKey(act(" deploy")) {
+		t.Error("action names differing only in whitespace should share a key")
+	}
+	if opCallKey(act("deploy")) == opCallKey(act("deploy2")) {
+		t.Error("different actions should not share a key")
+	}
+	mf := func(run string) *orchOpState {
+		return &orchOpState{formKind: "mark free", formVals: &markFreeVals{sandboxID: "w1", runID: run, host: "h", orchID: "o"}}
+	}
+	if opCallKey(mf("run-1")) == opCallKey(mf("run-2")) {
+		t.Error("a mark-free is keyed by its run")
 	}
 }

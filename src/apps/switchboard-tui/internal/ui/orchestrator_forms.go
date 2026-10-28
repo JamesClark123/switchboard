@@ -44,6 +44,7 @@ type markFreeVals struct {
 	outcome   string // "completed" | "failed"
 	note      string
 	sandboxID string
+	runID     string // the run awaiting review the dialog was opened for
 	host      string // host entry id of the orchestrator's daemon
 	orchID    string
 }
@@ -532,15 +533,56 @@ type formCall struct {
 }
 
 // opCallKey names the call the open form would send, so the same call is not
-// sent again while it is in flight. A mark-free is keyed by its worker alone (a
+// sent again while it is in flight. A mark-free is keyed by its worker and run (a
 // run is closed once, whatever the outcome or note); any other form by its kind,
-// orchestrator and values.
+// orchestrator and the values it sends (trimmed as sendOrchOpForm trims them).
 func opCallKey(op *orchOpState) string {
 	t := op.formTarget
 	if v, ok := op.formVals.(*markFreeVals); ok {
-		return "mark free|" + v.host + "|" + v.orchID + "|" + v.sandboxID
+		return markFreeCallKey(v)
 	}
-	return fmt.Sprintf("%s|%s|%s|%v", op.formKind, t.host, t.id, snapshotOpVals(op.formVals))
+	return fmt.Sprintf("%s|%s|%s|%v", op.formKind, t.host, t.id, sentOpVals(op.formVals))
+}
+
+// markFreeCallKey names a mark-free of one run on one worker.
+func markFreeCallKey(v *markFreeVals) string {
+	return "mark free|" + v.host + "|" + v.orchID + "|" + v.sandboxID + "|" + v.runID
+}
+
+// sentOpVals is a form's values as its call sends them: surrounding whitespace
+// dropped, and a call form's empty arguments left out. The dirty guard keeps
+// comparing the raw values (snapshotOpVals).
+func sentOpVals(vals any) any {
+	switch v := vals.(type) {
+	case *actionFormVals:
+		c := *v
+		c.name, c.description, c.workerTag, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.description), strings.TrimSpace(c.workerTag), trimLines(c.args)
+		return c
+	case *eventFormVals:
+		c := *v
+		c.name, c.intervalMinutes, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.intervalMinutes), trimLines(c.args)
+		return c
+	case *callFormVals:
+		out := map[string]string{}
+		for k, p := range v.values {
+			if val := strings.TrimSpace(*p); val != "" {
+				out[k] = val
+			}
+		}
+		return out
+	}
+	return snapshotOpVals(vals)
+}
+
+// trimLines trims each line of s and drops blank ones.
+func trimLines(s string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // opCallLabel names an op form's call ("call review-pr on alpha-bot").

@@ -217,7 +217,7 @@ func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) 
 			op.status = "only a run awaiting review can be marked free"
 			return m, nil
 		}
-		return m.openMarkFreeForm(s, t, run.GetSandboxId())
+		return m.openMarkFreeForm(s, t, run.GetSandboxId(), run.GetId())
 	case "o":
 		if !runFinished(run) {
 			op.status = "open results is for finished runs"
@@ -300,19 +300,33 @@ func (m Model) confirmCancelRun(s orchSurface, t orchTarget, runID string) (tea.
 
 // --- mark free (FR-156) ---
 
-// openMarkFreeForm opens the outcome + note dialog for a worker's reviewed run on
-// the target orchestrator.
-func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID string) (tea.Model, tea.Cmd) {
+// openMarkFreeForm opens the outcome + note dialog for runID, awaiting review on
+// a worker of the target orchestrator. It refuses while a mark-free of that run
+// is still saving: a second dialog would outlive the run it was opened for.
+func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID, runID string) (tea.Model, tea.Cmd) {
 	if _, ok := m.requireDaemon(s, t.host); !ok {
 		return m, nil
 	}
-	v := &markFreeVals{outcome: "completed", sandboxID: sandboxID, host: t.host, orchID: t.id}
+	v := &markFreeVals{outcome: "completed", sandboxID: sandboxID, runID: runID, host: t.host, orchID: t.id}
+	if text, busy := m.markFreeSaving(v); busy {
+		m.opState(s).status = text
+		return m, nil
+	}
 	return m, m.setOpForm(s, t, "mark free", v, func(m Model, spec *formSpec) *huh.Form {
 		return m.newOrchForm(spec,
 			huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
 			spec.input("note", "Note").Description("optional; recorded as the run's summary").Value(&v.note),
 		)
 	})
+}
+
+// markFreeSaving reports whether a mark-free of v's run is in flight, and the
+// refusal that says so.
+func (m Model) markFreeSaving(v *markFreeVals) (string, bool) {
+	if _, busy := m.opCalls[markFreeCallKey(v)]; busy {
+		return "mark free of " + v.runID + " is still saving; its result will show on the footer", true
+	}
+	return "", false
 }
 
 // markFreeKey is `m` on a sandbox row: while the worker's run awaits review
@@ -341,6 +355,10 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 		m.status = "error: " + err.Error()
 		return m, nil
 	}
+	if text, busy := m.markFreeSaving(&markFreeVals{sandboxID: sb.GetId(), runID: c.GetRun().GetId(), host: orchHost, orchID: c.GetOrchestratorId()}); busy {
+		m.status = text
+		return m, nil
+	}
 	// The dialog lives on the detail state but returns to the list.
 	t := orchTarget{host: orchHost, hostName: m.hostDisplayName(orchHost), id: c.GetOrchestratorId(), name: c.GetName()}
 	// The detail's names too: the form header and a disconnect's close message
@@ -349,14 +367,14 @@ func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.orchDetail.id, m.orchDetail.name = c.GetOrchestratorId(), t.name
 	m.markFreeFromList = true
 	m.screen = screenOrchDetail
-	return m.openMarkFreeForm(surfaceDetail, t, sb.GetId())
+	return m.openMarkFreeForm(surfaceDetail, t, sb.GetId(), c.GetRun().GetId())
 }
 
 // markFreeFromView is `m` in the Workers view.
 func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 	switch {
 	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW:
-		return m.openMarkFreeForm(surfaceDetail, m.detailTarget(), w.GetSandboxId())
+		return m.openMarkFreeForm(surfaceDetail, m.detailTarget(), w.GetSandboxId(), w.GetRunId())
 	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT && w.GetRunId() == "":
 		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
 	}

@@ -216,6 +216,11 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 			// still refreshes the list it returned to.
 			msg.closeForm = false
 			reloadList = msg.formCall.reloadList && msg.err == nil
+			outcome := msg.status
+			if msg.err != nil {
+				outcome = "error: " + msg.err.Error()
+			}
+			m.settleDuplicateForm(msg.sink, msg.formCall, outcome)
 		}
 	}
 	if msg.fire {
@@ -283,6 +288,15 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 }
 
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
+// settleDuplicateForm replaces the "still saving" refusal on a form reopened with
+// the same call as c, now that c has answered, so it no longer says so.
+func (m *Model) settleDuplicateForm(s orchSurface, c formCall, outcome string) {
+	op := m.opState(s)
+	if op.form != nil && !op.formSaving && strings.Contains(op.status, "still saving") && opCallKey(op) == c.key {
+		op.status = "the earlier " + c.label + " finished: " + outcome
+	}
+}
+
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
 	m.releaseOpCall(msg.formCall)
 	if tok := msg.formCall.token; tok != 0 {
@@ -290,6 +304,7 @@ func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
 			// Its form was left or replaced: report it, named, and that its values
 			// went with it; touch nothing open now.
 			m.status = "error: " + msg.formCall.label + ": " + msg.err.Error() + " (the form was closed; its values were not kept)"
+			m.settleDuplicateForm(msg.sink, msg.formCall, "error: "+msg.err.Error())
 			return m, nil
 		}
 		op := m.opState(msg.sink)
