@@ -75,3 +75,10 @@
   - The check/confirm handshake is serialised by a lock (FR-308a).
   - Kept settings move onto runs atomically (FR-314b).
   - Reason runs are scoped out of lanes.
+- PR #22 re-review (run-571), resolved in run-574 with new FR-308c:
+  - Per-sandbox revisions, so only fresh records change the roster, and listing absences are ordered.
+  - Every roster change is one atomic record update, with no lock held across network calls.
+  - Links subscribe before listing, and a reported event-stream gap triggers a new reconcile.
+  - Calling and deleting an action are serialised (FR-314b).
+  - Detach is guard-and-mark, then unlink with no lock held, then settle (FR-308a, L5).
+  - Lifecycle L1–L8 re-checked.
