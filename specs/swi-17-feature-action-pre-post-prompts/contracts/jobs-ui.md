@@ -47,7 +47,11 @@ The state word is followed by the step while a sequence is in flight:
 | A step waiting over 10 s | `running · setting up 2/3 waiting: input box not empty` |
 | Holding its sandbox | `completed · needing the developer on alpha-w1` / `… needs input (freeing) …` |
 
-*In progress* lists every run that holds a sandbox or is halted, including closed ones (FR-213).
+*In progress* lists every run that holds a sandbox or is halted, including closed ones (FR-213). The server returns
+them in `ListRunsResponse.in_flight` and not in `history`, so they appear once, and the same way in every view.
+
+`t`/`T` on such a row opens the worker's terminal, also for a closed run that still holds its sandbox: the terminal
+is the way out of a hold.
 
 ## Run-row keys — FR-222
 
@@ -56,8 +60,8 @@ These are added to the run-row help only when the run is halted:
 | Key | Action | Notes |
 |---|---|---|
 | `R` | Retry the step | For a step *sent before a restart*, it first opens the confirm "This step may already have run — check the worker's terminal. Retry anyway? (y/N)". While the step's text is still in the box the row says `clear the step's text in the worker's terminal (t) to retry`. |
-| `S` | Skip the step | Not offered for Clear. Listed **before** `R` for a step sent before a restart. |
-| `X` | Fail | Confirm: "Fail <run> at <step>?". A pre-prompt fails the run (FR-212). A custom post-prompt drops the remaining custom post-prompts and frees the sandbox. Clear leaves the sandbox *needing the developer*, and `R` stays on the row to retry Clear (FR-222). |
+| `S` | Skip the step | Not offered for Clear or for the action step (skipping it would leave the run waiting for a report that can't come). Listed **before** `R` for a step sent before a restart. |
+| `X` | Fail | Confirm, defaulting to **No**: "Fail <run> at <step>? (y/N)". A pre-prompt or the action step fails the run, naming the step (FR-212); cleanup then runs as after any close. A custom post-prompt drops the remaining custom post-prompts; **Clear (if enabled) is still sent**, and the sandbox is free once it finishes (FR-216, FR-222). Clear leaves the sandbox *needing the developer*, and `R` stays on the row to retry Clear (FR-222). `X` is offered only on halted runs and `x` (cancel) only on queued ones, so a Shift slip opens a confirm or does nothing. |
 
 All three call `ResolveRunStep{run_id, step, resolution}`. A `FAILED_PRECONDITION` ("the run moved on") shows on the
 status line and the view reloads.
@@ -83,7 +87,7 @@ A run without steps shows only the composed prompt, as today.
 
 | Condition | Suffix | Surfaced first |
 |---|---|---|
-| `controller.run.hold == CLEANING_UP` | `⚑ worker · cleaning up <run>` | no |
+| `controller.run.hold == CLEANING_UP` | `⚑ worker · cleaning up <run>`, or `… · waiting: <reason>` once its step has waited over 10 s | no while it progresses; **yes** once it waits or is halted |
 | `== NEEDS_INPUT_FREEING` | `⚑ worker · needs input (freeing) <run>` | yes |
 | `== NEEDS_DEVELOPER` | `⚑ worker · needing the developer — open its terminal and run /clear <run>` | yes |
 | `controller.run.halted` | `⚑ worker · <run> halted: step not accepted` | yes |
@@ -91,7 +95,8 @@ A run without steps shows only the composed prompt, as today.
 The orchestrator's **Workers view** reads `WorkerView.hold`/`halted` (proto-delta) for the same text.
 
 **Mark free on a held worker.** `markFreeKey` also accepts a sandbox with `hold == CLEANING_UP` whose agent is
-NEEDS_INPUT (FR-216 freeing); it calls `MarkWorkerFree` as today.
+NEEDS_INPUT (FR-216 freeing). The run is already closed, so it calls `MarkWorkerFree` **directly**: no outcome or
+note dialog, and the run's outcome is not changed.
 
 **Surfacing.** `needsDeveloper(sb)` adds the last three rows to today's rules, so they sort to the top of the All,
 host and group tabs (009 surfacing rule).

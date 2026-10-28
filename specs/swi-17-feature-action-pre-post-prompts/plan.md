@@ -40,8 +40,15 @@ judged by evidence after its submit.
      ever typed twice**.
    - A restart resolves sent steps from new recorded hook evidence: `last_submit_at`, `last_turn_end_at`,
      `last_session_start_at/source`.
-7. **Prerequisites (R12).** SWI-15 (PR #17: `SessionStart`, agent readiness) and SWI-9's implementation (form guard,
-   enlargeable text fields) both merge first.
+7. **Prerequisites (R12).** SWI-15 (PR #17: `SessionStart`, agent readiness) has merged. SWI-9's implementation
+   (form guard, enlargeable text fields) must merge first.
+8. **Security (R13).** Control characters (ESC, so the paste-end marker too; C0 except `\n`/`\t`; DEL; C1) are refused
+   in call argument values, in action text, and again at type time. Hook callbacks carry a per-sandbox token, and the
+   decisions that could leak context (hold release, Clear's read-back) are corroborated by what the daemon itself
+   saw. `DeliverWorkerStep` derives built-in text itself and only accepts increasing step indices.
+9. **Daemon restarts (R14).** A restart of the owning daemon loses the agent's PTY, so it is treated as an agent exit:
+   setup fails the run, an action is handled as today's agent exit, and cleanup becomes *needing the developer*. The
+   step path never spawns an agent except for a run's first step on an unheld sandbox.
 5. **Holds (R7).** `WorkerRun.hold` shows on the sandbox list and surfaces the worker. The values are *cleaning up*,
    *needs input (freeing)* and *needing the developer — open its terminal and run /clear*.
    - A hold ends only when the owning daemon observes a `startup`/`clear` session start (FR-216). The daemon releases
@@ -59,8 +66,10 @@ judged by evidence after its submit.
 **Language/Version**: Go 1.26 (workspace `go.work`). The modules touched are `src/services/switchboardd`,
 `src/apps/switchboard-tui`, `src/libs/switchboard-proto`, and the **new** `src/libs/switchboard-termview`.
 
-**Primary Dependencies**: the existing ones: gRPC/protobuf, bbolt, Bubble Tea/huh, `charmbracelet/x/ansi` (the
-termview parser). **No new third-party dependency.** `termview` moves rather than a VT library being added.
+**Primary Dependencies**: the existing ones: gRPC/protobuf, bbolt, Bubble Tea/huh. `termview` moves rather than a VT
+library being added, so there is **no new dependency for the repository**. The **daemon module** does gain, through
+`switchboard-termview`, `charmbracelet/x/ansi`, `charmbracelet/x/cellbuf` and their transitive packages, which the
+TUI already uses.
 
 **Storage**: the bbolt `orchestrators` and `orchestrator_runs` buckets (additive proto fields on `Action` and `Run`),
 and the sandbox registry (additive `AgentSession` and `WorkerRun` fields). No migration is needed: a missing
@@ -81,7 +90,11 @@ Scenario 0 re-checks the matchers).
 **Performance Goals**:
 - A built-in step finishes in ≈ `submitWindow` (2.5 s) plus a typing delay. The confirmation lands in ~150 ms, but the
   window must pass before a step counts as agent-local (FR-206b).
-- Feeding the daemon's screen adds one VT parse per PTY chunk, the same work the TUI already does per attached view.
+- Only orchestrator-controlled sandboxes keep a daemon screen. Each chunk is parsed on a per-broadcaster goroutine fed
+  by a bounded channel, outside the broadcaster mutex, so fan-out and `Attach` never wait on parsing. Overflow marks
+  the screen stale rather than blocking, and the screen keeps no scrollback (R2).
+- Evidence fields are written only when they change, so `input_idle_since` sampling causes no `sandbox_changed`
+  traffic of its own.
 - The pending-step retry ticker runs only while a step waits: one RPC per waiting sandbox every 2 s.
 
 **Constraints**:
@@ -115,7 +128,7 @@ Tracking**. SWI-17 stays inside that deviation:
 | VI Multi-Level Testing | ✅ Unit tests (claudeui fixtures, submit check, sequence state machine, validation, TUI form/rows/keys), daemon e2e for `DeliverWorkerStep`/`ResolveRunStep`, TUI e2e for the form. ≥ 90% coverage held per module, including the new `switchboard-termview`. |
 | VII Containerized Deployment | ✅ N/A: daemon/client binaries (001 carve-out). |
 | VIII Env Discipline | ✅ No env vars added. |
-| Repository Structure | ⚠️ A **new library module** `src/libs/switchboard-termview`. It sits at depth `src/<category>/<name>/` and is a framework-agnostic lib with no UI framework dependency (only `charmbracelet/x/ansi`) and no DB I/O. It is added to `go.work` and the Makefile's module list, which SWI-11 derives from `go.work`. This follows the 009 precedent for `switchboard-dial`, so there is no violation. |
+| Repository Structure | ⚠️ A **new library module** `src/libs/switchboard-termview`. It sits at depth `src/<category>/<name>/` and is a framework-agnostic lib with no UI framework dependency (`charmbracelet/x/ansi` and `charmbracelet/x/cellbuf`) and no DB I/O. It is added to `go.work` and the Makefile's module list, which SWI-11 derives from `go.work`. This follows the 009 precedent for `switchboard-dial`, so there is no violation. |
 
 **Result**: PASS. **Re-checked after Phase 1 design: still PASS.** The new module is the only structural addition,
 and it follows the `libs` rules.
@@ -128,7 +141,7 @@ and it follows the `libs` rules.
 specs/swi-17-feature-action-pre-post-prompts/
 ├── spec.md              # amended in this PR: ultracode dropped (planning amendment)
 ├── plan.md              # This file
-├── research.md          # Phase 0: R1 (agent probe, planning gate) … R12
+├── research.md          # Phase 0: R1 (agent probe, planning gate) … R14
 ├── data-model.md        # Phase 1: Action.sequence, Run steps/state, WorkerRun hold, AgentSession evidence
 ├── quickstart.md        # Phase 1: validation guide (Scenario 0 re-checks the R1 matchers)
 ├── contracts/
@@ -149,24 +162,29 @@ src/libs/switchboard-termview/            # NEW module: moved from apps/switchbo
 ├── go.mod / termview.go / termview_test.go   #   + a Lines() snapshot with each cell's faint attribute (claudeui needs it)
 
 src/services/switchboardd/internal/
-├── terminal/broadcaster.go   # read loop also writes into a termview.Screen (resized with the PTY; fixed 140×45 with no
-│                             #   client, plus a repaint nudge); Screen() snapshot
+├── terminal/broadcaster.go   # controlled sandboxes only: chunks → parser goroutine (bounded, stale on overflow) →
+│                             #   termview.Screen (no scrollback; resized with the PTY; fixed 140×45 with no client,
+│                             #   plus a repaint nudge); Screen() snapshot; Registry.Screen/BroadcasterIfLive never spawn
 ├── agent/
 │   ├── claudeui.go           # NEW: InputBox, ConfirmationAfter, modal markers, built-in matchers (R2)
 │   ├── testdata/claudeui/    # NEW: R1 screen fixtures
 │   ├── hooks.go              # Tap(); evidence (last_submit_at, last_turn_end_at, session start); TASK_COMPLETE suppressed
 │   │                         #   for step_role SETUP/CLEANUP (Stop + backstop); SessionStart via SWI-15 (R12);
-│   │                         #   startup/clear SessionStart ends a NEEDS_DEVELOPER hold (R7)
-│   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress()
+│   │                         #   corroborated startup/clear SessionStart ends a NEEDS_DEVELOPER hold (R7, R13);
+│   │                         #   BuildSettings puts a per-sandbox token in the callback URL; main-session filter (R13)
+│   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); control-char refusal
+│                             #   (also in Registry.Prompt)
 ├── worker/
 │   ├── step.go               # NEW: DeliverWorkerStep guard (step_index: never typed twice) + submit check + check_only
 │   ├── deliver.go            # unchanged path for runs without steps; Frame() reused
 │   └── controller.go         # Update: set_run carries hold/halted/step_role
-├── sandbox/manager.go        # SetAgentEvidence; ClearHeldRun; leaveRunning keeps held/cleanup runs as NEEDS_DEVELOPER
+├── sandbox/manager.go        # SetAgentEvidence; ClearHeldRun; leaveRunning keeps held/cleanup runs as NEEDS_DEVELOPER;
+│                             #   SetAgentStatus(EXITED) escalates cleanup to NEEDS_DEVELOPER; restart recovery (R14)
 ├── orchestrator/
 │   ├── sequence.go           # NEW: per-sandbox single-flight stepper (deliverStep, advance), hold handling,
 │   │                         #   ResolveRunStep, retry ticker
-│   ├── actions.go            # effectiveSequence, buildSteps, composeStep; validateAction FR-204 rules
+│   ├── actions.go            # effectiveSequence, buildSteps, composeStep; validateAction FR-204 rules; control-char
+│   │                         #   refusal in action text and call values (validateCall, R13)
 │   ├── runs.go               # callAction snapshots steps; foldStatus/armReview per step role; completeRun/MarkWorkerFree
 │   │                         #   start cleanup instead of clearing the worker run; holdingRunOn (runOn unchanged);
 │   │                         #   workerRunFor (every WorkerRun write keeps all fields); restart resolution

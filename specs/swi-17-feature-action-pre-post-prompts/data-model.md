@@ -55,8 +55,9 @@ PENDING ──persist──► SENDING ──deliver ok──► SENT ──MODE
    │  └─FailedPrecondition (retry R6)
    │                      ├──AGENT_LOCAL──► (next step PENDING | …)
    │                      └──NOT_ACCEPTED─► HALTED ──R retry──► PENDING
-   │                                           ├──S skip────► (next step PENDING)        [not for CLEAR]
-   │                                           └──X fail────► FR-212 (setup) / drop custom cleanup + free (FR-222)
+   │                                           ├──S skip────► (next step PENDING)        [not for CLEAR or ACTION_PROMPT]
+   │                                           └──X fail────► FR-212 (setup or action) / drop custom cleanup, Clear still
+   │                                                           sent if enabled, then free (FR-222)
    │                                                           / CLEAR: hold NEEDS_DEVELOPER
    └─(after ACTION step) AWAIT_CLOSE ──completion report / mark free──► cleanup steps (PENDING, once agent IDLE)
 ```
@@ -96,7 +97,7 @@ would drop `hold`, `halted` and `step_index`.
 it, so dispatch, `Deliver` and `DeliverWorkerStep` refuse a held sandbox with no extra check.
 
 **Conditional writes.** Orchestrator writes to an existing run (hold, halt, review flag) use `UpdateWorker{set_run,
-same_run_only}`: applied only while `controller.run.id` is still that run, so a late write never re-creates a run the
+expect_run_id}`: applied only while `controller.run.id` is still that run, so a late write never re-creates a run the
 daemon already released.
 
 **Agent exit during cleanup.** When the agent exits while `step_role == CLEANUP` or `hold != NONE`, the daemon sets
@@ -120,13 +121,14 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `last_submit_at` | `UserPromptSubmit` |
 | `last_turn_end_at` | `Stop` with no background tasks pending, or the WAITING backstop expiring |
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
-| `input_idle_since` | Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
+| `session_id` | The main agent's session, from the last corroborated `startup`/`clear` SessionStart (research R13). Hook events from any other session are ignored for steps, evidence and holds. |
+| `input_idle_since` | Written **only when it changes** (set or unset), never per sample, so it doesn't flood `sandbox_changed`. Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
 
 ## Hold (sandbox) — state and display
 
 | Hold | Shown on the sandbox row and Workers view | Surfaced at top of All/host/group tabs |
 |---|---|---|
-| CLEANING_UP | `cleaning up after <run>` | no (hidden, as today) |
+| CLEANING_UP | `cleaning up after <run>` (`· waiting: <reason>` once its step waits over 10 s) | no while it progresses; **yes** once its step has a `waiting:` note or is halted, so a stuck cleanup is visible |
 | NEEDS_INPUT_FREEING | `needs input (freeing) · <run>` | yes |
 | NEEDS_DEVELOPER | `needing the developer — open its terminal and run /clear · <run>` | yes |
 | (run halted not accepted) | `<run> halted: <step> not accepted` | yes |
@@ -141,3 +143,6 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `stepRetryEvery` | 2 s | orchestrator (research R6) |
 | `stepWaitNote` | 10 s | orchestrator: a guard refusal lasting longer shows as `step_note` (`waiting: <reason>`) |
 | `stepScreenSize` | 140×45 | daemon: the PTY and screen size set when a broadcaster is created with no client (research R2) |
+| `modalGrace` | 1 s | worker step delivery: how long a modal may wait for a needs-input report before NOT_ACCEPTED (T006 may raise it) |
+| `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
+| `hookTokenBytes` | 32 | daemon: per-sandbox hook callback token (research R13) |

@@ -160,10 +160,13 @@ raise no hook — read back from the screen's `⎿` confirmation line; `/clear` 
 (hook `Tap` + screen) → MODEL_TURN | MODEL_TURN_INPUT_ONLY | AGENT_LOCAL | NOT_ACCEPTED; runs without steps keep
 `DeliverWorkerPrompt`. Orchestrator `sequence.go` owns `Run.steps/step/step_status/…` (persisted), closes runs exactly
 as before, and holds the sandbox during cleanup via `controller.run.hold` (CLEANING_UP | NEEDS_INPUT_FREEING |
-NEEDS_DEVELOPER — the last ends only on a recorded `startup`/`clear` session start after it began). `AgentSession`
+NEEDS_DEVELOPER — the last is ended live by the owning daemon on a corroborated `startup`/`clear` `SessionStart`). `AgentSession`
 records `last_submit_at`, `last_turn_end_at`, `last_session_start_at/source` (restart resolution, FR-217). New
 `ResolveRunStep` (`R` retry · `S` skip · `X` fail), `RUN_STEP_NOT_ACCEPTED`, TASK_COMPLETE suppressed for
-setup/cleanup turns (`WorkerRun.step_role`). Depends on SWI-15 (PR #17) for `SessionStart`. See `research.md` (R1–R12),
+setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) for `SessionStart`; needs SWI-9's implementation for the form guard. Security
+(R13): control characters refused in call values, action text and at type time; hook callbacks carry a per-sandbox
+token, with daemon-side corroboration for hold release and Clear. An owning-daemon restart is an agent exit (R14).
+See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 

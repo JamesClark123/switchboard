@@ -79,12 +79,16 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
 2. The worker shows `needs input (freeing)`.
 3. Answer the question in `t`. `/clear` is sent once the box is empty, then the worker is free.
 
-## Scenario 7 — restart mid-sequence (FR-217; research R8)
+## Scenario 7 — restart mid-sequence (FR-217; research R8, R14)
 
-1. Restart the orchestrator's daemon during a long setup skill turn. On reconnect the run continues to the action
-   prompt, and nothing is re-sent.
-2. Restart the **worker's** daemon after `/effort` was typed. The step either finishes (read-back on screen) or halts
-   `sent before a restart`, with `S` listed first.
+1. With a **remote** worker, restart the orchestrator's daemon during a long setup skill turn. On reconnect the run
+   continues to the action prompt, and nothing is re-sent.
+2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon) during a setup step. The
+   agent's PTY is gone, so the run fails naming the step ("agent lost when its daemon restarted…"), and no agent is
+   started by a step. Repeat during cleanup: the worker shows *needing the developer*, and `t` starts a fresh agent
+   that frees it.
+3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
+   the step resolves from the daemon's record to sent, then finishes as usual.
 
 ## Scenario 8 — notifications (FR-223)
 
@@ -100,3 +104,13 @@ sandbox list and on the orchestrator machine's Workers view.
 
 With every built-in off and no custom prompts, the run is delivered through `DeliverWorkerPrompt` exactly as before:
 one framed prompt, and no step text in the row.
+
+## Scenario 11 — injection and forged hooks (research R13)
+
+1. Call an action with an argument value containing `ESC[201~` followed by `\r!id\r` (for example from a worker's
+   `orchestrator_call_action`). The call is refused: `argument <name> contains a control character`. Nothing is
+   typed.
+2. From inside a held worker's sandbox, `curl` the hook URL with `SessionStart` `source=clear` and the old session
+   id. The hold stays. With no token or another sandbox's token, the request gets 403.
+3. Run `claude -p "hi"` in a worker's workspace during a setup step. That nested session's hooks don't classify or
+   finish the step.

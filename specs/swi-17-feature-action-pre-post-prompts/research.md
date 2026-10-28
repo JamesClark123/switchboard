@@ -93,12 +93,17 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
 **Decision.**
 1. **Move `termview` into a library module, `src/libs/switchboard-termview`**, as 009 did with
    `switchboard-dial`. The TUI imports it from there, and nothing else about it changes.
-2. **Give the daemon a per-sandbox screen.** The `terminal.Broadcaster` read loop, the single PTY reader, writes every
-   chunk into a `termview.Screen` sized to the PTY and resized with it (`applyResizeLocked`). Today a PTY gets no
+2. **Give the daemon a screen for each controlled sandbox.** Only a broadcaster whose sandbox has an orchestrator
+   controller keeps a screen; other sandboxes pay nothing. The read loop, the single PTY reader, hands each chunk to
+   a per-broadcaster **parser goroutine** through a bounded channel and goes straight on to fan-out, so VT parsing
+   never runs under the broadcaster mutex and never delays clients or `Attach`. On overflow (for example a large
+   `cat`) the channel drops chunks and marks the screen **stale**. A stale screen reads as *not ready* (guard 6
+   refuses `screen resyncing`) until a resize nudge makes the agent repaint. The daemon's screen uses termview with
+   **no scrollback** (a new option; the TUI keeps its 5000 lines). The screen is a `termview.Screen` sized to the PTY
+   and resized with it (`applyResizeLocked`). Today a PTY gets no
    size until a client attaches (`pty.Start` sets no winsize), so a broadcaster created with no client sets both to
    `stepScreenSize` (140×45, the size R1 probed) and nudges a resize; the agent repaints, and a broadcaster created
-   after the agent drew its box still sees one. The screen is guarded
-   by the broadcaster's mutex. `Broadcaster.Screen()` returns a read-only snapshot (rendered lines plus each cell's
+   after the agent drew its box still sees one. The screen has its own lock, separate from the broadcaster's mutex. `Broadcaster.Screen()` returns a read-only snapshot (rendered lines plus each cell's
    faint attribute) on demand.
 3. **Add `agent/claudeui.go`, a pure reader over that snapshot**, pinned by fixtures captured in R1:
    - `InputBox(lines) (text string, ready bool)`. The box is every row between the last two horizontal rules
@@ -146,8 +151,14 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
    `step_sent_at` on `WorkerRun`, and refuses (`ALREADY_EXISTS`) a step index already recorded: **a step is never
    typed twice**, whatever the orchestrator retries (FR-217).
 
-   Before the guard the daemon makes sure the broadcaster exists (R2). With `first` and no live agent, it starts
-   one as SWI-15's `Deliver` does and refuses this call (`agent is starting`); a later retry types the step.
+   Before the guard the daemon reads the screen **without creating anything**. Creating a broadcaster runs the agent
+   factory, which spawns `claude` when none is live, so the step path creates one only while the agent is live (R2).
+   With `first`, no live agent and no hold, it starts one as SWI-15's `Deliver` does and refuses this call (`agent
+   is starting`), and a later retry types the step. In every other case with no live agent it refuses (`no live
+   agent`) and starts nothing, so a retried Clear or a cleanup step can never spawn an agent whose `startup` would
+   end a hold (FR-216).
+
+   Step text is checked for control characters, and built-in text is derived on the daemon (R13).
 
    A guard miss returns `FailedPrecondition` with the reason. Nothing is typed, and the orchestrator tries again on
    the next status change (R6). That is how *developer activity takes precedence* (009 FR-119): text the developer
@@ -226,16 +237,28 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
     (`stepper`), so dispatch and `foldStatus` (which runs in the host's event handler) never block on a 2.5–10 s
     submit check, and at most one `DeliverWorkerStep` is in flight per sandbox. `sandbox_changed`, the retry
     ticker and `ResolveRunStep` only *kick* the stepper.
+  - **Kicks are coalesced, never dropped.** A kick that arrives while a call is in flight sets a pending flag that
+    the stepper consumes when the call returns. After **every** response the stepper also re-evaluates
+    `stepFinished` against the latest sandbox record, so a fast turn whose IDLE `sandbox_changed` landed during the
+    call still finishes.
   - Before each call the step is persisted as **SENDING**. The response moves it to SENT/TURN/HALTED, or back to
-    PENDING on `FailedPrecondition`. `ALREADY_EXISTS` means it was typed before (a lost response): SENT with the
-    daemon's `step_sent_at`.
+    PENDING on `FailedPrecondition`. `ALREADY_EXISTS` means it was typed before (a lost response): SENT with
+    `controller.run.step_sent_at` read from the sandbox record (a gRPC status carries no timestamp).
+  - **A step left SENDING** (a lost response, a timeout, a link blip) is resolved **in the MVP**, on the next
+    `sandbox_changed` or reconnect, from the daemon's record: `controller.run.step_index` equal to the step → SENT
+    with `controller.run.step_sent_at`, then finished or halted per R8; lower → PENDING (never typed). So a lost
+    response never strands a run (tasks T022).
+  - **A response for a run that is no longer active** (cancelled or failed while its first step was in flight)
+    makes the stepper clear the daemon record with `UpdateWorker{set_run, expect_run_id = run}` (unset run). The
+    orchestrator's reconcile also clears any worker record naming a finished run that isn't holding, so a
+    cancel/claim race can never leave a worker taken forever.
   - `startRun` (RUNNING, `StartedAt`, sandbox fields) runs on **any** outcome where the first step was typed,
     including NOT_ACCEPTED, so a halted first step is a RUNNING run with its controls. A `FailedPrecondition` on the
     first step writes nothing on the daemon (the guard commits only when every check passes) and leaves the run
     QUEUED; the orchestrator retries it like any pending step.
   - **Claim.** Before the first call, dispatch records the sandbox on the run (`sandbox_id`/`sandbox_host_id`) while
     it is still QUEUED. Dispatch skips QUEUED runs with a sandbox set, and counts that sandbox as not free. Cancelling
-    such a run, or failing it, clears the daemon's record with `UpdateWorker{set_run, same_run_only}` (unset run), so
+    such a run, or failing it, clears the daemon's record with `UpdateWorker{set_run, expect_run_id}` (unset run), so
     the worker is freed.
   - A run with no steps keeps `deliver` → `DeliverWorkerPrompt`.
 - **`advance(run)`**, called after each finished step and on each `sandbox_changed` while a step is waiting:
@@ -250,16 +273,28 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
   - Whether the box is empty and ready is then checked by the **next** step's delivery guard (R3). For the last
     step it is checked by Clear's own check, or else the sandbox simply becomes free.
 - **Status folding**, changed only for runs with steps:
-  - IDLE arms the review timer **only once the action step was accepted** (TURN or AWAIT_CLOSE), never while it is
-    PENDING, SENDING or HALTED (FR-209, FR-214);
-  - EXITED, or the sandbox stopping, during setup fails the run naming the step (FR-212);
+  - **`runAwaitingReview` itself** refuses unless the action step was accepted (TURN or AWAIT_CLOSE), never while it
+    is PENDING, SENDING or HALTED. Gating the function, not only `armReview`, also covers `reconcileInFlight`'s IDLE
+    branch on link-up (FR-209, FR-214);
+  - EXITED, or the sandbox stopping or being destroyed, during setup fails the run naming the step (FR-212). That
+    includes `failRunsOn` (`onSandboxRemoved`, `Detach`), whose reason names the step for a run in setup;
   - during cleanup it drops the remaining steps and sets the hold *needing the developer* (FR-216).
-- **Completion report.** `toolReportCompletion` refuses a report until the action step was accepted (TURN or
-  AWAIT_CLOSE): "the action prompt has not been delivered yet" (FR-211).
+- **Completion report.** `toolReportCompletion` refuses a report until the action prompt was delivered: the action
+  step is TURN or AWAIT_CLOSE, **or** the daemon's `controller.run.step_index` equals the action step's index (it was
+  typed, and only the response was lost). Otherwise: "the action prompt has not been delivered yet" (FR-211).
+- **A halted action step.** `S` is refused for ACTION_PROMPT: skipping it would close nothing and leave the run
+  waiting for a report that can't come. `X` fails the run (FR-212 wording, naming the step). Cleanup then runs as
+  after any close (FR-215), so the worker is still cleared.
 - **Run close and cleanup.** `completeRun`/`MarkWorkerFree` close the run exactly as today (FR-215). When cleanup
   steps exist, they **don't clear the worker's run**: they set `controller.run.hold = CLEANING_UP` through
   `UpdateWorker`. The sandbox is then not free by the existing `free()` rule (`controller.run != nil`), so it takes no
   run of either type (FR-215, SC-004).
+  - If the sandbox isn't RUNNING or its agent is EXITED at close (for example a run awaiting review on a sandbox that
+    was stopped, which `leaveRunning` keeps), the cleanup steps can't run: they are dropped and the hold is
+    `NEEDS_DEVELOPER` straight away (FR-216), not a hidden `CLEANING_UP` that would stall.
+- **Listing.** `Service.ListRuns` puts closed runs that hold a sandbox or are halted in `in_flight`, and keeps them
+  out of `history`, so the TUI's *In progress* group, its *History* group and the orchestrator's own views agree
+  (FR-213).
 - **Runs that hold a sandbox.**
   - `runOn(sandbox)` is **unchanged** (in-flight runs only): `failRunsOn` loops until it returns nil, and
     `MarkWorkerFree`, `toolReportCompletion` and the reasoning-rebuild check rely on it meaning "in flight".
@@ -287,8 +322,12 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
 - The orchestrator tries again on every `sandbox_changed` for that sandbox, plus a `stepRetryEvery = 2s` ticker that
   runs only while some run has a pending step on a reachable host. The ticker covers a box the developer empties
   without any hook firing.
-- `Unimplemented` (an older daemon) on the first step fails the run's delivery: "worker daemon does not support
-  pre/post prompts; update it". It is the only error that fails a run at delivery.
+- **Mixed versions.** `Unimplemented` (an older daemon) on the first step **unclaims** the run (back to QUEUED, no
+  sandbox, no daemon record, since the old daemon recorded nothing) and marks that worker, in memory, as unable to
+  take sequenced runs until its host's link reconnects. Dispatch then picks another worker. Only when **no**
+  attached, eligible worker can take a sequenced run does the run fail: "no worker supports pre/post prompts; update
+  their daemons". Every action has steps by default (FR-210), so without this, upgrading only the orchestrator's
+  machine would fail every run sent to an older remote worker.
 - Any other error (unreachable host, timeout), on any step including the first, is treated like a lost host: the
   step stays SENDING, and on reconnect it is resolved from the daemon's `step_index` record (typed → SENT, then R8;
   not typed → PENDING). A first step resolved to SENT on a still-QUEUED run calls `startRun`. Nothing is re-typed
@@ -305,7 +344,7 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
 
 | `hold` | Set when | Ends when | Free? | Surfaced (sandbox list) |
 |---|---|---|---|---|
-| `CLEANING_UP` | the run closed and has cleanup steps | the last cleanup step finished (`controller.run` cleared) | no | hidden, as today |
+| `CLEANING_UP` | the run closed and has cleanup steps | the last cleanup step finished (`controller.run` cleared) | no | hidden while it progresses; **top**, `cleaning up · waiting: <reason>`, once its step has a `waiting:` note (R6) or is halted |
 | `NEEDS_INPUT_FREEING` | the developer frees a worker whose cleanup is asking for input | Clear finished (or no Clear) | no | **top**, `needs input (freeing)` |
 | `NEEDS_DEVELOPER` | Clear failed by the developer, or the agent exits or the sandbox stops during cleanup | the owning daemon observes `SessionStart` with source `startup` or `clear` | no | **top**, `needing the developer — open its terminal and run /clear` |
 
@@ -320,10 +359,15 @@ Details:
   live, from the hook itself, so nothing is compared across machines' clocks and nothing is inferred from recorded
   state (FR-216).
   - When the **agent exits** during cleanup with the sandbox still running, the daemon sets `hold = NEEDS_DEVELOPER`
-    itself too, so a fresh session that follows at once still ends the hold. Guard 3a refuses the remaining custom
+    itself too. No hook reports an exit (`SessionEnd` isn't registered); the exit arrives as `agent.Registry.onExit`
+    → `Manager.SetAgentStatus(EXITED)`, so the escalation lives in `SetAgentStatus`, so a fresh session that follows at once still ends the hold. Guard 3a refuses the remaining custom
     cleanup steps, so nothing is typed into the new session even if the orchestrator missed the exit (FR-216).
-  - Orchestrator writes to an existing run use `UpdateWorker{same_run_only}`, so a late hold, halt or review write
+  - Orchestrator writes to an existing run use `UpdateWorker{expect_run_id}`, so a late hold, halt or review write
     never re-creates a run the daemon has released.
+  - **A hold is never lowered by an update.** The daemon's `Update` refuses to change `NEEDS_DEVELOPER` to anything
+    but a clear (and `workerRunFor` overlays the higher of the two holds). An orchestrator that hasn't yet seen the
+    daemon's escalation can therefore never downgrade it to a hidden `CLEANING_UP` that lets custom cleanup steps
+    through guard 3a.
   - **Retrying Clear under the hold.** After `X` on Clear, the step stays on the row with `R` (FR-216, FR-222: "a
     retried Clear also produces" the fresh session). `ResolveRunStep` RETRY and guard 3a accept it while `hold ==
     NEEDS_DEVELOPER`; it waits for a live, idle agent and never starts one (guard 5).
@@ -341,7 +385,11 @@ Details:
   sandbox record). The Workers view gets `WorkerView.hold`/`halted` (fields 12–13), since `availability()` alone
   reports a held worker as BUSY.
 - Marking a held worker free from the TUI is allowed when `hold == CLEANING_UP` and the agent is NEEDS_INPUT (the
-  FR-216 freeing case); today's `markFreeKey` refuses any sandbox with a run that is not awaiting review.
+  FR-216 freeing case); today's `markFreeKey` refuses any sandbox with a run that is not awaiting review. The run is
+  already closed, so this goes **straight to freeing**: no outcome/note dialog, and the run's outcome is never
+  changed.
+- `t`/`T` on a run row also open the terminal of a run that **holds** its sandbox (`holdingRunOn`), not only one in
+  flight. The terminal is the way out of a hold, and the row tells the developer to use it.
 - Nothing new is needed for cross-machine display, because the hold travels with the sandbox.
 
 ## R8 — Restart resolution (FR-217)
@@ -352,17 +400,27 @@ resolves each run whose step is **sent but not finished**. A step still SENDING 
 recorded evidence (R4) against `step_sent_at`. Every time compared here is the **daemon's** clock (`step_sent_at`
 comes from `DeliverWorkerStepResponse.sent_at` or the daemon record), so there is no cross-machine skew:
 
-1. If `last_submit_at > step_sent_at`, the step was a model turn.
-   - If `last_turn_end_at > last_submit_at` and the status is IDLE, it is **finished**.
-   - If the status is WORKING, WAITING or NEEDS_INPUT, it is awaited as usual.
-2. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
+This applies when the sandbox's **owning daemon kept running** (an orchestrator restart with a remote worker, or a
+lost link). When the owning daemon itself restarted, the agent's PTY is gone and R14 applies instead.
+
+1. **A step already `TURN`** was classified before the restart, so the turn-start test is skipped: it is finished
+   when the agent is IDLE with `last_turn_end_at > step_sent_at` (or, for MODEL_TURN_INPUT_ONLY, by the input-only
+   rule, FR-206b), and otherwise awaited as usual.
+2. **A step `SENT`** (typed, not yet classified) is a model turn if `last_submit_at > step_sent_at`, **or** the
+   agent is NEEDS_INPUT with `last_event_at > step_sent_at` (a needs-input report after the send, FR-217). It is
+   then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
+3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`
    after `step_sent_at` finishes it.
-3. Otherwise the step **halts as not accepted, marked `sent_before_restart`** (FR-217, FR-222). An empty, ready box
-   alone never finishes it.
+4. Otherwise the step **halts as not accepted, marked `sent_before_restart`** (FR-217, FR-222). An empty, ready box
+   alone never finishes it. The halt is also written to the daemon (`controller.run.halted = true` through
+   `workerRunFor` with `expect_run_id`), so `R`'s `retry` passes guard 3a and the worker is surfaced. On every
+   reconnect the orchestrator repairs a HALTED run whose `controller.run.halted` disagrees, as `repairReviewFlag`
+   does for the review flag, so a halt push lost on a down link doesn't strand a retry.
 
 **Rationale.** It applies the spec's rule literally, and the recorded evidence (R4) shrinks the developer-decides
-case to its true minimum: a daemon that itself restarted mid-turn.
+case to the minimum: a turn that ended with no recorded evidence. A restart of the owning daemon is a different case
+(the agent is gone) and is handled as an agent exit (R14).
 
 ## R9 — Action storage and the upgrade default (FR-200–FR-204, FR-210)
 
@@ -431,11 +489,87 @@ case to its true minimum: a daemon that itself restarted mid-turn.
 ## R12 — Dependency on SWI-15 (PR #17)
 
 **Decision.**
-- The implement phase **rebases on `main` after PR #17 merges**, and uses its `SessionStart` hook registration and
-  `Source` plumbing (`hooks.go` `sessionStart`) to record R4's session-start evidence.
-- The step guard also needs SWI-15's `Ready`/`MarkReady`, AGENT_STATUS_STARTING and `startAgent`. **PR #17 is
-  therefore a hard prerequisite**: implementation starts after it merges. A cherry-pick of only the hook would leave
-  guard 5 with nothing to read.
+- **PR #17 (SWI-15) has merged.** The implement phase starts from a `main` that includes it, and uses its
+  `SessionStart` hook registration and `Source` plumbing (`hooks.go` `sessionStart`) to record R4's session-start
+  evidence. The step guard also uses SWI-15's `Ready`/`MarkReady`, AGENT_STATUS_STARTING and `startAgent`.
 - **SWI-9 (app forms) is a second prerequisite.** The form tasks use its `UI/formguard.go` snapshot and its
   enlargeable `spec.text` fields (ctrl+e), which exist only on the unmerged SWI-9 implement branch. Implementation
   rebases on `main` after both merge.
+
+## R13 — Security: typed text, hook events and the step RPC
+
+**Context.** Steps are typed into an agent that can run slash commands and `!` shell lines. Three things decide what
+gets typed or what counts as evidence, and each needs a boundary.
+
+**Decision.**
+
+1. **Control characters never reach the PTY.** Steps are sent as a bracketed paste (`ESC[200~ … ESC[201~`). A
+   value containing `ESC[201~` would end the paste early, and a following `\r` would submit whatever comes next, a
+   slash command or a `!` shell line. That defeats FR-204, under which the action's **author**, not a call value,
+   decides the command. Call values come from worker agents that read untrusted ticket and PR text, so this is
+   reachable through prompt injection. The rule is applied at three layers:
+   - **Call time (`validateCall`).** Every argument value is refused (`argument <name> contains a control
+     character`) if it contains ESC (0x1B), another C0 control other than `\n` and `\t` (this includes `\r`), DEL
+     (0x7F), or a C1 control (U+0080–U+009F, which some terminals read as CSI). The same check applies to argument
+     defaults. Nothing is stripped silently: a refused call is visible to the caller.
+   - **Save time (`validateAction`).** The action body, pre-prompts and post-prompts are checked the same way.
+   - **Type time (`TypeStep`, and `Registry.Prompt` for runs without steps).** Text containing any of these
+     characters is refused before anything is written. This is defence in depth, for example against a stored action
+     saved by an older daemon.
+2. **Hook callbacks are bound to their sandbox.** `POST /hook` is reached from inside sandboxes over
+   `host.docker.internal`, and today it trusts the `sandbox_id` query parameter.
+   - **Per-sandbox token.** The daemon generates a random 32-byte token per sandbox when it writes the agent's hook
+     settings (`BuildSettings`). The token is kept in the daemon's own store, never on `pb.Sandbox` (so
+     `ListSandboxes` doesn't expose it), and is put in the callback URL (`…/hook?sandbox=<id>&token=<t>`). The hook
+     server compares it in constant time and drops a mismatch with 403. One sandbox therefore can't forge or replay
+     events for another. The token is rotated whenever the settings are rewritten.
+   - **Self-forgery is corroborated, not trusted.** A process inside the sandbox can read its own settings, so the
+     token doesn't stop the sandbox's own agent (or a background process it started) from posting a fake
+     `SessionStart`. The decisions that would let context leak into the next run (SC-001) therefore need
+     daemon-observed evidence as well as the hook:
+     - **Ending a hold on `startup`**: the daemon itself spawned a new agent PTY for the sandbox after the hold began
+       (an `agent.Registry` generation counter).
+     - **Ending a hold on `clear`, and Clear's read-back**: the hook's `session_id` differs from the recorded
+       `AgentSession.session_id`, **and** the daemon's screen shows the post-clear state (an empty, ready box with no
+       conversation above it, fixture `clear-banner`).
+   - **Only the main agent counts.** A nested `claude -p` run in the workspace fires the same hooks with its own
+     `session_id`. `AgentSession.session_id` records the main session from the last corroborated
+     `startup`/`clear`. The submit check, the evidence fields and hold release ignore events from any other session,
+     though status display keeps today's behaviour.
+3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as
+   `DeliverWorkerPrompt`: the local daemon socket, and the orchestrator's SSH-dialled link. On top of that:
+   - **Built-ins are derived, not passed.** For MODEL, EFFORT and CLEAR the daemon types the text it derives from
+     `kind` + `expect` and ignores `step.text`, so a caller can't type `/anything` as a built-in.
+   - CUSTOM and ACTION_PROMPT text pass the control-character check.
+   - **Indices only grow.** `step_index` must be **greater** than the recorded one (skips leave gaps), or equal with
+     `retry` on a halted run. A replayed or out-of-order request types nothing.
+   - The run must be the one recorded on the sandbox for this orchestrator (guards 2–3), so a client that knows ids
+     still can't type into a sandbox busy with another orchestrator's run, or with no run.
+
+**Alternatives considered.**
+- **Strip control characters silently.** Rejected: it would change what the author or caller wrote without telling
+  them. Refusing is visible and the fix is obvious.
+- **Trust hook events once the token matches.** Rejected: the token stops cross-sandbox forgery, not
+  self-forgery, and a fake `clear` is exactly what would carry context into the next run.
+
+## R14 — Recovery when the owning daemon restarts
+
+**Context.** Agent sessions don't survive a restart of the sandbox's owning daemon. The `sbx exec` child is orphaned
+and the PTY is lost (SWI-15: "agent sessions do not survive a daemon restart"), and `WarmStart` skips sandboxes with
+a run. For a **local** worker the owning daemon is the orchestrator's daemon, so every orchestrator restart is also
+an owning-daemon restart.
+
+**Decision.** A lost PTY is an **agent exit**, with the rule for the phase the run was in. The daemon applies it at
+start, before `WarmStart`, to each sandbox whose `controller.run` has a `step_role` or `hold`:
+- **SETUP:** agent status EXITED. The orchestrator fails the run naming the step (FR-212): "agent lost when its
+  daemon restarted during setup step N/M (<text>)".
+- **ACTION:** agent status EXITED. The orchestrator handles it as an agent exit during a run today (`foldStatus`:
+  "agent exited"), and the cleanup that follows a close runs per FR-215/FR-216 (below).
+- **CLEANUP, or any hold:** `hold = NEEDS_DEVELOPER`, set by the daemon itself (as `leaveRunning` does). `WarmStart`
+  doesn't start an agent for a held sandbox. Opening its terminal (`t`) starts a fresh one, whose `startup` ends the
+  hold (FR-216).
+
+So no step waits on an agent that is gone, nothing is read back from a screen that no longer exists (`check_only`
+answers `no live agent`), and no second `claude` is spawned by the step path (guard 5 starts one only for a `first`
+step on an unheld sandbox). R8's evidence-based resolution covers the remaining case, where the owning daemon kept
+running (a remote worker while the orchestrator restarted, or a lost link).

@@ -125,7 +125,11 @@ message AgentSession {
   google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
   string last_session_source = 8;                       // "startup" | "resume" | "clear"
   google.protobuf.Timestamp input_idle_since = 9;       // box empty + ready and agent not WORKING since (unset otherwise);
-                                                        // sampled while controller.run is set (idle-nudge fallback, R1)
+                                                        // sampled while controller.run is set (idle-nudge fallback, R1);
+                                                        // written only when it is set or unset, never per sample
+  string session_id = 10;                               // the main agent's session, from the last corroborated
+                                                        // startup/clear SessionStart (research R13); hooks from any
+                                                        // other session (a nested `claude -p`) are ignored for steps
 }
 
 message WorkerRun {
@@ -162,19 +166,23 @@ message DeliverWorkerStepRequest {
   string orchestrator_id = 2;
   string run_id = 3;
   string action = 4;
-  RunStep step = 5;
+  RunStep step = 5;                      // MODEL/EFFORT/CLEAR: the daemon types the text it derives from kind + expect
+                                         // (`/model opus`…) and ignores step.text; CUSTOM/ACTION_PROMPT text must have
+                                         // no control characters (research R13)
   bool first = 6;                        // the run is not started: record controller.run if none (idempotent for the same run_id)
   bool check_only = 7;                   // restart resolution (research R8): read back without typing
-  int32 step_index = 8;                  // refused if controller.run.step_index already equals it (never typed twice)
+  int32 step_index = 8;                  // must be greater than controller.run.step_index (monotonic), or equal with retry
   bool retry = 9;                        // ResolveRunStep RETRY: a repeated step_index is allowed only while controller.run.halted
                                          // (or, for CLEAR, while hold == NEEDS_DEVELOPER)
 }
 
 message UpdateWorkerRequest {
   // … fields 1..7 unchanged …
-  bool same_run_only = 8;                // with set_run: apply only if controller.run.id == run.id; never recreate a
-                                         // cleared run (FAILED_PRECONDITION "run moved"). Every hold, halt and review
-                                         // write from the orchestrator sets it (research R7).
+  string expect_run_id = 8;              // compare-and-set key: when set, the update (set or clear of controller.run, with
+                                         // set_run) applies only while controller.run.id == expect_run_id; otherwise
+                                         // FAILED_PRECONDITION "run moved". Never re-creates a cleared run. Every
+                                         // orchestrator write to a sequenced run sets it (research R7).
+                                         // A NEEDS_DEVELOPER hold is never lowered by an update: only cleared (R7).
 }
 
 enum StepOutcome {
@@ -214,7 +222,9 @@ message ResolveRunStepRequest {
 | Condition | Code / result |
 |---|---|
 | Sandbox not RUNNING; controller missing or another orchestrator's; agent not IDLE or not ready; input box not empty and ready; (`first`) another run already recorded; (not `first`) `controller.run.id ≠ run_id` | `FAILED_PRECONDITION` with the reason. Nothing is typed, and the orchestrator retries (research R6); a refusal lasting over `stepWaitNote` shows on the row. |
-| `controller.run.step_index == req.step_index` (already typed) | `ALREADY_EXISTS` with `step_sent_at`. Nothing is typed; the orchestrator treats the step as SENT and resolves it per research R8. |
+| `req.step_index ≤ controller.run.step_index` without a valid `retry` (already typed, or a replay) | `ALREADY_EXISTS`. Nothing is typed; the orchestrator reads `controller.run.step_sent_at` from the sandbox record, treats the step as SENT and resolves it per research R8. |
+| CUSTOM or ACTION_PROMPT text containing a control character (research R13) | `INVALID_ARGUMENT`. Nothing is typed. |
+| No live agent (and not a `first` step on an unheld sandbox, which starts one) | `FAILED_PRECONDITION` `no live agent`. The broadcaster is never created for a sandbox with no live agent. |
 | Unknown sandbox | `NOT_FOUND` |
 | An older daemon | `UNIMPLEMENTED`. The orchestrator fails the first step's delivery with "worker daemon does not support pre/post prompts; update it" (research R6). |
 
@@ -225,3 +235,4 @@ message ResolveRunStepRequest {
 | Run not found | `NOT_FOUND` |
 | Run not halted (except RETRY of a CLEAR step under a NEEDS_DEVELOPER hold), or `step` ≠ its halted step | `FAILED_PRECONDITION` ("the run moved on; reload") |
 | SKIP on a CLEAR step | `FAILED_PRECONDITION` ("Clear cannot be skipped") |
+| SKIP on the ACTION_PROMPT step | `FAILED_PRECONDITION` ("the action prompt cannot be skipped; retry or fail") |
