@@ -177,6 +177,12 @@ func holding(r *pb.Run) bool {
 		(r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || r.GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED)
 }
 
+// cleaningUp reports whether a closed run's cleanup steps still run on its
+// sandbox: CLEANING_UP, or NEEDS_INPUT_FREEING (only Clear is left).
+func cleaningUp(r *pb.Run) bool {
+	return r.GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP || r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
+}
+
 // restartHalt reports whether a run is halted because its agent was detached
 // by an owning-daemon restart (research R14): R restarts setup, S is refused.
 func restartHalt(r *pb.Run) bool {
@@ -356,10 +362,20 @@ func (rt *runtime) syncWorkerRun(runID string) {
 
 // --- transactions on the live record ---
 
-// sameStep reports whether the live record is where the caller saw it.
+// sameStep reports whether the live record is where the caller saw it. The
+// in-flight states count as one: status folding moves a run between running,
+// awaiting input and awaiting review while a step call is out, and the step's
+// answer still applies (lost, it would leave a typed step unclassified).
 func sameStep(a, b *pb.Run) bool {
-	return a.GetState() == b.GetState() && a.GetStep() == b.GetStep() && a.GetStepSend() == b.GetStepSend() &&
+	return stepState(a) == stepState(b) && a.GetStep() == b.GetStep() && a.GetStepSend() == b.GetStepSend() &&
 		a.GetStepStatus() == b.GetStepStatus() && a.GetHold() == b.GetHold()
+}
+
+func stepState(r *pb.Run) pb.RunState {
+	if inFlight(r) {
+		return pb.RunState_RUN_STATE_RUNNING
+	}
+	return r.GetState()
 }
 
 // stepTx applies fn to the live record of seen under runs.mu while its step is
@@ -540,7 +556,7 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 			}
 			return true
 		case wr.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER && run.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER,
-			run.GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP && run.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING && !canType(sb):
+			cleaningUp(run) && run.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING && !canType(sb):
 			// The agent exited or the sandbox stopped during cleanup (the
 			// daemon may have raised the hold already): the remaining steps
 			// are dropped and the developer frees it (FR-216).
@@ -768,6 +784,7 @@ func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse
 	sb := rt.sandboxRecord(sent.GetSandboxId())
 	now := rt.svc.clock.Now()
 	var fx stepFx
+	answered := false
 	live, ok := rt.stepTx(sent, func(l *pb.Run) bool {
 		closedEarly := finished(l) && l.GetHold() == pb.WorkerHold_WORKER_HOLD_NONE
 		switch res {
@@ -787,9 +804,15 @@ func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse
 		case resInvalid:
 			fx = haltLocked(l, refusalReason(err))
 		default:
-			if l.GetState() == pb.RunState_RUN_STATE_QUEUED {
+			switch l.GetState() {
+			case pb.RunState_RUN_STATE_QUEUED:
 				l.State = pb.RunState_RUN_STATE_RUNNING
 				l.StartedAt = timestamppb.New(now)
+			case pb.RunState_RUN_STATE_AWAITING_INPUT:
+				// Typed at an empty, ready box: the agent's question (asked by
+				// an earlier step) is gone, and the sequence goes on (US2 #4).
+				l.State = pb.RunState_RUN_STATE_RUNNING
+				answered = true
 			}
 			fx = typedLocked(l, res, resp, sb)
 		}
@@ -820,6 +843,9 @@ func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse
 	}
 	rt.mu.Lock()
 	rt.seq.dropMarks(live.GetId())
+	if answered {
+		delete(rt.inputNotified, live.GetId())
+	}
 	rt.mu.Unlock()
 	rt.applyFx(live, fx)
 	return true
@@ -880,7 +906,8 @@ func advanceLocked(l *pb.Run) stepFx {
 		l.StepNote = ""
 		return stepFx{sync: true}
 	}
-	if i+1 >= len(l.GetSteps()) {
+	if i+1 >= len(l.GetSteps()) || l.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING {
+		// Freeing: Clear was the one step left (FR-216).
 		l.Hold = pb.WorkerHold_WORKER_HOLD_NONE
 		moveTo(l, i, pb.StepStatus_STEP_STATUS_DONE)
 		return stepFx{clear: true}
@@ -1054,11 +1081,16 @@ func builtin(k pb.StepKind) bool {
 }
 
 // resolveSent resolves a step typed but not classified (an UNCONFIRMED
-// outcome, a lost answer) by evidence after its send, never by an idle state
-// that was already there (FR-206a, FR-217, research R8): a turn start makes it
-// a TURN; a built-in whose setting reads back (check_only), or a Clear whose
-// fresh session was reported, is finished; otherwise, once sentGrace has
-// passed, it halts for the developer, marked as possibly run.
+// outcome, a lost answer, an orchestrator restart) by evidence after its send,
+// never by an idle state that was already there (FR-206a, FR-217, research
+// R8). Rule 2: a turn start makes it a TURN (finishTurn then waits for its
+// end). Rule 3: a built-in whose setting reads back is finished; the daemon
+// runs the read-back (check_only), and for Clear it requires the clear
+// session start after the send, corroborated by its own screen (R13), so the
+// orchestrator never finishes Clear on the hook evidence alone. An agent
+// detached by an owning-daemon restart has no screen to read: only hook
+// evidence counts for it (R14). Rule 4: otherwise, once sentGrace has passed,
+// it halts for the developer, marked as possibly run.
 func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 	st := curStep(run)
 	if sb == nil || st == nil {
@@ -1075,11 +1107,10 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		}
 		return true
 	}
-	a := sb.GetAgent()
-	if st.GetKind() == pb.StepKind_STEP_KIND_CLEAR && a.GetLastSessionSource() == "clear" && after(a.GetLastSessionStartAt(), run.GetStepSentAt()) {
-		return rt.finishStep(run)
-	}
 	if builtin(st.GetKind()) && canType(sb) {
+		if agentCheck(sb) == pb.AgentCheck_STATE_UNKNOWN {
+			return false // a probe is pending: its answer (a status change) kicks again
+		}
 		api, err := rt.apiFor(run.GetSandboxHostId())
 		if err != nil {
 			return false
@@ -1092,7 +1123,9 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		cancel()
 		switch {
 		case err != nil, resp.GetOutcome() == pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED:
-			rt.armStepRetry() // the screen is resyncing, or the link blipped: read again
+			// The screen is resyncing, the agent is busy, or the link blipped:
+			// read again (the retry ticker only kicks steps waiting to be sent).
+			rt.wakeAfter(run, stepRetryEvery)
 			return false
 		case resp.GetOutcome() == pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL:
 			return rt.finishStep(run)
@@ -1288,6 +1321,57 @@ func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
 	moveTo(l, at, pb.StepStatus_STEP_STATUS_DONE)
 	l.StepNote = note
 	return stepFx{sync: true}
+}
+
+// freeCleanup is a mark free of a worker whose closed run is cleaning up while
+// its agent asks for input (FR-216): the remaining custom post-prompts are
+// dropped and the hold becomes NEEDS_INPUT_FREEING; Clear (if enabled) is then
+// sent under the normal guard, once the question is gone and the box is empty
+// and ready, and the worker is free once it finished. With no Clear it is free
+// at once. The run's outcome is never changed. held is false when the sandbox
+// has no such run (MarkWorkerFree goes on as before).
+func (rt *runtime) freeCleanup(sandboxID string) (out *pb.Run, held bool, err error) {
+	run := rt.seqRunOn(sandboxID)
+	if run == nil || !finished(run) || run.GetHold() != pb.WorkerHold_WORKER_HOLD_CLEANING_UP {
+		return nil, false, nil
+	}
+	if rt.sandboxRecord(sandboxID).GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
+		return nil, true, fmt.Errorf("%w: sandbox %s is cleaning up after run %s; it can be freed only while its agent asks for input", ErrPrecondition, sandboxID, run.GetId())
+	}
+	var fx stepFx
+	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
+		switch st := curStep(l); {
+		case l.GetStepStatus() == pb.StepStatus_STEP_STATUS_SENDING:
+			err = fmt.Errorf("%w: a cleanup step of run %s is being sent; try again", ErrPrecondition, l.GetId())
+			return false
+		case st.GetKind() == pb.StepKind_STEP_KIND_CLEAR && l.GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED:
+			err = fmt.Errorf("%w: Clear of run %s is halted; retry or fail it from the run", ErrPrecondition, l.GetId())
+			return false
+		}
+		c := clearIndex(l)
+		if c < 0 {
+			l.Hold = pb.WorkerHold_WORKER_HOLD_NONE
+			moveTo(l, int(l.GetStep()), pb.StepStatus_STEP_STATUS_DONE)
+			fx = stepFx{clear: true}
+			return true
+		}
+		l.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
+		l.HoldSince = timestamppb.New(rt.svc.clock.Now())
+		if int(l.GetStep()) != c {
+			moveTo(l, c, pb.StepStatus_STEP_STATUS_PENDING)
+		}
+		fx = stepFx{sync: true, kick: true}
+		return true
+	})
+	switch {
+	case err != nil:
+		return nil, true, err
+	case !ok:
+		return nil, true, fmt.Errorf("%w: run %s moved on; reload", ErrPrecondition, run.GetId())
+	}
+	rt.dropMarks(live.GetId())
+	rt.applyFx(live, fx)
+	return proto.Clone(live).(*pb.Run), true, nil
 }
 
 // --- developer resolution (FR-222) ---

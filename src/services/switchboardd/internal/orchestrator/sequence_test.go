@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -1329,5 +1330,628 @@ func TestInvalidStepHalts(t *testing.T) {
 	}
 	if n := len(stepReqs(w2)); n != 1 {
 		t.Errorf("an invalid step is never retried: %d calls", n)
+	}
+}
+
+// --- custom pre- and post-prompts (US2, T035) ---
+
+// callTicket calls review-pr with a ticket (the custom steps' placeholder).
+func callTicket(t *testing.T, env *testEnv, o *pb.Orchestrator, number, ticket string) *pb.Run {
+	t.Helper()
+	run, err := env.svc.CallAction(o.GetId(), "review-pr", map[string]string{"ticket": ticket, "number": number, "repo": "acme/web"}, pb.EventKind_EVENT_KIND_USER, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+// endTurn ends the current step's turn with the clock first moved on, so the
+// next step's send is after this turn end (a turn end at the same instant
+// would finish it too).
+func endTurn(env *testEnv, w *fakeWorker) {
+	env.clock.Advance(5 * time.Second)
+	turnEnds(w, "wa")
+}
+
+// Custom prompts run around the built-ins in their listed order (US2 #2):
+// /model, /effort, the pre-prompts, the action prompt, then after the report
+// the post-prompts and /clear last. Placeholders are filled per call.
+func TestCustomPromptsOrderAndPlaceholders(t *testing.T) {
+	a := withSequence([]string{"Open {ticket}", "/use {skill}"}, []string{"Wrap up {ticket}"})
+	env, w, o, rt, d := seqEnv(t, 1, a)
+	run := callTicket(t, env, o, "1", "T-1")
+	run2 := callTicket(t, env, o, "2", "T-2")
+	for _, r := range []*pb.Run{run, run2} {
+		waitStep(t, env, o, r.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+		endTurn(env, w)
+		waitStep(t, env, o, r.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+		endTurn(env, w)
+		waitStep(t, env, o, r.GetId(), 4, pb.StepStatus_STEP_STATUS_TURN)
+		endTurn(env, w)
+		waitStep(t, env, o, r.GetId(), 4, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+		if err := report(t, rt, "wa"); err != nil {
+			t.Fatal(err)
+		}
+		waitStep(t, env, o, r.GetId(), 5, pb.StepStatus_STEP_STATUS_TURN)
+		endTurn(env, w)
+		waitStep(t, env, o, r.GetId(), 6, pb.StepStatus_STEP_STATUS_DONE)
+	}
+	want := []string{
+		"/model opus", "/effort medium", "Open T-1", "/use review", "Review pull request 1 in acme/web and leave review comments.\n\nticket: T-1", "Wrap up T-1", "/clear",
+		"/model opus", "/effort medium", "Open T-2", "/use review", "Review pull request 2 in acme/web and leave review comments.\n\nticket: T-2", "Wrap up T-2", "/clear",
+	}
+	got := d.typedTexts()
+	for i := range got {
+		got[i] = strings.TrimPrefix(got[i], "wa: ")
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("typed =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A pre-prompt that makes the agent ask gives an AWAITING_INPUT run, exactly
+// as for the action prompt; once the agent is idle again the sequence goes on
+// and the run is RUNNING (US2 #4).
+func TestPrePromptNeedsInputContinues(t *testing.T) {
+	a := withSequence([]string{"/ask {ticket}"}, nil)
+	env, w, o, _, _ := seqEnv(t, 1, a)
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+		sb.Agent.LastNeedsInputAt = timestamppb.New(sb.GetController().GetRun().GetStepSentAt().AsTime().Add(time.Second))
+	})
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_INPUT })
+	if k := notifiedKinds(env); len(k) != 1 || k[0] != pb.NotificationKind_NOTIFICATION_KIND_RUN_NEEDS_INPUT {
+		t.Errorf("notifications = %v", k)
+	}
+	if r := runNow(env, o, run.GetId()); r.GetStep() != 2 {
+		t.Fatalf("a question holds the sequence: step %d", r.GetStep())
+	}
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+}
+
+// Idle again in setup with the next step not yet typed (its box busy): the
+// run is RUNNING again, never review (FR-209).
+func TestPrePromptAnsweredIdleIsRunning(t *testing.T) {
+	a := withSequence([]string{"/ask {ticket}"}, nil)
+	env, w, o, rt, d := seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT })
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_INPUT })
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_PENDING)
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+	// The link's reconcile agrees.
+	emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT })
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_INPUT })
+	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE })
+	rt.mu.Lock()
+	rt.sbs["wa"] = w.get("wa")
+	rt.mu.Unlock()
+	rt.reconcileInFlight("box")
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_RUNNING })
+}
+
+// cleanupAsks runs a run with custom post-prompts to its first post-prompt,
+// whose turn then asks the developer a question.
+func cleanupAsks(t *testing.T, env *testEnv, w *fakeWorker, o *pb.Orchestrator, rt *runtime) *pb.Run {
+	t.Helper()
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+	// Not asking anything yet: a cleaning-up worker can't be marked free.
+	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "only while its agent asks for input") {
+		t.Errorf("mark free of a working cleanup = %v", err)
+	}
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+		sb.Agent.LastNeedsInputAt = timestamppb.New(sb.GetController().GetRun().GetStepSentAt().AsTime().Add(time.Second))
+	})
+	waitFor(t, func() bool {
+		return rt.sandboxRecord("wa").GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	})
+	return run
+}
+
+// FR-216: freeing a worker whose cleanup asks for input drops the remaining
+// custom post-prompts; the hold reads NEEDS_INPUT_FREEING until Clear, sent
+// only once the agent is idle at an empty box, finished. The run's outcome is
+// never changed by the mark free.
+func TestFreeingDuringCleanupWithClear(t *testing.T) {
+	a := withSequence(nil, []string{"Ask about {ticket}", "Tidy up"})
+	env, w, o, rt, d := seqEnv(t, 1, a)
+	run := cleanupAsks(t, env, w, o, rt)
+	got, err := env.svc.MarkWorkerFree(o.GetId(), "wa", true, "ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetId() != run.GetId() || got.GetState() != pb.RunState_RUN_STATE_COMPLETED || got.GetSummary() != "done" ||
+		got.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING || got.GetStep() != 5 || got.GetStepStatus() != pb.StepStatus_STEP_STATUS_PENDING {
+		t.Fatalf("freed run = %+v", got)
+	}
+	waitFor(t, func() bool {
+		return w.get("wa").GetController().GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
+	})
+	// Freeing again is refused; the worker is still held, and takes no run.
+	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("second mark free = %v", err)
+	}
+	run2 := callTicket(t, env, o, "2", "T-2")
+	env.clock.Advance(stepRetryEvery)
+	settle(t, rt)
+	if r := runNow(env, o, run2.GetId()); r.GetSandboxId() != "" {
+		t.Errorf("a freeing worker takes no run: %+v", r)
+	}
+	if typed := strings.Join(d.typedTexts(), "|"); strings.Contains(typed, "/clear") {
+		t.Fatalf("Clear typed into the question: %q", typed)
+	}
+	// The developer answers; the agent is idle at an empty box: Clear, free.
+	endTurn(env, w)
+	r := waitStep(t, env, o, run.GetId(), 5, pb.StepStatus_STEP_STATUS_DONE)
+	if r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetSummary() != "done" || r.GetClosedByDeveloper() {
+		t.Errorf("finished run = %+v", r)
+	}
+	typed := strings.Join(d.typedTexts(), "|")
+	if strings.Contains(typed, "Tidy up") || !strings.Contains(typed, "wa: Ask about T-1|wa: /clear") {
+		t.Errorf("typed = %q", typed)
+	}
+	waitFor(t, func() bool { return runNow(env, o, run2.GetId()).GetState() == pb.RunState_RUN_STATE_RUNNING })
+}
+
+// FR-216 without Clear: the worker is free at once.
+func TestFreeingDuringCleanupWithoutClear(t *testing.T) {
+	a := withSequence(nil, []string{"Ask about {ticket}", "Tidy up"})
+	a.Sequence.ClearEnabled = false
+	env, w, o, rt, d := seqEnv(t, 1, a)
+	run := cleanupAsks(t, env, w, o, rt)
+	got, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || got.GetStepStatus() != pb.StepStatus_STEP_STATUS_DONE || got.GetState() != pb.RunState_RUN_STATE_COMPLETED {
+		t.Errorf("freed run = %+v", got)
+	}
+	waitFor(t, func() bool { return w.get("wa").GetController().GetRun() == nil })
+	if runs, _ := env.svc.ListRuns(o.GetId()); len(runs.GetInFlight()) != 0 || len(runs.GetHistory()) != 1 || runs.GetHistory()[0].GetId() != run.GetId() {
+		t.Errorf("a freed run is history: %+v", runs)
+	}
+	if typed := strings.Join(d.typedTexts(), "|"); strings.Contains(typed, "Tidy up") {
+		t.Errorf("typed = %q", typed)
+	}
+}
+
+// A halted Clear is not freed by mark free: R or X on the run decide.
+func TestFreeingRefusedOnAHaltedClear(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = notAccepted(pb.StepKind_STEP_KIND_CLEAR, "no new session after /clear")
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_HALTED)
+	emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT })
+	waitFor(t, func() bool {
+		return rt.sandboxRecord("wa").GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	})
+	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "Clear of run "+run.GetId()+" is halted") {
+		t.Errorf("mark free of a halted Clear = %v", err)
+	}
+	if r := runNow(env, o, run.GetId()); r.GetHold() != pb.WorkerHold_WORKER_HOLD_CLEANING_UP || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+		t.Errorf("refused mark free changed the run: %+v", r)
+	}
+}
+
+// --- restart resolution (US3, research R8, T037/T038) ---
+
+// restartOrch restarts the orchestrator's service on the same store while the
+// worker's daemon keeps running: outage changes the worker's records (or the
+// clock) while it is down, and the new service's first connect reconciles.
+// The step timings kept in memory are gone, as after a real restart.
+func restartOrch(t *testing.T, env *testEnv, o *pb.Orchestrator, w *fakeWorker, outage func()) *runtime {
+	t.Helper()
+	// Status events the old service hasn't read would reach the new one late.
+	waitFor(t, func() bool { return len(w.events) == 0 })
+	env.svc.Stop()
+	if outage != nil {
+		outage()
+	}
+	svc := NewService(Deps{Store: env.reg, Hub: env.hub, HostID: "host-m", Dial: env.dials.dial, Clock: env.clock, Logf: t.Logf, DaemonVersion: "test"})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Stop)
+	env.svc = svc
+	rt := mustRT(t, env, o)
+	waitFor(t, func() bool { ok, _ := rt.reachability("box"); return ok })
+	return rt
+}
+
+// sentAfter is a daemon-clock time d after the worker's recorded send.
+func sentAfter(sb *pb.Sandbox, d time.Duration) *timestamppb.Timestamp {
+	return timestamppb.New(sb.GetController().GetRun().GetStepSentAt().AsTime().Add(d))
+}
+
+// lostAnswer answers a custom step's first send with ALREADY_EXISTS after it
+// was typed, leaving it SENT (typed, not classified).
+func lostAnswer(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+	if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_CUSTOM && !req.GetRetry() {
+		return nil, status.Error(codes.AlreadyExists, "step already sent")
+	}
+	return nil, nil
+}
+
+// waitSentSeen waits until a runtime's stepper started timing a SENT step's
+// grace (the restarted stepper saw it with no evidence).
+func waitSentSeen(t *testing.T, rt *runtime, runID string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		m := rt.seq.marks[runID]
+		return m != nil && !m.sentSeen.IsZero()
+	})
+}
+
+func stepNotAccepted(env *testEnv) bool {
+	for _, k := range notifiedKinds(env) {
+		if k == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+			return true
+		}
+	}
+	return false
+}
+
+// Rule 1: a TURN step classified INPUT_ONLY before the restart skips the
+// turn-start test: it waits while the agent still asks, never halting, and
+// finishes by the input-only rule once it is idle.
+func TestRestartTurnInputOnly(t *testing.T) {
+	a := withSequence([]string{"/ask {ticket}"}, nil)
+	env, w, o, _, d := seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_CUSTOM {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_MODEL_TURN_INPUT_ONLY}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+			sb.Agent.LastNeedsInputAt = sentAfter(sb, time.Second)
+		})
+	})
+	waitFor(t, func() bool { return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_INPUT })
+	env.clock.Advance(sentGrace)
+	env.clock.Advance(inputOnlyIdle)
+	if r := runNow(env, o, run.GetId()); r.GetStep() != 2 || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_TURN {
+		t.Fatalf("a TURN step still asking waits: %+v", r)
+	}
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+		sb.Agent.LastEventAt = sentAfter(sb, 2*time.Second)
+	})
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+	if stepNotAccepted(env) {
+		t.Error("an INPUT_ONLY step never halts on a restart")
+	}
+}
+
+// Rule 2: a SENT step whose main session reported needs-input after the send
+// is that step's model turn, awaited through the question (FR-217).
+func TestRestartSentNeedsInputIsAwaited(t *testing.T) {
+	a := withSequence([]string{"/ask {ticket}"}, nil)
+	env, w, o, _, d := seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) { d.outcome = lostAnswer })
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+			sb.Agent.LastNeedsInputAt = sentAfter(sb, time.Second)
+		})
+	})
+	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if r.GetStepKindSeen() != pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY {
+		t.Errorf("kind = %v", r.GetStepKindSeen())
+	}
+	env.clock.Advance(sentGrace)
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_TURN {
+		t.Fatalf("awaited step = %+v", r)
+	}
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+	if stepNotAccepted(env) || len(d.typedTexts()) != 4 {
+		t.Errorf("nothing re-sent, nothing halted: %q", d.typedTexts())
+	}
+}
+
+// Rule 4: no evidence after the send halts the step, marked sent before a
+// restart, and the halt is written to the worker (controller.run.halted), so
+// R's retry passes guard 3a and types it exactly once more.
+func TestRestartNoEvidenceHaltsAndRetries(t *testing.T) {
+	a := withSequence([]string{"/prepare {ticket}"}, nil)
+	env, w, o, _, d := seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) { d.outcome = lostAnswer })
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	rt := restartOrch(t, env, o, w, nil)
+	waitSentSeen(t, rt, run.GetId())
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENT {
+		t.Fatalf("an empty, ready box alone never finishes a step: %+v", r)
+	}
+	env.clock.Advance(sentGrace)
+	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+	if !r.GetStepSentBeforeRestart() || r.GetStepUnconfirmed() || r.GetStepNote() != noEvidenceNote {
+		t.Errorf("restart halt = %+v", r)
+	}
+	waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetHalted() })
+	if !stepNotAccepted(env) {
+		t.Error("a restart halt raises RUN_STEP_NOT_ACCEPTED")
+	}
+	before := len(stepReqs(w))
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 2, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	reqs := stepReqs(w)[before:]
+	if len(reqs) != 1 || !reqs[0].GetRetry() || reqs[0].GetStepIndex() != stepReqs(w)[before-1].GetStepIndex() {
+		t.Errorf("retry requests = %+v", reqs)
+	}
+	n := 0
+	for _, txt := range d.typedTexts() {
+		if txt == "wa: /prepare T-1" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("R types the step once more: %d sends", n)
+	}
+}
+
+// Rule 2: a turn that started and ended during the outage (a submit and a turn
+// end after the send, idle) finishes the SENT step.
+func TestRestartTurnFinishedDuringOutage(t *testing.T) {
+	a := withSequence([]string{"/prepare {ticket}"}, nil)
+	env, w, o, _, d := seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) { d.outcome = lostAnswer })
+	run := callTicket(t, env, o, "1", "T-1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.LastSubmitAt = sentAfter(sb, time.Second)
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 2*time.Second)
+		})
+		env.clock.Advance(5 * time.Second)
+	})
+	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+	if r.GetStepSentBeforeRestart() || stepNotAccepted(env) {
+		t.Errorf("finished step = %+v", r)
+	}
+}
+
+// Rule 1: a turn still working at resume is awaited to its end.
+func TestRestartTurnStillWorking(t *testing.T) {
+	env, w, o, _, _ := seqEnv(t, 1, nil)
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING
+			sb.Agent.LastSubmitAt = sentAfter(sb, time.Second)
+		})
+	})
+	env.clock.Advance(sentGrace)
+	env.clock.Advance(reviewGrace)
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_TURN || r.GetState() != pb.RunState_RUN_STATE_RUNNING {
+		t.Fatalf("a working turn is awaited: %+v", r)
+	}
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+}
+
+// Rule 3: a built-in left SENT is read back after the restart (check_only),
+// never re-typed; Clear's read-back is the daemon's, which requires the clear
+// session start after the send (and its own screen).
+func TestRestartBuiltinsReadBack(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	resyncing := &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: "screen resyncing"}
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if k := req.GetStep().GetKind(); (k == pb.StepKind_STEP_KIND_MODEL || k == pb.StepKind_STEP_KIND_CLEAR) && !req.GetRetry() {
+				return resyncing, nil
+			}
+			return nil, nil
+		}
+		d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse { return resyncing }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_SENT)
+	waitFor(t, func() bool {
+		for _, r := range stepReqs(w) {
+			if r.GetCheckOnly() {
+				return true
+			}
+		}
+		return false
+	})
+	// The daemon's read-back, as worker.checkOnly: the confirmation for a
+	// built-in, and for Clear a clear session start after the send.
+	readBack := func(req *pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+		if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_CLEAR {
+			sb := w.get("wa")
+			if a := sb.GetAgent(); a.GetLastSessionSource() != "clear" || !after(a.GetLastSessionStartAt(), sb.GetController().GetRun().GetStepSentAt()) {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "no new session after /clear"}
+			}
+		}
+		return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}
+	}
+	rt := restartOrch(t, env, o, w, func() { d.set(func(d *fakeDaemon) { d.check = readBack }) })
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	// Clear typed, unconfirmed; the screen keeps resyncing until the restart.
+	d.set(func(d *fakeDaemon) {
+		d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse { return resyncing }
+	})
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_SENT)
+	checks := func() int {
+		n := 0
+		for _, r := range stepReqs(w) {
+			if r.GetCheckOnly() && r.GetStep().GetKind() == pb.StepKind_STEP_KIND_CLEAR {
+				n++
+			}
+		}
+		return n
+	}
+	waitFor(t, func() bool { return checks() > 0 })
+	// The clear session start alone is not enough to the orchestrator: the
+	// daemon's read-back decides.
+	restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.LastSessionSource = "clear"
+			sb.Agent.LastSessionStartAt = sentAfter(sb, time.Second)
+		})
+		d.set(func(d *fakeDaemon) { d.check = readBack })
+	})
+	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	if r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE {
+		t.Errorf("hold = %v", r.GetHold())
+	}
+	waitFor(t, func() bool { return w.get("wa").GetController().GetRun() == nil })
+	if got := d.typedTexts(); len(got) != 4 {
+		t.Errorf("nothing re-typed: %q", got)
+	}
+}
+
+// Rule 3, failed: a Clear with no clear session start after its send halts,
+// marked sent before a restart.
+func TestRestartClearNotConfirmedHalts(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_CLEAR {
+				return nil, status.Error(codes.AlreadyExists, "step already sent")
+			}
+			return nil, nil
+		}
+		d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	endTurn(env, w)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_SENT)
+	restartOrch(t, env, o, w, func() {
+		d.set(func(d *fakeDaemon) {
+			d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "no new session after /clear"}
+			}
+		})
+	})
+	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_HALTED)
+	if !r.GetStepSentBeforeRestart() || r.GetStepNote() != "no new session after /clear" || r.GetHold() != pb.WorkerHold_WORKER_HOLD_CLEANING_UP {
+		t.Errorf("halted Clear = %+v", r)
+	}
+	waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetHalted() })
+}
+
+// A detached agent's built-in has no screen to read back (R14): only hook
+// evidence counts, and a probe still pending waits for its answer.
+func TestRestartBuiltinOnUnknownAgentWaits(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_EFFORT {
+				return nil, status.Error(codes.AlreadyExists, "step already sent")
+			}
+			return nil, nil
+		}
+		d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_SENT)
+	rt := restartOrch(t, env, o, w, func() {
+		w.update("wa", func(sb *pb.Sandbox) { sb.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_UNKNOWN} })
+		d.set(func(d *fakeDaemon) { d.check = nil })
+	})
+	before := len(stepReqs(w))
+	env.clock.Advance(sentGrace)
+	settle(t, rt)
+	if r := runNow(env, o, run.GetId()); r.GetStep() != 1 || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENT {
+		t.Fatalf("a pending probe waits: %+v", r)
+	}
+	for _, r := range stepReqs(w)[before:] {
+		if r.GetCheckOnly() {
+			t.Error("no read-back while the probe is pending")
+		}
+	}
+	// The probe clears: the read-back confirms it.
+	emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.AgentCheck = nil })
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+}
+
+// A lost answer on a later step (the action prompt) is resolved on the
+// reconnect from the daemon's record: typed → SENT, then the turn's evidence.
+func TestRestartLostAnswerOnALaterStep(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	release := make(chan struct{})
+	d.set(func(d *fakeDaemon) {
+		d.hold = func(req *pb.DeliverWorkerStepRequest) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				<-release
+			}
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitFor(t, func() bool { return len(d.typedTexts()) == 3 })
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENDING)
+	restartOrch(t, env, o, w, func() {
+		close(release) // the answer goes to the stopped service
+		w.update("wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING
+			sb.Agent.LastSubmitAt = sentAfter(sb, time.Second)
+		})
+	})
+	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if r.GetStepSentAt() == nil || r.GetStepKindSeen() != pb.StepObserved_STEP_OBSERVED_MODEL_TURN {
+		t.Errorf("resolved step = %+v", r)
+	}
+	if got := d.typedTexts(); len(got) != 3 {
+		t.Errorf("nothing re-typed: %q", got)
 	}
 }

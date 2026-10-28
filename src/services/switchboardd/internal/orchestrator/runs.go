@@ -207,7 +207,9 @@ func (s *Service) CancelRun(id, runID string) (*pb.Run, error) {
 // (default) or FAILED with the developer's note as summary (FR-156). A worker
 // with no run on it whose agent is recorded NEEDS_INPUT is instead set back to
 // IDLE on its owning daemon — the developer's override for an agent parked by a
-// prompt nobody is going to answer — and an empty run is returned.
+// prompt nobody is going to answer — and an empty run is returned. A worker
+// held by a closed run's cleanup whose agent asks for input is freed per
+// FR-216 (freeCleanup), and that run is returned with its outcome unchanged.
 func (s *Service) MarkWorkerFree(id, sandboxID string, failed bool, note string) (*pb.Run, error) {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
@@ -220,6 +222,10 @@ func (s *Service) MarkWorkerFree(id, sandboxID string, failed bool, note string)
 		return rt.completeRun(run, note, true, failed)
 	}
 	if run == nil {
+		// A closed run cleaning up while its agent asks for input (FR-216).
+		if out, held, err := rt.freeCleanup(sandboxID); held {
+			return out, err
+		}
 		if sb := rt.sandboxRecord(sandboxID); sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT && sb.GetController().GetRun() == nil {
 			return &pb.Run{}, rt.clearNeedsInput(hostOf(rt.record(), sandboxID), sandboxID)
 		}
@@ -314,6 +320,9 @@ func (rt *runtime) startRun(run *pb.Run, sandboxID, hostID string) error {
 func (rt *runtime) runNeedsInput(run *pb.Run) {
 	rt.runs.mu.Lock()
 	defer rt.runs.mu.Unlock()
+	// The live record: the stepper may have moved the run's step since the
+	// caller read it, and a stale copy must not write it back.
+	rt.refreshLocked(run)
 	if run.GetState() != pb.RunState_RUN_STATE_RUNNING {
 		return
 	}
@@ -716,7 +725,11 @@ func (rt *runtime) foldStatus(sb *pb.Sandbox) {
 		rt.runResumed(run)
 		rt.repairReviewFlag(run, sb)
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE:
-		if run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
+		switch {
+		case run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW:
+			return
+		case setupAnswered(run):
+			rt.runResumed(run)
 			return
 		}
 		rt.armReview(run)
@@ -798,6 +811,8 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 			}
 		case sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING:
 			rt.failRun(run, "sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")))
+		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE && setupAnswered(run):
+			rt.runResumed(run)
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE:
 			rt.mu.Lock()
 			reported := rt.reported[run.GetId()]
@@ -823,6 +838,13 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 			}
 		}
 	}
+}
+
+// setupAnswered reports whether a run awaiting input was asked during setup:
+// once its agent is idle again the sequence goes on, so the run is RUNNING
+// (US2 #4); idle in setup is never review (FR-209).
+func setupAnswered(run *pb.Run) bool {
+	return run.GetState() == pb.RunState_RUN_STATE_AWAITING_INPUT && inSetup(run)
 }
 
 // busy reports whether a worker's agent is still on its run: working, or

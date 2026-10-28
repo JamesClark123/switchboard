@@ -94,7 +94,7 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 			}
 		} else if starting {
 			if serr := s.startAgentErr(req.GetSandboxId()); serr != nil {
-				return false, gateRefusal(serr, err)
+				return nil, gateRefusal(serr, err)
 			}
 		}
 		return nil, err

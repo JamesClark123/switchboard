@@ -328,3 +328,70 @@ func TestLongStepDetailLeavesTheOrigin(t *testing.T) {
 		t.Fatalf("the origin should keep its first columns beside a long detail:\n%s", line)
 	}
 }
+
+// FR-216: m on a worker whose closed run is cleaning up while its agent asks
+// for input frees it directly, with no outcome dialog (the run is already
+// closed and keeps its outcome); a cleanup that isn't asking is refused, as is
+// a worker held for the developer.
+func TestMarkFreeCleaningUpWorker(t *testing.T) {
+	m, a, b := attachEnv(t)
+	held := func(hold pb.WorkerHold, st pb.AgentStatus) Model {
+		b.sandboxes[0].Controller = &pb.SandboxController{OrchestratorId: "o-a", Name: "review-bot", HostId: "hosta",
+			Run: &pb.WorkerRun{Id: "run-7", Action: "review-pr", Hold: hold, StepRole: pb.StepRole_STEP_ROLE_CLEANUP}}
+		b.sandboxes[0].Agent = &pb.AgentSession{Status: st}
+		m = feed2(m, m.listDataCmd())
+		m.refreshListItems()
+		return selectSandbox(m, "sb")
+	}
+	for _, c := range []struct {
+		hold pb.WorkerHold
+		st   pb.AgentStatus
+	}{
+		{pb.WorkerHold_WORKER_HOLD_CLEANING_UP, pb.AgentStatus_AGENT_STATUS_WORKING},
+		{pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
+		{pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
+	} {
+		m = held(c.hold, c.st)
+		before := a.orchCallsJoined()
+		mm, cmd := update(m, press("m"))
+		if cmd != nil || !strings.Contains(mm.status, "no run awaiting review") || a.orchCallsJoined() != before {
+			t.Errorf("%v/%v: m should be refused locally: status %q", c.hold, c.st, mm.status)
+		}
+	}
+	m = held(pb.WorkerHold_WORKER_HOLD_CLEANING_UP, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT)
+	if !strings.Contains(ansi.Strip(m.View()), "sand-b") {
+		t.Fatalf("a held worker asking for input is surfaced:\n%s", ansi.Strip(m.View()))
+	}
+	before := a.orchCallsJoined()
+	m, cmd := update(m, press("m"))
+	if cmd == nil || m.screen != screenList || m.orchDetail.form != nil || m.markFreeFromList {
+		t.Fatalf("m frees a cleaning-up worker directly: cmd %v screen %v status %q", cmd != nil, m.screen, m.status)
+	}
+	done, ok := runCmd(cmd).(orchDoneMsg)
+	if !ok || done.err != nil || !strings.Contains(done.status, "marked sand-b free") {
+		t.Errorf("result = %+v", done)
+	}
+	if calls := strings.TrimPrefix(a.orchCallsJoined(), before); !strings.Contains(calls, `MarkWorkerFree o-a sb false ""`) {
+		t.Errorf("calls = %q", calls)
+	}
+}
+
+// The Workers view frees a cleaning-up worker asking for input the same way.
+func TestWorkersViewMarkFreeCleaningUp(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
+		{SandboxId: "w1", DisplayName: "worker-one", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT, RunId: "run-7", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP},
+	}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	m, cmd := update(m, press("m"))
+	if cmd == nil || m.orchDetail.form != nil {
+		t.Fatal("m on a cleaning-up worker asking for input frees it directly")
+	}
+	if done, ok := runCmd(cmd).(orchDoneMsg); !ok || done.err != nil || !strings.Contains(done.status, "marked worker-one free") {
+		t.Errorf("result = %+v", done)
+	}
+	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a w1 false ""`) {
+		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+}

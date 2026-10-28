@@ -340,11 +340,14 @@ func (m Model) markFreeSaving(v *markFreeVals) (string, bool) {
 // markFreeKey is `m` on a sandbox row: while the worker's run awaits review
 // the outcome dialog is sent to the controller's daemon; a worker parked
 // "needs input" with no run on it is freed outright (its agent set back to
-// idle), no dialog. The dialog opens over the orchestrator detail (under
-// Daemons › Orchestrators) and returns to the list (research R8).
+// idle), no dialog, and so is one whose closed run is cleaning up while its
+// agent asks for input (SWI-17 FR-216: the run's outcome is not changed). The
+// dialog opens over the orchestrator detail (under Daemons › Orchestrators)
+// and returns to the list (research R8).
 func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	c := sb.GetController()
-	parked := c.GetRun() == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	asking := sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	parked := asking && (c.GetRun() == nil || c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP)
 	if !c.GetRun().GetNeedsReview() && !parked {
 		m.status = "no run awaiting review on this sandbox"
 		return m, nil
@@ -383,7 +386,8 @@ func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 	switch {
 	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW:
 		return m.openMarkFreeForm(surfaceDetail, m.detailTarget(), w.GetSandboxId(), w.GetRunId())
-	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT && w.GetRunId() == "":
+	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT &&
+		(w.GetRunId() == "" || w.GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP):
 		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
 	}
 	m.orchDetail.status = "that worker has no run awaiting review"
@@ -392,7 +396,9 @@ func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 
 // freeParkedWorker asks the orchestrator's daemon to set a worker that is
 // parked needs-input with no run back to idle (MarkWorkerFree with nothing to
-// close); the next queued run can then go to it.
+// close); the next queued run can then go to it. For a worker held by a
+// cleanup that asks for input, the same call drops the remaining custom
+// post-prompts; Clear follows once the question is answered (FR-216).
 func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model, tea.Cmd) {
 	md, err := m.connectedDaemon(host)
 	if err != nil {

@@ -230,12 +230,22 @@ func (l *hostLink) serve(ctx context.Context, api WorkerAPI) error {
 		return err
 	}
 	errc := make(chan error, 4)
+	// The loops are counted in the runtime's group (this goroutine holds a
+	// count already), so stop waits for them too: a status event folded after
+	// it would add to the group while it is waited on (SWI-17).
+	spawn := func(loop func() error) {
+		l.rt.wg.Add(1)
+		go func() {
+			defer l.rt.wg.Done()
+			errc <- loop()
+		}()
+	}
 	resync := make(chan struct{}, 1)
-	go func() { errc <- l.readEvents(sctx, events, resync) }()
+	spawn(func() error { return l.readEvents(sctx, events, resync) })
 	if err := l.rt.reconcile(sctx, l.hostID, api, true); err != nil {
 		return err
 	}
-	go func() { errc <- l.resyncLoop(sctx, api, resync) }()
+	spawn(func() error { return l.resyncLoop(sctx, api, resync) })
 	link, err := api.OpenLink(sctx)
 	if err != nil {
 		return err
@@ -251,8 +261,8 @@ func (l *hostLink) serve(ctx context.Context, api WorkerAPI) error {
 		l.link = nil
 		l.mu.Unlock()
 	}()
-	go func() { errc <- l.readLink(sctx, link) }()
-	go func() { errc <- l.ping(sctx, link) }()
+	spawn(func() error { return l.readLink(sctx, link) })
+	spawn(func() error { return l.ping(sctx, link) })
 	l.rt.triggerDispatch()
 	select {
 	case <-sctx.Done():
