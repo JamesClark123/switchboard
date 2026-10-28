@@ -244,7 +244,7 @@ func TestOverrideStaysQueuedOffTheList(t *testing.T) {
 	if o.screen != screenSources || len(o.sourcesView.marked) != marks || len(o.pendingOverrides) != 1 {
 		t.Error("an override for another sandbox should park and keep the marks")
 	}
-	// Its own overlay: it opens there and returns there.
+	// Its own: queued behind the head, which only another sandbox's overlay may open.
 	o, _ = update(o, blockedAdd(o.sourcesView.sandboxID, ""))
 	if len(o.pendingOverrides) != 2 {
 		t.Error("the head (another sandbox) blocks the queue")
@@ -282,5 +282,62 @@ func TestTerminalOpeningElsewhereIsClosed(t *testing.T) {
 	}
 	if r, _ = update(r, termClosedMsg{name: "feature-work", seq: r.termSeq}); r.screen != screenRename {
 		t.Error("termClosed must not move off rename")
+	}
+}
+
+// Review findings: every forced close that drops edits says so.
+func TestForceCloseReportsEveryKindOfLostEdit(t *testing.T) {
+	noKeyGrace(t)
+	// Text typed only in the enlarged view.
+	m := pressCmd(mcpModel(t, &fakeDaemon{}), "a")
+	focusField(t, m.mcpView.form, textsOf(t, m, gMcp)[0])
+	m, _ = update(m, keyCtrlE)
+	m = typeIn(m, "X-Token: abc")
+	m, _ = update(m, dropped(m.mcpView.host))
+	if m.enlarge.open || !strings.Contains(m.status, "unsaved edits lost") {
+		t.Errorf("enlarged edits: status %q", m.status)
+	}
+
+	// The MCP "register anyway?" step, which keeps the values.
+	m = pressCmd(mcpModel(t, &fakeDaemon{}), "a")
+	m.mcpView.vals.name, m.mcpView.vals.kind, m.mcpView.vals.command = "pw", "command", "npx"
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m.mcpView.pending == nil {
+		t.Fatalf("no pending step; status %q", m.mcpView.status)
+	}
+	m, _ = update(m, dropped(m.mcpView.host))
+	if m.screen != screenDaemons || !strings.Contains(m.status, "unsaved edits lost") {
+		t.Errorf("pending registration: screen %v status %q", m.screen, m.status)
+	}
+
+	// Folders selected in the add browser.
+	m, _ = openSourcesOverlay(t)
+	m = pressCmd(m, "a")
+	m, _ = update(m, press(" "))
+	m.status = ""
+	m, _ = update(m, removedEvent(m.sourcesView.sandboxID))
+	if m.screen != screenList || m.status != "unsaved edits lost: sandbox removed" {
+		t.Errorf("add browser: screen %v status %q", m.screen, m.status)
+	}
+
+	// A purged override adds to the forced close's status, not over it.
+	r, sb := renaming(t)
+	r, _ = update(r, blockedAdd(sb.GetId(), "h1"))
+	r, _ = update(r, removedEvent(sb.GetId()))
+	if !strings.HasPrefix(r.status, "unsaved edits lost: sandbox removed; add of lib to") {
+		t.Errorf("purge after a forced close: %q", r.status)
+	}
+}
+
+func TestOverrideOpensOnItsOwnOverlay(t *testing.T) {
+	o, _ := openSourcesOverlay(t)
+	o, _ = update(o, tea.KeyMsg{Type: tea.KeySpace})
+	o, _ = update(o, blockedAdd(o.sourcesView.sandboxID, ""))
+	if o.screen != screenConfirm || o.confirm.returnTo != screenSources || !o.confirm.yOnly {
+		t.Fatalf("own overlay: screen %v returnTo %v", o.screen, o.confirm.returnTo)
+	}
+	o, _ = update(o, press("n"))
+	if o.screen != screenSources || len(o.sourcesView.marked) != 1 {
+		t.Errorf("n should return to the overlay with the mark: screen %v marks %d", o.screen, len(o.sourcesView.marked))
 	}
 }

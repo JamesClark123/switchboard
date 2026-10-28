@@ -635,6 +635,9 @@ func (m *Model) reconcileGuardLayers() {
 // the reasoning setup under Rebuild, or the sources overlay under its removal
 // confirm (research R7). activeGuard does not see it; forced closes must.
 func (m Model) suspendedGuard() (guardSurface, bool) {
+	if m.screen == screenMcp && m.mcpView.pending != nil && m.mcpView.vals != nil {
+		return gMcp, true // the "register anyway?" step keeps the form's values
+	}
 	if m.screen != screenConfirm {
 		return gNone, false
 	}
@@ -660,8 +663,12 @@ func (m Model) activeOrSuspendedGuard() (guardSurface, bool) {
 // close leaves the surface. Changed values are reported lost: appended to a
 // status close set, or as "unsaved edits lost: <reason>".
 func (m *Model) forceClose(g guardSurface, reason string, close func(m *Model)) {
-	lost := m.guardDirty(g)
-	if sg, ok := m.suspendedGuard(); ok && sg == g {
+	if m.enlarge.open && m.enlarge.surface == g {
+		m.enlarge.writeBack() // the view's text counts toward the form (FR-007)
+	}
+	// The add browser leaves with its overlay, so the overlay's marks count too.
+	lost := m.guardDirty(g) || (g == gSourcesBrowse && m.guardDirty(gSources))
+	if sg, ok := m.suspendedGuard(); ok && sg == g && m.screen == screenConfirm {
 		m.screen = m.confirm.returnTo
 		m.confirm = confirmState{}
 	}
@@ -702,12 +709,13 @@ func (m *Model) closeSandboxGuard(gone func(id, host string) bool, reason string
 	if !ok || id == "" || !gone(id, host) {
 		return
 	}
+	leave := g
 	if g == gSourcesBrowse {
-		g = gSources // the add browser leaves with its overlay
+		leave = gSources // the add browser leaves with its overlay
 	}
 	m.forceClose(g, reason, func(m *Model) {
 		status := m.status
-		*m, _ = m.guardLeave(g)
+		*m, _ = m.guardLeave(leave)
 		m.status = status
 	})
 }

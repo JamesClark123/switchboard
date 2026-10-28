@@ -420,12 +420,20 @@ func (m Model) openParkedOverride(msg tea.Msg) (Model, tea.Cmd) {
 	return guardResult(m.confirmAddOverride(head.msg, head.name))
 }
 
-// purgeOverrides drops queued overrides whose sandbox or host went away.
-func (m *Model) purgeOverrides(gone func(parkedOverride) bool, reason string) {
+// purgeOverrides drops queued overrides whose sandbox or host went away. With
+// appendTo the note follows the status this message already set (a forced
+// close's) rather than replacing it.
+func (m *Model) purgeOverrides(gone func(parkedOverride) bool, reason string, appendTo bool) {
 	kept := m.pendingOverrides[:0]
 	for _, o := range m.pendingOverrides {
 		if gone(o) {
-			m.status = "add of " + folderNames(o.msg.sources) + " to " + o.name + " cancelled: " + reason
+			note := "add of " + folderNames(o.msg.sources) + " to " + o.name + " cancelled: " + reason
+			if appendTo && m.status != "" {
+				m.status += "; " + note
+			} else {
+				m.status = note
+			}
+			appendTo = true
 			continue
 		}
 		kept = append(kept, o)
@@ -632,8 +640,9 @@ func (m Model) sourcesModal() string {
 // sandboxGone closes a guarded surface on, and drops queued overrides for, a
 // sandbox gone reports removed.
 func (m *Model) sandboxGone(gone func(id, host string) bool) {
+	before := m.status
 	m.closeSandboxGuard(gone, "sandbox removed")
-	m.purgeOverrides(func(o parkedOverride) bool { return gone(o.msg.id, o.msg.host) }, "sandbox removed")
+	m.purgeOverrides(func(o parkedOverride) bool { return gone(o.msg.id, o.msg.host) }, "sandbox removed", m.status != before)
 }
 
 func hasSandbox(sbs []*pb.Sandbox, id string) bool {

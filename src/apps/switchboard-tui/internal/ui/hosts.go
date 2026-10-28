@@ -149,8 +149,9 @@ func (m Model) applyHosts(msg hostsMsg) (tea.Model, tea.Cmd) {
 		}
 		return false
 	}
+	before := m.status
 	m.closeSandboxGuard(func(_, host string) bool { return dropped(host) }, "daemon disconnected")
-	m.purgeOverrides(func(o parkedOverride) bool { return dropped(o.msg.host) }, "daemon disconnected")
+	m.purgeOverrides(func(o parkedOverride) bool { return dropped(o.msg.host) }, "daemon disconnected", m.status != before)
 	if !m.hosts.ready {
 		return m, nil
 	}
