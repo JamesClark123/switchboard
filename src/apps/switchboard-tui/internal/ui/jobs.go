@@ -458,20 +458,26 @@ func (m Model) jobsRowStyle(host, line string) string {
 // windowLines keeps a long body within avail lines, scrolled so the focus line
 // (the cursor's) stays visible.
 func windowLines(lines []string, focus, avail int) []string {
+	start, end := windowRange(len(lines), focus, avail)
+	return lines[start:end]
+}
+
+// windowRange is the [start, end) of n lines that windowLines shows.
+func windowRange(n, focus, avail int) (int, int) {
 	if avail < 3 {
 		avail = 3
 	}
-	if len(lines) <= avail {
-		return lines
+	if n <= avail {
+		return 0, n
 	}
 	start := focus - avail/2
 	if start < 0 {
 		start = 0
 	}
-	if start > len(lines)-avail {
-		start = len(lines) - avail
+	if start > n-avail {
+		start = n - avail
 	}
-	return lines[start : start+avail]
+	return start, start + avail
 }
 
 // cursorMark is the cursor column of a row.

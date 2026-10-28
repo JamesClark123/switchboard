@@ -314,3 +314,36 @@ func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
 		t.Errorf("detached worker re-adopted by a stale reconcile: roster = %v", rt.record().GetWorkers())
 	}
 }
+
+// An attach or detach reply about another sandbox than the one asked for is
+// ignored and reported: replies are trusted over marks and the cache, so a
+// misbehaving host must not adopt or freeze another sandbox through one
+// (PR #24 review).
+func TestRepliesForAnotherSandboxAreIgnored(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	w.put(running("wb", "b"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	cached := rt.sandboxRecord("wa").GetRevision()
+	w.mu.Lock()
+	w.replyAs = "wa"
+	w.mu.Unlock()
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wb", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
+		t.Fatalf("attach with a foreign reply = %v", err)
+	}
+	if onRoster(rt.record(), "wb") != nil || rt.sandboxRecord("wa").GetRevision() != cached {
+		t.Errorf("the reply was applied: roster %+v", rt.record().GetWorkers())
+	}
+	w.mu.Lock()
+	w.replyAs = "wb"
+	w.mu.Unlock()
+	if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", &pb.LaneGuardConfirm{}); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
+		t.Fatalf("detach with a foreign reply = %v", err)
+	}
+	if rt.isDetaching("wa") {
+		t.Error("a refused reply left the detaching mark")
+	}
+}

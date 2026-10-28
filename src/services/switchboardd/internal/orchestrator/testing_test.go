@@ -283,6 +283,9 @@ type fakeWorker struct {
 	// with no lock held.
 	onList func()
 	lists  int
+	// replyAs, when set (under mu), makes attach and detach replies name this
+	// sandbox id instead of the asked-for one (a misbehaving host).
+	replyAs string
 }
 
 // stamp bumps a record's revision as the registry would (caller holds mu).
@@ -388,7 +391,16 @@ func (w *fakeWorker) AttachController(_ context.Context, req *pb.AttachControlle
 	}
 	sb.Controller = proto.Clone(req.GetController()).(*pb.SandboxController)
 	w.stamp(sb, sb.GetRevision())
-	return proto.Clone(sb).(*pb.Sandbox), nil
+	return w.reply(sb), nil
+}
+
+// reply is an attach or detach reply: sb, renamed to replyAs when set.
+func (w *fakeWorker) reply(sb *pb.Sandbox) *pb.Sandbox {
+	out := proto.Clone(sb).(*pb.Sandbox)
+	if w.replyAs != "" {
+		out.Id = w.replyAs
+	}
+	return out
 }
 
 func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControllerRequest) (*pb.Sandbox, error) {
@@ -401,7 +413,7 @@ func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControlle
 	}
 	sb.Controller = nil
 	w.stamp(sb, sb.GetRevision())
-	return proto.Clone(sb).(*pb.Sandbox), nil
+	return w.reply(sb), nil
 }
 
 func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest) (*pb.Sandbox, error) {

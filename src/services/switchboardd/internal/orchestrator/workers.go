@@ -233,6 +233,9 @@ func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string, laneIDs
 		}
 		return nil, remoteErr(err, hostID)
 	}
+	if err := rt.replyFor(hostID, sandboxID, sb); err != nil {
+		return nil, err
+	}
 	if _, err := rt.applyRoster(rosterInput{source: srcAttachReply, hostID: hostID, records: []*pb.Sandbox{sb}}); err != nil {
 		return nil, err
 	}
@@ -250,6 +253,18 @@ func (rt *runtime) workerView(sandboxID string) *pb.WorkerView {
 		}
 	}
 	return &pb.WorkerView{SandboxId: sandboxID}
+}
+
+// replyFor refuses a host's attach or detach reply that is not about the
+// sandbox asked for: replies are trusted over other hosts' marks and cache
+// entries, so one naming another sandbox is ignored (and logged); the next
+// listing of the host settles the asked-for sandbox.
+func (rt *runtime) replyFor(hostID, sandboxID string, sb *pb.Sandbox) error {
+	if sb.GetId() == sandboxID {
+		return nil
+	}
+	rt.svc.logf("[orchestrator %s] host %s replied for sandbox %q, not %s: ignored", rt.name(), hostID, sb.GetId(), sandboxID)
+	return fmt.Errorf("%w: host %s replied for another sandbox than %s — the reply was ignored", ErrPrecondition, hostID, sandboxID)
 }
 
 // detach clears the controller on a worker through its link (FR-111): refused
@@ -287,6 +302,9 @@ func (rt *runtime) detach(ctx context.Context, sandboxID string, confirm *pb.Lan
 	sb, err := api.DetachController(cctx, &pb.DetachControllerRequest{SandboxId: sandboxID, OrchestratorId: rt.id})
 	if err != nil {
 		return remoteErr(err, hostID)
+	}
+	if err := rt.replyFor(hostID, sandboxID, sb); err != nil {
+		return err
 	}
 	if _, err := rt.applyRoster(rosterInput{source: srcDetachReply, hostID: hostID, records: []*pb.Sandbox{sb}}); err != nil {
 		return err

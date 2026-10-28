@@ -542,7 +542,7 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 		switch {
 		case v.kind == "reason" && len(v.lanes) > 0 && op.status == "":
 			op.status = reasonLanesText
-		case v.kind != "reason" && op.status == reasonLanesText:
+		case op.status == reasonLanesText && (v.kind != "reason" || len(v.lanes) == 0):
 			op.status = ""
 		}
 	}

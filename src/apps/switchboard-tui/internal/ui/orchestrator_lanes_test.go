@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -677,7 +678,7 @@ func TestLaneResultsStayWithTheirOrigin(t *testing.T) {
 	msg := cmd()
 	m.screen = screenList // the user moved on before the check came back
 	m, _ = update(m, msg)
-	if m.screen != screenList || !strings.Contains(m.status, "was interrupted by another screen") {
+	if m.screen != screenList || !strings.Contains(m.status, "was interrupted — not applied") {
 		t.Fatalf("late check: screen %v status %q", m.screen, m.status)
 	}
 	if strings.Contains(a.orchCallsJoined(), "DetachWorker o-a w2") {
@@ -774,5 +775,33 @@ func TestReasonNoteKeepsARefusal(t *testing.T) {
 	m, _ = update(m, struct{}{})
 	if m.jobs.status != reasonLanesText {
 		t.Errorf("status = %q, want the note", m.jobs.status)
+	}
+	// Its ticks gone (a lane deleted elsewhere), the note goes too.
+	fv.lanes = nil
+	m, _ = update(m, struct{}{})
+	if m.jobs.status != "" {
+		t.Errorf("status = %q after the ticks went", m.jobs.status)
+	}
+}
+
+// The Lanes window marks hidden lanes by position, so lanes that render
+// alike still get their marks.
+func TestLanesWindowMarksHiddenLanes(t *testing.T) {
+	a := lanesDaemon()
+	rec := a.orchDetail.GetSummary().GetOrchestrator()
+	rec.Lanes = nil
+	for i := range 12 {
+		rec.Lanes = append(rec.Lanes, &pb.Lane{Id: fmt.Sprintf("ln-%d", i), Name: fmt.Sprintf("frontend-review-%c", 'a'+i)})
+	}
+	m := lanesView(t, a)
+	m.height = 20
+	m.orchDetail.lanes.cursor = 6
+	v := strings.Join(m.lanesView(surfaceDetail), "\n")
+	if !strings.Contains(v, "↑ more") || !strings.Contains(v, "↓ more") {
+		t.Errorf("window marks missing:\n%s", v)
+	}
+	m.orchDetail.lanes.cursor = 0
+	if v := strings.Join(m.lanesView(surfaceDetail), "\n"); strings.Contains(v, "↑ more") || !strings.Contains(v, "↓ more") {
+		t.Errorf("top window:\n%s", v)
 	}
 }

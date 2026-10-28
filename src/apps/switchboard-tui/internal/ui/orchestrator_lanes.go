@@ -663,7 +663,7 @@ func (m Model) laneConfirm(w laneWrite, st confirmState) (tea.Model, tea.Cmd) {
 		cmd = m.rebuildActionForm(w.sink, v)
 	}
 	if m.screen != w.back() || !here {
-		m.status = "lane check for " + sanitizeLine(w.target.name, 0) + " was interrupted by another screen — not applied; start it again"
+		m.status = "lane check for " + sanitizeLine(w.target.name, 0) + " was interrupted — not applied; start it again"
 		return m, cmd
 	}
 	mm, ccmd := m.enterConfirm(st)
@@ -931,14 +931,14 @@ func (m Model) lanesView(s orchSurface) []string {
 	}
 	// Windowed around the cursor by whole lanes, under the detail's or the
 	// dialog's header, the notice and the status.
-	shown := windowLines(rows, p.cursor, (m.bodyHeight()-len(lines)-8)/2)
-	if len(shown) < len(rows) && len(shown) > 0 && shown[0] != rows[0] {
+	start, end := windowRange(len(rows), p.cursor, (m.bodyHeight()-len(lines)-8)/2)
+	if start > 0 {
 		lines = append(lines, dimStyle.Render("  ↑ more"))
 	}
-	for _, r := range shown {
+	for _, r := range rows[start:end] {
 		lines = append(lines, strings.Split(r, "\n")...)
 	}
-	if len(shown) < len(rows) && len(shown) > 0 && shown[len(shown)-1] != rows[len(rows)-1] {
+	if end < len(rows) {
 		lines = append(lines, dimStyle.Render("  ↓ more"))
 	}
 	if p.status != "" {
