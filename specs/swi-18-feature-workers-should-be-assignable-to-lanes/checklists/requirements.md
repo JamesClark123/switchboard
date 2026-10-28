@@ -82,3 +82,9 @@
   - Calling and deleting an action are serialised (FR-314b).
   - Detach is guard-and-mark, then unlink with no lock held, then settle (FR-308a, L5).
   - Lifecycle L1–L8 re-checked.
+- PR #22 re-review (run-577), resolved in run-580:
+  - High-water marks stop stale re-adoption after a drop.
+  - Removal is terminal for a sandbox id.
+  - Marks are pruned.
+  - *Detaching* is cleared on restart, and the host's record decides (FR-308c, L1, L2, L4, L5, FR-322).
+  - Lifecycle L1–L8 re-checked.

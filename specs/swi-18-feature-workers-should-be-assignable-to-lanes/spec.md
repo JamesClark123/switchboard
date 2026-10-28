@@ -138,6 +138,14 @@ The previous round made sandbox-changed events change the roster. This round mak
   - L7 adds the call/delete rule.
   - L3, L6 and L8 are unchanged and still hold. L6's free workers exclude *detaching* ones through FR-308.
 
+### PR re-review 2026-10-28 (pr-review run `run-c275c8f2-577`, resolved in pr-response run `run-c275c8f2-580`)
+
+- **High-water marks** (FR-308c, L2). A roster entry dropped for any reason other than removal leaves its sandbox a high-water mark at the revision that caused the drop. A record for a sandbox not on the roster must be newer than that mark to adopt it. A status event emitted before a detach can therefore never re-adopt the sandbox once the detach has settled. A later re-attach is newer, so it adopts normally and clears the mark (L4).
+- **Removal is terminal** (FR-308c, L2). A removal event, a destroying record or a listing absence drops the roster entry and the cached record whatever the revision, and marks the id *removed*. Later records for that id are ignored. Ids are fresh UUIDs and never reused, so this is safe, and a destroyed worker can no longer stay on the roster as a ghost.
+- **Pruning.** A mark is pruned once a later listing of its host lacks the sandbox, or after 24 hours for a *removed* id whose host is never listed again.
+- ***Detaching* does not survive a restart** (L1, L5 step 4, FR-322). On load the mark is cleared, and the host's record decides: if the unlink took effect, the cleared controller drops the worker; if not, it remains a worker and can be detached again. While the mark lasts, the Workers view shows it.
+- **Lifecycle re-check:** L1, L2, L4 and L5 are updated. L3 (a launched sandbox has a fresh id, so no mark), L6 (free workers already exclude removed and *detaching* ones), L7 and L8 are unaffected.
+
 ## Background (current behaviour this feature changes)
 
 - An orchestrator's `prompt` actions can name one optional **worker tag**. A run of such an action is delivered only to a worker whose sandbox tag (its single, free-text purpose label) equals it. An action with no worker tag runs on any free worker, tagged or not.
@@ -282,6 +290,9 @@ After upgrading, a developer's actions that had a worker tag have no lanes and r
 - **Launched worker before adoption**: its picked lanes wait on its attach ticket. It is not on the roster, so it is not dispatched to. If its host stays unreachable past the ticket's 24-hour expiry, it is adopted with *lanes pending* and flagged, never silently into the open lane (FR-306b, L3).
 - **Events arriving late, out of order or twice**: they refresh the cache when newer than the cached copy, but change the roster only when fresh (FR-308c). A just-attached worker is never dropped by an older event, and a detached one is never re-adopted by one.
 - **Slow or hung host during a detach**: no lock is held across the unlink. The worker is *detaching*, which every other guarded change accounts for, until the call settles (L5).
+- **Event from before a detach arriving after it**: the sandbox's high-water mark is at the detach reply's revision, so the older event cannot re-adopt it (FR-308c).
+- **Worker destroyed on a connected host**: the removal event is terminal whatever its revision. The roster entry and cached record go at once, so no run is offered to it and the guard stops counting it (FR-308c).
+- **Orchestrator's daemon crashes mid-detach**: the *detaching* mark is not carried across the restart. The host's record decides whether the worker was detached (L1, L5).
 - **Action deleted while it is being called**: the call and the delete are serialised. The run either gets the kept copy, or the call fails with "unknown action" (FR-314b).
 - **Orchestrator daemon restarts**: lanes and memberships are persisted. Until each host reconnects, its workers count as unreachable: not free, but still counted (FR-308, L1).
 
@@ -303,13 +314,18 @@ This section walks through the whole life of lanes, workers and runs. Each step 
   - it still counts as an open-lane worker or a lane worker for the open-lane safeguard (FR-308a);
   - a run that only it could take says "stopped or unreachable" (FR-315).
 - Expired attach tickets are swept (FR-306b).
+- Every *detaching* mark is cleared; detaching is never carried across a restart. The host's record then decides: if the unlink took effect, the cleared controller drops the worker (L2); if it never reached the host, the worker simply stays a worker, and the developer can detach again (L5).
+- The high-water marks (FR-308c) are loaded with the record.
 
 **L2. Adoption and drops** (FR-308c). Three sources feed these: a host's listing (reconcile, when its link comes up), sandbox-changed events from a connected host, and an attach or detach's own reply. Every source applies the same rule, and no source holds a lock across a network call.
-- **Freshness.** The owning daemon stamps every sandbox record with a **revision** that increases on every write to that record. Each roster entry keeps the revision it was last written from. A record changes the roster only if its revision is **newer** than that. Older or repeated records, whether events delivered late, out of order or twice, or a listing taken before an attach, still refresh the cache when newer than the cached copy, but never change the roster.
+- **Freshness.** The owning daemon stamps every sandbox record with a **revision** that increases on every write to that record. Each roster entry keeps the revision it was last written from. A record changes the roster only if its revision is **newer** than that. For a sandbox **not** on the roster, it must also be newer than the sandbox's **high-water mark**, if it has one. Older or repeated records, whether events delivered late, out of order or twice, or a listing taken before an attach, still refresh the cache when newer than the cached copy, but never change the roster.
 - **Listing absences.** A roster worker *missing* from a host's listing is dropped only if its entry was written before the listing was requested. A worker adopted while the listing was in flight is kept.
+- **High-water marks.** When a roster entry is dropped for any reason other than removal, its sandbox keeps a high-water mark: the revision of the record or reply that caused the drop, or the entry's own revision if that is higher. An older event still in flight, for example a status change emitted before the detach, can then never re-adopt the sandbox. A later attach, whose link reply has a newer revision, adopts normally and clears the mark.
+- **Removal is terminal.** A removal event, a record in the destroying state, or a listing absence (under the rule above) drops the sandbox's roster entry and its cached record **whatever its revision**, and its high-water mark becomes *removed*. Any later record for a *removed* id is ignored. Sandbox ids are fresh and never reused, so this is safe.
+- **Pruning.** A high-water mark is pruned once a listing of its host, requested after the mark was set, no longer contains the sandbox. A *removed* mark whose host is never listed again is pruned after 24 hours. The set therefore stays bounded by recently dropped sandboxes.
 - **One atomic write.** Each adoption or drop is one atomic update of the orchestrator's record, which checks freshness inside the update. Reconcile lists first, with no lock, and then applies the whole listing in one such update. Status folding (needs input, review, exit) stays lock-free, as today, and never waits on a roster write.
-- **Workers that are gone:** a roster worker whose fresh record no longer names this orchestrator, or which is missing from a listing under the rule above, is dropped together with its lanes. That is the evidence that ends its place on the live roster.
-- **Sandboxes to adopt:** a fresh record that names this orchestrator, for a sandbox not on the roster, is adopted:
+- **Workers that are gone:** a roster worker whose fresh record no longer names this orchestrator, or which is removed (above), is dropped together with its lanes. That is the evidence that ends its place on the live roster.
+- **Sandboxes to adopt:** a fresh record that names this orchestrator, for a sandbox not on the roster and newer than its high-water mark (never for a *removed* id), is adopted:
   - With **no attach ticket**: it joins the open lane, as today.
   - With a **valid ticket for this host** (and this sandbox, if the ticket names one): it joins with the ticket's lanes, and the ticket is consumed in the same write.
   - With an **unknown, expired or mismatched ticket**: it joins with **lanes pending**. It is not dispatchable and is flagged on the Workers view until the developer sets its lanes, or chooses the open lane (FR-306b).
@@ -327,16 +343,17 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 **L4. Attach with lanes picked.**
 1. The orchestrator writes an attach ticket bound to the host and this sandbox, holding the picked lanes by identity.
 2. It links the sandbox, setting its controller with the ticket identifier, as today.
-3. It then commits from the link's reply, which carries the sandbox's new revision. The commit is one atomic update under the freshness rule (FR-306a, FR-308c). It creates the roster entry if needed and sets the entry's lanes from the ticket's *current* lanes (lane deletes may have stripped some), consuming the ticket. This keeps today's order, link then commit.
+3. It then commits from the link's reply, which carries the sandbox's new revision. The commit is one atomic update under the freshness rule (FR-306a, FR-308c). It creates the roster entry if needed and sets the entry's lanes from the ticket's *current* lanes (lane deletes may have stripped some), consuming the ticket. This keeps today's order, link then commit. Re-attaching a sandbox detached earlier works the same way: the link reply's revision is newer than the high-water mark the detach left, so the commit adopts it and clears the mark.
 4. **If an adoption runs between steps 2 and 3** (the link's own event arriving first), it adopts the sandbox through the ticket under L2, with the right lanes, and consumes the ticket. Step 3 then finds the ticket already consumed and the entry already holding its lanes, so it changes nothing. **An older event**, emitted before the link but arriving after step 3, is not fresh and changes nothing (L2).
 5. **If the link is definitely refused** (for example, already controlled), the attach deletes its ticket. If the outcome is unknown (a timeout), or the link succeeds but the commit fails, the ticket is kept. Adoption then applies it, or it expires into *lanes pending*.
 6. Attaching with no lanes picked issues no ticket, and the worker joins the open lane, as today.
 
 **L5. Detach.**
 - **Through the orchestrator's daemon**, in three steps:
-  1. **Guard and mark.** One atomic update evaluates the guard (FR-308a) and marks the worker **detaching**. A detaching worker is not free, and no longer counts as an open-lane or lane worker for any later guard.
+  1. **Guard and mark.** One atomic update evaluates the guard (FR-308a) and marks the worker **detaching**. A detaching worker is not free, is shown as *detaching* on the Workers view, and no longer counts as an open-lane or lane worker for any later guard.
   2. **Unlink.** The owning daemon is asked to unlink, with no lock held.
-  3. **Settle.** On success, the roster entry and its lanes go, applied from the reply's revision, so an older event cannot re-adopt the sandbox. Runs on the worker fail as today. On failure, the mark is cleared.
+  3. **Settle.** On success, the roster entry and its lanes go, applied from the reply's revision, and the sandbox gets a high-water mark at that revision, so an older event cannot re-adopt it (L2). Runs on the worker fail as today. On failure, the mark is cleared.
+  4. **Crash between steps 1 and 3.** The mark does not survive a restart (L1). If the unlink took effect, the host's record, which no longer names this orchestrator, drops the worker. If it did not, the worker remains a worker.
 - **Directly, through the sandbox's own daemon** (while the orchestrator's daemon is not connected): the client warns on a best-effort basis (FR-308b). The orchestrator learns of it from the sandbox-changed event or the next reconcile. That is the evidence that ends its place on the live roster and drops its roster entry and lanes (L2).
 
 **L6. Dispatch pass** (FR-314). This covers `prompt` runs. `reason` runs go to the reasoning sandbox as today, outside lanes, reservations and waiting reasons.
@@ -394,12 +411,15 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 - **FR-308c**: Every change to the roster MUST be one atomic update of the orchestrator's record. It MUST apply a sandbox record only if that record is fresh:
   - **Revision.** The owning daemon MUST stamp every sandbox record with a revision that increases on every write to it. A record is fresh if its revision is newer than the one the roster entry was last written from.
   - **Stale records.** Records that arrive late, out of order or twice MUST never change the roster.
+  - **High-water marks.** A roster entry dropped for any reason other than removal MUST leave its sandbox a high-water mark (the revision that caused the drop). A record for a sandbox not on the roster MUST be newer than its mark to adopt it. A fresh adoption clears the mark.
+  - **Removal is terminal.** A removal, a destroying record or a listing absence MUST drop the roster entry and the cached record whatever the revision, and mark the id *removed*. Later records for a *removed* id MUST be ignored. Sandbox ids are never reused.
+  - **Pruning.** High-water marks MUST be pruned once a listing of the host, requested after the mark, lacks the sandbox, or after 24 hours for a *removed* id whose host is never listed again.
   - **Listing absences.** A worker missing from a host's listing MUST be dropped only if its entry was written before the listing was requested.
   - **No waiting on the network.** No roster writer MUST hold a lock across a network call. Status folding from events MUST NOT wait on roster writes.
   - **No gaps.** A link MUST subscribe to a host's events before listing it. A host whose event stream reports dropped events for this subscriber MUST be reconciled again (L2).
 - **FR-308a**: The orchestrator's daemon MUST guard every change made through it that would either drop the live roster's open-lane workers from at least one to zero while the orchestrator has un-laned `prompt` actions, or save an un-laned `prompt` action (including clearing an action's lanes) while it has none. Queued un-laned runs of deleted actions (FR-314b) count as un-laned work too, so the guard lists them alongside the actions. The guarded changes are membership saves (one worker or several), action saves, lane deletes that leave an action un-laned, and detaching through the orchestrator. The guard has one shape:
   - **Check.** A *check* request returns the un-laned actions the change would affect, and changes nothing.
-  - **Refuse or apply.** The change itself is refused with that same list unless it is confirmed. The guard is evaluated inside the same atomic record update that makes the change, so guarded changes cannot interleave. For a detach, that update marks the worker *detaching* before the owning daemon is asked to unlink. No lock is held across that call (L5), so a slow host never blocks other saves.
+  - **Refuse or apply.** The change itself is refused with that same list unless it is confirmed. The guard is evaluated inside the same atomic record update that makes the change, so guarded changes cannot interleave. For a detach, that update marks the worker *detaching* before the owning daemon is asked to unlink. The mark does not survive a restart; the host's record then decides (L1, L5). No lock is held across that call (L5), so a slow host never blocks other saves.
   - **Confirm.** A confirmed request carries the list the developer was shown. It is accepted only when the current list is within it; otherwise it is refused with the current list.
   - **The client** fetches the list first and shows it in the change's single confirm. A detach folds it into the detach confirm it already shows. A second confirm appears only when the situation changed while the first was open.
 - **FR-308b**: Changes the orchestrator's daemon cannot check are made visible instead of guarded. When the developer detaches directly, through the sandbox's own daemon while the orchestrator's daemon is not connected, the detach confirm MUST warn from the client's last-known roster and actions if the detach would leave no open-lane worker. If the client has no last-known data for that orchestrator, the confirm MUST say it cannot check open-lane workers. Reconcile drops, sandbox removal and hosts going away are not warned about. Runs left with no worker able to take them show why through FR-315.
@@ -449,7 +469,7 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 
 #### General
 
-- **FR-322**: Lanes, worker assignments, *lanes pending* and *detaching* marks, each roster entry's sandbox revision, action lanes, kept settings on queued runs, open attach tickets and the dropped-tag list MUST persist across daemon restarts and orchestrator reloads.
+- **FR-322**: Lanes, worker assignments, *lanes pending* flags, each roster entry's sandbox revision, the high-water marks, action lanes, kept settings on queued runs, open attach tickets and the dropped-tag list MUST persist across daemon restarts and orchestrator reloads. *Detaching* marks MUST NOT; they are cleared on load (L1).
 - **FR-323**: The new forms, pickers and dialogs MUST follow the app's existing form conventions, including its keys and its unsaved-changes guard where forms have one.
 
 ### Key Entities
@@ -460,6 +480,7 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 - **Waiting reason**: why a queued run cannot be taken by any live-roster worker, or why every worker that could take it is stopped or unreachable (FR-315). It is derived when runs are read, never stored, and separate from a run's failure or cancellation reason.
 - **Open lane**: not a stored lane. It means "a non-reasoning worker with no lanes" (FR-308).
 - **Sandbox revision**: a counter the owning daemon raises on every write to a sandbox's record. The orchestrator uses it to ignore stale records (FR-308c).
+- **High-water mark**: per sandbox recently dropped from the roster, either the last revision that caused the drop or *removed*. It stops stale records re-adopting a dropped sandbox. It is persisted, and pruned once a later listing of the host lacks the sandbox, or after 24 hours for a *removed* id (FR-308c).
 - **Live roster**: the roster workers with no evidence that they are gone (FR-308). Evidence arrives on reconcile and on sandbox-changed events (L2). A worker whose record is not yet known counts as unreachable. It is what routing, the open-lane safeguard and waiting reasons count.
 - **Attach ticket**: a single-use token the orchestrator issues when lanes are picked for a sandbox being launched or attached. It holds those lanes, is bound to the host (and, on attach, the sandbox), is stored on the orchestrator record, holds lanes by identity, is consumed by the attach commit or by adoption, whichever comes first, and expires after 24 hours (FR-306b).
 - **Kept lane setting**: a deleted action's lane setting, copied onto each run queued when it was deleted. It leaves with the run (FR-314b).
