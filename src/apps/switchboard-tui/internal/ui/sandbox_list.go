@@ -200,6 +200,13 @@ func workerHoldNote(r *pb.WorkerRun) (string, bool) {
 	return holdNote(r.GetHold(), r.GetHalted(), r.GetStepNote(), r.GetId())
 }
 
+// cleanupNeedsInput reports whether a worker's cleanup is stalled on its
+// agent's question, which m resolves (FR-216).
+func cleanupNeedsInput(sb *pb.Sandbox) bool {
+	return sb.GetController().GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP &&
+		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+}
+
 // holdNote phrases a hold or halt for the sandbox list and the Workers view
 // (WorkerView carries the same three fields).
 func holdNote(hold pb.WorkerHold, halted bool, note, runID string) (string, bool) {
@@ -436,14 +443,17 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 			role = "reasoning"
 		}
 		hold, surfaced := workerHoldNote(c.GetRun())
+		needsInput := row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
 		switch {
 		case hold != "" && surfaced:
 			title += "   " + agentWaitStyle.Render("⚑ "+role+" · "+hold)
+		case hold != "" && needsInput:
+			title += "   " + agentWaitStyle.Render("⚑ "+role+" · "+hold+" · needs input")
 		case hold != "":
 			title += "   " + dimStyle.Render("⚑ "+role+" · "+hold)
 		case c.GetRun().GetNeedsReview():
 			title += "   " + agentWaitStyle.Render("⚑ "+role+" · review")
-		case row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+		case needsInput:
 			title += "   " + agentWaitStyle.Render(role+" · needs input")
 		}
 	}

@@ -292,12 +292,14 @@ func (m Model) lastSeenOf(r *pb.Run) string {
 }
 
 // stepLines renders a run's steps for the prompt overlay (FR-220): pre, the
-// action prompt (its composed text in the panel), post; ✓ marks finished steps
-// and ▶ the current one. width bounds a step's line.
+// action prompt (its composed text in the panel), post; ✓ marks finished steps,
+// ▶ the current one, and ✗ the step a hold for the developer stopped at.
+// width bounds a step's line.
 func (m Model) stepLines(r *pb.Run, width int) []string {
 	cur := int(r.GetStep())
 	done := r.GetStepStatus() == pb.StepStatus_STEP_STATUS_DONE
 	queued := r.GetState() == pb.RunState_RUN_STATE_QUEUED
+	held := r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 	var lines []string
 	last := pb.StepRole_STEP_ROLE_UNSPECIFIED
 	for i, st := range r.GetSteps() {
@@ -316,6 +318,8 @@ func (m Model) stepLines(r *pb.Run, width int) []string {
 		mark := "  "
 		switch {
 		case queued:
+		case held && i == cur:
+			mark = statusErrStyle.Render("✗") + " "
 		case done || i < cur:
 			mark = statusOKStyle.Render("✓") + " "
 		case i == cur:

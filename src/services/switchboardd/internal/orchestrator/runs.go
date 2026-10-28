@@ -197,6 +197,9 @@ func (s *Service) CancelRun(id, runID string) (*pb.Run, error) {
 	}
 	rt.runs.mu.Unlock()
 	if seq {
+		if !stepActive(run) {
+			rt.dropMarks(run.GetId())
+		}
 		rt.applyFx(run, fx)
 		rt.triggerDispatch()
 	}
@@ -545,8 +548,9 @@ func (rt *runtime) failRun(run *pb.Run, reason string) {
 	rt.notify(run, pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, "failed: "+reason)
 }
 
-// closedRun drops the transient state of a run that just closed, trims the
-// history and asks for a dispatch pass (a worker may be free).
+// closedRun drops the transient state of a run that just closed (its step
+// marks too, once it has no step work left), trims the history and asks for a
+// dispatch pass (a worker may be free).
 func (rt *runtime) closedRun(run *pb.Run) {
 	rt.mu.Lock()
 	if t, ok := rt.reviewTimers[run.GetId()]; ok {
@@ -555,6 +559,9 @@ func (rt *runtime) closedRun(run *pb.Run) {
 	}
 	delete(rt.reported, run.GetId())
 	delete(rt.inputNotified, run.GetId())
+	if !stepActive(run) {
+		rt.seq.dropMarks(run.GetId())
+	}
 	rt.mu.Unlock()
 	if err := rt.svc.trimHistory(rt.id); err != nil {
 		rt.svc.logf("[orchestrator %s] trim history: %v", rt.name(), err)
@@ -615,6 +622,15 @@ func (rt *runtime) closeAllRuns(reason string) (failed, cancelled uint32) {
 			failed++
 		case r.GetState() == pb.RunState_RUN_STATE_QUEUED:
 			rt.runs.mu.Lock()
+			rt.refreshLocked(r) // the stepper may have typed its first step since
+			if r.GetState() != pb.RunState_RUN_STATE_QUEUED {
+				rt.runs.mu.Unlock()
+				if inFlight(r) {
+					rt.failRun(r, reason)
+					failed++
+				}
+				continue
+			}
 			r.State = pb.RunState_RUN_STATE_CANCELLED
 			r.Reason = reason
 			r.EndedAt = timestamppb.New(rt.svc.clock.Now())
@@ -810,7 +826,7 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 				rt.runResumed(run) // the agent resumed while the link was down
 			}
 		case sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING:
-			rt.failRun(run, "sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")))
+			rt.failRun(run, duringStep("sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")), run))
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE && setupAnswered(run):
 			rt.runResumed(run)
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE:

@@ -140,7 +140,7 @@ func TestDetachedAgentRefusalOpensDialog(t *testing.T) {
 	d.attachErr = status.Error(codes.FailedPrecondition, "agent detached by a daemon restart")
 	m, cmd := update(m, press("t"))
 	m, _ = update(m, runCmd(cmd))
-	if m.screen != screenConfirm || !strings.Contains(ansi.Strip(m.View()), "in an unknown state") || !m.confirm.enterCancels {
+	if m.screen != screenConfirm || !strings.Contains(ansi.Strip(m.View()), "in an unknown state") || !m.confirm.enterCancels || !m.confirm.yOnly {
 		t.Errorf("refusal: screen %v\n%s", m.screen, ansi.Strip(m.View()))
 	}
 	// Any other refusal shows the daemon's text.
@@ -182,6 +182,9 @@ func TestDetachedAgentCheckingAndCheckFailed(t *testing.T) {
 		t.Error("enter waits")
 	}
 	m, cmd = update(m, press("y"))
+	if m.busy["f1"] != "restarting" {
+		t.Errorf("restart spinner: %v", m.busy)
+	}
 	m, _ = update(m, runCmd(cmd))
 	if strings.Join(d.lifecycle, ",") != "Stop f1,Restart f1" || !strings.Contains(m.status, "restarted sb-f1") {
 		t.Errorf("restart: %v status %q", d.lifecycle, m.status)
@@ -193,6 +196,28 @@ func TestDetachedAgentCheckingAndCheckFailed(t *testing.T) {
 	m, _ = update(m, press("T"))
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "Restarting ends every process in it.") {
 		t.Errorf("plain restart dialog:\n%s", v)
+	}
+	// A run held for cleanup is not failed by a restart.
+	cleaning := detachedSandbox("f3", pb.AgentStatus_AGENT_STATUS_IDLE, true)
+	cleaning.Controller.Run.StepRole = pb.StepRole_STEP_ROLE_CLEANUP
+	cleaning.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_CHECK_FAILED, Error: "x"}
+	m, _ = orphanList(t, cleaning)
+	m, _ = update(m, press("t"))
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Restarting ends every process in it.") || strings.Contains(v, "fails run-9") {
+		t.Errorf("cleanup restart dialog:\n%s", v)
+	}
+}
+
+// An idle agent whose run a Replace fails still defaults to Wait: enter never
+// fails a finished run.
+func TestDetachedAgentWaitIsDefaultWhenReplaceFailsRun(t *testing.T) {
+	m, d := orphanList(t, detachedSandbox("w2", pb.AgentStatus_AGENT_STATUS_IDLE, true))
+	m, _ = update(m, press("t"))
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Replacing stops it and fails run-9.") {
+		t.Fatalf("dialog:\n%s", v)
+	}
+	if mm, cmd := update(m, tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || mm.screen != screenList || d.replacedID != "" {
+		t.Errorf("enter should wait (screen %v)", mm.screen)
 	}
 }
 

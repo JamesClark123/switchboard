@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 func reviewPR() *pb.Action {
@@ -162,6 +163,32 @@ func TestPutAndDeleteAction(t *testing.T) {
 	}
 	if _, err := env.svc.DeleteAction("nope", "x"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete on unknown = %v", err)
+	}
+}
+
+// A save with no sequence (a client from before SWI-17) keeps the stored
+// sequence instead of resetting it to the defaults; a sent one replaces it.
+func TestPutActionKeepsSequenceFromOldClient(t *testing.T) {
+	env := newEnv(t)
+	o, _ := env.svc.Create("bot")
+	custom := withSequence([]string{"/prepare {ticket}"}, []string{"/wrap"})
+	custom.Sequence.ClearEnabled = false
+	if _, err := putAction(env.svc, o.GetId(), custom); err != nil {
+		t.Fatal(err)
+	}
+	old := withSequence(nil, nil)
+	old.Sequence, old.Description = nil, "v2"
+	saved, err := putAction(env.svc, o.GetId(), old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.GetDescription() != "v2" || !proto.Equal(saved.GetSequence(), custom.GetSequence()) {
+		t.Errorf("old client save = %+v", saved)
+	}
+	sent := withSequence(nil, nil)
+	saved, _ = putAction(env.svc, o.GetId(), sent)
+	if !proto.Equal(saved.GetSequence(), sent.GetSequence()) {
+		t.Errorf("a sent sequence replaces the stored one: %+v", saved.GetSequence())
 	}
 }
 

@@ -571,6 +571,16 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 			}
 			line += "  " + style.Render("⚑ "+note)
 		}
+		// SWI-17 (R14): a detached agent, or a check for one, as the list shows it.
+		if sb, _, why := m.runSandbox(&pb.Run{SandboxId: w.GetSandboxId(), SandboxHostId: w.GetHostId()}); why == "" {
+			if note, surfaced := orphanNote(sb); note != "" {
+				style := dimStyle
+				if surfaced {
+					style = statusErrStyle
+				}
+				line += "  " + style.Render(note)
+			}
+		}
 		if w.GetReasoning() {
 			line += "  " + tagBadgeStyle.Render("reasoning")
 		}

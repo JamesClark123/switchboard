@@ -105,7 +105,7 @@ func (a *agent) read(in *bufio.Reader) {
 			continue
 		case pasting:
 			continue
-		case s == "\x1b" || s == "\x1b[" || s == "\x1bO" || strings.HasPrefix(s, "\x1b[2") && len(s) < len(pasteStart):
+		case s == "\x1bO" || strings.HasPrefix(pasteStart, s):
 			continue // an escape sequence still arriving
 		case s == "\r" || s == "\n" || s == "\x1bOM":
 			a.submit()

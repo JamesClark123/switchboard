@@ -95,8 +95,8 @@ func failsOnReplace(r *pb.WorkerRun) bool {
 }
 
 // confirmReplaceOrphan opens the Wait/Replace dialog. Wait is the default
-// (enter) unless the agent was last seen idle, so a developer's own turn in a
-// plain sandbox is never killed by a reflexive enter.
+// (enter) unless the agent was last seen idle and replacing fails no run, so
+// neither a developer's own turn nor a run is ended by a reflexive enter.
 func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, external bool, returnTo screen, check *pb.AgentCheck) (tea.Model, tea.Cmd) {
 	name := sanitizeLine(sb.GetDisplayName(), 40)
 	seen := "Last seen " + lastSeenText(check)
@@ -116,7 +116,7 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 		returnTo:     returnTo,
 		acceptLabel:  "replace",
 		cancelLabel:  "wait",
-		enterCancels: check.GetLastStatus() != pb.AgentStatus_AGENT_STATUS_IDLE,
+		enterCancels: check.GetLastStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || (run != nil && failsOnReplace(run)),
 		onConfirm:    func() tea.Msg { return msg },
 	})
 }
@@ -128,7 +128,7 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 func (m Model) confirmRestartUnchecked(sb *pb.Sandbox, d Daemon, returnTo screen, check *pb.AgentCheck) (tea.Model, tea.Cmd) {
 	name := sanitizeLine(sb.GetDisplayName(), 40)
 	warning := "Restarting ends every process in it."
-	if run := sb.GetController().GetRun(); run != nil {
+	if run := sb.GetController().GetRun(); run != nil && failsOnReplace(run) {
 		warning = "Restarting ends every process in it and fails " + sanitizeLine(run.GetId(), 0) + "."
 	}
 	id := sb.GetId()
@@ -140,6 +140,8 @@ func (m Model) confirmRestartUnchecked(sb *pb.Sandbox, d Daemon, returnTo screen
 		acceptLabel:  "restart sandbox",
 		cancelLabel:  "wait",
 		enterCancels: true,
+		sandboxID:    id,
+		verb:         "restarting",
 		onConfirm: func() tea.Msg {
 			// A restart of a running sandbox is a stop, then a start: only the
 			// stop ends the processes in it. Each gets its own timeout, as

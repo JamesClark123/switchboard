@@ -45,9 +45,9 @@ const (
 	unsupportedReason = "no worker supports pre/post prompts; update their daemons"
 )
 
-// checkFailedPrefixes start the notes a daemon writes while it can't check for
-// a detached agent (research R14). They are never a run's failure reason.
-var checkFailedPrefixes = []string{"can't check for a detached agent", "can't confirm the agent is still running"}
+// replacedNote is the note a daemon writes on the run of an agent the developer
+// replaced after a daemon restart (research R14): that run's failure reason.
+const replacedNote = "agent replaced by the developer after a daemon restart"
 
 // seqState is a runtime's transient step state (guarded by runtime.mu).
 type seqState struct {
@@ -63,7 +63,7 @@ type stepMarks struct {
 	step      int32
 	waitSince time.Time // first refusal of the current wait
 	sentSeen  time.Time // first time the stepper saw the step SENT with no evidence
-	idleSince time.Time // the input_idle_since being timed (INPUT_ONLY fallback)
+	idleSince time.Time // the input_idle_since being timed (idle-nudge fallback)
 	idleSeen  time.Time // when the stepper first saw it
 	wake      Timer     // a wake-up for one of the timed waits
 }
@@ -285,24 +285,16 @@ func after(ts, ref *timestamppb.Timestamp) bool {
 }
 
 // exitReason is the failure reason of a run whose agent exited: the daemon's
-// own note on the record when it wrote one (a developer's Replace after a
-// daemon restart, R14), never a check-failed note; otherwise "agent exited",
-// naming the step for a run in setup (FR-212).
+// note on the record when it wrote the Replace one (a developer's Replace after
+// a daemon restart, R14), never another note (a check-failed one, or one the
+// orchestrator mirrored); otherwise "agent exited", naming the step for a run
+// in setup (FR-212).
 func exitReason(r *pb.Run, sb *pb.Sandbox) string {
 	wr := sb.GetController().GetRun()
-	if note := wr.GetStepNote(); wr.GetId() == r.GetId() && note != "" && note != r.GetStepNote() && !checkFailedNote(note) {
-		return note
+	if wr.GetId() == r.GetId() && wr.GetStepNote() == replacedNote {
+		return replacedNote
 	}
 	return duringStep("agent exited", r)
-}
-
-func checkFailedNote(note string) bool {
-	for _, p := range checkFailedPrefixes {
-		if strings.HasPrefix(note, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // --- effects of a transition, applied once runs.mu is released ---
@@ -659,13 +651,14 @@ func unclaimLocked(l *pb.Run) {
 }
 
 // unclaimOn puts every claimed, untyped run on a sandbox back in the queue
-// (its worker was dropped).
+// (its worker was dropped): pending, or halted on a refused first step.
 func (rt *runtime) unclaimOn(sandboxID string) {
 	rt.runs.mu.Lock()
 	runs, _ := rt.svc.reg.ListRuns(rt.id)
 	n := 0
 	for _, r := range runs {
-		if r.GetState() == pb.RunState_RUN_STATE_QUEUED && r.GetSandboxId() == sandboxID && r.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING {
+		st := r.GetStepStatus()
+		if r.GetState() == pb.RunState_RUN_STATE_QUEUED && r.GetSandboxId() == sandboxID && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_HALTED) {
 			unclaimLocked(r)
 			if rt.putRun(r) == nil {
 				n++
@@ -1213,10 +1206,12 @@ func stepFinished(run *pb.Run, sb *pb.Sandbox) bool {
 	return run.GetStepKindSeen() == pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY && after(a.GetLastEventAt(), sent)
 }
 
-// finishTurn finishes a TURN step once its turn ended. A step classified only
-// by a needs-input report is also finished once the input box has stayed
-// empty and ready for inputOnlyIdle after its send (the idle-nudge fallback,
-// research R1), timed on this clock from when the period was first seen.
+// finishTurn finishes a TURN step once its turn ended. A step is also
+// finished once the input box has stayed empty and ready for inputOnlyIdle
+// after its send (the idle-nudge fallback, research R1), timed on this clock
+// from when the period was first seen: for a step classified only by a
+// needs-input report, and for any step whose agent is IDLE (a turn interrupted
+// with Esc, or ended by an error, may report no turn end).
 func (rt *runtime) finishTurn(run *pb.Run, sb *pb.Sandbox) bool {
 	if sb == nil {
 		return false
@@ -1225,7 +1220,8 @@ func (rt *runtime) finishTurn(run *pb.Run, sb *pb.Sandbox) bool {
 		return rt.finishStep(run)
 	}
 	idle := sb.GetAgent().GetInputIdleSince()
-	if run.GetStepKindSeen() != pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY || !after(idle, run.GetStepSentAt()) {
+	inputOnly := run.GetStepKindSeen() == pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY
+	if (!inputOnly && sb.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE) || !after(idle, run.GetStepSentAt()) {
 		return false
 	}
 	now := rt.svc.clock.Now()
@@ -1346,11 +1342,21 @@ func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
 // dropped and the hold becomes NEEDS_INPUT_FREEING; Clear (if enabled) is then
 // sent under the normal guard, once the question is gone and the box is empty
 // and ready, and the worker is free once it finished. With no Clear it is free
-// at once. The run's outcome is never changed. held is false when the sandbox
-// has no such run (MarkWorkerFree goes on as before).
+// at once. The run's outcome is never changed. A sandbox held otherwise is
+// refused with what frees it. held is false when the sandbox has no held run
+// (MarkWorkerFree goes on as before).
 func (rt *runtime) freeCleanup(sandboxID string) (out *pb.Run, held bool, err error) {
 	run := rt.seqRunOn(sandboxID)
-	if run == nil || !finished(run) || run.GetHold() != pb.WorkerHold_WORKER_HOLD_CLEANING_UP {
+	if run == nil || !finished(run) {
+		return nil, false, nil
+	}
+	switch run.GetHold() {
+	case pb.WorkerHold_WORKER_HOLD_CLEANING_UP:
+	case pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+		return nil, true, fmt.Errorf("%w: sandbox %s is held after run %s until a fresh session starts: run /clear in its terminal (t → Replace for a detached agent)", ErrPrecondition, sandboxID, run.GetId())
+	case pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING:
+		return nil, true, fmt.Errorf("%w: sandbox %s is already being freed after run %s", ErrPrecondition, sandboxID, run.GetId())
+	default:
 		return nil, false, nil
 	}
 	if rt.sandboxRecord(sandboxID).GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT {
@@ -1590,8 +1596,9 @@ func (rt *runtime) claim(run *pb.Run, w *pb.Worker) bool {
 }
 
 // actionTyped reports whether the daemon recorded the action step's send while
-// its answer is still unknown (SENDING or SENT): only the answer was lost, so
-// the agent's completion report is accepted (FR-211, research R5).
+// its answer is still unknown (SENDING, SENT, or halted as "may have run"):
+// only the answer was lost, so the agent's completion report is accepted and
+// closes the run as usual (FR-211, research R5).
 func actionTyped(run *pb.Run, sb *pb.Sandbox) bool {
 	if int(run.GetStep()) != actionIndex(run) {
 		return false
@@ -1599,6 +1606,8 @@ func actionTyped(run *pb.Run, sb *pb.Sandbox) bool {
 	switch run.GetStepStatus() {
 	case pb.StepStatus_STEP_STATUS_SENT:
 		return true
+	case pb.StepStatus_STEP_STATUS_HALTED:
+		return run.GetStepSentAt() != nil && (run.GetStepUnconfirmed() || run.GetStepSentBeforeRestart())
 	case pb.StepStatus_STEP_STATUS_SENDING:
 		wr := sb.GetController().GetRun()
 		return wr.GetId() == run.GetId() && wr.GetStepIndex() == run.GetStepSend() && wr.GetStepSentAt() != nil &&

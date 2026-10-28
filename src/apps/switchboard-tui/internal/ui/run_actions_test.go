@@ -308,6 +308,12 @@ func TestPromptOverlayListsSteps(t *testing.T) {
 	if v := ansi.Strip(m.promptView(done)); !strings.Contains(v, "✓ /clear") {
 		t.Errorf("done:\n%s", v)
 	}
+	// A Clear failed with X (held for the developer) is not ticked.
+	held := seqRun("h", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	held.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	if v := ansi.Strip(m.promptView(held)); !strings.Contains(v, "✗ /clear") || !strings.Contains(v, "✓ /tear-down-skill") {
+		t.Errorf("held Clear:\n%s", v)
+	}
 	q := seqRun("q", pb.RunState_RUN_STATE_QUEUED, 0, 0)
 	if v := ansi.Strip(m.promptView(q)); strings.Contains(v, "✓") || strings.Contains(v, "▶") {
 		t.Errorf("queued:\n%s", v)
@@ -359,8 +365,8 @@ func TestMarkFreeCleaningUpWorker(t *testing.T) {
 		}
 	}
 	m = held(pb.WorkerHold_WORKER_HOLD_CLEANING_UP, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT)
-	if !strings.Contains(ansi.Strip(m.View()), "sand-b") {
-		t.Fatalf("a held worker asking for input is surfaced:\n%s", ansi.Strip(m.View()))
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "sand-b") || !strings.Contains(v, "cleaning up run-7 · needs input") || !strings.Contains(v, "mark free") {
+		t.Fatalf("a held worker asking for input is surfaced, with m offered:\n%s", v)
 	}
 	before := a.orchCallsJoined()
 	m, cmd := update(m, press("m"))

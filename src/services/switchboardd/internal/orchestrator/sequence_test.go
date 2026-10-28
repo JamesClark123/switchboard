@@ -191,6 +191,9 @@ func seqEnv(t *testing.T, n int, action *pb.Action) (*testEnv, *fakeWorker, *pb.
 	if action == nil {
 		action = reviewPR()
 	}
+	// dispatchEnv stored review-pr with no steps, and a save with no sequence
+	// keeps the stored one: send the defaults it reads as.
+	action.Sequence = effectiveSequence(action)
 	if _, err := putAction(env.svc, o.GetId(), action); err != nil {
 		t.Fatal(err)
 	}
@@ -469,6 +472,63 @@ func TestInputOnlyStepFinishes(t *testing.T) {
 	}
 	env.clock.Advance(inputOnlyIdle / 2)
 	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+}
+
+// A TURN step whose turn reports no end (Esc, which runs no Stop hook) is
+// finished by the same fallback once its agent is IDLE and the input box has
+// stayed empty and ready for inputOnlyIdle: setup never sticks.
+func TestTurnWithoutTurnEndFinishesOnIdle(t *testing.T) {
+	a := withSequence([]string{"/prepare {ticket}"}, nil)
+	env, w, o, rt, _ := seqEnv(t, 1, a)
+	run := callTicket(t, env, o, "1", "T-1")
+	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if r.GetStepKindSeen() != pb.StepObserved_STEP_OBSERVED_MODEL_TURN {
+		t.Fatalf("kind = %v", r.GetStepKindSeen())
+	}
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+		sb.Agent.InputIdleSince = sentAfter(sb, time.Second)
+	})
+	waitFor(t, func() bool {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		m := rt.seq.marks[run.GetId()]
+		return m != nil && !m.idleSeen.IsZero() && m.wake != nil
+	})
+	env.clock.Advance(inputOnlyIdle)
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_TURN)
+}
+
+// An action prompt halted as "may have run" (typed, unconfirmed) still
+// accepts the agent's completion report, which closes the run as usual.
+func TestReportOnHaltedActionPrompt(t *testing.T) {
+	env, _, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	env.clock.Advance(sentGrace)
+	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+	if !r.GetStepUnconfirmed() {
+		t.Fatalf("halted = %+v", r)
+	}
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatalf("report on a may-have-run halt = %v", err)
+	}
+	if r := runNow(env, o, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetSummary() != "done" {
+		t.Errorf("reported run = %+v", r)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	if got := d.typedTexts(); got[len(got)-1] != "wa: /clear" {
+		t.Errorf("cleanup after the report: %q", got)
+	}
 }
 
 // --- delivery: refusals, kicks during a call, single flight ---
@@ -872,6 +932,9 @@ func TestHaltedActionAndClear(t *testing.T) {
 	waitFor(t, func() bool {
 		return w.get("wa").GetController().GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 	})
+	if _, err := env.svc.MarkWorkerFree(o.GetId(), "wa", false, ""); err == nil || !strings.Contains(err.Error(), "run /clear in its terminal") {
+		t.Errorf("mark free on a developer hold = %v", err)
+	}
 	// R stays: a retried Clear waits for the agent (busy here) …
 	emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
 	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
@@ -1203,6 +1266,11 @@ func TestOrphanReplaceFailsTheRun(t *testing.T) {
 	if got := exitReason(&pb.Run{Id: "x"}, sb); got != "agent exited" {
 		t.Errorf("exit reason = %q", got)
 	}
+	// Nor is a note the orchestrator mirrored there.
+	sb.Controller.Run.StepNote = waitingPrefix + "agent is working"
+	if got := exitReason(&pb.Run{Id: "x"}, sb); got != "agent exited" {
+		t.Errorf("exit reason on a mirrored note = %q", got)
+	}
 }
 
 // A setup step halts when its agent is detached; R stops the orphan and
@@ -1343,6 +1411,16 @@ func TestInvalidStepHalts(t *testing.T) {
 	}
 	if n := len(stepReqs(w2)); n != 1 {
 		t.Errorf("an invalid step is never retried: %d calls", n)
+	}
+	// Still QUEUED, nothing typed: dropping the worker puts it back in the queue.
+	// The last open-lane worker: the guard's list is confirmed (SWI-18).
+	imp, _ := env2.svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: o2.GetId(), Change: &pb.CheckLaneChangeRequest_DetachWorker{DetachWorker: &pb.DetachWorkerRequest{SandboxId: "wa"}}})
+	guard := &pb.LaneGuardConfirm{UnlanedActions: imp.GetUnlanedActions(), UnlanedRuns: imp.GetUnlanedRuns()}
+	if err := env2.svc.DetachWorker(context.Background(), o2.GetId(), "wa", guard); err != nil {
+		t.Fatal(err)
+	}
+	if r := runNow(env2, o2, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_QUEUED || r.GetSandboxId() != "" {
+		t.Errorf("after the worker is dropped = %+v", r)
 	}
 }
 

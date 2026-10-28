@@ -190,7 +190,11 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 			m.status = "an external terminal is already attached to " + msg.name
 		case !showing && !msg.replace && msg.sb != nil && isDetachedRefusal(msg.err) && m.attachAwaited(msg.returnTo):
 			// The record was stale: the daemon found the detached agent first.
-			return m.confirmReplaceOrphan(msg.sb, msg.host, msg.d, false, msg.returnTo, refusalCheck(msg.sb))
+			// The dialog opens on its own, so it accepts on y alone.
+			mm, dcmd := m.confirmReplaceOrphan(msg.sb, msg.host, msg.d, false, msg.returnTo, refusalCheck(msg.sb))
+			out := mm.(Model)
+			out.confirm.yOnly = true
+			return out, dcmd
 		default:
 			m.status = "terminal: " + attachErrText(msg.err)
 		}

@@ -467,6 +467,12 @@ func putActionChange(a *pb.Action, now *timestamppb.Timestamp) changeFn {
 		saved := proto.Clone(a).(*pb.Action)
 		for i, ex := range o.Actions {
 			if ex.GetName() == a.GetName() {
+				// A client from before SWI-17 sends no sequence (the TUI always
+				// sends one): keep the stored one rather than resetting it to
+				// the defaults.
+				if saved.GetSequence() == nil && ex.GetSequence() != nil {
+					saved.Sequence = proto.Clone(ex.GetSequence()).(*pb.ActionSequence)
+				}
 				saved.CreatedAt, saved.UpdatedAt = ex.GetCreatedAt(), now
 				o.Actions[i] = saved
 				return ch, nil
