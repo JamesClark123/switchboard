@@ -130,8 +130,9 @@ func TestEnlargeOpensOnEveryTextField(t *testing.T) {
 			}
 		}
 	}
-	if total != 17 {
-		t.Errorf("visited %d Text fields, want 17", total)
+	// 17 before SWI-17, which added the action form's Pre-prompts and Post-prompts.
+	if total != 19 {
+		t.Errorf("visited %d Text fields, want 19", total)
 	}
 }
 
