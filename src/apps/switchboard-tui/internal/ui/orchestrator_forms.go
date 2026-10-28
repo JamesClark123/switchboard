@@ -538,10 +538,11 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 		// Reason actions have no lanes (FR-316): the Lanes group hides and the
 		// save sends none. The ticks are kept, not cleared, so moving the Type
 		// cursor across reason and back loses nothing.
+		// The note never covers another message (a refusal stays shown).
 		switch {
-		case v.kind == "reason" && len(v.lanes) > 0:
+		case v.kind == "reason" && len(v.lanes) > 0 && op.status == "":
 			op.status = reasonLanesText
-		case op.status == reasonLanesText:
+		case v.kind != "reason" && op.status == reasonLanesText:
 			op.status = ""
 		}
 	}

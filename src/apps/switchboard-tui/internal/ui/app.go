@@ -361,6 +361,9 @@ type Model struct {
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
+	// laneSaves numbers every lane form save, model-wide: a panel is rebuilt
+	// when its dialog or detail reopens, so its own count would restart.
+	laneSaves int
 
 	// --- feature 010: the Jobs screen and Daemons › Orchestrators ---
 	jobs        jobsState

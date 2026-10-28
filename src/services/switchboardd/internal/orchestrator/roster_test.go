@@ -600,6 +600,21 @@ func TestApplyRecordsIgnoresForeignHosts(t *testing.T) {
 	if !foreignTo(rec, "s", "h2") || foreignTo(rec, "s", "h1") || foreignTo(rec, "s", "") || foreignTo(rec, "new", "h2") {
 		t.Error("foreignTo")
 	}
+	// The orchestrator destroying its own reasoning sandbox is trusted, even
+	// when the daemon's host id changed since the entry was written.
+	rr := rrec(&pb.Worker{SandboxId: "r", HostId: "old-host", Reasoning: true})
+	rr.ReasoningSandboxId = "r"
+	if res := applyRecords(rr, rosterInput{source: srcDestroyReasoning, hostID: "new-host", ids: []string{"r"}}, rNow); !res.changed || onRoster(rr, "r") != nil || rr.GetReasoningSandboxId() != "" {
+		t.Errorf("reasoning destroy: %+v", rr)
+	}
+	// A reply to this orchestrator's own attach adopts over another host's
+	// mark (its host entry was replaced).
+	re := rrec()
+	re.HighWaterMarks = map[string]*pb.HighWaterMark{"s": {Revision: 5, HostId: "h1"}}
+	reply := withCache(rosterInput{source: srcAttachReply, hostID: "h1b", records: []*pb.Sandbox{rsb("s", 9, rOrch)}})
+	if res := applyRecords(re, reply, rNow); !res.changed || onRoster(re, "s").GetHostId() != "h1b" {
+		t.Errorf("attach reply over a replaced host's mark: %+v", re)
+	}
 	// h1 itself still applies.
 	if res := applyRecords(rec, event(rsb("s", 4, "other")), rNow); !res.changed || onRoster(rec, "s") != nil {
 		t.Errorf("h1's own event should drop: %+v", rec)

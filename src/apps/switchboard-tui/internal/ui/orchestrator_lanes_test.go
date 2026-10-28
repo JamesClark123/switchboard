@@ -677,7 +677,7 @@ func TestLaneResultsStayWithTheirOrigin(t *testing.T) {
 	msg := cmd()
 	m.screen = screenList // the user moved on before the check came back
 	m, _ = update(m, msg)
-	if m.screen != screenList || !strings.Contains(m.status, "came back after you left") {
+	if m.screen != screenList || !strings.Contains(m.status, "was interrupted by another screen") {
 		t.Fatalf("late check: screen %v status %q", m.screen, m.status)
 	}
 	if strings.Contains(a.orchCallsJoined(), "DetachWorker o-a w2") {
@@ -734,5 +734,45 @@ func TestDeclinedGuardKeepsTheFormEditable(t *testing.T) {
 	m = keys(m, press("x"))
 	if m.screen == screenConfirm {
 		t.Error("a key on the form re-submitted it")
+	}
+}
+
+// Lane form saves are numbered model-wide: a reply to a save made before the
+// panel was rebuilt never closes a newer form (PR #24 re-review).
+func TestLaneFormSaveNumbersOutliveThePanel(t *testing.T) {
+	a := lanesDaemon()
+	m := lanesView(t, a)
+	m = keys(m, press("a"))
+	m.orchDetail.lanes.formVals.name = "x"
+	m, cmd := m.submitLaneForm(surfaceDetail)
+	old := cmd().(laneFormMsg)
+	m.orchDetail.lanes = lanesPanel{} // the detail was re-entered
+	m = keys(m, press("a"))
+	m.orchDetail.lanes.formVals.name = "y"
+	m, _ = m.submitLaneForm(surfaceDetail)
+	out, _ := m.applyLaneForm(old)
+	if p := out.(Model).orchDetail.lanes; p.form == nil || !p.saving || p.formVals.name != "y" {
+		t.Errorf("an old reply closed the newer form: %+v", p)
+	}
+}
+
+// The reason-lanes note never covers a refusal on the form's line.
+func TestReasonNoteKeepsARefusal(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e"))
+	fv := m.jobs.formVals.(*actionFormVals)
+	fv.kind = "reason"
+	m.jobs.status = "body: unknown placeholder {x}"
+	m, _ = update(m, struct{}{})
+	if m.jobs.status != "body: unknown placeholder {x}" {
+		t.Errorf("status = %q", m.jobs.status)
+	}
+	m.jobs.status = ""
+	m, _ = update(m, struct{}{})
+	if m.jobs.status != reasonLanesText {
+		t.Errorf("status = %q, want the note", m.jobs.status)
 	}
 }

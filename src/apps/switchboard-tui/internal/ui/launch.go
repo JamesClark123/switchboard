@@ -1085,8 +1085,9 @@ func (m Model) launchModal() string {
 	case m.launch.orchPick:
 		content = m.launchOrchPicker()
 	case m.launch.lanePick != nil:
-		// The modal's border, title and spacing sit around the picker.
-		content = m.launch.lanePick.view(m.modalInnerWidth(), m.height-4)
+		// The modal's border and padding (4), title and spacing (2) and the
+		// progress line (2) sit around the picker.
+		content = m.launch.lanePick.view(m.modalInnerWidth(), m.height-8)
 	default:
 		content = m.launchBrowser()
 	}

@@ -179,9 +179,11 @@ func (a *applier) dropFor(w *pb.Worker, removed, removedEvent bool) {
 
 // foreign reports whether a roster entry or mark on host belongs to another
 // host than the one the input came from: a host never drops, removes or marks
-// another host's worker. Inputs with no host (local replies) are trusted.
+// another host's worker. Inputs with no host, and the orchestrator destroying
+// its own reasoning sandbox, are trusted (the daemon's host id may have
+// changed since that entry was written).
 func (a *applier) foreign(host string) bool {
-	return a.in.hostID != "" && host != "" && host != a.in.hostID
+	return a.in.source != srcDestroyReasoning && a.in.hostID != "" && host != "" && host != a.in.hostID
 }
 
 // foreignTo reports whether sandbox id's roster entry or mark on rec belongs
@@ -333,7 +335,9 @@ func (a *applier) apply(sb *pb.Sandbox) {
 		return
 	}
 	m := a.mark(id)
-	if m.GetRemoved() || (m != nil && a.foreign(m.GetHostId())) {
+	// A reply to this orchestrator's own attach or launch may adopt over
+	// another host's mark (the host entry may have been replaced since).
+	if m.GetRemoved() || (m != nil && !a.in.source.isReply() && a.foreign(m.GetHostId())) {
 		return
 	}
 	if rev != 0 && ((m != nil && rev <= m.GetRevision()) || rev < cached.GetRevision()) {

@@ -46,7 +46,10 @@ func (rt *runtime) applyRoster(in rosterInput) (rosterResult, error) {
 	_, err := rt.update(func(o *pb.Orchestrator) error {
 		rt.mu.Lock()
 		for _, sb := range in.records {
-			if sb.GetState() != pb.SandboxState_SANDBOX_STATE_DESTROYING && rt.relevantLocked(o, sb) {
+			// A host never caches a record over another host's worker (a reply,
+			// to this orchestrator's own call, is trusted like its apply).
+			if sb.GetState() != pb.SandboxState_SANDBOX_STATE_DESTROYING && rt.relevantLocked(o, sb) &&
+				(in.source.isReply() || !foreignTo(o, sb.GetId(), in.hostID)) {
 				rt.cacheLocked(sb)
 			}
 		}

@@ -38,7 +38,8 @@ type lanesPanel struct {
 	stale  string
 	status string
 	// saving is set while the lane form's PutLane is out: keys but esc wait.
-	// saveSeq numbers the saves, so a reply applies only to its own.
+	// saveSeq is the number (Model.laneSaves) of its latest save, so a
+	// reply applies only to that one.
 	saving  bool
 	saveSeq int
 }
@@ -244,7 +245,7 @@ func (m Model) laneForm(v *laneFormVals) *huh.Form {
 type laneFormMsg struct {
 	sink orchSurface
 	key  string // the orchestrator it was saved on
-	seq  int    // the panel's saveSeq when it was sent
+	seq  int    // its Model.laneSaves number
 	lane *pb.Lane
 	err  error
 }
@@ -260,7 +261,8 @@ func (m Model) submitLaneForm(s orchSurface) (Model, tea.Cmd) {
 	}
 	v, laneID, id, key := *p.formVals, p.formLane, t.id, t.key()
 	p.saving = true
-	p.saveSeq++
+	m.laneSaves++
+	p.saveSeq = m.laneSaves
 	seq := p.saveSeq
 	return m, func() tea.Msg {
 		ctx, cancel := ctxTimeout()
@@ -654,18 +656,18 @@ func (m Model) laneConfirm(w laneWrite, st confirmState) (tea.Model, tea.Cmd) {
 	if p := m.lanes(w.sink); here && p.picker != nil && !w.list {
 		p.picker.busy = false
 	}
+	var cmd tea.Cmd
+	if v, ok := m.opState(w.sink).formVals.(*actionFormVals); ok && w.closeForm && here {
+		// Whether the confirm opens or not, its form is editable again (a
+		// completed huh form takes no more keys).
+		cmd = m.rebuildActionForm(w.sink, v)
+	}
 	if m.screen != w.back() || !here {
-		m.status = "lane check for " + sanitizeLine(w.target.name, 0) + " came back after you left — not applied; start it again"
-		return m, nil
+		m.status = "lane check for " + sanitizeLine(w.target.name, 0) + " was interrupted by another screen — not applied; start it again"
+		return m, cmd
 	}
-	if v, ok := m.opState(w.sink).formVals.(*actionFormVals); ok && w.closeForm {
-		// A declined confirm returns to an editable form (a completed huh form
-		// takes no more keys).
-		cmd := m.rebuildActionForm(w.sink, v)
-		mm, ccmd := m.enterConfirm(st)
-		return mm, tea.Batch(cmd, ccmd)
-	}
-	return m.enterConfirm(st)
+	mm, ccmd := m.enterConfirm(st)
+	return mm, tea.Batch(cmd, ccmd)
 }
 
 // applyLaneResult advances a guarded write.
@@ -690,6 +692,7 @@ func (m Model) applyLaneResult(msg laneResultMsg) (tea.Model, tea.Cmd) {
 			st.returnTo, st.onConfirm = w.back(), laneWriteCmd(w, guardOf(imp), false)
 			st.sandboxID, st.verb = w.busyID, "detaching"
 			delete(m.busy, w.busyID)
+			m.refreshListItems() // the row's spinner stops with it
 			return m.laneConfirm(w, st)
 		}
 		if msg.err != nil {
@@ -928,8 +931,15 @@ func (m Model) lanesView(s orchSurface) []string {
 	}
 	// Windowed around the cursor by whole lanes, under the detail's or the
 	// dialog's header, the notice and the status.
-	for _, r := range windowLines(rows, p.cursor, (m.bodyHeight()-len(lines)-6)/2) {
+	shown := windowLines(rows, p.cursor, (m.bodyHeight()-len(lines)-8)/2)
+	if len(shown) < len(rows) && len(shown) > 0 && shown[0] != rows[0] {
+		lines = append(lines, dimStyle.Render("  ↑ more"))
+	}
+	for _, r := range shown {
 		lines = append(lines, strings.Split(r, "\n")...)
+	}
+	if len(shown) < len(rows) && len(shown) > 0 && shown[len(shown)-1] != rows[len(rows)-1] {
+		lines = append(lines, dimStyle.Render("  ↓ more"))
 	}
 	if p.status != "" {
 		lines = append(lines, "", statusErrStyle.Render(sanitizeTerminalText(p.status)))

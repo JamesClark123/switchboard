@@ -459,3 +459,26 @@ func eventBarrier(t *testing.T, w *fakeWorker, o *pb.Orchestrator, rt *runtime, 
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: sb}}
 	waitFor(t, func() bool { return onRoster(rt.record(), id) != nil })
 }
+
+// A listing from another host never overwrites the cached record of a worker
+// on this one (PR #24 review: the cache is shared by every host's input).
+func TestForeignListingDoesNotCache(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	rev := rt.sandboxRecord("wa").GetRevision()
+	forged := ours(o, running("wa", "a"))
+	forged.Revision, forged.State = ^uint64(0), pb.SandboxState_SANDBOX_STATE_STOPPED
+	if _, err := rt.applyRoster(rosterInput{source: srcListing, hostID: "elsewhere", records: []*pb.Sandbox{forged}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.sandboxRecord("wa"); got.GetRevision() != rev || got.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("a foreign listing overwrote the cache: %+v", got)
+	}
+	if onRoster(rt.record(), "wa") == nil {
+		t.Error("a foreign listing dropped the worker")
+	}
+}

@@ -394,7 +394,8 @@ func (m Model) confirmDetach(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 func (m Model) attachModal() string {
 	a := m.attach
 	if a.lanes != nil {
-		return modalStyle.Width(m.modalInnerWidth()).Render(a.lanes.view(m.modalInnerWidth(), m.height-2))
+		// The modal's border and padding take 4 rows.
+		return modalStyle.Width(m.modalInnerWidth()).Render(a.lanes.view(m.modalInnerWidth(), m.height-4))
 	}
 	rows := []string{sectionStyle.Render("Attach " + sanitizeLine(a.sandbox.GetDisplayName(), 32) + " to an orchestrator"), ""}
 	if len(a.choices) == 0 {
