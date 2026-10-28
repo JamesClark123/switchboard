@@ -59,6 +59,27 @@ Other findings:
   - **Multi-line paste.** The framed action prompt is pasted as several lines; its box rendering (a paste
     placeholder) is captured as a fixture (R2).
 
+- **Closed by T006 (2026-10-28, Claude Code 2.1.312, `TestCaptureFixtures` with `SXB_CAPTURE_CLAUDE=1`).**
+  - **Report latency.** A real skill turn (a project skill, `/sxb-ping`) raised `UserPromptSubmit` **15–17 ms** after
+    the Enter (two runs). That is far below half of `submitWindow` (1.25 s), so `submitWindow` stays 2.5 s.
+  - **Idle nudge.** The `Notification` hook's input carries `notification_type` (`"idle_prompt"`, message `Claude is
+    waiting for your input`, about 60 s after the turn). The `input_idle_since` fallback stays as planned for hooks
+    that do not forward it.
+  - **`$PPID` (R13).** In every hook (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`), `$PPID` of the hook
+    command's shell **is** the `claude` process that fired it. T046 keeps `X-Sxb-Pid: $PPID`; the PTY-device fallback
+    is not needed.
+  - **Screen details the fixtures pin.** The input box's prompt is `❯` followed by a **no-break space** (U+00A0),
+    while an echoed command is `❯` and a plain space. The placeholder hint is drawn faint. A multi-line paste shows
+    as `[Pasted text #1 +6 lines]`; a long one-line paste is shown in full, wrapped with a two-space indent. Typing
+    `/` opens the command autocomplete **above** the box (its rows are indented, the selected one marked `❯`), with
+    the box still present. The bare `/model` picker replaces the top rule with a `▔` border and has `Select model`,
+    numbered rows and `Enter to set as default · s to use this session only · Esc to cancel`.
+  - **Window titles.** Claude Code sets the terminal title on each turn (`OSC 0;✳ Claude Code`). The ANSI parser
+    printed the rest of an OSC string after its first non-ASCII byte, so termview now drops OSC strings before
+    parsing (`switchboard-termview`, `filterOSC`).
+  - **Fixtures.** Every T006 fixture was captured except `auto-mode-dialog`: no start-up dialog appeared with the
+    capturing account's settings, so that one is **hand-authored** from the picker's layout and R1's description.
+
 **Decision.** The built-ins are **agent-local** with a **screen read-back**:
 
 - Model: the confirmation line must start `Set model to <Family>` with the chosen family (Opus, Fable, Sonnet, Haiku).

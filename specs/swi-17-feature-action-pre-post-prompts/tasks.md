@@ -116,7 +116,7 @@ sequence model. No user story can be delivered before this phase.
     a slow parser never blocks fan-out; overflow marks the screen stale, then reset + nudge recover it; an uncontrolled
     sandbox keeps no screen; `EnableScreen` on an existing broadcaster; `Screen`/`BroadcasterExisting` never spawn,
     including when the agent exits mid-call.
-- [ ] T006 [P] Add the R1 screen fixtures under `SBD/agent/testdata/claudeui/`, as plain text plus a faint-mask
+- [X] T006 [P] Add the R1 screen fixtures under `SBD/agent/testdata/claudeui/`, as plain text plus a faint-mask
   sidecar:
   - `startup-placeholder`, `empty-after-command`;
   - `model-set-opus`, `model-set-fable`, `model-set-sonnet`, `model-set-haiku`, `model-not-found`;
