@@ -150,7 +150,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `stepScreenSize` | 140×45 | daemon: the PTY and screen size set when a broadcaster is created with no client (research R2) |
 | `modalGrace` | 1 s, **capped at 2 s** | worker step delivery: how long a modal may wait for a needs-input report before NOT_ACCEPTED (T006 may raise it within the cap; contracts/worker-step.md §6) |
 | `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
-| `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token}` and accepted until that agent is gone (research R13) |
+| `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token, main PID, start time}` and accepted until that agent is known gone (a normal exec-client exit, a gone probe, a stop or a reap; research R13/R14) |
 | `clearSettle` | 1 s | daemon: how long the screen is polled for the post-clear state after a `clear` SessionStart (research R13) |
 | `orphanProbeConcurrency` | 8 | daemon: start-up probes run at once, after the servers start (research R14) |
 | `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run asynchronously once the servers have started); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff; after 3 failures `t` offers *Replace anyway* (research R14) |

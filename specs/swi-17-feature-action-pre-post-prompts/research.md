@@ -570,8 +570,10 @@ gets typed or what counts as evidence, and each needs a boundary.
      There is no file to write, so nothing races the spawn.
      - **Persisted, never on `pb.Sandbox`.** The daemon keeps `{generation → token}` per sandbox in its own store, so
        `ListSandboxes` doesn't expose it. A generation's token stays accepted, across daemon restarts too, until that
-       agent is known to be gone: its PTY exited, or it was reaped as an orphan (R14). An agent that survives a
-       restart therefore keeps working hooks.
+       agent is **known** to be gone (revised in run-586): its `sbx exec` client exited normally (R14: no probe is
+       needed then), a probe found it gone, its sandbox stopped, or it was reaped as an orphan (R14). A PTY exit alone
+       doesn't retire it: a killed exec client leaves the agent running, and that orphan keeps working hooks, as does
+       an agent that survives a daemon restart.
      - **The settings carry no secret.** `settings.local.json` is rewritten at every daemon start (`RefreshHooks`),
        written 0644 into the workspace mount. It only references the variable (`-H "X-Sxb-Token:
        $SXB_HOOK_TOKEN"`), so rewriting it never changes any agent's token.
@@ -592,7 +594,7 @@ gets typed or what counts as evidence, and each needs a boundary.
          its environment (`env`, a crash report, a CI-style log dump) can put the token into the transcript or a
          committed file. A leaked token lets another sandbox on the same host forge evidence or end a hold for this
          sandbox (the hook server keys on the `sandbox_id` query parameter). This is accepted: the token is
-         per-generation (a new agent gets a new one, and a reap retires it), and hold release and Clear still need the
+         per-generation (a new agent gets a new one, and it is retired only once its agent is known gone), and hold release and Clear still need the
          daemon's own screen as corroboration. Binding calls to their source address isn't possible here: every
          sandbox reaches the host through the same `host.docker.internal` gateway.
    - **Checking it.** The hook command also sends `X-Sxb-Gen: $SXB_AGENT_GEN`. The hook server looks the generation
@@ -648,7 +650,12 @@ gets typed or what counts as evidence, and each needs a boundary.
        PID equals the generation's **main PID**.
        - The main PID is bound by the first non-`compact` SessionStart of the generation (any source). A nested
          `claude -p` can only start after the agent's own SessionStart, and it has its own PID. The main PID also
-         equals the `agent.pid` recorded at launch (`exec` keeps the PID), and the probe (R14) cross-checks it.
+         equals the `agent.pid` recorded at launch (`exec` keeps the PID).
+       - **The main PID survives a daemon restart** (revised in run-586). It is persisted with the generation's token
+         (`{generation → token, main PID, start time}`, written when it is bound), so an orphan's hooks count as main
+         as soon as the restarted daemon loads the store. Every probe (R14) also re-derives it from `agent.pid`: when
+         the file's generation matches and its start time is live, the probe's PID wins over a missing or different
+         stored one (an agent whose binding write was lost, or that the daemon died before binding).
        - **Fallback, if T006 finds `$PPID` isn't the `claude` process** (an intermediate shell): the hook sends
          `readlink /proc/$PPID/fd/0` (or of its parent) instead, and the main agent is the process whose stdin is the
          generation's PTY device (recorded at launch with the PID). A nested `claude -p` run from a tool has pipes,
@@ -722,6 +729,23 @@ developer.
 - **Only running sandboxes.** The daemon asks the runtime which sandboxes are running (`ListStatuses`). A sandbox
   that is not running has no agent: its recorded agent status is set to EXITED, and it is never probed or reaped.
   `sbx exec` would start a stopped sandbox, so nothing here ever runs `sbx exec` against one.
+- **Never a sandbox being stopped** (revised in run-586). `Manager.Stop` runs `sbx stop` before it writes STOPPED
+  (`leaveRunning`), so a probe in that window would see RUNNING, and its `sbx exec` would start the sandbox again.
+  The same holds for `Refresh`, `Destroy`, the kit-attach recreate and `Restart`'s teardown. So:
+  - **Stopping is marked first.** Each of them already takes `m.lifecycle.begin(id)` as its first statement. That
+    mark is the sandbox's **stopping** state, and before the runtime call each one also closes the agent session
+    (`agents.Close`, which sets `closing`), so the exec client's exit during a stop starts no probe.
+  - **The probe skips** (no `sbx exec`) any sandbox that is stopping (`lifecycle.has(id)`), whose recorded state is
+    STOPPED, DESTROYING or anything but RUNNING, or that `ListStatuses` doesn't report running. It checks all of
+    these immediately before the exec, under a per-sandbox probe latch.
+  - **A stop waits for an in-flight probe.** After marking stopping, the operation cancels the sandbox's in-flight
+    probe and waits on its latch until that `sbx exec` has returned, and only then calls the runtime. No probe's
+    exec can overlap a stop.
+  - A skipped probe leaves the sandbox *unknown* (refused) while the operation runs. When it ends, the container's
+    processes are gone: the orphan record is dropped, the generation's token retired, and EXITED written by the rule
+    below.
+  - The mark is in memory only. After a daemon crash mid-stop, `ListStatuses` decides at the next start: a stopped
+    sandbox is never probed.
 - **The probe** is one `sbx exec <ref> sh -c …` against a running sandbox. It reads `gen pid start tty` from
   `~/.sxb/agent.pid` and reports **alive** only if `/proc/<pid>/stat` exists with the same start time (a reused PID
   never matches).
@@ -740,11 +764,18 @@ polling alone.
   run asynchronously with bounded concurrency (`orphanProbeConcurrency`, 8), each bounded by `orphanProbeTimeout`
   (10 s). The gate refuses on *unknown*, so nothing can spawn beside an agent before its probe finishes.
 - **The exec client exits** while the sandbox is still RUNNING and the registry didn't close it (an `onExit` that
-  isn't `closing`). The `docker exec` child survives its host client (R14 context), so a dead client doesn't mean a
-  dead agent: the `sbx exec` process can be OOM-killed, killed by hand, or taken down by a runtime restart while
-  `sxbd` stays up. `onExit` therefore marks the sandbox *unknown* and probes **before** writing EXITED.
-  - Agent alive → an orphan record, exactly as after a daemon restart, and the run keeps its state.
-  - Agent gone → EXITED as today, so the existing exit handling (FR-212, cleanup, holds) applies.
+  isn't `closing`, on a sandbox that isn't stopping). The `docker exec` child survives its host client (R14
+  context), so a dead client doesn't always mean a dead agent: the `sbx exec` process can be OOM-killed, killed by
+  hand, or taken down by a runtime restart while `sxbd` stays up. `onExit` decides from `cmd.Wait()`'s
+  `ProcessState` first (revised in run-586):
+  - **Normal exit** (an exit code below 125): `docker exec` returns the agent's own status, so the agent is gone.
+    EXITED is written as today, with no probe, and the existing exit handling (FR-212, cleanup, holds) applies.
+  - **Killed by a signal, or a runtime error code** (125–127, or `sbx`'s connection error): the agent may be alive.
+    `onExit` marks the sandbox *unknown* in memory (the gate refuses from then on), releases every lock it holds
+    (`r.mu`, `statusMu`) and **schedules the probe asynchronously**. No lock is ever held across a probe's
+    `sbx exec`, and the common case (the agent quit) costs no exec at all.
+  - The probe's result is applied under the locks: alive → an orphan record, exactly as after a daemon restart,
+    and the run keeps its state; gone → EXITED by the rule below.
 - **The gate refuses.** Each refusal schedules a re-probe (debounced to one per sandbox per 10 s; the gate itself
   never blocks). Whatever tries to spawn, whether `t`, `WarmStart`, a delivery or an escape-hatch result, therefore
   learns within seconds that the orphan is gone.
@@ -752,11 +783,17 @@ polling alone.
   at once.
 - **Backstop, only while an orphan record holds a run:** a re-probe every 60 s. A crashed orphan fires no hook, and
   nothing spawns while a run is in flight, so without it a crashed ACTION orphan would hang its run.
-- **Gone** (on any probe): the record is dropped and EXITED is written. A run in flight then fails with `agent
-  exited` (FR-212), or the worker is freed or held by the existing exit rules.
+- **Gone** (on any probe): the record is dropped and the generation's token retired. EXITED is written only when
+  the recorded agent status is set and not already EXITED (revised in run-586), so a sandbox whose agent never
+  started, or whose exit was already handled, doesn't run the exit handling twice. A run in flight then fails with
+  `agent exited` (FR-212), or the worker is freed or held by the existing exit rules.
 - **Probe failures.** A failed or timed-out probe leaves the sandbox *unknown*, retried with backoff. After 3 failures
-  in a row, the row shows `can't check for a detached agent: <error>`, and `t` offers **Replace anyway**. That reap
-  runs the PID-file and binary-match kill without the probe's alive check, and is surfaced like any reap.
+  in a row, the row shows `can't check for a detached agent: <error>`, and `t` offers **Replace anyway**
+  (revised in run-586). It bypasses only the *unknown* gate, never the reap's own checks: the reap script (below)
+  still signals only a process whose `/proc/<pid>/stat` start time matches the PID file, or, with no PID file, that
+  matches the agent binary and fixed flags. A reused PID is never killed. If the reap's own `sbx exec` fails too,
+  nothing is killed or spawned, the sandbox stays *unknown*, and the dialog shows that exec's error. A reap is
+  surfaced like any other.
 - Each reap re-probes first, so it acts on current evidence, never on the record alone.
 
 **The gate: one choke point, no automatic decisions.** Every path that starts an agent goes through
@@ -830,7 +867,8 @@ goes into the daemon log and, for a worker, into `controller.run.step_note` or t
 - **An uncontrolled sandbox**: nothing happens until the developer presses `t`, which shows the dialog.
 
 **Reaping.** A reap is one `sbx exec <ref> sh -c …` script, run only on a RUNNING sandbox:
-1. re-probes as above. If every matched process is gone, it reports **gone** and signals nothing.
+1. re-probes as above, in the same script, so the start-time and binary checks guard every signal, *Replace
+   anyway* included. If every matched process is gone, it reports **gone** and signals nothing.
 2. sends TERM to **each** live matched process, waits up to `orphanKillWait` (5 s) for them to go, then sends KILL.
    The notification and the dialog name the count when there is more than one.
 

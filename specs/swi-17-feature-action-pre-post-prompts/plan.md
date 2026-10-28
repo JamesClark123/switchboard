@@ -47,8 +47,8 @@ judged by evidence after its submit.
      refused in the **untrusted substituted values** only: call argument values and defaults, after CRLF is
      normalised, checked at call and compose time. Authored text and escape-hatch output are left as they are.
    - Hook callbacks carry a **per-agent token**, drawn for each spawned PTY generation and passed in the agent's
-     environment (`SXB_HOOK_TOKEN`), so it is set before the first hook. The daemon persists `{generation → token}`,
-     so an agent that survives a restart keeps working hooks. The escape-hatch wrapper sends the same header and is
+     environment (`SXB_HOOK_TOKEN`), so it is set before the first hook. The daemon persists `{generation → token, main PID}`,
+     so an agent that survives a restart keeps working hooks, and retires a token only once its agent is known gone. The escape-hatch wrapper sends the same header and is
      re-injected at daemon start.
    - Hold release and Clear's read-back are corroborated by the daemon's own spawn generation and screen. Only the
      main agent counts, matched by its process (the hook's parent PID), so a nested `claude -c -p` never does.

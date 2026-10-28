@@ -61,7 +61,9 @@ research R14). Nothing ever stops it without the developer seeing it:
   is the default when it was last seen idle. Replace re-attaches with `replace_orphan` and shows `replacing the
   detached agent…` until the terminal opens.
 - **A sandbox whose detached-agent check keeps failing** (3 probe failures) shows `can't check for a detached agent:
-  <error>`, and `t` offers **Replace anyway** (stops whatever agent process it finds, surfaced like any stop).
+  <error>`, and `t` offers **Replace anyway**. It skips only the failed check: the stop still signals only the recorded agent
+  process (same start time) or, with no record, the agent binary with its fixed flags, and is surfaced like any
+  stop. If the stop's own check fails too, nothing is stopped or started, and the dialog shows the error.
 - **A worker whose detached agent asks for input** has the note `detached agent asks for input; it can't be answered
   here — replace it (fails the run) or wait`.
 - **A step halted by the restart** carries its evidence in the note (`agent detached by a daemon restart; last seen
