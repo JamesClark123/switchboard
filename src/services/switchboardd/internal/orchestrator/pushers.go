@@ -257,6 +257,9 @@ func (rt *runtime) retryLanes(host string, lr *laneRetrier) {
 		}
 		if len(due) == 0 {
 			lr.timer = rt.svc.clock.AfterFunc(next.Sub(now), lr.poke)
+			if !rt.svc.clock.Now().Before(next) {
+				lr.poke() // the clock passed next while the timer was armed
+			}
 		}
 		p.mu.Unlock()
 		if len(due) > 0 {
