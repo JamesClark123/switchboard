@@ -597,8 +597,9 @@ func trimLines(s string) string {
 }
 
 // opCallLabel names an op form's call ("call review-pr on alpha-bot", "save
-// action triage on alpha-bot"). A save names what it saves, so a notice settled
-// by label never takes another save's outcome.
+// action triage on alpha-bot", "save event poll (tev-1) on alpha-bot"). A save
+// names what it saves, so a notice settled by label never takes another save's
+// outcome; an edited event adds its id, since event names need not be unique.
 func opCallLabel(op *orchOpState) string {
 	verb := op.formKind
 	if verb == "action" || verb == "event" {
@@ -616,7 +617,11 @@ func savedName(vals any) string {
 	case *actionFormVals:
 		return strings.TrimSpace(v.name)
 	case *eventFormVals:
-		return strings.TrimSpace(v.name)
+		name := strings.TrimSpace(v.name)
+		if v.id != "" {
+			name += " (" + v.id + ")"
+		}
+		return name
 	}
 	return ""
 }

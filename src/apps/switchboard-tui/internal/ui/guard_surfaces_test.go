@@ -1222,3 +1222,40 @@ func TestEventSnapshotCompares(t *testing.T) {
 		t.Error("normalising must not reorder the form's own days")
 	}
 }
+
+// Review run-510: event names need not be unique, so an edited event's save is
+// labelled with its id and another same-named event's reply never settles it.
+func TestGuardSaveLabelNamesTheEventID(t *testing.T) {
+	evs := []*pb.TimedEvent{
+		{Id: "tev-1", Name: "poll", Action: "triage", IntervalSeconds: 900, Enabled: true},
+		{Id: "tev-2", Name: "poll", Action: "triage", IntervalSeconds: 1800, Enabled: true},
+	}
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host",
+		Actions: []*pb.Action{{Name: "triage", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "x"}}, TimedEvents: evs}}}}
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsEvents
+	edit := func(m Model, down int) (Model, tea.Cmd) {
+		for i := 0; i < down; i++ {
+			m, _ = update(m, tea.KeyMsg{Type: tea.KeyDown})
+		}
+		m, _ = update(m, press("e"))
+		return update(m, ctrlS())
+	}
+	m, cmd1 := edit(m, 0)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd2 := edit(m, 1)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, again := edit(m, 0)
+	if again != nil || !strings.Contains(m.jobs.status, "the same save event poll (tev-1) on alpha-bot is still saving") {
+		t.Fatalf("the reopened save should be refused, named with its id: %q", m.jobs.status)
+	}
+	m, _ = update(m, runCmd(cmd2))
+	if !strings.Contains(m.jobs.status, "save event poll (tev-1) on alpha-bot is still saving") {
+		t.Errorf("tev-2's reply settled tev-1's refusal: %q", m.jobs.status)
+	}
+	m, _ = update(m, runCmd(cmd1))
+	if !strings.Contains(m.jobs.status, "the earlier save event poll (tev-1) on alpha-bot finished") {
+		t.Errorf("tev-1's reply should settle its refusal: %q", m.jobs.status)
+	}
+}
