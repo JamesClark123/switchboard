@@ -62,6 +62,8 @@ const (
 	// ticketSkew tolerates clock skew between hosts when an attach ticket's
 	// age is checked (research R11).
 	ticketSkew = 10 * time.Minute
+	// maxAttachTickets caps the unexpired attach tickets per orchestrator.
+	maxAttachTickets = 256
 )
 
 // CapabilityLanes is advertised in DaemonInfo.capabilities by a daemon that

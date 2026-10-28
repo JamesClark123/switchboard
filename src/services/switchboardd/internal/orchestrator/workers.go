@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -159,7 +160,10 @@ func (rt *runtime) workerViews() []*pb.WorkerView {
 	out := make([]*pb.WorkerView, 0, len(rec.GetWorkers()))
 	for _, w := range rec.GetWorkers() {
 		up, _ := rt.reachability(w.GetHostId())
-		v := &pb.WorkerView{SandboxId: w.GetSandboxId(), HostId: w.GetHostId(), Reasoning: w.GetReasoning(), HostReachable: up}
+		v := &pb.WorkerView{
+			SandboxId: w.GetSandboxId(), HostId: w.GetHostId(), Reasoning: w.GetReasoning(), HostReachable: up,
+			LaneIds: slices.Clone(w.GetLaneIds()), LanesPending: w.GetLanesPending(), Detaching: rt.isDetaching(w.GetSandboxId()),
+		}
 		if sb := rt.sandboxRecord(w.GetSandboxId()); sb != nil {
 			v.DisplayName = sb.GetDisplayName()
 			v.Tag = sb.GetTag()
@@ -194,21 +198,36 @@ func (rt *runtime) bundle() *pb.WorkerBundle {
 
 // attach records this orchestrator as the controller of an existing sandbox
 // through its host's link (FR-107/FR-108); the reply is applied through
-// applyRecords, so a newer record already seen (a direct detach) wins.
-func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string) (*pb.WorkerView, error) {
+// applyRoster, so a newer record already seen (a direct detach) wins. Lanes
+// picked for it travel as an attach ticket (FR-306a, research R11), deleted
+// again when the owning daemon definitely refused the attach.
+func (rt *runtime) attach(ctx context.Context, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error) {
+	if len(laneIDs) > 0 && onRosterEntry(rt.record(), sandboxID) != nil {
+		return nil, fmt.Errorf("%w: %s is already a worker — change its lanes from the Workers view", ErrPrecondition, rt.displayName(sandboxID))
+	}
 	api, err := rt.awaitAPI(ctx, hostID)
 	if err != nil {
 		return nil, err
 	}
+	ctrl := &pb.SandboxController{OrchestratorId: rt.id, HostId: rt.svc.hostID}
+	if len(laneIDs) > 0 {
+		if ctrl.AttachTicket, err = rt.issueTicket(hostID, sandboxID, laneIDs); err != nil {
+			return nil, err
+		}
+	}
 	rec := rt.record()
+	ctrl.Name = rec.GetName()
 	cctx, cancel := context.WithTimeout(ctx, unaryTimeout)
 	defer cancel()
 	sb, err := api.AttachController(cctx, &pb.AttachControllerRequest{
 		SandboxId:  sandboxID,
-		Controller: &pb.SandboxController{OrchestratorId: rt.id, Name: rec.GetName(), HostId: rt.svc.hostID},
+		Controller: ctrl,
 		Briefing:   renderBriefing(rec, false),
 	})
 	if err != nil {
+		if ctrl.GetAttachTicket() != "" && definiteRefusal(err) {
+			rt.dropTicket(ctrl.GetAttachTicket())
+		}
 		return nil, remoteErr(err, hostID)
 	}
 	if _, err := rt.applyRoster(rosterInput{source: srcAttachReply, hostID: hostID, records: []*pb.Sandbox{sb}}); err != nil {
@@ -231,9 +250,11 @@ func (rt *runtime) workerView(sandboxID string) *pb.WorkerView {
 }
 
 // detach clears the controller on a worker through its link (FR-111): refused
-// while a run is recorded on it and for the reasoning sandbox. The reply is
-// applied through applyRecords.
-func (rt *runtime) detach(ctx context.Context, sandboxID string) error {
+// while a run is recorded on it and for the reasoning sandbox, and guarded by
+// the open-lane guard (FR-308a). The worker is marked detaching while the call
+// is out, so dispatch delivers nothing to it. The reply is applied through
+// applyRoster.
+func (rt *runtime) detach(ctx context.Context, sandboxID string, confirm *pb.LaneGuardConfirm) error {
 	rec := rt.record()
 	hostID := hostOf(rec, sandboxID)
 	if hostID == "" {
@@ -251,6 +272,13 @@ func (rt *runtime) detach(ctx context.Context, sandboxID string) error {
 	if err != nil {
 		return err
 	}
+	if _, _, _, err := rt.guarded(confirm, rt.detachChange(sandboxID)); err != nil {
+		return err
+	}
+	defer func() {
+		rt.clearDetaching(sandboxID)
+		rt.triggerDispatch()
+	}()
 	cctx, cancel := context.WithTimeout(ctx, unaryTimeout)
 	defer cancel()
 	sb, err := api.DetachController(cctx, &pb.DetachControllerRequest{SandboxId: sandboxID, OrchestratorId: rt.id})

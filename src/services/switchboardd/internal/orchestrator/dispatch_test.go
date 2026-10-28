@@ -25,7 +25,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 	for i := 0; i < n; i++ {
 		id := "w" + string(rune('a'+i))
 		w.put(running(id, "worker-"+id))
-		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id); err != nil {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +44,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 		rt.sbs["reasoning-1"] = r
 		rt.mu.Unlock()
 	}
-	if _, err := env.svc.PutAction(o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
 		t.Fatal(err)
 	}
 	return env, w, o, rt
@@ -146,10 +146,10 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 	// worker_tag restricts prompt runs; a reason run goes only to the reasoning sandbox.
 	tagged := reviewPR()
 	tagged.WorkerTag = "ci"
-	if _, err := env.svc.PutAction(o.GetId(), tagged); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), tagged); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	wb := w.update("wb", func(sb *pb.Sandbox) { sb.Tag = "ci" })
@@ -181,7 +181,7 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 	r2 := call(t, env, o.GetId(), "2")
 	untagged := reviewPR()
 	untagged.Name = "any"
-	if _, err := env.svc.PutAction(o.GetId(), untagged); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), untagged); err != nil {
 		t.Fatal(err)
 	}
 	r3, _ := env.svc.CallAction(o.GetId(), "any", map[string]string{"number": "3", "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", "")
@@ -312,10 +312,10 @@ func TestOwnHostRefusalKeepsRunQueued(t *testing.T) {
 	sb.HostId = "host-m"
 	w.put(sb)
 	waitFor(t, func() bool { ok, _ := rt.reachability("host-m"); return ok })
-	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.svc.PutAction(o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
 		t.Fatal(err)
 	}
 	// The agent turns busy as the delivery arrives (the record moved after the

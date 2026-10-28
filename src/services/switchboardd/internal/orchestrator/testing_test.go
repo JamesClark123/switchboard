@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,6 +274,13 @@ type fakeWorker struct {
 	// carry no revision (SWI-18 research R16). Otherwise every write stamps
 	// one, as the registry does (R3).
 	noRevisions bool
+	// onUpdate, when set (under mu), runs at the start of each UpdateWorker
+	// with no lock held; a non-nil error is returned as the call's.
+	onUpdate func(req *pb.UpdateWorkerRequest) error
+	// onList, when set (under mu), runs at the start of each ListSandboxes
+	// with no lock held.
+	onList func()
+	lists  int
 }
 
 // stamp bumps a record's revision as the registry would (caller holds mu).
@@ -299,6 +307,13 @@ func (w *fakeWorker) GetDaemonInfo(context.Context, *pb.GetDaemonInfoRequest) (*
 }
 
 func (w *fakeWorker) ListSandboxes(context.Context, *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+	w.mu.Lock()
+	hook := w.onList
+	w.lists++
+	w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	out := &pb.ListSandboxesResponse{}
@@ -390,6 +405,14 @@ func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControlle
 func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest) (*pb.Sandbox, error) {
 	w.record("update %s name=%q briefing=%v", req.GetSandboxId(), req.GetName(), req.Briefing != nil)
 	w.mu.Lock()
+	hook := w.onUpdate
+	w.mu.Unlock()
+	if hook != nil {
+		if err := hook(req); err != nil {
+			return nil, err
+		}
+	}
+	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb, ok := w.sbs[req.GetSandboxId()]
 	if !ok {
@@ -467,6 +490,24 @@ func (w *fakeWorker) frameKinds() []string {
 	return out
 }
 
+// listCount reports how many ListSandboxes calls the fake served.
+func (w *fakeWorker) listCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lists
+}
+
+// countPrefix counts recorded calls starting with prefix.
+func (w *fakeWorker) countPrefix(prefix string) int {
+	n := 0
+	for _, c := range w.recorded() {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func (w *fakeWorker) recorded() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -519,3 +560,13 @@ func (w *fakeWorker) serve(t *testing.T) string {
 }
 
 func sprintf(format string, args ...any) string { return fmtSprintf(format, args...) }
+
+// putAction saves an action as a lanes-aware client does: the guard's current
+// list is fetched with CheckLaneChange and confirmed.
+func putAction(svc *Service, id string, a *pb.Action) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	if impact, err := svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
+		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions(), UnlanedRuns: impact.GetUnlanedRuns()}
+	}
+	return svc.PutAction(req)
+}

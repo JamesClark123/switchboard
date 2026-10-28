@@ -409,10 +409,10 @@ func TestTwoDaemonsCallDeliverReviewMarkFree(t *testing.T) {
 	if _, err := m.client.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{
 		Name: "review-pr", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "Review {number} in {repo}.",
 		Arguments: []*pb.ActionArgument{{Name: "number", Required: true}, {Name: "repo", Required: true}, {Name: "focus"}},
-	}}); err != nil {
+	}, SetsLanes: true, Guard: &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.client.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{Name: "bad"}}); status.Code(err) != codes.InvalidArgument {
+	if _, err := m.client.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{Name: "bad"}, SetsLanes: true}); status.Code(err) != codes.InvalidArgument {
 		t.Errorf("invalid action = %v", err)
 	}
 	// Call: queued, then delivered on N (its record carries the run; the agent
@@ -523,7 +523,7 @@ func TestFireTimedEventRPC(t *testing.T) {
 	if _, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{
 		Name: "check", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "check {repo}",
 		Arguments: []*pb.ActionArgument{{Name: "repo", Required: true}},
-	}}); err != nil {
+	}, SetsLanes: true, Guard: &pb.LaneGuardConfirm{UnlanedActions: []string{"check"}}}); err != nil {
 		t.Fatal(err)
 	}
 	ev, err := c.PutTimedEvent(ctx, &pb.PutTimedEventRequest{OrchestratorId: o.GetId(), Event: &pb.TimedEvent{

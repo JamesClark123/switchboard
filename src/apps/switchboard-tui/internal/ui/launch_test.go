@@ -47,7 +47,7 @@ type fakeDaemon struct {
 	mcpAvail    bool
 	mcpReason   string
 	// SWI-18: the fake advertises "lanes" unless noLanes is set.
-	noLanes bool
+	noLanes     bool
 	mcpServers  []*pb.McpServer
 	mcpSettings *pb.McpGatewaySettings
 	mcpListErr  error

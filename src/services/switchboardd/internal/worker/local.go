@@ -32,8 +32,7 @@ func (l localAPI) UpdateWorker(ctx context.Context, req *pb.UpdateWorkerRequest)
 }
 
 func (l localAPI) DeliverWorkerPrompt(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
-	accepted, err := l.svc.Deliver(ctx, req)
-	return &pb.DeliverWorkerPromptResponse{Accepted: accepted}, err
+	return l.svc.DeliverResponse(ctx, req)
 }
 
 // hubStream adapts a hub subscription to an EventStream; the subscription ends

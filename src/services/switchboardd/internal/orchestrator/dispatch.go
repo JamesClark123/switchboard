@@ -144,12 +144,13 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
 		rt.mu.Lock()
 		if sb, ok := rt.sbs[w.GetSandboxId()]; ok && sb.GetController() != nil {
 			// The worker took the run: it is busy until its record says
-			// otherwise. The delivery was a write on the host, so the record
-			// is at least one revision newer: a reply to a call made before
-			// it (a background push) can no longer read the worker free.
-			sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
-			if sb.GetRevision() != 0 {
-				sb.Revision++
+			// otherwise. The cache takes the delivery write's revision (when
+			// the host reports it), so a reply to a call made before it (a
+			// background push) can no longer read the worker free, while the
+			// host's next write still reads as newer.
+			if rev := resp.GetRevision(); rev == 0 || rev > sb.GetRevision() {
+				sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
+				sb.Revision = max(sb.GetRevision(), rev)
 			}
 		}
 		rt.mu.Unlock()

@@ -41,36 +41,46 @@ func (s *Service) CallAction(id, action string, args map[string]string, kind pb.
 }
 
 func (rt *runtime) callAction(action string, args map[string]string, kind pb.EventKind, origin, originLabel string) (*pb.Run, error) {
-	rec := rt.record()
-	a := findAction(rec, action)
-	if a == nil {
-		return nil, fmt.Errorf("%w: action %s", ErrNotFound, action)
-	}
 	if args == nil {
 		args = map[string]string{}
 	}
-	if err := validateCall(a, args); err != nil {
+	// The action is read and the run queued in one transaction, so a run never
+	// names an action deleted before it was written (SWI-18 research R7).
+	var run *pb.Run
+	var pos uint32
+	if _, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
+		a := findAction(o, action)
+		if a == nil {
+			return fmt.Errorf("%w: action %s", ErrNotFound, action)
+		}
+		if err := validateCall(a, args); err != nil {
+			return err
+		}
+		prompt, err := compose(a, args)
+		if err != nil {
+			return err
+		}
+		queued, err := runs.Queued()
+		if err != nil {
+			return err
+		}
+		seq, err := runs.NextSeq()
+		if err != nil {
+			return err
+		}
+		run = &pb.Run{
+			Id: newRunID(rt.id, seq), OrchestratorId: rt.id, Action: a.GetName(), Type: a.GetType(),
+			Arguments: args, Prompt: prompt, EventKind: kind, Origin: origin, OriginLabel: originLabel,
+			ReceivedAt: timestamppb.New(rt.svc.clock.Now()), State: pb.RunState_RUN_STATE_QUEUED,
+		}
+		// The position is taken before dispatch can pick the run up, so the
+		// caller sees where it queued (>= 1) rather than 0 when a free worker
+		// takes it at once.
+		pos = uint32(len(queued)) + 1
+		return runs.Put(run)
+	}); err != nil {
 		return nil, err
 	}
-	prompt, err := compose(a, args)
-	if err != nil {
-		return nil, err
-	}
-	seq, err := rt.svc.reg.NextRunSeq(rt.id)
-	if err != nil {
-		return nil, err
-	}
-	run := &pb.Run{
-		Id: newRunID(rt.id, seq), OrchestratorId: rt.id, Action: a.GetName(), Type: a.GetType(),
-		Arguments: args, Prompt: prompt, EventKind: kind, Origin: origin, OriginLabel: originLabel,
-		ReceivedAt: timestamppb.New(rt.svc.clock.Now()), State: pb.RunState_RUN_STATE_QUEUED,
-	}
-	if err := rt.svc.reg.PutRun(run); err != nil {
-		return nil, err
-	}
-	// The position is read before dispatch can pick the run up, so the caller sees
-	// where it queued (>= 1) rather than 0 when a free worker takes it at once.
-	pos := rt.position(run.GetId())
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
 	out := proto.Clone(run).(*pb.Run)

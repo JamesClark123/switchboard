@@ -52,9 +52,9 @@ type rosterInput struct {
 
 // droppedWorker is a roster entry applyRecords removed.
 type droppedWorker struct {
-	id        string
-	hostID    string
-	removed   bool // removal or listing absence, not a controller change
+	id      string
+	hostID  string
+	removed bool // removal or listing absence, not a controller change
 	// removedEvent: a removed event or DESTROYING record (runs fail "sandbox
 	// removed"; other drops fail them "worker detached").
 	removedEvent bool
@@ -237,10 +237,17 @@ func (a *applier) listing() {
 		m := a.rec.HighWaterMarks[id]
 		switch {
 		case a.entry(id) != nil:
-		case m.GetHostId() == a.in.hostID && !present[id] && m.GetSetSeq() <= a.in.requestedSeq:
-			a.deleteMark(id) // its own host no longer lists it
 		case m.GetRemoved() && a.now.Sub(m.GetRemovedAt().AsTime()) > removedMarkTTL:
 			a.deleteMark(id)
+		case !m.GetRemoved() && m.GetHostId() == a.in.hostID && !present[id] && m.GetSetSeq() <= a.in.requestedSeq:
+			// Its own host no longer lists it: the sandbox is gone. The mark
+			// turns removed and is pruned after removedMarkTTL rather than at
+			// once, so an event the link's reader still holds from before
+			// the listing cannot re-adopt it from an older record.
+			a.setMark(id, &pb.HighWaterMark{
+				Revision: m.GetRevision(), Removed: true, SetSeq: a.write(),
+				RemovedAt: timestamppb.New(a.now), HostId: m.GetHostId(),
+			})
 		}
 	}
 	if sweepTickets(a.rec, a.now) {

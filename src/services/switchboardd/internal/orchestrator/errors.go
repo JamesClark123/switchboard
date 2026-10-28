@@ -14,6 +14,8 @@ import (
 //	ErrPrecondition      → FAILED_PRECONDITION
 //	ErrUnreachable       → UNAVAILABLE (carries ssh's stderr tail)
 //	ErrForbidden         → PERMISSION_DENIED
+//	ErrAborted           → ABORTED (SWI-18 FR-307a: the editor's view is stale)
+//	ErrExhausted         → RESOURCE_EXHAUSTED (SWI-18: too many attach tickets)
 var (
 	ErrNotFound          = errors.New("not found")
 	ErrNameTaken         = errors.New("name already taken")
@@ -22,6 +24,8 @@ var (
 	ErrPrecondition      = errors.New("precondition failed")
 	ErrUnreachable       = errors.New("unreachable")
 	ErrForbidden         = errors.New("forbidden")
+	ErrAborted           = errors.New("aborted")
+	ErrExhausted         = errors.New("resource exhausted")
 )
 
 // AlreadyControlledError names the sandbox's current controller (FR-108). It

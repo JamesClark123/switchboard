@@ -57,7 +57,7 @@ type runtime struct {
 	runs            runState
 	reviewTimers    map[string]Timer // run id -> armed review-grace timer
 	reported        map[string]bool  // run id -> a completion report arrived
-	inputNotified map[string]bool // run id -> RUN_NEEDS_INPUT raised for the current input wait
+	inputNotified   map[string]bool  // run id -> RUN_NEEDS_INPUT raised for the current input wait
 	// pushMu holds one lock per worker sandbox serializing the pushes of its
 	// controller.run (SWI-12): the needs_review flag is computed from the run's
 	// live state while holding it, and the clearing push of a run that closed

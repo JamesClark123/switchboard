@@ -1519,7 +1519,10 @@ message DeliverWorkerPromptRequest {
   string action = 4;
   string prompt = 5;                     // the COMPOSED prompt; the daemon applies the run frame
 }
-message DeliverWorkerPromptResponse { bool accepted = 1; }
+message DeliverWorkerPromptResponse {
+  bool accepted = 1;
+  uint64 revision = 2;                   // SWI-18: the accepted delivery's record revision (0 from older hosts)
+}
 
 // --- SWI-18: lane payloads ---
 

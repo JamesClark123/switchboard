@@ -10156,6 +10156,7 @@ func (x *DeliverWorkerPromptRequest) GetPrompt() string {
 type DeliverWorkerPromptResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Revision      uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"` // SWI-18: the accepted delivery's record revision (0 from older hosts)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10195,6 +10196,13 @@ func (x *DeliverWorkerPromptResponse) GetAccepted() bool {
 		return x.Accepted
 	}
 	return false
+}
+
+func (x *DeliverWorkerPromptResponse) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type PutLaneRequest struct {
@@ -12405,9 +12413,10 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0forchestrator_id\x18\x02 \x01(\tR\x0eorchestratorId\x12\x15\n" +
 	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12\x16\n" +
 	"\x06action\x18\x04 \x01(\tR\x06action\x12\x16\n" +
-	"\x06prompt\x18\x05 \x01(\tR\x06prompt\"9\n" +
+	"\x06prompt\x18\x05 \x01(\tR\x06prompt\"U\n" +
 	"\x1bDeliverWorkerPromptResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted\"\x88\x01\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x04R\brevision\"\x88\x01\n" +
 	"\x0ePutLaneRequest\x12'\n" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12\x17\n" +
 	"\alane_id\x18\x02 \x01(\tR\x06laneId\x12\x12\n" +

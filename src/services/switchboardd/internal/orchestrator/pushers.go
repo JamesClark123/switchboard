@@ -136,6 +136,16 @@ func (rt *runtime) drainLanes(host string) {
 	}
 }
 
+// definiteRefusal reports whether a remote call was answered with a refusal,
+// so nothing it would have done happened.
+func definiteRefusal(err error) bool {
+	switch status.Code(err) {
+	case codes.AlreadyExists, codes.FailedPrecondition, codes.NotFound, codes.InvalidArgument, codes.PermissionDenied:
+		return true
+	}
+	return false
+}
+
 // transient reports whether a push failure is worth retrying.
 func transient(err error) bool {
 	switch status.Code(err) {

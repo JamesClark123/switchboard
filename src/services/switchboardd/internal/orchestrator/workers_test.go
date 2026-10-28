@@ -34,13 +34,13 @@ func TestAttachDetachOverLink(t *testing.T) {
 	w.put(running("sb-1", "worker-one"))
 
 	// No entry for an unknown host.
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "nowhere", "sb-1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "no host entry for nowhere") {
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "nowhere", "sb-1", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "no host entry for nowhere") {
 		t.Errorf("attach on a missing entry = %v", err)
 	}
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "", ""); !errors.Is(err, ErrInvalid) {
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "", "", nil); !errors.Is(err, ErrInvalid) {
 		t.Errorf("attach without ids = %v", err)
 	}
-	view, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1")
+	view, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestAttachDetachOverLink(t *testing.T) {
 	o2, _ := env.svc.Create("other")
 	rt2 := withHost(t, env, o2.GetId(), "box", "me@box")
 	waitFor(t, func() bool { ok, _ := rt2.reachability("box"); return ok })
-	_, err = env.svc.AttachWorker(context.Background(), o2.GetId(), "box", "sb-1")
+	_, err = env.svc.AttachWorker(context.Background(), o2.GetId(), "box", "sb-1", nil)
 	if st := status.Convert(err); st.Code() != codes.AlreadyExists || !strings.Contains(st.Message(), "controlled by review-bot") {
 		t.Errorf("second orchestrator = %v", err)
 	}
@@ -80,13 +80,13 @@ func TestAttachDetachOverLink(t *testing.T) {
 	rt.mu.Lock()
 	rt.sbs["sb-1"].Controller.Run = &pb.WorkerRun{Id: "run-1", Action: "review-pr"}
 	rt.mu.Unlock()
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "run-1") {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "run-1") {
 		t.Errorf("detach with a run = %v", err)
 	}
 	rt.mu.Lock()
 	rt.sbs["sb-1"].Controller.Run = nil
 	rt.mu.Unlock()
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); err != nil {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if w.get("sb-1").GetController() != nil {
@@ -96,7 +96,7 @@ func TestAttachDetachOverLink(t *testing.T) {
 	if len(rec.GetWorkers()) != 0 {
 		t.Error("roster should be empty")
 	}
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); !errors.Is(err, ErrNotFound) {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("detach a non-worker = %v", err)
 	}
 	if _, err := env.svc.Bundle("nope"); !errors.Is(err, ErrNotFound) {
@@ -110,7 +110,7 @@ func TestAttachOnUnreachableHost(t *testing.T) {
 	o, _ := env.svc.Create("bot")
 	withHost(t, env, o.GetId(), "box", "me@box")
 	waitFor(t, func() bool { return env.dials.count() >= 1 })
-	_, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1")
+	_, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1", nil)
 	var ue *UnreachableError
 	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "Connection refused") {
 		t.Errorf("attach on a down link = %v", err)
@@ -184,7 +184,7 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	// Removing the orchestrator force-detaches reachable workers.
 	again := running("sb-again", "again")
 	w.put(again)
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-again"); err != nil {
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-again", nil); err != nil {
 		t.Fatal(err)
 	}
 	quiesce(t, rt)
@@ -282,7 +282,7 @@ func TestReconcileDuringAttachKeepsWorker(t *testing.T) {
 	w.calls = nil
 	w.mu.Unlock()
 	reconcileAround(t, w, rt, func() {
-		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
 			t.Error(err)
 		}
 	})
@@ -298,7 +298,7 @@ func TestReconcileDuringAttachKeepsWorker(t *testing.T) {
 func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
 	env, w, o, rt := remoteEnv(t)
 	w.put(running("wa", "worker-wa"))
-	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, rt)
@@ -306,7 +306,7 @@ func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
 	w.calls = nil
 	w.mu.Unlock()
 	reconcileAround(t, w, rt, func() {
-		if err := env.svc.DetachWorker(bg(), o.GetId(), "wa"); err != nil {
+		if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", nil); err != nil {
 			t.Error(err)
 		}
 	})

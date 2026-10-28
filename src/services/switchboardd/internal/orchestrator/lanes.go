@@ -285,4 +285,3 @@ func refuseGuard(confirm *pb.LaneGuardConfirm, impact *pb.LaneChangeImpact) erro
 	}
 	return &GuardError{Impact: proto.Clone(impact).(*pb.LaneChangeImpact)}
 }
-
