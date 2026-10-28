@@ -59,3 +59,10 @@
   - FR-307a is narrowed.
   - Nits: `open` reserved, the worker-tag field retired, reverse compatibility, orchestrator removal.
   - Consistency pass across FRs, edge cases, Key Entities and SCs.
+- PR #22 re-review (run-558), resolved in run-561 with one model rather than per-finding patches (spec § Clarifications, run-558 session):
+  - The **live roster** (FR-308) decides which workers count.
+  - **Lanes before eligibility** (FR-306a/b): attach writes the roster entry first; launch uses an orchestrator-issued attach ticket.
+  - **Two-tier open-lane safeguard** (FR-308a/b): changes through the orchestrator's daemon are guarded with one refusal shape and one confirm; anything else is made visible through FR-315.
+  - **Reservation dispatch** (FR-314): O(runs + workers), and no run waits for a later one.
+  - Minors and nits: FR-321 keeps today's triggers; FR-315 adds a reason for stopped or unreachable workers; FR-309b drops bad names instead of refusing; 32-lane cap; FR-318a refuses saves on an old daemon; FR-318b is persisted; FR-314b keeps the setting on the orchestrator record, written atomically.
+  - Consistency pass: US2 #4, US4 #8, edge cases, Key Entities (live roster, attach ticket, kept lane setting, dropped worker tags), SC-002, SC-006 and Assumptions.
