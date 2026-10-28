@@ -1,0 +1,227 @@
+# Contract: proto delta (SWI-17)
+
+This change is additive to `src/libs/switchboard-proto/proto/switchboard.proto`. It is mirrored in
+`specs/001-sandbox-session-manager/contracts/switchboard.proto`, and the code is regenerated with `make proto`.
+
+Field numbers continue from today's maximum in each message:
+
+| Message | Today's max | New fields from |
+|---|---|---|
+| Action | 8 | 9 |
+| Run | 19 | 20 |
+| AgentSession | 4 | 5 |
+| WorkerRun | 3 | 4 |
+| NotificationKind | 8 | 9 |
+
+No field is removed or renumbered.
+
+```proto
+// ---- Action sequence (FR-200..FR-204, FR-210) ----------------------------
+
+enum ModelChoice {
+  MODEL_CHOICE_UNSPECIFIED = 0;          // refused at save
+  MODEL_CHOICE_OPUS = 1;                 // `/model opus`   -> "Set model to Opus …"
+  MODEL_CHOICE_FABLE = 2;                // `/model fable`  -> "Set model to Fable …"
+  MODEL_CHOICE_SONNET = 3;               // `/model sonnet` -> "Set model to Sonnet …"
+  MODEL_CHOICE_HAIKU = 4;                // `/model haiku`  -> "Set model to Haiku …"
+}
+
+enum EffortChoice {
+  EFFORT_CHOICE_UNSPECIFIED = 0;         // refused at save
+  EFFORT_CHOICE_LOW = 1;
+  EFFORT_CHOICE_MEDIUM = 2;
+  EFFORT_CHOICE_HIGH = 3;
+  EFFORT_CHOICE_XHIGH = 4;
+  EFFORT_CHOICE_MAX = 5;
+  EFFORT_CHOICE_AUTO = 6;                // read back as "Effort level set to auto"
+  // ultracode is deliberately absent (spec planning amendment, research R1).
+}
+
+// Absent on an Action => defaults: Opus, medium, Clear on, no custom prompts (FR-210).
+message ActionSequence {
+  bool model_enabled = 1;
+  ModelChoice model = 2;
+  bool effort_enabled = 3;
+  EffortChoice effort = 4;
+  bool clear_enabled = 5;
+  repeated string pre_prompts = 6;       // trimmed; <= 10; FR-204 rules
+  repeated string post_prompts = 7;
+}
+
+message Action {
+  // … fields 1..8 unchanged …
+  ActionSequence sequence = 9;
+}
+
+// ---- Run sequence snapshot (FR-205, FR-207, FR-213, FR-217) ---------------
+
+enum StepRole {
+  STEP_ROLE_UNSPECIFIED = 0;
+  STEP_ROLE_SETUP = 1;
+  STEP_ROLE_ACTION = 2;
+  STEP_ROLE_CLEANUP = 3;
+}
+
+enum StepKind {
+  STEP_KIND_UNSPECIFIED = 0;
+  STEP_KIND_MODEL = 1;
+  STEP_KIND_EFFORT = 2;
+  STEP_KIND_CLEAR = 3;
+  STEP_KIND_CUSTOM = 4;
+  STEP_KIND_ACTION_PROMPT = 5;
+}
+
+enum StepStatus {
+  STEP_STATUS_UNSPECIFIED = 0;
+  STEP_STATUS_PENDING = 1;               // waiting to be typed (agent busy, box not empty, run not yet closed)
+  STEP_STATUS_SENT = 2;                  // typed; submit check / restart resolution pending
+  STEP_STATUS_TURN = 3;                  // accepted as a model turn; waiting for the turn to end
+  STEP_STATUS_HALTED = 4;                // not accepted (FR-206c); developer retries, skips or fails
+  STEP_STATUS_AWAIT_CLOSE = 5;           // action step done; waiting for completion report / mark free
+  STEP_STATUS_DONE = 6;                  // every step finished or dropped
+  STEP_STATUS_SENDING = 7;               // persisted before DeliverWorkerStep; resolved from WorkerRun.step_index (research R5, R8)
+}
+
+enum StepObserved {
+  STEP_OBSERVED_UNKNOWN = 0;
+  STEP_OBSERVED_MODEL_TURN = 1;
+  STEP_OBSERVED_MODEL_TURN_INPUT_ONLY = 2;   // classified only by a needs-input report (FR-206b)
+  STEP_OBSERVED_AGENT_LOCAL = 3;
+}
+
+enum WorkerHold {
+  WORKER_HOLD_NONE = 0;
+  WORKER_HOLD_CLEANING_UP = 1;
+  WORKER_HOLD_NEEDS_INPUT_FREEING = 2;
+  WORKER_HOLD_NEEDS_DEVELOPER = 3;
+}
+
+message RunStep {
+  StepRole role = 1;
+  StepKind kind = 2;
+  string text = 3;                       // exactly what is typed (ACTION_PROMPT: Run.prompt; frame added at delivery)
+  string expect = 4;                     // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
+}
+
+message Run {
+  // … fields 1..19 unchanged …
+  repeated RunStep steps = 20;           // empty => no sequence; delivered exactly as before (FR-208)
+  int32 step = 21;
+  StepStatus step_status = 22;
+  google.protobuf.Timestamp step_sent_at = 23;
+  StepObserved step_kind_seen = 24;
+  string step_note = 25;                 // not-accepted reason as shown
+  bool step_sent_before_restart = 26;
+  WorkerHold hold = 27;
+  google.protobuf.Timestamp hold_since = 28;
+}
+
+// ---- Worker-side records (research R4, R7, R10) ---------------------------
+
+message AgentSession {
+  // … fields 1..4 unchanged …
+  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit
+  google.protobuf.Timestamp last_turn_end_at = 6;       // Stop w/o background tasks, or backstop expiry
+  google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
+  string last_session_source = 8;                       // "startup" | "resume" | "clear"
+  google.protobuf.Timestamp input_idle_since = 9;       // box empty + ready and agent not WORKING since (unset otherwise);
+                                                        // sampled while controller.run is set (idle-nudge fallback, R1)
+}
+
+message WorkerRun {
+  // … fields 1..3 unchanged …
+  StepRole step_role = 4;                // suppresses TASK_COMPLETE unless ACTION (FR-223)
+  WorkerHold hold = 5;                   // set via UpdateWorker{set_run, run}
+  bool halted = 6;                       // run halted at a not-accepted step (surfacing, FR-213)
+  int32 step_index = 7;                  // last step typed for this run, recorded by the guard (no double send, R3)
+  google.protobuf.Timestamp step_sent_at = 8;  // when that step was typed (daemon clock)
+}
+
+message WorkerView {
+  // … fields 1..11 unchanged …
+  WorkerHold hold = 12;                  // the worker's controller.run.hold (Workers view, FR-213)
+  bool halted = 13;                      // controller.run.halted
+}
+
+enum NotificationKind {
+  // … 0..8 unchanged …
+  NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED = 9;   // orchestrator: a step halted (FR-206c)
+}
+
+// ---- New RPCs --------------------------------------------------------------
+
+service Switchboard {
+  // Worker side (owning daemon). Types one step and runs its submit check (contracts/worker-step.md).
+  rpc DeliverWorkerStep(DeliverWorkerStepRequest) returns (DeliverWorkerStepResponse);
+  // Orchestrator side. Retry, skip or fail a halted step (FR-222).
+  rpc ResolveRunStep(ResolveRunStepRequest) returns (Run);
+}
+
+message DeliverWorkerStepRequest {
+  string sandbox_id = 1;
+  string orchestrator_id = 2;
+  string run_id = 3;
+  string action = 4;
+  RunStep step = 5;
+  bool first = 6;                        // the run is not started: record controller.run if none (idempotent for the same run_id)
+  bool check_only = 7;                   // restart resolution (research R8): read back without typing
+  int32 step_index = 8;                  // refused if controller.run.step_index already equals it (never typed twice)
+  bool retry = 9;                        // ResolveRunStep RETRY: a repeated step_index is allowed only while controller.run.halted
+                                         // (or, for CLEAR, while hold == NEEDS_DEVELOPER)
+}
+
+message UpdateWorkerRequest {
+  // … fields 1..7 unchanged …
+  bool same_run_only = 8;                // with set_run: apply only if controller.run.id == run.id; never recreate a
+                                         // cleared run (FAILED_PRECONDITION "run moved"). Every hold, halt and review
+                                         // write from the orchestrator sets it (research R7).
+}
+
+enum StepOutcome {
+  STEP_OUTCOME_UNSPECIFIED = 0;
+  STEP_OUTCOME_MODEL_TURN = 1;
+  STEP_OUTCOME_MODEL_TURN_INPUT_ONLY = 2;
+  STEP_OUTCOME_AGENT_LOCAL = 3;          // accepted and finished (read-back passed for built-ins)
+  STEP_OUTCOME_NOT_ACCEPTED = 4;
+}
+
+message DeliverWorkerStepResponse {
+  StepOutcome outcome = 1;
+  string note = 2;                       // NOT_ACCEPTED: reason as shown (e.g. "Model 'bogus' not found")
+  google.protobuf.Timestamp sent_at = 3; // when the step was typed (zero for check_only)
+  google.protobuf.Timestamp submit_at = 4;  // UserPromptSubmit seen by the check (MODEL_TURN), daemon clock
+}
+
+enum StepResolution {
+  STEP_RESOLUTION_UNSPECIFIED = 0;
+  STEP_RESOLUTION_RETRY = 1;
+  STEP_RESOLUTION_SKIP = 2;              // refused for CLEAR
+  STEP_RESOLUTION_FAIL = 3;
+}
+
+message ResolveRunStepRequest {
+  string orchestrator_id = 1;
+  string run_id = 2;
+  int32 step = 3;                        // must equal the run's halted step (stale UI guard)
+  StepResolution resolution = 4;
+}
+```
+
+## Errors
+
+**`DeliverWorkerStep`**
+
+| Condition | Code / result |
+|---|---|
+| Sandbox not RUNNING; controller missing or another orchestrator's; agent not IDLE or not ready; input box not empty and ready; (`first`) another run already recorded; (not `first`) `controller.run.id ≠ run_id` | `FAILED_PRECONDITION` with the reason. Nothing is typed, and the orchestrator retries (research R6); a refusal lasting over `stepWaitNote` shows on the row. |
+| `controller.run.step_index == req.step_index` (already typed) | `ALREADY_EXISTS` with `step_sent_at`. Nothing is typed; the orchestrator treats the step as SENT and resolves it per research R8. |
+| Unknown sandbox | `NOT_FOUND` |
+| An older daemon | `UNIMPLEMENTED`. The orchestrator fails the first step's delivery with "worker daemon does not support pre/post prompts; update it" (research R6). |
+
+**`ResolveRunStep`**
+
+| Condition | Code |
+|---|---|
+| Run not found | `NOT_FOUND` |
+| Run not halted (except RETRY of a CLEAR step under a NEEDS_DEVELOPER hold), or `step` ≠ its halted step | `FAILED_PRECONDITION` ("the run moved on; reload") |
+| SKIP on a CLEAR step | `FAILED_PRECONDITION` ("Clear cannot be skipped") |

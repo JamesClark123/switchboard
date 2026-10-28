@@ -147,7 +147,27 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
+Active feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17). Every
+action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`), **Effort** (`/effort
+low|medium|high|xhigh|max|auto`; **ultracode dropped** — it is a sticky session toggle, research R1) and **Clear**
+(`/clear`), on by default incl. existing actions (absent `Action.sequence` = defaults), plus custom pre/post prompts
+(≤10 each, `{name}` placeholders, none in the first word, none in `!` steps). Steps go **one at a time, each only once
+the previous finished by evidence after its submit**. Planning gate run on Claude Code 2.1.312 (R1): `/model`/`/effort`
+raise no hook — read back from the screen's `⎿` confirmation line; `/clear` raises `SessionStart source=clear`.
+`termview` moves to **`src/libs/switchboard-termview`**; the daemon's PTY reader feeds a per-sandbox screen read by
+`agent/claudeui.go` (input box empty/ready, step text still in box, pickers, confirmation lines; fixtures in
+`agent/testdata/claudeui/`). New worker RPC **`DeliverWorkerStep`** types one step and runs the submit check locally
+(hook `Tap` + screen) → MODEL_TURN | MODEL_TURN_INPUT_ONLY | AGENT_LOCAL | NOT_ACCEPTED; runs without steps keep
+`DeliverWorkerPrompt`. Orchestrator `sequence.go` owns `Run.steps/step/step_status/…` (persisted), closes runs exactly
+as before, and holds the sandbox during cleanup via `controller.run.hold` (CLEANING_UP | NEEDS_INPUT_FREEING |
+NEEDS_DEVELOPER — the last ends only on a recorded `startup`/`clear` session start after it began). `AgentSession`
+records `last_submit_at`, `last_turn_end_at`, `last_session_start_at/source` (restart resolution, FR-217). New
+`ResolveRunStep` (`R` retry · `S` skip · `X` fail), `RUN_STEP_NOT_ACCEPTED`, TASK_COMPLETE suppressed for
+setup/cleanup turns (`WorkerRun.step_role`). Depends on SWI-15 (PR #17) for `SessionStart`. See `research.md` (R1–R12),
+`data-model.md`, `contracts/`, `quickstart.md`.
+
+
+Prior feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
 replace the action worker tag**: a lane is a named worker group per orchestrator (`pb.Lane{id "ln-…", name, description}`
 on `Orchestrator.lanes`, ≤32, action-name rule, `open` reserved); `prompt` actions are **exclusive**/**inclusive** to
 lanes (`Action.lane_ids`/`lane_mode`) or un-laned (open-lane workers only = non-reasoning, no lanes, not *lanes pending*).
