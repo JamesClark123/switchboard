@@ -29,19 +29,22 @@ Paths are relative to the repository root. `O/` = `src/services/switchboardd/int
   - the new messages (`Lane`, `LaneMode`, `AttachTicket`, `HighWaterMark`, `DroppedWorkerTag`, `KeptLaneSetting`,
     `WorkerLaneDisplay`, `LaneGuardConfirm`, `LaneChangeImpact`, `LaneActionUse`, `EventsDropped`);
   - the extended messages with the exact field numbers listed there;
-  - `Action.worker_tag` marked `[deprecated = true]` with the comment from the contract;
+  - `Action.worker_tag` left unmarked for now: `[deprecated = true]` is added in T052, once the last reader is
+    gone, so `make lint` (SA1019) passes at every task in between;
   - the six RPCs and their request/response messages, appended after `OrchestratorLink`.
 
   Run `make proto` and commit the regenerated `src/libs/switchboard-proto/gen/`. Check that no number collides with
-  SWI-17's (`Action` 9, `Run` 20–30, `WorkerView` 12–14, `WorkerRun` 4–10, `UpdateWorkerRequest` 8); if SWI-17 has
-  merged, rebase onto it first.
+  SWI-17's (`Action` 9, `Run` 20–30, `WorkerView` 12–14, `WorkerRun` 4–10, `UpdateWorkerRequest` 8,
+  `NotificationKind` 9–10, `AgentSession` 5–11, `AgentInput.AttachInfo` 4); if SWI-17 has merged, rebase onto it
+  first.
 - [ ] T002 [P] Add constants to `O/constants.go`: `maxLanes = 32`, `maxLaneDescription = 200`,
   `attachTicketTTL = 24 * time.Hour`, `removedMarkTTL = 24 * time.Hour`, `laneIDPrefix = "ln-"`,
   `waitingNamesMax = 5`, and the capability name `CapabilityLanes = "lanes"` (exported for the grpc server).
-- [ ] T003 [P] Advertise the capability: `G/server.go` sets `DaemonInfo.Capabilities = []string{"lanes"}`;
+- [ ] T003 [P] Advertise the capability: `G/server.go` sets
+  `DaemonInfo.Capabilities = []string{orchestrator.CapabilityLanes}` (T002);
   `src/libs/switchboard-dial/conn.go` adds `HasCapability(name string) bool`; the UI `Daemon` interface in
   `UI/app.go` and `fakeDaemon` (`UI/launch_test.go`) expose it. The fake defaults to having `lanes`, with a field to
-  remove it. Test in `src/libs/switchboard-dial/conn_test.go`.
+  remove it. Test in `src/libs/switchboard-dial/conn_test.go` (new file).
 
 ---
 
@@ -59,10 +62,11 @@ depends on this phase.
   - keep the last slot of each subscriber channel in reserve;
   - on overflow, drop the event, set the subscriber's `overflowed` flag, and enqueue one `Event{EventsDropped}`
     into the reserved slot;
-  - while flagged, drop further events; clear the flag once the marker has been read.
+  - while flagged, drop further events; clear the flag at the next fan-out that finds the channel empty
+    (`len(ch) == 0`), which is observable on a buffered channel.
 
-  Tests in `agent/hub_test.go`: a stalled subscriber gets exactly one marker; other subscribers are unaffected;
-  `Publish` never blocks.
+  Tests in `agent/hub_test.go` (new file): a stalled subscriber gets exactly one marker; other subscribers are
+  unaffected; `Publish` never blocks; after draining, the next overflow gets a new marker.
 
 ### Registry: record + runs in one transaction
 
@@ -78,19 +82,31 @@ depends on this phase.
 - [ ] T007 In `O/runtime.go`:
   - add `recMu`, held by `rt.update` across the bolt transaction **and** the `rt.rec` cache store;
   - add `rt.updateRuns(fn)`, which wraps `UpdateOrchestratorRuns` the same way;
-  - add `rt.detaching map[string]struct{}` under `rt.mu`, with `markDetaching`/`clearDetaching`/`isDetaching`;
-  - change `rt.sbs` writes to keep the newer record by `revision` (revision 0 always replaces, research R16).
+  - add `rt.recGen uint64`, bumped by every `rt.update`/`rt.updateRuns` commit together with the `rt.rec` store and
+    read under `rt.mu` (research R8);
+  - add `rt.detaching` and `rt.delivering` (`map[string]struct{}`) under `rt.mu`. `markDetaching` refuses a worker
+    in `rt.delivering` (`FailedPrecondition` "<worker> is receiving a run — try again in a moment");
+    `clearDetaching`, `isDetaching`, and `claimDelivery`/`endDelivery` for the pass;
+  - change `rt.sbs` writes to keep the newer record by `revision` (a revision-0 record replaces, research R16; a
+    removal evicts, T011);
+  - document the lock order `runs.mu → recMu → bolt → rt.mu` on `rt.update`/`rt.updateRuns`: callbacks touch only
+    the record, `RunTx` and in-memory state under `rt.mu`; they never take `runs.mu`, call `failRun`/`putRun`/
+    `rt.svc.reg.*`, notify or emit. Those run after the commit, from the callback's result (research R7).
 
-  Delete `reconcileMu`. Callers move to `applyRecords` in T010–T012.
+  `reconcileMu` stays until T012; its users move to `applyRecords` in T010–T012.
 - [ ] T008 Create `O/roster.go` with `applyRecords(rec *pb.Orchestrator, in rosterInput, now time.Time)
   rosterResult`, exactly per [contracts/dispatch.md](./contracts/dispatch.md) "Roster freshness". It is the only
-  code that applies sandbox records to `rec.workers`, `rec.reasoning_sandbox_id` and `rec.high_water_marks`:
+  code that applies sandbox records to `rec.workers`, `rec.reasoning_sandbox_id` and `rec.high_water_marks`.
+  `rosterInput.cache` is a snapshot of `rt.sbs` for the input's ids, taken under `rt.mu` inside the `rt.update`
+  callback, so the function reads no shared state. It covers:
   - the roster clock (`roster_seq`, `written_seq`);
   - freshness: `revision > entry.revision` (or `> mark.revision`) **and** `≥` the cached record's revision. For
     `attachReply`/`detachReply`/`launchReply`, the newer of the reply and the cached record is applied under the
     normal rules, keeping the reply's permissions (reasoning adoption, attach ticket);
-  - a removal or DESTROYING record for a non-roster sandbox marks it *removed* only if it already has a mark or is
-    cached as naming this orchestrator; otherwise it is ignored;
+  - removal first: a `removed` event or a DESTROYING record (any revision; today's daemon emits a bare
+    `{id, DESTROYING}`) is classified before the freshness check, takes its `host_id` from the entry or the cached
+    record, and asks the caller to evict the cache entry rather than replace it. For a non-roster sandbox it marks
+    it *removed* only if it already has a mark or is cached as naming this orchestrator; otherwise it is ignored;
   - `rosterResult.changed == false` for status-only records, so the caller refreshes `rt.sbs` without taking
     `recMu` or writing bolt;
   - high-water marks with `host_id`: set, cleared by adoption, `removed` terminal, pruned only by a listing of their
@@ -100,9 +116,11 @@ depends on this phase.
   - reasoning: adopt only from `launchReply`, or from a listing while `reasoning_sandbox_id` is empty;
     `destroyReasoning` drops with a *removed* mark;
   - DESTROYING and removal as terminal;
-  - revision-0 records treated as fresh with no mark;
+  - revision-0 records: they refresh the cache and leave no mark; a revision-0 **event** never adopts or drops
+    (research R16);
   - adoption rules for attach tickets (no ticket → open; valid → its current lanes, ticket deleted; else
-    `lanes_pending`);
+    `lanes_pending`), and the fail-closed rule for a revision-0 record with no ticket id (sandbox-bound ticket → its
+    lanes; host-bound launch ticket → `lanes_pending`; neither → open; research R11);
   - reasoning entries keep `reasoning=true` and no lanes.
 
   `rosterResult` lists adopted, dropped and lane-changed sandbox ids. Also sweep expired tickets
@@ -121,10 +139,17 @@ depends on this phase.
   - attach then an immediate direct detach (cached record names no controller, newer than the attach reply): not
     adopted; a detach reply older than a cached re-attach does not drop the worker;
   - a removal event for an unrelated sandbox writes nothing;
+  - a bare revision-0 DESTROYING record for a roster worker drops it with a *removed* mark carrying the entry's host,
+    evicts the cache, and a replayed older event then cannot re-adopt it;
+  - on a revision-0 host: an event never adopts or drops; a detach reply then a buffered pre-detach event leaves the
+    worker detached; a listing still adopts; a record with no ticket id but an outstanding ticket gets the ticket's
+    lanes (sandbox-bound) or `lanes_pending` (host-bound launch ticket);
+  - `TestRosterFreshness` generates revision-0 hosts and bare DESTROYING records, and models `input.cache`;
   - reasoning: a late event from a destroyed reasoning sandbox does not re-adopt it during a rebuild, and a listing
     requested before a reasoning launch commit does not drop the new entry.
 - [ ] T010 Rewrite reconcile in `O/workers.go` and `O/links.go` (research R5):
-  - `hostLink.serve` subscribes first, then reconciles, then opens the link;
+  - `hostLink.serve` subscribes first and starts the event reader at once, then reconciles (off the reader
+    goroutine), then opens the link;
   - reconcile reads `roster_seq` (`requestedSeq`), lists with no lock, then
     `rt.update(applyRecords(listing))`;
   - it fails runs on dropped workers (`failRunsOn(…, "worker detached")`) and keeps the reasoning-loss handling,
@@ -132,21 +157,25 @@ depends on this phase.
   - it requests a briefing refresh (T013).
 
   An `events_dropped` event on the link's subscription re-runs reconcile for that host, coalesced with any pending
-  one. Update `O/links_test.go` and `O/workers_test.go`: an event arriving during the listing is not lost, and no
-  lock is held across `ListSandboxes` (a blocking fake API with a concurrent `rt.update` succeeding).
+  one; that reconcile lists and applies only, and pushes no worker state. Update `O/links_test.go` and
+  `O/workers_test.go`: an event arriving during the listing is not lost; no lock is held across `ListSandboxes` (a
+  blocking fake API with a concurrent `rt.update` succeeding); a host with 100 workers reconciles once and produces
+  at most one marker.
 - [ ] T011 Route `sandbox_changed` and `removed` events through `applyRecords` in `O/runs.go`
   (`onSandboxChanged`/`onSandboxRemoved`):
   - events now adopt and drop (F6);
   - a launched worker naming this orchestrator is adopted from its first event;
   - status folding (`foldStatus`) stays lock-free and never waits on `recMu`;
+  - a removal or DESTROYING record evicts the `rt.sbs` entry after the rules have read it (FR-308c);
   - `triggerDispatch` runs after any roster change.
 
   Tests in `O/runs_test.go`: adoption from an event, drop when the controller changes, a stale event ignored,
-  removal terminal.
+  removal terminal and the cache entry gone.
 - [ ] T012 Send the reasoning sandbox's roster writes through `applyRecords` in `O/reasoning.go`:
   - the launch commit (`:108-120`) applies `launchReply` (the newer of the reply and the cached record, per T008);
-  - `destroyReasoning` (`:139-150`) applies `destroyReasoning`;
-  - `dropWorker` (`O/workers.go:247`) is replaced by `applyRecords` inputs at its call sites.
+  - `destroyReasoning` (`:136-147`) applies `destroyReasoning`;
+  - `dropWorker` (`O/workers.go:247`) is replaced by `applyRecords` inputs at its call sites;
+  - delete `reconcileMu` (`O/reasoning.go:108`, `O/workers.go:17,189,239`), now that T010–T012 have moved its users.
 
   Update `O/reasoning_test.go`: rebuild while events for the old sandbox arrive late; reconcile overlapping a launch;
   a newer status event for the new reasoning sandbox processed before the launch commit (the commit still adopts it).
@@ -161,11 +190,14 @@ depends on this phase.
   - in `O/runtime.go`, a `lanePusher` (dirty set + drain goroutine per host, no lock across calls) sends
     `UpdateWorker{lanes: WorkerLaneDisplay{names, pending}}`;
   - `O/stubs.go` `pushBriefingsTo` becomes `pushWorkerStateTo` and sends name + briefing + lanes on reconnect;
-  - `W/controller.go` `Update` applies `req.Lanes` to `controller.lane_names`/`lanes_pending`, dropping and logging
-    names that break the lane rule while applying the rest (FR-309b), and emits.
+  - both push through the worker's `pushMu` and read its lanes from `rt.rec` while holding it, so the last push
+    carries the latest value; a push that fails while the link is up puts the worker back in the dirty set;
+  - `W/controller.go` `Update` applies `req.Lanes` to `controller.lane_names`/`lanes_pending`, sets `lanes_known`,
+    drops and logs names that break the lane rule while applying the rest (FR-309b), and emits.
 
-  Tests in `W/controller_test.go` (invalid name dropped, name still applied) and `O/links_test.go` (reconnect push
-  carries lanes; only marked workers are pushed; a save never waits on a push).
+  Tests in `W/controller_test.go` (invalid name dropped, name still applied, `lanes_known` set) and
+  `O/links_test.go` (reconnect push carries lanes; only marked workers are pushed; a save never waits on a push; a
+  failing fake push is retried; a pusher push and a reconnect push racing leave the latest lanes on the host).
 
 ### Lanes, effective settings, guard
 
@@ -175,7 +207,7 @@ depends on this phase.
   - `laneByID`, `laneNames(rec, ids)`;
   - `isOpenLane(w)`;
   - `effectiveLanes(rec, run) (ids []string, mode pb.LaneMode, ok bool)`: kept copy → current action → missing
-    (data-model).
+    (data-model). A setting with no ids is returned as (`[]`, `UNSPECIFIED`), un-laned, whatever its stored mode.
 
   Tests in `O/lanes_test.go`.
 - [ ] T016 Add the guard and impact in `O/lanes.go` (research R10):
@@ -183,7 +215,8 @@ depends on this phase.
   - `unlanedWork(rec, queued)`: un-laned prompt actions, plus queued runs of deleted actions whose kept setting is
     un-laned. Every guarded write and `CheckLaneChange` evaluate it inside `rt.updateRuns` (or its read-only view),
     so the record and the queued runs come from one transaction (FR-308a);
-  - `guardFires(before, after, change)`;
+  - `guardFires(before, after, change)`, which also fires when the change saves an un-laned prompt action with no
+    open-lane worker, including a re-save of one that is already un-laned (FR-308a);
   - `laneImpact(rec, queued, change) *pb.LaneChangeImpact`;
   - `confirmCovers(confirm, impact) bool` (current list ⊆ confirmed list);
   - `refuseGuard(impact) error`: `FailedPrecondition` with `LaneChangeImpact` as a status detail.
@@ -193,7 +226,8 @@ depends on this phase.
 - [ ] T017 Wire `CheckLaneChange` in `G/orchestrator_rpcs.go` and a `Service.CheckLaneChange` in `O/service.go`. It
   dispatches on the `oneof` to the same pure "after" builder each write uses, and returns the impact without
   writing. Each write task (T018, T029, T030, T036, T040) adds its builder and its `CheckLaneChange` case with a test
-  in `G/orchestrator_rpcs_test.go`; this task adds the RPC skeleton, the dispatch and the `NotFound`/empty cases.
+  in `G/orchestrator_rpcs_test.go`; this task adds the RPC skeleton, the dispatch and the `NotFound`/empty cases. The top-level
+  `orchestrator_id` wins; the nested request's id is ignored (and must be empty or equal, else `InvalidArgument`).
 
 **Checkpoint**: revisions, freshness, atomic record+runs, lane records and the guard exist. Routing is unchanged.
 
@@ -204,8 +238,10 @@ depends on this phase.
 **Goal**: Exclusive actions run only on their lanes' workers; un-laned actions run only on open-lane workers; queued
 runs say why they wait.
 
-**Independent test**: daemon tests create a lane, put one worker in it, make one action exclusive, and call it and
-an un-laned action several times (US1 scenarios 1–6); quickstart Scenario 1.
+**Independent test**: daemon tests seed a lane and one member straight into the record (`seedLanes`, a test helper
+in `O/lanes_test_helpers_test.go` that writes through `rt.update`, so US1 needs no US3/US4 RPC), make one action
+exclusive, and call it and an un-laned action several times (US1 scenarios 1–6). Quickstart Scenario 1 needs US3
+and US4 too.
 
 - [ ] T018 [US1] Action lane fields in `O/actions.go`:
   - `validateAction` checks lane ids exist (`NotFound` "lane … no longer exists"), refuses `reason` with lanes,
@@ -230,8 +266,8 @@ an un-laned action several times (US1 scenarios 1–6); quickstart Scenario 1.
   either fails "unknown action" or yields a run with `kept_lanes`, over 200 iterations with `-race`; a new action
   with the deleted one's name does not change a kept run's routing.
 - [ ] T020 [US1] Create `O/lanes_dispatch.go`, the planner (research R8, contracts/dispatch.md):
-  - `buildIndex(rec, sbs, ups, detaching)`: free workers, `byLane` lists sorted by (lane count, roster order),
-    `open` list, masks;
+  - `buildIndex(rec, sbs, ups, detaching)`: free workers, `byLane` lists ordered by (lane count, roster order)
+    by bucketing on lane count (0–32) in roster order, with no comparison sort; `open` list; masks;
   - `reserve(index, runs)` for exclusive runs;
   - a `candidates(run)` iterator for **exclusive** (own reservation → unreserved lane worker → later run's
     reservation, stealing it) and **un-laned** (open-lane);
@@ -240,14 +276,18 @@ an un-laned action several times (US1 scenarios 1–6); quickstart Scenario 1.
 
   Inclusive is added in T025.
 - [ ] T021 [US1] Rewrite the pass in `O/dispatch.go` on the planner:
-  - the snapshot of the record and queued runs comes from one `ViewOrchestratorRuns` (no separate `ListRuns` +
-    `rt.record()`);
+  - read `gen0 := rt.recGen` under `rt.mu`, then take the snapshot of the record and queued runs from one
+    `ViewOrchestratorRuns` (no separate `ListRuns` + `rt.record()`);
   - `free` excludes reasoning, `lanes_pending` and detaching workers;
   - `eligible` and the worker-tag lookup are deleted;
-  - a run with a *missing* effective setting is re-read inside `rt.updateRuns` and failed "its action was deleted"
-    only if it is still missing there (a delete that committed after the snapshot gave it `kept_lanes`);
-  - per candidate: re-check (as today) → `deliver`;
-  - a precondition refusal or failed re-check → `out` + release, next candidate;
+  - a run with a *missing* effective setting is re-read inside `rt.updateRuns`, which returns whether it is still
+    missing; the pass then fails it through `failRun` **after** the commit (never inside the callback, T007);
+  - per candidate: `recheckAndClaim(w, r, gen0)` under `rt.mu` (research R8: sandbox still free; when
+    `rt.recGen != gen0`, w still on the roster, not reasoning, *lanes pending* or detaching, and its current lane
+    mask allowed by r's current effective setting; on success w joins `rt.delivering`) → `deliver` with no lock →
+    `endDelivery(w)`;
+  - a precondition refusal or a failed sandbox/roster re-check → `out` + release, next candidate;
+  - a failed lane re-check → skip w for this run only, next candidate;
   - any other error → fail as today + `out`;
   - accepted → claim and release the run's other reservation;
   - `reason` runs keep today's path.
@@ -260,19 +300,34 @@ an un-laned action several times (US1 scenarios 1–6); quickstart Scenario 1.
   - `TestDispatchProperties` (contracts/dispatch.md), 100 seeds × 100 runs with random refusals, asserting
     guarantees 1–3 for exclusive and un-laned runs;
   - an instrumented cost check (guarantee 4).
+- [ ] T022a [US1] Race tests in `O/dispatch_test.go`, run with `-race` (contracts/dispatch.md guarantee 5):
+  - `TestDispatchLaneRace`: a fake `deliver` that blocks on a channel holds a pass mid-pass while the test, through
+    `seedLanes`/`rt.update`, removes the next candidate from the run's lane, switches the action from inclusive to
+    exclusive, deletes the lane, or marks the worker *lanes pending*; the run is not delivered to it, and is
+    delivered to a worker that is still allowed;
+  - a seeded variant applies random lane writes between and during deliveries over 100 seeds, and asserts that
+    every delivery was allowed by the record committed at its claim;
+  - `markDetaching` while a delivery to that worker is blocked is refused; a claim for a detaching worker is refused;
+  - `DeleteAction` while a pass fails a missing run: no deadlock, and the run ends either failed or with
+    `kept_lanes` (T007 lock order).
 - [ ] T023 [US1] Waiting reasons in `O/runs.go` (research R9):
   - `laneCounts` is built once per `ListRuns`/`GetRun` from the record, `rt.sbs`, host reachability and
     `rt.detaching`;
-  - `waitingReason(run, counts)` returns the three lane texts, the "stopped or unreachable" names (≤ 5 then
-    `+N more`) and the "; N workers awaiting lane assignment" suffix;
+  - `waitingReason(run, counts, forAgent)` returns the lane texts for all three modes (exclusive, inclusive,
+    un-laned), the "stopped or unreachable" names (≤ 5 then `+N more`) and the "; N workers awaiting lane
+    assignment" suffix. With `forAgent` it names no workers: `waiting: every worker that could take it is stopped
+    or unreachable`;
+  - *detaching* workers count as live, and as available while RUNNING with their host up (spec Clarifications);
   - set it on QUEUED prompt runs only;
   - `putRun` clears `waiting_reason` before writing.
 
-  The `orchestrator_check_run` tool result in `O/tools.go` includes `waiting_reason`. Tests in `O/waiting_test.go`
-  cover each row, the pending suffix, and a reason that disappears once a worker joins a lane (US1 scenario 6).
-- [ ] T024 [US1] FR-314a triggers: every lane write, membership save, action save or delete, ticket consumption,
-  adoption and drop calls `triggerDispatch`. Test in `O/dispatch_test.go`: a queued exclusive run is delivered after
-  a worker joins its lane with no other event (SC-007).
+  The `orchestrator_check_run` tool result in `O/tools.go` includes the `forAgent` reason. Tests in
+  `O/waiting_test.go` cover each row, the pending suffix, a detaching-only lane, the agent text having no worker
+  names, and a reason that disappears once a worker joins a lane (US1 scenario 6, through `seedLanes`).
+- [ ] T024 [US1] FR-314a triggers that exist by this phase: action save or delete, adoption, drop and ticket
+  consumption call `triggerDispatch`. Test in `O/dispatch_test.go`: a queued un-laned run is delivered after an
+  action save makes it laned to a seeded lane with a free member, with no other event. The lane-write triggers and
+  their SC-007 tests are in the tasks that add those writes (T028, T029, T030, T036).
 
 **Checkpoint**: exclusive and un-laned routing, waiting reasons and kept settings work end to end in daemon tests.
 
@@ -292,8 +347,8 @@ an un-laned action several times (US1 scenarios 1–6); quickstart Scenario 1.
     delivered);
   - an inclusive run takes a reserved lane worker only when no other worker it could take is free;
   - extend `TestDispatchProperties` to mix inclusive runs (SC-002).
-- [ ] T027 [US2] Inclusive waiting reasons in `O/runs.go` (`waiting for a worker in a or an open-lane worker`), with
-  tests in `O/waiting_test.go`.
+- [ ] T027 [US2] Tests in `O/waiting_test.go` for the inclusive waiting reasons T023 returns (`waiting for a worker
+  in a or an open-lane worker`, and its stopped-or-unreachable variant), with inclusive runs dispatched by T025.
 
 **Checkpoint**: all three routing modes and SC-001/SC-002 hold.
 
@@ -313,7 +368,8 @@ the Lanes and Workers views (quickstart Scenarios 1 and 6).
   - rename/describe: `NotFound` for an unknown id.
 
   After the write it emits, triggers dispatch, requests a briefing **only** on a rename of a lane an action uses
-  (T053), and marks every member for a display push (T014). Tests in `O/lanes_test.go`.
+  (T053), and marks every member for a display push (T014). Tests in `O/lanes_test.go`, including that the write
+  triggers a pass (FR-314a).
 - [ ] T029 [US3] Implement `SetLaneMembers`:
   - inside `rt.updateRuns`, compare `expected_sandbox_ids` with the lane's current members as a set; `Aborted` if
     they differ, the lane is gone, or a named worker left the roster (every FR-307a case is `Aborted`, so the picker
@@ -323,15 +379,18 @@ the Lanes and Workers views (quickstart Scenarios 1 and 6).
   - evaluate the guard with `guard`.
 
   Mark changed workers for display, then dispatch. Tests: stale refusal only when *this lane's* members changed
-  (FR-307a); guard refusal and confirm.
+  (FR-307a); guard refusal and confirm; a queued exclusive run is delivered after a worker joins its lane with no
+  other event (SC-007).
 - [ ] T030 [US3] Implement `DeleteLane` in `rt.updateRuns`:
   - compute the impact (T016), refuse via the guard unless confirmed;
-  - strip the lane from workers, actions (mode → `UNSPECIFIED` when empty), queued runs' `kept_lanes` and tickets;
+  - strip the lane from workers, actions (mode → `UNSPECIFIED` when empty), queued runs' `kept_lanes` (mode →
+    `UNSPECIFIED` when empty) and tickets;
   - return the applied impact.
 
   Mark members for display, request a briefing if an action used it, then dispatch. Tests: the FR-305 impact
   counts (workers, actions with mode, actions left un-laned, re-routed runs incl. kept copies); an unused lane; the
-  guard.
+  guard; delete an exclusive action with a queued run, then delete its only lane: the run is delivered to an
+  open-lane worker.
 - [ ] T031 [P] [US3] Add client wrappers in `C/orchestrator.go`:
   - `PutLane`, `DeleteLane`, `SetLaneMembers`, `SetWorkerLanes`, `CheckLaneChange`, `DismissDroppedWorkerTags`;
   - `ImpactFromError(err) (*pb.LaneChangeImpact, bool)`, which reads the status detail;
@@ -344,20 +403,30 @@ the Lanes and Workers views (quickstart Scenarios 1 and 6).
 - [ ] T032 [US3] Add `viewLanes` in `UI/orchestrator_views.go`:
   - add it before `orchViewCount`, append "Lanes" to `orchViewNames`, and update the file comment;
   - add cases to `viewRowCount`, `orchDetailHelp`, the key dispatch and `renderOrchView`;
-  - hide the view when the orchestrator's daemon lacks the `lanes` capability.
+  - hide the view when the orchestrator's daemon lacks the `lanes` capability; `enterOrchDetail` (which carries
+    `view` over, `UI/orchestrator_views.go:64`) and a capability change reset a hidden Lanes view to Workers.
 
-  Fix the view-cycling tests that assume three views (`UI/orchestrator_views_test.go:13,123`).
+  Fix the view-cycling tests that assume three views (`UI/orchestrator_views_test.go:13,123`), and add one: Lanes
+  selected on an updated daemon, then an orchestrator on an older one opens on Workers.
 - [ ] T033 [US3] Create `UI/orchestrator_lanes.go` with a self-contained `lanesPanel` per
-  [contracts/lanes-ui.md](./contracts/lanes-ui.md). It carries its own `orchTarget`, `*pb.OrchestratorDetail`, cursor,
-  lane form and confirm state, plus `update(msg) (lanesPanel, tea.Cmd)` and `view(width, height) string`, so the
-  orchestrator detail (Lanes view) and the Jobs screen (Manage lanes, T047) can both host it:
+  [contracts/lanes-ui.md](./contracts/lanes-ui.md). It carries its own `orchTarget`, cursor, lane form and confirm
+  state, and reads the detail through a getter (`detail func() *pb.OrchestratorDetail`) on its host, so the host's
+  reloads (`syncOrchestratorChanged`, `r`, the Jobs reload) reach it with no copy to refresh. It exposes
+  `update(msg) (lanesPanel, tea.Cmd, handled bool)` and `view(width, height) string`, so the orchestrator detail
+  (Lanes view) and the Jobs screen (Manage lanes, T047) can both host it; unhandled keys (`←`/`→`, `tab`, `q`, the
+  host's shortcuts) go to the host:
   - rows: name, description, members, actions with mode, sanitised;
   - the empty state;
-  - keys `a`/`e` (the panel's own lane form with `laneFormVals` → `PutLane`), `w` (member picker, T034), `d` (delete via `CheckLaneChange` → impact confirm → `DeleteLane` with
-    the guard list; a guard refusal reopens the confirm with the new list), `r`.
+  - keys `a`/`e` (the panel's own lane form with `laneFormVals` → `PutLane`), `w` (member picker, T034), `d`
+    (delete via `CheckLaneChange` → impact confirm → `DeleteLane` with the guard list; a guard refusal reopens the
+    confirm with the new list), `r`;
+  - every confirm body and warning built from daemon data (worker, action and lane names) goes through
+    `sanitizeLine`, and each list is capped at 5 names, then `, and N more` (`confirmModal` sanitises only the
+    title, `UI/confirm.go:79-82`).
 - [ ] T034 [US3] Create `UI/lane_picker.go`, the shared `lanePicker` overlay:
   - modes `pickWorkerLanes`, `pickLaneMembers`, `pickAttach`, `pickLaunch`;
   - space toggles, enter saves, esc closes, j/k/up/down move;
+  - rows (`name` or `name @ host`) through `sanitizeLine` and `fitCol`; the list scrolls;
   - remembers the opening value;
   - save path: `CheckLaneChange` → guard confirm when the impact is non-empty → save with the guard list → second
     confirm on a new refusal list → `ErrLaneStale` reloads from a fresh `GetOrchestrator`, keeps the cursor by id
@@ -372,7 +441,10 @@ the Lanes and Workers views (quickstart Scenarios 1 and 6).
   - delete with impact text (workers, actions with mode, left un-laned, N runs re-routed) and a plain confirm for an
     unused lane;
   - the guard confirm then a second confirm;
-  - the view is absent without the capability.
+  - the view is absent without the capability;
+  - a worker name with ANSI escapes is neutralised in the delete confirm and in picker rows, and a long impact list
+    ends `, and N more`;
+  - after `l` on the Workers view changes a worker's lanes, the Lanes view shows the new members with no `r`.
 
   Extend `fakeDaemon` (`UI/orchestrator_fake_test.go`) with the six RPCs, recorded in `orchCalls`.
 
@@ -400,70 +472,96 @@ clear them and see `open lane` (quickstart Scenarios 1, 3, 4).
   Mark the worker for display, then dispatch. Tests: FR-307a refuses only on this worker's change; the lanes-pending
   flag clears; reasoning refused; guard.
 - [ ] T037 [US4] Fill `WorkerView.lane_ids`, `lanes_pending` and `detaching` in `workerViews` (`O/workers.go`).
-  Summaries in `O/service.go` clear `high_water_marks` before returning. Test in `O/workers_test.go`.
+  Every RPC in `O/service.go` that returns an `Orchestrator` (summaries, `GetOrchestrator`, `Dismiss…`, the
+  detail) clears `high_water_marks` and `attach_tickets` before returning. Tests in `O/workers_test.go` and
+  `O/service_test.go`.
 - [ ] T038 [US4] Attach with lanes (research R11, L4) in `O/workers.go`:
-  - with `lane_ids`, write an `AttachTicket` bound to the host and sandbox;
+  - refuse `lane_ids` for a sandbox already on the roster (`FailedPrecondition` "already a worker of
+    <orchestrator> — change its lanes with l") and any id that no longer exists (`NotFound` "lane "<id>" no longer
+    exists"; never stripped silently);
+  - with `lane_ids`, write an `AttachTicket` bound to the host and sandbox (at most 256 unexpired tickets per
+    orchestrator: `ResourceExhausted` "too many pending attaches — try again later");
   - call `AttachController` with `controller.attach_ticket`, holding no lock;
   - apply the reply through `applyRecords(attachReply)`;
   - delete the ticket on a definite refusal (`AlreadyControlled`, `FailedPrecondition`, `NotFound`); keep it on a
     timeout or a commit failure.
 
-  Pass `lane_ids` through `G/orchestrator_rpcs.go`. `W/controller.go` `Attach`/`Apply` record
-  `controller.attach_ticket` from the request. Tests: event-before-commit adopts with the lanes and the commit is a
-  no-op (L4.4); refusal deletes the ticket; timeout keeps it.
+  Pass `lane_ids` through `G/orchestrator_rpcs.go`. `W/controller.go` `AttachController` (which rebuilds the
+  controller field by field, `:146-149`) records `controller.attach_ticket` from the request and carries
+  `lane_names`, `lanes_pending` and `lanes_known` forward on a same-orchestrator re-attach. Tests: event-before-commit
+  adopts with the lanes and the commit is a no-op (L4.4); refusal deletes the ticket; timeout keeps it; unknown lane
+  → `NotFound` and no ticket; lanes on a roster sandbox refused; an idempotent re-attach keeps the displayed lanes.
 - [ ] T039 [US4] Launch with lanes (L3):
-  - `GetWorkerBundle` takes `host_id` + `lane_ids`; with lanes it writes a host-bound ticket and returns its id in
+  - `GetWorkerBundle` takes `host_id` (the target **daemon's** host id) + `lane_ids`; it refuses a `host_id` that
+    is neither the orchestrator's own host nor in `rec.hosts` (`InvalidArgument` "unknown host <id>") and an unknown
+    lane (`NotFound`) and applies the ticket cap, as T038; with lanes it writes a host-bound ticket and returns its id in
     `bundle.controller.attach_ticket` (`O/workers.go` `bundle()`);
   - adoption from the launch's `sandbox_changed` event consumes it (T011).
 
-  Tests: adopted with lanes; an expired ticket → `lanes_pending`; another host's ticket → `lanes_pending`.
+  Tests: adopted with lanes; an expired ticket → `lanes_pending` (with an injected clock, `rt.now`); another
+  host's ticket → `lanes_pending`; unknown host and unknown lane refused.
 - [ ] T040 [US4] Detach with the guard (L5) in `O/workers.go`:
-  - one `rt.updateRuns` evaluates the guard (`DetachWorkerRequest.guard`) and `markDetaching`;
+  - one `rt.updateRuns` evaluates the guard (`DetachWorkerRequest.guard`) and, in its callback under `rt.mu`,
+    `markDetaching`, which is refused while the worker is in `rt.delivering` (T007);
+  - any `rt.updateRuns` error, the commit included, clears the mark;
   - `DetachController` runs with no lock;
   - on success apply the reply through `applyRecords(detachReply)` (drop + mark), then `clearDetaching`;
   - on error `clearDetaching`.
 
-  Tests: a detaching worker is not free and not counted by a concurrent guard; a restart clears the mark; an older
-  event cannot re-adopt after the detach.
+  Tests: a detaching worker is not free and not counted by a concurrent guard; a failed commit leaves no mark; a
+  detach during a blocked delivery is refused; an older event cannot re-adopt after the detach (the replay that
+  quickstart Scenario 7.2 describes, driven by the test's fake event stream). FR-322 restart test: after a
+  restart, lanes, `lanes_pending`, tickets, marks, action settings and `kept_lanes` are back, and `detaching`,
+  `delivering` and waiting reasons are not.
 ### TUI
 
 - [ ] T041 [US4] Workers view in `UI/orchestrator_attach.go`:
   - `renderWorkersView` adds the lane cell (`lanes: a, b` | `open lane` | `⚠ lanes pending` | `detaching…`, names
     via `laneNames` + `sanitizeLine`; none for reasoning);
   - `l` opens `lanePicker{pickWorkerLanes}` (reasoning → status `reasoning sandbox — no lanes`; no lanes → `no lanes
-    yet — a to add one`, where `a` opens the lane form and reopens the picker);
+    yet — a to add one`, where `a` opens the lane form and reopens the picker); without the `lanes` capability `l`
+    shows the FR-318a message instead;
   - `x` detach, when the daemon has the `lanes` capability, runs `CheckLaneChange{detach_worker}` first and adds the
     guard line to the existing confirm, sending `DetachWorker` with the guard list (a refusal with a new list reopens
     the confirm). Without the capability it detaches as today;
   - help gains `l lanes`.
 - [ ] T042 [US4] Attach and launch lane steps:
+  - both steps are offered only when the orchestrator's daemon **and** the target host's daemon have the `lanes`
+    capability; otherwise the status reads `lanes need the daemon on <host> updated — attaching to the open lane`;
   - `attachTo`/`attachWorkerCmd` in `UI/orchestrator_attach.go` open `lanePicker{pickAttach}` after the
-    orchestrator is chosen when it has lanes, and pass `lane_ids` to `AttachWorker`;
+    orchestrator is chosen when it has lanes, and pass `lane_ids` to `AttachWorker`; a `NotFound` reopens the picker
+    reloaded;
   - `launch.go` opens `lanePicker{pickLaunch}` after the `O` picker when the orchestrator has lanes, shows
     `orchestrator: X (lanes: a, b)` in the title (sanitised, and sanitise the existing orchestrator name there too),
-    and calls `GetWorkerBundle` with the target host and lanes.
+    and calls `GetWorkerBundle` with `host_id = m.daemonHostID(targetHost)` (`UI/launch.go:378`) and the lanes;
+  - the bundle is fetched **before** the wizard closes (today it is fetched after, `UI/launch.go:793-801`), so a
+    refusal returns to the lane step with the message and the picker reloaded, keeping sources, kits and name;
+  - `H` after `O` clears the chosen orchestrator and lanes (`UI/launch.go:650-657`).
 - [ ] T043 [US4] Sandbox-list detach (`o` on a worker) in `confirmDetach` (`UI/orchestrator_attach.go:188-205`):
   - **connected branch** (`od.DetachWorker`): this is a detach through the orchestrator (FR-308a). With the `lanes`
     capability, run `CheckLaneChange{detach_worker}` first, fold its list into the confirm and send the guard list,
     exactly as T041's `x`; without it, detach as today;
   - **not-connected branch** (FR-308b): when the
   orchestrator's daemon is not connected, compute from the last-known `m.orch` detail and actions whether the detach
-  leaves no open-lane worker with un-laned actions, and add the warning line. With no last-known data, add `Cannot
-  check open-lane workers: <name>'s daemon is not connected`.
+  leaves no open-lane worker with un-laned actions, and add the warning line (action names sanitised, capped as in
+  T033). With no last-known data, add `Cannot check open-lane workers: <name>'s daemon is not connected`.
 - [ ] T044 [US4] Sandbox list in `UI/list_delegate.go`:
   - `thirdLine` appends `lanes: a, b` | `open lane` | `lanes pending` for non-reasoning workers from
-    `SandboxController.lane_names`/`lanes_pending`;
+    `SandboxController.lane_names`/`lanes_pending`, only when `lanes_known` is set;
   - each name, and the existing MCP and orchestrator names, go through `sanitizeLine`.
 
   `UI/sandbox_list.go`: an `events_dropped` event reloads that host's sandbox list. Tests in
-  `UI/list_delegate_test.go`: lanes shown; `renderFieldsDiffer` redraws on a lane change (SC-004); escape sequences
-  in a lane name are neutralised.
+  `UI/list_delegate_test.go`: lanes shown; nothing shown before `lanes_known`; `renderFieldsDiffer` redraws on a
+  lane change (SC-004); escape sequences in a lane name are neutralised.
 - [ ] T045 [US4] TUI tests in `UI/lane_picker_test.go` and `UI/orchestrator_attach_test.go`:
   - the worker picker saves, the stale reload works, and the guard confirm runs (US4 scenario 6);
   - no picker for reasoning (scenario 4);
   - the no-lanes offer (scenario 5);
   - the attach step sends `lane_ids` (scenario 8);
-  - launch sends `GetWorkerBundle` with host + lanes;
+  - launch sends `GetWorkerBundle` with the daemon host id + lanes, and a refusal keeps the wizard open;
+  - `H` after `O` clears the orchestrator and lanes;
+  - no `l` picker, attach step or launch step without the capability on the orchestrator's daemon, and no attach or
+    launch step without it on the target host's daemon;
   - `lanes pending` and `detaching` cells;
   - the direct-detach warning with and without last-known data.
 
@@ -483,7 +581,8 @@ Actions shows it (quickstart Scenario 5).
   - add `laneIDs []string` and `mode` to `actionFormVals`;
   - add a `huh.NewMultiSelect[string]` of lanes (by id, labelled with sanitised names), hidden for `reason`
     (`WithHideFunc`);
-  - add a mode `huh.NewSelect` (exclusive preselected), hidden for `reason` or no ticks;
+  - add a mode `huh.NewSelect` (exclusive preselected), hidden for `reason` or no ticks; the save sends
+    `UNSPECIFIED` when nothing is ticked, whatever the hidden field holds;
   - switching Kind to `reason` clears the ticks and sets the status `lanes cleared: reason actions have no lanes`;
   - save sends `PutAction` with `sets_lanes: true`, lane ids and mode. When the result is un-laned it runs
     `CheckLaneChange{put_action}` first and confirms the guard (only against a daemon with the `lanes` capability;
@@ -531,7 +630,8 @@ Actions shows it (quickstart Scenario 5).
 workers, and the notice shows until dismissed (quickstart Scenario 0).
 
 - [ ] T050 [US6] Load-time drop in `O/service.go` (runtime creation): for each action with a non-empty `worker_tag`,
-  clear it, append `DroppedWorkerTag{action, tag, now}`, log `orchestrator %s: dropped worker tag %q from action %q`,
+  clear it, append `DroppedWorkerTag{action, tag, now}` (the list keeps the newest 100), log
+  `orchestrator %s: dropped worker tag %q from action %q`,
   and rewrite the record once. The read of the deprecated getter carries
   `//nolint:staticcheck // SA1019: read only to drop the retired worker tag (FR-318b)`, and so do the tests that set it.
   Also sweep expired tickets and old removed marks. Tests in `O/service_test.go`: an
@@ -543,7 +643,9 @@ workers, and the notice shows until dismissed (quickstart Scenario 0).
   - `renderBriefing` in `O/briefing.go` writes the lane sentence per action and drops the worker-tag sentence;
   - `toolAction` in `O/tools.go` replaces `worker_tag` with `lanes` + `lane_mode` (omitempty);
   - `ActionInfo` in `W/endpoint.go` mirrors it;
-  - lane descriptions are never included.
+  - lane descriptions are never included;
+  - with the last reader gone, mark `Action.worker_tag` `[deprecated = true]` in `P` with the contract's comment,
+    run `make proto`, and check `make lint` passes (only T050's `//nolint` reads remain).
 
   Update `O/briefing_test.go:15,27`, `O/tools_test.go:101`, `W/endpoint_test.go:105`.
 - [ ] T053 [US6] Lane triggers for the briefer (T013): a lane rename or delete requests a briefing only when an
@@ -574,10 +676,12 @@ workers, and the notice shows until dismissed (quickstart Scenario 0).
   - `README.md` (replace the worker-tag text at `:399` with lanes, the Lanes view, keys `l`/`w`/`ctrl+l`/`D`, and
     waiting reasons);
   - `CLAUDE.md` (the SWI-18 paragraph is already in place from the plan; check that it matches what was built).
-- [ ] T059 FR-323 guard: if SWI-9's implementation is on `main`, register the lane form, `lanePicker` and the Manage
-  lanes dialog as `guardSurface`s (baselines when opened, exits through `requestExit`) with tests in
-  `UI/guard_surfaces_test.go`. If it is not, record in the PR that they follow the existing form conventions (spec
-  Assumptions).
+- [ ] T059 FR-323 guard: if SWI-9's implementation is on `main` (as of this plan it is not: `UI/formguard.go` is
+  absent), register the lane form, `lanePicker` and the launch wizard's lane step as `guardSurface`s (baselines when
+  opened, exits through `requestExit`) with tests in `UI/guard_surfaces_test.go`. Manage lanes saves as it goes, so
+  it has nothing to guard; when it drops the tick of a deleted lane, the action form re-baselines that field, so
+  `esc` does not raise the unsaved-changes dialog for it. If SWI-9 is not on `main`, record in the PR that they follow
+  the existing form conventions (spec Assumptions).
 - [ ] T060 Run `make fmt-check vet lint test cover env-check e2e`; keep ≥ 90% coverage per module. Then run
   quickstart Scenarios 0–7 on a two-host setup and record the results in the PR.
 
@@ -586,7 +690,8 @@ workers, and the notice shows until dismissed (quickstart Scenario 0).
 ## Dependencies & execution order
 
 - **Setup (T001–T003)** → **Foundational (T004–T017)** → stories.
-- **US1 (T018–T024)** needs Foundational. **US2 (T025–T027)** needs US1's planner (T020–T021).
+- **US1 (T018–T024, T022a)** needs Foundational; its tests seed lanes with `seedLanes`, not US3/US4 RPCs. **US2
+  (T025–T027)** needs US1's planner (T020–T021).
 - **US3 (T028–T035)** needs Foundational; its TUI tasks need T031 (client wrappers). The daemon half of US3 can run
   alongside US1/US2.
 - **US4 (T036–T045)**: the daemon tasks (T036–T040) need only Foundational; the TUI tasks (T041–T045) need US3's
@@ -600,13 +705,15 @@ Within Foundational:
 - T006 → T007;
 - T007 + T008 → T010, T011, T012;
 - T007 → T013, T014;
+- T013 → T010, T011, T012 (reconcile and adoption request briefings);
+- T010 + T011 → T012 (the `reconcileMu` deletion);
 - T015 → T016 → T017.
 
 ## Parallel opportunities
 
 - T002 and T003 in parallel after T001.
 - T004, T005 and T006 in parallel (registry, hub and registry-orchestrator are separate files).
-- T013 (briefer) and T014 (lane pusher) in parallel with T008–T012.
+- T013 (briefer) in parallel with T008–T009; T014 (lane pusher) in parallel with T008–T012.
 - In US1, T023 (waiting reasons) in parallel with T020–T022 (planner).
 - US3's daemon tasks (T028–T030) in parallel with US1/US2. T031 (client) in parallel with all daemon work.
 - In US4, the daemon tasks T036–T040 in parallel with US3's TUI tasks T032–T035.

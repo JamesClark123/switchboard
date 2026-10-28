@@ -17,26 +17,32 @@ action is **exclusive** or **inclusive** to one or more lanes, or un-laned (open
 2. **Roster freshness** (R3–R6). The owning daemon's registry stamps a `Sandbox.revision` on every write. One pure
    function, `applyRecords`, applies listings, events and attach/detach replies inside one atomic record update,
    using revisions, high-water marks and terminal removal. Reconcile no longer holds a lock across the network,
-   links subscribe before they list, and the event hub reports overflow with an `events_dropped` marker. Events can
-   now adopt and drop workers, so a launched worker joins within moments.
+   links subscribe and start reading before they list, and the event hub reports overflow with an `events_dropped`
+   marker. Events can now adopt and drop workers, so a launched worker joins within moments; removals are classified
+   by state first, and events from hosts that predate lanes (revision 0) never change the roster.
 3. **Dispatch** (R7, R8). A pure planner reserves lane workers for queued exclusive runs, then delivers in queue
    order through the candidate table: exclusive → own reservation, unreserved lane worker, later run's reservation;
-   inclusive → unreserved lane worker, open-lane worker, later run's reservation; un-laned → open-lane worker. A
-   seeded property test pins SC-001/SC-002. Call and action delete share one bolt transaction for the record and its
+   inclusive → unreserved lane worker, open-lane worker, later run's reservation; un-laned → open-lane worker. Before
+   each delivery the worker is re-checked and claimed under the runtime lock: when the record changed since the
+   pass's snapshot, its lanes are re-validated against the current record, so a mid-pass lane change can't send a
+   run where it is no longer allowed. Seeded property and race tests pin SC-001/SC-002. Call and action delete share one bolt transaction for the record and its
    runs, so a deleted action's lane setting is copied onto its queued runs atomically.
 4. **Guard and impact** (R10). One `CheckLaneChange` RPC reports what a membership save, action save, lane delete or
    detach would affect. Each guarded write carries the list the developer confirmed and is re-evaluated in its own
    atomic update.
 5. **Attach tickets** (R11). Lanes picked at launch or attach travel as a ticket id on the controller record. The
    first adoption or attach commit consumes the ticket; an expired or mismatched ticket adopts the worker as
-   *lanes pending*.
+   *lanes pending*. Hosts that predate lanes drop the ticket id, so adoption fails closed for them, and the TUI
+   doesn't offer the lane step there.
 6. **Display and agents** (R9, R12, R13). Waiting reasons are derived on every run read. Lane names are pushed to
-   each worker's host for display only, in the background and coalesced. Briefings and the list-actions tool
+   each worker's host for display only, in the background, coalesced and serialised per worker; the sandbox list
+   shows lane text only once a push has arrived (`lanes_known`). Agents get waiting reasons without worker names. Briefings and the list-actions tool
    describe lanes and mode, and are refreshed in the background.
 7. **TUI** (R15). Adds a Lanes view (fourth detail view), one shared lane picker (worker's lanes, lane members,
    attach, launch), lane cells on Workers and sandbox-list rows, lanes + mode in the action form with `ctrl+l`
    Manage lanes, a lanes column on Jobs › Actions, waiting reasons on queued rows, and the dropped-tag notice. Lane
-   UI is gated on a new `DaemonInfo.capabilities` entry, `lanes`.
+   UI is gated on a new `DaemonInfo.capabilities` entry, `lanes`, on the orchestrator's daemon (and, for attach and
+   launch, on the target host's).
 
 ## Technical Context
 
@@ -131,19 +137,20 @@ src/services/switchboardd/internal/
 │   ├── server.go            # DaemonInfo.capabilities = ["lanes"]
 │   └── orchestrator_rpcs.go # six new RPCs; guard/impact status details; new request fields
 ├── worker/
-│   ├── controller.go        # Update applies WorkerLaneDisplay (validated, logged); Apply/Attach record attach_ticket
+│   ├── controller.go        # Update applies WorkerLaneDisplay (validated, logged, lanes_known); AttachController records
+│   │                        #   attach_ticket and carries lane display forward
 │   └── endpoint.go          # ActionInfo: lanes + lane_mode instead of WorkerTag
 └── orchestrator/
     ├── lanes.go             # NEW: lane CRUD, validation, membership saves (expected values), impact + guard (R10)
     ├── roster.go            # NEW: applyRecords, marks, tickets on adoption, roster clock (R4, R11)
     ├── reasoning.go         # launch commit + destroyReasoning through applyRecords
     ├── lanes_dispatch.go    # NEW: index, reservations, candidate iterators (R8)
-    ├── dispatch.go          # pass uses the planner; effective lane setting; "its action was deleted"
+    ├── dispatch.go          # pass uses the planner; re-check and claim under rt.mu (recGen); "its action was deleted"
     ├── runs.go              # callAction via UpdateOrchestratorRuns; waiting reasons on ListRuns/GetRun (R9); events adopt/drop
     ├── actions.go           # lane validation, sets_lanes, delete copies kept settings, guard
     ├── workers.go           # reconcile without lock; attach/detach via tickets, detaching set, applyRecords
-    ├── links.go             # subscribe before list; events_dropped → re-reconcile
-    ├── runtime.go           # recMu; detaching set; lanePusher; briefer
+    ├── links.go             # subscribe + read before list; events_dropped → listing-only re-reconcile
+    ├── runtime.go           # recMu + recGen; lock order; detaching/delivering sets; lanePusher; briefer
     ├── briefing.go          # lane text; background coalesced briefer (R13)
     ├── stubs.go             # pushWorkerStateTo: name + briefing + lanes on reconnect (R12)
     ├── tools.go             # list-actions lanes/lane_mode; check_run waiting_reason
@@ -153,13 +160,13 @@ src/services/switchboardd/internal/
 src/apps/switchboard-tui/internal/
 ├── client/orchestrator.go   # new RPC wrappers; LaneChangeImpact from status details; ErrLaneStale
 └── ui/
-    ├── orchestrator_lanes.go  # NEW: self-contained lanesPanel (own target + detail): rows/keys, lane form, delete impact
+    ├── orchestrator_lanes.go  # NEW: self-contained lanesPanel (own target; detail via a getter): rows/keys, lane form, delete impact
     │                          #   confirm; hosted by the detail's Lanes view and by Jobs as the Manage lanes dialog
     ├── lane_picker.go         # NEW: shared picker overlay (worker lanes, lane members, attach, launch), guard + stale flows
     ├── orchestrator_views.go  # viewLanes; dispatch, help, render, submit cases; dropped-tag notice
     ├── orchestrator_attach.go # Workers lane cell + `l`; detach guard; attach lane step; direct-detach warning (FR-308b)
     ├── orchestrator_forms.go  # action form: lanes MultiSelect + mode Select, ctrl+l, reason clears; actionLine lanes
-    ├── launch.go              # lane step after `O`; GetWorkerBundle with host + lanes
+    ├── launch.go              # lane step after `O`; GetWorkerBundle (daemon host id + lanes) before the wizard closes; H clears
     ├── list_delegate.go       # thirdLine lanes (sanitised, incl. existing names)
     ├── jobs_overview.go       # waiting reason in the QUEUED branch of jobsRunLine
     ├── jobs_groups.go         # dropped-tag notice + `D` on Jobs › Actions

@@ -20,7 +20,9 @@ file describes each entity, where it lives, its rules and its state changes. "Re
   (FR-304).
 - **Delete** (FR-305), in one `UpdateOrchestratorRuns` transaction: removed from every `Worker.lane_ids`,
   `Action.lane_ids`, queued `Run.kept_lanes.lane_ids` and `AttachTicket.lane_ids`. An action left with no lanes gets
-  `lane_mode = UNSPECIFIED`. A kept setting left with no lanes means un-laned. Guarded by FR-308a (R10).
+  `lane_mode = UNSPECIFIED`. A kept setting left with no lanes gets `mode = UNSPECIFIED` and means un-laned;
+  `effectiveLanes` normalises any setting with no lanes to (`[]`, `UNSPECIFIED`), so an emptied exclusive setting is
+  never read as "exclusive to nothing". Guarded by FR-308a (R10).
 
 ### Roster entry (`pb.Worker`, `Orchestrator.workers` = 10, extended)
 
@@ -28,7 +30,7 @@ file describes each entity, where it lives, its rules and its state changes. "Re
 |-------|-----|------|
 | `sandbox_id`, `host_id`, `attached_at`, `reasoning` | – | as today |
 | `lane_ids` | 5 | ids of existing lanes; empty for reasoning; deduplicated |
-| `lanes_pending` | 6 | set only by adoption through an invalid ticket; cleared by any membership save that covers this worker |
+| `lanes_pending` | 6 | set only by adoption through an invalid ticket, or of a revision-0 record while a launch ticket for its host is outstanding (R11); cleared by any membership save that covers this worker |
 | `revision` | 7 | sandbox revision this entry was last written from (FR-308c); rewritten only when the roster changes, not on every status event |
 | `written_seq` | 8 | `roster_seq` at the last write (listing-absence rule) |
 
@@ -77,7 +79,8 @@ A `uint64` incremented by every roster write. Reconcile reads it *before* listin
 ### Sandbox revision (`Sandbox.revision` = 24, owning daemon)
 
 Stamped by `registry.Put`/`registry.Update` inside the write transaction: `stored + 1`, or 1 for a new record.
-Callers cannot set it. Revision 0 means "host predates lanes": always fresh, leaves no mark (R16).
+Callers cannot set it. Revision 0 means "host predates lanes": it refreshes the cache and leaves no mark, and as an
+event it never adopts or drops (R4, R16). A DESTROYING record is a removal whatever its revision.
 
 ### Action lane setting (`Action.lane_ids` = 10, `Action.lane_mode` = 11)
 
@@ -110,28 +113,41 @@ in [research R9](./research.md#r9-waiting-reasons-derived-at-read-time-fr-315-sc
 |-------|------|
 | `id` | 16 hex; carried as `SandboxController.attach_ticket` (9) |
 | `lane_ids` | lane ids; lane delete strips them |
-| `host_id` | target host (launch and attach) |
+| `host_id` | target **daemon** host id (launch and attach); validated against the orchestrator's hosts |
 | `sandbox_id` | set for attach only |
 | `issued_at` | expiry = `issued_at + 24h` |
+| (cap) | at most 256 unexpired per orchestrator; more → `ResourceExhausted` |
 
 Lifecycle: issued (bundle or attach) → consumed by the first adoption or attach commit (same write) | deleted on a
 definite attach refusal | swept after expiry. Presenting an unknown, expired or mismatched id → `lanes_pending`.
+Issued only after every lane id is checked to exist (`NotFound` otherwise). On a revision-0 record with no ticket id
+(an owning daemon that predates lanes drops it), an unexpired ticket bound to the sandbox is consumed for its lanes,
+and an unexpired launch ticket bound to the host gives `lanes_pending` (R11).
+
+On the owning host the id stays in `SandboxController.attach_ticket` after adoption: nothing clears it, because the
+orchestrator reads it only when adopting, and a later adoption always follows a new attach or launch that rewrites
+it. The orchestrator deletes the ticket itself in the adopting write, so a replayed id finds no ticket and gives
+`lanes_pending`, never lanes.
 
 ### Dropped worker tags (`Orchestrator.dropped_worker_tags` = 14, `pb.DroppedWorkerTag{action, tag, dropped_at}`)
 
 Appended on load whenever an action has a `worker_tag` (FR-318b). Cleared by `DismissDroppedWorkerTags`.
 
-### Display copy on the worker's host (`SandboxController.lane_names` = 7, `lanes_pending` = 8)
+### Display copy on the worker's host (`SandboxController.lane_names` = 7, `lanes_pending` = 8, `lanes_known` = 10)
 
-Written by `UpdateWorker{lanes}` only. Names breaking the lane rule are dropped and logged. Never read by any
+Written by `UpdateWorker{lanes}` only (`lanes_known` = true on the first one); carried forward by a same-orchestrator
+re-attach. Lane text is shown only when `lanes_known` is set. Names breaking the lane rule are dropped and logged. Never read by any
 orchestrator (FR-309b).
 
 ### In-memory only (orchestrator's daemon)
 
 | State | Owner | Notes |
 |-------|-------|-------|
-| `rt.sbs` cached sandbox records | `rt.mu` | refreshed when `revision > cached.revision`; a record older than the cache never changes the roster (contracts/dispatch.md) |
-| `rt.detaching` | `rt.mu` | cleared by restart |
+| `rt.sbs` cached sandbox records | `rt.mu` | refreshed when `revision > cached.revision` or the record has revision 0; evicted on removal; a record older than the cache never changes the roster (contracts/dispatch.md); `applyRecords` reads a snapshot (`input.cache`) |
+| `rt.recGen` | `recMu` to write, `rt.mu` to read | bumped by every record commit; a pass re-validates a claim against `rt.rec` when it changed since the pass's snapshot (R8) |
+| `rt.detaching` | `rt.mu` | cleared by restart; cleared on any detach error; refused while the worker is in `rt.delivering` |
+| `rt.delivering` | `rt.mu` | workers a run is being delivered to, from claim until `deliver` returns; `markDetaching` refuses them |
+| per-worker `pushMu` | its own mutex | serialises display pushes and the reconnect push per worker (R12) |
 | `lanePusher` dirty set | its own mutex | per-worker display pushes, coalesced |
 | `briefer` pending flag | its own mutex | briefing pushes, coalesced |
 | per-pass dispatch state (reservations, claimed, out) | the pass | discarded at the end of the pass |
@@ -140,7 +156,8 @@ orchestrator (FR-309b).
 
 Persisted on the record: lanes, worker `lane_ids`/`lanes_pending`/`revision`/`written_seq`, `roster_seq`,
 high-water marks, action lane settings, attach tickets, dropped worker tags. Persisted on runs: `kept_lanes`. Not
-persisted: detaching, waiting reasons, the sandbox-record cache.
+persisted: detaching, delivering, the record generation, waiting reasons, the sandbox-record cache. A restart test
+(T040) pins this list.
 
 ## Validation messages (shown verbatim by the TUI)
 
@@ -151,10 +168,16 @@ persisted: detaching, waiting reasons, the sandbox-record cache.
 | reserved | `"open" is reserved: it names workers in no lane` |
 | description | `description must be one line of at most 200 characters` |
 | cap | `this orchestrator already has 32 lanes` |
-| unknown lane on save | `lane "<id or last-known name>" no longer exists` |
+| unknown lane on save | `lane "<id>" no longer exists` |
 | stale worker picker | `<worker>'s lanes changed since the picker opened — reloaded` |
 | stale lane editor | `lane <name>'s members changed since the editor opened — reloaded` |
 | old client | `this client predates lanes — update the client` |
+| old orchestrator daemon (TUI, local) | `the daemon on <host> predates lanes — update with u` |
+| old target daemon (TUI, attach/launch) | `lanes need the daemon on <host> updated — attaching to the open lane` |
+| unknown launch host | `unknown host <id>` |
+| lanes on a roster sandbox (attach) | `already a worker of <orchestrator> — change its lanes with l` |
+| detach during delivery | `<worker> is receiving a run — try again in a moment` |
+| ticket cap | `too many pending attaches — try again later` |
 | reason with lanes | `reason actions run on the reasoning sandbox and take no lanes` |
 | missing mode | `choose exclusive or inclusive for an action with lanes` |
 | run lost its action | `its action was deleted` |

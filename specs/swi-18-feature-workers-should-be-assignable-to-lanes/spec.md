@@ -116,7 +116,7 @@ The last two rounds each found new gaps in the roster, reservation and attach me
   - **FR-315** mentions *lanes pending* workers as a hint, not as possible takers.
   - **The detach guard** is evaluated before unlinking, under a lock that serialises guarded changes.
   - **"Refuses delivery"** means a precondition refusal; other errors fail the run, as today.
-  - **Reservation** prefers the worker with the fewest lanes outside the run's own.
+  - **Reservation** prefers the worker with the fewest lanes outside the run's own. *(Superseded by "Plan review 2026-10-28" below, pending developer approval.)*
   - **The guard** also counts queued un-laned runs of deleted actions.
 - **Nits:** FR-321 lists today's refresh triggers, including attach and reconcile, and the operations they hold up. FR-318b applies whenever a worker tag is loaded. The dispatch bound is restated per lane and per membership.
 
@@ -149,6 +149,17 @@ The previous round made sandbox-changed events change the roster. This round mak
 ### Plan review 2026-10-28 (pre-PR review of the plan, run `run-c275c8f2-585`)
 
 - **Reservation preference** (FR-314, L6). The exact "fewest lanes outside the run's own lanes" over every worker in the run's lanes costs a scan of those workers per run, which FR-314's Cost bullet rules out. The preference now compares the first unreserved worker of each of the run's lanes, with each lane's workers ordered by fewest lanes and then roster order. The preference is a tie-breaker only: the Outcomes bullets and SC-002 are unchanged and still hold, because of the fallback chain (plan research R8).
+- **Status: proposed, awaiting developer approval.** FR-314's Reserve bullet and L6's Reserve step already carry the amended wording. If it is declined, they revert to the earlier rule and the Cost bullet needs relaxing instead.
+
+### PR review 2026-10-28 (review of the plan PR #23, run `run-593`)
+
+These follow from the plan review and change no requirement; they record how the plan reads FR-308, FR-308a, FR-314 and FR-315.
+
+- **"At that moment" (FR-314)** means at the moment the dispatch pass claims a worker for a run. Just before delivering, the pass re-validates the worker's lanes, *lanes pending* and *detaching* state against the current record, not only against the snapshot it planned from. A lane change committed after the claim applies to later runs; the run being delivered is not moved (Edge Cases: "A run already delivered is never moved"). A worker being delivered a run cannot be marked *detaching* until the delivery returns.
+- **Detaching workers in waiting reasons (FR-315).** As FR-308 says, a *detaching* worker stays on the live roster. Waiting reasons count it as a live lane or open-lane worker, and, while its record is RUNNING and its host is up, as available. So a run only it could take shows no reason until the detach completes, rather than "stopped or unreachable".
+- **Re-saving an un-laned action (FR-308a)** counts as "saving an un-laned `prompt` action while it has none", so the guard fires for it too.
+- **Hosts that predate lanes (FR-306b, FR-308c, FR-318a).** An older owning daemon drops the attach ticket and stamps no revision. Its records' events never adopt or drop a worker (listings and replies still do); a launch or attach with lanes to it lands as *lanes pending* or with the ticket's lanes, never in the open lane; the TUI does not offer the lane step for it.
+- **Waiting reasons and agents (FR-315).** The reason an agent reads through `orchestrator_check_run` names lanes but no workers: the "stopped or unreachable" case reads "every worker that could take it is stopped or unreachable". The developer's views name the workers. Any worker's agent can check any run, and worker display names are not exposed to agents today.
 
 ## Background (current behaviour this feature changes)
 
@@ -508,7 +519,7 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 - Inclusive runs prefer unreserved lane workers, then open-lane workers, then lane workers reserved for later runs (FR-314). The ticket allows any order; this one keeps open-lane workers for un-laned work without starving exclusive work, and never makes an earlier run wait for a later one. Reservation is greedy, but the fallback chain means no run is left queued while a worker it could take is free and unclaimed (L6).
 - Planning note: the registry has no single change spanning the orchestrator record and its runs today. FR-314b needs one, which the underlying store supports.
 - Planning note: FR-308c needs a new, additive sandbox-record revision field on the owning daemon, and a way for the host's event stream to report that it dropped events for a subscriber. Today it drops them silently once a subscriber's buffer is full. Reconcile no longer holds its lock across listing; it lists first, then applies the listing in one update.
-- **Lanes are routing, not access control.** Any worker's agent can call any action, an exclusive one included, and can check any run of its orchestrator, including its waiting reason, which names lanes. Lanes decide only where a run is delivered. They are not an isolation boundary, and lane names are not secret.
+- **Lanes are routing, not access control.** Any worker's agent can call any action, an exclusive one included, and can check any run of its orchestrator, including its waiting reason, which names lanes. Lanes decide only where a run is delivered. They are not an isolation boundary, and lane names are not secret. Worker display names are not shown to agents (Clarifications, PR review 2026-10-28).
 - Planning note: the sandbox list redraws a row only when a displayed field changes, so lanes must join that change check for SC-004.
 - An exclusive or un-laned run that no worker can take stays queued, as worker-tagged runs do today, rather than failing.
 - Lane changes from the Manage lanes dialog are saved immediately, like changes in the Lanes view, because lanes belong to the orchestrator and not to the action being edited.

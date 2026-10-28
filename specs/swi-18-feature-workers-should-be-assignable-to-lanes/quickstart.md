@@ -30,8 +30,9 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    `⇢ frontend · exclusive`.
 4. Call `build-ui` 4 times and `chore` 4 times. **Expect**: `build-ui` runs only on `w1`/`w2`; `chore` only on
    `w3`–`w5`.
-5. Stop `w1` and `w2` (`s`). Call `build-ui`. **Expect**: queued with `waiting for w1, w2, stopped or unreachable`.
-   Start them: delivered within one pass.
+5. Stop `w1` and `w2` (`s`). Call `build-ui`. **Expect**: queued with `waiting for w1, w2, stopped or unreachable`;
+   `orchestrator_check_run` from an agent names no workers (`waiting: every worker that could take it is stopped or
+   unreachable`). Start them: delivered within one pass.
 6. Remove both from `frontend` (confirm the guard if prompted). Queued `build-ui` shows `waiting for a worker in
    frontend`; `orchestrator_check_run` from an agent shows the same. Add `w1` back: delivered with no other action
    (SC-007).
@@ -53,8 +54,8 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    **Expect**: confirm `No open-lane worker will be left to run: chore, review-pr …`. `n` changes nothing; `y` saves.
 2. In a second client, with the confirm still open in the first, add another un-laned action; then press `y` in the
    first. **Expect**: a second confirm listing the new action.
-3. Disconnect the orchestrator's host in the client, then `o` (detach) the last open-lane worker from the sandbox
-   list on its own host. **Expect**: the confirm's best-effort warning from last-known data; with no data, `Cannot
+3. Make the last open-lane worker one on host B. Disconnect host A (the orchestrator's host) in the client, then
+   `o` (detach) that worker from host B's sandbox list. **Expect**: the confirm's best-effort warning from last-known data; with no data, `Cannot
    check open-lane workers`.
 
 ## Scenario 4 — attach and launch with lanes (US4.8, US4.9, FR-306a, FR-306b, L3, L4)
@@ -63,9 +64,12 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    appears with `lanes: frontend` and never receives an un-laned run.
 2. Launch wizard, `O` → `pdev-orch`, tick `reviewers`, launch on host B. **Expect**: adopted within moments of the
    launch (not at the next reconnect) with `lanes: reviewers`.
-3. Ticket expiry (dev only): set the clock or use the test hook to expire a ticket, launch with lanes on a host whose
-   link is down, bring it back up. **Expect**: `⚠ lanes pending`; no runs delivered; `l` → choose lanes or none →
-   flag cleared.
+3. Ticket expiry is covered by T039's daemon test (injected clock), not by hand. By hand, check the recovery: with
+   a worker shown `⚠ lanes pending` (from that test's setup or a 24 h wait), no runs are delivered to it; `l` →
+   choose lanes or none → flag cleared.
+4. In the launch wizard, pick `pdev-orch` with lanes, then change the host with `H`. **Expect**: the orchestrator
+   and lanes are cleared. Delete a ticked lane from a second client before launching: the wizard stays open on the
+   lane step with `lane "<id>" no longer exists`.
 
 ## Scenario 5 — Manage lanes from the action form (US5, FR-316, FR-316a, FR-317, SC-003)
 
@@ -88,5 +92,6 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
 
 1. Restart host A's daemon with runs queued and workers in lanes. **Expect**: lanes and memberships unchanged; host B
    workers show `unreachable` until its link is up; runs that only they can take say `stopped or unreachable`.
-2. Detach a worker, then (dev hook) replay an older `sandbox_changed` event for it. **Expect**: not re-adopted.
+2. Detach a worker. **Expect**: it stays detached. (Replaying an older `sandbox_changed` event is covered by the
+   T040 and T009 tests, which drive a fake event stream; there is no manual hook.)
 3. Destroy a worker on host B. **Expect**: it leaves the roster at once; no run is offered to it.

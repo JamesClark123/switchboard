@@ -2,7 +2,9 @@
 
 All changes are additive to `src/libs/switchboard-proto/proto/switchboard.proto`, apart from `Action.worker_tag`,
 which is deprecated but kept (research R14). Field numbers avoid the ones SWI-17 (PR #21) claims: `Action` 9,
-`Run` 20–30, `WorkerView` 12–14, `WorkerRun` 4–10, `UpdateWorkerRequest` 8, `NotificationKind` 9–10.
+`Run` 20–30, `WorkerView` 12–14, `WorkerRun` 4–10, `UpdateWorkerRequest` 8, `NotificationKind` 9–10,
+`AgentSession` 5–11 and `AgentInput.AttachInfo` 4, plus the RPCs `DeliverWorkerStep` and `ResolveRunStep`
+(research F10). None of them is touched here.
 
 ## New messages and enum
 
@@ -128,6 +130,7 @@ message SandboxController {
   repeated string lane_names = 7;         // display only (FR-309a/b)
   bool lanes_pending = 8;                 // display only
   string attach_ticket = 9;               // FR-306b; the orchestrator's token, not lane data
+  bool lanes_known = 10;                  // set by the first UpdateWorker{lanes}; TUI shows lane text only when set
 }
 
 message UpdateWorkerRequest {
@@ -155,7 +158,7 @@ message PutActionRequest {
 }
 message GetWorkerBundleRequest {
   string orchestrator_id = 1;
-  string host_id = 2;                     // target host; required when lane_ids is set
+  string host_id = 2;                     // target daemon's host id (daemonHostID); required when lane_ids is set
   repeated string lane_ids = 3;           // FR-306a; non-empty => an attach ticket is issued
 }
 message AttachWorkerRequest {
@@ -209,7 +212,7 @@ message SetLaneMembersRequest {
   LaneGuardConfirm guard = 5;
 }
 message CheckLaneChangeRequest {
-  string orchestrator_id = 1;
+  string orchestrator_id = 1;             // wins; a nested request's own id must be empty or equal (InvalidArgument)
   oneof change {
     SetWorkerLanesRequest set_worker_lanes = 2;
     SetLaneMembersRequest set_lane_members = 3;
@@ -227,9 +230,14 @@ message CheckLaneChangeRequest {
 | any lane write | `InvalidArgument` | name/description rule, cap, reason-with-lanes, missing mode |
 | `PutLane` (create/rename) | `AlreadyExists` | name taken |
 | `PutAction`, `PutLane`, `DeleteLane` | `NotFound` | a named lane or action no longer exists (FR-316a); the action form reloads its lane options |
+| `GetWorkerBundle`, `AttachWorker` | `NotFound` | a `lane_ids` entry no longer exists (`lane "<id>" no longer exists`); the picker reloads |
+| `GetWorkerBundle` | `InvalidArgument` | `host_id` is neither the orchestrator's host nor one of its hosts ("unknown host <id>") |
+| `AttachWorker` | `FailedPrecondition` | `lane_ids` set for a sandbox already on the roster ("already a worker of <orchestrator> — change its lanes with l") |
+| `GetWorkerBundle`, `AttachWorker` | `ResourceExhausted` | 256 unexpired attach tickets already outstanding ("too many pending attaches — try again later") |
+| `DetachWorker` | `FailedPrecondition` | a run is being delivered to the worker ("<worker> is receiving a run — try again in a moment") |
 | `SetWorkerLanes`, `SetLaneMembers` | `Aborted` | every FR-307a case: the worker's lanes or pending flag changed, the lane's members changed, the edited lane or a ticked lane was deleted, or the worker left the roster; the TUI reloads the picker |
 | guarded writes | `FailedPrecondition` + `LaneChangeImpact` detail | guard fires and the confirm does not cover the current list |
-| `PutAction` | `FailedPrecondition` | `sets_lanes` false or `worker_tag` set (old client) |
+| `PutAction` | `FailedPrecondition` | `sets_lanes` false or `worker_tag` set (old client): "this client predates lanes — update the client" |
 | `SetWorkerLanes` on the reasoning sandbox | `InvalidArgument` | FR-310 |
 
 `Action.worker_tag` is deprecated, so the generated getter is too. The one load-time read (and its tests) carries

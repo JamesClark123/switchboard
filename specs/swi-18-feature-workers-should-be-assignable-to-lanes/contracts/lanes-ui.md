@@ -3,13 +3,22 @@
 Paths are relative to `src/apps/switchboard-tui/internal/ui/`. All lane names, worker names and action names are
 drawn through `sanitizeLine`/`fitCol` (FR-309). Every operation goes through `connectedDaemon(host)` for the
 orchestrator's host (010 R12). Lane UI appears only when that daemon advertises the `lanes` capability; otherwise
-the Lanes view is omitted and action saves are refused locally with
-`the daemon on <host> predates lanes — update it (u on the Daemons screen)` (FR-318a). `CheckLaneChange` is only
-ever called against a daemon with the capability; against an older daemon a detach goes ahead as today.
+the Lanes view is omitted, `l` on a Workers row shows that message instead of a picker, and action saves are refused
+locally with `the daemon on <host> predates lanes — update with u` (FR-318a; `u` on the Sandboxes list updates every
+connected daemon, matching today's `errTooOld` text). `CheckLaneChange` is only ever called against a daemon with
+the capability; against an older daemon a detach goes ahead as today. If the capability disappears while the Lanes
+view is showing (the daemon was replaced by an older one), the detail falls back to the Workers view.
 
-The lane list, lane form, delete confirm and picker are one self-contained `lanesPanel` carrying its own target,
-detail and op state. The orchestrator detail hosts it as the Lanes view; the Jobs screen hosts it as the Manage lanes
-dialog over the action form. While the panel is open, its host screen routes keys to it first.
+The attach and launch lane steps also need the capability on the **target host's** daemon (an older owning daemon
+drops the attach ticket, research R11); without it the step is skipped and the status reads
+`lanes need the daemon on <host> updated — attaching to the open lane`.
+
+The lane list, lane form, delete confirm and picker are one self-contained `lanesPanel` carrying its own target and
+op state. It reads the orchestrator detail through a getter on its host screen (`func() *pb.OrchestratorDetail`), so
+the host's reloads are seen at once and the panel never holds a stale copy. The orchestrator detail hosts it as the
+Lanes view; the Jobs screen hosts it as the Manage lanes dialog over the action form. While the panel is open, its
+host screen routes keys to it first; `update` returns `handled bool`, and unhandled keys (`←`/`→`, `tab`, `q`, the
+host's own shortcuts) go on to the host.
 
 ## Orchestrator detail › Lanes (FR-301–FR-305, FR-307)
 
@@ -45,13 +54,20 @@ One overlay type, `lanePicker`, with four uses. Rows toggle with `space`; `enter
 |-----|-----------|------|------|
 | Worker's lanes (FR-306) | `l` on a Workers row (not reasoning: status `reasoning sandbox — no lanes`) | the orchestrator's lanes; header shows `none ticked = open lane` | `SetWorkerLanes` |
 | Lane's members (FR-307) | `w` on a Lanes row | non-reasoning workers, `name @ host` | `SetLaneMembers` |
-| Attach (FR-306a) | after choosing an orchestrator with `o` on the sandbox list, when it has lanes | lanes | passed as `AttachWorker.lane_ids` |
-| Launch (FR-306a) | after choosing an orchestrator with `O` in the launch wizard, when it has lanes | lanes | passed to `GetWorkerBundle.lane_ids` at launch; the wizard title shows `orchestrator: X (lanes: a, b)` |
+| Attach (FR-306a) | after choosing an orchestrator with `o` on the sandbox list, when it has lanes and both daemons have the capability | lanes | passed as `AttachWorker.lane_ids` |
+| Launch (FR-306a) | after choosing an orchestrator with `O` in the launch wizard, when it has lanes and both daemons have the capability | lanes | passed to `GetWorkerBundle.lane_ids` with `host_id` = `daemonHostID(target)`; the wizard title shows `orchestrator: X (lanes: a, b)` |
 
 - With no lanes on the orchestrator, the worker picker shows `no lanes yet — a to add one`; `a` opens the lane form,
   and the picker reopens with the new lane after it saves (FR-306). Attach and launch skip the step.
+- **Launch**: the bundle (and so the ticket) is fetched **before the wizard closes**; a refusal (`NotFound` `lane "<id>"
+  no longer exists`, `InvalidArgument` "unknown host") keeps the wizard open on the lane step with the daemon's
+  message and the picker reloaded. Changing the target host with `H` clears the chosen orchestrator and lanes, since
+  the ticket is bound to the host.
+- **Attach**: `NotFound` for a lane reopens the picker reloaded, with the daemon's message; nothing is attached.
+- Rows show `sanitizeLine(name)` cut with `fitCol`; the picker scrolls (no cap on the number of lanes it can show).
 - **Guard (FR-308a)**: before saving, the picker calls `CheckLaneChange`. If the impact lists un-laned work, it opens
-  one confirm: `No open-lane worker will be left to run: build, deploy (and 2 queued runs). Save anyway?` `y` saves
+  one confirm: `No open-lane worker will be left to run: build, deploy (and 2 queued runs). Save anyway?` (each name
+  sanitised; more than 5 names end `, and N more`) `y` saves
   with that list as `guard`. If the daemon still refuses (`FailedPrecondition` with a new list), a second confirm
   shows the new list.
 - **Stale (FR-307a)**: `Aborted` → the picker reloads from the fresh detail, keeps the cursor on the same row id, and
@@ -59,8 +75,9 @@ One overlay type, `lanePicker`, with four uses. Rows toggle with `space`; `enter
 
 ## Workers view (FR-306, FR-309, L5)
 
-Row: today's cells, then the lane cell: `lanes: frontend, reviewers` | `open lane` | `⚠ lanes pending` |
-`detaching…`. Reasoning rows show no lane cell. New key `l` (lanes). Help gains `l lanes`.
+Row: today's cells, then the lane cell, cut to the remaining width with `fitCol`: `lanes: frontend, reviewers` |
+`open lane` | `⚠ lanes pending` | `detaching…`. Reasoning rows show no lane cell. New key `l` (lanes; only with the
+capability). Help gains `l lanes`.
 
 **Detach `x`** through the orchestrator: `CheckLaneChange{detach_worker}` first; the existing detach confirm adds
 the guard line when it fires, and `y` sends `DetachWorker` with that guard list.
@@ -68,14 +85,16 @@ the guard line when it fires, and `y` sends `DetachWorker` with that guard list.
 ## Sandbox list (FR-308b, FR-309)
 
 - Third line (`thirdLine`): `… · orchestrator: pdev-orch · lanes: frontend, reviewers` | `· open lane` |
-  `· lanes pending`, from `SandboxController.lane_names`/`lanes_pending`; reasoning and non-workers unchanged. The MCP
-  and orchestrator names on this line are now sanitised too.
+  `· lanes pending`, from `SandboxController.lane_names`/`lanes_pending`, shown only when `lanes_known` is set (no
+  lane text otherwise); reasoning and non-workers unchanged. The MCP and orchestrator names on this line are now
+  sanitised too.
 - **Detach through the orchestrator** (`o` on a worker whose orchestrator daemon **is** connected): guarded like `x`
   on the Workers view. `CheckLaneChange{detach_worker}` runs first, its list is folded into the existing detach
   confirm, and `y` sends `DetachWorker` with that guard list; a refusal with a new list reopens the confirm.
 - **Direct detach** (`o` on a worker whose orchestrator daemon is not connected): the confirm adds, from the client's
   last-known orchestrator detail and actions,
-  `Warning: this may leave no open-lane worker for: build, deploy` when that data shows it would, or
+  `Warning: this may leave no open-lane worker for: build, deploy` (sanitised, capped as above) when that data shows
+  it would, or
   `Cannot check open-lane workers: pdev-orch's daemon is not connected` when the client has none.
 - `events_dropped` on a host's stream → reload that host's sandbox list.
 
@@ -107,4 +126,4 @@ exclusive, hidden when no lane is ticked or for `reason`), Arguments. The worker
 
 If SWI-9's implementation is on `main` when this is implemented, the lane form, the lane picker overlay and Manage
 lanes register as guarded surfaces (`guardSurface`), with baselines taken when they open. Otherwise they close on
-`esc` like today's forms.
+`esc` like today's forms. As of this plan it is not: `ui/formguard.go` does not exist on `main`.

@@ -168,7 +168,8 @@ TUI: Lanes view, shared `lane_picker.go`, action form lanes + `ctrl+l` Manage la
 `data-model.md`, `contracts/`, `quickstart.md`.
 
 Prior feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes
-Guard, SWI-9). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
+Guard, SWI-9). **Planned; implementation pending, not on `main`**: the files named below (`formguard.go`,
+`enlarge.go`, `unsaved.go`, …) do not exist yet, so check before relying on them (SWI-18 T059). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
 textarea (`MaxHeight 0`, `enlarge.go`); esc/ctrl+e write back (`*ptr = value; field.Value(ptr)`), ctrl+s writes back
 and saves, ctrl+c writes back then leaves the form, `ctrl+r` reverts to the text at open, pgup/pgdn batch cursor moves.
 huh's external editor is gone: every form uses `formKeyMap()` (keyless `Text.Editor` **and** keyless `Quit`, since
