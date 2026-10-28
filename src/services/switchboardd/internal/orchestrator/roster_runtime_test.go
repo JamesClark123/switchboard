@@ -247,7 +247,7 @@ func TestLaneDisplayPushes(t *testing.T) {
 	if slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) {
 		t.Fatal("the failed push should not have landed")
 	}
-	waitFor(t, func() bool { return retrySleeping(rt, "box") })
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 1) })
 	env.clock.Advance(lanePushRetryMin)
 	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
 	if waPushes.Load() != 2 {
@@ -320,7 +320,7 @@ func TestLanePushRetriesAreBounded(t *testing.T) {
 	w.mu.Unlock()
 	rt.markLanes("wa")
 	for i := 1; i <= lanePushMaxAttempts; i++ {
-		waitFor(t, func() bool { return int(pushes.Load()) == i && retrySleeping(rt, "box") })
+		waitFor(t, func() bool { return retryAfter(rt, "wa", i) })
 		env.clock.Advance(linkRetryMax)
 	}
 	waitFor(t, func() bool {
@@ -335,12 +335,13 @@ func TestLanePushRetriesAreBounded(t *testing.T) {
 	}
 }
 
-// retrySleeping reports whether host's retry loop is asleep on its timer.
-func retrySleeping(rt *runtime, host string) bool {
+// retryAfter reports whether worker id's n-th failure has been recorded and
+// its retry is scheduled (not yet re-marked).
+func retryAfter(rt *runtime, id string, n int) bool {
 	rt.lanes.mu.Lock()
 	defer rt.lanes.mu.Unlock()
-	lr := rt.lanes.retriers[host]
-	return lr != nil && lr.timer != nil
+	r := rt.lanes.retry[id]
+	return r != nil && r.n == n && !r.queued
 }
 
 // Each worker keeps its own backoff on a shared host loop: a first failure is
@@ -373,16 +374,16 @@ func TestLanePushRetryIsPerWorker(t *testing.T) {
 	w.mu.Unlock()
 	// wa fails three times: its next retry is 8 s away.
 	rt.markLanes("wa")
-	for i := int32(1); i <= 3; i++ {
-		waitFor(t, func() bool { return pa.Load() == i && retrySleeping(rt, "box") })
+	for i := 1; i <= 3; i++ {
+		waitFor(t, func() bool { return retryAfter(rt, "wa", i) })
 		if i < 3 {
 			env.clock.Advance(linkRetryMax)
 		}
 	}
 	rt.markLanes("wb")
-	waitFor(t, func() bool { return pb_.Load() == 1 && retrySleeping(rt, "box") })
+	waitFor(t, func() bool { return retryAfter(rt, "wb", 1) })
 	env.clock.Advance(lanePushRetryMin)
-	waitFor(t, func() bool { return pb_.Load() == 2 && retrySleeping(rt, "box") })
+	waitFor(t, func() bool { return retryAfter(rt, "wb", 2) })
 	if pa.Load() != 3 {
 		t.Fatalf("wa pushes = %d: retried on wb's schedule", pa.Load())
 	}
@@ -397,8 +398,9 @@ func TestLanePushRetryIsPerWorker(t *testing.T) {
 	waitFor(t, func() bool {
 		rt.lanes.mu.Lock()
 		defer rt.lanes.mu.Unlock()
-		return rt.lanes.retry["wb"] == nil && pa.Load() == 4
+		return rt.lanes.retry["wb"] == nil
 	})
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 4) })
 	if pb_.Load() != 2 {
 		t.Errorf("wb pushes = %d after leaving the roster", pb_.Load())
 	}

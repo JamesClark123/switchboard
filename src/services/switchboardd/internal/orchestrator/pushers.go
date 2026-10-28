@@ -100,7 +100,7 @@ func nextBackoff(cur, lo, hi time.Duration) time.Duration {
 }
 
 // markLanes queues lane display pushes for workers (by sandbox id); workers
-// no longer on the roster are skipped.
+// no longer on the roster are skipped, dropping any retry they had.
 func (rt *runtime) markLanes(sandboxIDs ...string) {
 	rec := rt.record()
 	p := &rt.lanes
@@ -112,6 +112,7 @@ func (rt *runtime) markLanes(sandboxIDs ...string) {
 	for _, id := range sandboxIDs {
 		host := hostOf(rec, id)
 		if host == "" {
+			p.dropRetry(id)
 			continue
 		}
 		if p.dirty[host] == nil {
@@ -259,7 +260,7 @@ func (rt *runtime) retryLanes(host string, lr *laneRetrier) {
 		}
 		p.mu.Unlock()
 		if len(due) > 0 {
-			rt.retryDue(host, due)
+			rt.markLanes(due...)
 			continue
 		}
 		select {
@@ -267,24 +268,6 @@ func (rt *runtime) retryLanes(host string, lr *laneRetrier) {
 		case <-rt.ctx.Done():
 		}
 	}
-}
-
-// retryDue marks due workers again; a worker that left the roster or the host
-// meanwhile drops its retry.
-func (rt *runtime) retryDue(host string, ids []string) {
-	rec := rt.record()
-	var mark []string
-	p := &rt.lanes
-	p.mu.Lock()
-	for _, id := range ids {
-		if hostOf(rec, id) == host {
-			mark = append(mark, id)
-		} else {
-			p.dropRetry(id)
-		}
-	}
-	p.mu.Unlock()
-	rt.markLanes(mark...)
 }
 
 // definiteRefusal reports whether a remote call was answered with a refusal,

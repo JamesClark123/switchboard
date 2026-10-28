@@ -26,11 +26,8 @@ func (rt *runtime) pushWorkerStateTo(ctx context.Context, hostID string, api Wor
 		if w.GetHostId() != hostID {
 			continue
 		}
-		// A failure is logged by pushWorker; the next reconnect retries. A
-		// success carries the lanes, so a pending lane retry is dropped.
-		if rt.pushWorker(ctx, api, w.GetSandboxId(), true) == nil {
-			rt.lanePushed(hostID, w.GetSandboxId(), false)
-		}
+		// A failure is logged by pushWorker; the next reconnect retries.
+		_ = rt.pushWorker(ctx, api, w.GetSandboxId(), true)
 	}
 }
 
@@ -71,6 +68,11 @@ func (rt *runtime) pushWorker(ctx context.Context, api WorkerAPI, sandboxID stri
 	rt.mu.Lock()
 	rt.cacheLocked(sb)
 	rt.mu.Unlock()
+	if full {
+		// It carried the current lanes: a pending lane retry is moot. Dropped
+		// under the push lock, so a newer lane push's retry is never lost.
+		rt.lanePushed(w.GetHostId(), sandboxID, false)
+	}
 	return nil
 }
 
