@@ -173,7 +173,31 @@ func (m *Model) rebuildActionForm(s orchSurface, v *actionFormVals) tea.Cmd {
 	op := m.opState(s)
 	op.formSpec = newFormSpec()
 	op.form = m.actionForm(op.formSpec, v)
+	if e := &m.enlarge; e.open && e.surface == opGuard(s) {
+		// An enlarged field writes back to the rebuilt Text bound to its value,
+		// not to the replaced one (whose stale text the new field would keep).
+		for t, te := range op.formSpec.texts {
+			if te.ptr == e.ptr {
+				e.field = t
+			}
+		}
+	}
 	return op.form.Init()
+}
+
+// pruneActionLanes follows an open action form to rec's lanes. A deleted
+// lane's tick goes from the values and from the baseline alike: the pruning is
+// not the user's edit, so it never reads as unsaved.
+func (m *Model) pruneActionLanes(s orchSurface, v *actionFormVals, rec *pb.Orchestrator) {
+	v.keepLanes(rec)
+	op := m.opState(s)
+	if b, ok := op.formBaseline.(actionFormVals); ok {
+		b.lanes = slices.DeleteFunc(b.lanes, func(id string) bool { return laneByID(rec, id) == nil })
+		if len(b.lanes) == 0 {
+			b.lanes = nil
+		}
+		op.formBaseline = b
+	}
 }
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.

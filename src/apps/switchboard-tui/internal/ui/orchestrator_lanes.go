@@ -29,6 +29,8 @@ type lanesPanel struct {
 	form     *huh.Form
 	formVals *laneFormVals
 	formLane string
+	// formBaseline is the form's values when opened (SWI-9's unsaved guard).
+	formBaseline laneFormVals
 	// pickAfterForm reopens the worker picker once a lane made from its empty
 	// state is saved (FR-306).
 	pickAfterForm bool
@@ -148,6 +150,29 @@ func modeWord(mode pb.LaneMode) string {
 	return "exclusive"
 }
 
+// closeLaneForm drops a surface's lane form unsaved (its esc path).
+func (m *Model) closeLaneForm(s orchSurface) {
+	p := m.lanes(s)
+	p.form, p.formVals, p.status = nil, nil, ""
+	p.pickAfterForm, p.saving = false, false
+}
+
+// laneGuard is the guard surface of a surface's lane form.
+func laneGuard(s orchSurface) guardSurface {
+	if s == surfaceJobs {
+		return gLaneJobs
+	}
+	return gLaneDetail
+}
+
+// laneSurfaceOf is the inverse of laneGuard.
+func laneSurfaceOf(g guardSurface) orchSurface {
+	if g == gLaneJobs {
+		return surfaceJobs
+	}
+	return surfaceDetail
+}
+
 // --- keys ---
 
 // updateLanesKey routes a key to a surface's panel. handled is false for keys
@@ -156,10 +181,14 @@ func (m Model) updateLanesKey(s orchSurface, msg tea.KeyMsg) (Model, tea.Cmd, bo
 	p := m.lanes(s)
 	if p.form != nil {
 		switch msg.String() {
-		case "esc":
-			p.form, p.formVals, p.status = nil, nil, ""
-			p.pickAfterForm, p.saving = false, false
-			return m, nil, true
+		case "esc", "ctrl+c":
+			if p.saving {
+				// The save is out: nothing is unsaved, leave at once.
+				m.closeLaneForm(s)
+				return m, nil, true
+			}
+			mm, cmd := m.requestExit(laneGuard(s))
+			return mm.(Model), cmd, true
 		}
 		if p.saving {
 			return m, nil, true // the save is out
@@ -230,6 +259,7 @@ func (m *Model) openLaneForm(s orchSurface, l *pb.Lane) tea.Cmd {
 	v := &laneFormVals{name: l.GetName(), description: l.GetDescription()}
 	p.formVals, p.formLane, p.status = v, l.GetId(), ""
 	p.form = m.laneForm(v)
+	p.formBaseline = *v // after the build settles the inputs
 	return p.form.Init()
 }
 
@@ -805,7 +835,7 @@ func (m Model) applyActionLanes(msg actionLanesMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	op.formTarget.rec = msg.rec
-	v.keepLanes(msg.rec)
+	m.pruneActionLanes(msg.sink, v, msg.rec)
 	return m, m.rebuildActionForm(msg.sink, v)
 }
 
@@ -854,7 +884,7 @@ func (m Model) applyManageDetail(msg manageDetailMsg) (tea.Model, tea.Cmd) {
 		// The action form's lane options follow (FR-317): by id, deleted
 		// lanes' ticks dropped, renamed lanes renamed.
 		m.jobs.formTarget.rec = mg.target.rec
-		v.keepLanes(mg.target.rec)
+		m.pruneActionLanes(surfaceJobs, v, mg.target.rec)
 	}
 	return m, nil
 }

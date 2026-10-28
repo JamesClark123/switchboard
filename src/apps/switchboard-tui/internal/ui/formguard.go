@@ -281,6 +281,8 @@ const (
 	gOrchAdmin
 	gOpJobs
 	gOpDetail
+	gLaneJobs   // the lane form in Jobs' Manage lanes (over the action form)
+	gLaneDetail // the lane form on the orchestrator detail
 	gKitItem
 	gKitOverview
 	gLaunch
@@ -316,12 +318,18 @@ func (m Model) activeGuard() (guardSurface, bool) {
 			return gOrchAdmin, true
 		}
 	case screenJobs:
+		if m.jobs.manage.open && m.jobs.manage.panel.form != nil {
+			return gLaneJobs, true // nested over the action form: it wins
+		}
 		if m.jobs.form != nil {
 			return gOpJobs, true
 		}
 	case screenOrchDetail:
 		if m.orchDetail.form != nil {
 			return gOpDetail, true
+		}
+		if m.orchDetail.lanes.form != nil {
+			return gLaneDetail, true
 		}
 	case screenKitEditor:
 		if m.kitEditor.form != nil {
@@ -383,6 +391,8 @@ func (m Model) guardForm(g guardSurface) *huh.Form {
 		return m.orch.form
 	case gOpJobs, gOpDetail:
 		return m.opState(opSurfaceOf(g)).form
+	case gLaneJobs, gLaneDetail:
+		return m.lanes(laneSurfaceOf(g)).form
 	case gKitItem:
 		return m.kitEditor.form
 	}
@@ -421,6 +431,9 @@ func (m Model) guardDirty(g guardSurface) bool {
 		op := m.opState(opSurfaceOf(g))
 		// A form whose call is in flight holds nothing unsaved.
 		return op.form != nil && !op.formSaving && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
+	case gLaneJobs, gLaneDetail:
+		p := m.lanes(laneSurfaceOf(g))
+		return p.form != nil && p.formVals != nil && !p.saving && *p.formVals != p.formBaseline
 	case gKitItem:
 		return m.kitEditor.vals != nil && *m.kitEditor.vals != m.kitEditor.formBaseline
 	case gKitOverview:
@@ -470,6 +483,8 @@ func (m Model) surfaceSave(g guardSurface) (Model, tea.Cmd) {
 		return guardResult(m.submitOrchOpForm(surfaceJobs))
 	case gOpDetail:
 		return guardResult(m.submitOrchDetailForm())
+	case gLaneJobs, gLaneDetail:
+		return m.submitLaneForm(laneSurfaceOf(g))
 	case gKitItem:
 		return guardResult(m.applyKitForm())
 	case gKitOverview:
@@ -526,6 +541,8 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 			m.markFreeFromList = false
 			m.screen = screenList
 		}
+	case gLaneJobs, gLaneDetail:
+		m.closeLaneForm(laneSurfaceOf(g))
 	case gKitItem:
 		m.closeKitForm()
 	case gKitOverview:

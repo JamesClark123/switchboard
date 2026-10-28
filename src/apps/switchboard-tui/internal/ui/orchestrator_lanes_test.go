@@ -809,3 +809,118 @@ func TestLanesWindowMarksHiddenLanes(t *testing.T) {
 		t.Errorf("top window:\n%s", v)
 	}
 }
+
+// The lane form is a guarded surface (SWI-9, PR #24 review 5688707257 #3):
+// esc on a changed form asks, discard leaves; an untouched one leaves at once.
+func TestLaneFormIsGuarded(t *testing.T) {
+	noKeyGrace(t)
+	a := lanesDaemon()
+	m := lanesView(t, a)
+	m = keys(m, press("a"))
+	if g, ok := m.activeGuard(); !ok || g != gLaneDetail {
+		t.Fatalf("active guard = %v %v", g, ok)
+	}
+	m = keys(m, escKey)
+	if m.orchDetail.lanes.form != nil || m.unsaved.open {
+		t.Fatalf("an untouched lane form should close: form %v dialog %v", m.orchDetail.lanes.form != nil, m.unsaved.open)
+	}
+	m = keys(m, press("a"))
+	m = typeIn(m, "qa")
+	m = keys(m, escKey)
+	if !m.unsaved.open || m.unsaved.surface != gLaneDetail || m.orchDetail.lanes.form == nil {
+		t.Fatalf("a changed lane form should ask: dialog %+v", m.unsaved)
+	}
+	m = keys(m, press("d"))
+	if m.orchDetail.lanes.form != nil || m.unsaved.open {
+		t.Error("discard should close the lane form")
+	}
+	// Save from the dialog is the form's own save.
+	m = keys(m, press("a"))
+	m = typeIn(m, "qa")
+	m = openDialog(t, m, gLaneDetail)
+	m = keys(m, press("s"))
+	if !strings.Contains(a.orchCallsJoined(), "PutLane") {
+		t.Errorf("save should send PutLane: %q", a.orchCallsJoined())
+	}
+	// In Jobs' Manage lanes the lane form wins over the action form under it.
+	a = lanesDaemon()
+	m = openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e"), tea.KeyMsg{Type: tea.KeyCtrlL})
+	m = keys(m, press("a"))
+	if g, ok := m.activeGuard(); !ok || g != gLaneJobs || m.guardForm(g) != m.jobs.manage.panel.form {
+		t.Fatalf("manage lanes guard = %v %v", g, ok)
+	}
+	m = typeIn(m, "qa")
+	m = keys(m, escKey)
+	if !m.unsaved.open || m.unsaved.surface != gLaneJobs {
+		t.Fatalf("dialog = %+v", m.unsaved)
+	}
+	m = keys(m, press("d"))
+	if m.jobs.manage.panel.form != nil || !m.jobs.manage.open || m.jobs.form == nil {
+		t.Error("discard should close only the lane form")
+	}
+}
+
+// Pruning a deleted lane's tick is not an edit (review 5688707257 #2); the
+// user's own untick still is.
+func TestPrunedLanesAreNotEdits(t *testing.T) {
+	noKeyGrace(t)
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e")) // build-ui, ticked in frontend
+	k := m.jobs.formTarget.key()
+	gone := &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host"}
+	out, _ := m.applyActionLanes(actionLanesMsg{sink: surfaceJobs, key: k, rec: gone})
+	m = out.(Model)
+	if v := m.jobs.formVals.(*actionFormVals); len(v.lanes) != 0 || m.guardDirty(gOpJobs) {
+		t.Fatalf("pruned: lanes %v dirty %v", v.lanes, m.guardDirty(gOpJobs))
+	}
+	m = keys(m, escKey)
+	if m.unsaved.open || m.jobs.form != nil {
+		t.Error("esc on a pruned, untouched form should close it")
+	}
+	m = keys(m, press("e"))
+	m.jobs.formVals.(*actionFormVals).lanes = nil
+	if !m.guardDirty(gOpJobs) {
+		t.Error("unticking a lane is an edit")
+	}
+}
+
+// A rebuild under the enlarged view keeps what is typed there (review
+// 5688707257 #1).
+func TestRebuildKeepsTheEnlargedText(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	var body *huh.Text
+	for txt, e := range m.jobs.formSpec.texts {
+		if e.ptr == &v.body {
+			body = txt
+		}
+	}
+	focusField(t, m.jobs.form, body)
+	m, _ = update(m, keyCtrlE)
+	if !m.enlarge.open {
+		t.Fatal("ctrl+e should enlarge Body")
+	}
+	_ = m.rebuildActionForm(surfaceJobs, v)
+	var rebuilt *huh.Text
+	for txt, e := range m.jobs.formSpec.texts {
+		if e.ptr == &v.body {
+			rebuilt = txt
+		}
+	}
+	m = typeIn(m, "kept")
+	m, _ = update(m, keyCtrlE) // close: write back
+	focusField(t, m.jobs.form, rebuilt)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyTab}) // blur writes the field back
+	if !strings.Contains(v.body, "kept") {
+		t.Errorf("body = %q, want the enlarged edit kept", v.body)
+	}
+}
