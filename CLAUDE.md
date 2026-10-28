@@ -147,7 +147,8 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17). Every
+Active feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17;
+**implemented** — T001–T042 done, T043 manual quickstart pending). Every
 action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`), **Effort** (`/effort
 low|medium|high|xhigh|max|auto`; **ultracode dropped** — it is a sticky session toggle, research R1) and **Clear**
 (`/clear`), on by default incl. existing actions (absent `Action.sequence` = defaults), plus custom pre/post prompts

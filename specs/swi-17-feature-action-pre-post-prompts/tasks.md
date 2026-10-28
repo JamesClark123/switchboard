@@ -985,7 +985,7 @@ the run surfaces.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T041 [P] Docs: the README's orchestrator section covers the action sequence, the defaults, the holds and the
+- [X] T041 [P] Docs: the README's orchestrator section covers the action sequence, the defaults, the holds and the
   R/S/X controls. `CLAUDE.md` (SPECKIT block) marks the implementation as done. The `specs/009-orchestrator`
   cross-reference notes that delivery is per step for runs with steps.
 - [ ] T042 Gates: `make proto` output checked in, then `golangci-lint fmt ./...` and `make fmt-check vet lint
