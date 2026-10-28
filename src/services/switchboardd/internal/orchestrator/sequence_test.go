@@ -513,7 +513,7 @@ func TestReportOnHaltedActionPrompt(t *testing.T) {
 	})
 	run := callSeq(t, env, o, "1")
 	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
-	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	waitSentSeen(t, rt, run.GetId())
 	env.clock.Advance(sentGrace)
 	r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
 	if !r.GetStepUnconfirmed() {
