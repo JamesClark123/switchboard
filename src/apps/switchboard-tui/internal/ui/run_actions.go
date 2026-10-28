@@ -112,6 +112,9 @@ type orchOpState struct {
 	// review). While saving, ctrl+s does nothing and esc/ctrl+c leave at once.
 	formSaving bool
 	formToken  uint64
+	// refusedFor is the token of the in-flight call the open form's last ctrl+s
+	// was refused as a duplicate of; only that call's reply settles the notice.
+	refusedFor uint64
 	// status is the surface's own line (refusals, transient hints); the footer
 	// keeps the outcome of the last mutation.
 	status string
@@ -155,7 +158,7 @@ func (m *Model) closeOpForm(s orchSurface) {
 	op := m.opState(s)
 	op.form, op.formVals, op.formKind, op.formTarget = nil, nil, "", orchTarget{}
 	op.formBuild, op.formSpec, op.formBaseline = nil, nil, nil
-	op.formSaving, op.formToken = false, 0
+	op.formSaving, op.formToken, op.refusedFor = false, 0, 0
 }
 
 // newOrchForm builds a huh form in the package's form style (the 008 pattern:

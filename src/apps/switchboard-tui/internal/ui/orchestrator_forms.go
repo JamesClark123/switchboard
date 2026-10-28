@@ -487,8 +487,9 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 	}
 	// The same call from a form left mid-save is still in flight.
 	key := opCallKey(op)
-	if _, busy := m.opCalls[key]; busy {
+	if tok, busy := m.opCalls[key]; busy {
 		op.status = "the same " + opCallLabel(op) + " is still saving; its result will show on the footer"
+		op.refusedFor = tok
 		return m, nil
 	}
 	label := opCallLabel(op)
@@ -598,8 +599,9 @@ func trimLines(s string) string {
 
 // opCallLabel names an op form's call ("call review-pr on alpha-bot", "save
 // action triage on alpha-bot", "save event poll (tev-1) on alpha-bot"). A save
-// names what it saves, so a notice settled by label never takes another save's
-// outcome; an edited event adds its id, since event names need not be unique.
+// names what it saves, and an edited event adds its id since event names need
+// not be unique. Labels are for display only: a refusal is settled by the
+// refused-for call's token (orchOpState.refusedFor), never by its label.
 func opCallLabel(op *orchOpState) string {
 	verb := op.formKind
 	if verb == "action" || verb == "event" {
@@ -619,7 +621,7 @@ func savedName(vals any) string {
 	case *eventFormVals:
 		name := strings.TrimSpace(v.name)
 		if v.id != "" {
-			name += " (" + v.id + ")"
+			name = strings.TrimSpace(name + " (" + v.id + ")")
 		}
 		return name
 	}

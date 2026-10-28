@@ -1259,3 +1259,41 @@ func TestGuardSaveLabelNamesTheEventID(t *testing.T) {
 		t.Errorf("tev-1's reply should settle its refusal: %q", m.jobs.status)
 	}
 }
+
+// Review run-517: new events have no id, so two same-named (or unnamed) creates
+// share a label; the refusal is settled by the refused-for call's token, so only
+// that call's reply settles it.
+func TestGuardRefusalSettlesByCallNotLabel(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host",
+		Actions: []*pb.Action{{Name: "triage", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "x"}}}}}}
+	for _, name := range []string{"poll", ""} {
+		m := openJobs(sized(New(a, "/work")))
+		m.jobs.tab = jobsEvents
+		saveNew := func(m Model, minutes string) (Model, tea.Cmd) {
+			m, _ = update(m, press("a"))
+			v := m.jobs.formVals.(*eventFormVals)
+			v.name, v.intervalMinutes = name, minutes
+			return update(m, ctrlS())
+		}
+		m, cmd15 := saveNew(m, "15")
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+		m, cmd30 := saveNew(m, "30")
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+		m, again := saveNew(m, "15")
+		if again != nil || !strings.Contains(m.jobs.status, "is still saving") {
+			t.Fatalf("%q: the reopened save should be refused: %q", name, m.jobs.status)
+		}
+		m, _ = update(m, runCmd(cmd30))
+		if !strings.Contains(m.jobs.status, "is still saving") {
+			t.Errorf("%q: the 30m create's reply settled the 15m refusal: %q", name, m.jobs.status)
+		}
+		m, _ = update(m, runCmd(cmd15))
+		if !strings.Contains(m.jobs.status, "finished") {
+			t.Errorf("%q: the 15m create's reply should settle its refusal: %q", name, m.jobs.status)
+		}
+	}
+	unnamed := &orchOpState{formKind: "event", formVals: &eventFormVals{id: "tev-1"}, formTarget: orchTarget{name: "alpha-bot"}}
+	if got := opCallLabel(unnamed); got != "save event (tev-1) on alpha-bot" {
+		t.Errorf("an unnamed edited event's label: %q", got)
+	}
+}
