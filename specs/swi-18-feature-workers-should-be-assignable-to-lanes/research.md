@@ -459,10 +459,12 @@ return their own types, so a check answer would need a different shape per RPC.
   drops `attach_ticket` (its field-by-field rebuild, `W/controller.go:146-149`), so its records arrive with no
   ticket id even when lanes were picked. For a revision-0 record with no ticket id:
   - an unexpired ticket bound to its sandbox id → that ticket's lanes (ticket consumed);
-  - otherwise, for a **listing or event** record (never an `attachReply`: the orchestrator knows whether that attach
-    wrote a ticket, and one that wrote none adopts into the open lane), the **oldest** unexpired launch ticket bound
-    to its host and issued before the sandbox's `created_at` (`Sandbox` field 12) → `lanes_pending`, and that ticket
-    is consumed, so one launch accounts for at most one pending adoption (re-review run-602);
+  - otherwise, for a **listing** record (revision-0 events never adopt, and never an `attachReply`: the orchestrator
+    knows whether that attach wrote a ticket, and one that wrote none adopts into the open lane), the **oldest**
+    unexpired launch ticket bound to its host and issued no later than `ticketSkew` (10 min) after the sandbox's
+    `created_at` (`Sandbox` field 12) → `lanes_pending`, and that ticket is consumed, so one launch accounts for at
+    most one pending adoption (re-review run-602). `issued_at` and `created_at` come from different daemons' clocks,
+    and the margin keeps a worker host whose clock runs behind from failing open (re-review run-610);
   - with neither, it is an open-lane worker, as today. The TUI also hides the lane step when the
   **target host's** daemon lacks the `lanes` capability (R15), so this is the second line of defence.
 - **Commit after an adoption** finds the ticket gone and the entry present; it changes nothing (L4.4).
@@ -623,6 +625,13 @@ dev builds.
     Removals are classified by state and stay terminal.
   - Its `AttachController` drops `attach_ticket`. Adoption fails closed (R11): a sandbox-bound ticket gives its
     lanes, a host-bound launch ticket gives *lanes pending*, and the TUI doesn't offer the lane step for that host.
+  - **Known limitation (follow-up, re-review run-610).** The launch-ticket fallback sees only unexpired tickets, and
+    such a host adopts only on a listing, which happens on (re)connect or after `events_dropped`. A laned launch on
+    a pre-lanes host that isn't listed within the 24 h `attachTicketTTL` therefore adopts into the open lane. That
+    needs the lane step to have been offered for a host without `lanes`, which the TUI prevents (R15), so it only
+    arises after a downgrade (already unsupported, below) or from a client that skips the capability check. Keeping
+    expired host-bound tickets until the host's next listing would close it, but adds a ticket state. It is left
+    for a follow-up; until then, update every host before using lanes (quickstart).
   - The Daemons screen already flags version skew; the quickstart notes that all hosts should be updated together.
 - **Downgrade** (unverified): Go protobuf keeps unknown fields when an older binary rewrites a record, so a downgraded
   host would carry its last `revision` forward unchanged, and its later writes would look stale to the roster until

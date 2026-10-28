@@ -144,8 +144,9 @@ depends on this phase.
     evicts the cache, and a replayed older event then cannot re-adopt it;
   - on a revision-0 host: an event never adopts or drops; a detach reply then a buffered pre-detach event leaves the
     worker detached; a listing still adopts; a record with no ticket id but an outstanding ticket gets the ticket's
-    lanes (sandbox-bound) or `lanes_pending` (host-bound launch ticket, listing or event only); the launch-ticket
-    fallback consumes the oldest ticket issued before the sandbox's `created_at`, so a second ticketless adoption on
+    lanes (sandbox-bound) or `lanes_pending` (host-bound launch ticket, listing only); the launch-ticket
+    fallback consumes the oldest ticket issued no later than `ticketSkew` (10 min) after the sandbox's `created_at`
+    (a host whose `created_at` is 5 min behind the ticket still matches, one 15 min behind doesn't), so a second ticketless adoption on
     that host joins the open lane; an `attachReply` from an attach that wrote no ticket joins the open lane even
     with a launch ticket outstanding;
   - `TestRosterFreshness` generates revision-0 hosts and bare DESTROYING records, and models `input.cache`;
@@ -562,7 +563,9 @@ clear them and see `open lane` (quickstart Scenarios 1, 3, 4).
   - the bundle is fetched **before** the wizard closes (today it is fetched after, `UI/launch.go:793-801`), so a
     refusal returns to the lane step with the message and the picker reloaded, keeping sources, kits and name. The
     fetch is a `tea.Cmd` (never a call inside `Update`): the lane step shows `fetching bundle…`, ignores the keys
-    that would launch, and `esc` cancels the request. A ticket for a launch that is then cancelled, or fails before
+    that would launch, and `esc` cancels the request. Each fetch carries a sequence number (`bundleSeq`, bumped on
+    every fetch and on `esc`, `H`, `O` and any lane change); a `bundleMsg` whose number isn't the current one is
+    dropped (re-review run-610). A ticket for a launch that is then cancelled, or fails before
     the sandbox exists, is left to expire (it counts toward the 256-ticket cap meanwhile);
   - `H` after `O` clears the chosen orchestrator and lanes (`UI/launch.go:650-657`).
 - [ ] T043 [US4] Sandbox-list detach (`o` on a worker) in `confirmDetach` (`UI/orchestrator_attach.go:188-205`):
@@ -589,6 +592,8 @@ clear them and see `open lane` (quickstart Scenarios 1, 3, 4).
   - launch sends `GetWorkerBundle` with the daemon host id + lanes, and a refusal keeps the wizard open;
   - `H` after `O` clears the orchestrator and lanes;
   - a slow bundle fetch doesn't block input, and `esc` while fetching cancels it;
+  - a stale bundle reply is ignored: start a fetch, change the host with `H` (and, separately, re-tick a lane), then
+    deliver the old reply; nothing launches and the wizard stays on the new selection;
   - the open-lane confirm for a target daemon without `lanes`: `y` attaches with no lanes, `n` attaches nothing;
   - no `l` picker, attach step or launch step without the capability on the orchestrator's daemon, and no attach or
     launch step without it on the target host's daemon;

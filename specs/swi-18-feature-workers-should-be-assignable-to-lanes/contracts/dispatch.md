@@ -98,7 +98,7 @@ names no controller) is never adopted, and a detach reply older than a cached re
 | fresh, names this orchestrator as reasoning | keep | adopt as reasoning only if its id is `reasoning_sandbox_id`, or the input is a listing and `reasoning_sandbox_id` is empty (today's recovery); never from an event otherwise |
 | stale or repeated | cache only | cache only |
 | revision-0 event (host predates lanes) | cache only | cache only |
-| revision-0 record, no ticket id, adoptable (listing or reply) | – | sandbox-bound ticket → its lanes (consumed); else, for a listing or event (not an `attachReply`), the oldest host-bound launch ticket issued before the sandbox's `created_at` → `lanes_pending` (consumed); neither → open lane |
+| revision-0 record, no ticket id, adoptable (listing, or this orchestrator's reply) | – | sandbox-bound ticket → its lanes (consumed); else, for a listing (never an event or an `attachReply`), the oldest host-bound launch ticket issued no later than `ticketSkew` (10 min) after the sandbox's `created_at` → `lanes_pending` (consumed); neither → open lane |
 | removal event / DESTROYING record, any revision | drop; mark `removed`; evict cache | mark `removed` only if the id already has a mark or is cached as naming this orchestrator; otherwise ignored, as today; evict cache |
 | listing absence, entry `written_seq ≤ requested_seq` | drop; mark `removed` | – |
 | listing absence, entry written after the request | keep | – |
