@@ -234,7 +234,7 @@ TRANSPORT STATUS GATEWAY DETAIL` (no URL column — kind from TRANSPORT, STATUS/
 own line, `mcp rm` prompts `(y/N)` unless `--force` (always passed), `sbx create … --kit … --static-mcp a,b`
 composes, `mcp load <name> --sandbox <N>` works right after create in both gateway modes, and `sbx kit add`
 recreates the container under the same name and refuses blocked sections with `error: kit "<kit>" declares
-<section>, which the kit-add recreate flow does not yet apply; …`; `sbx ls --json` matches `IsRunning`'s three keys;
+<section>, which the kit-add recreate flow does not yet apply; …`; `sbx ls --json` matches `ListStatuses`' three keys (formerly `IsRunning`; SWI-13);
 `sbx start` **does not exist** — `SbxRunner.Start` is now the no-op `sbx exec <N> true`, which starts a
 stopped sandbox in place (`bringUp` had always fallen back to destroy + relaunch; `sbx run -d --name` also
 resumes but leaves a detached agent). Scenario 0 / T003 complete 2026-10-12; only T063 (real-host

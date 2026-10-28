@@ -62,6 +62,9 @@ type Server struct {
 	worker       *worker.Service
 	orchestrator *orchestrator.Service
 
+	// reconcile throttles the registry-vs-runtime check ListSandboxes runs (SWI-13).
+	reconcile reconcileGate
+
 	grpc *grpc.Server
 }
 
@@ -169,9 +172,12 @@ func NewServer(cfg Config) *Server {
 				}
 				// Same for port-forwarded services (feature 006, FR-048): every one
 				// of this sandbox's services stops, releasing its ports, so a stop or
-				// destroy never leaves an orphan holding a port.
+				// destroy never leaves an orphan holding a port. Only STOPPED and
+				// DESTROYING mean the container is down; CREATING (a kit being
+				// attached) and ERROR leave it up, so its services are signalled.
 				if s.services != nil {
-					s.services.StopAll(sb.GetId())
+					down := sb.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED || sb.GetState() == pb.SandboxState_SANDBOX_STATE_DESTROYING
+					s.services.StopAll(sb.GetId(), down)
 				}
 			}
 			if cfg.Hub != nil {
@@ -246,7 +252,8 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 
 // ListSandboxes returns every sandbox known to this daemon (FR-017), each
 // enriched with its live terminal-attachment count (feature 003, FR-008).
-func (s *Server) ListSandboxes(_ context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+func (s *Server) ListSandboxes(ctx context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+	s.reconcileSandboxes(ctx)
 	all, err := s.mgr.List()
 	if err != nil {
 		return nil, err

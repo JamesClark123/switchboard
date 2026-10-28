@@ -295,3 +295,42 @@ func TestRefreshReseedsEditedSet(t *testing.T) {
 		t.Errorf("sources after refresh = %+v, want exactly repo-b", out.GetSources())
 	}
 }
+
+// stopFailingRunner fails every Stop and leaves the container as it was.
+type stopFailingRunner struct{ *fakeRunner }
+
+func (r *stopFailingRunner) Stop(context.Context, string) error { return errors.New("stop failed") }
+
+// SWI-13 review: STOPPED tells the teardown the container is down, so its
+// in-sandbox services are not signalled. A refresh whose stop failed emits
+// that only when the runtime no longer lists the container running; a
+// container still up reads CREATING, so its services are stopped rather than
+// orphaned.
+func TestRefreshWhoseStopFailedTearsDownByTheRuntimeState(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		running bool
+		want    pb.SandboxState
+	}{
+		{"container still up", true, pb.SandboxState_SANDBOX_STATE_CREATING},
+		{"container already down", false, pb.SandboxState_SANDBOX_STATE_STOPPED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, runner, dir := newTestManager(t)
+			sb, _ := launchOne(t, m, dir, "proj")
+			runner.mu.Lock()
+			runner.running[sb.GetContainerRef()] = tc.running
+			runner.mu.Unlock()
+			m.runner = &stopFailingRunner{runner}
+
+			var states []pb.SandboxState
+			m.SetOnChange(func(s *pb.Sandbox) { states = append(states, s.GetState()) })
+			if _, err := m.Refresh(context.Background(), sb.GetId(), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if len(states) < 2 || states[0] != tc.want {
+				t.Errorf("refresh emits %v; want %v first", states, tc.want)
+			}
+		})
+	}
+}

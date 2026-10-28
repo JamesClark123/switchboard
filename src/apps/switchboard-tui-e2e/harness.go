@@ -57,14 +57,26 @@ func stubSbx(t *testing.T) string {
 echo "$*" >> "` + filepath.Join(dir, "sbx.log") + `"
 case "$1" in
   version) echo "sbx version: v0.46.0 0411f50ee4700fe7bd37e6e7e3aced563e850ca9" ;;   # real format; >= sbxkit.MinSbxVersion so kit/gateway gates pass
-  create) echo "container-$3" ;;
-  ls) echo '{"sandboxes":[]}' ;;   # IsRunning parses ls --json
+  # Sandbox state lives in <dir>/sbx-state/<name> ("running"|"stopped") so ls
+  # answers like the real runtime: the daemon reconciles every list against it
+  # (SWI-13), and an always-empty listing would read as "everything stopped".
+  create) mkdir -p "` + dir + `/sbx-state"; echo running > "` + dir + `/sbx-state/$3"; echo "container-$3" ;;
+  stop) if [ -f "` + dir + `/sbx-state/$2" ]; then echo stopped > "` + dir + `/sbx-state/$2"; fi ;;
+  rm) rm -f "` + dir + `/sbx-state/$2" ;;
+  ls)
+    printf '{"sandboxes":['; sep=''
+    for f in "` + dir + `"/sbx-state/*; do
+      [ -f "$f" ] || continue
+      printf '%s{"name":"%s","id":"%s","status":"%s"}' "$sep" "$(basename "$f")" "$(basename "$f")" "$(cat "$f")"; sep=','
+    done
+    echo ']}' ;;
   exec)
     # feature 009: the daemon's agent PTY runs "sbx exec -it <ref> bash -lc ...";
     # the stub agent copies everything typed into it to <dir>/agent-<ref>.in so a
     # test can assert what a delivered run looked like. "sbx exec <ref> true"
-    # (resume) just succeeds.
-    if [ "$2" = "-it" ]; then cat > "` + dir + `/agent-$3.in"; fi ;;
+    # (resume) starts the sandbox.
+    if [ "$2" = "-it" ]; then cat > "` + dir + `/agent-$3.in"
+    elif [ -f "` + dir + `/sbx-state/$2" ]; then echo running > "` + dir + `/sbx-state/$2"; fi ;;
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.
     case "$2 $3" in

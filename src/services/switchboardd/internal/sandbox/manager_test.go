@@ -54,6 +54,10 @@ type fakeRunner struct {
 	loadErrRef    map[string]string // same, keyed "<ref> <name>" and checked first (a failure on one handle only)
 	launchOut     string            // with failNext: Launch streams this output before failing
 	lastStaticMcp []string
+	// SWI-13: listErr makes ListStatuses fail (an unreadable runtime); lists
+	// counts ListStatuses calls.
+	listErr error
+	lists   int
 }
 
 func newFakeRunner() *fakeRunner { return &fakeRunner{running: map[string]bool{}} }
@@ -101,10 +105,21 @@ func (f *fakeRunner) Destroy(_ context.Context, ref string) error {
 	delete(f.running, ref)
 	return nil
 }
-func (f *fakeRunner) IsRunning(_ context.Context, ref string) (bool, error) {
+func (f *fakeRunner) ListStatuses(_ context.Context) (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.running[ref], nil
+	f.lists++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := map[string]string{}
+	for ref, up := range f.running {
+		out[ref] = "stopped"
+		if up {
+			out[ref] = "running"
+		}
+	}
+	return out, nil
 }
 func (f *fakeRunner) CloneRepo(_ context.Context, _, dest string, _ func(string)) error {
 	f.mu.Lock()
