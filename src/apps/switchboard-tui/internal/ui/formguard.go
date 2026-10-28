@@ -362,6 +362,18 @@ func (m Model) guardDirty(g guardSurface) bool {
 		return kitFingerprint(m.kitEditor.kit) != m.kitEditor.baseline
 	case gLaunch, gReasoning:
 		return !snapshotLaunch(m.launch).equal(m.launch.baseline)
+	case gSources:
+		return len(m.sourcesView.marked) > 0
+	case gSourcesBrowse:
+		return len(m.launch.selected) > 0
+	case gRename:
+		return strings.TrimSpace(m.rename.Value()) != m.renameInitial
+	case gTag:
+		return strings.TrimSpace(m.tagInput.Value()) != m.tagInitial
+	case gHostAdd:
+		return strings.TrimSpace(m.hosts.input.Value()) != ""
+	case gGroupAdd:
+		return strings.TrimSpace(m.groups.input.Value()) != ""
 	}
 	return false
 }
@@ -395,6 +407,23 @@ func (m Model) guardSave(g guardSurface) (Model, tea.Cmd) {
 		return guardResult(m.startLaunch())
 	case gReasoning:
 		return m.confirmRebuildFromSetup()
+	case gSources:
+		return guardResult(m.confirmRemoveSources(true))
+	case gSourcesBrowse:
+		return guardResult(m.submitSourcesBrowse())
+	case gRename:
+		// enter renames nothing on an empty name; Save says so instead (FR-011a).
+		if strings.TrimSpace(m.rename.Value()) == "" {
+			m.status = "name can't be empty"
+			return m, nil
+		}
+		return m.submitRename()
+	case gTag:
+		return m.submitTag()
+	case gHostAdd:
+		return m.submitHostAdd()
+	case gGroupAdd:
+		return m.submitGroupAdd()
 	}
 	return m, nil
 }
@@ -434,6 +463,18 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 		m.screen = screenList
 	case gReasoning:
 		m.screen = screenOrchDetail
+	case gSources:
+		m = m.leaveSources()
+	case gSourcesBrowse:
+		m.sourcesView.browsing = false
+	case gRename:
+		m = m.leaveRename()
+	case gTag:
+		m = m.leaveTag()
+	case gHostAdd:
+		m = m.leaveHostAdd()
+	case gGroupAdd:
+		m = m.leaveGroupAdd()
 	}
 	return m, nil
 }

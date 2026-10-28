@@ -222,15 +222,18 @@ type Model struct {
 
 	// launch wizard state (launch.go)
 	launch launchState
-	// rename input
-	rename     textinput.Model
-	renameID   string
-	renameHost string
+	// rename input; renameInitial is the trimmed name it opened with, for the
+	// unsaved-changes guard (SWI-9).
+	rename        textinput.Model
+	renameID      string
+	renameHost    string
+	renameInitial string
 
 	// US5: tag editor (mirrors rename).
-	tagInput textinput.Model
-	tagID    string
-	tagHost  string
+	tagInput   textinput.Model
+	tagID      string
+	tagHost    string
+	tagInitial string
 
 	// confirm backs the modal yes/no gate in front of destructive actions
 	// (feature 004); valid only while screen == screenConfirm.
@@ -1410,6 +1413,7 @@ func (m Model) enterRename(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	m.renameHost = host
 	m.rename.SetValue(sb.GetDisplayName())
 	m.rename.CursorEnd()
+	m.renameInitial = strings.TrimSpace(sb.GetDisplayName())
 	return m, m.rename.Focus()
 }
 
@@ -1420,24 +1424,34 @@ func (m Model) renameHelp() helpBindings {
 func (m Model) updateRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		m.rename.Blur()
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gRename)
 	case tea.KeyEnter:
-		id, name := m.renameID, strings.TrimSpace(m.rename.Value())
-		host := m.renameHost
-		m.rename.Blur()
-		m.screen = screenList
-		if name == "" {
-			return m, nil
-		}
-		m.busy[id] = "renaming"
-		m.refreshListItems()
-		return m, m.renameCmd(m.daemonForHost(host), id, name)
+		return m.submitRename()
 	}
 	var cmd tea.Cmd
 	m.rename, cmd = m.rename.Update(msg)
 	return m, cmd
+}
+
+// submitRename is enter: rename to the trimmed value (an empty one renames
+// nothing) and return to the list.
+func (m Model) submitRename() (Model, tea.Cmd) {
+	id, name := m.renameID, strings.TrimSpace(m.rename.Value())
+	host := m.renameHost
+	m = m.leaveRename()
+	if name == "" {
+		return m, nil
+	}
+	m.busy[id] = "renaming"
+	m.refreshListItems()
+	return m, m.renameCmd(m.daemonForHost(host), id, name)
+}
+
+// leaveRename closes the input without renaming.
+func (m Model) leaveRename() Model {
+	m.rename.Blur()
+	m.screen = screenList
+	return m
 }
 
 func (m Model) viewRename() string {

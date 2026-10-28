@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -625,5 +626,256 @@ func TestGuardTextKeysAreTyped(t *testing.T) {
 		if got := get(m); got != "q," || m.screen != screen || m.unsaved.open {
 			t.Errorf("%s: value %q screen %v dialog %v, want q, typed and nothing else", name, got, m.screen, m.unsaved.open)
 		}
+	}
+}
+
+// --- US3: inline inputs, launch, reasoning setup, sources ---
+
+func TestGuardRenameAndTag(t *testing.T) {
+	noKeyGrace(t)
+	d := &fakeDaemon{}
+	m := listModel(t, d)
+	sb := d.sandboxes[0]
+	open := func() Model {
+		mm, _ := m.enterRename(sb, "")
+		return mm.(Model)
+	}
+	// Whitespace around the name is not a change.
+	r := open()
+	r = typeIn(r, " ")
+	r, _ = update(r, tea.KeyMsg{Type: tea.KeyEsc})
+	if r.unsaved.open || r.screen != screenList {
+		t.Fatal("a whitespace-only change should close with no dialog")
+	}
+	// Emptied: Save stays open with the message; Discard keeps the name.
+	r = open()
+	r.rename.SetValue("")
+	r, _ = update(r, tea.KeyMsg{Type: tea.KeyEsc})
+	r, _ = update(r, press("s"))
+	if r.screen != screenRename || r.status != "name can't be empty" {
+		t.Fatalf("empty Save: screen %v status %q", r.screen, r.status)
+	}
+	r, _ = update(r, tea.KeyMsg{Type: tea.KeyEsc})
+	r, _ = update(r, press("d"))
+	if r.screen != screenList || r.busy[sb.GetId()] != "" || sb.GetDisplayName() != "feature-work" {
+		t.Fatalf("Discard: screen %v busy %q name %q", r.screen, r.busy[sb.GetId()], sb.GetDisplayName())
+	}
+	// Changed: Save renames, as enter does.
+	r = open()
+	r = typeIn(r, "-2")
+	r, _ = update(r, tea.KeyMsg{Type: tea.KeyEsc})
+	r, cmd := update(r, press("s"))
+	runCmd(cmd)
+	if r.screen != screenList || sb.GetDisplayName() != "feature-work-2" {
+		t.Fatalf("Save: screen %v name %q", r.screen, sb.GetDisplayName())
+	}
+
+	// Tag: clearing it is a change, and Save clears it.
+	sb.Tag = "wip"
+	mm, _ := m.enterTag(sb, "")
+	tg := mm.(Model)
+	tg.tagInput.SetValue("")
+	tg, _ = update(tg, tea.KeyMsg{Type: tea.KeyEsc})
+	if !tg.unsaved.open {
+		t.Fatal("clearing the tag should ask")
+	}
+	tg, cmd = update(tg, press("s"))
+	runCmd(cmd)
+	if tg.screen != screenList || d.lastTagID != sb.GetId() || d.lastTag != "" {
+		t.Fatalf("Save should clear the tag: %q %q", d.lastTagID, d.lastTag)
+	}
+	// ctrl+c in the input is unchanged: nothing happens.
+	mm, _ = m.enterTag(sb, "")
+	tg = typeIn(mm.(Model), "x")
+	tg, _ = update(tg, ctrlC)
+	if tg.screen != screenTag || tg.unsaved.open {
+		t.Error("ctrl+c on the tag input should do nothing")
+	}
+}
+
+func TestGuardHostAndGroupAdd(t *testing.T) {
+	noKeyGrace(t)
+	s, _ := store.New(t.TempDir())
+	m := sized(New(&fakeDaemon{}, "/work").WithHosts(client.NewManager(), s.Hosts(), "").WithGroups(s.Groups(), nil))
+	m, cmd := update(m, press("h"))
+	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, press("a"))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.hosts.adding {
+		t.Fatal("esc on an empty host input should close it")
+	}
+	m, _ = update(m, press("a"))
+	m = typeIn(m, "box")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, press("s"))
+	if hosts, _ := s.Hosts().List(); len(hosts) != 1 || m.hosts.adding {
+		t.Fatalf("Save should add the host: %d", len(hosts))
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc}) // back to the list
+	m, cmd = update(m, press("g"))
+	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, press("a"))
+	m = typeIn(m, "team")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, press("d"))
+	if groups, _ := s.Groups().List(); len(groups) != 0 || m.groups.adding {
+		t.Fatalf("Discard should add nothing: %d", len(groups))
+	}
+}
+
+// launchWith opens the launch wizard over root with two folders to pick.
+func launchWith(t *testing.T) (Model, *fakeDaemon) {
+	t.Helper()
+	root := t.TempDir()
+	for _, d := range []string{"lib", "proj"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &fakeDaemon{}
+	m := pressCmd(sized(New(d, root)), "n")
+	if m.screen != screenLaunch || len(m.launch.entries) < 2 {
+		t.Fatalf("launch wizard not open: %v %d entries", m.screen, len(m.launch.entries))
+	}
+	return m, d
+}
+
+func TestGuardLaunchWizard(t *testing.T) {
+	noKeyGrace(t)
+	m, _ := launchWith(t)
+	m, _ = update(m, press(" "))
+	m, _ = update(m, press("j"))
+	m, _ = update(m, press(" "))
+	// The name field's esc is a step back, not an exit.
+	m, _ = update(m, press("N"))
+	m = typeIn(m, "box")
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.screen != screenLaunch || m.launch.naming {
+		t.Fatal("esc in the name field should only leave the field")
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open || m.unsaved.surface != gLaunch || !strings.Contains(m.View(), "This launch has choices") {
+		t.Fatal("esc with two folders picked should ask")
+	}
+	m, _ = update(m, press("s"))
+	if m.screen != screenList || len(m.launching) != 1 {
+		t.Fatalf("Save should launch: screen %v launching %d", m.screen, len(m.launching))
+	}
+	// Nothing picked: esc leaves at once.
+	m, _ = launchWith(t)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.screen != screenList {
+		t.Fatal("esc on an untouched wizard should close it")
+	}
+}
+
+func TestGuardReasoningSetupOrderAndPicker(t *testing.T) {
+	noKeyGrace(t)
+	m, _ := editedReasoningSetup(t)
+	// Un-marking and re-marking a pre-filled folder moves it last: a change.
+	m.launch.order = append([]string{}, m.launch.order[1], m.launch.order[0])
+	m.launch.cloneMode = false
+	if !m.guardDirty(gReasoning) {
+		t.Fatal("a re-ordered selection is a different rebuild")
+	}
+	// The kit picker's esc is a step back, not an exit.
+	m.launch.kitPick = true
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.screen != screenLaunch {
+		t.Fatal("esc in the kit picker should only close the picker")
+	}
+	if h := m.renderHelp(m.launchHelp()); !strings.Contains(h, "rebuild") || strings.Contains(h, "orchestrator") {
+		t.Errorf("setup help %q should offer rebuild and no N/H/O", h)
+	}
+}
+
+// openSourcesOverlay opens S on the one sandbox (sources api, web).
+func openSourcesOverlay(t *testing.T) (Model, *fakeDaemon) {
+	t.Helper()
+	d := &fakeDaemon{}
+	m, _ := sourcesModel(t, d)
+	m, _ = update(m, press("S"))
+	if m.screen != screenSources {
+		t.Fatalf("S should open the sources overlay, screen %v", m.screen)
+	}
+	return m, d
+}
+
+func TestGuardSourcesOverlay(t *testing.T) {
+	noKeyGrace(t)
+	m, _ := openSourcesOverlay(t)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.screen != screenList {
+		t.Fatal("esc with no marks should close the overlay")
+	}
+	m, d := openSourcesOverlay(t)
+	m, _ = update(m, press(" "))
+	m, _ = update(m, press("q"))
+	if !m.unsaved.open || !strings.Contains(m.View(), "These marked folders") {
+		t.Fatal("q with a folder marked should ask")
+	}
+	// Save → the removal confirm (y only); n keeps the marks and the overlay.
+	m, _ = update(m, press("s"))
+	if m.screen != screenConfirm || !m.confirm.yOnly || m.confirm.onAccept == nil {
+		t.Fatalf("Save should open the y-only removal confirm: %v %+v", m.screen, m.confirm.yOnly)
+	}
+	m, _ = update(m, press("n"))
+	if m.screen != screenSources || len(m.sourcesView.marked) != 1 {
+		t.Fatalf("n: screen %v marks %d", m.screen, len(m.sourcesView.marked))
+	}
+	// enter@Save, then repeated enters, remove nothing.
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	for range 4 {
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if m.screen != screenConfirm || len(d.removedSources) != 0 {
+		t.Fatalf("enters must not remove: screen %v removed %v", m.screen, d.removedSources)
+	}
+	// y removes, lands on the list (the zero-value screen) and resets the overlay.
+	m, cmd := update(m, press("y"))
+	runCmd(cmd)
+	if m.screen != screenList || m.sourcesView.sandboxID != "" || len(d.removedSources["sb-1"]) != 1 {
+		t.Fatalf("y: screen %v overlay %+v removed %v", m.screen, m.sourcesView.sandboxID, d.removedSources)
+	}
+	// The overlay's own removal key still accepts enter.
+	m, d = openSourcesOverlay(t)
+	m, _ = update(m, press("d"))
+	if m.screen != screenConfirm || m.confirm.yOnly {
+		t.Fatal("d should open an ordinary confirm")
+	}
+	m, cmd = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	runCmd(cmd)
+	if m.screen != screenSources || len(d.removedSources["sb-1"]) != 1 {
+		t.Fatalf("enter on d's confirm: screen %v removed %v", m.screen, d.removedSources)
+	}
+	// ctrl+c on the overlay is unchanged: nothing.
+	m, _ = update(m, ctrlC)
+	if m.screen != screenSources || m.unsaved.open {
+		t.Error("ctrl+c on the overlay should do nothing")
+	}
+}
+
+func TestGuardSourcesAddBrowser(t *testing.T) {
+	noKeyGrace(t)
+	m, _ := openSourcesOverlay(t)
+	m = pressCmd(m, "a")
+	if !m.sourcesView.browsing {
+		t.Fatal("a should open the add browser")
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.unsaved.open || m.sourcesView.browsing || m.screen != screenSources {
+		t.Fatal("esc with nothing selected should go back to the overlay")
+	}
+	m = pressCmd(m, "a")
+	m, _ = update(m, press(" "))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open || m.unsaved.surface != gSourcesBrowse {
+		t.Fatal("esc with a folder selected should ask")
+	}
+	m, _ = update(m, press("d"))
+	if m.unsaved.open || m.sourcesView.browsing || m.screen != screenSources {
+		t.Fatalf("Discard should return to the overlay: browsing %v screen %v", m.sourcesView.browsing, m.screen)
 	}
 }

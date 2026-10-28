@@ -297,17 +297,17 @@ dialog, with the step-back keys untouched.
 dialog; the reasoning setup's Save is labelled Rebuild; sources Save → removal confirm, decline returns, confirm
 closes.
 
-- [ ] T021 [US3] Rename (`gRename`) in `UI/app.go`:
+- [X] T021 [US3] Rename (`gRename`) in `UI/app.go`:
   - Record `renameInitial = TrimSpace(display name)` in `enterRename`.
   - Dirty = `TrimSpace(value) != renameInitial`; esc → `requestExit`.
   - Save = the enter path, except an empty trimmed value keeps the input open with status "name can't be empty"
     (FR-011a). enter's own behaviour is unchanged.
   - Leave = today's esc.
-- [ ] T022 [US3] Tag (`gTag`) in `UI/tageditor.go`, add host (`gHostAdd`) in `UI/hosts.go` and add group
+- [X] T022 [US3] Tag (`gTag`) in `UI/tageditor.go`, add host (`gHostAdd`) in `UI/hosts.go` and add group
   (`gGroupAdd`) in `UI/groups.go`:
   - trimmed-initial dirty checks: the tag; `""` for host and group;
   - esc → `requestExit`; Save = the enter path (an empty tag clears it); Leave = today's esc.
-- [ ] T023 [US3] Launch wizard (`gLaunch`) and reasoning setup (`gReasoning`) in `UI/launch.go` and
+- [X] T023 [US3] Launch wizard (`gLaunch`) and reasoning setup (`gReasoning`) in `UI/launch.go` and
   `UI/orchestrator_reasoning.go`:
   - Add `launchState.baseline = snapshotLaunch(...)` set in `enterLaunch`, `enterLaunchWithConfig` and
     `enterReasoningSetup` (after the saved-setup prefill).
@@ -318,7 +318,7 @@ closes.
     `startReasoningRebuildFromSetup`.
   - Leave = today's esc (list or orchestrator detail).
   - Align `launchHelp` in reasoning mode with the modal help: no N/H/O, and "enter rebuild" (R8).
-- [ ] T024 [US3] Sources overlay (`gSources`) and add browser (`gSourcesBrowse`) in `UI/sources.go` and
+- [X] T024 [US3] Sources overlay (`gSources`) and add browser (`gSourcesBrowse`) in `UI/sources.go` and
   `UI/confirm.go`:
   - Overlay dirty = `len(marked) > 0`; esc/q → `requestExit`. Save = `confirmRemoveSources(exitAfter=true)`, which sets
     `onAccept = func(m *Model) { m.screen = screenList; m.sourcesView = sourcesState{} }` (T006's hook; not an
@@ -327,7 +327,7 @@ closes.
     returns to `screenSources` with marks kept.
   - Browser dirty = `len(launch.selected) > 0`; esc → `requestExit`. Save = `dispatchAddSources`; Leave = back to the
     overlay.
-- [ ] T025 [US3] Tests in `UI/guard_surfaces_test.go`, `UI/sources_test.go` and `UI/launch_test.go`, covering US3
+- [X] T025 [US3] Tests in `UI/guard_surfaces_test.go`, `UI/sources_test.go` and `UI/launch_test.go`, covering US3
   #1–#7:
   - rename: whitespace-only change → no dialog; empty Save → stays open with the message, Discard keeps the name;
   - tag: cleared → Save clears it;

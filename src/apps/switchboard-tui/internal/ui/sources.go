@@ -155,9 +155,7 @@ func (m Model) updateSourcesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc", "q":
-		m.sourcesView = sourcesState{}
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gSources)
 	case "up", "k":
 		if m.sourcesView.cursor > 0 {
 			m.sourcesView.cursor--
@@ -177,9 +175,16 @@ func (m Model) updateSourcesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		return m.startSourcesBrowse()
 	case "d":
-		return m.confirmRemoveSources()
+		return m.confirmRemoveSources(false)
 	}
 	return m, nil
+}
+
+// leaveSources closes the overlay, dropping any marks.
+func (m Model) leaveSources() Model {
+	m.sourcesView = sourcesState{}
+	m.screen = screenList
+	return m
 }
 
 func (m Model) highlightedSource() (*pb.SourceRef, bool) {
@@ -214,8 +219,7 @@ func (m Model) startSourcesBrowse() (tea.Model, tea.Cmd) {
 func (m Model) updateSourcesBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.sourcesView.browsing = false
-		return m, nil
+		return m.requestExit(gSourcesBrowse)
 	case "up", "k":
 		m.launch.moveCursor(-1)
 	case "down", "j":
@@ -229,14 +233,19 @@ func (m Model) updateSourcesBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		m.launch.toggle()
 	case "enter":
-		sources := m.selectedSources()
-		if len(sources) == 0 {
-			m.sourcesView.status = "select at least one directory (space), then enter"
-			return m, nil
-		}
-		return m.dispatchAddSources(m.sourcesView.sandboxID, m.sourcesView.host, sources, false)
+		return m.submitSourcesBrowse()
 	}
 	return m, nil
+}
+
+// submitSourcesBrowse is the browser's enter: add the selected folders.
+func (m Model) submitSourcesBrowse() (tea.Model, tea.Cmd) {
+	sources := m.selectedSources()
+	if len(sources) == 0 {
+		m.sourcesView.status = "select at least one directory (space), then enter"
+		return m, nil
+	}
+	return m.dispatchAddSources(m.sourcesView.sandboxID, m.sourcesView.host, sources, false)
 }
 
 // folderNames renders the workspace folder names of a source set.
@@ -394,7 +403,11 @@ func (m Model) confirmAddOverride(msg sourcesAddResultMsg, name string) (tea.Mod
 // consequence. Marked folders are the targets; with none marked, the highlighted
 // folder is. The at-least-one floor is checked here too so the developer is told
 // before a round-trip (the daemon enforces it regardless, FR-061).
-func (m Model) confirmRemoveSources() (tea.Model, tea.Cmd) {
+//
+// exitAfter is the unsaved-changes dialog's Save: accepting also closes and
+// resets the overlay (onAccept), and the confirm takes y only (it opened from
+// a dialog key, not its own). Declining returns to the overlay, marks kept.
+func (m Model) confirmRemoveSources(exitAfter bool) (tea.Model, tea.Cmd) {
 	var targets []*pb.SourceRef
 	for _, src := range m.sourcesView.sources {
 		if m.sourcesView.marked[src.GetPath()] {
@@ -433,14 +446,19 @@ func (m Model) confirmRemoveSources() (tea.Model, tea.Cmd) {
 		dimStyle.Render("The sandbox keeps running; nothing restarts."),
 	)
 	id, host := m.sourcesView.sandboxID, m.sourcesView.host
-	return m.enterConfirm(confirmState{
+	st := confirmState{
 		title:     "Remove seeded folders?",
 		body:      body,
 		verb:      "removing",
 		sandboxID: id,
 		returnTo:  screenSources,
 		onConfirm: m.removeSourcesCmd(m.daemonForHost(host), id, paths),
-	})
+	}
+	if exitAfter {
+		st.onAccept = func(m *Model) { *m = m.leaveSources() }
+		st.yOnly = true
+	}
+	return m.enterConfirm(st)
 }
 
 // removeSourcesCmd performs one confirmed removal. The daemon is captured as a

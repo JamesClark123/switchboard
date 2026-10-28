@@ -364,6 +364,17 @@ func (m Model) launchHelp() helpBindings {
 	if m.launch.orchPick {
 		return helpBindings{hkey("↑/↓", "move"), hkey("enter", "select orchestrator"), hkey("esc", "cancel")}
 	}
+	if m.launch.reasoning != nil {
+		// The setup's name, host and orchestrator are fixed (N/H/O are inert).
+		return helpBindings{
+			hkey("space", "select"),
+			hkey("→/←", "open/up"),
+			hkey("m", "seeding mode"),
+			hkey("K", "kits"),
+			hkey("enter", "rebuild"),
+			hkey("esc", "cancel"),
+		}
+	}
 	return helpBindings{
 		hkey("space", "select"),
 		hkey("→/←", "open/up"),
@@ -551,11 +562,9 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		if reasoning {
-			m.screen = screenOrchDetail
-			return m, nil
+			return m.requestExit(gReasoning)
 		}
-		m.screen = screenList
-		return m, nil
+		return m.requestExit(gLaunch)
 	case "ctrl+s":
 		if reasoning {
 			return m.startReasoningRebuildFromSetup()

@@ -274,27 +274,37 @@ func (m Model) activateHost() (tea.Model, tea.Cmd) {
 func (m Model) updateHostAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		m.hosts.adding = false
-		m.hosts.input.Blur()
-		return m, nil
+		return m.requestExit(gHostAdd)
 	case tea.KeyEnter:
-		target := strings.TrimSpace(m.hosts.input.Value())
-		m.hosts.adding = false
-		m.hosts.input.Blur()
-		if target == "" {
-			return m, nil
-		}
-		host, err := m.hostStore.Save(store.KnownHost{Kind: "ssh", DisplayName: target, SSHTarget: target})
-		if err != nil {
-			m.hosts.status = "add failed: " + err.Error()
-			return m, nil
-		}
-		m.manager.Upsert(toEntry(*host))
-		return m, m.hostsCmd()
+		return m.submitHostAdd()
 	}
 	var cmd tea.Cmd
 	m.hosts.input, cmd = m.hosts.input.Update(msg)
 	return m, cmd
+}
+
+// submitHostAdd is enter: save the typed SSH target as a host (empty adds
+// nothing).
+func (m Model) submitHostAdd() (Model, tea.Cmd) {
+	target := strings.TrimSpace(m.hosts.input.Value())
+	m = m.leaveHostAdd()
+	if target == "" {
+		return m, nil
+	}
+	host, err := m.hostStore.Save(store.KnownHost{Kind: "ssh", DisplayName: target, SSHTarget: target})
+	if err != nil {
+		m.hosts.status = "add failed: " + err.Error()
+		return m, nil
+	}
+	m.manager.Upsert(toEntry(*host))
+	return m, m.hostsCmd()
+}
+
+// leaveHostAdd closes the input with nothing added.
+func (m Model) leaveHostAdd() Model {
+	m.hosts.adding = false
+	m.hosts.input.Blur()
+	return m
 }
 
 // enterHostPassword opens the masked SSH-password prompt for a host. The
