@@ -672,7 +672,7 @@ needs a custom post-prompt, which arrives in US2.
 
 ### Orchestrator sequence (research R5–R7)
 
-- [ ] T018 [US1] Create `SBD/orchestrator/sequence.go` with a per-sandbox **stepper**: one goroutine per sandbox
+- [X] T018 [US1] Create `SBD/orchestrator/sequence.go` with a per-sandbox **stepper**: one goroutine per sandbox
   with a run in sequence, **single-flight**, started on demand and stopped when the run is done or the orchestrator
   stops. `sandbox_changed`, the retry ticker and `ResolveRunStep` only *kick* it. Kicks during a call are
   **coalesced, never dropped**, and after **every** response the stepper re-evaluates `stepFinished` against the
@@ -722,13 +722,13 @@ needs a custom post-prompt, which arrives in US2.
 
   Add `stepRetryEvery = 2s` and `stepWaitNote = 10s` to `SBD/orchestrator/constants.go`. The retry ticker kicks
   steppers only while some run has a `PENDING` step on a reachable host.
-- [ ] T019 [US1] In `SBD/orchestrator/dispatch.go`, `dispatch` claims the worker for a run with `len(steps) > 0` and
+- [X] T019 [US1] In `SBD/orchestrator/dispatch.go`, `dispatch` claims the worker for a run with `len(steps) > 0` and
   kicks its stepper; it **never waits** on a step. Runs without steps keep `deliver` unchanged (FR-208).
   - **Claim:** record `sandbox_id`/`sandbox_host_id` on the still-QUEUED run before the first call. Dispatch skips
     QUEUED runs with a sandbox set, and `free()` counts that sandbox as busy.
   - Cancelling or failing a claimed QUEUED run clears the daemon's record (`UpdateWorker{set_run, expect_run_id}`
     with no run).
-- [ ] T020 [US1] In `SBD/orchestrator/runs.go`:
+- [X] T020 [US1] In `SBD/orchestrator/runs.go`:
   - `foldStatus` kicks the stepper for runs with steps; it does no step work inline.
   - Gate **`runAwaitingReview` itself** (so `armReview` and `reconcileInFlight`'s IDLE branch both obey it) on the action
     step having been accepted (`step_status` TURN or AWAIT_CLOSE on the ACTION step; FR-209, FR-214).
@@ -739,7 +739,7 @@ needs a custom post-prompt, which arrives in US2.
   - `toolReportCompletion` in `SBD/orchestrator/tools.go` refuses until the action prompt was delivered: the action
     step is TURN or AWAIT_CLOSE, **or** `controller.run.step_index` equals its index (only the response was lost).
     Otherwise: "the action prompt has not been delivered yet" (FR-211).
-- [ ] T021 [US1] Run close and holding runs in `SBD/orchestrator/runs.go` and `SBD/orchestrator/store.go`:
+- [X] T021 [US1] Run close and holding runs in `SBD/orchestrator/runs.go` and `SBD/orchestrator/store.go`:
   - `completeRun` and `MarkWorkerFree` close the run as today (FR-215). When CLEANUP steps exist, instead of
     `clearWorkerRun` they set `hold = CLEANING_UP` on the Run and `WorkerRun`, and set `step` to the first cleanup
     step, `PENDING`. If the sandbox isn't RUNNING, or its agent can't be typed into at close (EXITED, or an orphan
@@ -754,7 +754,7 @@ needs a custom post-prompt, which arrives in US2.
     `step_status == HALTED`, used by the stepper, folding, `ResolveRunStep` and hold release.
   - `onSandboxRemoved` and `Detach` of a held sandbox end its holding run's cleanup (DONE, `hold = NONE`).
   - `trimHistory` skips holding runs (FR-213 retention).
-- [ ] T022 [US1] Reconcile against the daemon record (`SBD/orchestrator/sequence.go`), on `sandbox_changed` and in
+- [X] T022 [US1] Reconcile against the daemon record (`SBD/orchestrator/sequence.go`), on `sandbox_changed` and in
   `reconcileInFlight`:
   - **Hold release:** a holding run whose sandbox's `controller.run` is no longer this run is finished: DONE, `hold
     = NONE`, any waiting retried Clear dropped (FR-216, run-538). The daemon ended the hold (T008).
@@ -763,10 +763,10 @@ needs a custom post-prompt, which arrives in US2.
     link blip never strands a run. Evidence-based finishing of SENT/TURN steps after a restart is T037.
   - **Halted repair:** a HALTED run whose `controller.run.halted` is false is re-pushed (as `repairReviewFlag` does).
   - **Stale records:** a worker record naming a finished run that isn't holding is cleared with `expect_run_id`.
-- [ ] T023 [US1] Reasoning sandbox (`SBD/orchestrator/reasoning.go`): `RebuildReasoningSandbox` is allowed while its
+- [X] T023 [US1] Reasoning sandbox (`SBD/orchestrator/reasoning.go`): `RebuildReasoningSandbox` is allowed while its
   sandbox is held. The old sandbox's removal ends the holding run's cleanup (T021), and the new sandbox starts free
   (research R7, FR-222).
-- [ ] T024 [US1] `ResolveRunStep` in `SBD/orchestrator/sequence.go`, wired in `SBD/grpc/orchestrator_rpcs.go`
+- [X] T024 [US1] `ResolveRunStep` in `SBD/orchestrator/sequence.go`, wired in `SBD/grpc/orchestrator_rpcs.go`
   (through the stepper):
   - **Guard**: the run is halted, or its CLEAR step is under a NEEDS_DEVELOPER hold (RETRY only), and `req.step`
     equals its step. SKIP on CLEAR or on ACTION_PROMPT is refused.
@@ -788,7 +788,7 @@ needs a custom post-prompt, which arrives in US2.
   - Clear `controller.run.halted` when the run leaves HALTED (SKIP, FAIL; RETRY clears it on the daemon), and with
     it `step_unconfirmed` and `step_sent_before_restart`, which are also cleared whenever `step` changes (test: a
     later halt of another step never shows `(may have run)`).
-- [ ] T025 [US1] Tests in `SBD/orchestrator/sequence_test.go`, with a fake `WorkerAPI` that scripts step outcomes,
+- [X] T025 [US1] Tests in `SBD/orchestrator/sequence_test.go`, with a fake `WorkerAPI` that scripts step outcomes,
   delays and `sandbox_changed`:
   - **Order and advance:** the default order; AGENT_LOCAL advances; TURN waits for the turn end; the INPUT_ONLY
     fallback finishes after 60 s of an empty box.
