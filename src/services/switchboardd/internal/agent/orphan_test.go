@@ -263,6 +263,52 @@ func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	}
 }
 
+// An auto-update repoints claude at a sibling version (or replaces the file)
+// while a running agent keeps the old executable: the agent is still alive,
+// still bindable, and still reaped.
+func TestProbeAfterAgentUpdate(t *testing.T) {
+	e := newAgentEnv(t)
+	data, err := os.ReadFile(e.claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, next := filepath.Join(e.bin, "2.1.311"), filepath.Join(e.bin, "2.1.312")
+	for _, f := range []string{old, next} {
+		if err := os.WriteFile(f, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running := e
+	running.claude = old
+	a := running.start(t, "plain", agentFlag)
+	pid := a.Process.Pid
+	if err := os.Remove(e.claude); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(next, e.claude); err != nil {
+		t.Fatal(err)
+	}
+	e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", pid, startTime(t, pid)))
+	r := e.run(t, ProbeScript())
+	if !r.File || !r.Alive() || r.AgentExe != next {
+		t.Fatalf("an updated agent read as %+v", r)
+	}
+	if p, ok := r.Main(); !ok || CheckProbed(p) != nil {
+		t.Errorf("an updated agent is not bindable: %+v %v", p, CheckProbed(p))
+	}
+	// The old version deleted from disk: still the agent.
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.run(t, ProbeScript()); !r.File || !r.Alive() {
+		t.Fatalf("an agent whose binary was deleted read as %+v", r)
+	}
+	if r := e.run(t, ReapScript(time.Second)); r.Reaped != 1 {
+		t.Errorf("reaped %d, want 1", r.Reaped)
+	}
+	waitFor(t, func() bool { return !alive(pid) })
+}
+
 func TestParseProbe(t *testing.T) {
 	r, err := ParseProbe("agent\t/c\nref\t1\t/x\nfile\t4\t10\t99\nproc\t10\t99\t1\t/c\t/x\tclaude\x1f--dangerously-skip-permissions\x1f\nreaped\t1\nnoise\n")
 	if err != nil || r.FileGen != 4 || r.RefPPID != 1 || r.RefPPIDExe != "/x" || len(r.Procs) != 1 || len(r.Procs[0].Cmdline) != 2 || r.Reaped != 1 {

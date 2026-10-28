@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -331,7 +332,7 @@ func CheckProbed(p ProbedAgent) error {
 	switch {
 	case p.PID <= 0 || p.Gen <= 0:
 		return fmt.Errorf("%w: no process", errProbeRefused)
-	case p.Exe == "" || p.Exe != p.AgentExe:
+	case !agentBinary(p.Exe, p.AgentExe):
 		return fmt.Errorf("%w: executable %q is not the agent binary", errProbeRefused, p.Exe)
 	case len(p.Cmdline) < len(want) || filepath.Base(p.Cmdline[0]) != want[0] || p.Cmdline[1] != want[1]:
 		return fmt.Errorf("%w: command line does not start with %v", errProbeRefused, want)
@@ -345,6 +346,15 @@ func CheckProbed(p ProbedAgent) error {
 		return fmt.Errorf("%w: started from inside the sandbox (parent %q)", errProbeRefused, p.PPIDExe)
 	}
 	return nil
+}
+
+// agentBinary reports whether exe is the agent binary the probe resolved, as
+// probeDetect's isagent decides it: in the same directory, since an auto-update
+// repoints claude at a sibling version (possibly deleting the old one) while a
+// running agent keeps its executable.
+func agentBinary(exe, agent string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	return exe != "" && agent != "" && filepath.Dir(exe) == filepath.Dir(agent)
 }
 
 // BindFromProbe fills a generation's main agent from a probe of agent.pid

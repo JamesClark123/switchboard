@@ -64,7 +64,11 @@ func pidRecord(gen int64) string {
 
 // probeDetect is the shell (POSIX sh) both scripts share. It prints what it
 // read and leaves the live matched processes in T as "pid:start" words:
-//   - agent <exe>: the agent binary (readlink -f "$(command -v claude)");
+//   - agent <exe>: the agent binary (readlink -f "$(command -v claude)"). A
+//     process is the agent when its executable is in that binary's directory
+//     (an auto-update repoints claude to a sibling version while a running
+//     agent keeps the old one, possibly deleted), argv0 is claude and the
+//     fixed flag follows;
 //   - ref <ppid> <exe>: the probe shell's parent, the reference for the exec
 //     path a first bind compares against (research R13);
 //   - file <gen> <pid> <start>, then proc … for that process only if
@@ -85,7 +89,9 @@ st() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 pp() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f2; }
 cl() { tr '\000' '\037' < "/proc/$1/cmdline" 2>/dev/null; }
 isagent() {
-  [ -n "$a" ] && [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$a" ] || return 1
+  [ -n "$a" ] || return 1
+  e=$(readlink "/proc/$1/exe" 2>/dev/null); e=${e% (deleted)}
+  [ -n "$e" ] && [ "${e%/*}" = "${a%/*}" ] || return 1
   c=$(cl "$1"); a0=${c%%"$u"*}; r=${c#*"$u"}; a1=${r%%"$u"*}
   [ "${a0##*/}" = claude ] && [ "$a1" = ` + agentFlag + ` ]
 }

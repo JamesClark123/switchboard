@@ -359,9 +359,13 @@ func TestCleanupHoldsTheWorker(t *testing.T) {
 		t.Errorf("workers view hold = %v", det.GetWorkers()[0].GetHold())
 	}
 	// Refusals lasting stepWaitNote show on the run and the worker's record.
-	env.clock.Advance(stepRetryEvery)
+	// The retry is re-armed only once a refusal is back, so keep the clock
+	// moving until the note shows rather than racing one advance against it.
 	env.clock.Advance(stepWaitNote)
-	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == "waiting: input box not empty" })
+	waitFor(t, func() bool {
+		env.clock.Advance(stepRetryEvery)
+		return runNow(env, o, run.GetId()).GetStepNote() == "waiting: input box not empty"
+	})
 	waitFor(t, func() bool {
 		return w.get("wa").GetController().GetRun().GetStepNote() == "waiting: input box not empty"
 	})
