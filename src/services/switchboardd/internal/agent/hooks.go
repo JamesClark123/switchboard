@@ -440,6 +440,9 @@ func (s *HookServer) sessionStart(p hookPayload, now time.Time) {
 			return
 		}
 	}
+	// Every way out of WAITING clears its backstop, this one too (a /clear or a
+	// replaced agent while background work was pending).
+	s.disarmBackstop(p.SandboxID)
 	_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
 }
 

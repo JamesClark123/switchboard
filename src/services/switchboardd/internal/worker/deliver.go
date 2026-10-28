@@ -140,6 +140,9 @@ func (s *Service) WarmStart(sb *pb.Sandbox) {
 	if sb.GetController() == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING || sb.GetController().GetRun() != nil {
 		return
 	}
+	if s.bringingUp(sb.GetId()) {
+		return // OnBringUp starts it once the gateway server is loaded
+	}
 	s.startAgent(sb.GetId(), "warm start")
 }
 

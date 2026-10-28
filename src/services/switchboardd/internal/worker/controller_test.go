@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
 )
@@ -336,4 +337,48 @@ func TestTokenIndexLoadedAtStart(t *testing.T) {
 		t.Error("nil gateway should be a no-op")
 	}
 	g.unregister(bg, "a")
+}
+
+// PR #17 review run-484: a bring-up reloads the gateway server before it starts
+// the agent, and a warm start that lands during the load leaves the start to it.
+func TestBringUpStartsTheAgentAfterTheGatewayLoad(t *testing.T) {
+	e := newEnv(t, "")
+	sb := e.sandbox(t, "99999999-aaaa", "readopted", pb.SandboxState_SANDBOX_STATE_STOPPED)
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		x.State = pb.SandboxState_SANDBOX_STATE_RUNNING // found running after a restart
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedFirst, starts := false, 0
+	e.svc.agents = agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
+		starts++
+		for _, l := range readLog(t, e.log) {
+			if strings.HasPrefix(l, "mcp load sxb-orch-99999999 ") {
+				loadedFirst = true
+			}
+		}
+		return newRecSession(), nil
+	})
+	// While a bring-up is loading the gateway, a warm start does nothing.
+	e.svc.markBringUp(stored.GetId(), 1)
+	e.svc.WarmStart(stored)
+	if starts != 0 {
+		t.Fatal("a warm start during the gateway load started the agent")
+	}
+	e.svc.markBringUp(stored.GetId(), -1)
+	if e.svc.bringingUp(stored.GetId()) || len(e.svc.bringing) != 0 {
+		t.Errorf("the bring-up mark should be released: %v", e.svc.bringing)
+	}
+	e.svc.OnBringUp(stored)
+	if starts != 1 || !loadedFirst {
+		t.Errorf("bring-up: %d starts, gateway loaded first %v", starts, loadedFirst)
+	}
+	if e.svc.bringingUp(stored.GetId()) {
+		t.Error("the bring-up mark outlived the bring-up")
+	}
 }

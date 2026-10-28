@@ -341,31 +341,34 @@ func runServe(cfg *config.Config, debug bool) error {
 		Debug:           debug,
 	})
 	workerSvc.SetTerminals(srv.Terminals())
-	// Workers re-adopted RUNNING at startup were moved before the bring-up
-	// observer existed: reload their registrations now, as after a Restart.
-	for _, sb := range readopted {
-		if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && sb.GetController() != nil {
-			go workerSvc.OnBringUp(sb)
-		}
-	}
-	if readoptErr != nil {
-		// Started only now: the manager's change and bring-up observers are set,
-		// so what the retry moves reaches clients (and is never a data race).
-		go retryReconcile(ctx, mgr, readoptRetries)
-	}
 	// SWI-15: agent sessions do not survive a daemon restart, so every running
 	// worker's agent is started now rather than on the first delivery attempt
 	// (WarmStart leaves a worker with a run in flight alone).
 	// A STARTING saved before the restart names a session that is gone.
-	if sbs, err := mgr.List(); err == nil {
-		for _, sb := range sbs {
-			if sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_STARTING && !agents.Live(sb.GetId()) {
-				if cur, err := mgr.SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()); err == nil {
-					sb = cur
-				}
+	sbs, _ := mgr.List() // unreadable: no warm starts, re-adopted workers still brought up
+	for i, sb := range sbs {
+		if sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_STARTING && !agents.Live(sb.GetId()) {
+			if cur, err := mgr.SetAgentStatus(sb.GetId(), pb.AgentStatus_AGENT_STATUS_IDLE, time.Now()); err == nil {
+				sbs[i] = cur
 			}
-			workerSvc.WarmStart(sb)
 		}
+	}
+	if readoptErr == nil {
+		// Workers re-adopted RUNNING at startup were moved before the bring-up
+		// observer existed: they are brought up now, as after a Restart.
+		startWorkers(readopted, sbs, func(sb *pb.Sandbox) { go workerSvc.OnBringUp(sb) }, workerSvc.WarmStart)
+	}
+	if readoptErr != nil {
+		// Started only now: the manager's change and bring-up observers are set,
+		// so what the retry moves reaches clients (and is never a data race).
+		// The records are last-known until a retry reads the runtime, and a warm
+		// start would bring a sandbox stopped meanwhile back up (sbx exec), so
+		// workers start only once one does; the observer brings up what it moved.
+		go retryReconcile(ctx, mgr, readoptRetries, func(moved []*pb.Sandbox) {
+			if sbs, err := mgr.List(); err == nil {
+				startWorkers(moved, sbs, func(*pb.Sandbox) {}, workerSvc.WarmStart)
+			}
+		})
 	}
 	// Started only now, with the terminals wired: a delivery (or a start it
 	// triggers) always goes through a drained broadcaster (research R7).
@@ -644,9 +647,36 @@ var readoptRetries = []time.Duration{5 * time.Second, 15 * time.Second, 30 * tim
 // than fails cannot keep the daemon from serving (SWI-13).
 const readoptTimeout = 30 * time.Second
 
+// startWorkers is the startup pass over this daemon's workers (SWI-13,
+// SWI-15). A controlled worker Reconcile moved to RUNNING goes to bringUp, which
+// reloads its orchestrator gateway server and only then warm-starts its agent;
+// it is not warm-started here as well, which would start the agent before that
+// load (PR #17 review run-484). Every other listed sandbox goes to warmStart,
+// which skips what is not a running worker.
+func startWorkers(moved, all []*pb.Sandbox, bringUp, warmStart func(*pb.Sandbox)) {
+	brought := map[string]bool{}
+	for _, sb := range moved {
+		if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && sb.GetController() != nil {
+			brought[sb.GetId()] = true
+			bringUp(sb)
+		}
+	}
+	for _, sb := range all {
+		if !brought[sb.GetId()] {
+			warmStart(sb)
+		}
+	}
+}
+
+// reconciler is the part of sandbox.Manager retryReconcile drives.
+type reconciler interface {
+	Reconcile(ctx context.Context) ([]*pb.Sandbox, error)
+}
+
 // retryReconcile reconciles at each delay until one reads the runtime, the
-// daemon stops, or the delays run out.
-func retryReconcile(ctx context.Context, mgr *sandbox.Manager, delays []time.Duration) {
+// daemon stops, or the delays run out. onRead runs once, with the records the
+// successful pass moved.
+func retryReconcile(ctx context.Context, mgr reconciler, delays []time.Duration, onRead func(moved []*pb.Sandbox)) {
 	start := time.Now()
 	for _, d := range delays {
 		select {
@@ -655,9 +685,10 @@ func retryReconcile(ctx context.Context, mgr *sandbox.Manager, delays []time.Dur
 		case <-time.After(time.Until(start.Add(d))):
 		}
 		rctx, cancel := context.WithTimeout(ctx, readoptTimeout)
-		_, err := mgr.Reconcile(rctx)
+		moved, err := mgr.Reconcile(rctx)
 		cancel()
 		if err == nil {
+			onRead(moved)
 			return
 		}
 	}

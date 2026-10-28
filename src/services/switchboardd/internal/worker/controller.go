@@ -74,6 +74,12 @@ type Service struct {
 	// servers caches one MCP server per live token (endpoint.go).
 	srvMu   sync.Mutex
 	servers map[string]*sdk.Server
+
+	// bringing counts the bring-ups reloading a sandbox's gateway server right
+	// now: WarmStart leaves those to OnBringUp, which starts the agent after
+	// the load so it comes up with the orchestrator's tools.
+	bringMu  sync.Mutex
+	bringing map[string]int
 }
 
 // NewService constructs a Service and loads the token index.
@@ -308,13 +314,35 @@ func (s *Service) OnBringUp(sb *pb.Sandbox) {
 	if _, err := s.reg.GetWorkerToken(sb.GetId()); err != nil {
 		return
 	}
+	s.markBringUp(sb.GetId(), 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb)); err != nil {
+	err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
+	cancel()
+	s.markBringUp(sb.GetId(), -1)
+	if err != nil {
 		s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
 	}
 	// After the gateway load, so the agent starts with the orchestrator's tools.
 	s.WarmStart(sb)
+}
+
+// markBringUp adds delta to the sandbox's count of bring-ups in progress.
+func (s *Service) markBringUp(sandboxID string, delta int) {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	if s.bringing == nil {
+		s.bringing = map[string]int{}
+	}
+	if s.bringing[sandboxID] += delta; s.bringing[sandboxID] <= 0 {
+		delete(s.bringing, sandboxID)
+	}
+}
+
+// bringingUp reports whether a bring-up is reloading the sandbox's gateway.
+func (s *Service) bringingUp(sandboxID string) bool {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	return s.bringing[sandboxID] > 0
 }
 
 // AcceptLink serves one OrchestratorLink stream (the gRPC handler and Local
