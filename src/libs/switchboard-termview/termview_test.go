@@ -755,6 +755,9 @@ func TestOSCStringsNeverReachTheScreen(t *testing.T) {
 		{"unterminated OSC then CSI", []string{"a\x1b]0;t\x1b[1mb"}, "ab"},
 		{"unterminated OSC then OSC", []string{"a\x1b]0;t\x1b]0;u\x07b"}, "ab"},
 		{"unterminated OSC then ESC", []string{"a\x1b]0;t\x1b\x1b[1mb"}, "ab"},
+		{"CAN aborts an OSC", []string{"a\x1b]0;t\x18b"}, "ab"},
+		{"SUB aborts an OSC", []string{"a\x1b]0;t", "\x1ab"}, "ab"},
+		{"an over-long OSC is abandoned", []string{"a\x1b]0;" + strings.Repeat("t", maxOSC-2), "b"}, "ab"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

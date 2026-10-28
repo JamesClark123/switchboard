@@ -55,6 +55,12 @@ type sessionEntry struct {
 	// cannot be waited on.
 	gen  int64
 	done chan struct{}
+	// typing serialises typing into the agent (SWI-17): a paste and its Enter
+	// (Prompt, TypeStep) and a re-press never interleave. typed counts the
+	// texts typed under it, so a prompt's ensureSubmitted stops once anything
+	// was typed after it.
+	typing sync.Mutex
+	typed  uint64
 }
 
 // Notifier emits a developer notification (the agent Hub).
@@ -562,6 +568,10 @@ func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) err
 		return err
 	}
 	idleAt, verify := r.idleNow(sandboxID)
+	e := r.typist(sandboxID, s)
+	e.typing.Lock()
+	defer e.typing.Unlock()
+	e.typed++
 	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
 		return err
 	}
@@ -570,9 +580,23 @@ func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) err
 		return err
 	}
 	if verify {
-		go r.ensureSubmitted(sandboxID, s, idleAt)
+		// The retry bounds are read here, not on the goroutine, which may
+		// outlive a test that shortened them.
+		go r.ensureSubmitted(sandboxID, s, idleAt, e, e.typed, submitCheckDelay, submitRetries)
 	}
 	return nil
+}
+
+// typist returns the entry whose typing lock guards typing into s, the
+// sandbox's live session; a session no longer live gets a fresh entry (its
+// writes fail on their own).
+func (r *Registry) typist(sandboxID string, s Session) *sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[sandboxID]; ok && e.s == s {
+		return e
+	}
+	return &sessionEntry{s: s}
 }
 
 // atPrompt reports whether an agent with this status sits at an empty input box
@@ -625,10 +649,13 @@ func (r *Registry) current(sandboxID string, s Session) bool {
 }
 
 // ensureSubmitted presses Enter again while a prompt typed into an idle agent
-// goes unreported (see submitCheckDelay).
-func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time) {
-	for attempt := 1; attempt <= submitRetries; attempt++ {
-		time.Sleep(submitCheckDelay)
+// goes unreported (see submitCheckDelay). It stops once anything else was
+// typed after the prompt (e's count moved past n): that typing, a step with its
+// own submit check among them, owns the box now. delay and retries are
+// submitCheckDelay and submitRetries.
+func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time, e *sessionEntry, n uint64, delay time.Duration, retries int) {
+	for attempt := 1; attempt <= retries; attempt++ {
+		time.Sleep(delay)
 		if !r.current(sandboxID, s) || r.submitted(sandboxID, since) {
 			return
 		}
@@ -636,9 +663,16 @@ func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time)
 		if attempt > 1 {
 			key, how = keypadEnter, "keypad Enter"
 		}
+		e.typing.Lock()
+		if e.typed != n {
+			e.typing.Unlock()
+			return
+		}
 		r.log("[agent] %s: prompt still unsubmitted %s after typing it; pressing %s again (%d/%d)",
-			sandboxID, time.Duration(attempt)*submitCheckDelay, how, attempt, submitRetries)
-		if _, err := s.Write([]byte(key)); err != nil {
+			sandboxID, time.Duration(attempt)*delay, how, attempt, retries)
+		_, err := s.Write([]byte(key))
+		e.typing.Unlock()
+		if err != nil {
 			return
 		}
 	}
@@ -650,23 +684,26 @@ func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time)
 // the step's submit check decides on any re-press (RePress), from the hooks
 // and the screen. It never starts an agent (ErrNoLiveAgent): the step guard
 // starts one only for a run's first step, and refuses the call meanwhile.
-// spec names the agent the step is for, as Prompt's does. sentAt is when the
-// Enter was written.
+// spec names the agent the step is for, as Prompt's does. sentAt is taken just
+// before the Enter is written, so no report of the submit predates it.
 func (r *Registry) TypeStep(sandboxID string, _ *pb.AgentSpec, text string) (sentAt time.Time, err error) {
 	s, err := r.Existing(sandboxID)
 	if err != nil {
 		return time.Time{}, err
 	}
+	e := r.typist(sandboxID, s)
+	e.typing.Lock()
+	defer e.typing.Unlock()
+	e.typed++
 	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
 		return time.Time{}, err
 	}
 	time.Sleep(promptSubmitDelay)
+	sentAt = r.now()
 	if _, err := s.Write([]byte(submitKey)); err != nil {
 		return time.Time{}, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.now(), nil
+	return sentAt, nil
 }
 
 // RePress presses Enter again in the sandbox's live agent, for a step whose
@@ -681,6 +718,9 @@ func (r *Registry) RePress(sandboxID string, n int) error {
 	if n > 0 {
 		key = keypadEnter
 	}
+	e := r.typist(sandboxID, s)
+	e.typing.Lock()
+	defer e.typing.Unlock()
 	_, err = s.Write([]byte(key))
 	return err
 }

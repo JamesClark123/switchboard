@@ -169,11 +169,17 @@ func squash(s string) string {
 
 // ModalOpen reports whether a picker or dialog is on screen: a numbered `❯ n.`
 // option row or a modal footer (Esc to cancel, Enter to select / to set as
-// default / to confirm). Only rows below the transcript's last entry (its last
-// echoed command or result line) are read, so a marker quoted in an older
-// command's output does not count.
+// default / to confirm). A picker or dialog replaces the input box's top rule,
+// so with the box on screen only the rows below it are read: a marker quoted
+// in the transcript above it (a command's output, an assistant message) does
+// not count. With no box, only rows below the transcript's last entry (its
+// last echoed command or result line) are read.
 func ModalOpen(lines []termview.Line) bool {
-	for _, l := range lines[transcriptEnd(lines):] {
+	from := transcriptEnd(lines)
+	if _, bottom, ok := boxBounds(lines); ok {
+		from = bottom + 1
+	}
+	for _, l := range lines[from:] {
 		if numberedOption.MatchString(l.Text) {
 			return true
 		}

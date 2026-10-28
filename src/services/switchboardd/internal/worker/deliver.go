@@ -94,7 +94,7 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 			}
 		} else if starting {
 			if serr := s.startAgentErr(req.GetSandboxId()); serr != nil {
-				return nil, gateRefusal(serr, err)
+				return nil, gateRefusal(serr)
 			}
 		}
 		return nil, err
@@ -148,14 +148,15 @@ func (s *Service) startAgentErr(sandboxID string) error {
 	return err
 }
 
-// gateRefusal is the delivery's refusal when its agent start was refused by
-// the orphan gate (FAILED_PRECONDITION with the gate's reason, research R14);
-// any other start failure is logged and the guard's own refusal stands.
-func gateRefusal(startErr, refusal error) error {
+// gateRefusal is the delivery's refusal when its agent could not be started:
+// FAILED_PRECONDITION with the orphan gate's reason (research R14), or
+// `agent not started: <err>` for any other failure, so a spawn that keeps
+// failing is not read as an agent forever starting.
+func gateRefusal(startErr error) error {
 	if errors.Is(startErr, agent.ErrOrphan) || errors.Is(startErr, agent.ErrBusy) {
 		return fmt.Errorf("%w: %v", ErrPrecondition, startErr)
 	}
-	return refusal
+	return fmt.Errorf("%w: agent not started: %v", ErrPrecondition, startErr)
 }
 
 // WarmStart starts a running worker's agent ahead of its first run (SWI-15), so

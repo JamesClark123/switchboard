@@ -291,7 +291,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		}
 		if startFirst {
 			if serr := s.startAgentErr(id); serr != nil {
-				return nil, gateRefusal(serr, err)
+				return nil, gateRefusal(serr)
 			}
 		}
 		if stale {
@@ -314,7 +314,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		return nil, fmt.Errorf("deliver step to %s: %w", id, err)
 	}
 	// 3. The submit check.
-	return s.submitCheck(stepCheck{id: id, read: read, sentAt: sentAt, recorded: recorded, tap: tap, priorSessID: priorSess}), nil
+	return s.submitCheck(ctx, stepCheck{id: id, read: read, sentAt: sentAt, recorded: recorded, tap: tap, priorSessID: priorSess}), nil
 }
 
 // readScreen reads the sandbox's screen for the guard: a live agent gets a
@@ -385,9 +385,10 @@ func (s *Service) openTap(id string) (<-chan agent.HookEvent, func()) {
 
 // rollbackStep undoes the guard's record of a step that could not be typed:
 // the run it recorded for a first step, otherwise its send. Only while the
-// record still holds this send.
+// record still holds this send. The reverted record is emitted, as the commit
+// was.
 func (s *Service) rollbackStep(id, runID string, idx int32, recordedFirst bool, prev *pb.WorkerRun) {
-	if _, err := s.reg.Update(id, func(x *pb.Sandbox) error {
+	sb, err := s.reg.Update(id, func(x *pb.Sandbox) error {
 		c := x.GetController()
 		run := c.GetRun()
 		if run.GetId() != runID || run.GetStepIndex() != idx {
@@ -399,9 +400,12 @@ func (s *Service) rollbackStep(id, runID string, idx int32, recordedFirst bool, 
 		}
 		run.StepRole, run.StepIndex, run.StepSentAt, run.Halted = prev.GetStepRole(), prev.GetStepIndex(), prev.GetStepSentAt(), prev.GetHalted()
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		s.logf("[worker] step %s: rollback: %v", id, err)
+		return
 	}
+	s.mgr.Emit(sb)
 }
 
 func notAccepted(note string, sentAt time.Time) *pb.DeliverWorkerStepResponse {
@@ -414,8 +418,9 @@ func notAccepted(note string, sentAt time.Time) *pb.DeliverWorkerStepResponse {
 
 // submitCheck watches a typed step until it is classified (contracts/
 // worker-step.md §3): hook events from the tap as they arrive, and the screen
-// every poll. It holds no registry lock while it waits.
-func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
+// every poll. It holds no registry lock while it waits. A cancelled call ends
+// it UNCONFIRMED (typed, not confirmed), with no further re-press.
+func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorkerStepResponse {
 	t, clock, scr := s.timing, s.clock, s.stepScreen()
 	deadline := c.sentAt.Add(t.window)
 	extension := t.extension // one extension per check, shared (§6)
@@ -466,6 +471,10 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 			return resp(pb.StepOutcome_STEP_OUTCOME_MODEL_TURN)
 		case needsInput:
 			return resp(pb.StepOutcome_STEP_OUTCOME_MODEL_TURN_INPUT_ONLY)
+		case ctx.Err() != nil:
+			r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
+			r.Note = "cancelled"
+			return r
 		}
 		now := clock.Now()
 		var lines []termview.Line
@@ -525,6 +534,7 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 		case ev := <-c.tap:
 			take(ev)
 		case <-clock.After(t.poll):
+		case <-ctx.Done():
 		}
 	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -375,6 +376,64 @@ func TestReadHookInputStreams(t *testing.T) {
 	}
 	if in := readHookInput(strings.NewReader(`{"background_tasks":[`)); len(in.BackgroundTasks) != 0 {
 		t.Error("a truncated list is no list")
+	}
+}
+
+// errAfter is a reader that panics if it is read to its end.
+type errAfter struct{ r io.Reader }
+
+func (e *errAfter) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF {
+		panic("read past the fields the event needs")
+	}
+	return n, err
+}
+
+func TestReadHookInputStopsOnceTheFieldsAreSeen(t *testing.T) {
+	for body, want := range map[string]hookInput{
+		`{"session_id":"s","hook_event_name":"PreToolUse","tool_input":{`:                {SessionID: "s", HookEventName: "PreToolUse"},
+		`{"session_id":"s","hook_event_name":"SessionStart","source":"clear","model":`:   {SessionID: "s", HookEventName: "SessionStart", Source: "clear"},
+		`{"hook_event_name":"Notification","session_id":"s","notification_type":"idle",`: {SessionID: "s", HookEventName: "Notification", NotificationType: "idle"},
+		`{"hook_event_name":"Stop","session_id":"s","background_tasks":[],`:              {SessionID: "s", HookEventName: "Stop"},
+	} {
+		// bufio reads ahead, so the reader must never reach its end: the body
+		// is followed by more input than one buffer.
+		r := &errAfter{io.MultiReader(strings.NewReader(body), strings.NewReader(strings.Repeat(" ", 1<<16)))}
+		got := readHookInput(r)
+		if got.SessionID != want.SessionID || got.HookEventName != want.HookEventName || got.Source != want.Source || got.NotificationType != want.NotificationType {
+			t.Errorf("%.40q = %+v, want %+v", body, got, want)
+		}
+	}
+	// A SessionStart still waits for its source.
+	if in := readHookInput(strings.NewReader(`{"session_id":"s","hook_event_name":"SessionStart","x":1,"source":"resume"}`)); in.Source != "resume" {
+		t.Errorf("source = %q", in.Source)
+	}
+}
+
+// A session nested in the main agent (a `claude -p`) changes no status and
+// sends no task-complete; the main agent's own events still do.
+func TestNestedSessionLeavesTheStatusAlone(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb", State: pb.SandboxState_SANDBOX_STATE_RUNNING})
+	s := mainServer(t, st)
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
+	if got := st.agent("sb").GetStatus(); got != pb.AgentStatus_AGENT_STATUS_WORKING {
+		t.Fatalf("main submit: status %v", got)
+	}
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit", "Stop"} {
+		s.handle(m(hookPayload{Event: ev, Source: "startup", SandboxID: "sb", PID: 7}))
+	}
+	if got := st.agent("sb").GetStatus(); got != pb.AgentStatus_AGENT_STATUS_WORKING {
+		t.Errorf("after a nested session: status %v, want WORKING", got)
+	}
+	for _, ev := range s.hub.Undelivered() {
+		if ev.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE {
+			t.Error("a nested Stop sent a task-complete")
+		}
+	}
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
+	if got := st.agent("sb").GetStatus(); got != pb.AgentStatus_AGENT_STATUS_IDLE {
+		t.Errorf("main Stop: status %v, want IDLE", got)
 	}
 }
 

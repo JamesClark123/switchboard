@@ -24,10 +24,16 @@ const maxHookField = 64 << 10
 
 var errHookBody = errors.New("malformed hook body")
 
-// readHookInput reads the fields of hookInput from a hook body.
+// errHookDone stops the read once every field the event needs was seen.
+var errHookDone = errors.New("hook body read")
+
+// readHookInput reads the fields of hookInput from a hook body. It stops once
+// the session id, the event name and that event's own field (hookInputDone)
+// were seen: Claude Code sends them ahead of a PreToolUse's tool_input.
 func readHookInput(r io.Reader) hookInput {
 	sk := &skim{r: bufio.NewReader(io.LimitReader(r, maxHookRead))}
 	var in hookInput
+	seen := map[string]bool{}
 	_ = sk.object(func(key string) error {
 		switch key {
 		case "hook_event_name":
@@ -53,9 +59,32 @@ func readHookInput(r io.Reader) hookInput {
 		default:
 			return sk.skipValue(nil)
 		}
-		return sk.err
+		if sk.err != nil {
+			return sk.err
+		}
+		if seen[key] = true; hookInputDone(in.HookEventName, seen) {
+			return errHookDone
+		}
+		return nil
 	})
 	return in
+}
+
+// hookInputDone reports whether every field readHookInput keeps for event has
+// been seen.
+func hookInputDone(event string, seen map[string]bool) bool {
+	if !seen["session_id"] || !seen["hook_event_name"] {
+		return false
+	}
+	switch event {
+	case "SessionStart":
+		return seen["source"]
+	case "Notification":
+		return seen["notification_type"]
+	case "Stop":
+		return seen["background_tasks"]
+	}
+	return true
 }
 
 // skim is a minimal forward-only JSON reader.

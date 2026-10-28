@@ -47,8 +47,14 @@ type Screen struct {
 	viewOffset int
 	maxScroll  int // scrollback cap: maxScrollback, or 0 under WithoutScrollback
 
-	osc oscState // OSC filter state, carried across writes (see filterOSC)
+	osc    oscState // OSC filter state, carried across writes (see filterOSC)
+	oscLen int      // bytes of the current OSC string so far (maxOSC)
 }
+
+// maxOSC caps an OSC string: a longer one (a stray ESC ] in binary output) is
+// abandoned, and what follows is printed again rather than swallowed until a
+// BEL happens to arrive.
+const maxOSC = 4096
 
 // oscState tracks an operating-system command (ESC ] … BEL | ESC \) across
 // writes. OSC strings (window titles, hyperlinks) are dropped before the ANSI
@@ -170,7 +176,7 @@ func (s *Screen) filterOSC(p []byte) []byte {
 		case oscEsc:
 			switch b {
 			case ']':
-				s.osc = oscBody
+				s.osc, s.oscLen = oscBody, 0
 			case 0x1b:
 				out = append(out, 0x1b) // the held ESC; hold this one
 			default:
@@ -178,11 +184,13 @@ func (s *Screen) filterOSC(p []byte) []byte {
 				s.osc = oscNone
 			}
 		case oscBody:
-			switch b {
-			case 0x07:
-				s.osc = oscNone
-			case 0x1b:
+			switch s.oscLen++; {
+			case b == 0x07, b == 0x18, b == 0x1a:
+				s.osc = oscNone // BEL ends it; CAN and SUB abort it
+			case b == 0x1b:
 				s.osc = oscBodyEs
+			case s.oscLen >= maxOSC:
+				s.osc = oscNone
 			}
 		case oscBodyEs:
 			switch b {
@@ -191,7 +199,7 @@ func (s *Screen) filterOSC(p []byte) []byte {
 			case 0x1b:
 				s.osc = oscEsc // an unterminated OSC, then a new ESC
 			case ']':
-				s.osc = oscBody // an unterminated OSC, then another one
+				s.osc, s.oscLen = oscBody, 0 // an unterminated OSC, then another one
 			default:
 				out = append(out, 0x1b, b) // an unterminated OSC, then a sequence
 				s.osc = oscNone

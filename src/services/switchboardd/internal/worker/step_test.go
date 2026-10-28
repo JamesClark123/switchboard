@@ -845,6 +845,31 @@ func TestStepRollbackOnTypeError(t *testing.T) {
 	if r := h.run(t); r.GetId() != "run-1" || r.GetStepIndex() != 2 || r.GetStepSentAt().AsTime() != sent.AsTime() || r.GetStepRole() != pb.StepRole_STEP_ROLE_SETUP {
 		t.Errorf("a later step's send is rolled back: %+v", r)
 	}
+	// The reverted record is emitted after the commit's, so subscribers do
+	// not keep showing the send.
+	h.e.mgr.mu.Lock()
+	last := h.e.mgr.emits[len(h.e.mgr.emits)-1]
+	h.e.mgr.mu.Unlock()
+	if r := last.GetController().GetRun(); r.GetStepIndex() != 2 || r.GetStepSentAt().AsTime() != sent.AsTime() {
+		t.Errorf("last emitted run = %+v, want the reverted send", r)
+	}
+}
+
+func TestStepCancelledCheckStopsPressing(t *testing.T) {
+	h := newStepHarness(t)
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	h.typer.onType = func(string) {
+		h.scr.set(fixture(t, "text-left-in-box"), false, true)
+		cancel()
+	}
+	resp, err := h.e.svc.DeliverStep(ctx, custom(textLeft, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED || resp.GetNote() != "cancelled" || len(h.typer.presses) != 0 {
+		t.Errorf("cancelled check = %+v, presses %v", resp, h.typer.presses)
+	}
 }
 
 // --- §4: check_only ---

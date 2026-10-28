@@ -266,6 +266,28 @@ func TestEnsureDrainedSpawnsNothingWhileHeld(t *testing.T) {
 	}
 }
 
+// A spawn that fails is refused with its cause, not read as an agent forever
+// starting.
+func TestDeliverReportsAFailedAgentStart(t *testing.T) {
+	e := newEnv(t, "")
+	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
+		return nil, errors.New("sbx: not found")
+	})
+	e.svc.agents = agents
+	e.svc.SetTerminals(terminal.NewRegistry(func(id string) (terminal.PTY, error) { return agents.Session(id, &pb.AgentSpec{}) }, 0, nil))
+	sb := e.sandbox(t, "eeeeeeee-6", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		x.Controller = controller("orch-1", "review-bot")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := e.svc.Deliver(bg, deliverReq(sb.GetId()))
+	if ok || !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "agent not started: ") || !strings.Contains(err.Error(), "sbx: not found") {
+		t.Fatalf("deliver with a failing spawn = %v / %v", ok, err)
+	}
+}
+
 // SWI-15: a prompt is never typed into an agent that has not reported ready.
 // With no session the agent is started and the run refused (it stays queued);
 // a live agent still starting is refused without a second session.

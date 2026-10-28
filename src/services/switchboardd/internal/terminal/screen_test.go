@@ -13,9 +13,9 @@ import (
 // fastNudges shortens the repaint debounce and gap for one test.
 func fastNudges(t *testing.T) {
 	t.Helper()
-	every, gap := repaintEvery, nudgeGap
-	repaintEvery, nudgeGap = 0, time.Millisecond
-	t.Cleanup(func() { repaintEvery, nudgeGap = every, gap })
+	every, gap, settle := repaintEvery, nudgeGap, repaintSettle
+	repaintEvery, nudgeGap, repaintSettle = 0, time.Millisecond, time.Millisecond
+	t.Cleanup(func() { repaintEvery, nudgeGap, repaintSettle = every, gap, settle })
 }
 
 // screenText joins a snapshot's rows for substring checks.
@@ -196,6 +196,33 @@ func TestOverflowResetsAndRepaintRecovers(t *testing.T) {
 	lines, _ := b.Screen()
 	if !strings.Contains(screenText(lines), "❯ repainted") {
 		t.Fatalf("screen after recovery = %q", screenText(lines))
+	}
+}
+
+func TestScreenStaysStaleUntilTheRepaintSettles(t *testing.T) {
+	fastNudges(t)
+	repaintSettle = time.Hour
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+
+	// The creation nudge completes; the first chunk after it is only the
+	// start of the repaint: still stale while output goes on.
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() > 0 })
+	p.feed([]byte("\x1b[H\x1b[2J"))
+	waitFor(t, func() bool {
+		sc := b.scr.Load()
+		sc.flagMu.Lock()
+		defer sc.flagMu.Unlock()
+		return !sc.repaintAt.IsZero()
+	})
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a chunk after the nudge must not read fresh before the output settles")
+	}
+	// Quiet for repaintSettle: fresh.
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("the screen should read fresh once the repaint settled")
 	}
 }
 

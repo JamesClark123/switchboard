@@ -29,6 +29,10 @@ const (
 var (
 	repaintEvery = time.Second
 	nudgeGap     = 50 * time.Millisecond
+	// repaintSettle is how long the output must stay quiet after a chunk parsed
+	// past a nudge before the screen reads fresh: the first chunk may be only
+	// the start of the repaint, over a just-reset blank view.
+	repaintSettle = 50 * time.Millisecond
 	// beforeParse, when set, runs before each chunk is parsed (tests use it to
 	// stall the parser). Copied into each screen when it is created.
 	beforeParse func()
@@ -45,6 +49,9 @@ type screen struct {
 	dropped bool   // a chunk was dropped; the parser resets the screen at its next chunk
 	stale   bool   // the screen may not match the agent's; set until a repaint is parsed
 	resetAt uint64 // nudges at the last reset: a later nudge's repaint clears stale
+	// repaintAt is when the last chunk past such a nudge was parsed (zero:
+	// none yet); stale clears once it is repaintSettle old (isStale).
+	repaintAt time.Time
 
 	nudges atomic.Uint64 // repaint nudges completed (resized back to full size)
 	hook   func()        // beforeParse at creation
@@ -76,7 +83,8 @@ func (sc *screen) offer(chunk []byte) {
 // parse is the parser goroutine: it feeds queued chunks to the emulator until
 // done closes. After a drop it discards what is queued and resets the screen
 // (a dropped chunk may have cut an escape sequence in half); the screen stays
-// stale until a chunk is parsed after a later repaint nudge. It never nudges on
+// stale until a chunk is parsed after a later repaint nudge and the output has
+// then been quiet for repaintSettle. It never nudges on
 // its own: a nudge repaints every attached client too, so recovery waits for a
 // reader to ask (RequestRepaint).
 func (sc *screen) parse(done <-chan struct{}) {
@@ -96,7 +104,7 @@ func (sc *screen) parse(done <-chan struct{}) {
 			_, _ = sc.view.Write(chunk)
 			sc.flagMu.Lock()
 			if sc.stale && !sc.dropped && sc.nudges.Load() > sc.resetAt {
-				sc.stale = false
+				sc.repaintAt = time.Now()
 			}
 			sc.flagMu.Unlock()
 		}
@@ -112,7 +120,7 @@ func (sc *screen) takeDrop() bool {
 		return false
 	}
 	sc.dropped, sc.stale = false, true
-	sc.resetAt = sc.nudges.Load()
+	sc.resetAt, sc.repaintAt = sc.nudges.Load(), time.Time{}
 	return true
 }
 
@@ -130,6 +138,9 @@ func (sc *screen) drain() {
 func (sc *screen) isStale() bool {
 	sc.flagMu.Lock()
 	defer sc.flagMu.Unlock()
+	if sc.stale && !sc.dropped && !sc.repaintAt.IsZero() && time.Since(sc.repaintAt) >= repaintSettle {
+		sc.stale, sc.repaintAt = false, time.Time{}
+	}
 	return sc.stale
 }
 

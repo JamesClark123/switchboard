@@ -192,3 +192,50 @@ func TestPromptIntoWaitingAgentIsVerified(t *testing.T) {
 	waitFor(t, func() bool { return sess.typed() == want })
 	time.Sleep(3 * submitCheckDelay) // let the retry goroutine finish before fastSubmit restores its knobs
 }
+
+// TestTypingIsSerialised: a prompt (an escape-hatch result) typed while a step
+// is being typed waits for the step's paste and Enter, and the step's Enter
+// never lands between the prompt's paste and its own (SWI-17).
+func TestTypingIsSerialised(t *testing.T) {
+	d := promptSubmitDelay
+	promptSubmitDelay = 30 * time.Millisecond
+	t.Cleanup(func() { promptSubmitDelay = d })
+	sess := &recSession{}
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
+	if _, err := reg.Session("sb1", &pb.AgentSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := reg.TypeStep("sb1", nil, "/clear"); done <- err }()
+	waitFor(t, func() bool { return sess.typed() != "" }) // the step's paste is out
+	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sess.typed(), Typed("/clear")+Typed("result"); got != want {
+		t.Errorf("typed = %q, want %q", got, want)
+	}
+}
+
+// TestPromptRetriesStopOnceSomethingElseIsTyped: a step typed after a prompt
+// owns the box; the prompt's re-presses stop rather than land on it.
+func TestPromptRetriesStopOnceSomethingElseIsTyped(t *testing.T) {
+	fastSubmit(t)
+	sess := &recSession{}
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
+	state := &agentState{status: pb.AgentStatus_AGENT_STATUS_IDLE, lastAt: time.Now().Add(-time.Minute)}
+	reg.SetStatusUpdater(state)
+	startedIdle(t, reg, state, "sb1")
+	if err := reg.Prompt("sb1", &pb.AgentSpec{}, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.TypeStep("sb1", nil, "/model opus"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(4 * submitCheckDelay)
+	if got, want := sess.typed(), Typed("hello")+Typed("/model opus"); got != want {
+		t.Errorf("typed = %q, want %q (no re-press after the step)", got, want)
+	}
+}

@@ -222,6 +222,26 @@ func TestModalOpenIgnoresTheTranscript(t *testing.T) {
 	}
 }
 
+func TestModalOpenIgnoresAnAssistantMessageAboveTheBox(t *testing.T) {
+	// The agent's last message quotes the markers (and a numbered option);
+	// the box under it is empty and ready, not a dialog.
+	screen := rows("❯ review the PR", "",
+		"⏺ The dialog footer reads \"Enter to confirm · Esc to cancel\", and",
+		"  the picker marks its current option:", "   ❯ 2. Opus", "",
+		"────", "❯\u00a0", "────", "  ⏵⏵ bypass permissions on (shift+tab to cycle)")
+	if ModalOpen(screen) {
+		t.Fatal("markers in an assistant message above the box should not count")
+	}
+	if _, present, ready := InputBox(screen); !present || !ready {
+		t.Fatalf("InputBox present=%v ready=%v, want an empty ready box", present, ready)
+	}
+	// The same message with no box under it (the dialog replaced it) is read
+	// as before.
+	if !ModalOpen(rows("⏺ done", "▔▔▔▔", "   ❯ 1. Yes", "   Enter to confirm · Esc to cancel")) {
+		t.Fatal("a dialog in place of the box is a modal")
+	}
+}
+
 func TestStepInBox(t *testing.T) {
 	tests := []struct {
 		name string

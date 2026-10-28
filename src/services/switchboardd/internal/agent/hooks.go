@@ -480,7 +480,10 @@ func (s *HookServer) handle(p hookPayload) {
 	}
 	main := s.mainEvent(p)
 	p.Foreign = p.Tokened && !main
-	needsInput := s.dispatch(p)
+	needsInput := false
+	if !s.nestedEvent(p) {
+		needsInput = s.dispatch(p)
+	}
 	if main {
 		s.releaseHold(p)
 		s.recordEvidence(p, needsInput, now)
@@ -503,6 +506,19 @@ func (s *HookServer) handle(p hookPayload) {
 // generation's main PID. Until the PID is bound, nothing is.
 func (s *HookServer) mainEvent(p hookPayload) bool {
 	return p.Tokened && s.tokens != nil && s.tokens.IsMain(p.SandboxID, p.Gen, p.PID)
+}
+
+// nestedEvent reports whether a hook event comes from a session nested in an
+// agent (a `claude -p` it ran): its generation's main PID is bound and the
+// event names another process. Such a session's start, turns and Stop say
+// nothing of the agent's own status, so they change none and notify nothing.
+// With no PID bound (a lost SessionStart) every event still drives the status.
+func (s *HookServer) nestedEvent(p hookPayload) bool {
+	if !p.Foreign || p.PID <= 0 {
+		return false
+	}
+	pid, _, ok := s.tokens.MainPID(p.SandboxID, p.Gen)
+	return ok && pid != p.PID
 }
 
 // dispatch maps a hook event to a status transition and (for terminal/await
