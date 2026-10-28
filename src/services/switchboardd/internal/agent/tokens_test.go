@@ -155,6 +155,7 @@ func probed() ProbedAgent {
 func TestCheckProbed(t *testing.T) {
 	ok := []func(*ProbedAgent){
 		func(*ProbedAgent) {}, // both parents 0: a plain container
+		func(p *ProbedAgent) { p.Exe = "/opt/claude/bin/2.1.311 (deleted)" }, // auto-updated since
 		func(p *ProbedAgent) { // both the runtime's exec agent
 			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 12, "/usr/libexec/sbx-exec-agent", 13, "/usr/libexec/sbx-exec-agent"
 		},
@@ -170,6 +171,7 @@ func TestCheckProbed(t *testing.T) {
 		"no process":      func(p *ProbedAgent) { p.PID = 0 },
 		"sleep":           func(p *ProbedAgent) { p.Exe, p.Cmdline = "/usr/bin/sleep", []string{"sleep", "1000"} },
 		"other flags":     func(p *ProbedAgent) { p.Cmdline = []string{"claude", "-p", "x"} },
+		"elsewhere":       func(p *ProbedAgent) { p.Exe = "/tmp/x/claude" },
 		"short cmdline":   func(p *ProbedAgent) { p.Cmdline = []string{"claude"} },
 		"parent mismatch": func(p *ProbedAgent) { p.PPID, p.PPIDExe = 40, "/usr/bin/script" },
 		"ref parent only": func(p *ProbedAgent) { p.RefPPID, p.RefPPIDExe = 12, "/usr/libexec/sbx-exec-agent" },

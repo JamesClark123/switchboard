@@ -300,8 +300,12 @@ func TestProbeAfterAgentUpdate(t *testing.T) {
 	if err := os.Remove(old); err != nil {
 		t.Fatal(err)
 	}
-	if r := e.run(t, ProbeScript()); !r.File || !r.Alive() {
+	r = e.run(t, ProbeScript())
+	if !r.File || !r.Alive() {
 		t.Fatalf("an agent whose binary was deleted read as %+v", r)
+	}
+	if p, ok := r.Main(); !ok || CheckProbed(p) != nil {
+		t.Errorf("an agent whose binary was deleted is not bindable: %+v %v", p, CheckProbed(p))
 	}
 	if r := e.run(t, ReapScript(time.Second)); r.Reaped != 1 {
 		t.Errorf("reaped %d, want 1", r.Reaped)
