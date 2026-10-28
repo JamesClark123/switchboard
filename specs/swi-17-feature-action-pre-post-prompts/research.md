@@ -829,8 +829,9 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
       announced PGID, KILL after `stopGrace`), records STOPPED and releases the port (revised in run-625). Those
       execs follow from the drain's own cancellation while it holds the lock, with the container up. A launch
       cancelled before its PGID arrives has no group to signal, and ends FAILED (`cancelled by a stop`) through
-      `markFailed`. A **RUNNING** service (ready, with its PGID known) keeps its client. Its exec session is already up, so
-      it can't start a stopped sandbox. It ends with the container on `sbx stop`, and the hook's `StopAll(id, true)`
+      `markFailed`. A **RUNNING** service (ready, with its PGID known) keeps its client.
+      Its exec session is already up, so it can't start a stopped sandbox. It ends with the container on `sbx stop`,
+      and the hook's `StopAll(id, true)`
       records it, as today. That matters because `gone(h)` reads that very client (`portforward/stop.go:133`), so
       killing it would leave the supervisor unable to stop or observe the service. A developer's service stop holds
       its try-lock for its whole duration, so no kill is in flight when the drain runs;
@@ -839,8 +840,9 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
       `sessionEntry` gets a `done` channel closed by `onExit` (the registry's `watch` goroutine already owns
       `cmd.Wait`, and a second `Wait` returns at once with `Wait was already called`). A drained portforward
       instance's done signal is its `bringUp` goroutine returning, so the group signal and the port release
-      (`UnpublishPort`) of a cancelled readiness check both land **before** `sbx stop` (run-625). Killing a host process is always possible. **Where the wait happens**
-      (revised in run-613): `Registry.Close` marks the entry `closing`, removes it and **returns** its `done`
+      (`UnpublishPort`) of a cancelled readiness check both land **before** `sbx stop` (run-625).
+      Killing a host process is always possible. **Where the wait happens** (revised in run-613): `Registry.Close`
+      marks the entry `closing`, removes it and **returns** its `done`
       channel; the drain waits on it only **after** `Close` has released `r.mu` and the terminal registry's global
       lock, because `onExit` takes `r.mu` (`agent/pty.go:117`). The wait is bounded: TERM, then KILL after
       `orphanKillWait`, then `orphanKillWait` again. A client still alive after that (for example, stuck in
