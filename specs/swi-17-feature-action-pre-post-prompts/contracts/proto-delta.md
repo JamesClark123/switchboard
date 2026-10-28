@@ -117,6 +117,8 @@ message Run {
   int32 step_send = 29;                  // send number of the current step's latest send: incremented for every new
                                          // send (a retry reuses it), sent as DeliverWorkerStepRequest.step_index, so a
                                          // setup restarted from step 0 after an orphan reap re-sends (research R14)
+  bool step_unconfirmed = 30;            // the current step halted after an UNCONFIRMED outcome: it was typed and may
+                                         // have run, so R asks the "may already have run" confirm (research R2)
 }
 
 // ---- Worker-side records (research R4, R7, R10) ---------------------------
@@ -163,6 +165,9 @@ message WorkerView {
 enum NotificationKind {
   // … 0..8 unchanged …
   NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED = 9;   // orchestrator: a step halted (FR-206c)
+  NOTIFICATION_KIND_AGENT_REPLACED = 10;         // owning daemon: an agent detached by a daemon restart was stopped,
+                                                 // by the developer or by the daemon; names who, the agent's last
+                                                 // state and the run affected (research R14)
 }
 
 // ---- New RPCs --------------------------------------------------------------
@@ -197,9 +202,10 @@ message AgentInput {
   // … fields 1..4 unchanged …
   message AttachInfo {
     // … fields 1..3 unchanged …
-    bool replace_orphan = 4;             // `t` → Replace on an agent detached by a daemon restart and still working an
-                                         // ACTION step: reap it (the run fails as on an exit), then start a fresh
-                                         // agent. Without it, attaching beside an orphan is refused (research R14)
+    bool replace_orphan = 4;             // `t` → Replace on an agent detached by a daemon restart (any sandbox): reap
+                                         // it (an ACTION run fails, "agent replaced by the developer after a daemon
+                                         // restart"), then start a fresh agent. Without it, attaching beside an
+                                         // orphan is refused with the agent's last state (research R14)
   }
 }
 
@@ -255,7 +261,7 @@ message ResolveRunStepRequest {
 | MODEL/EFFORT `expect` outside the fixed sets (research R13) | `INVALID_ARGUMENT`, before the guard commits. Nothing is recorded or typed. The orchestrator halts the step with the error as its note (never retries it). |
 | No live agent (and not a `first` step on an unheld sandbox, which starts one) | `FAILED_PRECONDITION` `no live agent`. The broadcaster is never created for a sandbox with no live agent. |
 | `restart` on a run not halted by a daemon restart | `FAILED_PRECONDITION` (`not a restart halt`) |
-| Beside an unreaped orphan (`Registry.Session`'s gate, research R14) | `FAILED_PRECONDITION` with the gate's reason (`agent detached by a daemon restart …`); nothing spawns |
+| Beside an orphan, or while the restart probe hasn't finished (`Registry.Session`'s gate, research R14) | `FAILED_PRECONDITION` with the gate's reason (`agent detached by a daemon restart; last seen …` / `checking for a detached agent`); nothing spawns and nothing is reaped |
 | Unknown sandbox | `NOT_FOUND` |
 | An older daemon | `UNIMPLEMENTED`. The orchestrator **unclaims** the run, marks that worker unable to take sequenced runs until its link reconnects, and re-queues the run. It fails the run ("no worker supports pre/post prompts; update their daemons") only when no attached worker is eligible (research R6). |
 

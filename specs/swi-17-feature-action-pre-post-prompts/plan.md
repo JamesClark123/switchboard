@@ -56,13 +56,16 @@ judged by evidence after its submit.
 9. **Daemon restarts (R14).** The agent **survives** a daemon restart (`agentCommand`), but the daemon loses its
    PTY, so the agent is an **orphan**: hooks and its MCP report still work, but it can't be typed into or read.
    - An action in flight stays in flight.
-   - Its terminal can't be opened beside it; the developer may **replace** it, which fails the run.
+   - Whether a sandbox has one is decided by **evidence**: a start-up probe (running sandboxes only, before the
+     servers start) finds a recorded agent process alive with no live session of its generation.
+   - `t` on any sandbox with one opens a Wait/Replace dialog; replacing an ACTION run's agent fails the run.
    - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
      again on the fresh agent.
    - Cleanup becomes *needing the developer*.
    - **One choke point:** every spawn goes through `agent.Registry.Session`, whose orphan gate refuses to start an
-     agent beside an unreaped orphan, and reaps it (by its recorded PID and start time) where the phase allows. So
-     two agents never share a workspace, whichever path spawns.
+     agent beside an orphan and never reaps. Only the developer (`t` → Replace, `R`) or two daemon cases (an idle
+     orphan on a worker with no run, or after its run closed) reap, and every reap raises an *agent replaced*
+     notification. So two agents never share a workspace, and none is killed unseen.
 
 ## Technical Context
 
@@ -177,7 +180,8 @@ src/services/switchboardd/internal/
 │   │                         #   per-agent token (header from $SXB_HOOK_TOKEN, set at launch); every hook forwards
 │   │                         #   its input, streamed; PTY generation + main-session filter (R13)
 │   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); agents.Existing;
-│                             #   PID + start time recorded at launch; orphan gate in Session + ReapOrphan (R14);
+│                             #   gen + PID + start time recorded at launch; start-up probe; orphan gate in
+│                             #   Session (refuses only) + ReapOrphan, surfaced (R14);
 │                             #   no spawn from Prompt while held
 ├── worker/
 │   ├── step.go               # NEW: DeliverWorkerStep guard (step_index: never typed twice) + submit check + check_only

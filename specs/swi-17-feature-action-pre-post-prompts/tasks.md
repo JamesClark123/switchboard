@@ -282,26 +282,34 @@ sequence model. No user story can be delivered before this phase.
   - **Generation and token.** `agent.Registry` numbers each PTY it spawns per sandbox from a counter **persisted** in
     the daemon store (it only grows, across restarts too), and draws a random `hookTokenBytes` token for it. The
     store keeps `{generation → token}` per sandbox, never on `pb.Sandbox`.
-  - **Passed in the environment.** `agentCommand` puts both into the launch string (`export SXB_HOOK_TOKEN=…
-    SXB_AGENT_GEN=…; … exec claude`), so they are set before the first hook and inherited by every child. No file is
-    written, so nothing races the spawn.
-  - **Settings carry no secret.** `BuildSettings`' hook command sends `-H "X-Sxb-Token: $SXB_HOOK_TOKEN"`, so
+  - **Passed in the environment, not argv.** The PTY factory sets `SXB_HOOK_TOKEN` and `SXB_AGENT_GEN` in the `sbx
+    exec` client's environment and passes them by name (`sbx exec -e SXB_HOOK_TOKEN -e SXB_AGENT_GEN …`), so they are
+    set before the first hook, inherited by every child, and absent from the host process list. The `-e` flag is
+    documentation-derived: pin it with an argv-asserting test and reconcile it first; only without it fall back to an
+    `export` in the launch string. No log line includes the launch string or the environment. No file is written,
+    so nothing races the spawn.
+  - **Settings carry no secret.** `BuildSettings`' hook command sends `-H "X-Sxb-Token: $SXB_HOOK_TOKEN" -H
+    "X-Sxb-Gen: $SXB_AGENT_GEN"`, so
     `RefreshHooks` rewriting it changes no agent's token. Every hook, `UserPromptSubmit` and `PreToolUse` included,
     now forwards its input (`--data-binary @-`).
-  - **Checking it.** `Handle` compares the token in constant time against the sandbox's live generations; the match
-    gives the event's generation. A token the sandbox doesn't have gets 403, and the event is dropped. **No** token
+  - **Checking it.** `Handle` looks up `X-Sxb-Gen` in an **in-memory** map `{sandbox → {generation → token}}` (loaded
+    from the store at start, updated on spawn and reap; no store read per hook) and compares that one token in
+    constant time; a match gives the event's generation. A token the sandbox doesn't have gets 403, and the event is dropped. **No** token
     (an agent launched before this feature) is accepted for status display only, never for evidence, holds or steps.
     A generation's token is retired once its agent is gone (PTY exit, or a reap, T047).
   - **Reading the body.** It is parsed as a JSON token stream that keeps only the needed fields and skips large
     values without buffering them, under a 16 MiB hard cap.
   - **The escape hatch.** `/escape-hatch/run` requires a live generation's token. `writeWrapper`'s `curl` sends the
     same header from `$SXB_HOOK_TOKEN`, and wrappers are re-injected at daemon start alongside `RefreshHooks`. A
-    tokenless call gets 403 `escape hatch needs a current agent; open the terminal to restart it`.
+    tokenless call gets 403 `no agent token in this environment; run the escape hatch from the agent's session`.
+    Document in the escape-hatch docs (T041) and quickstart that only the agent's own process tree can run hatch
+    commands.
 
   Tests:
   - a wrong token, or another sandbox's token, is dropped;
   - a tokenless call updates status but not evidence;
-  - the launch command exports the token before `exec`, and the first hook of a new agent is accepted;
+  - the `sbx exec` argv passes `-e SXB_HOOK_TOKEN -e SXB_AGENT_GEN` and contains no token value; the first hook of a
+    new agent is accepted; a hook with a wrong `X-Sxb-Gen` is dropped;
   - a surviving agent's token still works after `RefreshHooks` and a daemon restart, and is refused after its reap;
   - the generation counter after a restart is greater than any recorded `hold_gen`;
   - a generated wrapper's call carries the token and runs; a tokenless call to `/escape-hatch/run` gets 403;
@@ -317,7 +325,10 @@ sequence model. No user story can be delivered before this phase.
     generation's** token, and rebind on **any** current-generation `clear` SessionStart (no screen wait). Ignore later
     startups in the same generation. Until one is bound, events count for status only.
   - The tap, the evidence fields and hold release use main-session events only.
-  - **`startup`** ends a hold only from a generation greater than `hold_gen`, spawned by `AttachAgent` or guard 5.
+  - **`startup`** ends a hold only from a generation greater than `hold_gen`, spawned by `AttachAgent`, guard 5, or
+    the daemon's own post-close replacement of an idle orphan (T047).
+  - **Rebinding.** Any current-generation `clear` **or** `resume` SessionStart rebinds the main session (both switch
+    the session id); `resume` never ends a hold.
   - **`clear`** ends a hold, or passes Clear's read-back, only with a new `session_id` and the post-clear screen,
     polled for up to `clearSettle` (1 s) after the hook.
   - **No spawn while held.** `Registry.Prompt` and `EnsureDrained` refuse to spawn while a hold is set (`sandbox is
@@ -329,71 +340,87 @@ sequence model. No user story can be delivered before this phase.
   - a `startup` from the same generation, or from a `claude -p` nested in it, ends nothing;
   - a SessionStart from a process left by the previous generation doesn't bind the main session;
   - a developer's `/clear` while the screen is stale still rebinds the session;
+  - a developer's `/resume` mid-run rebinds it, and the next turn's `Stop` still finishes the step; the `resume` ends
+    no hold;
   - an orchestrator write with `hold_gen = 0` (a stale view) and a re-sent NEEDS_DEVELOPER (a `step_note` mirror)
     both leave the stored `hold_gen` unchanged;
   - an escape-hatch result to a held sandbox with no live agent spawns nothing;
   - a nested session's `UserPromptSubmit` doesn't classify a step;
   - a `--continue` agent (first SessionStart `resume`) binds its session.
 - [ ] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
-  handles it as an orphan rather than an exit:
-  - **Record the PID and start time.** In `SBD/agent/pty.go` `agentCommand`: `mkdir -p ~/.sxb; echo "$$ $(cut -d'
-    ' -f22 /proc/$$/stat)" > ~/.sxb/agent.pid; … exec claude …`.
-  - **`ReapOrphan(ctx, id, mode)`**: one `sbx exec <ref> sh -c …` script that signals the recorded PID only if
-    `/proc/<pid>/stat` still has the recorded start time (otherwise it reports **gone**), sends TERM, then KILL
-    after `orphanKillWait` (5 s). With no PID file, it falls back to processes whose full command line equals
-    `agentArgv`. After it, the generation's token is retired, the suspect mark cleared, and the agent status written
-    EXITED, except for `mode = restart` (T024), where the fresh agent's STARTING follows.
-  - **At daemon start** (`SBD/sandbox/manager.go`, before `WarmStart`), mark each sandbox with no live session and a
-    recorded agent status other than EXITED/none as **orphan-suspect**, then, for each `controller.run` with a
-    `step_role` or `hold`, by phase:
+  handles it as an orphan, decided by **evidence**, never by state flags:
+  - **Record generation, PID and start time.** In `SBD/agent/pty.go` `agentCommand`: `mkdir -p ~/.sxb; echo "<gen>
+    $$ $(cut -d' ' -f22 /proc/$$/stat)" > ~/.sxb/agent.pid; … exec claude …`.
+  - **Probe** (`SBD/agent/orphan.go`): one `sbx exec <ref> sh -c …` that reports *alive* `{gen, pid, start}` only if
+    `/proc/<pid>/stat` has the recorded start time; with no PID file, a process whose full command line equals
+    `agentArgv`. **Orphan** = alive and no live session of that generation.
+  - **At daemon start** (`SBD/sandbox/manager.go`), **before** the gRPC and hook servers start: list running
+    sandboxes (`ListStatuses`). Non-running ones get agent status EXITED and are never probed or reaped (`sbx exec`
+    would start them). Running ones are probed in parallel, each bounded by `orphanProbeTimeout` (10 s); a failure
+    leaves the sandbox *unknown* (spawns refused, re-probed with backoff). Then, for each orphan whose sandbox has a
+    `controller.run` with a `step_role` or `hold`, by phase:
     - **ACTION:** left as is (in flight; hooks and the MCP report still work);
     - **SETUP**, or an action step not yet accepted: marked so the orchestrator halts the step with the note `agent
-      detached by a daemon restart; R restarts setup with a fresh agent` (and `sent_before_restart` when it was
-      sent);
+      detached by a daemon restart; last seen <state> <time>; R restarts setup with a fresh agent` (and
+      `sent_before_restart` when it was sent);
     - **CLEANUP or any hold:** `hold = NEEDS_DEVELOPER` with `hold_gen`.
-  - **The reap itself is gated in one place**, `Registry.Session` (T048). `AttachAgent` calls `ReapOrphan` first
-    (`replace` when `AttachInfo.replace_orphan` is set), so `t` on a held sandbox is one action.
-  - **ACTION orphan.** Plain `AttachAgent` is refused `agent detached by a daemon restart and still working run
-    <id>; …`; `replace_orphan` reaps it, and the EXITED write fails the run through the orchestrator's existing exit
-    path. Its needs-input notification sets the row's note (`detached agent asks for input; …`).
+  - **`ReapOrphan(ctx, id, mode, by)`**: RUNNING sandboxes only. Re-probe; if alive, TERM, then KILL after
+    `orphanKillWait`. Then retire the generation's token, drop the orphan record, emit
+    `NOTIFICATION_KIND_AGENT_REPLACED` (who, last state, run) and log it, and write EXITED. For a replaced ACTION run,
+    write the reason `agent replaced by the developer after a daemon restart` into `controller.run.step_note` in the
+    same update. For `mode = restart`, write no EXITED (the fresh agent's STARTING follows).
+  - **Callers that may reap**, and no others:
+    - `AttachAgent` with `AttachInfo.replace_orphan`, on any sandbox;
+    - `DeliverWorkerStep.restart` (T024);
+    - the daemon itself: a worker with no run whose orphan was last seen IDLE (then `WarmStart`), and a run that closed
+      on an orphan with no custom post-prompts, once the orphan is last seen IDLE (then a fresh spawn, whose `startup`
+      ends the hold). With custom post-prompts, they are dropped, the hold is NEEDS_DEVELOPER, and the note says so.
+  - **Orchestrator** (`SBD/orchestrator/sequence.go`): a run failed by EXITED uses `controller.run.step_note` as its
+    reason when set. A run failed by a replace sends **no** custom post-prompts and no Clear.
 
   Tests:
-  - in `SBD/sandbox/manager_test.go`: each phase at daemon start; `WarmStart` skips held sandboxes;
-  - in `SBD/agent/pty_test.go`: the launch command creates `~/.sxb` and records PID and start time; `ReapOrphan`
-    sends TERM, then KILL; a recorded PID whose start time differs (reused) is never signalled; a missing PID file
-    falls back to the argv match and spares a nested `claude -p`;
+  - in `SBD/sandbox/manager_test.go`:
+    - each phase at daemon start;
+    - a stopped sandbox is never probed (no `sbx exec`), and its status becomes EXITED;
+    - a recorded non-EXITED status with a dead PID, or a reused PID (start time differs), is **not** an orphan;
+    - the servers start only after the probes; a probe timeout leaves the sandbox refused and re-probed;
+  - in `SBD/agent/pty_test.go`: the launch command creates `~/.sxb` and records gen, PID and start time; `ReapOrphan`
+    sends TERM, then KILL, and emits AGENT_REPLACED; a missing PID file falls back to the argv match and spares a
+    nested `claude -p`;
   - in `SBD/orchestrator/sequence_test.go`:
-    - an orphan's completion report closes an ACTION run, and its cleanup becomes NEEDS_DEVELOPER;
-    - `t` on an ACTION orphan is refused; replace fails the run (`agent exited`) and starts one fresh agent;
+    - an orphan's completion report closes an ACTION run; with no custom post-prompts the daemon replaces the idle
+      orphan and the fresh `startup` ends the hold; with custom post-prompts the hold is NEEDS_DEVELOPER, noting they
+      were dropped;
+    - replace on an ACTION orphan fails the run with the replace reason and sends no post-prompt;
     - a SETUP step halts, and `R` reaps the orphan, starts a fresh agent and re-sends every pre-step from step 0;
-      the action prompt is typed only after `/model` and `/effort` were confirmed on the fresh agent;
-    - a held sandbox's `t` reaps the orphan before spawning, and the fresh `startup` ends the hold.
+      the action prompt is typed only after `/model` and `/effort` were confirmed on the fresh agent.
 - [ ] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
-  OrphanGate)`. `Registry.Session` calls the gate **before the factory**, never blocking (the terminal registry calls
-  `Session` under its global lock):
-  - no suspect mark → spawn;
-  - suspect with a run in ACTION (or of unknown phase) → `ErrOrphanWorking`, nothing spawns;
-  - suspect with a run halted in setup → `ErrOrphanHalted`, nothing spawns (only `R` reaps it);
-  - suspect otherwise (cleanup, a hold, no run, uncontrolled) → `ErrOrphanReaping`, and an asynchronous,
-    single-flight reap starts; when it ends, the mark is cleared and `sandbox_changed` is emitted, which re-kicks the
-    stepper and `WarmStart`.
+  OrphanGate)`. `Registry.Session` calls the gate **before the factory**. It never blocks (the terminal registry calls
+  `Session` under its global lock) and decides **only from the orphan record** (T047), never from run flags:
+  - no record → spawn;
+  - a record, or *unknown* → `ErrOrphan` with the agent's last state (`agent detached by a daemon restart; last seen
+    working 10:42`, or `checking for a detached agent`). Nothing spawns, and **the gate never reaps**.
 
-  No caller checks for orphans itself. Callers with a developer waiting call `ReapOrphan` first (T047, T024);
-  best-effort callers log the error and are retried by the re-kick.
+  No caller checks for orphans itself. Callers allowed to reap call `ReapOrphan` first (T047). Best-effort callers log
+  the error and are re-kicked by the `sandbox_changed` after a reap.
 
   Test, in `SBD/agent/orphan_gate_test.go`: a table over **every** spawn path, each driven through the real daemon
-  wiring with a fake factory that counts spawns and a fake reaper:
+  wiring with a fake factory that counts spawns and a fake prober and reaper:
   - `WarmStart` (`startAgent`);
   - `Deliver`'s start (`startAgent`);
   - `AttachAgent` (the broadcaster factory, `grpc/server.go`), plain and with `replace_orphan`;
-  - guard 5's `first` start;
+  - guard 5's `first` start, and `DeliverWorkerStep.restart`;
   - `Registry.Prompt` (an escape-hatch result);
   - `EnsureDrained`.
 
-  For each path, and each phase (ACTION, setup halt, hold, no run), assert that the factory never runs while the
-  orphan is unreaped; that exactly one agent exists afterwards; that the reap ran only where the phase allows it
-  (for a setup halt, never); and that two concurrent spawns start one reap. A guard test fails if a new
-  `Registry.factory` call site appears outside `Session`.
+  For each path, and each state (ACTION; SETUP not yet halted; SETUP halted; hold; no run; uncontrolled; unknown),
+  assert:
+  - the factory never runs while an orphan record exists;
+  - **only** `replace_orphan`, `restart` and the two daemon cases reap, and each reap raises AGENT_REPLACED;
+  - in particular, an escape-hatch result on a SETUP run that hasn't halted yet kills nothing and fails nothing;
+  - exactly one agent exists afterwards, and two concurrent reaps signal once.
+
+  A guard test fails if a new `Registry.factory` call site appears outside `Session`.
 
 **Checkpoint**: a step can be typed and classified on a worker, never twice, with no injectable text and no
 forgeable evidence; actions carry sequences; runs snapshot them.
@@ -436,7 +463,8 @@ needs a custom post-prompt, which arrives in US2.
       prompts; update their daemons") only when no attached, eligible worker remains (research R6).
     - UNCONFIRMED (the screen stayed stale, research R2) → SENT with `step_sent_at = resp.sent_at`, resolved by
       evidence per R8 (T022 in the MVP, T037 in full): a turn hook finishes it; a built-in is read back with
-      `check_only` once the screen is fresh, and halts only if that read-back fails.
+      `check_only` once the screen is fresh, and halts only if that read-back fails. A step that halts after
+      UNCONFIRMED is marked `step_unconfirmed` (shown `(may have run)`; `R` asks the "may already have run" confirm).
     - A response for a run **cancelled or failed before delivery** with no hold and no cleanup pending:
       - **not typed** (FailedPrecondition, INVALID_ARGUMENT) → clear the daemon record with `UpdateWorker{set_run,
         expect_run_id}`;
@@ -516,8 +544,8 @@ needs a custom post-prompt, which arrives in US2.
     PENDING and sends step 0 with `DeliverWorkerStep.restart`. On that flag (accepted only while the run is halted
     by a restart), the owning daemon reaps the orphan (`mode = restart`), starts a fresh agent as guard 5 does, and
     refuses `agent is starting`; the stepper retries without the flag once the agent is ready. Each pre-step is re-sent as a new send (`step_send` grows), so the action prompt never reaches an agent without its
-    model and effort (SC-001). Its confirm reads `Replace the detached agent and restart setup from the first step?
-    (y/N)`. `S` is refused for such a halt (`the agent was replaced; restart setup with R`). `X` fails the run.
+    model and effort (SC-001). Its single confirm reads `Stop the detached agent (last seen <state> <time>) and
+    restart setup from the first step? Anything it was doing is lost. (y/N)`; the reap raises AGENT_REPLACED. `S` is refused for such a halt (`the agent was replaced; restart setup with R`). `X` fails the run.
   - **FAIL**, by role (FR-222):
     - SETUP or ACTION_PROMPT → `failRun` per FR-212, naming the step. No custom post-prompt follows; only Clear, if
       enabled (FR-214 as amended);
@@ -564,7 +592,8 @@ needs a custom post-prompt, which arrives in US2.
   `backstopExpired` when the sandbox's `controller.run.step_role` is SETUP or CLEANUP. Read it through the status
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
 - [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
-  like `RUN_FAILED`.
+  like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_REPLACED` ("<sandbox>: detached agent stopped by <you|the
+  daemon> (last seen <state>)[; <run> failed]"), never suppressed, so every kill is seen (research R14).
 
 ### TUI: built-ins, run rows and controls (contracts/jobs-ui.md)
 
@@ -594,9 +623,12 @@ needs a custom post-prompt, which arrives in US2.
   - all three call `ResolveRunStep`, and a FAILED_PRECONDITION shows and reloads;
   - for a step halted by an owning-daemon restart, `R` reads **Restart setup** with its own confirm, and `S` is
     hidden (contracts/jobs-ui.md);
-  - **Detached agent** (`UI/terminal.go` attach, and `T`): when the attach is refused because a detached agent is
-    still working an action step, show the Wait/Replace dialog (default Wait); Replace re-attaches with
-    `AttachInfo.replace_orphan`. Test both choices with the fake daemon.
+  - **Detached agent** (`UI/terminal.go` attach, and `T`), on **any** sandbox, worker or not: when the attach is
+    refused because of a detached agent, show the Wait/Replace dialog with its last state and run (default Wait if
+    it was working or waiting for input, Replace if idle); Replace re-attaches with `AttachInfo.replace_orphan` and
+    shows `replacing the detached agent…`. Test both choices, on a worker and on a plain sandbox, with the fake
+    daemon;
+  - a step marked `step_unconfirmed` lists `S` first and `R` asks the "may already have run" confirm.
 
   Add `ResolveRunStep` to the TUI `Daemon` interface and its fakes.
 - [ ] T031 [P] [US1] Sandbox list and Workers view:

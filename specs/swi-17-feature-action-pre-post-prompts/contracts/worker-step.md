@@ -17,8 +17,10 @@ sandbox starts an agent. Elsewhere, only `AttachAgent` spawns while a sandbox is
 `EnsureDrained` refuse to spawn for a held sandbox (research R13).
 
 Every spawn, on this path or any other, goes through `agent.Registry.Session`, whose **orphan gate** refuses to
-start an agent beside one left running by an owning-daemon restart (research R14). Guard 5's start therefore never
-puts a second agent in the workspace; it gets the gate's refusal, and the stepper retries after the reap.
+start an agent beside one left running by an owning-daemon restart (research R14). The gate only refuses; it never
+reaps. Guard 5's start therefore never puts a second agent in the workspace and never kills one; it gets the gate's
+refusal, and the step stays waiting (or halted, for a setup step) until the developer or the daemon replaces the
+orphan.
 
 A broadcaster created with no client attached sets the PTY and its screen to `stepScreenSize` (140×45) and nudges a
 resize, so the agent repaints and the input box is on the screen (research R2).
@@ -94,7 +96,7 @@ in NOT_ACCEPTED `text still in the input box`, and nothing is appended (FR-206c)
 ## 4. `check_only` (restart resolution, research R8)
 
 Steps 1 (guard checks 1–2 only, never recording) and 3's read-back run against the **current** screen and recorded
-evidence. Nothing is typed. It applies to MODEL, EFFORT and CLEAR only: the RPC returns AGENT_LOCAL if the read-back
+evidence. A stale screen gets the lazy repaint nudge first (research R2). Nothing is typed. It applies to MODEL, EFFORT and CLEAR only: the RPC returns AGENT_LOCAL if the read-back
 passes, otherwise NOT_ACCEPTED, and always NOT_ACCEPTED for CUSTOM and ACTION_PROMPT (an empty box alone never
 finishes a step, FR-217). With no live agent (after an owning-daemon restart the PTY is gone) it returns
 NOT_ACCEPTED `no live agent` and creates nothing (research R14).

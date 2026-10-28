@@ -44,6 +44,7 @@ The state word is followed by the step while a sequence is in flight:
 | Closed, cleaning up 1 of 2 | `completed · cleaning up 1/2 on alpha-w1 — <summary snippet>` |
 | Halted | `running · setting up 1/3 not accepted: Model 'bogus' not found` / `completed · Clear not accepted: picker opened` |
 | Halted after a restart | `… not accepted (sent before a restart)` |
+| Halted after an unconfirmed send | `… not accepted (may have run)` |
 | A step waiting over 10 s | `running · setting up 2/3 waiting: input box not empty` |
 | Holding its sandbox | `completed · needing the developer on alpha-w1` / `… needs input (freeing) …` |
 
@@ -51,16 +52,21 @@ The state word is followed by the step while a sequence is in flight:
 them in `ListRunsResponse.in_flight` and not in `history`, so they appear once, and the same way in every view.
 
 `t`/`T` on such a row opens the worker's terminal, also for a closed run that still holds its sandbox: the terminal
-is the way out of a hold. After an owning-daemon restart (research R14):
-- **On a hold**, opening it reaps the detached (orphaned) agent first, then starts a fresh one.
-- **On a run whose detached agent is still working its action step**, the daemon refuses to start a second agent,
-  and the TUI shows a dialog instead of the terminal: "<worker>'s agent was detached by a daemon restart and is
-  still working <run>. It can't be shown or typed into. Wait for its report, or replace it? Replacing fails the run."
-  The choices are **Wait** (the default) and **Replace**, which re-attaches with `replace_orphan`. The row's note
-  reads `detached agent asks for input; it can't be answered here — replace it (fails the run) or wait` once that
-  agent asks for input.
-- **On a step halted by the restart**, the terminal is refused the same way (`R restarts setup with a fresh
-  agent`), so nothing ends the setup behind the developer's back.
+is the way out of a hold. After an owning-daemon restart, a sandbox may have a **detached agent** (an orphan,
+research R14). Nothing ever stops it without the developer seeing it:
+- **`t`/`T` on any sandbox with a detached agent** (a worker or a plain sandbox) opens a dialog instead of the
+  terminal: "<sandbox>'s agent was detached by a daemon restart (last seen <working|waiting for input|idle> <time>[
+  on <run>]). It can't be shown or typed into. Replace it? Replacing stops it[ and fails <run>]." The choices are
+  **Wait** and **Replace**. Wait is the default when the agent was last seen working or waiting for input; Replace
+  is the default when it was last seen idle. Replace re-attaches with `replace_orphan` and shows `replacing the
+  detached agent…` until the terminal opens.
+- **A worker whose detached agent asks for input** has the note `detached agent asks for input; it can't be answered
+  here — replace it (fails the run) or wait`.
+- **A step halted by the restart** carries its evidence in the note (`agent detached by a daemon restart; last seen
+  working 10:42; R restarts setup with a fresh agent`), so the developer can judge without a terminal.
+- **Every stop of a detached agent**, by the developer or by the daemon (a worker idle at restart, or a run closed on
+  an idle detached agent), raises an *agent replaced* notification naming the sandbox, who stopped it, its last state
+  and the run affected.
 
 `openRunOfEvent` (the timed-event "already open" check) skips closed runs, so a holding run listed in `in_flight`
 doesn't block its event. The orchestrator summary's in-flight count matches the list.
@@ -71,8 +77,8 @@ These are added to the run-row help only when the run is halted:
 
 | Key | Action | Notes |
 |---|---|---|
-| `R` | Retry the step | For a step *sent before a restart*, it first opens the confirm "This step may already have run — check the worker's terminal. Retry anyway? (y/N)". While the step's text is still in the box the row says `clear the step's text in the worker's terminal (t) to retry`. For a step halted by an **owning-daemon** restart (note `agent detached by a daemon restart`), `R` is **Restart setup** instead: the confirm "Replace the detached agent and restart setup from the first step? (y/N)" (default No), then the orphan is reaped, a fresh agent starts, and every pre-step is sent again from the first (research R14). |
-| `S` | Skip the step | Not offered for Clear or for the action step (skipping it would leave the run waiting for a report that can't come), nor for a step halted by an owning-daemon restart (the agent is replaced, so setup restarts with `R`). Listed **before** `R` for a step sent before an orchestrator restart. |
+| `R` | Retry the step | For a step *sent before a restart*, it first opens the confirm "This step may already have run — check the worker's terminal. Retry anyway? (y/N)". While the step's text is still in the box the row says `clear the step's text in the worker's terminal (t) to retry`. The same confirm is used for a step marked *may have run* (UNCONFIRMED, research R2). For a step halted by an **owning-daemon** restart (note `agent detached by a daemon restart`), `R` is **Restart setup** instead, with one confirm whatever else the step is marked: "Stop the detached agent (last seen <state> <time>) and restart setup from the first step? Anything it was doing is lost. (y/N)" (default No). Then the orphan is reaped (with an *agent replaced* notification), a fresh agent starts, and every pre-step is sent again from the first (research R14). |
+| `S` | Skip the step | Not offered for Clear or for the action step (skipping it would leave the run waiting for a report that can't come), nor for a step halted by an owning-daemon restart (the agent is replaced, so setup restarts with `R`). Listed **before** `R` for a step sent before an orchestrator restart, or marked *may have run*. |
 | `X` | Fail | Confirm, defaulting to **No**: "Fail <run> at <step>? (y/N)". A pre-prompt or the action step fails the run, naming the step (FR-212). No custom post-prompt follows, and Clear (if enabled) is sent once the agent is idle (FR-214 as amended). A custom post-prompt drops the remaining custom post-prompts; **Clear (if enabled) is still sent**, and the sandbox is free once it finishes (FR-216, FR-222). Clear leaves the sandbox *needing the developer*, and `R` stays on the row to retry Clear (FR-222). `X` is offered only on halted runs and `x` (cancel) only on queued ones, so a Shift slip opens a confirm or does nothing. |
 
 All three call `ResolveRunStep{run_id, step, resolution}`. A `FAILED_PRECONDITION` ("the run moved on") shows on the

@@ -85,16 +85,23 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    continues to the action prompt, and nothing is re-sent.
 2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon). The agent keeps running in
    the sandbox, but the daemon can no longer type into it.
-   - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. Its
-     cleanup then shows *needing the developer*. Pressing `t` meanwhile shows the Wait/Replace dialog; **Replace**
-     fails the run and starts one fresh agent.
-   - **During a setup step:** the step halts with `agent detached by a daemon restart`. `R` (*Restart setup*, after
-     its confirm) kills the old agent, starts a fresh one, and sends every pre-step again from the first; the action
-     prompt is typed only after `/model` and `/effort` were confirmed on the new agent. `S` isn't offered.
-   - **During cleanup:** the worker shows *needing the developer*. `t` kills the old agent, starts a fresh one, and
-     that frees the worker.
-   - In every case, `ps` inside the sandbox never shows two agents: also not after the restart while workers are
-     idle (`WarmStart`), nor when an escape-hatch result arrives.
+   - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. With no
+     custom post-prompts, the daemon then stops the idle old agent and starts a fresh one, and an *agent replaced*
+     notification says so; with custom post-prompts, the worker shows *needing the developer* and notes they were
+     dropped. Pressing `t` before the report shows the Wait/Replace dialog (default Wait); **Replace** fails the run
+     (`agent replaced by the developer after a daemon restart`) and starts one fresh agent.
+   - **During a setup step:** the step halts with `agent detached by a daemon restart; last seen …`. An escape-hatch
+     result arriving meanwhile kills nothing. `R` (*Restart setup*, after its confirm) stops the old agent, starts a
+     fresh one, and sends every pre-step again from the first; the action prompt is typed only after `/model` and
+     `/effort` were confirmed on the new agent. `S` isn't offered.
+   - **During cleanup:** the worker shows *needing the developer*. `t` shows the dialog (default Replace, the agent
+     is idle); Replace stops the old agent, starts a fresh one, and that frees the worker.
+   - **An idle worker** is replaced by the daemon right after the restart, with a notification.
+   - **A plain sandbox** where you were mid-turn: `t` shows the dialog with default **Wait**; the turn is not
+     killed unless you choose Replace.
+   - **A sandbox stopped while the daemon was down** is not started by the restart, and gets no dialog.
+   - In every case, `ps` inside the sandbox never shows two agents, and every stopped agent produced an *agent
+     replaced* notification.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
    the step resolves from the daemon's record to sent, then finishes as usual.
 
@@ -128,3 +135,7 @@ one framed prompt, and no step text in the row.
 4. Have an escape-hatch command print coloured output. Its result still reaches the agent.
 5. Run `claude -p "hi"` in a worker's workspace during a setup step. That nested session's hooks don't classify or
    finish the step.
+6. On the host, `ps -ef | grep SXB_HOOK_TOKEN` shows no token value. From your own `sbx exec -it <sb> bash` shell,
+   the escape-hatch wrapper gets 403 `no agent token in this environment; …`; from the agent it runs.
+7. During a run, type `/resume` in the worker's terminal and pick an earlier session. The run's next step still
+   finishes when that turn ends.

@@ -46,6 +46,7 @@ action has no enabled built-in and no custom prompts gets **no steps**, and is d
 | `step_sent_before_restart` | bool | FR-217 marker (FR-213, FR-222). |
 | `hold` | `WorkerHold` | Mirrors `WorkerRun.hold` while this run holds its sandbox (FR-213). |
 | `hold_since` | Timestamp | When the current hold began (display only; the daemon ends the hold, research R7). |
+| `step_unconfirmed` | bool | The current step halted after an UNCONFIRMED outcome: it was typed and may have run. The row shows `(may have run)`, and `R` asks the "may already have run" confirm (research R2). |
 | `step_send` | int32 | Send number of the current step's latest send. Incremented for every new send (a retry reuses it) and sent as `step_index`, so guard 3a stays monotonic even when setup is restarted from step 0 after an orphan reap (research R14). |
 
 ### StepStatus transitions
@@ -151,4 +152,5 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
 | `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token}` and accepted until that agent is gone (research R13) |
 | `clearSettle` | 1 s | daemon: how long the screen is polled for the post-clear state after a `clear` SessionStart (research R13) |
-| `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, reaped through `Registry.Session`'s orphan gate before any fresh spawn (research R14) |
+| `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run in parallel before the servers start); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff (research R14) |
+| `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, reaped only by the developer (`t` → Replace, `R` Restart setup) or by the daemon's two surfaced cases (research R14) |
