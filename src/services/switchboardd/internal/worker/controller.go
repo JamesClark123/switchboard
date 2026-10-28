@@ -90,6 +90,10 @@ type Service struct {
 	typer  StepTyper
 	clock  StepClock
 	timing stepTiming
+
+	// reaper stops an agent detached by a daemon restart for a restart
+	// halt's R (SWI-17, research R14; sandbox.Manager). nil: R refuses.
+	reaper OrphanReaper
 }
 
 // NewService constructs a Service and loads the token index.

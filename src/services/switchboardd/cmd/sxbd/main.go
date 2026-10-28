@@ -225,6 +225,13 @@ func runServe(cfg *config.Config, debug bool) error {
 	// SWI-15: any hook means the agent's input box is up; a stuck start notifies.
 	agents.SetNotifier(hub)
 	hookServer.SetOnReady(agents.MarkReady)
+	// SWI-17 (research R14): an agent outlives this daemon, so after a restart
+	// it may be detached (an orphan). Every spawn asks the manager's gate
+	// first; an exec client that exits on its own, or a detached agent's
+	// SessionEnd, is probed rather than taken for an exit.
+	agents.SetOrphanGate(mgr)
+	agents.SetOnClientExit(mgr.AgentClientExited)
+	hookServer.SetOnSessionEnd(mgr.RecheckOrphan)
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
@@ -292,6 +299,9 @@ func runServe(cfg *config.Config, debug bool) error {
 	// host. It reaches sandboxes through the same `sbx` runner the manager uses, and
 	// publishes state changes on the hub the client is already subscribed to.
 	services := portforward.NewSupervisor(mgr, runner, hub)
+	// SWI-17: a developer's in-sandbox start or service stop is refused while a
+	// lifecycle operation holds the sandbox's runtime lock (research R14).
+	services.SetRuntimeLock(mgr.TryLockRuntime)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hook", hookServer.Handle)
@@ -325,6 +335,11 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetGoBringUp(workerSvc.GoBringUp)
 	mgr.SetOnLaunched(workerSvc.WarmStart)
 	mgr.SetControllerApplier(workerSvc.Apply)
+	// SWI-17 (research R14): the detached-agent check; a sandbox found clear
+	// again has its worker's agent warm-started, and R on a restart halt
+	// stops the detached agent first.
+	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub, OnClear: workerSvc.WarmStart})
+	workerSvc.SetOrphanReaper(mgr)
 	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
 	// /orchestrator/w/<token>/mcp. The gateway reaches it on 127.0.0.1:<port>
 	// from the host, so the `localhost:<port>` policy allow above already
@@ -391,6 +406,11 @@ func runServe(cfg *config.Config, debug bool) error {
 			}
 		}
 	}
+	// SWI-17 (research R14): before any agent can start, every running sandbox
+	// that may still have the previous daemon's agent is marked unknown (the
+	// gate refuses it) and probed in the background; the rest are clear.
+	mgr.CheckOrphansAtStart(ctx)
+	go mgr.RunOrphanBackstop(ctx)
 	if readoptErr == nil {
 		// Workers re-adopted RUNNING at startup were moved before the bring-up
 		// observer existed: they are brought up now, as after a Restart.

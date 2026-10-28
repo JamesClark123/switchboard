@@ -401,7 +401,7 @@ sequence model. No user story can be delivered before this phase.
   - an escape-hatch result to a held sandbox with no live agent spawns nothing;
   - a nested session's `UserPromptSubmit` doesn't classify a step;
   - a `--continue` agent (first SessionStart `resume`) binds its session.
-- [ ] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
+- [X] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
   handles it as an orphan, decided by **evidence**, never by state flags. The daemon **detects and surfaces**
   orphans and **never stops one on its own** (simplified in run-590):
   - **Record generation, PID, start time and PTY.** In `SBD/agent/pty.go` `agentCommand`: `mkdir -p ~/.sxb; echo
@@ -618,7 +618,7 @@ sequence model. No user story can be delivered before this phase.
     - replace on an ACTION orphan fails the run with the replace reason and sends no post-prompt;
     - a SETUP step halts, and `R` stops the orphan, starts a fresh agent and re-sends every pre-step from step 0;
       the action prompt is typed only after `/model` and `/effort` were confirmed on the fresh agent.
-- [ ] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
+- [X] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
   OrphanGate)`. `Registry.Session` calls the gate **before the factory**. It never blocks (the terminal registry calls
   `Session` under its global lock), and it decides **only from the orphan record and `runtimeMu`** (T047), never from
   run flags:

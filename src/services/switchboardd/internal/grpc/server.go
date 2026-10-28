@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
@@ -174,6 +175,12 @@ func NewServer(cfg Config) *Server {
 					s.terms.Close(sb.GetId())
 				}
 				if s.agents != nil {
+					// The agent can outlive its exec client: closing a live one on
+					// CREATING or ERROR (the container may still be up) leaves the
+					// sandbox unknown until a probe says (SWI-17, research R14).
+					if s.agents.Live(sb.GetId()) && (sb.GetState() == pb.SandboxState_SANDBOX_STATE_CREATING || sb.GetState() == pb.SandboxState_SANDBOX_STATE_ERROR) {
+						cfg.Manager.MarkAgentUnknown(sb.GetId())
+					}
 					s.agents.Close(sb.GetId())
 					// A confirmed stop or destroy leaves no agent running: its
 					// hook tokens are retired (SWI-17, research R13/R14). Not on
@@ -204,6 +211,7 @@ func NewServer(cfg Config) *Server {
 				cfg.Hub.PublishSandbox(s.withTerminalCounts(sb))
 			}
 		})
+		cfg.Manager.SetStopDrain(s.drainForStop)
 	}
 	var opts []grpc.ServerOption
 	if cfg.Debug {
@@ -214,6 +222,49 @@ func NewServer(cfg Config) *Server {
 	s.grpc = grpc.NewServer(opts...)
 	pb.RegisterSwitchboardServer(s.grpc, s)
 	return s
+}
+
+// drainForStop is a stop's best-effort drain of the sandbox's exec clients
+// before `sbx stop` (SWI-17, research R14), run under its runtime lock: `sbx
+// exec` starts a stopped sandbox in place and a client reaches the runtime
+// with unbounded lag, so the agent's client and the still-starting services'
+// are quieted first. TERM to all (the agent session is closed with closing
+// set: no EXITED, no probe), one wait of at most wait for the agent client,
+// then KILL to all; the terminal goes last. Waiting happens outside every
+// registry lock (CloseForStop has released them; onExit takes the agent
+// registry's). RUNNING services are left alone. Anything still pending after
+// the bound is logged and abandoned. It reports whether a live agent was
+// closed.
+func (s *Server) drainForStop(sb *pb.Sandbox, wait time.Duration) bool {
+	id := sb.GetId()
+	var done <-chan struct{}
+	finish := func() {}
+	if s.agents != nil {
+		done, finish = s.agents.CloseForStop(id)
+	}
+	var groups []portforward.Group
+	if s.services != nil {
+		groups = s.services.InterruptStarting(id)
+	}
+	if done != nil || len(groups) > 0 {
+		t := time.NewTimer(wait)
+		select {
+		case <-done: // nil (no agent): waits out the bound for the groups
+		case <-t.C:
+			if done != nil {
+				log.Printf("[warn] stop %s: agent client still running after %s; killing it", id, wait)
+			}
+		}
+		t.Stop()
+	}
+	finish()
+	if s.services != nil {
+		s.services.KillGroups(groups)
+	}
+	if s.terms != nil {
+		s.terms.Close(id)
+	}
+	return done != nil
 }
 
 // Terminals exposes the persistent terminal registry (feature 009: the worker

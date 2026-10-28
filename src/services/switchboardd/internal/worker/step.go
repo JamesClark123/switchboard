@@ -11,6 +11,7 @@ import (
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -86,6 +87,46 @@ func (a termScreen) EnsureScreen(id string) error {
 
 // SetHookTap wires the hook tap the submit check listens on.
 func (s *Service) SetHookTap(t StepTap) { s.tap = t }
+
+// OrphanReaper stops a sandbox's detached agent (sandbox.Manager.ReapOrphan).
+type OrphanReaper interface {
+	ReapOrphan(ctx context.Context, id string, mode sandbox.ReapMode) error
+}
+
+// SetOrphanReaper registers who stops a detached agent for a restart halt's R
+// (SWI-17, research R14).
+func (s *Service) SetOrphanReaper(r OrphanReaper) { s.reaper = r }
+
+// restartAgent serves a restart halt's R (DeliverWorkerStep.restart, research
+// R14): the detached agent is stopped (sandbox.ReapRestart: no EXITED, the
+// fresh agent's STARTING follows), then a fresh agent is started, and the
+// call is refused while it starts. A failed stop starts nothing.
+func (s *Service) restartAgent(ctx context.Context, sandboxID string) error {
+	if s.reaper == nil {
+		return fmt.Errorf("%w: detached agents are not handled here", ErrPrecondition)
+	}
+	if err := s.reaper.ReapOrphan(ctx, sandboxID, sandbox.ReapRestart); err != nil {
+		return fmt.Errorf("%w: %v", ErrPrecondition, err)
+	}
+	if err := s.startAgentErr(sandboxID); err != nil {
+		return fmt.Errorf("%w: %v", ErrPrecondition, err)
+	}
+	return fmt.Errorf("%w: agent is starting", ErrPrecondition)
+}
+
+// restartHalt reports whether a run is halted by an owning-daemon restart
+// (research R14), as the orchestrator writes it: halted, with the detached
+// note, or the note it writes once R was pressed.
+func restartHalt(run *pb.WorkerRun) bool {
+	note := run.GetStepNote()
+	return run.GetHalted() && (strings.Contains(note, orphanNote) || strings.HasPrefix(note, restartingNote))
+}
+
+// The orchestrator's restart-halt notes (orchestrator/sequence.go).
+const (
+	orphanNote     = "agent detached by a daemon restart"
+	restartingNote = "restarting"
+)
 
 func (s *Service) stepScreen() StepScreen {
 	if s.screen != nil {
@@ -178,6 +219,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		recordedFirst   bool
 		prev            *pb.WorkerRun
 		startFirst      bool
+		restart         bool
 	)
 	kind := req.GetStep().GetKind()
 	sb, err := s.reg.Update(id, func(x *pb.Sandbox) error {
@@ -189,9 +231,14 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		case c == nil || c.GetOrchestratorId() != req.GetOrchestratorId():
 			return fmt.Errorf("%w: not this orchestrator's worker", ErrPrecondition)
 		case req.GetRestart():
-			// T047: R on a step halted by an owning-daemon restart reaps the
-			// orphan and starts a fresh agent. No halt is recorded that way yet.
-			return fmt.Errorf("%w: not a restart halt", ErrPrecondition)
+			// R on a step halted by an owning-daemon restart (research R14):
+			// the orphan is stopped and a fresh agent started below, and this
+			// call is refused while it starts. Nothing is recorded.
+			if run == nil || run.GetId() != req.GetRunId() || !restartHalt(run) {
+				return fmt.Errorf("%w: not a restart halt", ErrPrecondition)
+			}
+			restart = true
+			return fmt.Errorf("%w: agent is starting", ErrPrecondition)
 		case req.GetFirst() && run != nil && run.GetId() != req.GetRunId():
 			return fmt.Errorf("%w: run %s is already on this sandbox", ErrPrecondition, run.GetId())
 		case !req.GetFirst() && (run == nil || run.GetId() != req.GetRunId()):
@@ -236,8 +283,13 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 		if errors.Is(err, registry.ErrNotFound) {
 			return nil, fmt.Errorf("%w: sandbox %s", ErrNotFound, id)
 		}
+		if restart {
+			return nil, s.restartAgent(ctx, id)
+		}
 		if startFirst {
-			s.startAgent(id, "step")
+			if serr := s.startAgentErr(id); serr != nil {
+				return nil, gateRefusal(serr, err)
+			}
 		}
 		if stale {
 			s.stepScreen().RequestRepaint(id)

@@ -64,6 +64,8 @@ func serviceStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, portforward.ErrServiceNotDeclared):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, portforward.ErrSandboxBusy):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return err
 	}

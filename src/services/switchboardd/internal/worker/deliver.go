@@ -93,7 +93,9 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 				go s.agents.ReassertUnready(req.GetSandboxId(), seen)
 			}
 		} else if starting {
-			s.startAgent(req.GetSandboxId(), "deliver")
+			if serr := s.startAgentErr(req.GetSandboxId()); serr != nil {
+				return false, gateRefusal(serr, err)
+			}
 		}
 		return nil, err
 	}
@@ -122,22 +124,38 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 // agent would come up without the orchestrator's tools, and OnBringUp starts it
 // once the load is done.
 func (s *Service) startAgent(sandboxID, why string) {
-	if s.agents == nil || s.agents.Live(sandboxID) || s.bringingUp(sandboxID) {
-		return
-	}
-	var err error
-	if s.terms != nil {
-		_, err = s.terms.Broadcaster(sandboxID)
-	} else {
-		sb, gerr := s.reg.Get(sandboxID)
-		if gerr != nil {
-			return
-		}
-		_, err = s.agents.Session(sandboxID, sb.GetAgent().GetSpec())
-	}
-	if err != nil {
+	if err := s.startAgentErr(sandboxID); err != nil {
 		s.logf("[worker] %s %s: agent not started: %v", why, sandboxID, err)
 	}
+}
+
+// startAgentErr is startAgent returning why the agent was not started. Every
+// spawn goes through the orphan gate (agent.Registry.Session), which refuses
+// beside an agent detached by a daemon restart (research R14).
+func (s *Service) startAgentErr(sandboxID string) error {
+	if s.agents == nil || s.agents.Live(sandboxID) || s.bringingUp(sandboxID) {
+		return nil
+	}
+	if s.terms != nil {
+		_, err := s.terms.Broadcaster(sandboxID)
+		return err
+	}
+	sb, err := s.reg.Get(sandboxID)
+	if err != nil {
+		return nil
+	}
+	_, err = s.agents.Session(sandboxID, sb.GetAgent().GetSpec())
+	return err
+}
+
+// gateRefusal is the delivery's refusal when its agent start was refused by
+// the orphan gate (FAILED_PRECONDITION with the gate's reason, research R14);
+// any other start failure is logged and the guard's own refusal stands.
+func gateRefusal(startErr, refusal error) error {
+	if errors.Is(startErr, agent.ErrOrphan) || errors.Is(startErr, agent.ErrBusy) {
+		return fmt.Errorf("%w: %v", ErrPrecondition, startErr)
+	}
+	return refusal
 }
 
 // WarmStart starts a running worker's agent ahead of its first run (SWI-15), so
