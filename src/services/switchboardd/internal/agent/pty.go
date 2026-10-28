@@ -480,6 +480,47 @@ func (r *Registry) ensureSubmitted(sandboxID string, s Session, since time.Time)
 	}
 }
 
+// TypeStep types one sequence step into the sandbox's live agent (SWI-17,
+// contracts/worker-step.md §2): the text as one bracketed paste, then the
+// Enter after promptSubmitDelay, as Prompt does, but with no ensureSubmitted:
+// the step's submit check decides on any re-press (RePress), from the hooks
+// and the screen. It never starts an agent (ErrNoLiveAgent): the step guard
+// starts one only for a run's first step, and refuses the call meanwhile.
+// spec names the agent the step is for, as Prompt's does. sentAt is when the
+// Enter was written.
+func (r *Registry) TypeStep(sandboxID string, _ *pb.AgentSpec, text string) (sentAt time.Time, err error) {
+	s, err := r.Existing(sandboxID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
+		return time.Time{}, err
+	}
+	time.Sleep(promptSubmitDelay)
+	if _, err := s.Write([]byte(submitKey)); err != nil {
+		return time.Time{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.now(), nil
+}
+
+// RePress presses Enter again in the sandbox's live agent, for a step whose
+// text is still in the input box: "\r" for the first re-press (n = 0), then
+// the keypad Enter, as ensureSubmitted does.
+func (r *Registry) RePress(sandboxID string, n int) error {
+	s, err := r.Existing(sandboxID)
+	if err != nil {
+		return err
+	}
+	key := submitKey
+	if n > 0 {
+		key = keypadEnter
+	}
+	_, err = s.Write([]byte(key))
+	return err
+}
+
 // Close terminates and forgets a sandbox's session. A session closed here is
 // never reported as an agent exit.
 func (r *Registry) Close(sandboxID string) {

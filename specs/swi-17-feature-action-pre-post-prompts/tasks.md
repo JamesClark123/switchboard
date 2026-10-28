@@ -185,7 +185,7 @@ sequence model. No user story can be delivered before this phase.
   NEEDS_DEVELOPER; stop during SETUP/ACTION clears it as today; an exit during cleanup followed at once by a
   corroborated `startup` ends the hold; an update can't lower NEEDS_DEVELOPER; an `expect_run_id` mismatch, for set or
   clear, changes nothing.
-- [ ] T010 In `SBD/agent/pty.go`, add `TypeStep(sandboxID string, spec *pb.AgentSpec, text string) (sentAt time.Time,
+- [X] T010 In `SBD/agent/pty.go`, add `TypeStep(sandboxID string, spec *pb.AgentSpec, text string) (sentAt time.Time,
   err error)`: one bracketed paste, `\r` after `promptSubmitDelay`, and **no** `ensureSubmitted`. Also add
   `RePress(sandboxID string, n int) error`, which sends `\r` for n = 0 and keypad Enter after that, as
   `ensureSubmitted` does today. Tests in `SBD/agent/pty_test.go` with the fake PTY.
