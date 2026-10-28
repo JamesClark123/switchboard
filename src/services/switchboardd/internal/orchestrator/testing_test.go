@@ -469,7 +469,7 @@ func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorke
 	}
 	sb.Controller.Run = &pb.WorkerRun{Id: req.GetRunId(), Action: req.GetAction()}
 	w.stamp(sb, sb.GetRevision())
-	return &pb.DeliverWorkerPromptResponse{Accepted: true}, nil
+	return &pb.DeliverWorkerPromptResponse{Accepted: true, Revision: sb.GetRevision()}, nil
 }
 
 func (w *fakeWorker) frameKinds() []string {

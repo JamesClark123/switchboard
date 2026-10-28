@@ -43,8 +43,12 @@ type planRun struct {
 	mask uint32
 }
 
-func (r planRun) exclusive() bool { return r.ok && len(r.ids) > 0 && r.mode != pb.LaneMode_LANE_MODE_INCLUSIVE }
-func (r planRun) inclusive() bool { return r.ok && len(r.ids) > 0 && r.mode == pb.LaneMode_LANE_MODE_INCLUSIVE }
+func (r planRun) exclusive() bool {
+	return r.ok && len(r.ids) > 0 && r.mode != pb.LaneMode_LANE_MODE_INCLUSIVE
+}
+func (r planRun) inclusive() bool {
+	return r.ok && len(r.ids) > 0 && r.mode == pb.LaneMode_LANE_MODE_INCLUSIVE
+}
 
 // lanePlan indexes the free workers of one pass.
 type lanePlan struct {
@@ -57,9 +61,9 @@ type lanePlan struct {
 	// unreserved ones (once runs deliver, nothing gains a reservation).
 	unres  map[string]int
 	resvd  map[string]int
-	open   []*planWorker            // open-lane workers, roster order
-	openAt int                      // first open entry not gone
-	resv   map[int]*planWorker      // run index → its reservation
+	open   []*planWorker       // open-lane workers, roster order
+	openAt int                 // first open entry not gone
+	resv   map[int]*planWorker // run index → its reservation
 	// touches counts list entries visited (the cost test reads it).
 	touches int
 }
@@ -251,8 +255,8 @@ func (p *lanePlan) release(i int) {
 
 // passHooks are the pass's effects: the planner itself makes no calls.
 type passHooks struct {
-	reason  func(*pb.Run)                        // a reason run (today's path)
-	missing func(*pb.Run)                        // a run with no effective setting
+	reason  func(*pb.Run)                         // a reason run (today's path)
+	missing func(*pb.Run)                         // a run with no effective setting
 	claim   func(*pb.Worker, planRun) claimResult // re-check a candidate before delivering
 	deliver func(*pb.Run, *pb.Worker) deliverResult
 }
