@@ -150,8 +150,8 @@ func TestReasoningSandboxLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []*pb.Action{
-		{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}},
-		reviewPR(),
+		plain(&pb.Action{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}}),
+		plain(reviewPR()),
 	} {
 		if _, err := putAction(env.svc, id, a); err != nil {
 			t.Fatal(err)

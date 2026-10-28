@@ -165,6 +165,14 @@ func TestPutAndDeleteAction(t *testing.T) {
 	}
 }
 
+// plain gives an action an explicit sequence with nothing enabled: no steps,
+// so its runs are delivered by DeliverWorkerPrompt as before (FR-208). The
+// tests of the prompt delivery use it.
+func plain(a *pb.Action) *pb.Action {
+	a.Sequence = &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_OPUS, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM}
+	return a
+}
+
 // withSequence returns review-pr with an explicit sequence (all built-ins on)
 // and the given custom prompts; ticket and skill are declared too.
 func withSequence(pre, post []string) *pb.Action {

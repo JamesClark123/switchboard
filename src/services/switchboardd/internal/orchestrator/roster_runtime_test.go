@@ -181,7 +181,7 @@ func TestBriefingPushIsBackgroundAndCoalesced(t *testing.T) {
 	w.mu.Unlock()
 	before := w.countPrefix("update wa name=")
 	saved := make(chan error, 1)
-	go func() { _, err := putAction(env.svc, o.GetId(), reviewPR()); saved <- err }()
+	go func() { _, err := putAction(env.svc, o.GetId(), plain(reviewPR())); saved <- err }()
 	select {
 	case err := <-saved:
 		if err != nil {

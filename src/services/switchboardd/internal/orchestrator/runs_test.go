@@ -353,12 +353,12 @@ func TestWorkerRunFor(t *testing.T) {
 		live *pb.WorkerRun
 		want *pb.WorkerRun
 	}{
-		"keeps live fields, overlays orchestrator's": {
+		"keeps live fields, overlays orchestrator's, never lowers NEEDS_DEVELOPER": {
 			&pb.Run{Id: "run-1", Action: "a", State: pb.RunState_RUN_STATE_RUNNING, Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepStatus: pb.StepStatus_STEP_STATUS_TURN},
 			live,
 			&pb.WorkerRun{Id: "run-1", Action: "a", StepRole: pb.StepRole_STEP_ROLE_CLEANUP, StepIndex: 4,
 				StepSentAt: timestamppb.New(time.Unix(5, 0)), StepNote: "waiting: x", HoldGen: 3,
-				Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP},
+				Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER},
 		},
 		"review and halt": {
 			&pb.Run{Id: "run-1", Action: "a", State: pb.RunState_RUN_STATE_AWAITING_REVIEW, StepStatus: pb.StepStatus_STEP_STATUS_HALTED},

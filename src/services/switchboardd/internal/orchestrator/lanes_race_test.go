@@ -150,7 +150,7 @@ func TestDispatchLaneRace(t *testing.T) {
 // delivered to that worker.
 func TestDetachRefusedMidDelivery(t *testing.T) {
 	env, w, o, rt := dispatchEnv(t, 2, false)
-	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, rt)

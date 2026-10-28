@@ -60,6 +60,7 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			return e
 		},
 		"DeliverWorkerStep": func() error { _, e := client.DeliverWorkerStep(ctx, &pb.DeliverWorkerStepRequest{}); return e },
+		"ResolveRunStep":    func() error { _, e := client.ResolveRunStep(ctx, &pb.ResolveRunStepRequest{}); return e },
 		"OrchestratorLink": func() error {
 			st, e := client.OrchestratorLink(ctx)
 			if e != nil {
@@ -69,8 +70,8 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			return e
 		},
 	}
-	if len(calls) != 32 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18) + DeliverWorkerStep (SWI-17)
-		t.Fatalf("expected the 32 orchestrator RPCs, have %d", len(calls))
+	if len(calls) != 33 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18) + DeliverWorkerStep, ResolveRunStep (SWI-17)
+		t.Fatalf("expected the 33 orchestrator RPCs, have %d", len(calls))
 	}
 	for name, call := range calls {
 		err := call()
@@ -107,6 +108,67 @@ func TestOrchStatusMapping(t *testing.T) {
 	}
 	if msg := sbgrpc.OrchStatusForTest(&orchestrator.UnreachableError{Host: "box", Err: "Connection refused"}).Error(); !contains(msg, "Connection refused") {
 		t.Errorf("UNAVAILABLE message should carry ssh's words: %q", msg)
+	}
+}
+
+// SWI-17: ResolveRunStep's refusals per contracts/proto-delta.md.
+func TestResolveRunStepErrors(t *testing.T) {
+	env := startOrchServer(t)
+	ctx := context.Background()
+	o, err := env.client.CreateOrchestrator(ctx, &pb.CreateOrchestratorRequest{Name: "review-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []*pb.RunStep{
+		{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL, Text: "/model opus", Expect: "Opus"},
+		{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT, Text: "do it"},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CLEAR, Text: "/clear"},
+	}
+	put := func(id string, step int32, st pb.StepStatus, state pb.RunState) {
+		t.Helper()
+		if err := env.reg.PutRun(&pb.Run{Id: id, OrchestratorId: o.GetId(), Action: "a", Steps: steps, Step: step, StepStatus: st,
+			State: state, SandboxId: "sb", SandboxHostId: "host-1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	short := o.GetId()
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	runAction, runClear, runTurn := "run-"+short+"-1", "run-"+short+"-2", "run-"+short+"-3"
+	put(runAction, 1, pb.StepStatus_STEP_STATUS_HALTED, pb.RunState_RUN_STATE_RUNNING)
+	put(runClear, 2, pb.StepStatus_STEP_STATUS_HALTED, pb.RunState_RUN_STATE_COMPLETED)
+	put(runTurn, 1, pb.StepStatus_STEP_STATUS_TURN, pb.RunState_RUN_STATE_RUNNING)
+	resolve := func(run string, step int32, res pb.StepResolution) error {
+		_, err := env.client.ResolveRunStep(ctx, &pb.ResolveRunStepRequest{OrchestratorId: o.GetId(), RunId: run, Step: step, Resolution: res})
+		return err
+	}
+	cases := []struct {
+		name string
+		err  error
+		code codes.Code
+		msg  string
+	}{
+		{"unknown run", resolve("nope", 0, pb.StepResolution_STEP_RESOLUTION_RETRY), codes.NotFound, ""},
+		{"unknown orchestrator", func() error {
+			_, e := env.client.ResolveRunStep(ctx, &pb.ResolveRunStepRequest{OrchestratorId: "nope", RunId: runAction})
+			return e
+		}(), codes.NotFound, ""},
+		{"no resolution", resolve(runAction, 1, pb.StepResolution_STEP_RESOLUTION_UNSPECIFIED), codes.InvalidArgument, ""},
+		{"not halted", resolve(runTurn, 1, pb.StepResolution_STEP_RESOLUTION_RETRY), codes.FailedPrecondition, "the run moved on; reload"},
+		{"stale step", resolve(runAction, 0, pb.StepResolution_STEP_RESOLUTION_RETRY), codes.FailedPrecondition, "the run moved on; reload"},
+		{"skip clear", resolve(runClear, 2, pb.StepResolution_STEP_RESOLUTION_SKIP), codes.FailedPrecondition, "Clear cannot be skipped"},
+		{"skip action", resolve(runAction, 1, pb.StepResolution_STEP_RESOLUTION_SKIP), codes.FailedPrecondition, "the action prompt cannot be skipped; retry or fail"},
+	}
+	for _, c := range cases {
+		if st, _ := status.FromError(c.err); st.Code() != c.code || !contains(st.Message(), c.msg) {
+			t.Errorf("%s = %v, want %v %q", c.name, c.err, c.code, c.msg)
+		}
+	}
+	// A valid retry answers with the run, back to PENDING.
+	run, err := env.client.ResolveRunStep(ctx, &pb.ResolveRunStepRequest{OrchestratorId: o.GetId(), RunId: runAction, Step: 1, Resolution: pb.StepResolution_STEP_RESOLUTION_RETRY})
+	if err != nil || run.GetStepStatus() != pb.StepStatus_STEP_STATUS_PENDING {
+		t.Errorf("retry = %+v / %v", run, err)
 	}
 }
 

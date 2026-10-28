@@ -137,7 +137,9 @@ func (s *Service) ListRuns(id string) (*pb.ListRunsResponse, error) {
 			r.Position = pos
 			r.WaitingReason = waitingReason(r, counts, false)
 			out.Queued = append(out.Queued, r)
-		case inFlight(r):
+		case inFlight(r), holding(r):
+			// A closed run holding its sandbox, or halted, stays in progress
+			// until its hold or halt ends (FR-213).
 			out.InFlight = append(out.InFlight, r)
 		default:
 			out.History = append(out.History, r)
@@ -174,19 +176,29 @@ func (s *Service) CancelRun(id, runID string) (*pb.Run, error) {
 		return nil, err
 	}
 	rt.runs.mu.Lock()
-	defer rt.runs.mu.Unlock()
 	run, err := s.reg.GetRun(id, runID)
 	if err != nil {
+		rt.runs.mu.Unlock()
 		return nil, notFound(err)
 	}
 	if run.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		rt.runs.mu.Unlock()
 		return nil, fmt.Errorf("%w: run %s is %s; only a queued run can be cancelled", ErrPrecondition, runID, stateLabel(run.GetState()))
 	}
 	run.State = pb.RunState_RUN_STATE_CANCELLED
 	run.Reason = "cancelled by developer"
 	run.EndedAt = timestamppb.New(s.clock.Now())
+	// A claimed run frees its worker (T019): its record is cleared, or, with
+	// its first step in flight, the stepper settles it.
+	fx, seq := rt.closeStepsLocked(run, false)
 	if err := rt.putRun(run); err != nil {
+		rt.runs.mu.Unlock()
 		return nil, err
+	}
+	rt.runs.mu.Unlock()
+	if seq {
+		rt.applyFx(run, fx)
+		rt.triggerDispatch()
 	}
 	return run, nil
 }
@@ -386,7 +398,13 @@ func workerRunFor(run *pb.Run, live *pb.WorkerRun) *pb.WorkerRun {
 	out.Id, out.Action = run.GetId(), run.GetAction()
 	out.NeedsReview = run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW
 	out.Hold = run.GetHold()
-	out.Halted = run.GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED
+	if live.GetId() == run.GetId() && live.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		out.Hold = live.GetHold() // never lowered (R7): the daemon raised it first
+	}
+	out.Halted = haltedOnWorker(run)
+	if sequenced(run) {
+		out.StepNote = run.GetStepNote()
+	}
 	return out
 }
 
@@ -434,9 +452,11 @@ func (rt *runtime) runAwaitingReview(run *pb.Run) {
 	// Decided on the live record and the worker's latest status, both under
 	// runs.mu like runResumed: an agent that resumed (SWI-12) or a report that
 	// closed the run since the caller looked keeps it out of review.
+	// A run with steps goes to review only once its action prompt was
+	// accepted: idle between setup steps is not the end of the task (FR-209).
 	live, err := rt.svc.reg.GetRun(rt.id, run.GetId())
 	if err != nil || (live.GetState() != pb.RunState_RUN_STATE_RUNNING && live.GetState() != pb.RunState_RUN_STATE_AWAITING_INPUT) ||
-		rt.sandboxRecord(live.GetSandboxId()).GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+		inSetup(live) || rt.sandboxRecord(live.GetSandboxId()).GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
 		rt.runs.mu.Unlock()
 		return
 	}
@@ -455,9 +475,11 @@ func (rt *runtime) runAwaitingReview(run *pb.Run) {
 }
 
 // completeRun closes a run with its one summary (a report, or the developer's
-// note) and frees the worker. Completions are silent (FR-133).
+// note) and frees the worker, or, for a run with cleanup steps, holds it while
+// they run (FR-214, FR-215). Completions are silent (FR-133).
 func (rt *runtime) completeRun(run *pb.Run, summary string, byDeveloper, failed bool) (*pb.Run, error) {
 	rt.runs.mu.Lock()
+	rt.refreshLocked(run)
 	if !inFlight(run) {
 		rt.runs.mu.Unlock()
 		return nil, fmt.Errorf("%w: run %s is %s", ErrPrecondition, run.GetId(), stateLabel(run.GetState()))
@@ -470,19 +492,25 @@ func (rt *runtime) completeRun(run *pb.Run, summary string, byDeveloper, failed 
 	run.Summary = summary
 	run.ClosedByDeveloper = byDeveloper
 	run.EndedAt = timestamppb.New(rt.svc.clock.Now())
+	fx, seq := rt.closeStepsLocked(run, true)
 	err := rt.putRun(run)
 	rt.runs.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	rt.closedRun(run)
-	rt.clearWorkerRun(run)
+	if seq {
+		rt.applyFx(run, fx)
+	} else {
+		rt.clearWorkerRun(run)
+	}
 	return proto.Clone(run).(*pb.Run), nil
 }
 
 // failRun closes a run as FAILED with a reason (FR-124) and raises RUN_FAILED.
 func (rt *runtime) failRun(run *pb.Run, reason string) {
 	rt.runs.mu.Lock()
+	rt.refreshLocked(run)
 	if !inFlight(run) && run.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		rt.runs.mu.Unlock()
 		return
@@ -490,13 +518,19 @@ func (rt *runtime) failRun(run *pb.Run, reason string) {
 	run.State = pb.RunState_RUN_STATE_FAILED
 	run.Reason = reason
 	run.EndedAt = timestamppb.New(rt.svc.clock.Now())
+	// A run with steps that failed before its action prompt was delivered gets
+	// Clear only, if a step reached a live agent (FR-214 as amended).
+	fx, seq := rt.closeStepsLocked(run, false)
 	err := rt.putRun(run)
 	rt.runs.mu.Unlock()
 	if err != nil {
 		return
 	}
 	rt.closedRun(run)
-	if run.GetSandboxId() != "" && rt.sandboxRecord(run.GetSandboxId()) != nil {
+	switch {
+	case seq:
+		rt.applyFx(run, fx)
+	case run.GetSandboxId() != "" && rt.sandboxRecord(run.GetSandboxId()) != nil:
 		rt.clearWorkerRun(run)
 	}
 	rt.notify(run, pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, "failed: "+reason)
@@ -555,7 +589,7 @@ func (rt *runtime) failRunsOn(sandboxID, reason string) {
 		if run == nil {
 			return
 		}
-		rt.failRun(run, reason)
+		rt.failRun(run, duringStep(reason, run))
 	}
 }
 
@@ -575,8 +609,12 @@ func (rt *runtime) closeAllRuns(reason string) (failed, cancelled uint32) {
 			r.State = pb.RunState_RUN_STATE_CANCELLED
 			r.Reason = reason
 			r.EndedAt = timestamppb.New(rt.svc.clock.Now())
+			fx, seq := rt.closeStepsLocked(r, false)
 			_ = rt.svc.reg.PutRun(r)
 			rt.runs.mu.Unlock()
+			if seq {
+				rt.applyFx(r, fx)
+			}
 			cancelled++
 		}
 	}
@@ -600,6 +638,7 @@ func (rt *runtime) onSandboxEvent(_ context.Context, hostID string, ev *pb.Event
 			return
 		}
 		if cur := rt.sandboxRecord(sb.GetId()); cur != nil {
+			rt.clearStaleRecord(cur)
 			rt.foldStatus(cur)
 		}
 		rt.triggerDispatch()
@@ -645,24 +684,26 @@ func (rt *runtime) onSandboxRemoved(hostID, sandboxID string) {
 	}
 }
 
-// foldStatus maps a worker's record onto the run on it (data-model state machine).
+// foldStatus maps a worker's record onto the run on it (data-model state
+// machine). Step work is the stepper's: it is only kicked from here.
 func (rt *runtime) foldStatus(sb *pb.Sandbox) {
+	rt.kickSteps(sb.GetId())
 	run := rt.runOn(sb.GetId())
 	if run == nil {
 		return
 	}
 	switch {
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED:
-		rt.failRun(run, "agent exited")
+		rt.failRun(run, exitReason(run, sb))
 	case sb.GetState() == pb.SandboxState_SANDBOX_STATE_ERROR || sb.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED:
 		if run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW {
 			return // stopped while awaiting review keeps the run (FR-156 edge case)
 		}
-		rt.failRun(run, "sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")))
+		rt.failRun(run, duringStep("sandbox "+strings.ToLower(strings.TrimPrefix(sb.GetState().String(), "SANDBOX_STATE_")), run))
 	case sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING:
 		// CREATING (a kit attach): the agent session is gone; treat as stopped.
 		if run.GetState() != pb.RunState_RUN_STATE_AWAITING_REVIEW {
-			rt.failRun(run, "sandbox restarting")
+			rt.failRun(run, duringStep("sandbox restarting", run))
 		}
 	case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
 		rt.disarmReview(run.GetId())
@@ -734,15 +775,23 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 		return
 	}
 	for _, run := range runs {
-		if !inFlight(run) || run.GetSandboxHostId() != hostID {
+		if run.GetSandboxHostId() != hostID {
+			continue
+		}
+		if stepActive(run) {
+			// Claims, sends left SENDING, holds and halts are settled against
+			// the records just re-read (T022).
+			rt.kickStepper(run.GetSandboxId())
+		}
+		if !inFlight(run) {
 			continue
 		}
 		sb := rt.sandboxRecord(run.GetSandboxId())
 		switch {
 		case sb == nil:
-			rt.failRun(run, "sandbox gone")
+			rt.failRun(run, duringStep("sandbox gone", run))
 		case sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED:
-			rt.failRun(run, "agent exited")
+			rt.failRun(run, exitReason(run, sb))
 		case run.GetState() == pb.RunState_RUN_STATE_AWAITING_REVIEW:
 			if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && busy(sb) {
 				rt.runResumed(run) // the agent resumed while the link was down
@@ -763,6 +812,15 @@ func (rt *runtime) reconcileInFlight(hostID string) {
 		}
 		if sb != nil {
 			rt.repairReviewFlag(run, sb)
+		}
+	}
+	// A worker record naming a run that is over is cleared (T022).
+	rec := rt.record()
+	for _, w := range rec.GetWorkers() {
+		if w.GetHostId() == hostID {
+			if sb := rt.sandboxRecord(w.GetSandboxId()); sb != nil {
+				rt.clearStaleRecord(sb)
+			}
 		}
 	}
 }

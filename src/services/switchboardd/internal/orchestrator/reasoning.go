@@ -130,6 +130,9 @@ func (rt *runtime) destroyReasoning() {
 	if _, err := rt.applyRoster(rosterInput{source: srcDestroyReasoning, hostID: rt.svc.hostID, ids: []string{old}}); err != nil {
 		rt.svc.logf("[orchestrator %s] forget reasoning sandbox %s: %v", rt.name(), old, err)
 	}
+	// A run holding the old sandbox ends its cleanup with it; the new one
+	// starts free (research R7, FR-222).
+	rt.endHoldingOn(old)
 	if rt.svc.mgr == nil {
 		return
 	}
@@ -158,7 +161,8 @@ func (rt *runtime) reasoningStatus() (bool, string) {
 
 // RebuildReasoningSandbox saves setup when given, then destroys the current
 // reasoning sandbox and launches a new one, streaming the launcher's log
-// lines (FR-146). Refused while a run is on it.
+// lines (FR-146). Refused while a run is on it; allowed while a closed run
+// holds it for cleanup (FR-222).
 func (s *Service) RebuildReasoningSandbox(ctx context.Context, id string, setup *pb.ReasoningSetup, onLog func(string)) (*pb.Sandbox, error) {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
@@ -173,7 +177,9 @@ func (s *Service) RebuildReasoningSandbox(ctx context.Context, id string, setup 
 			return nil, fmt.Errorf("%w: run %s is on the reasoning sandbox", ErrPrecondition, run.GetId())
 		}
 		if r := rt.sandboxRecord(old).GetController().GetRun(); r != nil {
-			return nil, fmt.Errorf("%w: run %s is on the reasoning sandbox", ErrPrecondition, r.GetId())
+			if live, err := s.reg.GetRun(id, r.GetId()); err != nil || !holding(live) {
+				return nil, fmt.Errorf("%w: run %s is on the reasoning sandbox", ErrPrecondition, r.GetId())
+			}
 		}
 	}
 	if setup != nil {

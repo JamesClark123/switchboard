@@ -18,7 +18,7 @@ import (
 // retired worker tag.
 
 func laned(name string, mode pb.LaneMode, laneIDs ...string) *pb.Action {
-	a := reviewPR()
+	a := plain(reviewPR()) // no steps (SWI-17): these tests exercise lane dispatch
 	a.Name, a.LaneIds, a.LaneMode = name, laneIDs, mode
 	return a
 }
@@ -132,7 +132,7 @@ func TestPutActionLaneRefusals(t *testing.T) {
 func TestOpenLaneGuard(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 1, false)
 	id := o.GetId()
-	if _, err := putAction(env.svc, id, reviewPR()); err != nil {
+	if _, err := putAction(env.svc, id, plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	ln, _ := env.svc.PutLane(id, "", "ci", "")
@@ -334,7 +334,7 @@ func TestDeleteActionKeepsLaneSetting(t *testing.T) {
 		t.Fatalf("kept = %+v", got.GetKeptLanes())
 	}
 	// A new action with the same name does not change the kept routing.
-	if _, err := putAction(env.svc, id, reviewPR()); err != nil {
+	if _, err := putAction(env.svc, id, plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, rt)
@@ -361,7 +361,7 @@ func TestCheckLaneChangeRequests(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 1, false)
 	id := o.GetId()
 	ids := seedLanes(t, rt, map[string][]string{"a": nil})
-	if _, err := putAction(env.svc, id, reviewPR()); err != nil {
+	if _, err := putAction(env.svc, id, plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	check := func(c *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error) {
@@ -406,7 +406,7 @@ func TestCheckLaneChangeRequests(t *testing.T) {
 func TestDetachGuardAndMark(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 1, false)
 	id := o.GetId()
-	if _, err := putAction(env.svc, id, reviewPR()); err != nil {
+	if _, err := putAction(env.svc, id, plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.svc.DetachWorker(bg(), id, "wa", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "review-pr") {
@@ -592,7 +592,7 @@ func TestActionSaveTriggersDispatch(t *testing.T) {
 	env, _, o, rt := dispatchEnv(t, 1, false)
 	id := o.GetId()
 	ids := seedLanes(t, rt, map[string][]string{"a": {"wa"}})
-	if _, err := putAction(env.svc, id, reviewPR()); err != nil {
+	if _, err := putAction(env.svc, id, plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	run := call(t, env, id, "1")
@@ -627,7 +627,7 @@ func TestSandboxTagDoesNotRoute(t *testing.T) {
 	rt.mu.Lock()
 	rt.sbs["wa"] = tagged
 	rt.mu.Unlock()
-	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	r1, r2 := call(t, env, o.GetId(), "1"), call(t, env, o.GetId(), "2")

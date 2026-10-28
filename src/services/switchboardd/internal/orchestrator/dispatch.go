@@ -44,11 +44,14 @@ func (rt *runtime) triggerDispatch() {
 
 // free reports whether a worker can take a run right now (R7). Only an IDLE
 // agent is free: one WAITING on background work is still on its run (SWI-12).
+// An agent its daemon has not checked for, or found detached by a daemon
+// restart, is not: nothing can be typed beside it (research R14).
 func free(sb *pb.Sandbox, hostUp bool) bool {
 	return hostUp && sb != nil &&
 		sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING &&
 		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE &&
-		sb.GetController().GetRun() == nil
+		sb.GetController().GetRun() == nil &&
+		agentCheck(sb) == pb.AgentCheck_STATE_CLEAR
 }
 
 // claimResult is the outcome of re-checking a planned candidate.
@@ -86,6 +89,18 @@ func (rt *runtime) dispatch() {
 	}); err != nil {
 		return
 	}
+	// A sandbox claimed by a queued run with steps, or held by a closed one,
+	// is not free (T019, T021), whatever its record says meanwhile.
+	all, err := rt.svc.reg.ListRuns(rt.id)
+	if err != nil {
+		return
+	}
+	claimed := map[string]bool{}
+	for _, r := range all {
+		if r.GetSandboxId() != "" && (r.GetState() == pb.RunState_RUN_STATE_QUEUED || stepActive(r)) {
+			claimed[r.GetSandboxId()] = true
+		}
+	}
 	// Candidates come from one view of the roster per pass: were a record
 	// re-read per run, a worker freed mid-pass could take a later run while an
 	// earlier one it could have taken stays queued (SC-003). The change that
@@ -101,23 +116,37 @@ func (rt *runtime) dispatch() {
 	}
 	plan := buildPlan(rec, func(w *pb.Worker) bool {
 		_, det := detaching[w.GetSandboxId()]
-		return !det && free(sbs[w.GetSandboxId()], ups[w.GetHostId()])
+		return !det && !claimed[w.GetSandboxId()] && free(sbs[w.GetSandboxId()], ups[w.GetHostId()])
 	})
-	runs := make([]planRun, len(queued))
-	for i, run := range queued {
+	runs := make([]planRun, 0, len(queued))
+	for _, run := range queued {
+		if run.GetSandboxId() != "" {
+			continue // claimed runs belong to their stepper (research R5)
+		}
 		ids, mode, ok := effectiveLanes(rec, run)
-		runs[i] = planRun{run: run, ids: ids, mode: mode, ok: ok, mask: plan.maskOf(ids)}
+		// A run with steps whose every allowed worker predates step delivery
+		// can never be delivered (R6).
+		if ok && sequenced(run) && run.GetType() != pb.ActionType_ACTION_TYPE_REASON && rt.noStepWorker(rec, ids, mode) {
+			rt.failRun(run, unsupportedReason)
+			continue
+		}
+		runs = append(runs, planRun{run: run, ids: ids, mode: mode, ok: ok, mask: plan.maskOf(ids)})
 	}
 	reasoningClaimed := false
 	plan.pass(runs, passHooks{
 		reason: func(run *pb.Run) {
 			if !reasoningClaimed {
-				reasoningClaimed = rt.dispatchReason(run, rec, sbs, ups)
+				reasoningClaimed = rt.dispatchReason(run, rec, sbs, ups, claimed)
 			}
 		},
 		missing: rt.failIfMissing,
-		claim:   func(w *pb.Worker, r planRun) claimResult { return rt.recheckAndClaim(w, r, gen0) },
-		deliver: rt.deliver,
+		claim: func(w *pb.Worker, r planRun) claimResult {
+			if sequenced(r.run) && rt.stepsUnsupported(w.GetSandboxId()) {
+				return claimLaneFail // not this run's worker; it stays free for others
+			}
+			return rt.recheckAndClaim(w, r, gen0)
+		},
+		deliver: rt.handOff,
 	})
 }
 
@@ -125,13 +154,20 @@ func (rt *runtime) dispatch() {
 // reporting whether it took one. A reason run has exactly one target; while it
 // is gone (not merely coming up) the run fails with the reason (FR-145 edge
 // case).
-func (rt *runtime) dispatchReason(run *pb.Run, rec *pb.Orchestrator, sbs map[string]*pb.Sandbox, ups map[string]bool) bool {
+func (rt *runtime) dispatchReason(run *pb.Run, rec *pb.Orchestrator, sbs map[string]*pb.Sandbox, ups map[string]bool, claimed map[string]bool) bool {
 	if ready, reason := rt.reasoningStatus(); !ready && reason != "" {
 		rt.failRun(run, reason)
 		return false
 	}
 	for _, w := range rec.GetWorkers() {
-		if !w.GetReasoning() || !free(sbs[w.GetSandboxId()], ups[w.GetHostId()]) {
+		if !w.GetReasoning() {
+			continue
+		}
+		if sequenced(run) && rt.stepsUnsupported(w.GetSandboxId()) {
+			rt.failRun(run, unsupportedReason)
+			return true
+		}
+		if claimed[w.GetSandboxId()] || !free(sbs[w.GetSandboxId()], ups[w.GetHostId()]) {
 			continue
 		}
 		// …but the latest record must still agree before delivering: a
@@ -141,10 +177,23 @@ func (rt *runtime) dispatchReason(run *pb.Run, rec *pb.Orchestrator, sbs map[str
 		if !free(rt.sandboxRecord(w.GetSandboxId()), liveUp) {
 			return true
 		}
-		rt.deliver(run, w)
+		rt.handOff(run, w)
 		return true
 	}
 	return false
+}
+
+// handOff delivers a run, or, for a run with steps, claims the worker for its
+// stepper, which delivers it step by step (research R5).
+func (rt *runtime) handOff(run *pb.Run, w *pb.Worker) deliverResult {
+	if !sequenced(run) {
+		return rt.deliver(run, w)
+	}
+	defer rt.endDelivery(w.GetSandboxId())
+	if rt.claim(run, w) {
+		return delivered
+	}
+	return refused
 }
 
 // failIfMissing fails a run whose effective lane setting is missing (its

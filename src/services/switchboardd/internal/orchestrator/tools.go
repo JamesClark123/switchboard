@@ -203,6 +203,9 @@ func (rt *runtime) toolReportCompletion(sandboxID string, in reportIn) (reportOu
 	if run.GetSummary() != "" {
 		return reportOut{}, fmt.Errorf("run %s already has a summary", run.GetId())
 	}
+	if inSetup(run) && !actionTyped(run, rt.sandboxRecord(sandboxID)) {
+		return reportOut{}, fmt.Errorf("the action prompt has not been delivered yet") // FR-211
+	}
 	rt.mu.Lock()
 	rt.reported[run.GetId()] = true
 	rt.mu.Unlock()

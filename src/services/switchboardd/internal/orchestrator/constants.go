@@ -43,6 +43,20 @@ const (
 	maxPromptBytes   = 64 * 1024
 	// maxStepPrompts bounds each of an action's custom pre/post prompt lists (FR-204).
 	maxStepPrompts = 10
+	// stepRetryEvery is how often a step the worker refused (FAILED_PRECONDITION)
+	// is tried again while no status change kicks it (research R6).
+	stepRetryEvery = 2 * time.Second
+	// stepWaitNote is how long refusals last before the step's note reads
+	// "waiting: <reason>" (research R6).
+	stepWaitNote = 10 * time.Second
+	// inputOnlyIdle is how long the input box must stay empty and ready after a
+	// step classified only by a needs-input report before it is finished (the
+	// idle-nudge fallback, FR-206b, research R1).
+	inputOnlyIdle = 60 * time.Second
+	// sentGrace is how long a step typed but not yet classified (SENT) waits for
+	// hook evidence before it halts (research R8); the worker's submit check is
+	// bounded by deliverTimeout, so a report still on its way lands within it.
+	sentGrace = deliverTimeout
 	// maxNameLen bounds an orchestrator's name (FR-105).
 	maxNameLen = 64
 

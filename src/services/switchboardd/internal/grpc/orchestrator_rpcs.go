@@ -227,6 +227,15 @@ func (s *Server) CancelRun(_ context.Context, req *pb.CancelRunRequest) (*pb.Run
 	return out, orchStatus(err)
 }
 
+// ResolveRunStep retries, skips or fails a run's halted step (SWI-17, FR-222).
+func (s *Server) ResolveRunStep(_ context.Context, req *pb.ResolveRunStepRequest) (*pb.Run, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.ResolveRunStep(req.GetOrchestratorId(), req.GetRunId(), req.GetStep(), req.GetResolution())
+	return out, orchStatus(err)
+}
+
 func (s *Server) RebuildReasoningSandbox(req *pb.RebuildReasoningSandboxRequest, stream pb.Switchboard_RebuildReasoningSandboxServer) error {
 	if s.orchestrator == nil {
 		return errNoOrchestrator

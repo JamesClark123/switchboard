@@ -44,7 +44,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 		rt.sbs["reasoning-1"] = r
 		rt.mu.Unlock()
 	}
-	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	return env, w, o, rt
@@ -146,12 +146,12 @@ func TestDispatchLanesReasonAndRefusals(t *testing.T) {
 	// An exclusive action runs only on its lane's workers; a reason run goes
 	// only to the reasoning sandbox.
 	ids := seedLanes(t, rt, map[string][]string{"ci": {"wb"}})
-	laned := reviewPR()
+	laned := plain(reviewPR())
 	laned.LaneIds, laned.LaneMode = []string{ids["ci"]}, pb.LaneMode_LANE_MODE_EXCLUSIVE
 	if _, err := putAction(env.svc, o.GetId(), laned); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(&pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}})); err != nil {
 		t.Fatal(err)
 	}
 	r1 := call(t, env, o.GetId(), "1")
@@ -177,7 +177,7 @@ func TestDispatchLanesReasonAndRefusals(t *testing.T) {
 	// A second laned call waits (wa is free but in no lane) and never blocks
 	// later un-laned runs.
 	r2 := call(t, env, o.GetId(), "2")
-	unlaned := reviewPR()
+	unlaned := plain(reviewPR())
 	unlaned.Name = "any"
 	if _, err := putAction(env.svc, o.GetId(), unlaned); err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestOwnHostRefusalKeepsRunQueued(t *testing.T) {
 	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(reviewPR())); err != nil {
 		t.Fatal(err)
 	}
 	// The agent turns busy as the delivery arrives (the record moved after the
