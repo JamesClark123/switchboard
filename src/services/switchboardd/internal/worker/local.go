@@ -35,6 +35,10 @@ func (l localAPI) DeliverWorkerPrompt(ctx context.Context, req *pb.DeliverWorker
 	return l.svc.DeliverResponse(ctx, req)
 }
 
+func (l localAPI) DeliverWorkerStep(ctx context.Context, req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+	return l.svc.DeliverStep(ctx, req)
+}
+
 // hubStream adapts a hub subscription to an EventStream; the subscription ends
 // with the context.
 type hubStream struct {

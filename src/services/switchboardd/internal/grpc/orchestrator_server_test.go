@@ -500,6 +500,24 @@ func TestTwoDaemonsCallDeliverReviewMarkFree(t *testing.T) {
 	if _, err := n.DeliverWorkerPrompt(ctx, &pb.DeliverWorkerPromptRequest{SandboxId: sb.GetId(), OrchestratorId: o.GetId(), RunId: "r", Action: "a", Prompt: "p"}); status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("deliver on a stopped sandbox = %v", err)
 	}
+	// DeliverWorkerStep (SWI-17) is served alike, directly and as the
+	// orchestrator's remote API sees it.
+	step := &pb.DeliverWorkerStepRequest{SandboxId: sb.GetId(), OrchestratorId: o.GetId(), RunId: "r", Action: "a", First: true, StepIndex: 1,
+		Step: &pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "opus"}}
+	if _, err := n.DeliverWorkerStep(ctx, step); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("step on a stopped sandbox = %v", err)
+	}
+	if _, err := worker.Remote(n).DeliverWorkerStep(ctx, step); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("remote step on a stopped sandbox = %v", err)
+	}
+	step.Step.Expect = "gpt"
+	if _, err := n.DeliverWorkerStep(ctx, step); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("step with a bad expect = %v", err)
+	}
+	step.SandboxId, step.Step.Expect = "nope", "opus"
+	if _, err := n.DeliverWorkerStep(ctx, step); status.Code(err) != codes.NotFound {
+		t.Errorf("step on an unknown sandbox = %v", err)
+	}
 	// Delete the action: a (disabled) event names it.
 	if _, err := m.client.PutTimedEvent(ctx, &pb.PutTimedEventRequest{OrchestratorId: o.GetId(), Event: &pb.TimedEvent{Name: "poll", Action: "review-pr", IntervalSeconds: 60, Enabled: true, Arguments: map[string]string{"number": "1", "repo": "r"}}}); err != nil && status.Code(err) != codes.Unavailable {
 		t.Fatalf("PutTimedEvent = %v", err)

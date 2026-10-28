@@ -81,6 +81,15 @@ type Service struct {
 	// the load so it comes up with the orchestrator's tools.
 	bringMu  sync.Mutex
 	bringing map[string]int
+
+	// Step delivery (SWI-17, step.go): the hook tap, and the screen, typer
+	// and clock, which default to the terminal registry, the agent registry
+	// and the wall clock. Tests inject them, and shorten the timing.
+	tap    StepTap
+	screen StepScreen
+	typer  StepTyper
+	clock  StepClock
+	timing stepTiming
 }
 
 // NewService constructs a Service and loads the token index.
@@ -89,6 +98,7 @@ func NewService(d Deps) *Service {
 		mgr: d.Manager, reg: d.Registry, agents: d.Agents, hub: d.Hub,
 		hookPort: d.HookPort, hostID: d.HostID, version: d.Version, logf: d.Logf, now: d.Clock,
 		links: newLinkIndex(), tokens: map[string]string{}, servers: map[string]*sdk.Server{},
+		clock: realClock{}, timing: defaultStepTiming,
 	}
 	if s.logf == nil {
 		s.logf = log.Printf

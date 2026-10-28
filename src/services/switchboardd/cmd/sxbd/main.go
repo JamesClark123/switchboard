@@ -352,6 +352,8 @@ func runServe(cfg *config.Config, debug bool) error {
 		Debug:           debug,
 	})
 	workerSvc.SetTerminals(srv.Terminals())
+	// SWI-17: a step's submit check listens to the agent's hooks.
+	workerSvc.SetHookTap(hookServer)
 	// SWI-15: agent sessions do not survive a daemon restart, so every running
 	// worker's agent is started now rather than on the first delivery attempt
 	// (WarmStart leaves a worker with a run in flight alone).

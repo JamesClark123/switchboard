@@ -59,6 +59,7 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			_, e := client.DismissDroppedWorkerTags(ctx, &pb.OrchestratorIdRequest{})
 			return e
 		},
+		"DeliverWorkerStep": func() error { _, e := client.DeliverWorkerStep(ctx, &pb.DeliverWorkerStepRequest{}); return e },
 		"OrchestratorLink": func() error {
 			st, e := client.OrchestratorLink(ctx)
 			if e != nil {
@@ -68,8 +69,8 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			return e
 		},
 	}
-	if len(calls) != 31 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18)
-		t.Fatalf("expected the 31 orchestrator RPCs, have %d", len(calls))
+	if len(calls) != 32 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18) + DeliverWorkerStep (SWI-17)
+		t.Fatalf("expected the 32 orchestrator RPCs, have %d", len(calls))
 	}
 	for name, call := range calls {
 		err := call()

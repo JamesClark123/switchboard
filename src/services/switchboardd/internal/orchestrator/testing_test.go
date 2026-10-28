@@ -458,6 +458,11 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
+// DeliverWorkerStep: this fake predates step delivery (SWI-17).
+func (w *fakeWorker) DeliverWorkerStep(context.Context, *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "DeliverWorkerStep")
+}
+
 func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
 	w.record("deliver %s %s", req.GetSandboxId(), req.GetRunId())
 	w.mu.Lock()

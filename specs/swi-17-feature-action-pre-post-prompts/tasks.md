@@ -192,7 +192,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### The step RPC (contracts/worker-step.md)
 
-- [ ] T011 Implement `SBD/worker/step.go` `func (s *Service) DeliverStep(ctx, req *pb.DeliverWorkerStepRequest)
+- [X] T011 Implement `SBD/worker/step.go` `func (s *Service) DeliverStep(ctx, req *pb.DeliverWorkerStepRequest)
   (*pb.DeliverWorkerStepResponse, error)`:
   1. **Read the screen without creating anything** (`terms.Screen`). Create a broadcaster only through
      `terms.BroadcasterExisting` (provider `agents.Existing`, atomic), so the step path never spawns an agent (except
@@ -222,7 +222,7 @@ sequence model. No user story can be delivered before this phase.
 
   The submit window and re-presses are injectable for tests. Inject the hook tap, the screen source and the clock
   through small interfaces on `Service`.
-- [ ] T012 Tests in `SBD/worker/step_test.go`, one per row of contracts/worker-step.md §1 and §3, using a fake tap
+- [X] T012 Tests in `SBD/worker/step_test.go`, one per row of contracts/worker-step.md §1 and §3, using a fake tap
   and a scripted screen built from the T006 fixtures:
   - MODEL_TURN on `UserPromptSubmit`;
   - INPUT_ONLY on a needs-input `Notification`;
@@ -245,7 +245,7 @@ sequence model. No user story can be delivered before this phase.
   - a rollback on a type error;
   - `check_only`;
   - the 10 s bound.
-- [ ] T013 Wire `DeliverWorkerStep` in `SBD/grpc/worker_rpcs.go` (same auth and attribution as
+- [X] T013 Wire `DeliverWorkerStep` in `SBD/grpc/worker_rpcs.go` (same auth and attribution as
   `DeliverWorkerPrompt`). Add it to the `worker.API` interface, `worker.Local` and `remoteAPI`
   (`SBD/worker/api.go`, `SBD/worker/local.go`).
   - An `UNIMPLEMENTED` from a remote daemon maps to `worker.ErrUnsupported`. An `ALREADY_EXISTS` maps to

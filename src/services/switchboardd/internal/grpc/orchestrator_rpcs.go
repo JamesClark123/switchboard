@@ -43,6 +43,10 @@ func orchStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, orchestrator.ErrNameTaken), errors.Is(err, orchestrator.ErrAlreadyControlled), errors.Is(err, worker.ErrAlreadyControlled):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, worker.ErrStepSent):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, worker.ErrUnsupported):
+		return status.Error(codes.Unimplemented, err.Error())
 	case errors.Is(err, orchestrator.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, orchestrator.ErrPrecondition), errors.Is(err, worker.ErrPrecondition):

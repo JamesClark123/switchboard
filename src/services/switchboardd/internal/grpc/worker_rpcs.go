@@ -46,6 +46,19 @@ func (s *Server) DeliverWorkerPrompt(ctx context.Context, req *pb.DeliverWorkerP
 	return resp, nil
 }
 
+// DeliverWorkerStep types one sequence step (SWI-17, contracts/worker-step.md):
+// served like DeliverWorkerPrompt, with ErrStepSent as ALREADY_EXISTS.
+func (s *Server) DeliverWorkerStep(ctx context.Context, req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+	if s.worker == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.worker.DeliverStep(ctx, req)
+	if err != nil {
+		return nil, orchStatus(err)
+	}
+	return out, nil
+}
+
 func (s *Server) OrchestratorLink(stream pb.Switchboard_OrchestratorLinkServer) error {
 	if s.worker == nil {
 		return errNoOrchestrator
