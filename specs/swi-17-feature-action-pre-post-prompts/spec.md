@@ -31,6 +31,14 @@ Builds on the orchestrator (`specs/009-orchestrator`: actions, runs, delivery to
 - Q: May custom pre/post prompts use the action's argument placeholders? → A: **Yes, with the body's `{name}` rules** — filled at call time from the call's values; an undeclared name is refused at save; unreferenced arguments are appended only to the action prompt, never to pre/post prompts. (FR-200, FR-204, FR-207)
 - Q: Does a bound end a pre/post step that never finishes? → A: **No timeout** — as with the action prompt today, the run shows which step it is on and the developer acts on the worker. (FR-206)
 
+### Session 2026-10-28 (PR #20 review, run-481)
+
+- Q: What tells the orchestrator a step has finished? → A: **Evidence observed after that step was submitted, never an idle state that was already there.** A step that starts a model turn is finished when the agent reports it started working on it and then ended that turn with no background work pending. A step the agent handles itself (no model turn — the built-ins, or a custom slash command) is finished when the agent is back at an empty, ready input box with no picker or dialog open, and, for a built-in whose setting the agent reports, that setting reads back as chosen. A step for which neither is confirmed within the submit check (today's re-press window) is **not accepted**: the sequence halts there, nothing more is typed, and the developer retries, skips or fails it. This bounded check is about acceptance; an accepted step still has no timeout. (FR-206, FR-206a–c, FR-222)
+- Q: May a call's value decide what kind of input a bare step is? → A: **No.** A custom prompt must start with the author's own text: a placeholder in the first position is refused at save. (FR-204)
+- Q: Does an argument used only in a pre/post prompt still reach the action prompt? → A: **Yes.** Whether an argument is appended to the action prompt depends on the **body** alone, exactly as today. (FR-207)
+- Q: Do setup and cleanup turns raise "task complete" notifications? → A: **No.** Only the action prompt's turn may; a step that needs the developer still notifies as today. (FR-223)
+- Q: What does freeing a sandbox mid-cleanup do, and do post-prompts follow a mark free as *failed*? → A: Freeing drops the remaining **custom** post-prompts but still sends Clear (if enabled) before the sandbox is free; post-prompts follow a mark free with either outcome. An agent that exits mid-cleanup comes back in a new session, which counts as cleared. (FR-214, FR-216)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Built-in setup and cleanup on every run (Priority: P1)
@@ -81,6 +89,7 @@ While a run is in flight the developer can tell which step it is on — setting 
 1. **Given** a run whose worker is executing its second of three pre-prompts, **When** the developer looks at the run on the Jobs screen, **Then** the row says it is setting up and which step (2 of 3).
 2. **Given** a completed run whose post-prompts are still being sent, **When** the developer looks at the worker, **Then** the worker shows it is cleaning up after that run and is not yet free.
 3. **Given** any run, **When** the developer opens its prompt, **Then** the overlay shows the pre-prompts, the composed action prompt and the post-prompts that the run was created with, in order.
+4. **Given** a run whose `/model` step was not accepted (it stayed in the input box, or the agent opened a picker), **When** the developer looks at the run, **Then** the row says the step was not accepted, nothing further has been typed into the worker, and the developer can retry the step, skip it, or fail the run.
 
 ---
 
@@ -91,17 +100,20 @@ While a run is in flight the developer can tell which step it is on — setting 
 - **Run cancelled while queued**: nothing was delivered, so no pre- or post-prompts are sent.
 - **Worker's agent exits, or the sandbox stops or is destroyed, during a pre-prompt**: the run fails with the reason named (it never reached its action prompt); no further steps are sent.
 - **…during the action prompt**: unchanged from today.
-- **…during a post-prompt**: the run stays *completed* with its summary; the remaining post-prompts are dropped and the worker is reported as needing the developer (it may still hold the old session).
-- **A post-prompt makes the agent ask for input**: the run is already completed; the worker is shown as needing input (as a worker parked needs-input is today) and is not free until it is idle again and its remaining post-prompts have been sent, or the developer frees it.
-- **A step never finishes** (the agent stays busy far longer than any reasonable step): it is treated like any long-running prompt — no timeout ends a step on its own; the developer sees which step the run is on (US3) and can act on the worker.
+- **…during a post-prompt**: the run stays *completed* with its summary; the remaining post-prompts are dropped and the sandbox is reported as needing the developer. It is not free until its agent is running again; the restarted agent is a new session, so it counts as cleared (FR-216).
+- **A post-prompt makes the agent ask for input**: the run is already completed; the sandbox is shown as needing input (as a worker parked needs-input is today) and is not free until it is idle again and its remaining post-prompts have been sent. If the developer frees it instead, the remaining custom post-prompts are dropped, Clear (if enabled) is still sent, and the sandbox is free once Clear has finished (FR-216).
+- **A step never finishes** (the agent stays busy far longer than any reasonable step): it is treated like any long-running prompt — no timeout ends an accepted step on its own; the developer sees which step the run is on (US3) and can act on the worker.
+- **A step is not accepted** (it stays in the agent's input box, or a built-in opens a picker or is rejected, e.g. an option the agent's account does not offer): the sequence halts at that step and shows it as *not accepted*; nothing further is typed, so two steps are never sent as one line. The developer retries the step, skips it, or fails the run (FR-206c, FR-222).
+- **The agent is already idle when a step is sent**: that idle state does not finish the step; only evidence observed after the step's submit does (FR-206a).
 - **Developer types in the worker's terminal between steps**: developer activity takes precedence (009 FR-119): the next step is sent only once the agent is idle again.
-- **Orchestrator or daemon restarts mid-sequence**: the run resumes from the step it was on (a step that had been sent and not confirmed finished is not re-sent if the agent has since gone idle); no step is sent twice to a settled agent.
+- **Orchestrator or daemon restarts mid-sequence**: the run resumes from the step it was on. A step that was sent but whose finish was not recorded is resolved by the same evidence as FR-206b: a built-in whose setting reads back as chosen is finished and one that does not is sent again; any other step is finished if the agent is at an empty, ready input box, and otherwise the sequence halts as *not accepted* for the developer (FR-217).
 - **Action edited while one of its runs is mid-sequence**: the in-flight run keeps the lists it was created with (009 FR-140).
 - **Empty or whitespace-only custom prompt**: refused at save with the offending entry named.
-- **Custom prompt that composes to nothing** (e.g. `{branch}` alone, with `branch` optional and not supplied): skipped for that run; the sequence moves to the next step.
+- **Custom prompt that starts with a placeholder** (e.g. `{skill} for {ticket}`, or `{cmd}` alone): refused at save with the placeholder named — a bare step's first character must be the author's, so a call's value cannot turn it into a slash command or a shell escape (FR-204). Because every custom prompt starts with literal text, none composes to nothing.
 - **Placeholder in a pre/post prompt names an undeclared argument**: refused at save with the placeholder named, as for the body.
+- **Argument used only in a pre/post prompt**: still appended to the action prompt if the body does not reference it, exactly as today (FR-207).
 - **Built-in step text in a custom list** (e.g. a custom pre-prompt `/clear`): allowed; it is sent as written in its position. The editor does not de-duplicate.
-- **Worker's agent does not understand a built-in step** (e.g. an agent other than Claude Code): the step is sent as text like any other; the developer switches the built-ins off for such actions.
+- **Worker's agent does not understand a built-in step** (e.g. an agent other than Claude Code): the step is not accepted (FR-206c) and the sequence halts; the developer switches the built-ins off for such actions.
 
 ## Requirements *(mandatory)*
 
@@ -116,13 +128,16 @@ While a run is in flight the developer can tell which step it is on — setting 
   - **Effort** (pre): sets the agent's effort; its value is one of **low**, **medium** (default), **high**, **xhigh**, **max**, **auto**, **ultracode**. Sent as `/effort <level>`.
   - **Clear** (post): clears the agent's session. Sent as `/clear`.
 - **FR-203**: A newly created action MUST have all three built-in steps **enabled**, with Model = Opus and Effort = medium.
-- **FR-204**: Saving an action MUST validate the new fields and refuse a save with the problem named when: a custom prompt is empty or whitespace-only; a list has more than **10** entries; a custom prompt exceeds the size limit that applies to argument values (009 FR-140); a built-in value is not one of its listed options; a custom prompt names an undeclared argument in a placeholder (the placeholder named, as for the body).
+- **FR-204**: Saving an action MUST validate the new fields and refuse a save with the problem named when: a custom prompt is empty or whitespace-only; a list has more than **10** entries; a custom prompt exceeds the size limit that applies to argument values (009 FR-140); a built-in value is not one of its listed options; a custom prompt names an undeclared argument in a placeholder (the placeholder named, as for the body); a custom prompt whose first non-space character is part of a placeholder (the placeholder named). Custom prompts are sent without the run frame (FR-200), so the author's text, not a call's value, decides whether a step is a slash command, a shell escape or plain words.
 
 #### Sequence
 
 - **FR-205**: When a run is delivered, the orchestrator MUST send its steps in this order: Model (if enabled), Effort (if enabled), the custom pre-prompts in order, the **action prompt** (composed and framed exactly as today), then — per FR-214 — the custom post-prompts in order, then Clear (if enabled).
-- **FR-206**: The orchestrator MUST send a step only when the sandbox's agent has **finished** the previous step — idle and ready for input — and no developer activity is in progress (009 FR-119). The first step is sent under today's delivery rule (the sandbox is free, 009 FR-117). No timeout ends a step: a step that stays busy is shown as the current step (FR-213) and left to the developer.
-- **FR-207**: A run MUST snapshot its sequence **at call time**, together with its composed prompt: the built-in choices and each custom pre/post prompt with its placeholders replaced by the call's values (every occurrence; an optional argument not supplied takes its default, otherwise its placeholders are replaced by nothing — 009 FR-139). Supplied arguments that no placeholder references — in the body or in any custom prompt — are appended **only to the action prompt**, never to a pre/post prompt. A custom prompt that composes to empty or whitespace-only text is skipped (not sent). Later edits to the action MUST NOT change a run already created (as 009 FR-140).
+- **FR-206**: The orchestrator MUST send a step only when the previous step has **finished** (FR-206a–b) and no developer activity is in progress (009 FR-119). The first step is sent under today's delivery rule (the sandbox is free, 009 FR-117). No timeout ends an accepted step: a step that stays busy is shown as the current step (FR-213) and left to the developer.
+  - **FR-206a** (no stale idle): only evidence observed **after the step was submitted** counts. An idle or ready state that was already present when the step was sent MUST NOT finish it.
+  - **FR-206b** (finished, per kind): a step that starts a **model turn** is finished when the agent reports that it began working on that step and then that the turn ended with no background work pending. A step the agent **handles itself** (no model turn follows: the built-ins, or a custom slash command the agent runs locally) is finished when the agent is back at an **empty, ready input box with no picker or dialog open**, checked after the submit; for a built-in whose setting the agent reports, that setting MUST also read back as the chosen value.
+  - **FR-206c** (not accepted): if neither condition of FR-206b is confirmed within the submit check (today's re-press window after typing a prompt), the step is **not accepted**. The sequence MUST halt at that step and type nothing further, so text is never appended to a step left in the input box; the run shows the step as not accepted (FR-213) and raises a needs-developer notification. This bound applies only to confirming acceptance, never to how long an accepted step runs.
+- **FR-207**: A run MUST snapshot its sequence **at call time**, together with its composed prompt: the built-in choices and each custom pre/post prompt with its placeholders replaced by the call's values (every occurrence; an optional argument not supplied takes its default, otherwise its placeholders are replaced by nothing — 009 FR-139). Whether a supplied argument is appended to the action prompt depends on the **body alone**, exactly as today: an argument the body does not reference is appended to the action prompt even if a custom prompt references it. Nothing is ever appended to a pre/post prompt. Later edits to the action MUST NOT change a run already created (as 009 FR-140).
 - **FR-208**: A run with no enabled built-in steps and no custom prompts MUST behave exactly as runs do today.
 
 #### Run and worker state
@@ -130,12 +145,12 @@ While a run is in flight the developer can tell which step it is on — setting 
 - **FR-209**: While pre-prompts are being sent the run MUST be *running* (or *awaiting input* while the agent asks for input), as from delivery today. Idle between pre-prompts MUST NOT make the run *awaiting review*; only idle without a report **after the action prompt** does (009 FR-156).
 - **FR-210**: Actions that exist when this feature is installed MUST be treated as having all three built-in steps enabled with the defaults (Opus, medium, Clear) and empty custom lists, and MUST show so in their editor.
 - **FR-211**: A completion report received before the action prompt has been delivered MUST be refused and change nothing.
-- **FR-212**: If the agent exits, or the sandbox stops or is destroyed, before the action prompt is delivered, the run MUST become *failed* with a reason naming the step it was on.
-- **FR-213**: The run MUST record which step it is on (setting up *n*/*m*, action, cleaning up *n*/*m*), and the TUI MUST show it wherever the run's state is shown (Jobs screen rows, orchestrator views) and on the worker while it cleans up.
-- **FR-214**: Post-prompts MUST be sent after the run is closed by the agent's **completion report**, and after the developer **marks the worker free** from *awaiting review* (009 FR-156) — in both cases once the agent is idle. They MUST NOT be sent for a run cancelled before delivery or for a run that failed before its action prompt was delivered.
-- **FR-215**: Closing the run (completion report or mark free) MUST happen when it does today — the run's outcome and summary do not wait for post-prompts. The **worker** MUST NOT be free (009 FR-117) until its post-prompts have all been sent and the agent is idle after the last one.
-- **FR-216**: If a post-prompt makes the agent ask for input, the worker MUST be shown as needing input (as a parked needs-input worker is today) and receive no new run; the remaining post-prompts continue once the agent is idle. If the agent exits or the sandbox stops during post-prompts, the remaining post-prompts MUST be dropped and the worker shown as needing the developer.
-- **FR-217**: An orchestrator restart MUST resume each in-flight sequence at the step it was on, without sending any step twice to an agent that has already finished it.
+- **FR-212**: If the agent exits, or the sandbox stops or is destroyed, before the action prompt is delivered, the run MUST become *failed* with a reason naming the step it was on. A run the developer fails at a halted pre-prompt (FR-222) fails the same way.
+- **FR-213**: The run MUST record which step it is on (setting up *n*/*m*, action, cleaning up *n*/*m*) and whether that step is *not accepted* (FR-206c), and the TUI MUST show it wherever the run's state is shown (Jobs screen rows, orchestrator views) and on the sandbox while it cleans up.
+- **FR-214**: Post-prompts MUST be sent after the run is closed by the agent's **completion report**, and after the developer **marks the sandbox free** from *awaiting review* (009 FR-156) with either outcome, *completed* or *failed* — in every case once the agent is idle. They MUST NOT be sent for a run cancelled before delivery or for a run that failed before its action prompt was delivered.
+- **FR-215**: Closing the run (completion report or mark free) MUST happen when it does today — the run's outcome and summary do not wait for post-prompts. The **sandbox** that ran it — a worker, or the reasoning sandbox for a `reason` run — MUST NOT be free (009 FR-117) until its post-prompts have all finished (FR-206b) or been dropped per FR-216; until then it receives no new run of either type.
+- **FR-216**: If a post-prompt makes the agent ask for input, the sandbox (worker or reasoning sandbox) MUST be shown as needing input (as a parked needs-input worker is today) and receive no new run; the remaining post-prompts continue once the agent is idle. If the developer **frees** it instead, the remaining **custom** post-prompts MUST be dropped and Clear (if enabled) MUST still be sent; the sandbox is free once Clear has finished. If the agent exits or the sandbox stops during post-prompts, the remaining post-prompts MUST be dropped and the sandbox shown as needing the developer; it is not free until its agent is running again, and the restarted agent's new session counts as cleared.
+- **FR-217**: An orchestrator restart MUST resume each in-flight sequence at the step it was on, without sending any step twice to an agent that has already finished it. A step sent but not recorded finished MUST be resolved by the evidence of FR-206b: a built-in whose setting reads back as chosen is finished, and one that does not is sent again; any other step is finished if the agent is at an empty, ready input box, and otherwise halts as not accepted (FR-206c).
 
 #### Editing and visibility
 
@@ -143,32 +158,37 @@ While a run is in flight the developer can tell which step it is on — setting 
 - **FR-219**: The action's details as shown to the developer MUST summarise its sequence (e.g. `pre: /model opus · /effort medium · 1 custom — post: 1 custom · /clear`).
 - **FR-220**: A run's prompt overlay MUST show its full snapshotted sequence in order: pre-prompts, the composed action prompt, post-prompts.
 - **FR-221**: The actions offered to workers' agents through the orchestrator's tools (009 FR-151) MUST NOT expose pre/post prompts as arguments; calling an action is unchanged.
+- **FR-222**: For a run halted at a step that was not accepted (FR-206c), the developer MUST be able, from wherever the run is shown, to **retry** the step (sent again once the input box is empty), **skip** it (the sequence moves on), or **fail** the run (a pre-prompt: the run fails per FR-212; a post-prompt: the run keeps its outcome and the sandbox is freed per FR-216).
+
+#### Notifications
+
+- **FR-223**: Only the turn of the **action prompt** MAY raise the agent's task-complete notification for a run. The turns of pre-prompts and post-prompts MUST NOT raise task-complete notifications (inbox or desktop). A step that needs the developer (asks for input, or is not accepted) MUST still notify as needs-input does today.
 
 ### Key Entities
 
 - **Action** (extended): gains *custom pre-prompts* (ordered list of text, may contain `{name}` placeholders), *custom post-prompts* (same), and *built-in steps*: Model (enabled, choice), Effort (enabled, level), Clear (enabled).
-- **Run** (extended): gains its *sequence snapshot* (the steps it will send, in order, placeholders already filled) and its *current step* (setting up *n*/*m*, action, cleaning up *n*/*m*, done).
-- **Worker** (extended state): may be *cleaning up* after a closed run — not free, with the run it is cleaning up after.
+- **Run** (extended): gains its *sequence snapshot* (the steps it will send, in order, placeholders already filled), its *current step* (setting up *n*/*m*, action, cleaning up *n*/*m*, done) and whether that step is *not accepted*.
+- **Sandbox** (extended state, workers and the reasoning sandbox alike): may be *cleaning up* after a closed run — not free, with the run it is cleaning up after.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: With the defaults untouched, 100% of runs start with the selected model and effort and end with the agent's session cleared before the worker takes its next run.
+- **SC-001**: With the defaults untouched, 100% of runs either start with the selected model and effort confirmed (FR-206b) or halt visibly before the action prompt (FR-206c); and the sandbox never takes its next run until the previous run's session has been cleared — by Clear, or by the agent restarting in a new session (FR-216).
 - **SC-002**: A developer can add a pre-prompt and a post-prompt to an existing action, and switch a built-in step off, in under 1 minute from the action list.
 - **SC-003**: In 100% of runs, the action prompt is delivered only after every pre-prompt finished, and no post-prompt is delivered before the run's completion report (or the developer's mark free).
-- **SC-004**: No worker receives a new run while any post-prompt of its previous run is still pending.
+- **SC-004**: No sandbox (worker or reasoning sandbox) receives a new run while any post-prompt of its previous run is still pending (not finished and not dropped per FR-216).
 - **SC-005**: An action with every built-in step off and no custom prompts produces a run indistinguishable from today's.
 - **SC-006**: At any moment during a run, the developer can tell from the Jobs screen which step the run is on without opening the worker's terminal.
 
 ## Assumptions
 
-- **Built-in step text**: the Model step sends the agent's model-switch command with the chosen model (`/model opus`, `/model fable`, `/model sonnet`, `/model haiku`); Effort sends `/effort <level>`; Clear sends `/clear`. The exact model identifiers are confirmed against the agent during planning.
-- **"Finished" means idle again**: a step is finished when the agent is idle and ready for input — the same signal the orchestrator already uses for delivery and awaiting review. ⚠️ **Risk for planning**: built-in slash commands (`/model`, `/effort`, `/clear`) are handled by the agent locally and may not produce the same busy → idle signals as a model turn; the plan must confirm, on a real worker, how each is detected as finished (and fall back to a short bounded settle wait if no signal arrives).
-- **No timeout** ends a step automatically; a stuck step is visible (FR-213) and handled by the developer, as a stuck action prompt is today.
+- **Built-in step text**: the Model step sends the agent's model-switch command with the chosen model (`/model opus`, `/model fable`, `/model sonnet`, `/model haiku`); Effort sends `/effort <level>`; Clear sends `/clear`. The exact model identifiers **and effort levels** are confirmed against the agent during planning; an option the agent does not accept is removed from its list (a spec amendment), and one an account cannot use at run time is *not accepted* (FR-206c).
+- **"Finished" is evidence after the submit** (FR-206a–c), not "idle". Today a typed prompt is confirmed by the agent's prompt-submit hook moving it to working, and the delivery path re-presses Enter when that does not arrive; a model turn ends with the turn-end hook. ⚠️ **Planning gate**: built-in slash commands (`/model`, `/effort`, `/clear`) are handled by the agent locally and are expected to raise neither hook. Before the step tracker is designed, the plan MUST establish on a real worker, for each built-in, how FR-206b's two checks are made (empty ready input box; the setting read back where the agent reports it). If a built-in has no confirmable signal, the plan MUST apply that setting by a mechanism that has one (for example at the agent's launch) and record the deviation, rather than fall back to a timed wait.
+- **No timeout** ends an accepted step; the only bound is the submit check that decides acceptance (FR-206c). A stuck step is visible (FR-213) and handled by the developer, as a stuck action prompt is today.
 - **Limits**: at most 10 custom pre-prompts and 10 custom post-prompts per action; each within the existing argument-value size limit.
 - **Agent**: workers and the reasoning sandbox run Claude Code, which understands the three built-in commands. Other agents can switch the built-ins off.
-- **Run frame**: only the action prompt carries the orchestrator's run frame and completion-report instruction; pre/post prompts are sent bare so slash commands work.
+- **Run frame**: only the action prompt carries the orchestrator's run frame and completion-report instruction; pre/post prompts are sent bare so slash commands work. Because a bare step's first character decides whether it is a slash command or a shell escape, it must be the author's (FR-204). Values in the rest of the step are delivered inside one bracketed paste, so a newline in a value cannot submit a second prompt.
 - **Timed events and MCP calls** create runs exactly as today; the sequence comes from the action, not the caller.
 - **No change** to queueing, capacity, retention, or how a worker is chosen.
 
