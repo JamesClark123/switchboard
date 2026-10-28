@@ -147,8 +147,29 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes
-Guard, SWI-9). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
+Active feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
+replace the action worker tag**: a lane is a named worker group per orchestrator (`pb.Lane{id "ln-…", name, description}`
+on `Orchestrator.lanes`, ≤32, action-name rule, `open` reserved); `prompt` actions are **exclusive**/**inclusive** to
+lanes (`Action.lane_ids`/`lane_mode`) or un-laned (open-lane workers only = non-reasoning, no lanes, not *lanes pending*).
+`Action.worker_tag` is deprecated: dropped on load, logged, listed in `Orchestrator.dropped_worker_tags` (TUI notice, `D`
+dismiss); `PutActionRequest.sets_lanes` refuses old clients; `DaemonInfo.capabilities` (`"lanes"`) gates the TUI.
+**Roster freshness** (`orchestrator/roster.go` `applyRecords`, the only code applying sandbox records to the roster;
+lane writes touch only lane fields): owning daemon stamps
+`Sandbox.revision` in `registry.Put/Update`; entries keep `revision` + `written_seq` (`Orchestrator.roster_seq`);
+high-water marks (removal terminal); reconcile lists with no lock then applies once; links subscribe before listing; the
+hub reports overflow via `Event.events_dropped`; events now adopt/drop. **Attach tickets** (`Orchestrator.attach_tickets`,
+`SandboxController.attach_ticket`, 24 h) carry lanes picked at launch/attach; bad ticket → *lanes pending*. **Dispatch**
+(`lanes_dispatch.go`): reserve for exclusive runs, then candidates per run (exclusive: own reservation → unreserved lane
+worker → later run's reservation; inclusive: unreserved lane worker → open-lane → later reservation; un-laned: open-lane).
+Call + action delete share `registry.UpdateOrchestratorRuns`; deleted actions' settings are kept on queued runs
+(`Run.kept_lanes`). `CheckLaneChange` + `LaneGuardConfirm` implement the open-lane guard; `Run.waiting_reason` is derived
+on read. Lane names pushed to worker hosts for display only (`UpdateWorkerRequest.lanes`); briefings in the background.
+TUI: Lanes view, shared `lane_picker.go`, action form lanes + `ctrl+l` Manage lanes. See `research.md` (R1–R17),
+`data-model.md`, `contracts/`, `quickstart.md`.
+
+Prior feature: `specs/swi-9-feature-app-forms/plan.md` (App Forms — Enlargeable Text Fields & Unsaved-Changes
+Guard, SWI-9). **Planned; implementation pending, not on `main`**: the files named below (`formguard.go`,
+`enlarge.go`, `unsaved.go`, …) do not exist yet, so check before relying on them (SWI-18 T059). **TUI-only**. **Enlarge**: `ctrl+e` on any multi-line `huh.Text` opens a full-terminal editable
 textarea (`MaxHeight 0`, `enlarge.go`); esc/ctrl+e write back (`*ptr = value; field.Value(ptr)`), ctrl+s writes back
 and saves, ctrl+c writes back then leaves the form, `ctrl+r` reverts to the text at open, pgup/pgdn batch cursor moves.
 huh's external editor is gone: every form uses `formKeyMap()` (keyless `Text.Editor` **and** keyless `Quit`, since
