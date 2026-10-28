@@ -328,7 +328,7 @@ func (m Model) openOrchCreateForm(host, hostName string) (tea.Model, tea.Cmd) {
 	m.orch.form = huh.NewForm(huh.NewGroup(
 		huh.NewInput().Key("name").Title("Name").Description("1–64 characters, unique across every orchestrator you can see. Hosted by " + sanitizeLine(hostName, 0) + "; workers can live anywhere it can reach over SSH.").Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 	return m, m.orch.form.Init()
 }
 
@@ -350,7 +350,7 @@ func (m Model) openOrchRenameForm(row orchRow) (tea.Model, tea.Cmd) {
 	m.orch.form = huh.NewForm(huh.NewGroup(
 		huh.NewInput().Key("name").Title("Rename " + sanitizeLine(raw, 0)).Description(desc).Value(&v.name),
 	)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 	return m, m.orch.form.Init()
 }
 

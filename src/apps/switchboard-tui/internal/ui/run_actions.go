@@ -99,6 +99,13 @@ type orchOpState struct {
 	formKind   string
 	formVals   any
 	formTarget orchTarget
+	// formBuild rebuilds the open form from formVals (open and reopenForm); it
+	// captures only the vals and plain option data, never a Model. formSpec
+	// registers its Text fields, and formBaseline is the vals snapshot taken
+	// once the form was built (SWI-9).
+	formBuild    func(m Model, spec *formSpec) *huh.Form
+	formSpec     *formSpec
+	formBaseline any
 	// status is the surface's own line (refusals, transient hints); the footer
 	// keeps the outcome of the last mutation.
 	status string
@@ -124,9 +131,16 @@ func (m *Model) opState(s orchSurface) *orchOpState {
 func (m Model) onSurface(s orchSurface) bool { return m.screen == surfaceScreen(s) }
 
 // setOpForm installs an open form on a surface, bound to the target it acts on.
-func (m *Model) setOpForm(s orchSurface, t orchTarget, kind string, vals any, form *huh.Form) tea.Cmd {
+func (m *Model) setOpForm(s orchSurface, t orchTarget, kind string, vals any, build func(Model, *formSpec) *huh.Form) tea.Cmd {
 	op := m.opState(s)
+	spec := newFormSpec()
+	form := build(*m, spec)
 	op.form, op.formKind, op.formVals, op.formTarget = form, kind, vals, t
+	op.formBuild, op.formSpec = build, spec
+	if notice := normalizeNotice(spec.normalize()); notice != "" {
+		op.status = notice
+	}
+	op.formBaseline = snapshotOpVals(vals)
 	return form.Init()
 }
 
@@ -134,13 +148,14 @@ func (m *Model) setOpForm(s orchSurface, t orchTarget, kind string, vals any, fo
 func (m *Model) closeOpForm(s orchSurface) {
 	op := m.opState(s)
 	op.form, op.formVals, op.formKind, op.formTarget = nil, nil, "", orchTarget{}
+	op.formBuild, op.formSpec, op.formBaseline = nil, nil, nil
 }
 
 // newOrchForm builds a huh form in the package's form style (the 008 pattern:
 // heap-allocated values, ctrl+s saves, esc cancels).
 func (m Model) newOrchForm(fields ...huh.Field) *huh.Form {
 	return huh.NewForm(huh.NewGroup(fields...)).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
 // runPromptMsg carries a run fetched for the prompt overlay of a surface.
@@ -284,11 +299,12 @@ func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID string) (
 		return m, nil
 	}
 	v := &markFreeVals{outcome: "completed", sandboxID: sandboxID, host: t.host, orchID: t.id}
-	form := m.newOrchForm(
-		huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
-		huh.NewInput().Key("note").Title("Note").Description("optional; recorded as the run's summary").Value(&v.note),
-	)
-	return m, m.setOpForm(s, t, "mark free", v, form)
+	return m, m.setOpForm(s, t, "mark free", v, func(m Model, _ *formSpec) *huh.Form {
+		return m.newOrchForm(
+			huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
+			huh.NewInput().Key("note").Title("Note").Description("optional; recorded as the run's summary").Value(&v.note),
+		)
+	})
 }
 
 // markFreeKey is `m` on a sandbox row: while the worker's run awaits review

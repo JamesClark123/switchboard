@@ -217,7 +217,7 @@ func (m Model) secretsForm(v *secretFormVals) *huh.Form {
 		huh.NewInput().Key("sandbox").Title("Sandbox (optional)").
 			Description("Leave empty for a global secret, or name one sandbox to scope it there.").Value(&v.sandbox),
 	)).WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(kitFormKeyMap())
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
 func (m Model) advanceSecretsForm(msg tea.Msg) (tea.Model, tea.Cmd) {

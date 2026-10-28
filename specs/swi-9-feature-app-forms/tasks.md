@@ -21,7 +21,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
 
 **Purpose**: Remove the external editor and give every form one keymap and one Text constructor (R1).
 
-- [ ] T001 Rename `kitFormKeyMap()` to `formKeyMap()` and move it to the new file `UI/formguard.go`. Keep its
+- [X] T001 Rename `kitFormKeyMap()` to `formKeyMap()` and move it to the new file `UI/formguard.go`. Keep its
   NewLine/Next/Prev/Submit bindings and add a keyless `Text.Editor = key.NewBinding()`. Doc comment: why it is keyless
   (`Text.Update` matches `Editor` unconditionally; `ExternalEditor(false)` only disables it when help renders). `Quit`
   stays ctrl+c until T017 routes ctrl+c through the guard, so ctrl+c keeps working in between.
@@ -30,7 +30,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
     `UI/run_actions.go`.
   - Apply it to the config editor form in `UI/config_editor.go`, which used huh's default keymap.
   - Rename the keymap test in `UI/kit_editor_keymap_test.go`.
-- [ ] T002 Add `formSpec{texts map[*huh.Text]textEntry{ptr *string; title string}}` in `UI/formguard.go`, with:
+- [X] T002 Add `formSpec{texts map[*huh.Text]textEntry{ptr *string; title string}}` in `UI/formguard.go`, with:
   - `newFormSpec()`;
   - `text(ptr *string, title string) *huh.Text`: `huh.NewText().ExternalEditor(false).Title(title).Value(ptr)`,
     recorded;
@@ -41,7 +41,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
     `<title>: line endings/tabs/control characters will be rewritten when saved`.
   - `text` records the original value in its `textEntry`, then converts `\r\n` to `\n` in `*ptr` before building,
     so CRLF content is not doubled by the sanitizer (which maps each `\r` and `\n` to a newline).
-- [ ] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
+- [X] T003 Build every multi-line field through `formSpec.text`, storing the spec next to the form and dropping it
   with the form:
   - the 13 kit fields in `UI/kit_editor.go`, on `kitEditorState`;
   - MCP Headers in `UI/mcp.go`, on `mcpState`;
@@ -50,7 +50,7 @@ All paths are relative to the repository root; `UI/` = `src/apps/switchboard-tui
 
   Each `.Title(...)` moves into the `text(ptr, title)` call. No `huh.NewText()` call may remain outside
   `UI/formguard.go`.
-- [ ] T004 Tests in `UI/formguard_test.go`:
+- [X] T004 Tests in `UI/formguard_test.go`:
   - `formKeyMap()` has a keyless Editor.
   - For every form with a Text field (kit agent instructions, MCP, action, event), sending ctrl+e straight to
     `form.Update` returns no `tea.ExecProcess` command, with `EDITOR` set and `WithShowHelp(false)`.

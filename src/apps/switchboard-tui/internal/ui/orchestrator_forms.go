@@ -83,15 +83,16 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 		}
 		v.args = strings.Join(lines, "\n")
 	}
-	form := m.newOrchForm(
-		huh.NewInput().Key("name").Title("Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
-		huh.NewInput().Key("description").Title("Description").Value(&v.description),
-		huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
-		huh.NewText().Key("body").Title("Body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {").Value(&v.body),
-		huh.NewInput().Key("tag").Title("Worker tag (prompt only)").Description("only workers tagged #<tag> are eligible; blank = any worker").Value(&v.workerTag),
-		huh.NewText().Key("args").Title("Arguments").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required").Value(&v.args),
-	)
-	return m, m.setOpForm(s, t, "action", v, form)
+	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form {
+		return m.newOrchForm(
+			huh.NewInput().Key("name").Title("Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
+			huh.NewInput().Key("description").Title("Description").Value(&v.description),
+			huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
+			spec.text(&v.body, "Body").Key("body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {"),
+			huh.NewInput().Key("tag").Title("Worker tag (prompt only)").Description("only workers tagged #<tag> are eligible; blank = any worker").Value(&v.workerTag),
+			spec.text(&v.args, "Arguments").Key("args").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required"),
+		)
+	})
 }
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.
@@ -177,20 +178,24 @@ func parseArgLines(text string) ([]*pb.ActionArgument, error) {
 // openCallForm builds a form from the action's declared arguments (FR-129).
 func (m Model) openCallForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
 	v := &callFormVals{action: a, values: map[string]*string{}}
-	var fields []huh.Field
 	for _, arg := range a.GetArguments() {
 		val := arg.GetDefaultValue()
 		v.values[arg.GetName()] = &val
-		title := sanitizeLine(arg.GetName(), 0)
-		if arg.GetRequired() {
-			title += " *"
+	}
+	return m, m.setOpForm(s, t, "call "+a.GetName(), v, func(m Model, _ *formSpec) *huh.Form {
+		var fields []huh.Field
+		for _, arg := range a.GetArguments() {
+			title := sanitizeLine(arg.GetName(), 0)
+			if arg.GetRequired() {
+				title += " *"
+			}
+			fields = append(fields, huh.NewInput().Key(arg.GetName()).Title(title).Description(sanitizeTerminalText(arg.GetDescription())).Value(v.values[arg.GetName()]))
 		}
-		fields = append(fields, huh.NewInput().Key(arg.GetName()).Title(title).Description(sanitizeTerminalText(arg.GetDescription())).Value(v.values[arg.GetName()]))
-	}
-	if len(fields) == 0 {
-		fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
-	}
-	return m, m.setOpForm(s, t, "call "+a.GetName(), v, m.newOrchForm(fields...))
+		if len(fields) == 0 {
+			fields = append(fields, huh.NewNote().Title("No arguments").Description("ctrl+s calls "+sanitizeLine(a.GetName(), 0)))
+		}
+		return m.newOrchForm(fields...)
+	})
 }
 
 // --- timed events (user story 5 of feature 009) ---
@@ -401,19 +406,20 @@ func (m Model) openEventForm(s orchSurface, t orchTarget, ev *pb.TimedEvent) (te
 	for _, a := range actions {
 		opts = append(opts, huh.NewOption(a.GetName(), a.GetName()))
 	}
-	form := m.newOrchForm(
-		huh.NewInput().Key("name").Title("Name").Value(&v.name),
-		huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
-		huh.NewInput().Key("interval").Title("Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
-		huh.NewInput().Key("activeFrom").Title("Active from").Description("HH:MM, 24-hour — blank: around the clock").Value(&v.activeFrom),
-		huh.NewInput().Key("activeUntil").Title("Active until").Description("HH:MM, exclusive; 24:00 = midnight; earlier than from = overnight").Value(&v.activeUntil),
-		huh.NewMultiSelect[int]().Key("days").Title("Days").Description("none: every day (an overnight window's day is the day it opens)").Options(dayOptions()...).Value(&v.days),
-		huh.NewInput().Key("timezone").Title("Timezone").Description("IANA name, e.g. America/Los_Angeles (not PST/EST)").Value(&v.timezone),
-		huh.NewText().Key("args").Title("Fixed arguments").Lines(3).Description("name = value, one per line (the action's declared arguments)").Value(&v.args),
-		huh.NewConfirm().Key("enabled").Title("Enabled").Value(&v.enabled),
-		huh.NewConfirm().Key("dedupe").Title("Dedupe").Description("skip a firing while a run of this event is queued or in flight").Value(&v.dedupe),
-	)
-	return m, m.setOpForm(s, t, "event", v, form)
+	return m, m.setOpForm(s, t, "event", v, func(m Model, spec *formSpec) *huh.Form {
+		return m.newOrchForm(
+			huh.NewInput().Key("name").Title("Name").Value(&v.name),
+			huh.NewSelect[string]().Key("action").Title("Action").Options(opts...).Value(&v.action),
+			huh.NewInput().Key("interval").Title("Every (minutes)").Description("at least 1").Value(&v.intervalMinutes),
+			huh.NewInput().Key("activeFrom").Title("Active from").Description("HH:MM, 24-hour — blank: around the clock").Value(&v.activeFrom),
+			huh.NewInput().Key("activeUntil").Title("Active until").Description("HH:MM, exclusive; 24:00 = midnight; earlier than from = overnight").Value(&v.activeUntil),
+			huh.NewMultiSelect[int]().Key("days").Title("Days").Description("none: every day (an overnight window's day is the day it opens)").Options(dayOptions()...).Value(&v.days),
+			huh.NewInput().Key("timezone").Title("Timezone").Description("IANA name, e.g. America/Los_Angeles (not PST/EST)").Value(&v.timezone),
+			spec.text(&v.args, "Fixed arguments").Key("args").Lines(3).Description("name = value, one per line (the action's declared arguments)"),
+			huh.NewConfirm().Key("enabled").Title("Enabled").Value(&v.enabled),
+			huh.NewConfirm().Key("dedupe").Title("Dedupe").Description("skip a firing while a run of this event is queued or in flight").Value(&v.dedupe),
+		)
+	})
 }
 
 // parseKV turns "name = value" lines into a map.

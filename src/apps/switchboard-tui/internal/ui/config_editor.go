@@ -81,7 +81,8 @@ func (m Model) buildEditorForm() *huh.Form {
 		WithShowHelp(true).
 		WithShowErrors(false).
 		WithWidth(m.bodyWidth()).
-		WithHeight(m.bodyHeight())
+		WithHeight(m.bodyHeight()).
+		WithKeyMap(formKeyMap())
 }
 
 func (m Model) editorHelp() helpBindings {
