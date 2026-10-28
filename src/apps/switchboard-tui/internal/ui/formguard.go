@@ -156,7 +156,7 @@ func normalizeNotice(titles []string) string {
 func snapshotOpVals(vals any) any {
 	switch v := vals.(type) {
 	case *actionFormVals:
-		return *v
+		return actionSnapshot(v)
 	case *eventFormVals:
 		c := *v
 		// days is a slice huh may write in place: copied, and empty read as none.
@@ -174,6 +174,19 @@ func snapshotOpVals(vals any) any {
 		return flattenCallVals(v)
 	}
 	return nil
+}
+
+// actionSnapshot copies an action form's values. Its lanes are a set: huh
+// rewrites them in option order (and as an empty slice when none is ticked), so
+// they are cloned sorted, none as nil. The offered options are not values.
+func actionSnapshot(v *actionFormVals) actionFormVals {
+	c := *v
+	c.options, c.lanes = nil, nil
+	if len(v.lanes) > 0 {
+		c.lanes = slices.Clone(v.lanes)
+		slices.Sort(c.lanes)
+	}
+	return c
 }
 
 // flattenCallVals turns a call form's per-argument pointers into plain values.

@@ -609,6 +609,9 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		case orchFormErrMsg:
 			msg.formCall = call
 			return msg
+		case laneResultMsg:
+			msg.w.call = call
+			return msg
 		default:
 			return msg
 		}
@@ -657,8 +660,11 @@ func markFreeCallKey(v *markFreeVals) string {
 func sentOpVals(vals any) any {
 	switch v := vals.(type) {
 	case *actionFormVals:
-		c := *v
+		c := actionSnapshot(v)
 		c.name, c.description, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.description), trimLines(c.args)
+		if c.kind == "reason" || len(c.lanes) == 0 {
+			c.lanes, c.mode = nil, ""
+		}
 		return c
 	case *eventFormVals:
 		c := *v
@@ -758,7 +764,7 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		if !od.HasCapability("lanes") {
 			// FR-318a: an older daemon would drop the lanes silently.
 			op.status = m.tooOldForLanes(t.host)
-			return m, m.rebuildActionForm(s, v)
+			return m, nil
 		}
 		a := v.action(args)
 		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true, owner: v,

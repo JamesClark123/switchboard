@@ -550,6 +550,9 @@ type laneWrite struct {
 	// owner is the picker or action-form values the write was started from:
 	// its outcome applies to that one only, not to one opened since.
 	owner any
+	// call is the action form's in-flight save (SWI-9's formCall), set by
+	// submitOrchOpForm; zero for every other write.
+	call formCall
 }
 
 // back is the screen a write's confirms return to.
@@ -672,6 +675,30 @@ func (m Model) laneConfirm(w laneWrite, st confirmState) (tea.Model, tea.Cmd) {
 
 // applyLaneResult advances a guarded write.
 func (m Model) applyLaneResult(msg laneResultMsg) (tea.Model, tea.Cmd) {
+	if c := msg.w.call; c.token != 0 {
+		// The action form's save: its first reply ends the in-flight call, a
+		// guard confirm included (the confirmed save that follows is untracked,
+		// like every other lane write).
+		m.releaseOpCall(c)
+		if op := m.opState(msg.w.sink); m.ownsFormReply(msg.w.sink, c.token) {
+			op.formSaving, op.formToken = false, 0
+			if op.status == savingText {
+				op.status = ""
+			}
+		} else if !msg.checked {
+			outcome := msg.w.done
+			if msg.err != nil {
+				outcome = "error: " + msg.err.Error()
+			}
+			m.settleDuplicateForm(msg.w.sink, c, outcome)
+			if msg.err != nil {
+				// Its form was left or replaced: as applyOrchFormErr reports it.
+				m.status = "error: " + c.label + ": " + msg.err.Error() + " (the form was closed; its values were not kept)"
+				return m, nil
+			}
+		}
+		msg.w.call = formCall{}
+	}
 	w := msg.w
 	p := m.lanes(w.sink)
 	if msg.checked {

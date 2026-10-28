@@ -732,6 +732,10 @@ func TestDeclinedGuardKeepsTheFormEditable(t *testing.T) {
 	if m.screen != screenJobs || m.jobs.form == nil || m.jobs.form.State != huh.StateNormal {
 		t.Fatalf("declined: screen %v form %v", m.screen, m.jobs.form)
 	}
+	// The check's reply ended the in-flight save (SWI-9): nothing left saving.
+	if m.jobs.formSaving || len(m.opCalls) != 0 || m.jobs.status == savingText {
+		t.Errorf("after the guard: saving %v calls %v status %q", m.jobs.formSaving, m.opCalls, m.jobs.status)
+	}
 	m = keys(m, press("x"))
 	if m.screen == screenConfirm {
 		t.Error("a key on the form re-submitted it")
