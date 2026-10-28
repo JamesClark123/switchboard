@@ -988,7 +988,7 @@ the run surfaces.
 - [X] T041 [P] Docs: the README's orchestrator section covers the action sequence, the defaults, the holds and the
   R/S/X controls. `CLAUDE.md` (SPECKIT block) marks the implementation as done. The `specs/009-orchestrator`
   cross-reference notes that delivery is per step for runs with steps.
-- [ ] T042 Gates: `make proto` output checked in, then `golangci-lint fmt ./...` and `make fmt-check vet lint
+- [X] T042 Gates: `make proto` output checked in, then `golangci-lint fmt ./...` and `make fmt-check vet lint
   cover`. Coverage must be ≥ 90% for `switchboardd`, `switchboard-tui`, `switchboard-termview` and
   `switchboard-proto`. Then `make e2e`.
 - [ ] T043 Manual: quickstart.md Scenarios 0–11 on a real worker (Scenario 0 first). Record the agent version and any
