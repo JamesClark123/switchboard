@@ -14,22 +14,39 @@ import (
 
 // The orchestrator detail (feature 009, research R13) is one orchestrator's
 // administration surface, opened from Daemons › <daemon> › Orchestrators
-// (feature 010, FR-024): three views switched with ←/→ — Workers, Reasoning,
-// Hosts. Its former Actions, Queue and Events views live on the Jobs screen,
+// (feature 010, FR-024): views switched with ←/→ — Workers, Reasoning,
+// Hosts, and Lanes when the daemon serves lanes (SWI-18, orchestrator_lanes.go). Its former Actions, Queue and Events views live on the Jobs screen,
 // across every orchestrator. The Hosts view manages the machines the
 // orchestrator dials (FR-106) with copy-from-my-hosts.
 
-// orchView is one of the three views.
+// orchView is one of the views.
 type orchView int
 
 const (
 	viewWorkers orchView = iota
 	viewReasoning
 	viewHosts
+	viewLanes
 	orchViewCount
 )
 
-var orchViewNames = [orchViewCount]string{"Workers", "Reasoning", "Hosts"}
+var orchViewNames = [orchViewCount]string{"Workers", "Reasoning", "Hosts", "Lanes"}
+
+// orchViewShown reports whether a view is offered: Lanes only when the
+// orchestrator's daemon serves lanes (FR-318a).
+func (m Model) orchViewShown(v orchView) bool {
+	return v != viewLanes || m.hostHasLanes(m.orchDetail.host)
+}
+
+// stepOrchView moves to the next (dir 1) or previous (dir -1) offered view.
+func (m Model) stepOrchView(v orchView, dir int) orchView {
+	for {
+		v = orchView((int(v) + dir + int(orchViewCount)) % int(orchViewCount))
+		if m.orchViewShown(v) {
+			return v
+		}
+	}
+}
 
 // orchDetailState backs the detail screen.
 type orchDetailState struct {
@@ -46,6 +63,8 @@ type orchDetailState struct {
 	hostPick    bool
 	hostChoices []store.KnownHost
 	hostCursor  int
+	// lanes is the Lanes view and the Workers view's lane picker (SWI-18).
+	lanes lanesPanel
 }
 
 // orchDetailMsg carries a loaded detail or the error.
@@ -102,6 +121,11 @@ func (m Model) applyOrchDetail(msg orchDetailMsg) (tea.Model, tea.Cmd) {
 	m.orchDetail.detail = msg.detail
 	m.orchDetail.name = msg.detail.GetSummary().GetOrchestrator().GetName()
 	m.clampOrchCursors()
+	m.refreshLanes(surfaceDetail)
+	if m.orchDetail.view == viewLanes && !m.hostHasLanes(m.orchDetail.host) {
+		// The daemon was replaced by one without lanes.
+		m.orchDetail.view = viewWorkers
+	}
 	return m, nil
 }
 
@@ -143,11 +167,18 @@ func (m Model) orchDetailHelp() helpBindings {
 		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save"), hkey("esc", "cancel")}
 	case d.hostPick:
 		return helpBindings{hkey("↑/↓", "move"), hkey("enter", "add host"), hkey("esc", "cancel")}
+	case d.lanes.form != nil || d.lanes.picker != nil:
+		return m.lanesHelp(surfaceDetail)
 	}
 	hb := helpBindings{hkey("←/→", "view"), hkey("↑/↓", "move")}
 	switch d.view {
 	case viewWorkers:
 		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"))
+		if m.hostHasLanes(d.host) {
+			hb = append(hb, hkey("l", "lanes"))
+		}
+	case viewLanes:
+		hb = append(hb, m.lanesHelp(surfaceDetail)...)
 	case viewReasoning:
 		hb = append(hb, hkey("e", "edit setup"), hkey("b", "rebuild"), hkey("l", "output"))
 	case viewHosts:
@@ -164,6 +195,11 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.hostPick {
 		return m.updateHostPickKey(msg)
 	}
+	if d.lanes.form != nil || d.lanes.picker != nil || d.view == viewLanes {
+		if mm, cmd, handled := m.updateLanesKey(surfaceDetail, msg); handled {
+			return mm, cmd
+		}
+	}
 	switch msg.String() {
 	case "esc":
 		d.status = ""
@@ -172,10 +208,10 @@ func (m Model) updateOrchDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "left":
-		d.view = (d.view + orchViewCount - 1) % orchViewCount
+		d.view = m.stepOrchView(d.view, -1)
 		return m, nil
 	case "right":
-		d.view = (d.view + 1) % orchViewCount
+		d.view = m.stepOrchView(d.view, 1)
 		return m, nil
 	case "r":
 		d.loading = true
@@ -334,6 +370,9 @@ func (m Model) submitOrchDetailForm() (tea.Model, tea.Cmd) {
 func (m Model) orchViewTabs() string {
 	parts := make([]string, 0, int(orchViewCount))
 	for v := orchView(0); v < orchViewCount; v++ {
+		if !m.orchViewShown(v) {
+			continue
+		}
 		style := inactiveTabStyle
 		if v == m.orchDetail.view {
 			style = activeTabStyle
@@ -371,6 +410,8 @@ func (m Model) viewOrchDetail() string {
 		lines = append(lines, m.spinner.View()+dimStyle.Render(" loading…"))
 	case d.detail == nil:
 		lines = append(lines, dimStyle.Render("(not loaded)"))
+	case d.lanes.form != nil || d.lanes.picker != nil:
+		lines = append(lines, m.lanesView(surfaceDetail)...)
 	default:
 		lines = append(lines, m.renderOrchView()...)
 	}
@@ -411,6 +452,8 @@ func (m Model) renderOrchView() []string {
 		return m.renderWorkersView(cursor)
 	case viewReasoning:
 		return m.renderReasoningView()
+	case viewLanes:
+		return m.lanesView(surfaceDetail)
 	}
 	return nil
 }

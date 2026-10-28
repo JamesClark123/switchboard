@@ -67,6 +67,10 @@ func (m Model) updateJobsActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "a":
 		return m.openActionForm(surfaceJobs, t, nil)
+	case "D":
+		if len(t.rec.GetDroppedWorkerTags()) > 0 {
+			return m, m.dismissTagsCmd(surfaceJobs, t)
+		}
 	case "e":
 		if cur != nil {
 			return m.openActionForm(surfaceJobs, t, cur)
@@ -129,7 +133,11 @@ func (m Model) groupsRowHelp(t jobsTab) helpBindings {
 	if t == jobsEvents {
 		return append(hb, hkey("e", "edit"), hkey("d", "delete"), hkey("space", "on/off"), hkey("n", "enqueue now"))
 	}
-	return append(hb, hkey("e", "edit"), hkey("d", "delete"), hkey("enter", "call"))
+	hb = append(hb, hkey("e", "edit"), hkey("d", "delete"), hkey("enter", "call"))
+	if o, _, _ := m.groupCurrent(t); len(o.target.rec.GetDroppedWorkerTags()) > 0 {
+		hb = append(hb, hkey("D", "dismiss tags"))
+	}
+	return hb
 }
 
 // renderGroups renders a grouped tab; focus is the cursor's line.
@@ -152,6 +160,9 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 		// Cut like the rows: one over-wide line would widen the whole view
 		// (review run-242 finding 5).
 		lines = append(lines, m.fitLine(heading))
+		if n := droppedTagsLine(o.target.rec); n != "" && t == jobsActions {
+			lines = append(lines, m.fitLine("  "+agentWaitStyle.Render(sanitizeLine(n, 0))))
+		}
 		waiting := map[string]int{}
 		if t == jobsEvents {
 			for _, run := range o.runs.GetQueued() {
@@ -174,7 +185,7 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 				ev := o.target.rec.GetTimedEvents()[pos[p].item]
 				line = eventLine(ev, waiting[ev.GetId()])
 			default:
-				line = actionLine(o.target.rec.GetActions()[pos[p].item])
+				line = actionLine(o.target.rec.GetActions()[pos[p].item], o.target.rec)
 			}
 			lines = append(lines, cursorMark(p == cur)+m.jobsRowStyle(o.target.host, line))
 		}

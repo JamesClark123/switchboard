@@ -143,7 +143,8 @@ func TestOrchestratedTabLifetime(t *testing.T) {
 	if cmd == nil || !strings.Contains(m.status, "opening terminal") {
 		t.Errorf("t should open the terminal on a worker: status %q", m.status)
 	}
-	m, _ = update(m, press("o"))
+	m, cmd = update(m, press("o"))
+	m = feed(m, cmd)
 	if m.screen != screenConfirm {
 		t.Error("o on a worker should confirm the detach")
 	}

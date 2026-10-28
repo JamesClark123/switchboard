@@ -57,8 +57,10 @@ type jobsState struct {
 	// orchOpState carries the open form, the Jobs status line, the prompt overlay
 	// and the Enqueue now repeat window (run_actions.go).
 	orchOpState
-	tab   jobsTab
-	orchs []jobsOrch // ordered by host display name, then orchestrator name
+	// manage is the Manage lanes dialog over the action form (SWI-18).
+	manage manageLanes
+	tab    jobsTab
+	orchs  []jobsOrch // ordered by host display name, then orchestrator name
 	// cursors are the tabs' row indexes; cursorKeys the identity of each tab's
 	// highlighted item, which the index follows after every data change (R11).
 	cursors    [jobsTabCount]int
@@ -248,7 +250,15 @@ func (m Model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if j.manage.open {
+		return m.updateManageKey(msg)
+	}
 	if j.form != nil {
+		if msg.String() == "ctrl+l" && !j.formSaving {
+			if _, ok := j.formVals.(*actionFormVals); ok {
+				return m.openManageLanes()
+			}
+		}
 		return m.formKey(gOpJobs, msg)
 	}
 	switch {
@@ -311,8 +321,18 @@ func (m Model) jobsHelp() helpBindings {
 		return m.runResultsHelp()
 	case j.prompt != nil:
 		return helpBindings{hkey("esc", "close")}
+	case j.manage.open:
+		p := j.manage.panel
+		if p.form == nil && p.picker == nil {
+			return append(m.lanesHelp(surfaceJobs), hkey("r", "reload"), hkey("esc", "back to the form"))
+		}
+		return m.lanesHelp(surfaceJobs)
 	case j.form != nil:
-		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save"), hkey("esc", "cancel")}
+		hb := helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save")}
+		if _, ok := j.formVals.(*actionFormVals); ok {
+			hb = append(hb, hkey("ctrl+l", "manage lanes"))
+		}
+		return append(hb, hkey("esc", "cancel"))
 	}
 	hb := helpBindings{hkey("←/→", "tab"), hkey("↑/↓", "move")}
 	switch j.tab {
@@ -368,6 +388,9 @@ func (m Model) viewJobs() string {
 	j := m.jobs
 	if j.prompt != nil {
 		return m.promptView(j.prompt)
+	}
+	if j.manage.open {
+		return m.viewManageLanes()
 	}
 	if j.form != nil {
 		parts := []string{sectionStyle.Render(sanitizeLine(j.formTarget.label()+" › "+j.formKind, 0)), "", j.form.View()}

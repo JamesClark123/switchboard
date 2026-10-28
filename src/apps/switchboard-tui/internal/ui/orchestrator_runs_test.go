@@ -33,6 +33,8 @@ func jobsWith(t *testing.T, tab jobsTab, actions []*pb.Action, runs *pb.ListRuns
 
 func TestActionFormRoundTripAndRefusal(t *testing.T) {
 	m, a := jobsWith(t, jobsActions, nil, nil)
+	a.orchestrators[0].Orchestrator.Lanes = []*pb.Lane{{Id: "ln-ci", Name: "ci"}}
+	m, _ = update(m, press("r"))
 	if !strings.Contains(m.View(), "no actions — press a to add one") || !strings.Contains(m.View(), "alpha-bot @ test-host") {
 		t.Errorf("empty actions group:\n%s", m.View())
 	}
@@ -44,7 +46,7 @@ func TestActionFormRoundTripAndRefusal(t *testing.T) {
 		t.Error("the form names its orchestrator")
 	}
 	v := m.jobs.formVals.(*actionFormVals)
-	v.name, v.description, v.body, v.workerTag = "review-pr", "Review a PR", "Review {number} in {repo}", "ci"
+	v.name, v.description, v.body, v.lanes = "review-pr", "Review a PR", "Review {number} in {repo}", []string{"ln-ci"}
 	v.args = "number * PR number\nrepo * = acme/web\nfocus"
 	m, cmd := update(m, ctrlS())
 	m = feed2(m, cmd)
@@ -52,7 +54,7 @@ func TestActionFormRoundTripAndRefusal(t *testing.T) {
 		t.Fatalf("PutAction calls = %d (%q)", len(a.putActions), a.orchCallsJoined())
 	}
 	got := a.putActions[0]
-	if got.GetName() != "review-pr" || got.GetType() != pb.ActionType_ACTION_TYPE_PROMPT || got.GetWorkerTag() != "ci" || len(got.GetArguments()) != 3 {
+	if got.GetName() != "review-pr" || got.GetType() != pb.ActionType_ACTION_TYPE_PROMPT || got.GetLaneIds()[0] != "ln-ci" || got.GetLaneMode() != pb.LaneMode_LANE_MODE_EXCLUSIVE || len(got.GetArguments()) != 3 {
 		t.Errorf("saved action = %+v", got)
 	}
 	if args := got.GetArguments(); !args[0].GetRequired() || args[0].GetDescription() != "PR number" || args[1].GetDefaultValue() != "acme/web" || !args[1].GetRequired() || args[2].GetRequired() {
@@ -62,7 +64,7 @@ func TestActionFormRoundTripAndRefusal(t *testing.T) {
 		t.Errorf("after save: form %v status %q", m.jobs.form != nil, m.status)
 	}
 	v2 := m.View()
-	for _, want := range []string{"review-pr", "(prompt)", "Review a PR", "#ci", "{number*, repo*, focus}"} {
+	for _, want := range []string{"review-pr", "(prompt)", "Review a PR", "⇢ ci · exclusive", "{number*, repo*, focus}"} {
 		if !strings.Contains(v2, want) {
 			t.Errorf("actions tab missing %q", want)
 		}

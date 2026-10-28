@@ -21,8 +21,12 @@ func TestHostsViewAddRemoveAndCycle(t *testing.T) {
 		t.Fatalf("initial view = %v", m.orchDetail.view)
 	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.orchDetail.view != viewLanes {
+		t.Errorf("left from Workers should wrap to Lanes, got %v", m.orchDetail.view)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyLeft})
 	if m.orchDetail.view != viewHosts {
-		t.Errorf("left from Workers should wrap to Hosts, got %v", m.orchDetail.view)
+		t.Errorf("left from Lanes should reach Hosts, got %v", m.orchDetail.view)
 	}
 	for _, want := range []string{"Workers", "Reasoning", "Hosts", "beta", "me@beta", "reachable"} {
 		if !strings.Contains(m.View(), want) {
@@ -102,6 +106,10 @@ func TestHostsViewAddRemoveAndCycle(t *testing.T) {
 	// Per-view cursors clamp and move.
 	m, _ = update(m, press("j"))
 	m, _ = update(m, press("k"))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRight}) // Lanes
+	if !strings.Contains(m.View(), "no lanes yet — a to add one") {
+		t.Error("empty lanes view should say so")
+	}
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRight}) // Workers
 	for _, want := range []string{"no workers"} {
 		if !strings.Contains(m.View(), want) {

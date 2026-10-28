@@ -804,6 +804,22 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleReasoningDone(msg)
 	case orchFormErrMsg:
 		return m.applyOrchFormErr(msg)
+	case laneFormMsg:
+		return m.applyLaneForm(msg)
+	case laneResultMsg:
+		return m.applyLaneResult(msg)
+	case manageDetailMsg:
+		return m.applyManageDetail(msg)
+	case actionLanesMsg:
+		return m.applyActionLanes(msg)
+	case launchOpenLaneMsg:
+		return m.applyLaunchOpenLane(msg)
+	case launchBundleMsg:
+		return m.applyLaunchBundle(msg)
+	case attachOpenLaneMsg:
+		return m.applyAttachOpenLane(msg)
+	case attachLaneErrMsg:
+		return m.applyAttachLaneErr(msg)
 	case runPromptMsg:
 		return m.applyRunPrompt(msg)
 

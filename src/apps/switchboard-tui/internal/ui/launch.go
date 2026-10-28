@@ -15,6 +15,8 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // browseVisible is how many filesystem entries the launch browser shows at once.
@@ -79,6 +81,13 @@ type launchState struct {
 	orchestrator *orchRow
 	orchPick     bool
 	orchChoices  []orchRow
+	// SWI-18 (FR-306a): the lanes picked for the orchestrator, the lane step
+	// while it is open, and the bundle fetched before the wizard closes
+	// (bundleSeq numbers the fetches; only the newest's reply counts).
+	orchLanes []string
+	lanePick  *lanePicker
+	bundleSeq uint64
+	fetching  bool
 
 	// reasoning (feature 009, FR-146): the browser edits an orchestrator's
 	// reasoning-sandbox setup instead of launching; enter rebuilds.
@@ -433,12 +442,142 @@ func (m Model) updateLaunchOrchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.launch.orchPick = false
+		m.launch.orchLanes = nil
 		if m.launch.orchCursor == 0 {
 			m.launch.orchestrator = nil
-		} else {
-			row := m.launch.orchChoices[m.launch.orchCursor-1]
-			m.launch.orchestrator = &row
+			return m, nil
 		}
+		return m.chooseLaunchOrch(m.launch.orchChoices[m.launch.orchCursor-1])
+	}
+	return m, nil
+}
+
+// launchHost is the launch's target host entry.
+func (m Model) launchHost() string {
+	if m.launch.targetHost != "" {
+		return m.launch.targetHost
+	}
+	return m.activeHost
+}
+
+// chooseLaunchOrch follows choosing an orchestrator: with lanes, the lane step
+// when both daemons serve lanes, else the predates-lanes confirm (y = no lanes).
+func (m Model) chooseLaunchOrch(row orchRow) (tea.Model, tea.Cmd) {
+	rec := row.summary.GetOrchestrator()
+	if len(rec.GetLanes()) == 0 {
+		m.launch.orchestrator = &row
+		return m, nil
+	}
+	old := ""
+	switch {
+	case !m.hostHasLanes(row.host):
+		old = row.host
+	case !m.hostHasLanes(m.launchHost()):
+		old = m.launchHost()
+	}
+	if old != "" {
+		return m.enterConfirm(confirmState{
+			title:     "The daemon on " + sanitizeLine(m.hostDisplayName(old), 0) + " predates lanes: attach to the open lane?",
+			body:      []string{sanitizeLine(rec.GetName(), 0) + " has lanes, but lanes picked now could not reach the worker."},
+			notice:    "It can be put in lanes later, once both daemons are updated (u).",
+			returnTo:  screenLaunch,
+			onConfirm: func() tea.Msg { return launchOpenLaneMsg{row: row} },
+		})
+	}
+	m.launch.orchestrator = &row
+	m.launch.lanePick = newLanePicker(pickLaunch, "Lanes for the new worker of "+rec.GetName(), "", laneRows(rec), nil)
+	m.launch.lanePick.header = "none ticked = open lane"
+	return m, nil
+}
+
+// launchOpenLaneMsg is the y of the launch's predates-lanes confirm.
+type launchOpenLaneMsg struct{ row orchRow }
+
+func (m Model) applyLaunchOpenLane(msg launchOpenLaneMsg) (tea.Model, tea.Cmd) {
+	row := msg.row
+	m.launch.orchestrator, m.launch.orchLanes = &row, nil
+	return m, nil
+}
+
+func (m Model) updateLaunchLaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	l := &m.launch
+	switch l.lanePick.update(msg) {
+	case pickClose:
+		// Back to the wizard without the orchestrator.
+		l.lanePick, l.orchestrator, l.orchLanes, l.fetching = nil, nil, nil, false
+		l.bundleSeq++
+	case pickSave:
+		l.orchLanes = l.lanePick.selected()
+		l.lanePick = nil
+	}
+	return m, nil
+}
+
+// launchBundleMsg is the bundle fetched before a launch with lanes closes the
+// wizard; on a lane or host refusal rec is the orchestrator re-read.
+type launchBundleMsg struct {
+	seq    uint64
+	bundle *pb.WorkerBundle
+	err    error
+	rec    *pb.Orchestrator
+}
+
+// fetchLaunchBundle asks the orchestrator's daemon for the bundle (and so the
+// attach ticket, bound to the target's host id) before the wizard closes.
+func (m Model) fetchLaunchBundle() (tea.Model, tea.Cmd) {
+	row := *m.launch.orchestrator
+	od, err := m.connectedDaemon(row.host)
+	if err != nil {
+		m.launch.progress = err.Error()
+		return m, nil
+	}
+	m.launch.bundleSeq++
+	m.launch.fetching = true
+	m.launch.progress = "fetching the worker bundle…"
+	seq, id, hostID, lanes := m.launch.bundleSeq, row.summary.GetOrchestrator().GetId(), m.daemonHostID(m.launch.targetHost), m.launch.orchLanes
+	return m, func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		b, err := od.GetWorkerBundle(ctx, id, hostID, lanes)
+		if err != nil {
+			msg := launchBundleMsg{seq: seq, err: err}
+			if c := status.Code(err); c == codes.NotFound || c == codes.InvalidArgument {
+				if det, gerr := od.GetOrchestrator(ctx, id); gerr == nil {
+					msg.rec = det.GetSummary().GetOrchestrator()
+				}
+			}
+			return msg
+		}
+		return launchBundleMsg{seq: seq, bundle: b}
+	}
+}
+
+func (m Model) applyLaunchBundle(msg launchBundleMsg) (tea.Model, tea.Cmd) {
+	l := &m.launch
+	if msg.seq != l.bundleSeq || !l.fetching || m.screen != screenLaunch || l.orchestrator == nil {
+		return m, nil
+	}
+	l.fetching = false
+	if msg.err == nil {
+		l.progress = ""
+		return m.launchWith(msg.bundle)
+	}
+	l.progress = "orchestrator " + l.orchestrator.summary.GetOrchestrator().GetName() + ": " + msg.err.Error()
+	if msg.rec != nil {
+		// The wizard stays open on the lane step, reloaded (FR-306a).
+		row := *l.orchestrator
+		row.summary = &pb.OrchestratorSummary{Orchestrator: msg.rec}
+		l.orchestrator = &row
+		var kept []string
+		for _, id := range l.orchLanes {
+			if laneByID(msg.rec, id) != nil {
+				kept = append(kept, id)
+			}
+		}
+		l.lanePick = newLanePicker(pickLaunch, "Lanes for the new worker of "+msg.rec.GetName(), "", laneRows(msg.rec), kept)
+		l.lanePick.header = "none ticked = open lane"
+		l.lanePick.status = msg.err.Error()
+		l.progress = ""
 	}
 	return m, nil
 }
@@ -558,6 +697,17 @@ func (m Model) updateLaunchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.launch.orchPick {
 		return m.updateLaunchOrchKey(msg)
 	}
+	if m.launch.lanePick != nil {
+		return m.updateLaunchLaneKey(msg)
+	}
+	if m.launch.fetching {
+		if msg.String() == "esc" {
+			// Stop waiting; the reply is ignored.
+			m.launch.fetching, m.launch.progress = false, ""
+			m.launch.bundleSeq++
+		}
+		return m, nil
+	}
 	reasoning := m.launch.reasoning != nil
 	switch msg.String() {
 	case "esc":
@@ -666,6 +816,8 @@ func (m Model) updateLaunchHostKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.launch.targetHost = c.id
 		m.launch.progress = ""
+		// The attach ticket is bound to the host (FR-306a).
+		m.launch.orchestrator, m.launch.orchLanes = nil, nil
 		m.launch.selected = map[string]bool{}
 		m.launch.srcRepo = map[string]bool{}
 		m.launch.order = nil
@@ -735,6 +887,17 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 		m.launch.progress = "select at least one directory (space), then enter"
 		return m, nil
 	}
+	if m.launch.orchestrator != nil && len(m.launch.orchLanes) > 0 {
+		return m.fetchLaunchBundle()
+	}
+	return m.launchWith(nil)
+}
+
+// launchWith launches; bundle, when set, was fetched before the wizard closed
+// (a launch with lanes), else the controller bundle is fetched in the launch
+// goroutine.
+func (m Model) launchWith(bundle *pb.WorkerBundle) (tea.Model, tea.Cmd) {
+	sources := m.selectedSources()
 	mode := pb.SeedingMode_SEEDING_MODE_DUPLICATE
 	if m.launch.cloneMode {
 		mode = pb.SeedingMode_SEEDING_MODE_CLONE
@@ -767,7 +930,7 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	// orchestrator's daemon inside the launch goroutine, right before the launch.
 	var orchDaemon Daemon
 	var orchID, orchName string
-	if m.launch.orchestrator != nil {
+	if m.launch.orchestrator != nil && bundle == nil {
 		orchDaemon = m.daemonForHost(m.launch.orchestrator.host)
 		orchID = m.launch.orchestrator.summary.GetOrchestrator().GetId()
 		orchName = m.launch.orchestrator.summary.GetOrchestrator().GetName()
@@ -805,6 +968,9 @@ func (m Model) startLaunch() (tea.Model, tea.Cmd) {
 	m.refreshListItems()
 
 	d := m.daemonForHost(m.launch.targetHost)
+	if bundle != nil {
+		req.Controller = bundle
+	}
 	go func() {
 		if orchDaemon != nil {
 			bctx, cancel := ctxTimeout()
@@ -916,11 +1082,18 @@ func (m Model) launchModal() string {
 		content = m.launchHostPicker()
 	case m.launch.orchPick:
 		content = m.launchOrchPicker()
+	case m.launch.lanePick != nil:
+		content = m.launch.lanePick.view(m.modalInnerWidth(), m.height)
 	default:
 		content = m.launchBrowser()
 	}
 	if m.launch.orchestrator != nil {
-		title += dimStyle.Render("  ·  orchestrator: " + m.launch.orchestrator.summary.GetOrchestrator().GetName())
+		rec := m.launch.orchestrator.summary.GetOrchestrator()
+		label := "  ·  orchestrator: " + rec.GetName()
+		if names := laneNames(rec, m.launch.orchLanes); len(names) > 0 {
+			label += " (lanes: " + strings.Join(names, ", ") + ")"
+		}
+		title += dimStyle.Render(sanitizeLine(label, 0))
 	}
 
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", content)
@@ -940,6 +1113,10 @@ func (m Model) launchModal() string {
 		help = "↑/↓ move · enter select host · esc cancel"
 	case m.launch.orchPick:
 		help = "↑/↓ move · enter select orchestrator · esc cancel"
+	case m.launch.lanePick != nil:
+		help = "space toggle · enter continue · esc back"
+	case m.launch.fetching:
+		help = "esc stop waiting"
 	}
 	inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", helpStyle.Render(help))
 	return modalStyle.Width(m.modalInnerWidth()).Render(inner)

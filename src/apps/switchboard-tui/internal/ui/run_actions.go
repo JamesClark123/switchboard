@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -410,6 +411,10 @@ func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model
 // promptView renders the read-only prompt overlay of a run.
 func (m Model) promptView(r *pb.Run) string {
 	// The composed prompt carries arguments other sandboxes supplied (FR-029).
-	return sectionStyle.Render("Run "+sanitizeLine(r.GetId(), 0)) + dimStyle.Render("  "+sanitizeLine(r.GetAction(), 0)+" · "+runState(r)) + "\n\n" +
-		panelStyle.Width(m.bodyWidth()-2).Render(sanitizeTerminalText(r.GetPrompt()))
+	head := sectionStyle.Render("Run "+sanitizeLine(r.GetId(), 0)) + dimStyle.Render("  "+sanitizeLine(r.GetAction(), 0)+" · "+runState(r))
+	if why := r.GetWaitingReason(); why != "" {
+		// SWI-18 (FR-320): the whole waiting reason, cut on the queue rows.
+		head += "\n" + dimStyle.Render(lipgloss.NewStyle().Width(m.bodyWidth()).Render(sanitizeLine(why, 0)))
+	}
+	return head + "\n\n" + panelStyle.Width(m.bodyWidth()-2).Render(sanitizeTerminalText(r.GetPrompt()))
 }

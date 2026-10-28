@@ -159,6 +159,12 @@ func (m Model) handleEvent(hostID string, ev *pb.Event) (tea.Model, tea.Cmd) {
 		// feature 009 (R14): an orchestrator on that host changed; the screen and
 		// any open detail re-fetch (filled by the orchestrator views).
 		out, cmd = m.syncOrchestratorChanged(m.subHostKey(hostID), e.OrchestratorChanged.GetOrchestratorId())
+	case *pb.Event_EventsDropped:
+		// SWI-18: the stream overflowed, so changes may have been missed; the
+		// list (every host's, aggregated) is read again.
+		m.listLoading = true
+		cmd = m.reloadCmd()
+		out = m
 	}
 	return out, tea.Batch(cmd, rearm)
 }
