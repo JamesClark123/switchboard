@@ -44,3 +44,18 @@
   - Stale membership saves are refused (FR-307a).
   - The waiting reason is new and is also shown to agents (FR-315).
   - Unmarked action saves from older clients are refused (FR-318a).
+- PR #22 review (run-552), resolved in run-555 (spec § Clarifications):
+  - An open-lane worker excludes the reasoning sandbox (FR-308).
+  - Pushes are targeted, run in the background and are coalesced. Briefings refresh only when what they describe changes (FR-309a, FR-321).
+  - The FR-315 waiting reason covers inclusive runs, is derived when runs are read and is never stored.
+  - Kept runs keep the mode and follow lane renames (FR-314b).
+  - The roster is the only source of lanes (FR-309b).
+  - Action saves name lanes by identity and refuse stale ones (FR-316a).
+  - FR-308a is daemon-enforced and also covers bulk edits, detach and un-laned saves.
+  - Inclusive runs give way to later exclusive runs (FR-314, SC-002).
+  - Dropped worker tags get a notice (FR-318b).
+  - Lanes can be picked at attach (FR-306a).
+  - Description cap; names only to agents; remote names are validated and sanitised. Lanes are not access control.
+  - FR-307a is narrowed.
+  - Nits: `open` reserved, the worker-tag field retired, reverse compatibility, orchestrator removal.
+  - Consistency pass across FRs, edge cases, Key Entities and SCs.

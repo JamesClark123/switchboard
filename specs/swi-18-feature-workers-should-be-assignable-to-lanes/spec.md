@@ -35,11 +35,41 @@
 
 - "List/overview page" in the ticket means the **sandbox list**. The app has no per-sandbox overview screen, and workers are hidden from the All, host and group tabs unless they need the developer. Lanes therefore show on the Orchestrator Sandboxes tab, on any worker row surfaced on the other tabs, and on the Workers view (FR-309).
 - A worker's lanes are kept on the orchestrator. They are also pushed to the daemon that runs the worker, the same way the orchestrator's name is, so that daemon's sandbox list can show them. While that host is unreachable, the last-known lanes are shown (FR-309a).
-- Any change to lanes, a worker's lanes or an action's lanes starts a dispatch pass and refreshes the workers' briefings (FR-314a, FR-321).
+- Any change to lanes, a worker's lanes or an action's lanes starts a dispatch pass (FR-314a). Briefings are refreshed only when what they describe changes (FR-321; refined in run-555 below).
 - A queued run follows its action's current lanes. If the action is deleted, the run keeps the lanes the action last had, even if a new action is later saved under the same name. A later lane delete removes the lane from such runs too (FR-314b, FR-305).
 - A save that would leave no open-lane worker while un-laned `prompt` actions exist warns first (FR-308a).
 - "Waiting for a lane" is new: today a queued run shows no reason it is waiting. A worker counts as able to take a run if it is attached, whatever its state (FR-315).
 - Lane-aware clients mark their action saves, and an unmarked save, which can only come from an older client, is refused. An older client therefore can't silently clear an action's lanes (FR-318a). Membership saves made against a lane list that has changed since the picker opened are refused (FR-307a).
+
+### PR review 2026-10-28 (pr-review run `run-c275c8f2-552`, resolved in pr-response run `run-c275c8f2-555`)
+
+- **The reasoning sandbox is never an open-lane worker.** An open-lane worker is a *non-reasoning* worker with no lanes. This is the definition FR-308a, FR-313 and FR-315 count with (FR-308, Key Entities).
+- **Pushes are targeted and off the save path.**
+  - A membership change pushes lanes only to the workers it affects.
+  - Briefings, which list actions only, are refreshed only when an action's lanes or mode change, or when a lane an action uses is renamed or deleted.
+  - Both kinds of push run in the background and are coalesced.
+  - A host's reconnect push carries its workers' lanes. (FR-309a, FR-321)
+- **The waiting reason (FR-315)** covers inclusive runs too. It is derived whenever runs are read, like queue position, never stored. It is separate from a run's failure or cancel reason.
+- **Runs of a deleted action** keep its lanes, by lane identity, **and its mode**, and they follow lane renames (FR-314b, FR-304).
+- **The orchestrator's roster is the only source of lane membership.** Lanes pushed to a worker's host are for display only and are never read back. A worker that reconcile adopts and that is not already on the roster starts in the open lane (FR-309b).
+- **Action saves name lanes by identity.** A save naming a lane that no longer exists is refused, and the form reloads its lane choices (FR-316a).
+- **The open-lane warning (FR-308a)**:
+  - fires on any change that leaves *none*, including bulk member edits and detach;
+  - also fires on saving an un-laned action while there are none;
+  - is enforced by the daemon, which needs an explicit confirmation.
+- **Inclusive runs give way.** They prefer lane workers, except when a later queued run in the same pass can only be taken by that lane worker (FR-314). SC-002 is reworded to match.
+- **Worker tags dropped on upgrade** are logged and listed once in the TUI (FR-318b).
+- **A sandbox can be given its lanes in the same step that makes it a worker** (FR-306a).
+- **Lane descriptions** are single-line and capped at 200 characters, and are never sent to agents (FR-302, FR-321).
+- **Lane names from another machine** are validated and sanitised before display (FR-309b).
+- **Lanes are routing, not access control** (Assumptions).
+- **FR-307a** refuses only saves whose own worker or lane changed.
+- **Nits:**
+  - The lane name `open` is reserved (FR-303).
+  - The retired worker-tag field is never reused.
+  - A new client refuses lane editing on a daemon without lanes (FR-318a).
+  - Orchestrator removal with unreachable hosts gets an edge case.
+  - The "as before" wording for deleted actions is corrected.
 
 ## Background (current behaviour this feature changes)
 
@@ -67,7 +97,7 @@ A developer has five workers. Two of them are set up for front-end work, so they
 3. **Given** an action exclusive to `frontend` and `backend`, and a free worker that is in `backend` only, **When** the action is called, **Then** the run may be delivered to it: one matching lane is enough (FR-311).
 4. **Given** an action with no lanes, a free worker in `frontend` and no free open-lane worker, **When** the action is called, **Then** the run stays queued and is not delivered to the laned worker (FR-313).
 5. **Given** an action with no lanes and a free open-lane worker, **When** the action is called, **Then** it runs there exactly as it did before this feature (FR-313).
-6. **Given** a queued run of an exclusive action and no worker in any of its lanes, **When** the developer views the queue, **Then** the run says it is waiting for a worker in the named lanes, and an agent checking the run sees the same reason (FR-315).
+6. **Given** a queued run of an exclusive action and no worker in any of its lanes, **When** the developer views the queue, **Then** the run says it is waiting for a worker in the named lanes, and an agent checking the run sees the same reason. Once a worker is added to one of those lanes, the reason is gone the next time runs are read (FR-315).
 
 ---
 
@@ -84,6 +114,7 @@ A developer marks the `review-pr` action **inclusive** to the `reviewers` lane. 
 1. **Given** an action inclusive to `reviewers`, a free worker in `reviewers` and a free open-lane worker, **When** the action is called, **Then** the run goes to the worker in `reviewers` (FR-312, FR-314).
 2. **Given** an action inclusive to `reviewers`, no free worker in `reviewers`, and a free open-lane worker, **When** the action is called, **Then** the run goes to the open-lane worker (FR-312).
 3. **Given** an action inclusive to `reviewers` and a free worker that is only in an unrelated lane `frontend`, **When** the action is called, **Then** the run is not delivered to that worker (FR-312).
+4. **Given** one free worker in `reviewers`, one free open-lane worker, and two queued runs, an inclusive-`reviewers` run followed by an exclusive-`reviewers` run, **When** a dispatch pass runs, **Then** the inclusive run takes the open-lane worker and the exclusive run takes the `reviewers` worker, so neither waits (FR-314).
 
 ---
 
@@ -120,8 +151,9 @@ A developer selects a worker in the Workers view and opens its lane picker. They
 3. **Given** a worker in no lanes, **When** it is shown in those places, **Then** it reads as being in the open lane (FR-309).
 4. **Given** the reasoning sandbox, **When** the developer looks for a lane picker, **Then** there is none: the reasoning sandbox is never in a lane (FR-310).
 5. **Given** an orchestrator with no lanes, **When** the developer opens a worker's lane picker, **Then** it says there are no lanes yet and offers to create one (FR-306).
-6. **Given** one open-lane worker and an un-laned `prompt` action, **When** the developer puts that worker in a lane and saves, **Then** a warning says no open-lane worker will be left to run un-laned actions, and names them. The save goes ahead only once the developer confirms (FR-308a).
+6. **Given** one open-lane worker and an un-laned `prompt` action, **When** the developer puts that worker in a lane and saves (or detaches it), **Then** a warning says no open-lane worker will be left to run un-laned actions, and names them. The change goes ahead only once the developer confirms (FR-308a).
 7. **Given** a queued run of an action exclusive to `frontend` and no worker in `frontend`, **When** the developer adds a free worker to `frontend`, **Then** the run is delivered to it without any other change (FR-314a).
+8. **Given** a sandbox being attached as a worker, **When** the developer attaches it, **Then** they can pick its lanes in the same step, and it is never free in the open lane before they do (FR-306a).
 
 ---
 
@@ -165,17 +197,20 @@ After upgrading, a developer's actions that had a worker tag have no lanes and r
 - **Exclusive action with no worker in any of its lanes**: the run stays queued indefinitely, as a worker-tagged run does today. The queue shows why (FR-315). It is not failed, because the developer may be about to add a worker to the lane.
 - **Lane changes while runs are queued**: lanes are checked when a run is dispatched, not when it is called. Any lane change starts a dispatch pass, so queued runs follow it at once. A run already delivered is never moved (FR-314, FR-314a).
 - **Lane changes while a worker is running a run**: the run carries on. The worker's new lanes apply to its next run.
-- **Worker detached from the orchestrator**: it leaves all its lanes. If it is attached again, it starts in the open lane (FR-308).
+- **Worker detached from the orchestrator**: it leaves all its lanes. If it is attached again, it starts in the open lane unless lanes are picked as it is attached (FR-306a, FR-308). Detaching the last open-lane worker warns first (FR-308a).
+- **Worker re-adopted by reconcile** (after a daemon restart or reconnect): a worker already on the roster keeps its lanes. One that is not, starts in the open lane. Lanes shown on the worker's host are never read back (FR-309b).
+- **Orchestrator removed while a worker's host is unreachable**: that worker keeps its controller record, and so its last-known lanes, on its host until the host is reconciled, as it keeps the orchestrator's name today. Those lanes are display-only and route nothing (FR-309b).
 - **Worker on another host**: lanes are the orchestrator's, so a worker on any of the orchestrator's hosts can be in any of its lanes. While a host is unreachable its workers keep their lanes; they just aren't free.
 - **Deleting the last lane of an inclusive action**: the action becomes un-laned and runs on open-lane workers only. Before, it could also run on lane workers. The delete confirm says so for each affected action, and counts the queued runs that will be re-routed (FR-305).
-- **Taking the last open-lane worker**: un-laned actions, which is every action right after upgrade, would wait until an open-lane worker exists again. The save warns first (FR-308a).
+- **Leaving no open-lane worker**: un-laned actions, which is every action right after upgrade, would wait until an open-lane worker exists again. Any change that leaves none warns first, whether one worker or several move into lanes at once or a worker is detached. So does saving an un-laned action while there are none (FR-308a).
 - **Timed event on an action no worker can take**: with dedupe on (the default), it skips while its run is queued. With dedupe off, it queues a run every interval, each showing why it waits (FR-315). Queuing every interval is unchanged from worker tags today; the waiting reason is new.
 - **Lane worker stopped or on an unreachable host**: it still counts as able to take the run, so FR-315's reason is not shown. The run waits for it, as it would for any worker that isn't free.
 - **Remote worker's host unreachable when its lanes change**: the orchestrator routes by its own record at once. The sandbox list on the worker's host shows the last-known lanes until the host is reachable again and the change is pushed (FR-309a).
 - **All workers are in lanes**: actions with no lanes wait in the queue until an open-lane worker exists. The queue shows that they are waiting for an open-lane worker (FR-315).
 - **Lane picker or lane editor open while lanes change elsewhere** (another TUI, the other picker, or the Manage lanes dialog): a save made against a lane list or membership that has changed since it opened is refused with the reason, and the picker reloads, so one save never silently undoes another (FR-307a).
-- **Action deleted while its runs are queued**: the runs still run, as before this feature, and keep the lanes the action last had (FR-314b).
-- **Agent-triggered and timed calls**: they follow the same lane rules as developer calls, because lanes belong to the action, not the caller.
+- **Action deleted while its runs are queued**: the runs still run and keep the lanes and mode the action last had (FR-314b). This is new: before this feature such a run lost its worker tag and could run on any worker.
+- **Agent-triggered and timed calls**: they follow the same lane rules as developer calls, because lanes belong to the action, not the caller. A worker's agent can call an exclusive action whatever its own lanes: lanes decide where a run goes, not who may call it (Assumptions).
+- **Inclusive and exclusive runs competing for one lane worker**: the inclusive run gives way when an open-lane worker is free (FR-314).
 
 ## Requirements *(mandatory)*
 
@@ -184,41 +219,51 @@ After upgrading, a developer's actions that had a worker tag have no lanes and r
 #### Lanes
 
 - **FR-301**: The orchestrator detail MUST have a fourth view, **Lanes**, alongside Workers, Reasoning and Hosts, reached the same way as the other views. It MUST list every lane on the orchestrator with its name, description, member workers and the actions that use it (and whether each is exclusive or inclusive).
-- **FR-302**: A developer MUST be able to create a lane from the Lanes view with a name and an optional description. Lanes belong to one orchestrator.
-- **FR-303**: A lane name MUST be 1–64 characters of lowercase letters, digits and hyphens, starting with a letter or digit (the action-name rule). It MUST be unique within the orchestrator. A refused name MUST say why.
-- **FR-304**: A developer MUST be able to rename a lane and change its description. A rename MUST keep every worker's and action's membership, and MUST NOT change which runs go where.
-- **FR-305**: A developer MUST be able to delete a lane. When workers or actions use it, a confirm MUST list them first and say which actions will be left with no lanes and so run on open-lane workers only. The confirm MUST also count the queued runs whose routing changes, including runs of deleted actions that kept the lane (FR-314b). On confirm, the lane MUST be removed from every worker, action and such run; on cancel nothing changes. An unused lane is deleted after a plain confirm.
+- **FR-302**: A developer MUST be able to create a lane from the Lanes view with a name and an optional description. A description MUST be a single line of at most 200 characters. Lanes belong to one orchestrator.
+- **FR-303**: A lane name MUST be 1–64 characters of lowercase letters, digits and hyphens, starting with a letter or digit (the action-name rule). It MUST be unique within the orchestrator. The name `open` is reserved, because it would read as the open lane. A refused name MUST say why.
+- **FR-304**: A developer MUST be able to rename a lane and change its description. A rename MUST keep the membership of every worker, every action and every queued run that kept lanes (FR-314b), and MUST NOT change which runs go where.
+- **FR-305**: A developer MUST be able to delete a lane. When workers or actions use it, a confirm MUST list them first and say which actions will be left with no lanes and so run on open-lane workers only. If no open-lane worker would exist after the delete, the confirm MUST say so as well (FR-308a). The confirm MUST also count the queued runs whose routing changes, including runs of deleted actions that kept the lane (FR-314b). On confirm, the lane MUST be removed from every worker, action and such run; on cancel nothing changes. An unused lane is deleted after a plain confirm.
 
 #### Worker assignment and display
 
 - **FR-306**: The Workers view MUST offer, on a worker row, a lane picker that sets that worker's lanes (none, one or many) from the orchestrator's lanes. With no lanes on the orchestrator, the picker MUST say so and offer to create one.
+- **FR-306a**: Every way a sandbox becomes a worker of the orchestrator MUST let the developer pick its lanes in the same step, applied together with the attach, so a worker meant for a lane is never free in the open lane first. This covers attaching from the sandbox list and launching with the orchestrator chosen in the launch wizard.
 - **FR-307**: A lane's editor in the Lanes view MUST let the developer change the lane's member workers. It MUST edit the same assignment as FR-306.
-- **FR-307a**: A membership save (FR-306, FR-307) made against lanes or memberships that have changed since the picker opened MUST be refused with the reason, and the picker MUST reload. One save MUST NOT silently undo another.
-- **FR-308**: A worker MAY be in any number of the orchestrator's lanes. A worker in no lane is in the **open lane**. A worker that is detached leaves all its lanes.
-- **FR-308a**: A save that would take the orchestrator's last open-lane worker while it has un-laned `prompt` actions MUST warn first, naming those actions, and MUST go ahead only on confirm.
-- **FR-309**: A worker's lanes MUST be shown on its Workers-view row and on its sandbox-list row, wherever the list shows it: the Orchestrator Sandboxes tab, and any other tab while it needs the developer. A worker in no lane MUST read as being in the open lane in the same places. The reasoning sandbox and sandboxes that are not workers show no lane information.
-- **FR-309a**: A worker's lanes MUST reach the daemon that runs it, the same way the orchestrator's name does, so the sandbox list shows them whichever host runs the worker. While that host is unreachable, routing uses the orchestrator's record, and the list on that host shows the last-known lanes until the change is pushed.
+- **FR-307a**: A membership save made against stale data MUST be refused with the reason, and the picker MUST reload. One save MUST NOT silently undo another. A worker's picker (FR-306) is refused only if **that worker's** lanes have changed since it opened, or a lane it ticks has been deleted. A lane's editor (FR-307) is refused only if **that lane's** members have changed, or the lane has been deleted. Unrelated changes never refuse a save.
+- **FR-308**: A worker MAY be in any number of the orchestrator's lanes. A non-reasoning worker in no lane is an **open-lane worker**, said to be in the **open lane**. The reasoning sandbox is never an open-lane worker. A worker that is detached leaves all its lanes.
+- **FR-308a**: A change that would leave the orchestrator with **no** open-lane worker while it has un-laned `prompt` actions MUST warn first, naming those actions, and MUST go ahead only on confirm. This covers any membership save, including several workers at once, and detaching a worker. Saving an un-laned `prompt` action, or clearing an action's lanes, while the orchestrator has no open-lane worker MUST warn the same way. The daemon MUST check the condition when the change is made, and refuse it unless the request says the developer confirmed. Two clients therefore cannot race past the warning.
+- **FR-309**: A worker's lanes MUST be shown on its Workers-view row and on its sandbox-list row, wherever the list shows it: the Orchestrator Sandboxes tab, and any other tab while it needs the developer. A worker in no lane MUST read as being in the open lane in the same places. The reasoning sandbox and sandboxes that are not workers show no lane information. Lane names MUST be sanitised for the terminal wherever they are shown.
+- **FR-309a**: A worker's lanes MUST reach the daemon that runs it, the same way the orchestrator's name does, so the sandbox list shows them whichever host runs the worker. A membership change MUST be pushed only to the workers it changes, in the background and coalesced, never holding up the save. The push a host gets when its link reconnects MUST carry its workers' current lanes. While that host is unreachable, routing uses the orchestrator's record, and the list on that host shows the last-known lanes until the change is pushed.
+- **FR-309b**: The orchestrator's roster MUST be the only source of lane membership. Lanes pushed to a worker's host are for display only and MUST never be read back into the roster or used for routing. A worker that reconcile adopts and that is not already on the roster MUST start in the open lane. A worker already on the roster keeps its lanes. A daemon receiving lanes for display MUST reject names that break FR-303's rule.
 - **FR-310**: The reasoning sandbox MUST NOT be assignable to a lane and MUST NOT be offered in any lane picker.
 
 #### Routing
 
 - **FR-311**: A run of an action **exclusive** to one or more lanes MUST be delivered only to a worker in at least one of those lanes.
 - **FR-312**: A run of an action **inclusive** to one or more lanes MUST be delivered only to a worker in at least one of those lanes or to an open-lane worker.
-- **FR-313**: A run of an action with **no lanes** MUST be delivered only to an open-lane worker. Apart from that, it is delivered exactly as before this feature.
-- **FR-314**: Eligibility MUST be decided at dispatch, from the action's and the workers' lanes at that moment. When an inclusive run can go to both a free worker in a matching lane and a free open-lane worker, it MUST go to the lane worker, which keeps open-lane workers for un-laned work. Apart from lanes, dispatch order and the free-worker rules are unchanged.
+- **FR-313**: A run of an action with **no lanes** MUST be delivered only to an open-lane worker (FR-308). Apart from that, it is delivered exactly as before this feature.
+- **FR-314**: Eligibility MUST be decided at dispatch, from the action's and the workers' lanes at that moment. When an inclusive run can go to both a free worker in a matching lane and a free open-lane worker, it MUST go to the lane worker, which keeps open-lane workers for un-laned work. The exception: when a later queued run in the same dispatch pass is exclusive to a lane and that lane worker is the only free worker it could take, the inclusive run MUST take the open-lane worker instead. A worker that refuses delivery is passed over as today, so the run moves on to its next eligible worker. Apart from lanes, dispatch order and the free-worker rules are unchanged.
 - **FR-314a**: Any change to a lane, to a worker's lanes or to an action's lanes MUST start a dispatch pass, so a queued run that has become deliverable is delivered without waiting for an unrelated event.
-- **FR-314b**: A queued run MUST follow its action's current lanes. A queued run whose action has been deleted MUST keep the lanes the action had when it was deleted. Those kept lanes win over a new action later saved under the same name. Deleting a lane MUST also remove it from these runs (FR-305), and a run left with no lanes is un-laned.
-- **FR-315**: A queued run that no attached worker could take under FR-311–FR-313, whatever those workers' states (no worker in any of its lanes, or no open-lane worker for an un-laned action), MUST say so. It MUST name the lanes it is waiting for, or "an open-lane worker", wherever queued runs are shown and to an agent checking the run. The run stays queued. Nothing shows this today, so it is new.
+- **FR-314b**: A queued run MUST follow its action's current lane setting. A queued run whose action has been deleted MUST keep the action's lane setting from when it was deleted: its lanes (by lane identity, so renames follow, FR-304) **and** its mode. That kept setting wins over a new action later saved under the same name. Deleting a lane MUST also remove it from these runs (FR-305), and a run left with no lanes is un-laned.
+- **FR-315**: A queued run that no attached worker could take under FR-311–FR-313, whatever those workers' states, MUST say why, wherever queued runs are shown and to an agent checking the run. The run stays queued. Nothing shows this today, so it is new.
+  - An exclusive run with no worker in any of its lanes is "waiting for a worker in <lanes>".
+  - An inclusive run with no worker in its lanes and no open-lane worker is "waiting for a worker in <lanes> or an open-lane worker".
+  - An un-laned run with no open-lane worker is "waiting for an open-lane worker".
+  - The reason MUST be worked out whenever runs are read, like queue position, and never stored. It therefore follows attaches, detaches and lane changes at once, including those that start no dispatch pass.
+  - The reason MUST be kept apart from a run's failure or cancellation reason.
+  - Working it out MUST cost no more than one count of workers per lane for each read, not a scan of every worker for every run.
 
 #### Actions
 
 - **FR-316**: The action form MUST let the developer pick any number of the orchestrator's lanes for a `prompt` action. With at least one lane picked, the developer MUST choose **exclusive** or **inclusive**, preselected to exclusive. With none picked there is no mode. `reason` actions MUST NOT be offered lanes, and saving a `reason` action with lanes MUST be refused. Switching an action from `prompt` to `reason` in the form MUST clear its lanes and say so.
+- **FR-316a**: An action's lanes MUST be saved by lane identity, so a rename elsewhere does not break them. An action save naming a lane that no longer exists MUST be refused with the reason, and the form MUST reload its lane choices, keeping every other value. An action MUST never lose its lanes silently because a lane was deleted while its form was open.
 - **FR-317**: The action form MUST offer **Manage lanes**, which opens a dialog with the same lane list and the same create, edit, member and delete operations as the Lanes view, for the action's orchestrator. Lane changes made there MUST be saved when made, not when the action is saved. When the dialog closes, the form's lane choices MUST reflect them (a deleted lane is no longer picked, a renamed one shows its new name), and every other value in the form MUST be intact.
-- **FR-318**: The action **worker tag** MUST be removed: from the action form, from what is saved, and from every description of an action. An action saved with a worker tag before this feature MUST load with no lanes and no worker tag, and MUST NOT fail to load.
-- **FR-318a**: A client that knows about lanes MUST mark each action save as one that sets lanes, even when it sets none. An action save without that mark comes from an older client, and MUST be refused with a message to update the client. An older client therefore cannot silently clear an action's lanes.
+- **FR-318**: The action **worker tag** MUST be removed: from the action form, from what is saved, and from every description of an action. An action saved with a worker tag before this feature MUST load with no lanes and no worker tag, and MUST NOT fail to load. The stored worker-tag setting is retired and MUST never be reused for another meaning.
+- **FR-318a**: A client that knows about lanes MUST mark each action save as one that sets lanes, even when it sets none. An action save without that mark comes from an older client, and MUST be refused with a message to update the client. An older client therefore cannot silently clear an action's lanes. The reverse also holds: a client MUST NOT offer lane editing against a daemon that does not support lanes, and MUST say that the daemon needs updating.
+- **FR-318b**: When the daemon drops a worker tag on upgrade, it MUST log the action and the dropped tag. The TUI MUST show the developer a notice listing each action whose worker tag was removed, with the old tag, until they dismiss it once per orchestrator.
 - **FR-319**: The sandbox tag MUST stay a plain purpose label, settable and shown as today, and MUST NOT affect dispatch.
 - **FR-320**: Jobs › Actions MUST show each action's lanes and mode. An action with no lanes shows none.
-- **FR-321**: The orchestrator's briefing to its workers and its list-actions tool MUST describe an action's lanes and mode instead of a worker tag, so an agent calling an action can tell where it will run. Any lane change that alters this MUST refresh the briefing, as an action change does today.
+- **FR-321**: The orchestrator's briefing to its workers and its list-actions tool MUST describe an action's lane names and mode instead of a worker tag, so an agent calling an action can tell where it will run. Lane descriptions MUST NOT be sent to agents. The briefing MUST be refreshed only when what it describes changes: an action's lanes or mode, or the rename or deletion of a lane an action uses. Membership changes alone MUST NOT refresh it. Refreshes MUST run in the background and be coalesced, never holding up the save.
 
 #### General
 
@@ -227,17 +272,18 @@ After upgrading, a developer's actions that had a worker tag have no lanes and r
 
 ### Key Entities
 
-- **Lane**: a named group of workers on one orchestrator. It has a name (unique within the orchestrator), an optional description and a stable identity that survives renames. It is owned by the orchestrator and deleted with it.
-- **Worker lane membership**: which lanes a worker is in (zero or more). Zero means the open lane. It belongs to the worker's place on the orchestrator's roster, is copied to the daemon that runs the worker for display, and is dropped when the worker is detached.
-- **Action lane setting**: an action's lanes (zero or more) and, when there is at least one, its mode: exclusive or inclusive. Only `prompt` actions have one.
-- **Open lane**: not a stored lane. It means "a worker with no lanes".
+- **Lane**: a named group of workers on one orchestrator. It has a name (unique within the orchestrator, `open` reserved), an optional single-line description of at most 200 characters, and a stable identity that survives renames. Workers, actions and kept runs refer to it by that identity. It is owned by the orchestrator and deleted with it.
+- **Worker lane membership**: which lanes a worker is in (zero or more). Zero means the open lane. It belongs to the worker's place on the orchestrator's roster, which is its only source (FR-309b). It is copied to the daemon that runs the worker for display only, and is dropped when the worker is detached.
+- **Action lane setting**: an action's lanes (zero or more) and, when there is at least one, its mode: exclusive or inclusive. Only `prompt` actions have one. A queued run of a deleted action keeps a copy of it (FR-314b).
+- **Waiting reason**: why a queued run cannot be taken by any attached worker (FR-315). It is derived when runs are read, never stored, and separate from a run's failure or cancellation reason.
+- **Open lane**: not a stored lane. It means "a non-reasoning worker with no lanes" (FR-308).
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
 - **SC-001**: In a test of 100 dispatched runs across exclusive, inclusive and un-laned actions, every run lands on a worker its lane rules allow (FR-311–FR-313). Zero runs land on a disallowed worker.
-- **SC-002**: When both are free, an inclusive run goes to a matching-lane worker over an open-lane worker in 100% of cases (FR-314).
+- **SC-002**: When a matching-lane worker and an open-lane worker are both free and accept delivery, and no later queued exclusive run in the pass needs that lane worker, an inclusive run goes to the lane worker in 100% of cases. When such a run does need it, the inclusive run takes the open-lane worker in 100% of cases (FR-314).
 - **SC-003**: Starting from the action form, a developer can create a lane, put a worker in it and make the action exclusive to it in under 2 minutes, using Manage lanes and without leaving the form. Starting from the orchestrator detail, the same takes under 2 minutes using the Lanes view and then the action form.
 - **SC-004**: While the worker's host is reachable, a worker's lanes appear on its Workers row and its sandbox-list row within one refresh of saving the change.
 - **SC-005**: After upgrade, 100% of orchestrators saved with worker tags load without error, and their formerly tagged actions run on open-lane workers.
@@ -247,10 +293,12 @@ After upgrading, a developer's actions that had a worker tag have no lanes and r
 ## Assumptions
 
 - Lane naming follows the action-name rule, and names are unique per orchestrator. Lanes are not shared between orchestrators.
-- Inclusive runs prefer lane workers over open-lane workers (FR-314). The ticket allows either; this choice keeps open-lane workers for un-laned work.
+- Inclusive runs prefer lane workers over open-lane workers, giving way to later exclusive runs in the same pass (FR-314). The ticket allows either; this keeps open-lane workers for un-laned work without starving exclusive work.
+- **Lanes are routing, not access control.** Any worker's agent can call any action, an exclusive one included, and can check any run of its orchestrator, including its waiting reason, which names lanes. Lanes decide only where a run is delivered. They are not an isolation boundary, and lane names are not secret.
+- Planning note: the sandbox list redraws a row only when a displayed field changes, so lanes must join that change check for SC-004.
 - An exclusive or un-laned run that no worker can take stays queued, as worker-tagged runs do today, rather than failing.
 - Lane changes from the Manage lanes dialog are saved immediately, like changes in the Lanes view, because lanes belong to the orchestrator and not to the action being edited.
-- A detached worker forgets its lanes. Re-attaching starts it in the open lane.
+- A detached worker forgets its lanes. Re-attaching starts it in the open lane, unless lanes are picked as it is attached (FR-306a).
 - Queued runs re-route when their action's lanes change, rather than keeping the lanes they were called with. This follows from lanes being checked at dispatch (FR-314).
 - The unsaved-changes guard in FR-323 depends on SWI-9 (PR #19). If that has not merged when this is implemented, the new forms behave like the existing forms.
 - Existing worker tags are not converted to lanes (clarified). Developers who used worker tags recreate the grouping with lanes.
