@@ -43,9 +43,9 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    exclusive to `reviewers`.
 2. Make every worker busy except `w3` and one open-lane worker (`w4`): call `chore` until they are taken.
 3. Each call starts its own pass, so queue both while `w3` and `w4` cannot take work: break the orchestrator
-   daemon's link to host B (both live there), for example by stopping `sxbd` on B. Disconnecting B in the TUI does not affect that link. Call `review-pr` then `review-strict`, then
-   start `sxbd` on B again so one pass sees both after reconcile.
-   **Expect**: `review-pr` → `w4`, `review-strict` → `w3`. (The daemon test in T026 pins this exactly.)
+   daemon's link to host B (both live there), for example by stopping `sxbd` on B. Disconnecting B in the TUI does not
+   affect that link. Call `review-pr` then `review-strict`, then start `sxbd` on B again so one pass sees both after
+   reconcile. **Expect**: `review-pr` → `w4`, `review-strict` → `w3`. (The daemon test in T026 pins this exactly.)
 4. Mark `w3` busy, call `review-pr`: it goes to an open-lane worker.
 
 ## Scenario 3 — open-lane guard (US4.6, FR-308a, FR-308b)
@@ -55,8 +55,8 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
 2. In a second client, with the confirm still open in the first, add another un-laned action; then press `y` in the
    first. **Expect**: a second confirm listing the new action.
 3. Make the last open-lane worker one on host B. Disconnect host A (the orchestrator's host) in the client, then
-   `o` (detach) that worker from host B's sandbox list. **Expect**: the confirm's best-effort warning from last-known data; with no data, `Cannot
-   check open-lane workers`.
+   `o` (detach) that worker from host B's sandbox list. **Expect**: the confirm's best-effort warning from last-known
+   data; with no data, `Cannot check open-lane workers`.
 
 ## Scenario 4 — attach and launch with lanes (US4.8, US4.9, FR-306a, FR-306b, L3, L4)
 
@@ -64,9 +64,8 @@ together: the TUI only offers lanes against a daemon that advertises the `lanes`
    appears with `lanes: frontend` and never receives an un-laned run.
 2. Launch wizard, `O` → `pdev-orch`, tick `reviewers`, launch on host B. **Expect**: adopted within moments of the
    launch (not at the next reconnect) with `lanes: reviewers`.
-3. Ticket expiry is covered by T039's daemon test (injected clock), not by hand. By hand, check the recovery: with
-   a worker shown `⚠ lanes pending` (from that test's setup or a 24 h wait), no runs are delivered to it; `l` →
-   choose lanes or none → flag cleared.
+3. Ticket expiry and *lanes pending* adoption have no reproducible manual path; they are covered by daemon tests
+   (T009, T039 with an injected clock), and recovering with `l` by T036 and T045.
 4. In the launch wizard, pick `pdev-orch` with lanes, then change the host with `H`. **Expect**: the orchestrator
    and lanes are cleared. Delete a ticked lane from a second client before launching: the wizard stays open on the
    lane step with `lane "<id>" no longer exists`.

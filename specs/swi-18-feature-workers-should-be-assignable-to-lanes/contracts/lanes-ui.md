@@ -10,8 +10,9 @@ the capability; against an older daemon a detach goes ahead as today. If the cap
 view is showing (the daemon was replaced by an older one), the detail falls back to the Workers view.
 
 The attach and launch lane steps also need the capability on the **target host's** daemon (an older owning daemon
-drops the attach ticket, research R11); without it the step is skipped and the status reads
-`lanes need the daemon on <host> updated — attaching to the open lane`.
+drops the attach ticket, research R11). When the orchestrator has lanes but the target daemon lacks the
+capability, the step is replaced by a confirm, `The daemon on <host> predates lanes: attach to the open lane?`
+(host sanitised): `y` attaches or launches with no lanes; `n` cancels the attach, or returns to the wizard.
 
 The lane list, lane form, delete confirm and picker are one self-contained `lanesPanel` carrying its own target and
 op state. It reads the orchestrator detail through a getter on its host screen (`func() *pb.OrchestratorDetail`), so
@@ -105,8 +106,9 @@ Fields (top to bottom): Name, Description, Kind, Body, **Lanes** (MultiSelect of
 exclusive, hidden when no lane is ticked or for `reason`), Arguments. The worker-tag field is gone.
 
 - `ctrl+l` (help: `ctrl+l manage lanes`) opens **Manage lanes**: the `lanesPanel` as a dialog on the Jobs screen
-  (where the action form lives) for the same orchestrator, with the same keys. Its changes are saved as made. `esc` closes it and returns to the form with every value intact;
-  lane options are rebuilt by id, a deleted lane's tick is dropped, a renamed lane shows its new name (FR-317).
+  (where the action form lives) for the same orchestrator, with the same keys. Its changes are saved as made. `esc`
+  closes it and returns to the form with every value intact; lane options are rebuilt by id, a deleted lane's tick is
+  dropped, a renamed lane shows its new name (FR-317).
 - Switching Kind to `reason` clears the ticks and sets the form status `lanes cleared: reason actions have no lanes`.
 - Save sends `PutAction{sets_lanes: true}`. If the action ends up un-laned, it first calls `CheckLaneChange{put_action}`
   and confirms as above.

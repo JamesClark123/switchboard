@@ -30,7 +30,7 @@ file describes each entity, where it lives, its rules and its state changes. "Re
 |-------|-----|------|
 | `sandbox_id`, `host_id`, `attached_at`, `reasoning` | – | as today |
 | `lane_ids` | 5 | ids of existing lanes; empty for reasoning; deduplicated |
-| `lanes_pending` | 6 | set only by adoption through an invalid ticket, or of a revision-0 record while a launch ticket for its host is outstanding (R11); cleared by any membership save that covers this worker |
+| `lanes_pending` | 6 | set only by adoption through an invalid (unknown, expired or mismatched) ticket, or of a revision-0 listing or event record that consumes its host's oldest launch ticket (R11); cleared by any membership save that covers this worker. A valid ticket whose lanes were all deleted adopts into the open lane |
 | `revision` | 7 | sandbox revision this entry was last written from (FR-308c); rewritten only when the roster changes, not on every status event |
 | `written_seq` | 8 | `roster_seq` at the last write (listing-absence rule) |
 
@@ -120,9 +120,12 @@ in [research R9](./research.md#r9-waiting-reasons-derived-at-read-time-fr-315-sc
 
 Lifecycle: issued (bundle or attach) → consumed by the first adoption or attach commit (same write) | deleted on a
 definite attach refusal | swept after expiry. Presenting an unknown, expired or mismatched id → `lanes_pending`.
+A valid ticket left with no lanes by lane deletes adopts into the open lane (spec L4 step 3: its current lanes).
 Issued only after every lane id is checked to exist (`NotFound` otherwise). On a revision-0 record with no ticket id
-(an owning daemon that predates lanes drops it), an unexpired ticket bound to the sandbox is consumed for its lanes,
-and an unexpired launch ticket bound to the host gives `lanes_pending` (R11).
+(an owning daemon that predates lanes drops it), an unexpired ticket bound to the sandbox is consumed for its lanes.
+Otherwise a listing or event record (never an `attachReply`) consumes the oldest unexpired launch ticket bound to
+the host and issued before the sandbox's `created_at`, and adopts as `lanes_pending` (R11). A ticket for a launch
+that is cancelled or fails before the sandbox exists is left to expire; it counts toward the cap meanwhile.
 
 On the owning host the id stays in `SandboxController.attach_ticket` after adoption: nothing clears it, because the
 orchestrator reads it only when adopting, and a later adoption always follows a new attach or launch that rewrites
@@ -136,15 +139,15 @@ Appended on load whenever an action has a `worker_tag` (FR-318b). Cleared by `Di
 ### Display copy on the worker's host (`SandboxController.lane_names` = 7, `lanes_pending` = 8, `lanes_known` = 10)
 
 Written by `UpdateWorker{lanes}` only (`lanes_known` = true on the first one); carried forward by a same-orchestrator
-re-attach. Lane text is shown only when `lanes_known` is set. Names breaking the lane rule are dropped and logged. Never read by any
-orchestrator (FR-309b).
+re-attach. Lane text is shown only when `lanes_known` is set. Names breaking the lane rule are dropped and logged.
+Never read by any orchestrator (FR-309b).
 
 ### In-memory only (orchestrator's daemon)
 
 | State | Owner | Notes |
 |-------|-------|-------|
 | `rt.sbs` cached sandbox records | `rt.mu` | refreshed when `revision > cached.revision` or the record has revision 0; evicted on removal; a record older than the cache never changes the roster (contracts/dispatch.md); `applyRecords` reads a snapshot (`input.cache`) |
-| `rt.recGen` | `recMu` to write, `rt.mu` to read | bumped by every record commit; a pass re-validates a claim against `rt.rec` when it changed since the pass's snapshot (R8) |
+| `rt.recGen` | written holding `recMu` and `rt.mu` (with `rt.rec`); read under `rt.mu` | bumped by every record commit; a pass re-validates a claim against `rt.rec` when it changed since the pass's snapshot (R8) |
 | `rt.detaching` | `rt.mu` | cleared by restart; cleared on any detach error; refused while the worker is in `rt.delivering` |
 | `rt.delivering` | `rt.mu` | workers a run is being delivered to, from claim until `deliver` returns; `markDetaching` refuses them |
 | per-worker `pushMu` | its own mutex | serialises display pushes and the reconnect push per worker (R12) |
@@ -173,7 +176,7 @@ persisted: detaching, delivering, the record generation, waiting reasons, the sa
 | stale lane editor | `lane <name>'s members changed since the editor opened — reloaded` |
 | old client | `this client predates lanes — update the client` |
 | old orchestrator daemon (TUI, local) | `the daemon on <host> predates lanes — update with u` |
-| old target daemon (TUI, attach/launch) | `lanes need the daemon on <host> updated — attaching to the open lane` |
+| old target daemon (TUI, attach/launch confirm) | `The daemon on <host> predates lanes: attach to the open lane?` |
 | unknown launch host | `unknown host <id>` |
 | lanes on a roster sandbox (attach) | `already a worker of <orchestrator> — change its lanes with l` |
 | detach during delivery | `<worker> is receiving a run — try again in a moment` |

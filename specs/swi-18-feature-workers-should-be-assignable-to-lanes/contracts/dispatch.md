@@ -20,7 +20,7 @@ pass():
       if effective(r) is missing: failIfStillMissing(r); continue   // re-read inside updateRuns before failing
       for w in candidates(r):          // lazily, skipping claimed/out workers
           switch recheckAndClaim(w, r, gen0):   // under rt.mu; adds w to rt.delivering on ok
-            sandbox/roster fails: out(w); release(w); continue
+            sandbox/detaching/roster fails: out(w); release(w); continue
             lane fails:           continue            // w stays for later runs, which re-check it
           switch deliver(r, w):                 // no lock held; w leaves rt.delivering when it returns
             accepted:      claim(w); release(r's other reservation); next run
@@ -35,11 +35,14 @@ pass():
 | inclusive | unreserved free in r.lanes → free open-lane → free in r.lanes reserved by a later run (steal) |
 | un-laned | free open-lane |
 
-**Re-check and claim** (`recheckAndClaim`, under `rt.mu`, research R8). The sandbox record must still be free
-(today's check). If `rt.recGen != gen0`, a record write committed since the snapshot, so the worker is re-validated
-against the current `rt.rec`: still on the roster, not reasoning, not *lanes pending*, not detaching, and its current
-lane mask allowed by the run's current effective setting. On success the worker joins `rt.delivering` in the same
-critical section; `markDetaching` refuses a worker in `rt.delivering` and the claim refuses one in `rt.detaching`.
+**Re-check and claim** (`recheckAndClaim(w, r, gen0)`, under `rt.mu`, research R8). Always: the sandbox record must
+still be free (today's check) and the worker not in `rt.detaching`. The detaching mark is set inside the detach's
+callback, before the commit bumps `rt.recGen`, so this check never depends on the generation. If
+`rt.recGen != gen0`, a record write committed since the snapshot, so the worker is re-validated against the current
+`rt.rec`: still on the roster, not reasoning, not *lanes pending*, and its current lane mask allowed by
+`effectiveLanes(rt.rec, snapshotRun)`. A missing setting or a kept lane that no longer exists is a lane-fail skip,
+never a failure. On success the worker joins `rt.delivering` in the same critical section; `markDetaching` refuses
+a worker in `rt.delivering`.
 A lane write that commits after the claim is ordered after the delivery (FR-314: decided at dispatch).
 
 **Guarantees tested** (`TestDispatchProperties`, 100 seeds × 100 runs, random refusals):
@@ -50,7 +53,8 @@ A lane write that commits after the claim is ordered after the delivery (FR-314:
    instrumented test hook).
 5. Mid-pass lane changes (`TestDispatchLaneRace`, `-race`): lane writes, action saves, lane deletes and detaches
    applied concurrently with a pass (a blocking fake `deliver` holds it mid-pass) never let a delivery through that
-   the record committed at its claim forbids, and never detach a worker while a run is being delivered to it.
+   the record committed at its claim forbids, and never detach a worker (through the orchestrator) while a run is
+   being delivered to it, including a detach whose callback has marked the worker but not yet committed.
 
 **Triggers** (`triggerDispatch`): today's, plus every lane create/rename/delete, membership save, action save or
 delete, ticket consumption, adoption or drop (FR-314a, L2).
@@ -94,7 +98,7 @@ names no controller) is never adopted, and a detach reply older than a cached re
 | fresh, names this orchestrator as reasoning | keep | adopt as reasoning only if its id is `reasoning_sandbox_id`, or the input is a listing and `reasoning_sandbox_id` is empty (today's recovery); never from an event otherwise |
 | stale or repeated | cache only | cache only |
 | revision-0 event (host predates lanes) | cache only | cache only |
-| revision-0 record, no ticket id, adoptable (listing or reply) | – | sandbox-bound ticket → its lanes; host-bound launch ticket → `lanes_pending`; neither → open lane |
+| revision-0 record, no ticket id, adoptable (listing or reply) | – | sandbox-bound ticket → its lanes (consumed); else, for a listing or event (not an `attachReply`), the oldest host-bound launch ticket issued before the sandbox's `created_at` → `lanes_pending` (consumed); neither → open lane |
 | removal event / DESTROYING record, any revision | drop; mark `removed`; evict cache | mark `removed` only if the id already has a mark or is cached as naming this orchestrator; otherwise ignored, as today; evict cache |
 | listing absence, entry `written_seq ≤ requested_seq` | drop; mark `removed` | – |
 | listing absence, entry written after the request | keep | – |

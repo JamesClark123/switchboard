@@ -25,8 +25,9 @@ action is **exclusive** or **inclusive** to one or more lanes, or un-laned (open
    inclusive → unreserved lane worker, open-lane worker, later run's reservation; un-laned → open-lane worker. Before
    each delivery the worker is re-checked and claimed under the runtime lock: when the record changed since the
    pass's snapshot, its lanes are re-validated against the current record, so a mid-pass lane change can't send a
-   run where it is no longer allowed. Seeded property and race tests pin SC-001/SC-002. Call and action delete share one bolt transaction for the record and its
-   runs, so a deleted action's lane setting is copied onto its queued runs atomically.
+   run where it is no longer allowed. Seeded property and race tests pin SC-001/SC-002. Call and action delete share
+   one bolt transaction for the record and its runs, so a deleted action's lane setting is copied onto its queued runs
+   atomically.
 4. **Guard and impact** (R10). One `CheckLaneChange` RPC reports what a membership save, action save, lane delete or
    detach would affect. Each guarded write carries the list the developer confirmed and is re-evaluated in its own
    atomic update.
@@ -36,8 +37,8 @@ action is **exclusive** or **inclusive** to one or more lanes, or un-laned (open
    doesn't offer the lane step there.
 6. **Display and agents** (R9, R12, R13). Waiting reasons are derived on every run read. Lane names are pushed to
    each worker's host for display only, in the background, coalesced and serialised per worker; the sandbox list
-   shows lane text only once a push has arrived (`lanes_known`). Agents get waiting reasons without worker names. Briefings and the list-actions tool
-   describe lanes and mode, and are refreshed in the background.
+   shows lane text only once a push has arrived (`lanes_known`). Agents get waiting reasons without worker names.
+   Briefings and the list-actions tool describe lanes and mode, and are refreshed in the background.
 7. **TUI** (R15). Adds a Lanes view (fourth detail view), one shared lane picker (worker's lanes, lane members,
    attach, launch), lane cells on Workers and sandbox-list rows, lanes + mode in the action form with `ctrl+l`
    Manage lanes, a lanes column on Jobs › Actions, waiting reasons on queued rows, and the dropped-tag notice. Lane
