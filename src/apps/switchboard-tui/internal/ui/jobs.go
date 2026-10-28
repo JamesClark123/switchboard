@@ -359,10 +359,11 @@ func runRowHelp(r *pb.Run) helpBindings {
 	case runFinished(r):
 		hb = append(hb, hkey("o", "open results"))
 	}
-	if runInFlight(r) {
+	if runHasTerminal(r) {
 		hb = append(hb, hkey("t", "terminal"), hkey("T", "external terminal"))
 	}
-	return hb
+	// SWI-17: R/S/X only on a halted run (R also on a held Clear).
+	return append(hb, stepKeysHelp(r)...)
 }
 
 // --- rendering ---

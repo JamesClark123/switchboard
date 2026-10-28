@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
@@ -60,6 +61,10 @@ type AttachOptions struct {
 	Rows      uint32
 	Label     string
 	Sink      AttachSink
+	// ReplaceOrphan sets AttachInfo.replace_orphan: `t` → Replace on an agent
+	// detached by a daemon restart (SWI-17, research R14). The daemon stops the
+	// detached agent (failing an ACTION run it holds) and starts a fresh one.
+	ReplaceOrphan bool
 }
 
 // AttachAgent opens the daemon's persistent session for the given sandbox and
@@ -90,9 +95,10 @@ func (c *Conn) AttachAgent(ctx context.Context, opts AttachOptions) (*AttachStre
 	initial := &pb.AgentInput{
 		SandboxId: opts.SandboxID,
 		Attach: &pb.AgentInput_AttachInfo{
-			Kind:        pbClientKind(opts.Kind),
-			ClientLabel: opts.Label,
-			InitialSize: &pb.AgentInput_Resize{Cols: opts.Cols, Rows: opts.Rows},
+			Kind:          pbClientKind(opts.Kind),
+			ClientLabel:   opts.Label,
+			InitialSize:   &pb.AgentInput_Resize{Cols: opts.Cols, Rows: opts.Rows},
+			ReplaceOrphan: opts.ReplaceOrphan,
 		},
 	}
 	if err := stream.Send(initial); err != nil {
@@ -228,7 +234,11 @@ func mapAttachErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	if s, ok := status.FromError(err); ok && s.Code() == codes.FailedPrecondition {
+	// Only the second-external refusal maps to ErrExternalAlreadyOpen: every
+	// other FailedPrecondition (an agent detached by a daemon restart, a check
+	// still running, a busy sandbox — SWI-17, research R14) keeps its status
+	// and text so the UI can tell them apart.
+	if s, ok := status.FromError(err); ok && s.Code() == codes.FailedPrecondition && strings.Contains(s.Message(), "external terminal") {
 		return ErrExternalAlreadyOpen
 	}
 	return err

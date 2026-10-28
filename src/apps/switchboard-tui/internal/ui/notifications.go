@@ -252,6 +252,14 @@ func notifTitle(k pb.NotificationKind) string {
 		return "run awaiting review"
 	case pb.NotificationKind_NOTIFICATION_KIND_RUN_NEEDS_INPUT:
 		return "worker needs input"
+	// SWI-17 (FR-223, research R10/R14): a halted step, raised by the
+	// orchestrator's daemon like RUN_FAILED; a detached agent, raised once per
+	// orphan by the sandbox's daemon (t → Replace or Wait). Neither is
+	// suppressed while a terminal is attached.
+	case pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED:
+		return "step not accepted"
+	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED:
+		return "agent detached"
 	}
 	return "task complete"
 }
@@ -282,8 +290,10 @@ func notifIcon(k pb.NotificationKind) string {
 	case pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING,
 		pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")
-	case pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED:
+	case pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED:
 		return lipgloss.NewStyle().Foreground(colError).Render("✗")
+	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED:
+		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")
 	case pb.NotificationKind_NOTIFICATION_KIND_RUN_AWAITING_REVIEW:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("⚑")
 	case pb.NotificationKind_NOTIFICATION_KIND_RUN_NEEDS_INPUT:

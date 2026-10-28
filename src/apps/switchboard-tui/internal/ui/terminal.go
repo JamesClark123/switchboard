@@ -72,6 +72,12 @@ type termClosedMsg struct {
 	name     string
 	returnTo screen
 	seq      uint64 // the attach (or open terminal) it is about
+	// A refused attach carries what it was for, so a detached-agent refusal can
+	// open the Wait/Replace dialog (SWI-17, research R14).
+	sb      *pb.Sandbox
+	host    string
+	d       Daemon
+	replace bool
 }
 
 // enterTerminal (lowercase `t`) opens the sandbox's persistent session in-place
@@ -84,27 +90,47 @@ func (m Model) enterTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 
 // enterTerminalFrom attaches to a running sandbox's session on daemon d, which
 // the caller resolved: detaching, or the session closing, returns to returnTo
-// (SWI-14).
+// (SWI-14). A sandbox whose agent was detached by a daemon restart, or is still
+// being checked for one, gets the detached-agent dialog or a wait instead
+// (SWI-17, research R14; orphan.go).
 func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo screen) (tea.Model, tea.Cmd) {
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		m.status = "start the sandbox before opening its terminal"
 		return m, nil
 	}
+	if mm, cmd, gated := m.orphanGate(sb, host, d, false, returnTo); gated {
+		return mm, cmd
+	}
+	return m.attachTerminal(sb, host, d, returnTo, false)
+}
+
+// attachTerminal opens the in-place terminal; replace attaches with
+// AttachInfo.replace_orphan (`t` → Replace).
+func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo screen, replace bool) (tea.Model, tea.Cmd) {
 	m.termSeq++
 	seq := m.termSeq
 	cols, rows := m.bodyWidth(), m.termRows()
 	id, name := sb.GetId(), sb.GetDisplayName()
 	m.status = "opening terminal…"
+	if replace {
+		m.status = replacingText
+	}
 	return m, func() tea.Msg {
 		screen := termview.New(cols, rows)
 		updates := make(chan struct{}, 1)
 		done := make(chan struct{})
 		ctx, cancel := context.WithCancel(context.Background())
 		sink := termSink{screen: screen, updates: updates}
-		sess, err := d.AttachTerminal(ctx, id, client.AttachInTUI, uint32(cols), uint32(rows), sink)
+		var sess client.TermSession
+		var err error
+		if replace {
+			sess, err = d.AttachTerminalReplacing(ctx, id, uint32(cols), uint32(rows), sink)
+		} else {
+			sess, err = d.AttachTerminal(ctx, id, client.AttachInTUI, uint32(cols), uint32(rows), sink)
+		}
 		if err != nil {
 			cancel()
-			return termClosedMsg{err: err, name: name, returnTo: returnTo, seq: seq}
+			return termClosedMsg{err: err, name: name, returnTo: returnTo, seq: seq, sb: sb, host: host, d: d, replace: replace}
 		}
 		return termOpenedMsg{
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
@@ -159,10 +185,14 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 		m, cmd = m.leaveTerminal(msg.returnTo)
 	}
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-		if errors.Is(msg.err, client.ErrExternalAlreadyOpen) {
+		switch {
+		case errors.Is(msg.err, client.ErrExternalAlreadyOpen):
 			m.status = "an external terminal is already attached to " + msg.name
-		} else {
-			m.status = "terminal: " + msg.err.Error()
+		case !showing && !msg.replace && msg.sb != nil && isDetachedRefusal(msg.err) && m.attachAwaited(msg.returnTo):
+			// The record was stale: the daemon found the detached agent first.
+			return m.confirmReplaceOrphan(msg.sb, msg.host, msg.d, false, msg.returnTo, refusalCheck(msg.sb))
+		default:
+			m.status = "terminal: " + attachErrText(msg.err)
 		}
 		return m, cmd
 	}

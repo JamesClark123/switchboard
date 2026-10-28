@@ -234,6 +234,21 @@ func (c *Conn) AttachTerminal(ctx context.Context, sandboxID string, kind Attach
 	})
 }
 
+// AttachTerminalReplacing is AttachTerminal with AttachInfo.replace_orphan set:
+// `t` → Replace on a sandbox whose agent was detached by a daemon restart
+// (SWI-17, research R14). The daemon stops the detached agent first.
+func (c *Conn) AttachTerminalReplacing(ctx context.Context, sandboxID string, cols, rows uint32, sink io.Writer) (TermSession, error) {
+	return c.AttachAgent(ctx, AttachOptions{
+		SandboxID:     sandboxID,
+		Kind:          AttachInTUI,
+		Cols:          cols,
+		Rows:          rows,
+		Label:         "sxb-tui",
+		Sink:          sink,
+		ReplaceOrphan: true,
+	})
+}
+
 // EventStream is the receive side of a Subscribe stream.
 type EventStream interface {
 	Recv() (*pb.Event, error)

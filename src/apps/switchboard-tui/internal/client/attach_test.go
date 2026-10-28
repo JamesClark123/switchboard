@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,8 @@ type attachServer struct {
 	live [][]byte
 	// rejectExternal returns FailedPrecondition on any EXTERNAL attach.
 	rejectExternal bool
+	// refuse, when set, is returned for every attach (SWI-17 gate refusals).
+	refuse error
 	// captured records everything the client sends, so tests can assert the
 	// AttachInfo, keystrokes, and resize frames arrived intact.
 	mu       sync.Mutex
@@ -56,6 +59,9 @@ func (s *attachServer) AttachAgent(stream pb.Switchboard_AttachAgentServer) erro
 	s.captured = append(s.captured, first)
 	s.mu.Unlock()
 
+	if s.refuse != nil {
+		return s.refuse
+	}
 	if s.rejectExternal && first.GetAttach().GetKind() == pb.ClientKind_CLIENT_KIND_EXTERNAL {
 		return status.Error(codes.FailedPrecondition, "external terminal already attached")
 	}
@@ -429,5 +435,32 @@ func TestAttachContextCancelledIsCleanDetach(t *testing.T) {
 	cancel()
 	if err := as.Wait(); err != nil {
 		t.Fatalf("cancelled context should be treated as clean detach, got %v", err)
+	}
+}
+
+// SWI-17 (research R14): AttachTerminalReplacing sets replace_orphan, and a
+// gate refusal keeps its status and text instead of reading as a second
+// external terminal.
+func TestAttachReplaceOrphanAndGateRefusal(t *testing.T) {
+	srv := newAttachServer()
+	srv.snapshot = &pb.AgentOutput_Snapshot{Data: []byte("s")}
+	conn := dialAttach(t, srv)
+	var sink syncBuf
+	sess, err := conn.AttachTerminalReplacing(context.Background(), "sb", 80, 24, &sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	<-srv.firstReady
+	ai := srv.capturedFrames()[0].GetAttach()
+	if !ai.GetReplaceOrphan() || ai.GetKind() != pb.ClientKind_CLIENT_KIND_IN_TUI {
+		t.Fatalf("attach info = %v", ai)
+	}
+
+	ref := newAttachServer()
+	ref.refuse = status.Error(codes.FailedPrecondition, "agent detached by a daemon restart")
+	_, err = dialAttach(t, ref).AttachTerminal(context.Background(), "sb", client.AttachInTUI, 80, 24, &sink)
+	if errors.Is(err, client.ErrExternalAlreadyOpen) || status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "agent detached") {
+		t.Errorf("gate refusal = %v", err)
 	}
 }
