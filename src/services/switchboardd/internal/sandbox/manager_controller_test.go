@@ -126,11 +126,11 @@ func TestLeavingRunningClearsRunUnlessReview(t *testing.T) {
 
 	// leaveRunning into RUNNING is a no-op for the run.
 	s := &pb.Sandbox{Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "r"}}}
-	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_RUNNING, 0)
 	if s.GetController().GetRun() == nil {
 		t.Error("RUNNING must not clear the run")
 	}
-	leaveRunning(&pb.Sandbox{}, pb.SandboxState_SANDBOX_STATE_STOPPED) // no controller: fine
+	leaveRunning(&pb.Sandbox{}, pb.SandboxState_SANDBOX_STATE_STOPPED, 0) // no controller: fine
 }
 
 func TestOnDestroyAndBringUpHooks(t *testing.T) {
@@ -289,7 +289,7 @@ func TestStopResetsABusyAgent(t *testing.T) {
 		Agent:      &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
 		Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "run-1", NeedsReview: true}},
 	}
-	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED, 0)
 	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || !s.GetController().GetRun().GetNeedsReview() {
 		t.Errorf("after leaving RUNNING: agent %v, run %v; want IDLE with the review run kept", s.GetAgent().GetStatus(), s.GetController().GetRun())
 	}
@@ -329,9 +329,40 @@ func TestStopKeepsARunWithCleanupHeld(t *testing.T) {
 		}
 	}
 	got, _ := reg.Get(controlled(t, m, reg, dir, "gen", &pb.WorkerRun{Id: "r7", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 7}).GetId())
-	leaveRunning(got, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	leaveRunning(got, pb.SandboxState_SANDBOX_STATE_STOPPED, 0)
 	if got.GetController().GetRun().GetHoldGen() != 7 {
 		t.Error("an existing NEEDS_DEVELOPER hold is left as it is")
+	}
+}
+
+// hold_gen is the agent generation when the hold begins, written by the daemon
+// on the transition into NEEDS_DEVELOPER only (SWI-17, research R13).
+func TestHoldRecordsTheAgentGeneration(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	gens := map[string]int64{}
+	m.SetAgentGeneration(func(id string) int64 { return gens[id] })
+	exited := controlled(t, m, reg, dir, "exited", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP})
+	stopped := controlled(t, m, reg, dir, "stopped", &pb.WorkerRun{Id: "r2", StepRole: pb.StepRole_STEP_ROLE_CLEANUP})
+	gens[exited.GetId()], gens[stopped.GetId()] = 4, 9
+	if _, err := m.SetAgentStatus(exited.GetId(), pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.Stop(ctx, stopped.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.GetController().GetRun().GetHoldGen(); got != 9 {
+		t.Errorf("stop: hold_gen = %d, want 9", got)
+	}
+	// A later write of the same hold (another exit) keeps the recorded value.
+	gens[exited.GetId()] = 5
+	if _, err := m.SetAgentStatus(exited.GetId(), pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := reg.Get(exited.GetId())
+	if got.GetController().GetRun().GetHoldGen() != 4 {
+		t.Errorf("exit: hold_gen = %d, want 4 (recorded on the transition only)", got.GetController().GetRun().GetHoldGen())
 	}
 }
 

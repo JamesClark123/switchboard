@@ -502,8 +502,27 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 	if r := run(); !r.GetNeedsReview() || r.GetStepIndex() != 4 || !proto.Equal(r.GetStepSentAt(), sent) || r.GetHoldGen() != 3 {
 		t.Errorf("kept fields = %+v", r)
 	}
-	// Into NEEDS_DEVELOPER, then never lowered: only cleared.
-	if _, err := set(&pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER}, "r1"); err != nil {
+	// Into NEEDS_DEVELOPER, then never lowered: only cleared. The transition
+	// records the agent generation now as hold_gen (research R13), whatever
+	// the request says.
+	tokens, err := agent.LoadHookTokens(e.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.agents = agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) { return nil, errors.New("unused") })
+	e.svc.agents.SetHookTokens(tokens)
+	for range 2 {
+		if _, err := tokens.Issue(sb.GetId()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := set(&pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 0}, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if run().GetHoldGen() != 2 {
+		t.Errorf("hold_gen = %d, want the generation at the transition (2)", run().GetHoldGen())
+	}
+	if _, err := tokens.Issue(sb.GetId()); err != nil {
 		t.Fatal(err)
 	}
 	for _, lower := range []*pb.WorkerRun{
@@ -521,6 +540,9 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 	// Re-sending the hold (a step_note mirror) is fine.
 	if _, err := set(&pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, StepNote: "waiting: x"}, "r1"); err != nil || run().GetStepNote() != "waiting: x" {
 		t.Errorf("re-sent hold = %v", err)
+	}
+	if run().GetHoldGen() != 2 {
+		t.Errorf("a re-sent hold re-recorded hold_gen: %d", run().GetHoldGen())
 	}
 	if _, err := set(nil, "r1"); err != nil || run() != nil {
 		t.Errorf("clear = %v / %+v", err, run())

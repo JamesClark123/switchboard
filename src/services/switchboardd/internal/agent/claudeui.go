@@ -79,7 +79,16 @@ func InputBox(lines []termview.Line) (text string, present, ready bool) {
 // boxRows returns the input box's rows: those between the last two horizontal
 // rules, the first being the `❯` row.
 func boxRows(lines []termview.Line) ([]termview.Line, bool) {
-	bottom, top := -1, -1
+	top, bottom, ok := boxBounds(lines)
+	if !ok {
+		return nil, false
+	}
+	return lines[top+1 : bottom], true
+}
+
+// boxBounds returns the indices of the input box's top and bottom rules.
+func boxBounds(lines []termview.Line) (top, bottom int, ok bool) {
+	bottom, top = -1, -1
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !isRule(lines[i].Text) {
 			continue
@@ -92,9 +101,9 @@ func boxRows(lines []termview.Line) ([]termview.Line, bool) {
 		break
 	}
 	if top < 0 || bottom-top < 2 || !isPromptRow(lines[top+1].Text) {
-		return nil, false
+		return 0, 0, false
 	}
-	return lines[top+1 : bottom], true
+	return top, bottom, true
 }
 
 // isRule reports whether a row is a horizontal rule.
@@ -263,4 +272,27 @@ func EffortConfirmed(line, level string) bool {
 	}
 	want := "Set effort level to " + level
 	return line == want || strings.HasPrefix(line, want+" ")
+}
+
+// assistantGlyph starts an assistant message or tool call in the transcript.
+const assistantGlyph = "⏺"
+
+// PostClear reports whether the screen shows a session just cleared (research
+// R13, fixture clear-banner): the input box empty and ready, and nothing of a
+// conversation above it — no echoed prompt other than `/clear` itself, no
+// command result and no assistant message. Clear's read-back and a clear's
+// hold release need it as the daemon's own corroboration of the hook.
+func PostClear(lines []termview.Line) bool {
+	text, present, ready := InputBox(lines)
+	if !present || !ready || strings.TrimSpace(text) != "" {
+		return false
+	}
+	top, _, _ := boxBounds(lines)
+	for _, l := range lines[:top] {
+		switch s := l.Text; {
+		case isEcho(s) && !isEchoOf(s, "/clear"), isResult(s), strings.HasPrefix(strings.TrimSpace(s), assistantGlyph):
+			return false
+		}
+	}
+	return true
 }

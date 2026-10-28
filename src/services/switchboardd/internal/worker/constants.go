@@ -33,4 +33,7 @@ const (
 	stepExtension = time.Second
 	// stepPoll is how often the submit check reads the screen.
 	stepPoll = 50 * time.Millisecond
+	// clearSettle bounds how long Clear's read-back polls for the post-clear
+	// screen after its SessionStart (research R13), within stepExtension.
+	clearSettle = time.Second
 )

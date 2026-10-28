@@ -538,6 +538,25 @@ func TestStepClearReadBack(t *testing.T) {
 	if resp := deliverStep(t, h, clear); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED || resp.GetNote() != "no new session after /clear" {
 		t.Errorf("clear without SessionStart clear = %+v", resp)
 	}
+	// Research R13: a forged clear naming the session recorded before typing,
+	// or one with the conversation still on screen, does not pass.
+	h.mutate(t, func(x *pb.Sandbox) { x.Agent.SessionId = "s-old" })
+	h.typer.onType = func(string) {
+		h.scr.set(fixture(t, "clear-banner"), false, true)
+		h.event(agent.HookEvent{Event: "SessionStart", Source: "clear", SessionID: "s-old"})
+	}
+	clear.StepIndex = 3
+	if resp := deliverStep(t, h, clear); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED {
+		t.Errorf("clear with the old session id = %+v", resp)
+	}
+	h.typer.onType = func(string) {
+		h.scr.set(fixture(t, "empty-after-command"), false, true)
+		h.event(agent.HookEvent{Event: "SessionStart", Source: "clear", SessionID: "s-new"})
+	}
+	clear.StepIndex = 4
+	if resp := deliverStep(t, h, clear); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED {
+		t.Errorf("clear with the conversation on screen = %+v", resp)
+	}
 }
 
 func TestStepWindowEndOutcomes(t *testing.T) {
@@ -774,7 +793,10 @@ func TestStepUnderNeedsDeveloper(t *testing.T) {
 		t.Errorf("an unretried Clear under the hold = %v", err)
 	}
 	clear.Retry = true
-	h.typer.onType = func(string) { h.event(agent.HookEvent{Event: "SessionStart", Source: "clear"}) }
+	h.typer.onType = func(string) {
+		h.scr.set(fixture(t, "clear-banner"), false, true)
+		h.event(agent.HookEvent{Event: "SessionStart", Source: "clear", SessionID: "after-clear"})
+	}
 	if resp := deliverStep(t, h, clear); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
 		t.Errorf("retried Clear = %+v", resp)
 	}
@@ -853,8 +875,17 @@ func TestStepCheckOnly(t *testing.T) {
 	h.mutate(t, func(x *pb.Sandbox) {
 		x.Agent.LastSessionSource, x.Agent.LastSessionStartAt = "clear", timestamppb.New(sent.Add(time.Second))
 	})
+	if resp := deliverStep(t, h, checkOnly(pb.StepKind_STEP_KIND_CLEAR, "")); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED {
+		t.Errorf("clear with evidence but the conversation on screen = %+v", resp)
+	}
+	h.scr.set(fixture(t, "clear-banner"), false, true)
 	if resp := deliverStep(t, h, checkOnly(pb.StepKind_STEP_KIND_CLEAR, "")); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
 		t.Errorf("clear with evidence = %+v", resp)
+	}
+	h.scr.set(fixture(t, "clear-banner"), true, true)
+	h.scr.freshAfter = 0
+	if resp := deliverStep(t, h, checkOnly(pb.StepKind_STEP_KIND_CLEAR, "")); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED {
+		t.Errorf("clear on a stale screen = %+v", resp)
 	}
 	// Stale: the lazy repaint first; fresh in time decides, still stale is unconfirmed.
 	h.scr.set(fixture(t, "model-set-opus"), true, true)

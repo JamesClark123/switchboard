@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -170,15 +171,23 @@ func (s *Service) rollbackRunErr(sandboxID string, cause error) error {
 // PromptFunc is the prompt-injection signature (agent.Registry.Prompt).
 type PromptFunc = func(sandboxID string, spec *pb.AgentSpec, text string) error
 
-// EnsureDrained wraps a prompt function so the sandbox's persistent terminal
-// session exists before text is typed — the escape hatch's result delivery
-// shares the unattended-PTY exposure delivery fixes (research R7). terms is
-// resolved at call time because the gRPC server owns the registry.
-func EnsureDrained(terms func() *terminal.Registry, prompt PromptFunc) PromptFunc {
+// EnsureDrained wraps the agent registry's Prompt so the sandbox's persistent
+// terminal session exists before text is typed — the escape hatch's result
+// delivery shares the unattended-PTY exposure delivery fixes (research R7).
+// terms is resolved at call time because the gRPC server owns the registry.
+//
+// It starts no agent for a held sandbox (agent.ErrHeld, SWI-17 research R13):
+// the broadcaster would spawn one, and a result arriving after the agent
+// exited must not start the session that ends the hold. A live agent still
+// gets the result.
+func EnsureDrained(terms func() *terminal.Registry, agents *agent.Registry) PromptFunc {
 	return func(sandboxID string, spec *pb.AgentSpec, text string) error {
+		if !agents.Live(sandboxID) && agents.Held(sandboxID) {
+			return agent.ErrHeld
+		}
 		if t := terms(); t != nil {
 			_, _ = t.Broadcaster(sandboxID)
 		}
-		return prompt(sandboxID, spec, text)
+		return agents.Prompt(sandboxID, spec, text)
 	}
 }

@@ -76,15 +76,23 @@ case "$1" in
     # test can assert what a delivered run looked like. Like Claude Code, it fires
     # the SessionStart hook injected into its workspace once it is up (SWI-15:
     # nothing is typed into an agent before that; host.docker.internal is the
-    # host's loopback from a container). "sbx exec <ref> true"
-    # (resume) starts the sandbox.
+    # host's loopback from a container). Like the injected hook command it
+    # sends the agent's token and generation, which the daemon passes by name
+    # ("-e SXB_HOOK_TOKEN -e SXB_AGENT_GEN") from the client's environment
+    # (SWI-17), and the agent's PID. "sbx exec <ref> true" (resume) starts
+    # the sandbox.
     if [ "$2" = "-it" ]; then
-      wd=$(printf '%s' "$6" | sed -n "s/^cd '\([^']*\)'.*/\1/p")
+      shift 2
+      while [ "$1" = "-e" ]; do shift 2; done
+      ref=$1; launch=$4
+      wd=$(printf '%s' "$launch" | sed -n "s/^cd '\([^']*\)'.*/\1/p")
       hook=$(grep -o "http://[^'?]*?event=SessionStart[^']*" "$wd/.claude/settings.local.json" 2>/dev/null | head -1 | sed -e 's/\\u0026/\&/g' -e 's#//host.docker.internal:#//127.0.0.1:#')
       if [ -n "$hook" ]; then
-        ( sleep 0.3; curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"hook_event_name":"SessionStart","source":"startup"}' "$hook" ) &
+        ( sleep 0.3; curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' \
+            -H "X-Sxb-Token: $SXB_HOOK_TOKEN" -H "X-Sxb-Gen: $SXB_AGENT_GEN" -H "X-Sxb-Pid: $$" \
+            -d "{\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"session_id\":\"e2e-$ref\"}" "$hook" ) &
       fi
-      cat > "` + dir + `/agent-$3.in"
+      cat > "` + dir + `/agent-$ref.in"
     elif [ -f "` + dir + `/sbx-state/$2" ]; then echo running > "` + dir + `/sbx-state/$2"; fi ;;
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.

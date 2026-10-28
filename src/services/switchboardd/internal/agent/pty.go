@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -23,6 +25,11 @@ type Session interface {
 
 // SessionFactory creates a Session for a sandbox's agent.
 type SessionFactory func(sandboxID string, spec *pb.AgentSpec) (Session, error)
+
+// SpawnFactory creates a Session for a sandbox's agent launched with a hook
+// token (SWI-17, research R13): sp carries its generation and token, to be set
+// in the agent's environment only (PTYFactory). The zero Spawn has neither.
+type SpawnFactory func(sandboxID string, spec *pb.AgentSpec, sp Spawn) (Session, error)
 
 // Waiter is implemented by a Session whose underlying process can be waited on.
 // The production ptySession waits on its child; the registry uses it to learn
@@ -78,17 +85,52 @@ type Registry struct {
 	// never by a path a status write's observers can reach (Close, Session).
 	statusMu sync.Mutex
 	sessions map[string]*sessionEntry
-	factory  SessionFactory
-	status   StatusUpdater
-	notify   Notifier
-	now      func() time.Time
-	logf     func(format string, args ...any)
+	factory  SpawnFactory
+	// tokens is the hook-token index (nil: agents are launched without a
+	// token). Read without mu: Generation runs inside the sandbox store's
+	// write transactions, while Session holds mu across a store write.
+	tokens atomic.Pointer[HookTokens]
+	status StatusUpdater
+	notify Notifier
+	now    func() time.Time
+	logf   func(format string, args ...any)
 }
 
 // NewRegistry constructs a Registry using the given session factory. Exit
 // reporting is wired with SetStatusUpdater.
 func NewRegistry(factory SessionFactory) *Registry {
+	return NewSpawnRegistry(func(sandboxID string, spec *pb.AgentSpec, _ Spawn) (Session, error) {
+		return factory(sandboxID, spec)
+	})
+}
+
+// NewSpawnRegistry constructs a Registry whose factory launches each agent
+// with its generation and hook token (SetHookTokens).
+func NewSpawnRegistry(factory SpawnFactory) *Registry {
 	return &Registry{sessions: map[string]*sessionEntry{}, factory: factory, now: time.Now}
+}
+
+// SetHookTokens registers the hook-token index each spawned agent gets its
+// generation and token from (SWI-17, research R13; nil = none).
+func (r *Registry) SetHookTokens(t *HookTokens) { r.tokens.Store(t) }
+
+// RetireTokens retires every hook token of a sandbox known to have no agent
+// left (a confirmed stop; with purge, a destroy, which drops its generation
+// counter too). No-op without a token index.
+func (r *Registry) RetireTokens(sandboxID string, purge bool) {
+	if t := r.tokens.Load(); t != nil {
+		t.RetireAll(sandboxID, purge)
+	}
+}
+
+// Generation is the sandbox's agent generation counter (0 without a token
+// index): the generation a NEEDS_DEVELOPER hold records as hold_gen.
+func (r *Registry) Generation(sandboxID string) int64 {
+	t := r.tokens.Load()
+	if t == nil {
+		return 0
+	}
+	return t.Generation(sandboxID)
 }
 
 // SetStatusUpdater registers where an agent's spontaneous exit is reported as
@@ -125,16 +167,49 @@ func (r *Registry) log(format string, args ...any) {
 	}
 }
 
+// ErrHeld refuses to start an agent for a sandbox whose run holds it (SWI-17,
+// research R13): only the developer's own terminal (AttachAgent) starts one
+// then, so nothing else can spawn the fresh session that ends a hold.
+var ErrHeld = errors.New("sandbox is held; open its terminal")
+
 // Session returns the sandbox's session, creating it on first use. A created
-// session's agent is recorded STARTING (SWI-15) until it reports ready.
+// session's agent is recorded STARTING (SWI-15) until it reports ready. With a
+// token index, each spawned agent is a new generation with its own hook token.
 func (r *Registry) Session(sandboxID string, spec *pb.AgentSpec) (Session, error) {
+	return r.session(sandboxID, spec, false)
+}
+
+// SessionUnlessHeld is Session, refusing to start an agent (ErrHeld) while the
+// sandbox's run holds it. A live session is returned as Session does.
+func (r *Registry) SessionUnlessHeld(sandboxID string, spec *pb.AgentSpec) (Session, error) {
+	return r.session(sandboxID, spec, true)
+}
+
+func (r *Registry) session(sandboxID string, spec *pb.AgentSpec, refuseHeld bool) (Session, error) {
 	r.mu.Lock()
 	if e, ok := r.sessions[sandboxID]; ok {
 		r.mu.Unlock()
 		return e.s, nil
 	}
-	s, err := r.factory(sandboxID, spec)
+	if refuseHeld && r.heldLocked(sandboxID) {
+		r.mu.Unlock()
+		return nil, ErrHeld
+	}
+	var sp Spawn
+	tokens := r.tokens.Load()
+	if tokens != nil {
+		var err error
+		if sp, err = tokens.Issue(sandboxID); err != nil {
+			// An agent without a token would never count for steps or holds.
+			r.mu.Unlock()
+			return nil, err
+		}
+	}
+	s, err := r.factory(sandboxID, spec, sp)
 	if err != nil {
+		if tokens != nil {
+			tokens.Retire(sandboxID, sp.Gen) // never started
+		}
 		r.mu.Unlock()
 		return nil, err
 	}
@@ -199,6 +274,23 @@ func (r *Registry) writeUnreadyLocked(sandboxID string, e *sessionEntry, st pb.A
 		_, _ = status.SetAgentStatus(sandboxID, st, now)
 	}
 	return true
+}
+
+// Held reports whether the sandbox's run holds it (any hold): no agent is
+// started for it then except from the developer's terminal (ErrHeld).
+func (r *Registry) Held(sandboxID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.heldLocked(sandboxID)
+}
+
+func (r *Registry) heldLocked(sandboxID string) bool {
+	g, ok := r.status.(sandboxGetter)
+	if !ok {
+		return false
+	}
+	sb, err := g.Get(sandboxID)
+	return err == nil && sb.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NONE
 }
 
 // Live reports whether the sandbox has a session, without creating one.
@@ -392,8 +484,12 @@ func Typed(text string) string { return pasteStart + text + pasteEnd + submitKey
 // return ("\r"), the byte a terminal sends for the Enter key in raw mode, NOT a
 // linefeed ("\n"), which the agent's multiline input inserts as a literal newline
 // rather than submitting.
+//
+// It starts no agent for a held sandbox (ErrHeld, SWI-17): an escape-hatch
+// result arriving after the agent exited must not spawn the session that ends
+// the hold.
 func (r *Registry) Prompt(sandboxID string, spec *pb.AgentSpec, text string) error {
-	s, err := r.Session(sandboxID, spec)
+	s, err := r.SessionUnlessHeld(sandboxID, spec)
 	if err != nil {
 		return err
 	}
@@ -640,7 +736,17 @@ func agentArgv(spec *pb.AgentSpec) []string {
 // prompt keeps running after the terminal closes / across a daemon restart's
 // client-kill). `exec` replaces the wrapping shell with the agent so the PTY's
 // controlling process IS the agent, keeping interactive job control intact.
-func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec) *exec.Cmd {
+//
+// An agent launched with a hook token (SWI-17, research R13) gets it, and its
+// generation, through the environment: both are set in the `sbx exec` client's
+// own environment (cmd.Env, never os.Setenv, which every other child of the
+// daemon would inherit) and passed by NAME (`-e SXB_HOOK_TOKEN -e
+// SXB_AGENT_GEN`, which reads the value from the client's environment, as
+// `docker exec -e NAME` does), so no value is in argv or the host process
+// list. ⚠ The `-e NAME` form is documentation-derived like the rest of `sbx
+// exec`'s argv; TestAgentCommandPassesTheTokenByName pins it. Neither the
+// launch string nor the environment is ever logged.
+func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec, sp Spawn) *exec.Cmd {
 	launch := "exec"
 	for _, a := range agentArgv(spec) {
 		launch += " " + shellQuote(a)
@@ -648,9 +754,24 @@ func agentCommand(sbxBin string, tgt Target, spec *pb.AgentSpec) *exec.Cmd {
 	if tgt.Workdir != "" {
 		launch = "cd " + shellQuote(tgt.Workdir) + " 2>/dev/null; " + launch
 	}
-	args := []string{"exec", "-it", tgt.Ref, "bash", "-lc", launch}
-	return exec.Command(sbxBin, args...)
+	args := []string{"exec", "-it"}
+	if sp.Token != "" {
+		args = append(args, "-e", envHookToken, "-e", envAgentGen)
+	}
+	args = append(args, tgt.Ref, "bash", "-lc", launch)
+	cmd := exec.Command(sbxBin, args...)
+	if sp.Token != "" {
+		cmd.Env = append(os.Environ(), envHookToken+"="+sp.Token, envAgentGen+"="+strconv.FormatInt(sp.Gen, 10))
+	}
+	return cmd
 }
+
+// The agent's environment variables carrying its hook token and generation
+// (research R13); the hook command and the escape-hatch wrapper read them.
+const (
+	envHookToken = "SXB_HOOK_TOKEN"
+	envAgentGen  = "SXB_AGENT_GEN"
+)
 
 // shellQuote wraps s in single quotes for safe use inside a `bash -lc` string,
 // escaping any embedded single quotes.
@@ -665,17 +786,18 @@ func shellQuote(s string) string {
 // then falls back to targeting the uuid so behavior is no worse than before
 // resolution existed. resolve may be nil (uuid used directly, no workdir), which is
 // intended only for tests.
-func PTYFactory(sbxBin string, resolve func(sandboxID string) Target) SessionFactory {
-	return func(sandboxID string, spec *pb.AgentSpec) (Session, error) {
+func PTYFactory(sbxBin string, resolve func(sandboxID string) Target) SpawnFactory {
+	return func(sandboxID string, spec *pb.AgentSpec, sp Spawn) (Session, error) {
 		tgt := Target{Ref: sandboxID}
 		if resolve != nil {
 			if r := resolve(sandboxID); r.Ref != "" {
 				tgt = r
 			}
 		}
-		cmd := agentCommand(sbxBin, tgt, spec)
+		cmd := agentCommand(sbxBin, tgt, spec, sp)
 		f, err := pty.Start(cmd)
 		if err != nil {
+			// The error names the binary, never the launch string or env.
 			return nil, fmt.Errorf("start pty for %s: %w", sandboxID, err)
 		}
 		return &ptySession{f: f, cmd: cmd}, nil

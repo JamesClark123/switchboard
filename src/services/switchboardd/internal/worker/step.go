@@ -458,7 +458,7 @@ func (s *Service) submitCheck(c stepCheck) *pb.DeliverWorkerStepResponse {
 				presses++
 				deadline = now.Add(t.window)
 			case present && ready && strings.TrimSpace(text) == "" && s.agentIdle(c.id):
-				if note, passed := s.readBack(c, lines, clearEv); !passed {
+				if note, passed := s.readBack(c, lines, clearEv, extension); !passed {
 					return notAccepted(note, c.sentAt)
 				}
 				return resp(pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL)
@@ -483,13 +483,14 @@ func (s *Service) agentIdle(id string) bool {
 // readBack checks a step that ended agent-local (contracts/worker-step.md §3):
 // Model and Effort by the confirmation under an echo of the command added
 // since it was typed, Clear by a new session; a custom step or the action
-// prompt needs nothing more. note is what was seen when it fails.
-func (s *Service) readBack(c stepCheck, lines []termview.Line, clearEv *agent.HookEvent) (note string, ok bool) {
+// prompt needs nothing more. note is what was seen when it fails. budget is
+// what is left of the check's one extension, which Clear's screen poll shares.
+func (s *Service) readBack(c stepCheck, lines []termview.Line, clearEv *agent.HookEvent, budget time.Duration) (note string, ok bool) {
 	switch c.read.kind {
 	case pb.StepKind_STEP_KIND_MODEL, pb.StepKind_STEP_KIND_EFFORT:
 		return confirmed(c.read, lines)
 	case pb.StepKind_STEP_KIND_CLEAR:
-		if clearEv == nil || !s.clearCorroborated(c, *clearEv) {
+		if clearEv == nil || !s.clearCorroborated(c, *clearEv, budget) {
 			return "no new session after /clear", false
 		}
 	}
@@ -518,11 +519,30 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 }
 
 // clearCorroborated reports whether a clear SessionStart passes Clear's
-// read-back (research R13). T046 adds the corroboration: the current
-// generation's token, a session_id other than c.priorSessID, and the
-// post-clear screen polled for clearSettle (sharing the check's extension).
-// Until then the main agent's clear SessionStart after the Enter counts.
-func (s *Service) clearCorroborated(stepCheck, agent.HookEvent) bool { return true }
+// read-back (research R13). The tap only carries the main agent's events (the
+// current generation's token and its main PID); on top of that the event must
+// name a session other than the one recorded before typing (c.priorSessID),
+// and the daemon's own screen must show the post-clear state (PostClear),
+// polled for up to clearSettle, within what is left of the check's extension.
+func (s *Service) clearCorroborated(c stepCheck, ev agent.HookEvent, budget time.Duration) bool {
+	scr := s.stepScreen()
+	if ev.SessionID == "" || ev.SessionID == c.priorSessID || scr == nil {
+		return false
+	}
+	until := s.clock.Now().Add(max(min(clearSettle, budget), 0))
+	for {
+		switch lines, stale, ok := scr.Screen(c.id); {
+		case stale:
+			scr.RequestRepaint(c.id)
+		case ok && agent.PostClear(lines):
+			return true
+		}
+		if !s.clock.Now().Before(until) {
+			return false
+		}
+		<-s.clock.After(s.timing.poll)
+	}
+}
 
 // checkOnly is the restart resolution's read-back (contracts/worker-step.md §4):
 // guard checks 1–2 only, nothing recorded or typed, for MODEL, EFFORT and
@@ -553,10 +573,22 @@ func (s *Service) checkOnly(_ context.Context, req *pb.DeliverWorkerStepRequest,
 	case kind == pb.StepKind_STEP_KIND_CLEAR:
 		a := sb.GetAgent()
 		sent := sb.GetController().GetRun().GetStepSentAt()
-		if a.GetLastSessionSource() == "clear" && sent != nil && a.GetLastSessionStartAt().AsTime().After(sent.AsTime()) {
-			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}, nil
+		if a.GetLastSessionSource() != "clear" || sent == nil || !a.GetLastSessionStartAt().AsTime().After(sent.AsTime()) {
+			return notAccepted("no new session after /clear", time.Time{}), nil
 		}
-		return notAccepted("no new session after /clear", time.Time{}), nil
+		// The recorded evidence came from the main agent's hook; the
+		// daemon's own screen corroborates it (research R13).
+		lines, stale, ok := s.readScreen(id, true)
+		if stale {
+			lines, stale, ok = s.awaitFresh(id)
+		}
+		switch {
+		case stale:
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: "screen resyncing"}, nil
+		case !ok || !agent.PostClear(lines):
+			return notAccepted("no new session after /clear", time.Time{}), nil
+		}
+		return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}, nil
 	}
 	lines, stale, ok := s.readScreen(id, true)
 	if stale {

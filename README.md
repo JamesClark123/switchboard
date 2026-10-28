@@ -497,6 +497,10 @@ sandbox's workspace — and delivers each result back to the agent, even with no
   use each and that they run on the host. The agent invokes one via a daemon-injected wrapper; the
   daemon validates the name against the sandbox's allowlist and runs only the fixed, pre-authorized
   string — never anything the agent supplies.
+- **Only the agent's own process tree.** The wrapper sends the agent's per-launch token, which the
+  daemon passes in the agent's environment. A call without one — from your own `sbx exec … bash`
+  shell, an IDE terminal or a service — gets 403 `no agent token in this environment; run the escape
+  hatch from the agent's session`. On the host you can run the command directly instead.
 - **Consent & bounds.** *auto-run* commands run unattended; *requires-approval* commands pause for a
   developer's approval (a 5-minute, deny-by-default window). Every run is bounded by its own or a
   30-minute default timeout, its output capped at 1 MiB, and cancelled if its sandbox stops.

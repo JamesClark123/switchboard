@@ -175,6 +175,15 @@ func NewServer(cfg Config) *Server {
 				}
 				if s.agents != nil {
 					s.agents.Close(sb.GetId())
+					// A confirmed stop or destroy leaves no agent running: its
+					// hook tokens are retired (SWI-17, research R13/R14). Not on
+					// CREATING or ERROR, which may leave the container up.
+					switch sb.GetState() {
+					case pb.SandboxState_SANDBOX_STATE_STOPPED:
+						s.agents.RetireTokens(sb.GetId(), false)
+					case pb.SandboxState_SANDBOX_STATE_DESTROYING:
+						s.agents.RetireTokens(sb.GetId(), true)
+					}
 				}
 				// Cancel any in-flight escape-hatch runs for this sandbox — a stop /
 				// destroy / refresh must leave no orphaned host process (FR-041).

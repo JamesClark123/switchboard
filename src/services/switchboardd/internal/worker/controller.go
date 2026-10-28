@@ -275,7 +275,7 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 			cur.Name = req.GetName()
 		}
 		if req.GetSetRun() {
-			run, err := nextRun(cur.GetRun(), req)
+			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()))
 			if err != nil {
 				return err
 			}
@@ -339,8 +339,11 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 //     that has not yet seen the daemon's escalation cannot downgrade it;
 //   - the daemon-written fields of the same run are kept: hold_gen, and the
 //     step_index / step_sent_at the step guard recorded (a write built from a
-//     stale view must not reopen a step it already typed).
-func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest) (*pb.WorkerRun, error) {
+//     stale view must not reopen a step it already typed);
+//   - hold_gen is never taken from the request (research R13): a write that
+//     moves a run into NEEDS_DEVELOPER records gen, the sandbox's agent
+//     generation now; one that keeps an existing hold keeps its value.
+func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.WorkerRun, error) {
 	next := req.GetRun()
 	if want := req.GetExpectRunId(); want != "" && (cur == nil || cur.GetId() != want) {
 		return nil, fmt.Errorf("%w: run moved", ErrPrecondition)
@@ -349,15 +352,34 @@ func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest) (*pb.WorkerRun, err
 		(next.GetId() != cur.GetId() || next.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER) {
 		return nil, fmt.Errorf("%w: run %s is held for the developer", ErrPrecondition, cur.GetId())
 	}
-	if next == nil || cur == nil || next.GetId() != cur.GetId() {
-		if next != nil {
-			next.HoldGen = 0 // daemon-written only (T046)
-		}
-		return next, nil
+	if next == nil {
+		return nil, nil
 	}
-	next.HoldGen = cur.GetHoldGen()
-	next.StepIndex, next.StepSentAt = cur.GetStepIndex(), cur.GetStepSentAt()
+	same := cur != nil && next.GetId() == cur.GetId()
+	held := next.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	switch {
+	case same && cur.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+		next.HoldGen = cur.GetHoldGen() // not re-recorded
+	case held:
+		next.HoldGen = gen // the transition into the hold
+	case same:
+		next.HoldGen = cur.GetHoldGen()
+	default:
+		next.HoldGen = 0 // daemon-written only
+	}
+	if same {
+		next.StepIndex, next.StepSentAt = cur.GetStepIndex(), cur.GetStepSentAt()
+	}
 	return next, nil
+}
+
+// agentGen is the sandbox's agent generation (0 without an agent registry).
+// It reads no store: it runs inside the controller's write transaction.
+func (s *Service) agentGen(sandboxID string) int64 {
+	if s.agents == nil {
+		return 0
+	}
+	return s.agents.Generation(sandboxID)
 }
 
 // OnDestroy revokes a controlled sandbox's token and registration (best effort)

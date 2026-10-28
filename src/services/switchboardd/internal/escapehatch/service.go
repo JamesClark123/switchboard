@@ -57,6 +57,9 @@ type Service struct {
 	exec      *Executor
 	consent   *ConsentGate
 	now       func() time.Time
+	// agentAuth checks a run request's agent token (SWI-17): a live generation
+	// of the sandbox. nil refuses every call.
+	agentAuth func(sandboxID, gen, token string) bool
 
 	mu       sync.Mutex
 	seq      int
@@ -76,6 +79,10 @@ func New(sandboxes SandboxLookup, emitter Emitter, prompt PromptFunc) *Service {
 		inflight:  map[string]map[int]context.CancelFunc{},
 	}
 }
+
+// SetAgentAuth registers the agent-token check every run request must pass
+// (agent.HookTokens.Verify; SWI-17, research R13).
+func (s *Service) SetAgentAuth(fn func(sandboxID, gen, token string) bool) { s.agentAuth = fn }
 
 // SetClock overrides the service clock; used in tests for deterministic timestamps.
 func (s *Service) SetClock(now func() time.Time) { s.now = now }

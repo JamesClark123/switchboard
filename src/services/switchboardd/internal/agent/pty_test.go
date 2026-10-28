@@ -130,7 +130,7 @@ func TestAgentCommandMapping(t *testing.T) {
 	// The agent is launched from the sandbox's code directory via a bash -lc that
 	// cd's then execs, so the terminal opens where `sbx run <agent>` would.
 	c := agentCommand("sbx", Target{Ref: "sb-ref", Workdir: "/home/u/ws"},
-		&pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}})
+		&pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}}, Spawn{})
 	want := []string{"exec", "-it", "sb-ref", "bash", "-lc"}
 	if len(c.Args) != len(want)+2 { // Args[0] is the binary; +1 for the launch script
 		t.Fatalf("args = %v", c.Args)
@@ -154,7 +154,7 @@ func TestAgentCommandMapping(t *testing.T) {
 
 	// An unset kind still targets the agent (claude) with the skip-permissions
 	// flag, matching the sbx runner, rather than dropping to a bare shell.
-	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{})
+	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{}, Spawn{})
 	if s := c2.Args[len(c2.Args)-1]; !strings.Contains(s, "exec 'claude' '--dangerously-skip-permissions'") {
 		t.Errorf("default launch = %q, want it to exec claude with --dangerously-skip-permissions", s)
 	}

@@ -115,14 +115,14 @@ func tickingNow() func() time.Time {
 
 func TestHookTapOrderAndCancel(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"}, &pb.Sandbox{Id: "other"})
-	s := NewHookServer(NewHub("h"), st)
+	s := mainServer(t, st)
 	ch, cancel := s.Tap("sb")
-	s.handle(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", SessionID: "s-1", PID: 42})
-	s.handle(hookPayload{Event: "PreToolUse", SandboxID: "sb"})
-	s.handle(hookPayload{Event: "UserPromptSubmit", SandboxID: "other"}) // another sandbox's
-	s.handle(hookPayload{Event: "SessionStart", Source: "compact", SandboxID: "sb"})
-	s.handle(hookPayload{Event: "Notification", NotificationType: "permission_prompt", SandboxID: "sb"})
-	s.handle(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 2})
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", SessionID: "s-1", PID: 42}))
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "other"})) // another sandbox's
+	s.handle(m(hookPayload{Event: "SessionStart", Source: "compact", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "Notification", NotificationType: "permission_prompt", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 2}))
 	var got []HookEvent
 	for len(ch) > 0 {
 		got = append(got, <-ch)
@@ -147,7 +147,7 @@ func TestHookTapOrderAndCancel(t *testing.T) {
 	}
 	cancel()
 	cancel() // idempotent
-	s.handle(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
 	if len(ch) != 0 {
 		t.Error("a cancelled tap must receive nothing")
 	}
@@ -155,11 +155,11 @@ func TestHookTapOrderAndCancel(t *testing.T) {
 
 func TestHookTapIsBestEffort(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
-	s := NewHookServer(NewHub("h"), st)
+	s := mainServer(t, st)
 	ch, cancel := s.Tap("sb")
 	defer cancel()
 	for range tapBuffer + 5 {
-		s.handle(hookPayload{Event: "PreToolUse", SandboxID: "sb"})
+		s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
 	}
 	if len(ch) != tapBuffer {
 		t.Errorf("a full tap must drop, not block: %d buffered", len(ch))
@@ -168,46 +168,46 @@ func TestHookTapIsBestEffort(t *testing.T) {
 
 func TestHookEvidencePerEvent(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
-	s := NewHookServer(NewHub("h"), st)
+	s := mainServer(t, st)
 	s.now = tickingNow()
 	s.afterFunc = func(time.Duration, func()) stopper { return &fakeTimer{} }
 
-	s.handle(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
 	if st.agent("sb").GetLastSubmitAt() == nil {
 		t.Error("UserPromptSubmit must record last_submit_at")
 	}
-	s.handle(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 1})
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 1}))
 	if st.agent("sb").GetLastTurnEndAt() != nil {
 		t.Error("a Stop with background work pending is not a turn end")
 	}
-	s.handle(hookPayload{Event: "Stop", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
 	if st.agent("sb").GetLastTurnEndAt() == nil {
 		t.Error("a Stop with nothing pending records last_turn_end_at")
 	}
-	s.handle(hookPayload{Event: "Notification", NotificationType: notifyIdle, SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "Notification", NotificationType: notifyIdle, SandboxID: "sb"}))
 	if st.agent("sb").GetLastNeedsInputAt() != nil {
 		t.Error("the idle nudge is not a request for input")
 	}
-	s.handle(hookPayload{Event: "Notification", NotificationType: "elicitation_dialog", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "Notification", NotificationType: "elicitation_dialog", SandboxID: "sb"}))
 	if st.agent("sb").GetLastNeedsInputAt() == nil {
 		t.Error("a needs-input Notification records last_needs_input_at")
 	}
-	s.handle(hookPayload{Event: "SessionStart", Source: "compact", SandboxID: "sb", SessionID: "x"})
+	s.handle(m(hookPayload{Event: "SessionStart", Source: "compact", SandboxID: "sb", SessionID: "x"}))
 	if st.agent("sb").GetLastSessionStartAt() != nil || st.agent("sb").GetSessionId() != "" {
 		t.Error("a compaction is not a session start")
 	}
-	s.handle(hookPayload{Event: "SessionStart", Source: "clear", SandboxID: "sb", SessionID: "s-2"})
+	s.handle(m(hookPayload{Event: "SessionStart", Source: "clear", SandboxID: "sb", SessionID: "s-2"}))
 	a := st.agent("sb")
 	if a.GetLastSessionStartAt() == nil || a.GetLastSessionSource() != "clear" || a.GetSessionId() != "s-2" {
 		t.Errorf("session start evidence = %+v", a)
 	}
-	s.handle(hookPayload{Event: "SessionStart", Source: "resume", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "SessionStart", Source: "resume", SandboxID: "sb"}))
 	if a := st.agent("sb"); a.GetLastSessionSource() != "resume" || a.GetSessionId() != "s-2" {
 		t.Errorf("a start with no session id keeps the recorded one: %+v", a)
 	}
 	// PostToolUse records nothing new.
 	n := st.writes()
-	s.handle(hookPayload{Event: "PostToolUse", SandboxID: "sb"})
+	s.handle(m(hookPayload{Event: "PostToolUse", SandboxID: "sb"}))
 	if st.writes() != n {
 		t.Error("PostToolUse is no evidence")
 	}
@@ -215,10 +215,10 @@ func TestHookEvidencePerEvent(t *testing.T) {
 
 func TestBackstopExpiryRecordsTurnEnd(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb", State: pb.SandboxState_SANDBOX_STATE_RUNNING})
-	s := NewHookServer(NewHub("h"), st)
+	s := mainServer(t, st)
 	var fire func()
 	s.afterFunc = func(_ time.Duration, f func()) stopper { fire = f; return &fakeTimer{} }
-	s.handle(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 1})
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb", PendingBackground: 1}))
 	fire()
 	if st.agent("sb").GetLastTurnEndAt() == nil {
 		t.Error("an expired backstop is a turn end")
@@ -243,8 +243,12 @@ func TestHookEndsAHoldOnAFreshSession(t *testing.T) {
 		{"startup", pb.WorkerHold_WORKER_HOLD_NONE, false},
 	} {
 		st := newEvidenceStatus(heldSandbox("sb", c.hold))
-		s := NewHookServer(NewHub("h"), st)
-		s.handle(hookPayload{Event: "SessionStart", Source: c.source, SandboxID: "sb"})
+		s := mainServer(t, st)
+		s.SetScreen(screenOf(loadFixture(t, "clear-banner"), false, true))
+		s.handle(m(hookPayload{Event: "SessionStart", Source: c.source, SandboxID: "sb", SessionID: "new"}))
+		if c.ends {
+			waitReleased(t, st)
+		}
 		sb, _ := st.Get("sb")
 		if ended := sb.GetController().GetRun() == nil; ended != c.ends {
 			t.Errorf("%s under %v: hold ended = %v, want %v", c.source, c.hold, ended, c.ends)
@@ -252,8 +256,8 @@ func TestHookEndsAHoldOnAFreshSession(t *testing.T) {
 	}
 	// No run at all: nothing to clear, nothing written.
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: &pb.SandboxController{}})
-	s := NewHookServer(NewHub("h"), st)
-	s.handle(hookPayload{Event: "SessionStart", Source: "startup", SandboxID: "sb"})
+	s := mainServer(t, st)
+	s.handle(m(hookPayload{Event: "SessionStart", Source: "startup", SandboxID: "sb"}))
 	if st.released != 0 {
 		t.Error("no hold: nothing is released")
 	}
@@ -372,12 +376,14 @@ func TestSampleIdleRunsUntilCancelled(t *testing.T) {
 
 func TestHookHTTPCarriesSessionAndPID(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
-	s := NewHookServer(NewHub("h"), st)
+	s, tok := tokenServer(t, st)
 	ch, cancel := s.Tap("sb")
 	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/hook?event=SessionStart&sandbox_id=sb",
 		strings.NewReader(`{"hook_event_name":"SessionStart","source":"startup","session_id":"abc"}`))
 	req.Header.Set("X-Sxb-Pid", "1234")
+	req.Header.Set("X-Sxb-Token", tok.Token)
+	req.Header.Set("X-Sxb-Gen", "1")
 	rec := httptest.NewRecorder()
 	s.Handle(rec, req)
 	if rec.Code != http.StatusNoContent {

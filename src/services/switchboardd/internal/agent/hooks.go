@@ -68,11 +68,13 @@ type HookEvent struct {
 	NeedsInput      bool
 	BackgroundTasks int // Stop: tasks still pending
 	At              time.Time
-	// SessionID and PID identify the reporting agent: Claude Code's session_id
-	// and the hook's X-Sxb-Pid (the claude process that fired it). T046 matches
-	// the main agent by PID; they are carried for it, and may be empty/0.
+	// SessionID, PID and Gen identify the reporting agent: Claude Code's
+	// session_id, the hook's X-Sxb-Pid (the claude process that fired it) and
+	// the generation its token belongs to. A tap only sees the main agent's
+	// events (research R13): the current generation's token and its main PID.
 	SessionID string
 	PID       int
+	Gen       int64
 }
 
 // tapBuffer is how many events a tap holds for a slow reader; the fan-out is
@@ -90,8 +92,28 @@ const (
 	notifyAuthSuccess = "auth_success" // sign-in finished; not an input request
 )
 
-// maxHookBody bounds the forwarded hook input the daemon will read.
+// maxHookBody bounds the original hook command's JSON body ({"event",
+// "sandbox_id"}). Claude Code's forwarded input is streamed instead, under
+// maxHookRead (readHookInput).
 const maxHookBody = 1 << 20
+
+// clearSettle is how long the screen is polled for the post-clear state after
+// a clear SessionStart that may end a hold (research R13): the hook can land
+// before the redraw. clearPoll is the poll interval. Variables so tests can
+// shorten them.
+var (
+	clearSettle = time.Second
+	clearPoll   = 50 * time.Millisecond
+)
+
+// The headers a hook (and the escape-hatch wrapper) identifies its agent with
+// (research R13): its generation's token and number, from the agent's
+// environment, and the PID of the claude process that fired it.
+const (
+	headerToken = "X-Sxb-Token"
+	headerGen   = "X-Sxb-Gen"
+	headerPID   = "X-Sxb-Pid"
+)
 
 // backgroundWaitMax bounds how long an agent stays WAITING on background work
 // (SWI-12). A background task that never ends — a dev server, a watcher — would
@@ -151,31 +173,36 @@ type claudeSettings struct {
 //
 // SessionStart (other than a compaction) also tells the agent Registry the
 // agent is ready (SetOnReady): Claude Code fires it once its input box is up.
-// The event and sandbox id ride on the callback URL's query; the Notification
-// and Stop and SessionStart hooks also forward Claude Code's hook input (stdin
-// JSON, which carries the notification_type, the Stop's background_tasks and
-// the SessionStart source) as the request body. Without the work-start hooks the
-// status would never leave IDLE while the agent runs, so the "working" indicator
-// would never show.
+// The event and sandbox id ride on the callback URL's query; every hook also
+// forwards Claude Code's hook input (stdin JSON, which carries the session_id,
+// the notification_type, the Stop's background_tasks and the SessionStart
+// source) as the request body. Without the work-start hooks the status would
+// never leave IDLE while the agent runs, so the "working" indicator would never
+// show.
+//
+// Each hook also sends the agent's hook token and generation from its
+// environment (SXB_HOOK_TOKEN, SXB_AGENT_GEN; SWI-17, research R13) and $PPID,
+// the claude process that fired it (hooks run as its `sh -c` children,
+// verified on Claude Code 2.1.312). The settings only name the variables, so
+// they carry no secret, and rewriting them (RefreshHooks) changes no agent's
+// token.
 //
 // It also sets permissions.defaultMode to "bypassPermissions" so the agent runs
 // non-interactively inside the sandbox — no permission prompt can block a detached
 // session that has no terminal attached to answer it.
 func BuildSettings(sandboxID, callbackURL string) claudeSettings {
-	curl := func(event string, forwardInput bool) []hookMatcher {
+	curl := func(event string) []hookMatcher {
 		// Best-effort, fire-and-forget status ping. It MUST never disrupt the
 		// agent: `-m 2` bounds the time so a slow/unreachable daemon can't stall a
 		// prompt, `-o /dev/null` discards the response (UserPromptSubmit injects a
 		// hook's stdout into Claude's context), and `|| true` guarantees exit 0 so
 		// a failed ping is never surfaced as a hook error. The URL is quoted: it
-		// carries `&`.
-		data := "-d ''"
-		if forwardInput {
-			data = "--data-binary @-" // Claude Code writes the hook input to stdin and closes it
-		}
+		// carries `&`. Claude Code writes the hook input to stdin and closes it.
 		cmd := fmt.Sprintf(
-			"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' %s '%s?event=%s&sandbox_id=%s' || true",
-			data, callbackURL, event, sandboxID)
+			"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' "+
+				`-H "%s: $%s" -H "%s: $%s" -H "%s: $PPID" `+
+				"--data-binary @- '%s?event=%s&sandbox_id=%s' || true",
+			headerToken, envHookToken, headerGen, envAgentGen, headerPID, callbackURL, event, sandboxID)
 		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{Type: "command", Command: cmd}}}}
 	}
 	return claudeSettings{
@@ -185,11 +212,11 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 		// to give.
 		Permissions: claudePermissions{DefaultMode: "bypassPermissions"},
 		Hooks: map[string][]hookMatcher{
-			"UserPromptSubmit": curl("UserPromptSubmit", false),
-			"PreToolUse":       curl("PreToolUse", false),
-			"Notification":     curl("Notification", true),
-			"Stop":             curl("Stop", true),
-			"SessionStart":     curl("SessionStart", true),
+			"UserPromptSubmit": curl("UserPromptSubmit"),
+			"PreToolUse":       curl("PreToolUse"),
+			"Notification":     curl("Notification"),
+			"Stop":             curl("Stop"),
+			"SessionStart":     curl("SessionStart"),
 		},
 	}
 }
@@ -241,7 +268,15 @@ type hookPayload struct {
 	Source            string `json:"source,omitempty"` // SessionStart: startup | resume | clear | compact
 	PendingBackground int    `json:"-"`
 	SessionID         string `json:"-"` // Claude Code's session_id (forwarded input)
-	PID               int    `json:"-"` // X-Sxb-Pid: the claude process that fired the hook (T046)
+	PID               int    `json:"-"` // X-Sxb-Pid: the claude process that fired the hook
+	// Tokened is a call whose hook token checked out (HookTokens.Verify); Gen
+	// is then its generation. A tokenless call counts for status display only.
+	Tokened bool  `json:"-"`
+	Gen     int64 `json:"-"`
+	// Foreign is a tokened call that is not the main agent's (a nested
+	// session, a process left by an earlier generation): it does not report
+	// the agent ready either.
+	Foreign bool `json:"-"`
 }
 
 // hookInput is the part of Claude Code's own hook input the daemon reads.
@@ -284,6 +319,9 @@ type HookServer struct {
 	afterFunc func(time.Duration, func()) stopper
 	onReady   func(sandboxID string)
 	screen    ScreenFunc
+	repaint   func(sandboxID string) bool
+	tokens    *HookTokens
+	logf      func(format string, args ...any)
 
 	mu       sync.Mutex
 	backstop map[string]backstopTimer // sandbox id -> its WAITING backstop
@@ -309,8 +347,27 @@ func NewHookServer(hub *Hub, status StatusUpdater) *HookServer {
 }
 
 // SetScreen registers where the agent screen is read for input_idle_since
-// (SWI-17; nil = never sampled).
+// and a clear's hold release (SWI-17; nil = never sampled, and no clear ends
+// a hold).
 func (s *HookServer) SetScreen(fn ScreenFunc) { s.screen = fn }
+
+// SetRepaint registers the lazy repaint nudge for a stale screen
+// (terminal.Registry.RequestRepaint; nil = none).
+func (s *HookServer) SetRepaint(fn func(sandboxID string) bool) { s.repaint = fn }
+
+// SetTokens registers the hook-token index calls are checked against (SWI-17,
+// research R13). Without one every call is tokenless: status display only.
+func (s *HookServer) SetTokens(t *HookTokens) { s.tokens = t }
+
+// SetLogger registers where hold releases and dropped calls are reported
+// (nil = silent). No line carries a token.
+func (s *HookServer) SetLogger(logf func(format string, args ...any)) { s.logf = logf }
+
+func (s *HookServer) log(format string, args ...any) {
+	if s.logf != nil {
+		s.logf(format, args...)
+	}
+}
 
 // Tap subscribes to a sandbox's hook events (SWI-17, research R4): each main
 // agent event is delivered after dispatch has applied its status. The channel
@@ -359,9 +416,15 @@ func (s *HookServer) SetOnReady(fn func(sandboxID string)) { s.onReady = fn }
 
 // Handle processes one hook callback (POST /hook). The current hook command
 // names the event and sandbox in the query and posts Claude Code's hook input
-// as the body (empty for the events that forward nothing); the original one
-// posts {"event","sandbox_id"} as the body. Both stay accepted: a sandbox keeps
-// the hook command it was launched with until its agent restarts.
+// as the body; the original one posts {"event","sandbox_id"} as the body. Both
+// stay accepted: a sandbox keeps the hook command it was launched with until
+// its agent restarts.
+//
+// A call carrying a hook token is checked against the sandbox's unretired
+// generations (research R13): one the sandbox does not have is dropped with
+// 403, and nothing of it is applied. A call with no token (an agent launched
+// before this feature, or a process the daemon did not start) still updates
+// the status display, and nothing else.
 func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -371,12 +434,10 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if ev := q.Get("event"); ev != "" {
 		p.Event, p.SandboxID = ev, q.Get("sandbox_id")
-		var in hookInput
-		if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&in); err == nil {
-			p.NotificationType, p.Source, p.SessionID = in.NotificationType, in.Source, in.SessionID
-			p.PendingBackground = pendingBackground(in.BackgroundTasks)
-		}
-		p.PID, _ = strconv.Atoi(r.Header.Get("X-Sxb-Pid"))
+		in := readHookInput(r.Body)
+		p.NotificationType, p.Source, p.SessionID = in.NotificationType, in.Source, in.SessionID
+		p.PendingBackground = pendingBackground(in.BackgroundTasks)
+		p.PID, _ = strconv.Atoi(r.Header.Get(headerPID))
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
@@ -385,23 +446,39 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing sandbox_id", http.StatusBadRequest)
 		return
 	}
+	if tok := r.Header.Get(headerToken); tok != "" && s.tokens != nil {
+		gen, ok := s.tokens.Verify(p.SandboxID, r.Header.Get(headerGen), tok)
+		if !ok {
+			s.log("[hook] %s: %s dropped: unknown agent token", p.SandboxID, p.Event)
+			http.Error(w, "unknown agent token", http.StatusForbidden)
+			return
+		}
+		p.Tokened, p.Gen = true, gen
+	}
 	s.handle(p)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // handle processes one hook event: its status (dispatch), then, for the main
-// agent's events (T046), the end of a hold, the recorded evidence and the
-// taps, and finally an input-idle sample (SWI-17).
+// agent's events (research R13), the end of a hold, the recorded evidence and
+// the taps, and finally an input-idle sample (SWI-17). A generation's first
+// non-compact SessionStart binds its main agent first, so that event is the
+// main agent's already.
 func (s *HookServer) handle(p hookPayload) {
 	now := s.now()
+	if p.Tokened && s.tokens != nil && p.Event == "SessionStart" && p.Source != "compact" {
+		s.tokens.BindMain(p.SandboxID, p.Gen, p.PID)
+	}
+	main := s.mainEvent(p)
+	p.Foreign = p.Tokened && !main
 	needsInput := s.dispatch(p)
-	if s.mainEvent(p) {
+	if main {
 		s.releaseHold(p)
 		s.recordEvidence(p, needsInput, now)
 		if p.Event != "SessionStart" || p.Source != "compact" {
 			s.publish(p.SandboxID, HookEvent{
 				Event: p.Event, Source: p.Source, NotificationType: p.NotificationType, NeedsInput: needsInput,
-				BackgroundTasks: p.PendingBackground, At: now, SessionID: p.SessionID, PID: p.PID,
+				BackgroundTasks: p.PendingBackground, At: now, SessionID: p.SessionID, PID: p.PID, Gen: p.Gen,
 			})
 		}
 	}
@@ -410,9 +487,11 @@ func (s *HookServer) handle(p hookPayload) {
 
 // mainEvent reports whether a hook event comes from the sandbox's main agent,
 // the only one whose events count for evidence, holds and steps (research
-// R13). T046 replaces this with the token + main-PID match; until then every
-// event counts, as before nested sessions were told apart.
-func (s *HookServer) mainEvent(hookPayload) bool { return true }
+// R13): it carries the current generation's token and comes from that
+// generation's main PID. Until the PID is bound, nothing is.
+func (s *HookServer) mainEvent(p hookPayload) bool {
+	return p.Tokened && s.tokens != nil && s.tokens.IsMain(p.SandboxID, p.Gen, p.PID)
+}
 
 // dispatch maps a hook event to a status transition and (for terminal/await
 // events) a notification, reporting whether it was a request for input.
@@ -423,7 +502,9 @@ func (s *HookServer) dispatch(p hookPayload) (needsInput bool) {
 	// an agent that outlived the old client keeps sending its other hooks for
 	// the same sandbox while the new one is still booting.
 	// A compaction (possibly by such an agent, mid-turn) is not a start either.
-	if p.Event == "SessionStart" && p.Source != "compact" && s.onReady != nil {
+	// Neither is another session's (Foreign): a nested `claude -p` starting
+	// says nothing about the agent's own input box.
+	if p.Event == "SessionStart" && p.Source != "compact" && !p.Foreign && s.onReady != nil {
 		s.onReady(p.SandboxID)
 	}
 	switch p.Event {
@@ -438,8 +519,10 @@ func (s *HookServer) dispatch(p hookPayload) (needsInput bool) {
 			return false
 		}
 		s.disarmBackstop(p.SandboxID)
-		_, _ = s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
-		s.hub.EmitNotification(p.SandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "agent task complete", now)
+		sb, _ := s.status.SetAgentStatus(p.SandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
+		if !quietStep(sb) {
+			s.hub.EmitNotification(p.SandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, "agent task complete", now)
+		}
 	case "Notification":
 		return s.notification(p, now)
 	case "PreToolUse", "PostToolUse":
@@ -494,11 +577,29 @@ func (s *HookServer) writeEvidence(sandboxID string, fn func(*pb.AgentSession)) 
 	}
 }
 
+// quietStep reports whether a sandbox's recorded run is on a setup or cleanup
+// step, whose turn ends are not the task's (FR-223, research R10): no
+// task-complete notification for them.
+func quietStep(sb *pb.Sandbox) bool {
+	switch sb.GetController().GetRun().GetStepRole() {
+	case pb.StepRole_STEP_ROLE_SETUP, pb.StepRole_STEP_ROLE_CLEANUP:
+		return true
+	}
+	return false
+}
+
 // releaseHold ends a NEEDS_DEVELOPER hold on a fresh session (FR-216, research
 // R7): a main-agent SessionStart from a new agent (startup) or after /clear.
 // A resume or a compaction keeps the conversation and ends nothing. It runs
 // before the evidence write, so the record still names the session the hold
 // was taken on.
+//
+// The hook alone is not trusted (research R13): a process in the sandbox can
+// read its own token. A startup ends the hold only from a generation spawned
+// after the hold began (greater than its hold_gen; while held, only the
+// developer's terminal spawns one, ErrHeld). A clear ends it only with a new
+// session_id and the daemon's own screen showing the post-clear state, polled
+// for up to clearSettle after the hook (releaseAfterClear).
 func (s *HookServer) releaseHold(p hookPayload) {
 	if p.Event != "SessionStart" || (p.Source != "startup" && p.Source != "clear") {
 		return
@@ -509,17 +610,50 @@ func (s *HookServer) releaseHold(p hookPayload) {
 		return
 	}
 	sb, err := g.Get(p.SandboxID)
-	if err != nil || sb.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || !s.corroborated(p, sb) {
+	run := sb.GetController().GetRun()
+	if err != nil || run.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
 		return
 	}
-	_, _ = r.ClearHeldRun(p.SandboxID)
+	switch {
+	case p.Source == "startup" && p.Gen > run.GetHoldGen():
+		if cleared, _ := r.ClearHeldRun(p.SandboxID); cleared {
+			s.log("[hook] %s: hold on %s ended by a fresh agent (generation %d)", p.SandboxID, run.GetId(), p.Gen)
+		}
+	case p.Source == "clear" && p.SessionID != "" && p.SessionID != sb.GetAgent().GetSessionId():
+		go s.releaseAfterClear(p.SandboxID, run.GetId(), g, r)
+	}
 }
 
-// corroborated reports whether a session start may end the sandbox's hold
-// (research R13): T046 requires, for startup, a generation later than the
-// run's hold_gen, and for clear a new session_id and the post-clear screen
-// (polled for clearSettle). Until then the event alone counts.
-func (s *HookServer) corroborated(hookPayload, *pb.Sandbox) bool { return true }
+// releaseAfterClear ends a hold once the daemon's screen shows the post-clear
+// state (PostClear), polling for up to clearSettle, with a repaint nudge while
+// it is stale. Only while the same run is still held.
+func (s *HookServer) releaseAfterClear(sandboxID, runID string, g sandboxGetter, r HoldReleaser) {
+	if s.screen == nil {
+		return
+	}
+	deadline := time.Now().Add(clearSettle)
+	for {
+		lines, stale, ok := s.screen(sandboxID)
+		switch {
+		case stale && s.repaint != nil:
+			s.repaint(sandboxID)
+		case ok && !stale && PostClear(lines):
+			sb, err := g.Get(sandboxID)
+			if err != nil || sb.GetController().GetRun().GetId() != runID {
+				return
+			}
+			if cleared, _ := r.ClearHeldRun(sandboxID); cleared {
+				s.log("[hook] %s: hold on %s ended by /clear", sandboxID, runID)
+			}
+			return
+		}
+		if !time.Now().Before(deadline) {
+			s.log("[hook] %s: a clear did not end the hold on %s: the screen does not show a cleared session", sandboxID, runID)
+			return
+		}
+		time.Sleep(clearPoll)
+	}
+}
 
 // sampleIdle keeps input_idle_since current for a sandbox with a run recorded
 // (the idle-nudge fallback, research R1): set to when the input box became
@@ -685,7 +819,9 @@ func (s *HookServer) backstopExpired(sandboxID string, gen uint64) {
 	_, _ = s.status.SetAgentStatus(sandboxID, pb.AgentStatus_AGENT_STATUS_IDLE, now)
 	at := timestamppb.New(now)
 	s.writeEvidence(sandboxID, func(a *pb.AgentSession) { a.LastTurnEndAt = at })
-	s.hub.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, backstopMessage, now)
+	if !quietStep(sb) {
+		s.hub.EmitNotification(sandboxID, pb.NotificationKind_NOTIFICATION_KIND_TASK_COMPLETE, backstopMessage, now)
+	}
 }
 
 // backstopMessage tells the developer the wait was given up, not that the work

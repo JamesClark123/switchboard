@@ -198,12 +198,25 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return agent.Target{Ref: ref, Workdir: sb.GetWorkspacePath()}
 	}
-	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
+	// SWI-17 (research R13): each agent PTY is a new generation with its own
+	// hook token, persisted so an agent that outlives this daemon keeps working
+	// hooks after a restart.
+	hookTokens, err := agent.LoadHookTokens(reg)
+	if err != nil {
+		return err
+	}
+	hookTokens.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
+	agents := agent.NewSpawnRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
+	agents.SetHookTokens(hookTokens)
+	// A NEEDS_DEVELOPER hold records the agent generation it began under.
+	mgr.SetAgentGeneration(agents.Generation)
 	// Feature 009 (research R7): an agent that exits on its own is reported as
 	// AGENT_STATUS_EXITED so the orchestrator can fail the run it was on.
 	agents.SetStatusUpdater(mgr)
 	agents.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	hookServer := agent.NewHookServer(hub, mgr)
+	hookServer.SetTokens(hookTokens)
+	hookServer.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	// SWI-12: a WAITING agent's backstop lives in memory; restore it for agents
 	// recorded WAITING before this start.
 	if all, err := mgr.List(); err == nil {
@@ -229,10 +242,6 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetHookInjector(func(sandboxID, workspacePath string) error {
 		return agent.InjectHooks(workspacePath, sandboxID, callbackURL)
 	})
-	// Sandboxes launched by an older daemon carry its hook command; rewrite them
-	// so this daemon's mapping (e.g. Claude Code's idle nudge is IDLE, not
-	// NEEDS_INPUT) applies once their agent restarts.
-	mgr.RefreshHooks(func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 
 	// Escape hatch (feature 005): the service runs allowlisted commands on the host
 	// and delivers results back to the agent via the PTY-injection Prompt path. The
@@ -249,7 +258,12 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return srv.Terminals()
 	}
-	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents.Prompt))
+	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents))
+	// SWI-17: only the agent's own process tree (its hook token) runs a command.
+	ehService.SetAgentAuth(func(sandboxID, gen, token string) bool {
+		_, ok := hookTokens.Verify(sandboxID, gen, token)
+		return ok
+	})
 	// SWI-17: a worker's input_idle_since is sampled from its agent screen, on
 	// each hook and every few seconds while a run is recorded.
 	hookServer.SetScreen(func(sandboxID string) ([]termview.Line, bool, bool) {
@@ -258,10 +272,21 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return nil, false, false
 	})
+	hookServer.SetRepaint(func(sandboxID string) bool {
+		if t := terms(); t != nil {
+			return t.RequestRepaint(sandboxID)
+		}
+		return false
+	})
 	go hookServer.SampleIdle(ctx)
 	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
 	})
+	// Sandboxes launched by an older daemon carry its hook command; rewrite them
+	// so this daemon's mapping (e.g. Claude Code's idle nudge is IDLE, not
+	// NEEDS_INPUT) applies once their agent restarts. The escape-hatch wrappers
+	// are re-injected with them, so each sends its agent's token (SWI-17).
+	mgr.RefreshHooks(func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 
 	// Port forwarding (feature 006): the supervisor owns service lifecycle on this
 	// host. It reaches sandboxes through the same `sbx` runner the manager uses, and

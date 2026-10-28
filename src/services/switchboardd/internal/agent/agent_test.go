@@ -314,10 +314,9 @@ func TestInjectHooks(t *testing.T) {
 		if !strings.Contains(hm[0].Hooks[0].Command, `'http://host.docker.internal:8765/hook?event=`+event+`&sandbox_id=sb1'`) {
 			t.Errorf("%s hook should name its event and the sandbox id in the URL: %s", event, hm[0].Hooks[0].Command)
 		}
-		// Only the Notification, Stop and SessionStart hooks forward Claude Code's
-		// hook input (the notification_type, the Stop's background_tasks and the
-		// SessionStart source); the others post nothing.
-		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); forwards != (event == "Notification" || event == "Stop" || event == "SessionStart") {
+		// Every hook forwards Claude Code's hook input (SWI-17: the session_id
+		// tells the main agent's events from a nested session's).
+		if forwards := strings.Contains(hm[0].Hooks[0].Command, "--data-binary @-"); !forwards {
 			t.Errorf("%s hook forwards stdin = %v: %s", event, forwards, hm[0].Hooks[0].Command)
 		}
 		// The ping must be best-effort: time-bounded, output discarded, and never
