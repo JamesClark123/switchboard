@@ -310,7 +310,7 @@ func (m Model) openMarkFreeForm(s orchSurface, t orchTarget, sandboxID string) (
 	return m, m.setOpForm(s, t, "mark free", v, func(m Model, spec *formSpec) *huh.Form {
 		return m.newOrchForm(spec,
 			huh.NewSelect[string]().Key("outcome").Title("Outcome").Options(huh.NewOption("completed", "completed"), huh.NewOption("failed", "failed")).Value(&v.outcome),
-			huh.NewInput().Key("note").Title("Note").Description("optional; recorded as the run's summary").Value(&v.note),
+			spec.input("note", "Note").Description("optional; recorded as the run's summary").Value(&v.note),
 		)
 	})
 }

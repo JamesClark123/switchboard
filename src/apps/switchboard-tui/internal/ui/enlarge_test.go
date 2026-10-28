@@ -478,10 +478,11 @@ func TestEnlargeRun470(t *testing.T) {
 		t.Errorf("the view collapses with no terminal size:\n%s", v)
 	}
 
-	if got := keyWords("requiresAgent"); got != "requires agent" {
-		t.Errorf("keyWords(requiresAgent) = %q", got)
-	}
-	if got := keyWords("PR_URL"); got != "PR_URL" {
-		t.Errorf("keyWords(PR_URL) = %q", got)
+	// The notice names an Input by its title, as the form shows it.
+	spec := newFormSpec()
+	agent := "codex\tbeta"
+	spec.settleInputs([]huh.Field{spec.input("requiresAgent", "Base agent").Value(&agent)})
+	if !slices.Equal(spec.rewritten, []string{"Base agent"}) {
+		t.Errorf("rewritten = %q, want the title", spec.rewritten)
 	}
 }

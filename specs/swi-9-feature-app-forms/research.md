@@ -212,7 +212,10 @@ otherwise:
   close. An op form whose save is in flight is not such a case: it is marked `formSaving` with a per-call token. ctrl+s
   and edits wait for the reply, so Save can never send the call twice; esc/ctrl+c leave at once with no dialog, the
   call finishing in the background (`saving…` on the footer, its error there too). Only the reply carrying that call's
-  token clears or closes the form, so a late reply from an earlier form or another surface cannot (PR #19 review). The same
+  token clears or closes the form, so a late reply from an earlier form or another surface cannot. A late refusal
+  names its call and says the form's values were not kept; a list-opened mark-free still reloads the list. Each call
+  in flight is also recorded by worker (mark-free) or by kind, orchestrator and values, so a form opened again cannot
+  send the same call until the first answers (PR #19 review). The same
   pass opens a parked add-override (R7).
   - **Cost**: the pass runs on every message, including terminal output, spinner and blink ticks, so it must be O(1).
     It does three things: an `activeGuard()` evaluation (a few field checks), two surface comparisons, and a

@@ -470,12 +470,12 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 	switch kind {
 	case formIdentity:
 		return m.newKitForm(spec,
-			huh.NewInput().Key("name").Title("Name").
+			spec.input("name", "Name").
 				Description("Kit id — lowercase, hyphens. Also the directory name.").Value(&v.name),
-			huh.NewInput().Key("displayName").Title("Display name").Value(&v.displayName),
-			huh.NewInput().Key("description").Title("Description").Value(&v.description),
-			huh.NewInput().Key("version").Title("Version").Description("Optional kit version, e.g. 1.0.0.").Value(&v.version),
-			huh.NewInput().Key("requiresAgent").Title("Base agent").
+			spec.input("displayName", "Display name").Value(&v.displayName),
+			spec.input("description", "Description").Value(&v.description),
+			spec.input("version", "Version").Description("Optional kit version, e.g. 1.0.0.").Value(&v.version),
+			spec.input("requiresAgent", "Base agent").
 				Description("Optional. Pins the agent this mixin is designed for (e.g. claude).").Value(&v.requiresAgent),
 		)
 	case formNetwork:
@@ -499,36 +499,36 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 		return m.newKitForm(spec,
 			spec.text(&v.itemCommand, "Command").Key("command").
 				Description("Shell string, run once at creation via sh -c."),
-			huh.NewInput().Key("user").Title("User").Description(`"0" = root, "1000" = agent.`).Value(&v.itemUser),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
+			spec.input("user", "User").Description(`"0" = root, "1000" = agent.`).Value(&v.itemUser),
+			spec.input("description", "Description").Value(&v.itemDesc),
 		)
 	case formStartup:
 		return m.newKitForm(spec,
 			spec.text(&v.itemCommand, "Command (argv)").Key("command").
 				Description("One argument per line — no shell is involved.\nRuns at every start, so it MUST be idempotent."),
-			huh.NewInput().Key("user").Title("User").Value(&v.itemUser),
+			spec.input("user", "User").Value(&v.itemUser),
 			huh.NewConfirm().Key("background").Title("Background").Value(&v.itemBackground),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
+			spec.input("description", "Description").Value(&v.itemDesc),
 		)
 	case formInitFile:
 		return m.newKitForm(spec,
-			huh.NewInput().Key("path").Title("Path").Description("Absolute path in the container.").Value(&v.itemPath),
+			spec.input("path", "Path").Description("Absolute path in the container.").Value(&v.itemPath),
 			spec.text(&v.itemContent, "Content").Key("content").
 				Description("${WORKDIR} expands to the workspace path."),
-			huh.NewInput().Key("mode").Title("Mode").Description("Octal, e.g. 0755.").Value(&v.itemMode),
+			spec.input("mode", "Mode").Description("Octal, e.g. 0755.").Value(&v.itemMode),
 			huh.NewConfirm().Key("onlyIfMissing").Title("Only if missing").Value(&v.itemOnlyIfMissing),
-			huh.NewInput().Key("description").Title("Description").Value(&v.itemDesc),
+			spec.input("description", "Description").Value(&v.itemDesc),
 		)
 	case formCredential:
 		return m.newKitForm(spec,
 			huh.NewNote().Title("Values stay on the host").
 				Description("A kit declares which credential a service needs and how it is injected.\nThe value itself is supplied and bound on the host (sbx secret set)."),
-			huh.NewInput().Key("service").Title("Service").
+			spec.input("service", "Service").
 				Description("kebab-case id, e.g. github. Matches the secret stored on the host.").Value(&v.credService),
-			huh.NewInput().Key("description").Title("Description").Value(&v.credDesc),
+			spec.input("description", "Description").Value(&v.credDesc),
 			huh.NewConfirm().Key("required").Title("Required").
 				Description("On = the agent cannot do its job without it (the runtime warns when unbound).").Value(&v.credRequired),
-			huh.NewInput().Key("envName").Title("API-key env var").
+			spec.input("envName", "API-key env var").
 				Description("Variable name the agent sees, e.g. GITHUB_TOKEN. Blank = no API-key mechanism.").Value(&v.credEnvName),
 			huh.NewConfirm().Key("proxyManaged").Title("Proxy-managed").
 				Description("On = the container only sees a placeholder; the proxy injects the real value.").Value(&v.credProxyManaged),
@@ -537,7 +537,7 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 		)
 	case formEscapeHatch:
 		return m.newKitForm(spec,
-			huh.NewInput().Key("name").Title("Name").
+			spec.input("name", "Name").
 				Description("kebab-case. The agent invokes the command by this name.").Value(&v.ehName),
 			spec.text(&v.itemCommand, "Command").Key("command").
 				Description("The fixed command prefix, run on the host via sh -c. The agent cannot change it."),
@@ -545,32 +545,32 @@ func (m Model) buildKitForm(kind kitFormKind, spec *formSpec, v *kitFormVals) *h
 				Description("Plain-language guidance the agent's rule shows for this command."),
 			spec.text(&v.ehSubcommands, "Allowed subcommands (one per line)").Key("subcommands").
 				Description("Optional. The agent may pass one of these as arguments (e.g. install, dev). Leave blank for none."),
-			huh.NewInput().Key("argsPattern").Title("Args regex (advanced)").
+			spec.input("argsPattern", "Args regex (advanced)").
 				Description("Optional alternative to subcommands. WARNING: a loose regex lets the agent pass more arguments to the command and lowers safety.").Value(&v.ehArgsPattern),
 			spec.text(&v.ehWorkspaces, "Targetable workspaces (one per line)").Key("workspaces").
 				Description("Optional. Workspace-relative paths or globs (e.g. src/apps/*). If set, the agent picks one with --workspace."),
 			huh.NewConfirm().Key("requiresApproval").Title("Requires approval").
 				Description("On = the developer must approve each run. Off = auto-run.").Value(&v.ehRequiresApproval),
-			huh.NewInput().Key("workingDir").Title("Default working dir").
+			spec.input("workingDir", "Default working dir").
 				Description("Optional, relative to the workspace. Used when no targetable workspaces are set.").Value(&v.ehWorkingDir),
-			huh.NewInput().Key("maxDuration").Title("Max duration (seconds)").
+			spec.input("maxDuration", "Max duration (seconds)").
 				Description("Optional; blank = 30-minute default.").Value(&v.ehMaxDuration),
 		)
 	case formService:
 		return m.newKitForm(spec,
-			huh.NewInput().Key("name").Title("Name").
+			spec.input("name", "Name").
 				Description("kebab-case, e.g. web. You start the service by this name.").Value(&v.svcName),
 			spec.text(&v.itemCommand, "Start command").Key("command").
 				Description("Run via sh -c. Must listen on ALL interfaces (e.g. --host 0.0.0.0), or it\nwill be unreachable from outside its environment."),
-			huh.NewInput().Key("listenPort").Title("Listen port").
+			spec.input("listenPort", "Listen port").
 				Description("The port THIS COMMAND binds in its own environment — not the one you\nconnect to. A free local port is assigned for you when it starts.").Value(&v.svcPort),
 			huh.NewConfirm().Key("onHost").Title("Run on the host").
 				Description("Off = inside the sandbox. On = on the host supervising it, in this\nsandbox's workspace. On-host commands may use {{port}} for a fresh port.").Value(&v.svcOnHost),
 			huh.NewConfirm().Key("isWebsite").Title("Serves a website").
 				Description("On = offer to open it in a browser. Off = show a copyable address.").Value(&v.svcIsWebsite),
-			huh.NewInput().Key("workingDir").Title("Working dir").
+			spec.input("workingDir", "Working dir").
 				Description("Optional, relative to the workspace.").Value(&v.svcWorkingDir),
-			huh.NewInput().Key("readiness").Title("Readiness timeout (seconds)").
+			spec.input("readiness", "Readiness timeout (seconds)").
 				Description("Optional; blank = 60s. How long it may take to start listening.").Value(&v.svcReadiness),
 		)
 	}

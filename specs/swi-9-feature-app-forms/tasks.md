@@ -242,7 +242,8 @@ calls `reopenForm`.
   - an op form whose save fails keeps the form open with the error (spec Edge Cases);
   - ctrl+s on an op form, then ctrl+s or typing while the RPC is in flight → ignored (status `saving…`, no second
     call); esc/ctrl+c leave at once with no dialog and the save finishes in the background; only that call's reply
-    (matched by token) clears or closes the form (amended in PR #19 review).
+    (matched by token) clears or closes the form; reopening it and sending the same call while the first is in flight
+    is refused, and a late refusal names its call (amended in PR #19 review).
 
 **Checkpoint**: esc on every form is guarded. This is the MVP.
 

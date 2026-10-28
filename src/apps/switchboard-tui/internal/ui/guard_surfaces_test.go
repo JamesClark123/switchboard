@@ -553,8 +553,9 @@ func TestGuardOpFormLeaveWhileSaving(t *testing.T) {
 		if m.jobs.form == nil || !m.jobs.formSaving || strings.Contains(m.jobs.status, "boom") {
 			t.Errorf("refused=%v: the old reply touched the new form (open %v saving %v status %q)", refused, m.jobs.form != nil, m.jobs.formSaving, m.jobs.status)
 		}
-		if refused && !strings.Contains(m.status, "boom") {
-			t.Errorf("the old refusal should reach the footer: %q", m.status)
+		// Named, and saying its values are gone (review run-475).
+		if refused && (!strings.Contains(m.status, "save action on alpha-bot: ") || !strings.Contains(m.status, "boom") || !strings.Contains(m.status, "values were not kept")) {
+			t.Errorf("the old refusal should reach the footer, named: %q", m.status)
 		}
 		// Its own reply still closes it.
 		m = settle(m, cmd2)
@@ -1004,7 +1005,7 @@ func TestGuardSourcesAddBrowser(t *testing.T) {
 func TestGuardBaselineIsTheCleanedValue(t *testing.T) {
 	noKeyGrace(t)
 	m := kitFormOn(t, &store.Kit{Name: "bare", Description: "line one\nline two"}, formIdentity)
-	if !strings.Contains(m.kitEditor.status, "description") {
+	if !strings.Contains(m.kitEditor.status, "Description: ") {
 		t.Errorf("the rewrite should be announced: %q", m.kitEditor.status)
 	}
 	for range 5 {
@@ -1029,5 +1030,49 @@ func TestGuardBaselineIsTheCleanedValue(t *testing.T) {
 	tg, _ := l.enterTag(sb, "")
 	if tg, _ = update(tg.(Model), tea.KeyMsg{Type: tea.KeyEsc}); tg.(Model).unsaved.open {
 		t.Error("tag with a tab should not ask when untouched")
+	}
+}
+
+// Review run-475: a list-opened mark-free left mid-save still refreshes the
+// list, and reopening it cannot send the same call while the first is out.
+func TestGuardMarkFreeLeftWhileSaving(t *testing.T) {
+	noKeyGrace(t)
+	a := &fakeDaemon{hostID: "test-host", orchestrators: []*pb.OrchestratorSummary{{Orchestrator: &pb.Orchestrator{Id: "o-a", Name: "alpha-bot", HostId: "test-host"}}}}
+	a.sandboxes = []*pb.Sandbox{{Id: "w1", DisplayName: "worker-one", State: pb.SandboxState_SANDBOX_STATE_RUNNING,
+		Controller: &pb.SandboxController{OrchestratorId: "o-a", Name: "alpha-bot", HostId: "test-host", Run: &pb.WorkerRun{Id: "run-1", Action: "review-pr", NeedsReview: true}}}}
+	m := withSandboxes(sized(New(a, "/work")), a.sandboxes)
+	m, _ = update(m, press("m"))
+	m, cmd := update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != screenList {
+		t.Fatalf("esc while saving returns to the list, got %v", m.screen)
+	}
+	// The row still offers m; the reopened dialog refuses the same call.
+	m, _ = update(m, press("m"))
+	m, cmd2 := update(m, ctrlS())
+	if cmd2 != nil || !strings.Contains(m.orchDetail.status, "still saving") {
+		t.Errorf("a second mark free went out mid-call (status %q)", m.orchDetail.status)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, reload := update(m, runCmd(cmd))
+	if n := strings.Count(a.orchCallsJoined(), "MarkWorkerFree"); n != 1 {
+		t.Errorf("%d MarkWorkerFree calls, want 1", n)
+	}
+	if !m.listLoading || reload == nil {
+		t.Error("the late success should reload the sandbox list")
+	}
+	if len(m.opCalls) != 0 {
+		t.Errorf("the reply should release its in-flight record: %v", m.opCalls)
+	}
+}
+
+// Review run-475: the notice names a call form's argument as its title does.
+func TestGuardCallFormNoticeUsesTitles(t *testing.T) {
+	act := &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "x",
+		Arguments: []*pb.ActionArgument{{Name: "sandboxID", Required: true, DefaultValue: "a\tb"}}}
+	m, _ := jobsWith(t, jobsActions, []*pb.Action{act}, nil)
+	m, _ = update(m, press("enter"))
+	if m.jobs.form == nil || !strings.Contains(m.jobs.status, "sandboxID: ") {
+		t.Errorf("the notice should name the argument as titled: %q", m.jobs.status)
 	}
 }

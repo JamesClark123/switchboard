@@ -97,8 +97,8 @@ type orchDoneMsg struct {
 	// fireToken identifies the Enqueue now this reply belongs to; only the reply
 	// whose token is the model's in-flight record for fireKey releases it.
 	fireToken uint64
-	// formToken is the op-form call this reply answers (0: not a form's call).
-	formToken uint64
+	// formCall is the op-form call this reply answers (zero: not a form's call).
+	formCall formCall
 	// fireKey / fireLabel say which orchestrator the fire was for: the key releases
 	// the model's in-flight record, the label names it in a refusal.
 	fireKey   string
@@ -202,16 +202,20 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	op := m.opState(msg.sink)
-	if msg.formToken != 0 {
-		if m.ownsFormReply(msg.sink, msg.formToken) {
+	m.releaseOpCall(msg.formCall)
+	reloadList := false
+	if tok := msg.formCall.token; tok != 0 {
+		if m.ownsFormReply(msg.sink, tok) {
 			op.formSaving, op.formToken = false, 0
 			if op.status == savingText {
 				op.status = ""
 			}
 		} else {
 			// The form that sent it was left or replaced: the outcome goes on the
-			// footer only, never closing the form open now.
+			// footer only, never closing the form open now. A list-opened mark-free
+			// still refreshes the list it returned to.
 			msg.closeForm = false
+			reloadList = msg.formCall.reloadList && msg.err == nil
 		}
 	}
 	if msg.fire {
@@ -263,6 +267,10 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmds []tea.Cmd
+	if reloadList {
+		m.listLoading = true
+		cmds = append(cmds, m.reloadCmd())
+	}
 	m.orch.loading = true
 	cmds = append(cmds, m.orchLoadCmd())
 	if m.screen == screenOrchDetail {
@@ -276,10 +284,12 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
-	if msg.formToken != 0 {
-		if !m.ownsFormReply(msg.sink, msg.formToken) {
-			// Its form was left or replaced: report it, touch nothing open now.
-			m.status = "error: " + msg.err.Error()
+	m.releaseOpCall(msg.formCall)
+	if tok := msg.formCall.token; tok != 0 {
+		if !m.ownsFormReply(msg.sink, tok) {
+			// Its form was left or replaced: report it, named, and that its values
+			// went with it; touch nothing open now.
+			m.status = "error: " + msg.formCall.label + ": " + msg.err.Error() + " (the form was closed; its values were not kept)"
 			return m, nil
 		}
 		op := m.opState(msg.sink)

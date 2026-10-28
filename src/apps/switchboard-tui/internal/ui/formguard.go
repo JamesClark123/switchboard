@@ -2,9 +2,9 @@ package ui
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,12 +57,23 @@ type textEntry struct {
 // field's pointer, and no Text can bring the external editor back.
 type formSpec struct {
 	texts map[*huh.Text]textEntry
+	// inputs maps each single-line Input's key to its title, for the notice.
+	inputs map[string]string
 	// rewritten names the single-line Inputs settleInputs cleaned.
 	rewritten []string
 }
 
 func newFormSpec() *formSpec {
-	return &formSpec{texts: map[*huh.Text]textEntry{}}
+	return &formSpec{texts: map[*huh.Text]textEntry{}, inputs: map[string]string{}}
+}
+
+// input builds a single-line field and records its title, so the notice names
+// the field as the form does (huh keeps an Input's title private).
+func (s *formSpec) input(key, title string) *huh.Input {
+	if s != nil {
+		s.inputs[key] = title
+	}
+	return huh.NewInput().Key(key).Title(title)
 }
 
 // text builds a multi-line field bound to ptr and records it. CRLF line endings
@@ -90,26 +101,13 @@ func (s *formSpec) settleInputs(fields []huh.Field) {
 		before := in.GetValue()
 		in.Update(nil)
 		if s != nil && in.GetValue() != before {
-			s.rewritten = append(s.rewritten, keyWords(in.GetKey()))
+			title, ok := s.inputs[in.GetKey()]
+			if !ok {
+				title = in.GetKey()
+			}
+			s.rewritten = append(s.rewritten, title)
 		}
 	}
-}
-
-// keyWords renders a field key as words for the notice ("requiresAgent" →
-// "requires agent"): huh keeps an Input's title private, and the keys name the
-// same fields (on a call form they are the argument names, the titles too).
-func keyWords(key string) string {
-	var b strings.Builder
-	prev := rune(0)
-	for _, r := range key {
-		if unicode.IsUpper(r) && unicode.IsLower(prev) {
-			b.WriteByte(' ')
-			r = unicode.ToLower(r)
-		}
-		b.WriteRune(r)
-		prev = r
-	}
-	return b.String()
 }
 
 // lookup reports whether field is one of this spec's Text fields.
@@ -160,7 +158,13 @@ func snapshotOpVals(vals any) any {
 	case *actionFormVals:
 		return *v
 	case *eventFormVals:
-		return *v
+		c := *v
+		// days is a slice huh may write in place: copied, and empty read as none.
+		c.days = nil
+		if len(v.days) > 0 {
+			c.days = slices.Clone(v.days)
+		}
+		return c
 	case *markFreeVals:
 		return *v
 	case *callFormVals:
@@ -186,7 +190,9 @@ func opValsEqual(a, b any) bool {
 	if aok || bok {
 		return aok && bok && maps.Equal(am, bm)
 	}
-	return a == b
+	// reflect, not ==: an event form's snapshot holds its days slice, and ==
+	// on a value holding a slice panics.
+	return reflect.DeepEqual(a, b)
 }
 
 // launchSnapshot is what a launch or reasoning-setup rebuild would send (SWI-9

@@ -344,7 +344,10 @@ type Model struct {
 	// the call's token. On the model (a shared map) so the guard holds across every
 	// tab and surface, and across leaving and re-entering the screen (research R9).
 	orchFires map[string]uint64
-	attach    attachState
+	// opCalls are the op-form calls in flight, by opCallKey -> the call's token:
+	// a form left mid-save and opened again cannot send the same call twice.
+	opCalls map[string]uint64
+	attach  attachState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -400,6 +403,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		forwards:         forward.NewManager(),
 		sandboxMcpOps:    map[string]sandboxMcpOp{},
 		orchFires:        map[string]uint64{},
+		opCalls:          map[string]uint64{},
 		launching:        map[string]*launchInFlight{},
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},
