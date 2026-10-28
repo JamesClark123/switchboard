@@ -141,13 +141,20 @@ func (m Model) confirmRestartUnchecked(sb *pb.Sandbox, d Daemon, returnTo screen
 		cancelLabel:  "wait",
 		enterCancels: true,
 		onConfirm: func() tea.Msg {
-			ctx, cancel := ctxTimeout()
-			defer cancel()
 			// A restart of a running sandbox is a stop, then a start: only the
-			// stop ends the processes in it.
-			if _, err := d.Stop(ctx, id); err != nil {
+			// stop ends the processes in it. Each gets its own timeout, as
+			// stopCmd and restartCmd do, so a slow drain can't starve the start.
+			stop := func() error {
+				ctx, cancel := ctxTimeout()
+				defer cancel()
+				_, err := d.Stop(ctx, id)
+				return err
+			}
+			if err := stop(); err != nil {
 				return errMsg{err}
 			}
+			ctx, cancel := ctxTimeout()
+			defer cancel()
 			if _, err := d.Restart(ctx, id); err != nil {
 				return errMsg{err}
 			}

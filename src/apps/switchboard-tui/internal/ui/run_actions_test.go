@@ -147,7 +147,7 @@ func TestStepKeysHelpAndAvailability(t *testing.T) {
 	before := halted(seqRun("run-b", pb.RunState_RUN_STATE_RUNNING, 2, 0), "")
 	before.StepSentBeforeRestart = true
 	detached := halted(seqRun("run-d", pb.RunState_RUN_STATE_RUNNING, 1, 0), "agent detached by a daemon restart")
-	heldClear := seqRun("run-hc", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_PENDING)
+	heldClear := seqRun("run-hc", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_DONE)
 	heldClear.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 	running := seqRun("run-r", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	m := Model{}

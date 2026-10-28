@@ -143,14 +143,15 @@ func phaseProgress(r *pb.Run) string {
 // was detached): R restarts setup with a fresh agent, and S is not offered
 // (research R14).
 func isRestartHalt(r *pb.Run) bool {
-	return runHalted(r) && strings.Contains(r.GetStepNote(), detachedRefusal)
+	return runHalted(r) && strings.HasPrefix(r.GetStepNote(), detachedRefusal)
 }
 
 // retryClearHeld reports a Clear the developer failed, leaving the worker
 // needing the developer: R stays on the row to retry it (FR-222).
 func retryClearHeld(r *pb.Run) bool {
 	st := currentStep(r)
-	return st != nil && st.GetKind() == pb.StepKind_STEP_KIND_CLEAR && r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	return st != nil && st.GetKind() == pb.StepKind_STEP_KIND_CLEAR && r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER &&
+		r.GetStepStatus() == pb.StepStatus_STEP_STATUS_DONE
 }
 
 // stepSkippable reports whether S applies: not for Clear, the action step (the
