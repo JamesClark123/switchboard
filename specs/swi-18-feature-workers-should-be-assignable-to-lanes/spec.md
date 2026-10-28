@@ -146,6 +146,10 @@ The previous round made sandbox-changed events change the roster. This round mak
 - ***Detaching* does not survive a restart** (L1, L5 step 4, FR-322). On load the mark is cleared, and the host's record decides: if the unlink took effect, the cleared controller drops the worker; if not, it remains a worker and can be detached again. While the mark lasts, the Workers view shows it.
 - **Lifecycle re-check:** L1, L2, L4 and L5 are updated. L3 (a launched sandbox has a fresh id, so no mark), L6 (free workers already exclude removed and *detaching* ones), L7 and L8 are unaffected.
 
+### Plan review 2026-10-28 (pre-PR review of the plan, run `run-c275c8f2-585`)
+
+- **Reservation preference** (FR-314, L6). The exact "fewest lanes outside the run's own lanes" over every worker in the run's lanes costs a scan of those workers per run, which FR-314's Cost bullet rules out. The preference now compares the first unreserved worker of each of the run's lanes, with each lane's workers ordered by fewest lanes and then roster order. The preference is a tie-breaker only: the Outcomes bullets and SC-002 are unchanged and still hold, because of the fallback chain (plan research R8).
+
 ## Background (current behaviour this feature changes)
 
 - An orchestrator's `prompt` actions can name one optional **worker tag**. A run of such an action is delivered only to a worker whose sandbox tag (its single, free-text purpose label) equals it. An action with no worker tag runs on any free worker, tagged or not.
@@ -359,7 +363,7 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 **L6. Dispatch pass** (FR-314). This covers `prompt` runs. `reason` runs go to the reasoning sandbox as today, outside lanes, reservations and waiting reasons.
 - **Free workers** are live roster workers that are not reasoning, not *lanes pending*, not *detaching*, have a record that is running and idle with no run, and are on a host whose link is up.
 - **Effective lane setting** of each queued run: its action's current setting, or its kept copy if the action was deleted (FR-314b).
-- **Reserve:** walk the queued exclusive runs in queue order. Each reserves one free worker in its lanes that is not already reserved. It prefers the worker with the fewest lanes outside the run's own lanes, then roster order, which leaves multi-lane workers for runs that need them.
+- **Reserve:** walk the queued exclusive runs in queue order. Each reserves one free worker in its lanes that is not already reserved. Each lane's free workers are ordered by fewest lanes, then roster order. The run compares the first unreserved worker of each of its lanes and takes the one with the fewest lanes outside the run's own lanes, then roster order. This leaves multi-lane workers for runs that need them, at a cost of one comparison per lane of the run.
 - **Deliver:** walk all queued runs in queue order. Each run tries its candidates in order (below). For each candidate, the worker's latest record is re-checked and delivery is attempted, as today. A worker that fails the re-check, or refuses delivery because it is not free after all (a precondition refusal, as today), leaves the pass, and any reservation on it is released. The run then tries its next candidate. Any other delivery error fails the run, as today, and the worker leaves the pass. Delivery claims the worker. A run that is delivered elsewhere, or tries every candidate without success, releases any reservation it still holds.
 - **Candidates:**
 
@@ -434,7 +438,7 @@ This section walks through the whole life of lanes, workers and runs. Each step 
 - **FR-312**: A run of a `prompt` action **inclusive** to one or more lanes MUST be delivered only to a worker in at least one of those lanes or to an open-lane worker.
 - **FR-313**: A run of a `prompt` action with **no lanes** MUST be delivered only to an open-lane worker (FR-308). Apart from that, it is delivered exactly as before this feature.
 - **FR-314**: This covers `prompt` runs; `reason` runs go to the reasoning sandbox as today, outside lanes, reservations and waiting reasons. Eligibility MUST be decided at dispatch, from the live roster and each run's effective lane setting (FR-314b) at that moment. Runs are offered workers in queue order, and the free-worker rules are unchanged. A *free* worker here is never reasoning, *lanes pending* or *detaching*. Each pass MUST work as Lifecycle L6 describes:
-  - **Reserve.** Walk the queued exclusive runs in queue order. Each reserves one free worker in its lanes that is not reserved yet, preferring the worker with the fewest lanes outside the run's own lanes, then roster order.
+  - **Reserve.** Walk the queued exclusive runs in queue order. Each reserves one free worker in its lanes that is not reserved yet. Each lane's free workers are ordered by fewest lanes, then roster order. The run compares the first unreserved worker of each of its lanes and takes the one with the fewest lanes outside the run's own lanes, then roster order.
   - **Deliver.** Walk all queued runs in queue order, each trying its candidates in order.
     - An **exclusive** run tries (1) its reservation, (2) a free unreserved worker in its lanes, then (3) a free worker in its lanes reserved for a run later in the queue, which loses that reservation.
     - An **inclusive** run tries (1) a free unreserved worker in its lanes, (2) a free open-lane worker, then (3) as for exclusive.
