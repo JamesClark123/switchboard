@@ -294,3 +294,96 @@ func TestStopResetsABusyAgent(t *testing.T) {
 		t.Errorf("after leaving RUNNING: agent %v, run %v; want IDLE with the review run kept", s.GetAgent().GetStatus(), s.GetController().GetRun())
 	}
 }
+
+// --- SWI-17: holds survive a stop, and an agent exit during cleanup ---
+
+func TestStopKeepsARunWithCleanupHeld(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	for _, c := range []struct {
+		name string
+		run  *pb.WorkerRun
+		kept bool
+	}{
+		{"cleaning", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepRole: pb.StepRole_STEP_ROLE_CLEANUP}, true},
+		{"freeing", &pb.WorkerRun{Id: "r2", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING}, true},
+		{"cleanup-step", &pb.WorkerRun{Id: "r3", StepRole: pb.StepRole_STEP_ROLE_CLEANUP}, true},
+		{"held", &pb.WorkerRun{Id: "r4", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 7}, true},
+		{"setup", &pb.WorkerRun{Id: "r5", StepRole: pb.StepRole_STEP_ROLE_SETUP}, false},
+		{"action", &pb.WorkerRun{Id: "r6", StepRole: pb.StepRole_STEP_ROLE_ACTION}, false},
+	} {
+		sb := controlled(t, m, reg, dir, c.name, c.run)
+		out, err := m.Stop(ctx, sb.GetId())
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := out.GetController().GetRun()
+		if !c.kept {
+			if run != nil {
+				t.Errorf("%s: a run in setup or action is cleared by a stop: %+v", c.name, run)
+			}
+			continue
+		}
+		if run.GetId() != c.run.GetId() || run.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+			t.Errorf("%s: kept run = %+v, want held NEEDS_DEVELOPER", c.name, run)
+		}
+	}
+	got, _ := reg.Get(controlled(t, m, reg, dir, "gen", &pb.WorkerRun{Id: "r7", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 7}).GetId())
+	leaveRunning(got, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	if got.GetController().GetRun().GetHoldGen() != 7 {
+		t.Error("an existing NEEDS_DEVELOPER hold is left as it is")
+	}
+}
+
+func TestAgentExitDuringCleanupHolds(t *testing.T) {
+	m, reg, _, dir := newTestManager(t)
+	cleaning := controlled(t, m, reg, dir, "cleaning", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepRole: pb.StepRole_STEP_ROLE_CLEANUP})
+	action := controlled(t, m, reg, dir, "action", &pb.WorkerRun{Id: "r2", StepRole: pb.StepRole_STEP_ROLE_ACTION})
+	for _, id := range []string{cleaning.GetId(), action.GetId()} {
+		if _, err := m.SetAgentStatus(id, pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := reg.Get(cleaning.GetId())
+	if got.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		t.Errorf("exit during cleanup = %+v, want NEEDS_DEVELOPER", got.GetController().GetRun())
+	}
+	got, _ = reg.Get(action.GetId())
+	if got.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NONE {
+		t.Error("a run with nothing left to clean gets no hold")
+	}
+	// A fresh session's corroborated startup then ends the hold at once.
+	var emits int
+	m.SetOnChange(func(*pb.Sandbox) { emits++ })
+	if cleared, err := m.ClearHeldRun(cleaning.GetId()); err != nil || !cleared {
+		t.Fatalf("ClearHeldRun = %v / %v", cleared, err)
+	}
+	got, _ = reg.Get(cleaning.GetId())
+	if got.GetController().GetRun() != nil || got.GetController() == nil || emits != 1 {
+		t.Errorf("hold not ended: %+v (emits %d)", got.GetController(), emits)
+	}
+	// The CAS: a run not held NEEDS_DEVELOPER is left alone, silently.
+	if cleared, err := m.ClearHeldRun(action.GetId()); err != nil || cleared || emits != 1 {
+		t.Errorf("unheld = %v / %v (emits %d)", cleared, err, emits)
+	}
+	if _, err := m.ClearHeldRun("nope"); err == nil {
+		t.Error("unknown sandbox must error")
+	}
+}
+
+func TestSetAgentEvidence(t *testing.T) {
+	m, reg, _, dir := newTestManager(t)
+	sb := controlled(t, m, reg, dir, "ev", nil)
+	var emits int
+	m.SetOnChange(func(*pb.Sandbox) { emits++ })
+	if _, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.Agent = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.SetAgentEvidence(sb.GetId(), func(a *pb.AgentSession) { a.SessionId = "s-1" })
+	if err != nil || out.GetAgent().GetSessionId() != "s-1" || emits != 1 {
+		t.Errorf("evidence = %+v / %v (emits %d)", out.GetAgent(), err, emits)
+	}
+	if _, err := m.SetAgentEvidence("nope", func(*pb.AgentSession) {}); err == nil {
+		t.Error("unknown sandbox must error")
+	}
+}

@@ -149,7 +149,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Hook evidence, hold release and typing (research R3, R4, R7)
 
-- [ ] T008 In `SBD/agent/hooks.go`:
+- [X] T008 In `SBD/agent/hooks.go`:
   - add `type HookEvent{Event, Source, NotificationType string; BackgroundTasks int; At time.Time}` and
     `func (s *HookServer) Tap(sandboxID string) (<-chan HookEvent, func())`, a buffered, best-effort fan-out after
     `dispatch` applies the status;
@@ -166,7 +166,7 @@ sequence model. No user story can be delivered before this phase.
   Extend the `StatusUpdater` interface accordingly. Tests in `SBD/agent/hooks_test.go`: tap order; evidence per
   event; the hold ends on a corroborated `startup` and `clear` but not on `resume` or `compact`; no hold → nothing
   cleared; `input_idle_since` set and unset, and repeated samples in the same state write nothing.
-- [ ] T009 In `SBD/sandbox/manager.go`:
+- [X] T009 In `SBD/sandbox/manager.go`:
   - add `SetAgentEvidence(id, func(*pb.AgentSession))`, which writes the fields and emits once, beside
     `SetAgentStatus`;
   - add `ClearHeldRun(id)` for T008's hold release: a CAS that clears only while the hold is still NEEDS_DEVELOPER;

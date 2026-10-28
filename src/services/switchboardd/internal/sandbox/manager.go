@@ -132,13 +132,23 @@ func (m *Manager) Controller(id string) (*pb.SandboxController, error) {
 // (its run was failed on the stop) and keep the worker from dispatch until it
 // is marked free. It becomes IDLE; the next session reports its own status. A
 // run awaiting review stays visible through the kept controller run.
+//
+// A run that still has cleanup to run (any hold, or a cleanup step on it) is
+// kept too, held NEEDS_DEVELOPER (SWI-17, research R7): the agent's session
+// was never cleared, so a restarted sandbox must not read free before the
+// developer (or a fresh session's SessionStart) clears it (FR-216, SC-001).
 func leaveRunning(s *pb.Sandbox, state pb.SandboxState) {
 	s.State = state
 	if state == pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return
 	}
-	if c := s.GetController(); c != nil && c.GetRun() != nil && !c.GetRun().GetNeedsReview() {
-		c.Run = nil
+	if c := s.GetController(); c != nil && c.GetRun() != nil {
+		switch run := c.GetRun(); {
+		case cleanupPending(run):
+			holdForDeveloper(run)
+		case !run.GetNeedsReview():
+			c.Run = nil
+		}
 	}
 	if a := s.GetAgent(); a != nil &&
 		(a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING || a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WAITING ||
@@ -869,6 +879,12 @@ func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
 
 // SetAgentStatus updates a sandbox's agent status (driven by injected Claude Code
 // hooks — FR-024/025) and publishes the change so subscribers see it live.
+//
+// An agent that exits while its run still has cleanup to run holds the
+// sandbox NEEDS_DEVELOPER (SWI-17, research R7): no hook reports an exit (it
+// arrives from agent.Registry's exit watch), and the remaining custom cleanup
+// steps must not be typed into the fresh session that follows, whose own
+// SessionStart then ends the hold.
 func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now time.Time) (*pb.Sandbox, error) {
 	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
 		if s.Agent == nil {
@@ -877,6 +893,9 @@ func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now ti
 		s.Agent.Status = status
 		s.Agent.LastEventAt = timestamppb.New(now)
 		s.UpdatedAt = timestamppb.Now()
+		if run := s.GetController().GetRun(); status == pb.AgentStatus_AGENT_STATUS_EXITED && cleanupPending(run) {
+			holdForDeveloper(run)
+		}
 		return nil
 	})
 	if err != nil {
@@ -884,6 +903,65 @@ func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now ti
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// SetAgentEvidence records hook evidence on a sandbox's agent session (SWI-17,
+// research R4: last_submit_at, last_turn_end_at, …) through fn and publishes
+// the change once. The status is left as it is: SetAgentStatus owns it.
+func (m *Manager) SetAgentEvidence(sandboxID string, fn func(*pb.AgentSession)) (*pb.Sandbox, error) {
+	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
+		if s.Agent == nil {
+			s.Agent = &pb.AgentSession{}
+		}
+		fn(s.Agent)
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(out)
+	return out, nil
+}
+
+// ClearHeldRun ends a NEEDS_DEVELOPER hold (SWI-17, FR-216, research R7): the
+// sandbox's agent started a fresh session, so the held run's context is gone
+// and the worker is free again. A compare-and-set: the run is cleared only
+// while its hold is still NEEDS_DEVELOPER, and cleared reports whether it was.
+func (m *Manager) ClearHeldRun(sandboxID string) (cleared bool, err error) {
+	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
+		cleared = false
+		if c := s.GetController(); c != nil && c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+			c.Run = nil
+			s.UpdatedAt = timestamppb.Now()
+			cleared = true
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if cleared {
+		m.emit(out)
+	}
+	return cleared, nil
+}
+
+// cleanupPending reports whether a worker run still has cleanup to run: it is
+// held (cleaning up, freeing or already needing the developer), or its last
+// step was a cleanup step (SWI-17, data-model.md WorkerRun).
+func cleanupPending(run *pb.WorkerRun) bool {
+	return run != nil && (run.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || run.GetStepRole() == pb.StepRole_STEP_ROLE_CLEANUP)
+}
+
+// holdForDeveloper raises a run's hold to NEEDS_DEVELOPER. An existing
+// NEEDS_DEVELOPER hold is left as it is. T046 records hold_gen here, on the
+// transition into the hold only.
+func holdForDeveloper(run *pb.WorkerRun) {
+	if run.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		return
+	}
+	run.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 }
 
 // SetTag sets (or clears, when tag is "") a sandbox's mutable purpose tag

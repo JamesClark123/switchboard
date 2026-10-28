@@ -29,6 +29,7 @@ import (
 
 	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/config"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/daemonctl"
@@ -249,6 +250,15 @@ func runServe(cfg *config.Config, debug bool) error {
 		return srv.Terminals()
 	}
 	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents.Prompt))
+	// SWI-17: a worker's input_idle_since is sampled from its agent screen, on
+	// each hook and every few seconds while a run is recorded.
+	hookServer.SetScreen(func(sandboxID string) ([]termview.Line, bool, bool) {
+		if t := terms(); t != nil {
+			return t.Screen(sandboxID)
+		}
+		return nil, false, false
+	})
+	go hookServer.SampleIdle(ctx)
 	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
 	})

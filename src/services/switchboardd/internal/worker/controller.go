@@ -265,7 +265,11 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 			cur.Name = req.GetName()
 		}
 		if req.GetSetRun() {
-			cur.Run = req.GetRun()
+			run, err := nextRun(cur.GetRun(), req)
+			if err != nil {
+				return err
+			}
+			cur.Run = run
 		}
 		if l := req.GetLanes(); l != nil {
 			// SWI-18 (FR-309a/b): a display copy only. A name breaking the
@@ -313,6 +317,37 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 	}
 	s.mgr.Emit(out)
 	return out, nil
+}
+
+// nextRun is the controller run an UpdateWorker{set_run} leaves (SWI-17,
+// research R7):
+//   - with expect_run_id, the set (or clear) applies only while that run is
+//     still recorded, so a late write never re-creates a run the daemon has
+//     released (a hold it ended, a cleared record): FAILED_PRECONDITION "run
+//     moved";
+//   - a NEEDS_DEVELOPER hold is never lowered, only cleared: an orchestrator
+//     that has not yet seen the daemon's escalation cannot downgrade it;
+//   - the daemon-written fields of the same run are kept: hold_gen, and the
+//     step_index / step_sent_at the step guard recorded (a write built from a
+//     stale view must not reopen a step it already typed).
+func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest) (*pb.WorkerRun, error) {
+	next := req.GetRun()
+	if want := req.GetExpectRunId(); want != "" && (cur == nil || cur.GetId() != want) {
+		return nil, fmt.Errorf("%w: run moved", ErrPrecondition)
+	}
+	if cur.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER && next != nil &&
+		(next.GetId() != cur.GetId() || next.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER) {
+		return nil, fmt.Errorf("%w: run %s is held for the developer", ErrPrecondition, cur.GetId())
+	}
+	if next == nil || cur == nil || next.GetId() != cur.GetId() {
+		if next != nil {
+			next.HoldGen = 0 // daemon-written only (T046)
+		}
+		return next, nil
+	}
+	next.HoldGen = cur.GetHoldGen()
+	next.StepIndex, next.StepSentAt = cur.GetStepIndex(), cur.GetStepSentAt()
+	return next, nil
 }
 
 // OnDestroy revokes a controlled sandbox's token and registration (best effort)
