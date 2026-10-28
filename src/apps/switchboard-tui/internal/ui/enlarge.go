@@ -97,6 +97,21 @@ func (e *enlargeState) writeBack() {
 	e.field.Update(nil)
 }
 
+// closeEnlarge writes the view back and closes it, for every exit that keeps
+// the form (esc, ctrl+e, ctrl+s, the dialog's Save/Discard over the view): the
+// form's cached group layout is rebuilt with the new text, and the field's
+// cursor blink, let lapse while enlarged, restarts.
+func (m *Model) closeEnlarge() tea.Cmd {
+	e := &m.enlarge
+	e.writeBack()
+	field, g := e.field, e.surface
+	m.enlarge = enlargeState{}
+	if f := m.guardForm(g); f != nil {
+		f.Update(nil)
+	}
+	return field.Focus()
+}
+
 // reposition scrolls the view to its cursor after the line count changed. The
 // textarea clamps scrolling to the line count of its last render, so it is
 // rendered first; otherwise a paste or a revert to a longer text leaves the
@@ -119,18 +134,12 @@ func (m Model) updateEnlargeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	e := &m.enlarge
 	switch msg.String() {
 	case "esc", "ctrl+e":
-		e.writeBack()
-		field, g := e.field, e.surface
-		m.enlarge = enlargeState{}
-		if f := m.guardForm(g); f != nil {
-			f.Update(nil) // the form caches its group's layout; rebuild it with the new text
-		}
-		return m, field.Focus() // restarts its cursor blink, let lapse while enlarged
+		return m, m.closeEnlarge()
 	case "ctrl+s":
 		g := e.surface
-		e.writeBack()
-		m.enlarge = enlargeState{}
-		return m.surfaceSave(g)
+		cmd := m.closeEnlarge()
+		next, scmd := m.surfaceSave(g)
+		return next, tea.Batch(cmd, scmd)
 	case "ctrl+c":
 		// As ctrl+c in the form: the text counts toward the form's changes, and a
 		// changed form asks over the view (Cancel returns here, FR-005a).
@@ -168,7 +177,8 @@ func (m Model) updateEnlargeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := e.ta.LineCount()
 	var cmd tea.Cmd
 	e.ta, cmd = e.ta.Update(msg)
-	if e.ta.LineCount() != lines {
+	// A paste may add only wrapped rows to one line, which LineCount misses.
+	if msg.Paste || e.ta.LineCount() != lines {
 		e.reposition()
 	}
 	return m, cmd
@@ -193,6 +203,9 @@ func (m Model) enlargeView() string {
 		Render(e.ta.View())
 	hint := dimStyle.Render(ansi.Truncate(enlargeHint, w, "…"))
 	out := lipgloss.JoinVertical(lipgloss.Left, top, box, hint)
+	if m.width <= 0 || m.height <= 0 {
+		return out // no size yet
+	}
 	// Below the border's minimum (6×4) the frame is cut to the terminal.
-	return lipgloss.NewStyle().MaxWidth(max(m.width, 1)).MaxHeight(max(m.height, 1)).Render(out)
+	return lipgloss.NewStyle().MaxWidth(m.width).MaxHeight(m.height).Render(out)
 }

@@ -97,6 +97,8 @@ type orchDoneMsg struct {
 	// fireToken identifies the Enqueue now this reply belongs to; only the reply
 	// whose token is the model's in-flight record for fireKey releases it.
 	fireToken uint64
+	// formToken is the op-form call this reply answers (0: not a form's call).
+	formToken uint64
 	// fireKey / fireLabel say which orchestrator the fire was for: the key releases
 	// the model's in-flight record, the label names it in a refusal.
 	fireKey   string
@@ -200,10 +202,16 @@ func (m Model) applyOrchRows(msg orchRowsMsg) (tea.Model, tea.Cmd) {
 // applyOrchDone shows a mutation's outcome and reloads what is open.
 func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	op := m.opState(msg.sink)
-	if !msg.fire {
-		op.formSaving = false // the form's call answered
-		if op.status == savingText {
-			op.status = ""
+	if msg.formToken != 0 {
+		if m.ownsFormReply(msg.sink, msg.formToken) {
+			op.formSaving, op.formToken = false, 0
+			if op.status == savingText {
+				op.status = ""
+			}
+		} else {
+			// The form that sent it was left or replaced: the outcome goes on the
+			// footer only, never closing the form open now.
+			msg.closeForm = false
 		}
 	}
 	if msg.fire {
@@ -268,7 +276,15 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 
 // applyOrchFormErr shows a form refusal verbatim and keeps the form open.
 func (m Model) applyOrchFormErr(msg orchFormErrMsg) (tea.Model, tea.Cmd) {
-	m.opState(msg.sink).formSaving = false
+	if msg.formToken != 0 {
+		if !m.ownsFormReply(msg.sink, msg.formToken) {
+			// Its form was left or replaced: report it, touch nothing open now.
+			m.status = "error: " + msg.err.Error()
+			return m, nil
+		}
+		op := m.opState(msg.sink)
+		op.formSaving, op.formToken = false, 0
+	}
 	if m.onSurface(msg.sink) {
 		m.opState(msg.sink).status = msg.err.Error()
 	} else {

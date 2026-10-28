@@ -472,8 +472,12 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 // savingText is an op form's status while its call is in flight.
 const savingText = "saving…"
 
+// formCallSeq numbers op-form calls, so each reply names the call it answers.
+var formCallSeq atomic.Uint64
+
 // submitOrchOpForm sends the open form's call once: while it is in flight the
-// form is marked saving and nothing sends it again.
+// form is marked saving and nothing sends it again. The reply is stamped with
+// the call's token, the only reply that may clear the mark or close the form.
 func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 	if op := m.opState(s); op.form == nil || op.formSaving {
 		return m, nil
@@ -484,8 +488,27 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 	}
 	nm := next.(Model)
 	op := nm.opState(s)
-	op.formSaving, op.status = true, savingText
-	return nm, cmd
+	tok := formCallSeq.Add(1)
+	op.formSaving, op.formToken, op.status = true, tok, savingText
+	return nm, func() tea.Msg {
+		switch msg := cmd().(type) {
+		case orchDoneMsg:
+			msg.formToken = tok
+			return msg
+		case orchFormErrMsg:
+			msg.formToken = tok
+			return msg
+		default:
+			return msg
+		}
+	}
+}
+
+// ownsFormReply reports whether a reply with token answers the call the open
+// form on s is waiting for.
+func (m Model) ownsFormReply(s orchSurface, token uint64) bool {
+	op := m.opState(s)
+	return token != 0 && op.formSaving && op.formToken == token
 }
 
 func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
@@ -600,6 +623,8 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 type orchFormErrMsg struct {
 	err  error
 	sink orchSurface
+	// formToken is the op-form call refused (see orchOpState.formToken).
+	formToken uint64
 }
 
 // --- renderers ---

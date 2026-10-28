@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,9 +90,26 @@ func (s *formSpec) settleInputs(fields []huh.Field) {
 		before := in.GetValue()
 		in.Update(nil)
 		if s != nil && in.GetValue() != before {
-			s.rewritten = append(s.rewritten, in.GetKey())
+			s.rewritten = append(s.rewritten, keyWords(in.GetKey()))
 		}
 	}
+}
+
+// keyWords renders a field key as words for the notice ("requiresAgent" →
+// "requires agent"): huh keeps an Input's title private, and the keys name the
+// same fields (on a call form they are the argument names, the titles too).
+func keyWords(key string) string {
+	var b strings.Builder
+	prev := rune(0)
+	for _, r := range key {
+		if unicode.IsUpper(r) && unicode.IsLower(prev) {
+			b.WriteByte(' ')
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+	return b.String()
 }
 
 // lookup reports whether field is one of this spec's Text fields.
@@ -379,7 +397,8 @@ func (m Model) guardDirty(g guardSurface) bool {
 		return m.orch.vals != nil && *m.orch.vals != m.orch.baseline
 	case gOpJobs, gOpDetail:
 		op := m.opState(opSurfaceOf(g))
-		return op.form != nil && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
+		// A form whose call is in flight holds nothing unsaved.
+		return op.form != nil && !op.formSaving && !opValsEqual(snapshotOpVals(op.formVals), op.formBaseline)
 	case gKitItem:
 		return m.kitEditor.vals != nil && *m.kitEditor.vals != m.kitEditor.formBaseline
 	case gKitOverview:
@@ -547,7 +566,16 @@ func (m Model) advanceForm(g guardSurface, msg tea.Msg) (tea.Model, tea.Cmd) {
 // of line on an Input, nothing on a Select).
 func (m Model) formKey(g guardSurface, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if (g == gOpJobs || g == gOpDetail) && m.opState(opSurfaceOf(g)).formSaving {
-		return m, nil // its call is in flight; the reply closes or revives it
+		// Its call is in flight. ctrl+s and edits wait for the reply; esc/ctrl+c
+		// leave at once (a hung daemon must not hold the keyboard), the call
+		// going on and its outcome landing on the footer.
+		switch msg.String() {
+		case "esc", "ctrl+c":
+			next, cmd := m.guardLeave(g)
+			next.status = "saving… (in the background; the result will show here)"
+			return next, cmd
+		}
+		return m, nil
 	}
 	switch msg.String() {
 	case "esc", "ctrl+c":

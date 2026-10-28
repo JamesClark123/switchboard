@@ -442,3 +442,46 @@ func TestEnlargeFitsTinyTerminals(t *testing.T) {
 		}
 	}
 }
+
+// Review run-470: every exit refreshes the field, a one-line paste stays in
+// view, and the notice names fields in words.
+func TestEnlargeRun470(t *testing.T) {
+	noKeyGrace(t)
+	// A refused ctrl+s keeps the form: its Content shows the pasted text.
+	m := kitFormOn(t, &store.Kit{Name: "bare"}, formInitFile)
+	for txt, e := range m.kitEditor.spec.texts {
+		if e.title == "Content" {
+			focusField(t, m.kitEditor.form, txt)
+		}
+	}
+	m, _ = update(m, keyCtrlE)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(numbered(200)), Paste: true})
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m.enlarge.open || m.kitEditor.form == nil {
+		t.Fatalf("ctrl+s should close the view and the refused save keep the form (status %q)", m.kitEditor.status)
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "line-0199") {
+		t.Errorf("the field shows none of its text after a refused ctrl+s:\n%s", v)
+	}
+
+	// One long line pasted.
+	m = enlargedOn(t, "")
+	_ = m.View()
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(strings.Repeat("abcdefghij", 600) + "END"), Paste: true})
+	if v := ansi.Strip(m.enlarge.ta.View()); !strings.Contains(v, "END") {
+		t.Error("the cursor's row is off-screen after a one-line paste")
+	}
+
+	// Before the first WindowSizeMsg the frame is not clamped to nothing.
+	m.width, m.height = 0, 0
+	if v := ansi.Strip(m.enlargeView()); !strings.Contains(v, "END") {
+		t.Errorf("the view collapses with no terminal size:\n%s", v)
+	}
+
+	if got := keyWords("requiresAgent"); got != "requires agent" {
+		t.Errorf("keyWords(requiresAgent) = %q", got)
+	}
+	if got := keyWords("PR_URL"); got != "PR_URL" {
+		t.Errorf("keyWords(PR_URL) = %q", got)
+	}
+}

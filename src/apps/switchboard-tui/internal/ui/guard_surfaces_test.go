@@ -270,6 +270,29 @@ func settle(m Model, cmd tea.Cmd) Model {
 	return m
 }
 
+// settleHolding is settle that keeps back the messages hold picks (a slow
+// daemon's replies) and returns them.
+func settleHolding(m Model, cmd tea.Cmd, hold func(tea.Msg) bool) (Model, []tea.Msg) {
+	var held []tea.Msg
+	for range 6 {
+		if cmd == nil {
+			break
+		}
+		var next []tea.Cmd
+		for _, msg := range quickMsgs(cmd) {
+			if hold(msg) {
+				held = append(held, msg)
+				continue
+			}
+			var c tea.Cmd
+			m, c = update(m, msg)
+			next = append(next, c)
+		}
+		cmd = tea.Batch(next...)
+	}
+	return m, held
+}
+
 // quickMsgs runs cmd (and any batch or sequence inside it) with a short timeout.
 func quickMsgs(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
@@ -459,11 +482,20 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 	if !m.jobs.formSaving || m.jobs.status != savingText {
 		t.Fatalf("in flight: saving %v status %q", m.jobs.formSaving, m.jobs.status)
 	}
-	for _, k := range []tea.KeyMsg{{Type: tea.KeyEsc}, ctrlS(), {Type: tea.KeyCtrlC}} {
+	for _, k := range []tea.KeyMsg{ctrlS(), press("x")} {
 		var c tea.Cmd
 		if m, c = update(m, k); c != nil || m.unsaved.open {
 			t.Fatalf("%s during the call: cmd %v dialog %v", k, c != nil, m.unsaved.open)
 		}
+	}
+	// A reply to something else on the surface does not end the save (run-470 #1).
+	m, _ = update(m, orchDoneMsg{status: "cancelled run-1", sink: surfaceJobs})
+	m, _ = update(m, orchDoneMsg{status: "detached"}) // sink-less: the zero sink is the detail
+	if !m.jobs.formSaving {
+		t.Fatal("an unrelated reply cleared the in-flight save")
+	}
+	if _, c := update(m, ctrlS()); c != nil {
+		t.Fatal("ctrl+s re-sent the call after an unrelated reply")
 	}
 	m, _ = update(m, nudgeMsg{}) // a forwarded message never re-submits
 	m = settle(m, cmd)
@@ -485,6 +517,83 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 	cv := m.jobs.formVals.(*callFormVals)
 	if m.jobs.form == nil || m.jobs.form.State != huh.StateNormal || *cv.values["number"] != "7" || !strings.Contains(m.jobs.status, "boom") {
 		t.Fatalf("refused after completion: form %v status %q", m.jobs.form != nil, m.jobs.status)
+	}
+}
+
+// While a save hangs, esc leaves at once (run-470 #2); the late replies land on
+// the footer and never touch a form opened since (run-470 #3).
+func TestGuardOpFormLeaveWhileSaving(t *testing.T) {
+	noKeyGrace(t)
+	for _, refused := range []bool{false, true} {
+		m, a := jobsWith(t, jobsActions, nil, nil)
+		m, _ = update(m, press("a"))
+		v := m.jobs.formVals.(*actionFormVals)
+		v.name, v.body = "triage", "Look"
+		if refused {
+			a.orchErr = errBoom{}
+		}
+		m, cmd := update(m, ctrlS())
+		reply := quickMsgs(cmd) // held back: the daemon is slow
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+		if m.jobs.form != nil || m.unsaved.open || !strings.Contains(m.status, "saving") {
+			t.Fatalf("esc while saving: form %v dialog %v status %q", m.jobs.form != nil, m.unsaved.open, m.status)
+		}
+		if m.guardDirty(gOpJobs) {
+			t.Error("a saving form must not count as unsaved")
+		}
+		// A new form is open, and its own save in flight, when the old reply lands.
+		m, _ = update(m, press("a"))
+		nv := m.jobs.formVals.(*actionFormVals)
+		nv.name, nv.body = "second", "Again"
+		a.orchErr = nil
+		m, cmd2 := update(m, ctrlS())
+		for _, msg := range reply {
+			m, _ = update(m, msg)
+		}
+		if m.jobs.form == nil || !m.jobs.formSaving || strings.Contains(m.jobs.status, "boom") {
+			t.Errorf("refused=%v: the old reply touched the new form (open %v saving %v status %q)", refused, m.jobs.form != nil, m.jobs.formSaving, m.jobs.status)
+		}
+		if refused && !strings.Contains(m.status, "boom") {
+			t.Errorf("the old refusal should reach the footer: %q", m.status)
+		}
+		// Its own reply still closes it.
+		m = settle(m, cmd2)
+		if m.jobs.form != nil {
+			t.Errorf("refused=%v: the new form's own reply should close it", refused)
+		}
+	}
+}
+
+// A form completed by enter stays completed while its call is in flight:
+// forwarded messages neither revive it nor re-submit it (run-470 #6).
+func TestGuardCompletedOpFormWaitsWhileSaving(t *testing.T) {
+	m, a := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	m, _ = update(m, press("enter"))
+	m = typeIn(m, "7")
+	calls := strings.Count(a.orchCallsJoined(), "CallAction")
+	for range 3 { // to the last field (focus); tab's advance runs in its cmd
+		mm, c := update(m, tea.KeyMsg{Type: tea.KeyTab})
+		m = settle(mm, c)
+	}
+	m, cmd := update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, pending := settleHolding(m, cmd, func(msg tea.Msg) bool { _, ok := msg.(orchDoneMsg); return ok })
+	if !m.jobs.formSaving || m.jobs.form == nil || m.jobs.form.State != huh.StateCompleted {
+		t.Fatalf("enter should complete the form and send it: saving %v status %q", m.jobs.formSaving, m.jobs.status)
+	}
+	for range 3 {
+		m, _ = update(m, nudgeMsg{})
+	}
+	if m.jobs.form.State != huh.StateCompleted {
+		t.Error("a forwarded message revived the form mid-save")
+	}
+	if n := strings.Count(a.orchCallsJoined(), "CallAction") - calls; n != 1 {
+		t.Errorf("%d CallAction calls, want 1", n)
+	}
+	for _, msg := range pending {
+		m, _ = update(m, msg)
+	}
+	if m.jobs.form != nil {
+		t.Error("the reply should close the form")
 	}
 }
 

@@ -106,10 +106,12 @@ type orchOpState struct {
 	formBuild    func(m Model, spec *formSpec) *huh.Form
 	formSpec     *formSpec
 	formBaseline any
-	// formSaving: the form's call is in flight. Its keys are ignored until the
-	// reply (orchDoneMsg / orchFormErrMsg), so it is never sent twice or asked
-	// about as unsaved (SWI-9 review).
+	// formSaving: the form's call is in flight; formToken names that call. Only
+	// a reply carrying the token clears it or touches the form, so another
+	// reply on the surface, or one for a form since closed, never does (SWI-9
+	// review). While saving, ctrl+s does nothing and esc/ctrl+c leave at once.
 	formSaving bool
+	formToken  uint64
 	// status is the surface's own line (refusals, transient hints); the footer
 	// keeps the outcome of the last mutation.
 	status string
@@ -153,7 +155,7 @@ func (m *Model) closeOpForm(s orchSurface) {
 	op := m.opState(s)
 	op.form, op.formVals, op.formKind, op.formTarget = nil, nil, "", orchTarget{}
 	op.formBuild, op.formSpec, op.formBaseline = nil, nil, nil
-	op.formSaving = false
+	op.formSaving, op.formToken = false, 0
 }
 
 // newOrchForm builds a huh form in the package's form style (the 008 pattern:

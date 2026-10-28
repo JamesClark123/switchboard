@@ -209,8 +209,10 @@ otherwise:
 - **Lifetime invariant**: the dialog and the enlarged view are layers on `Model` bound to a `guardSurface`. After
   every message, `Update` runs `m.reconcileGuardLayers()`, which closes both layers when `activeGuard()` no longer
   matches their surface. This covers a background update while the dialog is open (spec Edge Cases), e.g. a forced
-  close. An op form whose save is in flight is not such a case: it is marked `formSaving` and ignores its keys until
-  the reply, so esc cannot open the dialog over it and Save can never send the call twice (PR #19 review). The same
+  close. An op form whose save is in flight is not such a case: it is marked `formSaving` with a per-call token. ctrl+s
+  and edits wait for the reply, so Save can never send the call twice; esc/ctrl+c leave at once with no dialog, the
+  call finishing in the background (`saving…` on the footer, its error there too). Only the reply carrying that call's
+  token clears or closes the form, so a late reply from an earlier form or another surface cannot (PR #19 review). The same
   pass opens a parked add-override (R7).
   - **Cost**: the pass runs on every message, including terminal output, spinner and blink ticks, so it must be O(1).
     It does three things: an `activeGuard()` evaluation (a few field checks), two surface comparisons, and a

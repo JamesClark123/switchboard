@@ -94,17 +94,22 @@ func (m Model) updateUnsavedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // Discard its esc path, Cancel nothing at all.
 func (m Model) unsavedChoose(choice int) (tea.Model, tea.Cmd) {
 	g := m.unsaved.surface
-	if m.unsaved.fromEnlarge && choice != unsavedCancel {
-		m.enlarge = enlargeState{} // its text was written back when ctrl+c asked
+	var ecmd tea.Cmd
+	if m.unsaved.fromEnlarge && m.enlarge.open && choice != unsavedCancel {
+		ecmd = m.closeEnlarge() // Save may be refused and keep the form: refresh it
 	}
 	m.unsaved = unsavedState{}
+	var next Model
+	var cmd tea.Cmd
 	switch choice {
 	case unsavedSave:
-		return m.guardSave(g)
+		next, cmd = m.guardSave(g)
 	case unsavedDiscard:
-		return m.guardLeave(g)
+		next, cmd = m.guardLeave(g)
+	default:
+		return m, nil
 	}
-	return m, nil
+	return next, tea.Batch(ecmd, cmd)
 }
 
 // unsavedBody names what is unsaved, by surface kind (≤ 49 cells, ≤ 2 lines).
