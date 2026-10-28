@@ -85,10 +85,11 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    continues to the action prompt, and nothing is re-sent.
 2. Restart the **worker's own** daemon (for a local worker, the orchestrator's daemon). The agent keeps running in
    the sandbox, but the daemon can no longer type into it.
-   - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. With no
-     custom post-prompts, the daemon then stops the idle old agent and starts a fresh one, and an *agent replaced*
-     notification says so; with custom post-prompts, the worker shows *needing the developer* and notes they were
-     dropped. Pressing `t` before the report shows the Wait/Replace dialog (default Wait); **Replace** fails the run
+   - An *agent detached* notification names each sandbox with a detached agent, once. The daemon never stops one
+     on its own.
+   - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. The
+     worker then shows *needing the developer* (`t → Replace frees the worker`, plus a note when custom post-prompts
+     were dropped); Replace starts a fresh agent and frees it. Pressing `t` before the report shows the Wait/Replace dialog (default Wait); **Replace** fails the run
      (`agent replaced by the developer after a daemon restart`) and starts one fresh agent.
    - **During a setup step:** the step halts with `agent detached by a daemon restart; last seen …`. An escape-hatch
      result arriving meanwhile kills nothing. `R` (*Restart setup*, after its confirm) stops the old agent, starts a
@@ -96,7 +97,8 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
      `/effort` were confirmed on the new agent. `S` isn't offered.
    - **During cleanup:** the worker shows *needing the developer*. `t` shows the dialog (default Replace, the agent
      is idle); Replace stops the old agent, starts a fresh one, and that frees the worker.
-   - **An idle worker** is replaced by the daemon right after the restart, with a notification.
+   - **An idle worker** keeps its detached agent: its row reads `agent detached by a daemon restart — t to Replace
+     or Wait`, and queued runs go to other workers until you press `t` → Replace.
    - **A plain sandbox** where you were mid-turn: `t` shows the dialog with default **Wait**; the turn is not
      killed unless you choose Replace.
    - **A sandbox stopped while the daemon was down** is not started by the restart, and gets no dialog.
@@ -105,8 +107,10 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    - **Without a daemon restart:** on the host, kill the `sbx exec` client of a working worker's agent. The run stays
      in progress (no `agent exited`), and `t` shows the dialog; `ps` in the sandbox still shows one agent. Then
      `kill -9` the old agent inside the sandbox: within a minute the run fails with `agent exited`.
-   - In every case, `ps` inside the sandbox never shows two agents, and every stopped agent produced an *agent
-     replaced* notification.
+   - **Stop during a check:** restart the daemon and press Stop on a worker while it still shows `checking for a
+     detached agent`. The sandbox stops and stays stopped (no `sbx exec` restarts it), and its row clears.
+   - In every case, `ps` inside the sandbox never shows two agents, and no agent is stopped except by your Replace,
+     `R`, or a sandbox stop/restart.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
    the step resolves from the daemon's record to sent, then finishes as usual.
 

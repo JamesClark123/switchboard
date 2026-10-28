@@ -165,9 +165,10 @@ message WorkerView {
 enum NotificationKind {
   // … 0..8 unchanged …
   NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED = 9;   // orchestrator: a step halted (FR-206c)
-  NOTIFICATION_KIND_AGENT_REPLACED = 10;         // owning daemon: an agent detached by a daemon restart was stopped,
-                                                 // by the developer or by the daemon; names who, the agent's last
-                                                 // state and the run affected (research R14)
+  NOTIFICATION_KIND_AGENT_DETACHED = 10;         // owning daemon: a probe found an agent detached by a daemon restart
+                                                 // (an orphan), once per orphan; names the sandbox, the agent's last
+                                                 // state and its run. The daemon never stops it; t → Replace or Wait
+                                                 // (research R14)
 }
 
 // ---- New RPCs --------------------------------------------------------------
@@ -193,7 +194,7 @@ message DeliverWorkerStepRequest {
                                          // or equal with retry
   bool retry = 9;                        // ResolveRunStep RETRY: a repeated step_index is allowed only while controller.run.halted
                                          // (or, for CLEAR, while hold == NEEDS_DEVELOPER)
-  bool restart = 10;                     // R on a step halted by an owning-daemon restart: the daemon reaps the orphan
+  bool restart = 10;                     // R on a step halted by an owning-daemon restart: the daemon stops the orphan
                                          // (mode restart), starts a fresh agent as guard 5 does and refuses "agent is
                                          // starting"; accepted only while the run is halted that way (research R14)
 }
@@ -202,7 +203,7 @@ message AgentInput {
   // … fields 1..4 unchanged …
   message AttachInfo {
     // … fields 1..3 unchanged …
-    bool replace_orphan = 4;             // `t` → Replace on an agent detached by a daemon restart (any sandbox): reap
+    bool replace_orphan = 4;             // `t` → Replace on an agent detached by a daemon restart (any sandbox): stop
                                          // it (an ACTION run fails, "agent replaced by the developer after a daemon
                                          // restart"), then start a fresh agent. Without it, attaching beside an
                                          // orphan is refused with the agent's last state (research R14)

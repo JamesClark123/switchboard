@@ -169,8 +169,10 @@ output untouched); a per-agent hook token passed in the agent's environment at l
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
 orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start, on an
 `sbx exec` client exit and on gate refusals;
-`agent.Registry.Session` is the one choke point that refuses to spawn beside it, and only the developer (or two
-surfaced daemon cases) stops it, always with an *agent replaced* notification (R14).
+`agent.Registry.Session` is the one choke point that refuses to spawn beside it (or while a stop/recreate holds the
+sandbox's `runtimeMu`, which also orders every probe and stop). The daemon only detects and surfaces an orphan
+(*agent detached* notification) and never stops one itself: only the developer (`t` → Replace, `R`) or a sandbox
+stop/restart does (R14, simplified in run-590).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

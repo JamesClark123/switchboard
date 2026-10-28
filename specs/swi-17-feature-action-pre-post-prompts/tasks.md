@@ -298,10 +298,12 @@ sequence model. No user story can be delivered before this phase.
     from the store at start, updated on spawn and reap; no store read per hook) and compares that one token in
     constant time; a match gives the event's generation. A token the sandbox doesn't have gets 403, and the event is dropped. **No** token
     (an agent launched before this feature) is accepted for status display only, never for evidence, holds or steps.
-    A generation's token is retired only once its agent is **known** gone (T047): a normal exec-client exit, a
-    probe that finds it gone, its sandbox stopping, or a reap. A killed exec client keeps the token until its probe.
-  - **Main PID persisted.** The store keeps `{generation → token, main PID, start time}`; the main PID (T046) is
-    written when bound, loaded at start, and overwritten by a probe's `agent.pid` of the same generation (T047).
+    A generation's token is retired only once its agent is **known** gone (T047): a probe that finds it gone, an
+    operation whose outcome is STOPPED or destroyed, or the developer stopping the orphan. An exec-client exit alone
+    never retires it.
+  - **Main PID persisted.** The store keeps `{generation → token, main PID, start time}`. The main PID (T046) is
+    written when it is bound and loaded at start. A probe's `agent.pid` of the same generation fills it **only when
+    none is bound**. A mismatch is logged, and the stored PID stays (T047).
   - **Reading the body.** It is parsed as a JSON token stream that keeps only the needed fields and skips large
     values without buffering them, under a 16 MiB hard cap.
   - **The escape hatch.** `/escape-hatch/run` requires a live generation's token. `writeWrapper`'s `curl` sends the
@@ -319,9 +321,10 @@ sequence model. No user story can be delivered before this phase.
     new agent is accepted; a hook with a wrong `X-Sxb-Gen` is dropped;
   - a surviving agent's token still works after `RefreshHooks` and a daemon restart, and is refused after its reap;
   - an orphan whose exec client was killed (SIGKILL) keeps a working token: its next hook is accepted and counts as
-    main; a normal client exit retires it;
+    main. Any client exit keeps the token until its probe; a gone probe retires it;
   - restart the daemon mid-action: the orphan's `Stop` hook updates `last_turn_end_at` (the main PID came from the
-    store); with no stored main PID, the start-up probe's `agent.pid` binds it;
+    store); with no stored main PID, the start-up probe's `agent.pid` binds it; an `agent.pid` rewritten to name
+    another live process doesn't change an existing binding (the mismatch is logged);
   - the generation counter after a restart is greater than any recorded `hold_gen`;
   - a generated wrapper's call carries the token and runs; a tokenless call to `/escape-hatch/run` gets 403;
   - a 5 MiB PreToolUse body is read and its `session_id` found;
@@ -334,11 +337,11 @@ sequence model. No user story can be delivered before this phase.
     re-record it.
   - **Main agent by process.** The hook command sends `X-Sxb-Pid: $PPID` (or, per T006, the PTY-device fallback).
     Bind the generation's **main PID** from its first non-`compact` SessionStart (any source) carrying the current
-    token, persist it with the token (T045), and let a probe's `agent.pid` of the same generation re-derive it (T047). An event is main when its token and PID match.
+    token, persist it with the token (T045), and let a probe's `agent.pid` of the same generation fill it only when none is bound (T047). An event is main when its token and PID match.
     Until the PID is bound, events count for status only.
   - The tap, the evidence fields and hold release use main-agent events only.
-  - **`startup`** ends a hold only from a generation greater than `hold_gen`, spawned by `AttachAgent`, guard 5, or
-    the daemon's own post-close replacement of an idle orphan (T047).
+  - **`startup`** ends a hold only from a generation greater than `hold_gen`, spawned by `AttachAgent` (including
+    `t` → Replace on an orphan, T047) or guard 5.
   - **Session id follows the main process.** A `clear` or `resume` SessionStart **from the main PID** updates the
     recorded `session_id`; one from any other PID (a nested `claude -c -p`, `claude -p --resume`) never does.
     `resume` never ends a hold.
@@ -363,56 +366,74 @@ sequence model. No user story can be delivered before this phase.
   - a nested session's `UserPromptSubmit` doesn't classify a step;
   - a `--continue` agent (first SessionStart `resume`) binds its session.
 - [ ] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
-  handles it as an orphan, decided by **evidence**, never by state flags:
+  handles it as an orphan, decided by **evidence**, never by state flags. The daemon **detects and surfaces**
+  orphans and **never stops one on its own** (simplified in run-590):
   - **Record generation, PID, start time and PTY.** In `SBD/agent/pty.go` `agentCommand`: `mkdir -p ~/.sxb; echo
     "<gen> $$ $(cut -d' ' -f22 /proc/$$/stat) $(tty)" > ~/.sxb/agent.pid; … exec claude …`.
-  - **Probe** (`SBD/agent/orphan.go`): one `sbx exec <ref> sh -c …` that reports *alive* `{gen, pid, start}` only if
-    `/proc/<pid>/stat` has the recorded start time. With no PID file, it reports **every** process whose executable is
-    the agent binary and whose command line starts with the fixed flags (`claude --dangerously-skip-permissions`),
-    excluding those whose parent is such a process. **Orphan** = alive and no live session of that generation.
-  - **Probe triggers** (research R14), each on RUNNING sandboxes only:
-    - **daemon start** (`SBD/sandbox/manager.go`): list running sandboxes (`ListStatuses`); non-running ones get
-      agent status EXITED and are never probed or reaped (`sbx exec` would start them). Mark the running ones
-      *unknown* synchronously, start the servers, then probe asynchronously with `orphanProbeConcurrency` (8), each
-      bounded by `orphanProbeTimeout` (10 s);
-    - **exec-client exit**: `Registry.onExit` for a session that isn't `closing`, on a RUNNING sandbox that isn't
-      stopping. A normal exit (code < 125) writes EXITED as today, with no probe. A signal or a runtime error code
-      (125–127, connection error) marks it *unknown*, releases `r.mu`/`statusMu`, and probes **asynchronously**;
-      the result is applied under the locks (alive → orphan record, run state kept; gone → EXITED);
+  - **Probe** (`SBD/agent/orphan.go`): one read-only `sbx exec <ref> sh -c …`.
+    - It reports *alive* `{gen, pid, start}` only if `/proc/<pid>/stat` has the recorded start time.
+    - With no PID file, or one that doesn't parse, it reports **every** process whose executable is the agent
+      binary and whose command line starts with the fixed flags (`claude --dangerously-skip-permissions`), excluding
+      those whose parent is such a process.
+    - **Orphan** = alive and no live session of that generation.
+    - It binds the generation's main PID from `agent.pid` only when none is bound (T045/T046).
+  - **`runtimeMu`** (`SBD/sandbox/manager.go`): a per-sandbox mutex, separate from `m.lifecycle` and the ops latch.
+    - **Who holds it.** These hold it from just before their runtime call until the resulting state is written:
+      `Stop`, `Destroy`, `Refresh` (its stop, and its bring-up), `AddKit` (the recreate) and `Restart` (the bring-up).
+      `Rename`, source edits and MCP attach don't take it.
+    - **Probes and `ReapOrphan`.** Each runs its `sbx exec` under it with a **try-lock**, after re-reading that the
+      record is RUNNING and that `ListStatuses` lists the sandbox as running. A probe that finds it held is dropped. A
+      developer's Replace or restart that finds it held is refused with `sandbox is busy (<operation>); try again`.
+    - **Lifecycle operations block** on it, which waits out an in-flight probe or stop.
+    - The agent session is closed by the on-change hook as today, never earlier.
+    - **Outcome rule**, applied as the operation releases the lock, from the state it wrote:
+      - STOPPED or destroyed → drop the orphan record, clear *unknown*, retire the token, and EXITED by the gone rule;
+      - RUNNING with an orphan record or *unknown* → mark *unknown* and probe once;
+      - anything else → keep the record and *unknown*.
+  - **Probe triggers** (research R14), each on RUNNING sandboxes only, and none of them stops anything:
+    - **daemon start**: list running sandboxes (`ListStatuses`). Non-running ones get agent status EXITED and are
+      never probed. Mark the running ones *unknown* synchronously, start the servers, then probe asynchronously with
+      `orphanProbeConcurrency` (8), each bounded by `orphanProbeTimeout` (10 s);
+    - **exec-client exit**: `Registry.onExit` for a session that isn't `closing`. It **always** marks the sandbox
+      *unknown*, releases `r.mu`/`statusMu`, and probes **asynchronously**. The exit status is not used. The result
+      is applied under the locks: alive → orphan record, run state kept; gone → EXITED;
     - **gate refusal**: each refusal schedules a re-probe, debounced to one per sandbox per 10 s;
     - a main-agent **`SessionEnd`** from the orphan's generation;
     - **backstop**: every `orphanBackstop` (60 s), only while an orphan record holds a run.
 
-    **Stopping.** `Stop`, `Refresh`, `Destroy`, the kit-attach recreate and `Restart`'s teardown mark the sandbox
-    stopping (`m.lifecycle.begin(id)`) and close the agent session (`closing`) **before** the runtime call, cancel
-    any in-flight probe and wait for its `sbx exec` to return. The probe skips a sandbox that is stopping, recorded
-    STOPPED/DESTROYING/not RUNNING, or not running per `ListStatuses`, checked just before the exec under a
-    per-sandbox probe latch. When the operation ends, drop the orphan record and retire the token.
+    On a **gone** probe: drop the record, retire the token, and write EXITED only when the recorded status is set and
+    not EXITED.
 
-    Gone on any probe → drop the record, retire the token, and write EXITED only when the recorded status is set
-    and not EXITED. Every probe also re-derives the generation's main PID from `agent.pid` (T046). A failed probe
-    leaves *unknown*, retried with backoff; after 3 failures in a row, set the row's note `can't check for a
-    detached agent: <error>` and let `AttachAgent{replace_orphan}` reap anyway: it bypasses only the *unknown*
-    gate, and the reap script keeps its start-time and binary checks. A failed reap exec kills and spawns nothing
-    and returns its error to the dialog.
+    **Probe failures.** A failed probe leaves the sandbox *unknown*, retried with backoff. After 3 failures in a row,
+    set the row's note to `can't check for a detached agent: <error>`. The TUI then offers **Restart sandbox** or
+    **Wait**. There is no unchecked stop.
+  - **Surfacing.** When a probe first creates an orphan record, emit `NOTIFICATION_KIND_AGENT_DETACHED` (sandbox,
+    last state, run), once per record, and set the worker row's note to `agent detached by a daemon restart — t to
+    Replace or Wait`.
   - **Phases.** For each orphan whose sandbox has a `controller.run` with a `step_role` or `hold`:
-    - **ACTION:** left as is (in flight; hooks and the MCP report still work);
+    - **ACTION:** left as is (in flight; hooks and the MCP report still work). At close, the cleanup steps are
+      dropped, and the hold is NEEDS_DEVELOPER with the note `agent detached by a daemon restart; t → Replace frees
+      the worker` (+ `custom post-prompts were dropped` when there were any);
     - **SETUP**, or an action step not yet accepted: marked so the orchestrator halts the step with the note `agent
       detached by a daemon restart; last seen <state> <time>; R restarts setup with a fresh agent` (and
-      `sent_before_restart` when it was sent);
-    - **CLEANUP or any hold:** `hold = NEEDS_DEVELOPER` with `hold_gen`.
-  - **`ReapOrphan(ctx, id, mode, by)`**: RUNNING sandboxes only. Re-probe; TERM **each** live matched process, then
-    KILL after `orphanKillWait`. Then retire the generation's token, drop the orphan record, emit
-    `NOTIFICATION_KIND_AGENT_REPLACED` (who, last state, run) and log it, and write EXITED. For a replaced ACTION run,
-    write the reason `agent replaced by the developer after a daemon restart` into `controller.run.step_note` in the
-    same update. For `mode = restart`, write no EXITED (the fresh agent's STARTING follows).
-  - **Callers that may reap**, and no others:
+      `sent_before_restart` when it was sent). `X` fails the run and leaves the hold NEEDS_DEVELOPER;
+    - **CLEANUP or any hold:** `hold = NEEDS_DEVELOPER` with `hold_gen`;
+    - **a worker with no run:** nothing changes on the record. Delivery is refused by the gate (FAILED_PRECONDITION),
+      and dispatch skips the worker until the developer replaces the agent.
+  - **`ReapOrphan(ctx, id, mode)`**, the developer's stop:
+    - RUNNING sandboxes only, under `runtimeMu` (try-lock).
+    - In one script: re-probe with the start-time and binary checks, TERM **each** live matched process, then KILL
+      after `orphanKillWait`.
+    - A failed exec stops and spawns nothing and returns its error.
+    - Then retire the generation's token, drop the orphan record, log the stop and write EXITED.
+    - For a replaced ACTION run, write the reason `agent replaced by the developer after a daemon restart` into
+      `controller.run.step_note` in the same update.
+    - For `mode = restart`, write no EXITED (the fresh agent's STARTING follows).
+  - **Callers that may stop an orphan**, and no others:
     - `AttachAgent` with `AttachInfo.replace_orphan`, on any sandbox;
-    - `DeliverWorkerStep.restart` (T024);
-    - the daemon itself: a worker with no run whose orphan was last seen IDLE (then `WarmStart`), and any **finished**
-      run on an orphan (completed, failed by `X`, or failed by an exit) with no custom post-prompts pending, once the
-      orphan is last seen IDLE (then a fresh spawn, whose `startup` ends the hold). With custom post-prompts dropped,
-      the hold stays NEEDS_DEVELOPER, and the note says so.
+    - `DeliverWorkerStep.restart` (T024).
+
+    The daemon itself never calls `ReapOrphan`. A guard test fails if a call site appears outside these two.
   - **Orchestrator** (`SBD/orchestrator/sequence.go`): a run failed by EXITED uses `controller.run.step_note` as its
     reason when set. A run failed by a replace sends **no** custom post-prompts and no Clear.
 
@@ -421,42 +442,52 @@ sequence model. No user story can be delivered before this phase.
     - each phase at daemon start;
     - a stopped sandbox is never probed (no `sbx exec`), and its status becomes EXITED;
     - a recorded non-EXITED status with a dead PID, or a reused PID (start time differs), is **not** an orphan;
-    - stop a sandbox with a live agent: no `sbx exec` follows the `sbx stop` (fake runner records argv order), a
-      probe in flight when the stop begins finishes before `sbx stop` runs, and a probe triggered during the stop
-      is skipped; the same for `Refresh`, `Destroy` and kit attach;
-    - the exec client exits with code 0: EXITED, no `sbx exec`; it is killed by SIGKILL: `onExit` returns without
-      waiting on the probe (a blocking fake prober), and `SetAgentStatus` from another goroutine isn't blocked;
-    - a gone probe on a sandbox whose recorded status is none or EXITED writes nothing;
-    - *Replace anyway* with a PID file whose PID was reused (start time differs) signals nothing; a failing reap
-      exec spawns nothing and the dialog shows its error;
     - the servers start before the probes finish, and the gate refuses every *unknown* sandbox meanwhile; probes run
       at most 8 at a time; a probe timeout leaves the sandbox refused and re-probed; after 3 failures `t` offers
-      *Replace anyway*, which still checks start times (below);
-    - the `sbx exec` client of a live agent is killed while the daemon runs: the agent becomes an orphan record (no
-      EXITED, no second agent on the next `t`); killing the agent itself writes EXITED as today;
+      *Restart sandbox* and *Wait*;
+    - **ordering, with a fake runner that records argv order and a blocking fake prober**, for each of `Stop`,
+      `Refresh`, `Destroy`, `AddKit` and `Restart`:
+      - a probe in flight when the operation starts finishes before its runtime call;
+      - a probe or Replace triggered during the operation runs no `sbx exec` (dropped or refused `sandbox is busy`);
+      - no `sbx exec` follows `sbx stop`;
+      - the gate refuses every spawn path while the lock is held (`sandbox is stopping`);
+    - `Rename` of a sandbox with an orphan doesn't take `runtimeMu`, and keeps the record and the token;
+    - outcomes: a failing `runner.Stop` with an orphan keeps the record and the token, and re-probes; a successful
+      stop drops the record and retires the token; a kit attach that recreates the container probes once and writes
+      EXITED;
+    - the `sbx exec` client exits with code 0, 1, 137 or by SIGKILL: each probes. A live agent becomes an orphan
+      record (no EXITED, no second agent on the next `t`). A dead one is EXITED. `onExit` returns without waiting
+      on the probe, and `SetAgentStatus` from another goroutine isn't blocked;
+    - a gone probe on a sandbox whose recorded status is none or EXITED writes nothing;
     - an orphan that exits on its own is noticed by the next gate refusal, by its `SessionEnd`, or (crashed, mid-run)
       by the 60 s backstop, and its run fails with `agent exited`;
-    - after `X` at a restart halt, the daemon replaces the orphan once idle and frees the worker;
-  - in `SBD/agent/pty_test.go`: the launch command creates `~/.sxb` and records gen, PID and start time; `ReapOrphan`
-    sends TERM, then KILL, and emits AGENT_REPLACED; a missing PID file falls back to the binary-and-flags match, finds
-    **both** of two pre-feature agents (and a reap stops both), matches one launched with since-changed spec args,
-    and spares a nested `claude -p`;
+    - **no automatic stop**: an idle worker with no run, an orphan whose run completed (with and without custom
+      post-prompts), and one after `X` at a restart halt each keep their orphan. Dispatch skips the worker, the hold
+      is NEEDS_DEVELOPER, and AGENT_DETACHED is emitted once;
+  - in `SBD/agent/pty_test.go`:
+    - the launch command creates `~/.sxb` and records gen, PID and start time;
+    - `ReapOrphan` sends TERM, then KILL, and a reused PID (start time differs) is never signalled;
+    - a missing or unparseable PID file falls back to the binary-and-flags match. That match finds **both** of two
+      pre-feature agents (and a stop ends both), matches one launched with since-changed spec args, and spares a
+      nested `claude -p`;
   - in `SBD/orchestrator/sequence_test.go`:
-    - an orphan's completion report closes an ACTION run; with no custom post-prompts the daemon replaces the idle
-      orphan and the fresh `startup` ends the hold; with custom post-prompts the hold is NEEDS_DEVELOPER, noting they
-      were dropped;
+    - an orphan's completion report closes an ACTION run, and the hold is NEEDS_DEVELOPER; `t` → Replace's fresh
+      `startup` ends it;
     - replace on an ACTION orphan fails the run with the replace reason and sends no post-prompt;
-    - a SETUP step halts, and `R` reaps the orphan, starts a fresh agent and re-sends every pre-step from step 0;
+    - a SETUP step halts, and `R` stops the orphan, starts a fresh agent and re-sends every pre-step from step 0;
       the action prompt is typed only after `/model` and `/effort` were confirmed on the fresh agent.
 - [ ] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
   OrphanGate)`. `Registry.Session` calls the gate **before the factory**. It never blocks (the terminal registry calls
-  `Session` under its global lock) and decides **only from the orphan record** (T047), never from run flags:
-  - no record → spawn;
+  `Session` under its global lock), and it decides **only from the orphan record and `runtimeMu`** (T047), never from
+  run flags:
+  - no record, and no operation holds `runtimeMu` → spawn;
   - a record, or *unknown* → `ErrOrphan` with the agent's last state (`agent detached by a daemon restart; last seen
-    working 10:42`, or `checking for a detached agent`). Nothing spawns, and **the gate never reaps**.
+    working 10:42`, or `checking for a detached agent`);
+  - an operation holds `runtimeMu` → `ErrStopping` (`sandbox is stopping`), a non-blocking check.
 
-  No caller checks for orphans itself. Callers allowed to reap call `ReapOrphan` first (T047). Best-effort callers log
-  the error and are re-kicked by the `sandbox_changed` after a reap.
+  Nothing spawns, and **the gate never stops anything**. No caller checks for orphans itself. The two developer
+  callers allowed to stop one call `ReapOrphan` first (T047). Best-effort callers log the error and are re-kicked by
+  the next `sandbox_changed`.
 
   Test, in `SBD/agent/orphan_gate_test.go`: a table over **every** spawn path, each driven through the real daemon
   wiring with a fake factory that counts spawns and a fake prober and reaper:
@@ -467,12 +498,12 @@ sequence model. No user story can be delivered before this phase.
   - `Registry.Prompt` (an escape-hatch result);
   - `EnsureDrained`.
 
-  For each path, and each state (ACTION; SETUP not yet halted; SETUP halted; hold; no run; uncontrolled; unknown),
-  assert:
-  - the factory never runs while an orphan record exists;
-  - **only** `replace_orphan`, `restart` and the two daemon cases reap, and each reap raises AGENT_REPLACED;
-  - in particular, an escape-hatch result on a SETUP run that hasn't halted yet kills nothing and fails nothing;
-  - exactly one agent exists afterwards, and two concurrent reaps signal once;
+  For each path, and each state (ACTION; SETUP not yet halted; SETUP halted; hold; no run; uncontrolled; unknown;
+  `runtimeMu` held), assert:
+  - the factory never runs while an orphan record exists or the lock is held;
+  - **only** `replace_orphan` and `restart` stop an orphan;
+  - in particular, an escape-hatch result on a SETUP run that hasn't halted yet stops nothing and fails nothing;
+  - exactly one agent exists afterwards, and two concurrent stops signal once;
   - each refusal schedules a re-probe (at most one per sandbox per 10 s), and when it finds the orphan gone, the next
     spawn on that path succeeds.
 
@@ -598,10 +629,10 @@ needs a custom post-prompt, which arrives in US2.
   - **SKIP**: `advance`.
   - **A step halted by a daemon restart** (T047): `R` is a **restart**. It resets the run to step 0 with every pre-step
     PENDING and sends step 0 with `DeliverWorkerStep.restart`. On that flag (accepted only while the run is halted
-    by a restart), the owning daemon reaps the orphan (`mode = restart`), starts a fresh agent as guard 5 does, and
+    by a restart), the owning daemon stops the orphan (`ReapOrphan`, `mode = restart`), starts a fresh agent as guard 5 does, and
     refuses `agent is starting`; the stepper retries without the flag once the agent is ready. Each pre-step is re-sent as a new send (`step_send` grows), so the action prompt never reaches an agent without its
     model and effort (SC-001). Its single confirm reads `Stop the detached agent (last seen <state> <time>) and
-    restart setup from the first step? Anything it was doing is lost. (y/N)`; the reap raises AGENT_REPLACED. `S` is refused for such a halt (`the agent was replaced; restart setup with R`). `X` fails the run.
+    restart setup from the first step? Anything it was doing is lost. (y/N)`; the stop is logged and noted in `step_note`. `S` is refused for such a halt (`the agent was replaced; restart setup with R`). `X` fails the run.
   - **FAIL**, by role (FR-222):
     - SETUP or ACTION_PROMPT → `failRun` per FR-212, naming the step. No custom post-prompt follows; only Clear, if
       enabled (FR-214 as amended);
@@ -650,8 +681,9 @@ needs a custom post-prompt, which arrives in US2.
   `backstopExpired` when the sandbox's `controller.run.step_role` is SETUP or CLEANUP. Read it through the status
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
 - [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
-  like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_REPLACED` ("<sandbox>: detached agent stopped by <you|the
-  daemon> (last seen <state>)[; <run> failed]"), never suppressed, so every kill is seen (research R14).
+  like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_DETACHED` ("<sandbox>: agent detached by a daemon restart (last
+  seen <state>)[ on <run>] — t to Replace or Wait"), never suppressed, since the daemon never resolves an orphan on
+  its own (research R14).
 
 ### TUI: built-ins, run rows and controls (contracts/jobs-ui.md)
 
@@ -684,8 +716,10 @@ needs a custom post-prompt, which arrives in US2.
   - **Detached agent** (`UI/terminal.go` attach, and `T`), on **any** sandbox, worker or not: when the attach is
     refused because of a detached agent, show the Wait/Replace dialog with its last state and run (default Wait if
     it was working or waiting for input, Replace if idle); Replace re-attaches with `AttachInfo.replace_orphan` and
-    shows `replacing the detached agent…`. Test both choices, on a worker and on a plain sandbox, with the fake
-    daemon;
+    shows `replacing the detached agent…`. A refusal with `sandbox is busy`/`sandbox is stopping` shows its message.
+    After 3 failed checks (`can't check for a detached agent: <error>`), the dialog offers **Restart sandbox** (behind
+    a confirm naming the run it fails) and **Wait**, with no Replace. Test every choice, on a worker and on a plain
+    sandbox, with the fake daemon;
   - a step marked `step_unconfirmed` lists `S` first and `R` asks the "may already have run" confirm.
 
   Add `ResolveRunStep` to the TUI `Daemon` interface and its fakes.

@@ -58,16 +58,21 @@ judged by evidence after its submit.
    - An action in flight stays in flight.
    - Whether a sandbox has one is decided by **evidence**: a probe (running sandboxes only) finds a recorded agent
      process alive with no live session of its generation. It runs on every event that can create or clear an
-     orphan: daemon start (asynchronously, after the servers start), an `sbx exec` client exit, a gate refusal, the
+     orphan: daemon start (asynchronously, after the servers start), any `sbx exec` client exit, a gate refusal, the
      agent's `SessionEnd`, and a 60 s backstop while an orphan holds a run.
+   - **Detect and surface only** (simplified in run-590). The daemon never stops an orphan on its own. It emits an
+     *agent detached* notification and notes the row, and dispatch skips an orphaned worker until the developer acts.
+   - **One per-sandbox lock, `runtimeMu`,** is held by Stop, Destroy, Refresh, kit attach and Restart for their
+     runtime calls. Every probe and stop try-locks it, so none can overlap or follow `sbx stop`. Each operation
+     settles the orphan record from the state it wrote (STOPPED drops it; RUNNING re-probes).
    - `t` on any sandbox with one opens a Wait/Replace dialog; replacing an ACTION run's agent fails the run.
    - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
      again on the fresh agent.
    - Cleanup becomes *needing the developer*.
    - **One choke point:** every spawn goes through `agent.Registry.Session`, whose orphan gate refuses to start an
-     agent beside an orphan and never reaps. Only the developer (`t` → Replace, `R`) or two daemon cases (an idle
-     orphan on a worker with no run, or after its run closed) reap, and every reap raises an *agent replaced*
-     notification. So two agents never share a workspace, and none is killed unseen.
+     agent beside an orphan (or while `runtimeMu` is held) and never stops anything. Only the developer (`t` → Replace,
+     `R`, or a sandbox stop/restart) stops an orphan. So two agents never share a workspace, and none is killed
+     unseen.
 
 ## Technical Context
 

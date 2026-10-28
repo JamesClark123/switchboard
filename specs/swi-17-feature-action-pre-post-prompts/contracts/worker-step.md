@@ -19,8 +19,8 @@ sandbox starts an agent. Elsewhere, only `AttachAgent` spawns while a sandbox is
 Every spawn, on this path or any other, goes through `agent.Registry.Session`, whose **orphan gate** refuses to
 start an agent beside one left running by an owning-daemon restart (research R14). The gate only refuses; it never
 reaps. Guard 5's start therefore never puts a second agent in the workspace and never kills one; it gets the gate's
-refusal, and the step stays waiting (or halted, for a setup step) until the developer or the daemon replaces the
-orphan.
+refusal, and the step stays waiting (or halted, for a setup step) until the developer replaces the orphan (the daemon
+never does).
 
 A broadcaster created with no client attached sets the PTY and its screen to `stepScreenSize` (140×45) and nudges a
 resize, so the agent repaints and the input box is on the screen (research R2).
