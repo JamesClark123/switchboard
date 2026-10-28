@@ -191,22 +191,9 @@ func guardFires(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.
 		return actions, runs, true
 	}
 	actionsBefore, runsBefore := unlanedWork(before, queuedBefore)
-	was := make(map[string]struct{}, len(actionsBefore)+len(runsBefore))
-	for _, x := range actionsBefore {
-		was["a/"+x] = struct{}{}
-	}
-	for _, x := range runsBefore {
-		was["r/"+x] = struct{}{}
-	}
-	for _, x := range actions {
-		if _, ok := was["a/"+x]; !ok {
-			return actions, runs, true
-		}
-	}
-	for _, x := range runs {
-		if _, ok := was["r/"+x]; !ok {
-			return actions, runs, true
-		}
+	if slices.ContainsFunc(actions, func(a string) bool { return !slices.Contains(actionsBefore, a) }) ||
+		slices.ContainsFunc(runs, func(r string) bool { return !slices.Contains(runsBefore, r) }) {
+		return actions, runs, true
 	}
 	return nil, nil, false
 }

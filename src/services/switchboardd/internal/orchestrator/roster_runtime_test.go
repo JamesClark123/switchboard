@@ -241,19 +241,13 @@ func TestLaneDisplayPushes(t *testing.T) {
 	}
 	w.mu.Unlock()
 	wbPushes := w.countPrefix("update wb")
-	timers0 := env.clock.pending()
 	rt.markLanes("wa")
 	// The retry waits on the runtime's clock (lanePushRetryMin), not real time.
 	waitFor(t, func() bool { return waPushes.Load() >= 1 })
 	if slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) {
 		t.Fatal("the failed push should not have landed")
 	}
-	waitFor(t, func() bool {
-		rt.lanes.mu.Lock()
-		defer rt.lanes.mu.Unlock()
-		return rt.lanes.armed["box"]
-	})
-	waitFor(t, func() bool { return env.clock.pending() > timers0 }) // the retry's AfterFunc
+	waitFor(t, func() bool { return retrySleeping(rt, "box") })
 	env.clock.Advance(lanePushRetryMin)
 	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
 	if waPushes.Load() != 2 {
@@ -324,24 +318,98 @@ func TestLanePushRetriesAreBounded(t *testing.T) {
 		return nil
 	}
 	w.mu.Unlock()
-	timers0 := env.clock.pending()
 	rt.markLanes("wa")
 	for i := 1; i <= lanePushMaxAttempts; i++ {
-		waitFor(t, func() bool {
-			rt.lanes.mu.Lock()
-			defer rt.lanes.mu.Unlock()
-			return rt.lanes.armed["box"] && int(pushes.Load()) == i && env.clock.pending() > timers0
-		})
+		waitFor(t, func() bool { return int(pushes.Load()) == i && retrySleeping(rt, "box") })
 		env.clock.Advance(linkRetryMax)
 	}
 	waitFor(t, func() bool {
 		rt.lanes.mu.Lock()
 		defer rt.lanes.mu.Unlock()
-		return int(pushes.Load()) == lanePushMaxAttempts+1 && !rt.lanes.armed["box"] && rt.lanes.failures["wa"] == 0
+		return int(pushes.Load()) == lanePushMaxAttempts+1 && rt.lanes.retriers["box"] == nil && rt.lanes.retry["wa"] == nil
 	})
 	env.clock.Advance(linkRetryMax)
 	quiesce(t, rt)
 	if got := int(pushes.Load()); got != lanePushMaxAttempts+1 {
 		t.Errorf("pushes = %d, want %d", got, lanePushMaxAttempts+1)
+	}
+}
+
+// retrySleeping reports whether host's retry loop is asleep on its timer.
+func retrySleeping(rt *runtime, host string) bool {
+	rt.lanes.mu.Lock()
+	defer rt.lanes.mu.Unlock()
+	lr := rt.lanes.retriers[host]
+	return lr != nil && lr.timer != nil
+}
+
+// Each worker keeps its own backoff on a shared host loop: a first failure is
+// retried after lanePushRetryMin even while another worker on the host waits
+// longer, and a worker that leaves the roster drops its retry.
+func TestLanePushRetryIsPerWorker(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	w.put(running("wb", "b"))
+	for _, id := range []string{"wa", "wb"} {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quiesce(t, rt)
+	var pa, pb_ atomic.Int32
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.GetLanes() == nil {
+			return nil
+		}
+		switch req.GetSandboxId() {
+		case "wa":
+			pa.Add(1)
+		case "wb":
+			pb_.Add(1)
+		}
+		return status.Error(codes.Unavailable, "wedged")
+	}
+	w.mu.Unlock()
+	// wa fails three times: its next retry is 8 s away.
+	rt.markLanes("wa")
+	for i := int32(1); i <= 3; i++ {
+		waitFor(t, func() bool { return pa.Load() == i && retrySleeping(rt, "box") })
+		if i < 3 {
+			env.clock.Advance(linkRetryMax)
+		}
+	}
+	rt.markLanes("wb")
+	waitFor(t, func() bool { return pb_.Load() == 1 && retrySleeping(rt, "box") })
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return pb_.Load() == 2 && retrySleeping(rt, "box") })
+	if pa.Load() != 3 {
+		t.Fatalf("wa pushes = %d: retried on wb's schedule", pa.Load())
+	}
+	// wb leaves the roster; its due retry is dropped, not leaked.
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Workers = slices.DeleteFunc(x.Workers, func(w *pb.Worker) bool { return w.GetSandboxId() == "wb" })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.clock.Advance(4 * lanePushRetryMin)
+	waitFor(t, func() bool {
+		rt.lanes.mu.Lock()
+		defer rt.lanes.mu.Unlock()
+		return rt.lanes.retry["wb"] == nil && pa.Load() == 4
+	})
+	if pb_.Load() != 2 {
+		t.Errorf("wb pushes = %d after leaving the roster", pb_.Load())
+	}
+	// A successful reconnect push drops wa's pending retry.
+	w.mu.Lock()
+	w.onUpdate = nil
+	w.mu.Unlock()
+	api, _ := rt.apiFor("box")
+	rt.pushWorkerStateTo(bg(), "box", api)
+	quiesce(t, rt)
+	if n := pa.Load(); n != 4 {
+		t.Errorf("wa pushes = %d, want no retry after the reconnect push", n)
 	}
 }

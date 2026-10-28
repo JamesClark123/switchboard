@@ -26,8 +26,11 @@ func (rt *runtime) pushWorkerStateTo(ctx context.Context, hostID string, api Wor
 		if w.GetHostId() != hostID {
 			continue
 		}
-		// A failure is logged by pushWorker; the next reconnect retries.
-		_ = rt.pushWorker(ctx, api, w.GetSandboxId(), true)
+		// A failure is logged by pushWorker; the next reconnect retries. A
+		// success carries the lanes, so a pending lane retry is dropped.
+		if rt.pushWorker(ctx, api, w.GetSandboxId(), true) == nil {
+			rt.lanePushed(hostID, w.GetSandboxId(), false)
+		}
 	}
 }
 

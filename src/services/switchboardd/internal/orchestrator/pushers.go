@@ -63,16 +63,32 @@ func (rt *runtime) pushBriefings() {
 
 // lanePusher keeps the workers whose lane display must be pushed, per host,
 // each host drained by its own goroutine. A push that fails transiently while
-// the host is up is retried with a per-worker backoff (failures), at most one
-// timer per host (armed), up to lanePushMaxAttempts; anything given up on is
-// corrected by the next reconnect push.
+// the host is up is retried with the worker's own backoff (retry), driven by
+// at most one retry loop per host (retriers), up to lanePushMaxAttempts; a
+// worker given up on is corrected by its next lane change, briefing refresh or
+// reconnect push.
 type lanePusher struct {
 	mu       sync.Mutex
 	dirty    map[string]map[string]struct{} // host id -> worker ids
 	running  map[string]bool
-	failures map[string]int                 // worker id -> consecutive transient failures
-	retry    map[string]map[string]struct{} // host id -> worker ids waiting for the timer
-	armed    map[string]bool                // host id -> its retry timer is pending
+	retry    map[string]*laneRetry   // worker id -> its pending retry
+	retriers map[string]*laneRetrier // host id -> its retry loop
+}
+
+// laneRetry is one worker's retry state.
+type laneRetry struct {
+	host    string
+	n       int           // consecutive transient failures
+	backoff time.Duration // the delay before its latest retry
+	due     time.Time
+	queued  bool // marked again; waiting for that push's outcome
+}
+
+// laneRetrier is a host's retry loop: it sleeps until its earliest due retry,
+// woken early when an earlier one joins.
+type laneRetrier struct {
+	wake  chan struct{} // buffered 1
+	timer Timer         // the pending sleep (nil while awake)
 }
 
 // nextBackoff doubles cur from lo to hi (cur 0 starts at lo).
@@ -132,7 +148,7 @@ func (rt *runtime) drainLanes(host string) {
 			// Down: the reconnect pushes every worker's lanes.
 			p.mu.Lock()
 			for id := range batch {
-				delete(p.failures, id)
+				p.dropRetry(id)
 			}
 			p.mu.Unlock()
 			continue
@@ -149,57 +165,126 @@ func (rt *runtime) drainLanes(host string) {
 }
 
 // lanePushed records one push's outcome: a success (or a failure not worth
-// retrying) clears the worker's failures; a transient one queues it for the
-// host's retry timer, arming it unless it already is, until
-// lanePushMaxAttempts.
+// retrying) drops the worker's retry; a transient one schedules the next
+// after the worker's own backoff, until lanePushMaxAttempts.
 func (rt *runtime) lanePushed(host, id string, again bool) {
 	p := &rt.lanes
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if !again || rt.ctx.Err() != nil {
-		delete(p.failures, id)
+		p.dropRetry(id)
+		p.mu.Unlock()
 		return
 	}
-	if p.failures == nil {
-		p.failures, p.retry, p.armed = map[string]int{}, map[string]map[string]struct{}{}, map[string]bool{}
+	if p.retry == nil {
+		p.retry, p.retriers = map[string]*laneRetry{}, map[string]*laneRetrier{}
 	}
-	p.failures[id]++
-	if p.failures[id] > lanePushMaxAttempts {
-		delete(p.failures, id)
-		rt.svc.logf("[orchestrator %s] gave up pushing lanes to %s on %s; the next reconnect pushes them", rt.record().GetName(), id, host)
+	r := p.retry[id]
+	if r == nil {
+		r = &laneRetry{}
+		p.retry[id] = r
+	}
+	r.n++
+	if r.n > lanePushMaxAttempts {
+		p.dropRetry(id)
+		p.mu.Unlock()
+		rt.svc.logf("[orchestrator %s] gave up pushing lanes to %s on %s; its next lane change, briefing refresh or reconnect pushes them", rt.name(), id, host)
 		return
 	}
-	if p.retry[host] == nil {
-		p.retry[host] = map[string]struct{}{}
+	r.host, r.queued = host, false
+	r.backoff = nextBackoff(r.backoff, lanePushRetryMin, linkRetryMax)
+	r.due = rt.svc.clock.Now().Add(r.backoff)
+	if lr := p.retriers[host]; lr != nil {
+		lr.poke()
+	} else {
+		lr = &laneRetrier{wake: make(chan struct{}, 1)}
+		p.retriers[host] = lr
+		rt.wg.Add(1)
+		go rt.retryLanes(host, lr)
 	}
-	p.retry[host][id] = struct{}{}
-	if p.armed[host] {
+	p.mu.Unlock()
+}
+
+// poke wakes the loop (it never blocks).
+func (lr *laneRetrier) poke() {
+	select {
+	case lr.wake <- struct{}{}:
+	default:
+	}
+}
+
+// dropRetry forgets a worker's retry and wakes its host's loop, which ends
+// once nothing is left to retry. The caller holds p.mu.
+func (p *lanePusher) dropRetry(id string) {
+	r := p.retry[id]
+	if r == nil {
 		return
 	}
-	var d time.Duration
-	for range p.failures[id] {
-		d = nextBackoff(d, lanePushRetryMin, linkRetryMax)
+	delete(p.retry, id)
+	if lr := p.retriers[r.host]; lr != nil {
+		lr.poke()
 	}
-	p.armed[host] = true
-	rt.wg.Add(1)
-	go func() {
-		defer rt.wg.Done()
-		ok := wait(rt.ctx, rt.svc.clock, d)
+}
+
+// retryLanes is a host's retry loop: it marks the workers whose retry is due
+// and sleeps until the next one, ending when none is left.
+func (rt *runtime) retryLanes(host string, lr *laneRetrier) {
+	defer rt.wg.Done()
+	p := &rt.lanes
+	for {
 		p.mu.Lock()
-		var ids []string
-		for id := range p.retry[host] {
-			// A worker pushed fine meanwhile has no failures left.
-			if p.failures[id] > 0 {
-				ids = append(ids, id)
+		if lr.timer != nil {
+			lr.timer.Stop()
+			lr.timer = nil
+		}
+		now := rt.svc.clock.Now()
+		var due []string
+		var next time.Time
+		for id, r := range p.retry {
+			switch {
+			case r.host != host || r.queued:
+			case !r.due.After(now):
+				r.queued = true
+				due = append(due, id)
+			case next.IsZero() || r.due.Before(next):
+				next = r.due
 			}
 		}
-		delete(p.retry, host)
-		p.armed[host] = false
-		p.mu.Unlock()
-		if ok {
-			rt.markLanes(ids...)
+		if rt.ctx.Err() != nil || (len(due) == 0 && next.IsZero()) {
+			delete(p.retriers, host)
+			p.mu.Unlock()
+			return
 		}
-	}()
+		if len(due) == 0 {
+			lr.timer = rt.svc.clock.AfterFunc(next.Sub(now), lr.poke)
+		}
+		p.mu.Unlock()
+		if len(due) > 0 {
+			rt.retryDue(host, due)
+			continue
+		}
+		select {
+		case <-lr.wake:
+		case <-rt.ctx.Done():
+		}
+	}
+}
+
+// retryDue marks due workers again; a worker that left the roster or the host
+// meanwhile drops its retry.
+func (rt *runtime) retryDue(host string, ids []string) {
+	rec := rt.record()
+	var mark []string
+	p := &rt.lanes
+	p.mu.Lock()
+	for _, id := range ids {
+		if hostOf(rec, id) == host {
+			mark = append(mark, id)
+		} else {
+			p.dropRetry(id)
+		}
+	}
+	p.mu.Unlock()
+	rt.markLanes(mark...)
 }
 
 // definiteRefusal reports whether a remote call was answered with a refusal,
