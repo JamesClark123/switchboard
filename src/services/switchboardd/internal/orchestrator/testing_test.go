@@ -234,6 +234,9 @@ func quiesce(t *testing.T, rt *runtime) {
 		for _, r := range rt.lanes.running {
 			busy = busy || r
 		}
+		for _, r := range rt.lanes.armed {
+			busy = busy || r // a retry is still pending
+		}
 		rt.lanes.mu.Unlock()
 		return !busy
 	})

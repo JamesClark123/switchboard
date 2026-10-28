@@ -61,6 +61,9 @@ const (
 	// failed transiently while its host is up is tried again; it doubles to
 	// linkRetryMax while the host keeps failing.
 	lanePushRetryMin = 2 * time.Second
+	// lanePushMaxAttempts bounds those retries per worker; the next reconnect
+	// push corrects a worker given up on.
+	lanePushMaxAttempts = 6
 	// ticketSkew tolerates clock skew between hosts when an attach ticket's
 	// age is checked (research R11).
 	ticketSkew = 10 * time.Minute

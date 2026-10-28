@@ -347,14 +347,7 @@ func (l *hostLink) setDown(reason string) {
 func (l *hostLink) nextBackoff() time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.backoff == 0 {
-		l.backoff = linkRetryMin
-	} else if l.backoff < linkRetryMax {
-		l.backoff *= 2
-		if l.backoff > linkRetryMax {
-			l.backoff = linkRetryMax
-		}
-	}
+	l.backoff = nextBackoff(l.backoff, linkRetryMin, linkRetryMax)
 	return l.backoff
 }
 

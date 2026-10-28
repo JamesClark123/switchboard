@@ -241,6 +241,7 @@ func TestLaneDisplayPushes(t *testing.T) {
 	}
 	w.mu.Unlock()
 	wbPushes := w.countPrefix("update wb")
+	timers0 := env.clock.pending()
 	rt.markLanes("wa")
 	// The retry waits on the runtime's clock (lanePushRetryMin), not real time.
 	waitFor(t, func() bool { return waPushes.Load() >= 1 })
@@ -248,9 +249,13 @@ func TestLaneDisplayPushes(t *testing.T) {
 		t.Fatal("the failed push should not have landed")
 	}
 	waitFor(t, func() bool {
-		env.clock.Advance(lanePushRetryMin)
-		return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"})
+		rt.lanes.mu.Lock()
+		defer rt.lanes.mu.Unlock()
+		return rt.lanes.armed["box"]
 	})
+	waitFor(t, func() bool { return env.clock.pending() > timers0 }) // the retry's AfterFunc
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
 	if waPushes.Load() != 2 {
 		t.Errorf("wa pushes = %d, want the failure and one retry", waPushes.Load())
 	}
@@ -297,5 +302,46 @@ func TestLanePushRaceKeepsLatest(t *testing.T) {
 		if got := w.get("wa").GetController().GetLaneNames(); !slices.Equal(got, []string{name}) {
 			t.Fatalf("round %d: host shows %v, want %s", i, got, name)
 		}
+	}
+}
+
+// A worker whose lane pushes keep failing transiently is retried
+// lanePushMaxAttempts times, with one timer per host, then given up on.
+func TestLanePushRetriesAreBounded(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	var pushes atomic.Int32
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.GetLanes() != nil && req.GetSandboxId() == "wa" {
+			pushes.Add(1)
+			return status.Error(codes.Unavailable, "wedged")
+		}
+		return nil
+	}
+	w.mu.Unlock()
+	timers0 := env.clock.pending()
+	rt.markLanes("wa")
+	for i := 1; i <= lanePushMaxAttempts; i++ {
+		waitFor(t, func() bool {
+			rt.lanes.mu.Lock()
+			defer rt.lanes.mu.Unlock()
+			return rt.lanes.armed["box"] && int(pushes.Load()) == i && env.clock.pending() > timers0
+		})
+		env.clock.Advance(linkRetryMax)
+	}
+	waitFor(t, func() bool {
+		rt.lanes.mu.Lock()
+		defer rt.lanes.mu.Unlock()
+		return int(pushes.Load()) == lanePushMaxAttempts+1 && !rt.lanes.armed["box"] && rt.lanes.failures["wa"] == 0
+	})
+	env.clock.Advance(linkRetryMax)
+	quiesce(t, rt)
+	if got := int(pushes.Load()); got != lanePushMaxAttempts+1 {
+		t.Errorf("pushes = %d, want %d", got, lanePushMaxAttempts+1)
 	}
 }

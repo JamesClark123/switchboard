@@ -170,36 +170,53 @@ func unlanedWork(rec *pb.Orchestrator, queued []*pb.Run) (actions, runs []string
 	return actions, runs
 }
 
-// guardFires is FR-308a's rule: with no open-lane worker after the change, it
+// guardFires is FR-308a's rule. With no open-lane worker after the change, it
 // fires when the change takes the last one away while un-laned work exists,
-// saves an un-laned prompt action, or leaves any other work un-laned that was
-// not before (a lane delete, or any future change that strips lanes — read
-// from the records, so no change has to remember to say so).
-func guardFires(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) bool {
+// saves an un-laned prompt action, or leaves any work un-laned that was not
+// before (a lane delete, or any later change that strips lanes: read from the
+// records, so no change has to say so). savesUnlaned stays for the one case the
+// records cannot show: re-saving an action that was already un-laned, which
+// FR-308a guards like any un-laned save. It returns the guard's list.
+func guardFires(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) (actions, runs []string, fires bool) {
 	if openLaneCount(after, detachingAfter) != 0 {
-		return false
+		return nil, nil, false
 	}
-	if savesUnlaned {
-		return true
-	}
-	actions, runs := unlanedWork(after, queuedAfter)
-	if len(actions) == 0 && len(runs) == 0 {
-		return false
-	}
-	if openLaneCount(before, detachingBefore) >= 1 {
-		return true
+	actions, runs = unlanedWork(after, queuedAfter)
+	switch {
+	case savesUnlaned:
+		return actions, runs, true
+	case len(actions) == 0 && len(runs) == 0:
+		return nil, nil, false
+	case openLaneCount(before, detachingBefore) >= 1:
+		return actions, runs, true
 	}
 	actionsBefore, runsBefore := unlanedWork(before, queuedBefore)
-	return slices.ContainsFunc(actions, func(a string) bool { return !slices.Contains(actionsBefore, a) }) ||
-		slices.ContainsFunc(runs, func(r string) bool { return !slices.Contains(runsBefore, r) })
+	was := make(map[string]struct{}, len(actionsBefore)+len(runsBefore))
+	for _, x := range actionsBefore {
+		was["a/"+x] = struct{}{}
+	}
+	for _, x := range runsBefore {
+		was["r/"+x] = struct{}{}
+	}
+	for _, x := range actions {
+		if _, ok := was["a/"+x]; !ok {
+			return actions, runs, true
+		}
+	}
+	for _, x := range runs {
+		if _, ok := was["r/"+x]; !ok {
+			return actions, runs, true
+		}
+	}
+	return nil, nil, false
 }
 
 // guardImpact returns the guard's list when it fires (an empty impact when it
 // does not).
 func guardImpact(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) *pb.LaneChangeImpact {
 	out := &pb.LaneChangeImpact{}
-	if guardFires(before, after, queuedBefore, queuedAfter, detachingBefore, detachingAfter, savesUnlaned) {
-		out.UnlanedActions, out.UnlanedRuns = unlanedWork(after, queuedAfter)
+	if actions, runs, ok := guardFires(before, after, queuedBefore, queuedAfter, detachingBefore, detachingAfter, savesUnlaned); ok {
+		out.UnlanedActions, out.UnlanedRuns = actions, runs
 	}
 	return out
 }

@@ -62,31 +62,25 @@ func (rt *runtime) pushBriefings() {
 }
 
 // lanePusher keeps the workers whose lane display must be pushed, per host,
-// each host drained by its own goroutine.
+// each host drained by its own goroutine. A push that fails transiently while
+// the host is up is retried with a per-worker backoff (failures), at most one
+// timer per host (armed), up to lanePushMaxAttempts; anything given up on is
+// corrected by the next reconnect push.
 type lanePusher struct {
-	mu      sync.Mutex
-	dirty   map[string]map[string]struct{} // host id -> worker ids
-	running map[string]bool
-	// backoff is each host's delay before its failed pushes are queued again;
-	// it doubles while they keep failing and resets after a clean round.
-	backoff map[string]time.Duration
+	mu       sync.Mutex
+	dirty    map[string]map[string]struct{} // host id -> worker ids
+	running  map[string]bool
+	failures map[string]int                 // worker id -> consecutive transient failures
+	retry    map[string]map[string]struct{} // host id -> worker ids waiting for the timer
+	armed    map[string]bool                // host id -> its retry timer is pending
 }
 
-// nextRetry is a host's next retry delay: lanePushRetryMin, doubling to
-// linkRetryMax (callers hold p.mu).
-func (p *lanePusher) nextRetry(host string) time.Duration {
-	if p.backoff == nil {
-		p.backoff = map[string]time.Duration{}
+// nextBackoff doubles cur from lo to hi (cur 0 starts at lo).
+func nextBackoff(cur, lo, hi time.Duration) time.Duration {
+	if cur == 0 {
+		return lo
 	}
-	d := p.backoff[host]
-	switch {
-	case d == 0:
-		d = lanePushRetryMin
-	case d < linkRetryMax:
-		d = min(2*d, linkRetryMax)
-	}
-	p.backoff[host] = d
-	return d
+	return min(2*cur, hi)
 }
 
 // markLanes queues lane display pushes for workers (by sandbox id); workers
@@ -117,9 +111,9 @@ func (rt *runtime) markLanes(sandboxIDs ...string) {
 }
 
 // drainLanes pushes a host's dirty workers until none is left. A push that
-// fails while the host is up for a transient reason is queued again after the
-// host's backoff, without holding up the host's other pushes; a host that is
-// down is left to the reconnect push (pushWorkerStateTo).
+// fails transiently while the host is up is queued for the host's retry timer,
+// so it never holds up the host's other pushes; a host that is down is left to
+// the reconnect push (pushWorkerStateTo).
 func (rt *runtime) drainLanes(host string) {
 	defer rt.wg.Done()
 	p := &rt.lanes
@@ -135,32 +129,77 @@ func (rt *runtime) drainLanes(host string) {
 		p.mu.Unlock()
 		api, err := rt.apiFor(host)
 		if err != nil {
-			continue // down: the reconnect pushes every worker's lanes
-		}
-		var retry []string
-		for id := range batch {
-			if err := rt.pushWorker(rt.ctx, api, id, false); err != nil && transient(err) {
-				if up, _ := rt.reachability(host); up {
-					retry = append(retry, id)
-				}
+			// Down: the reconnect pushes every worker's lanes.
+			p.mu.Lock()
+			for id := range batch {
+				delete(p.failures, id)
 			}
-		}
-		p.mu.Lock()
-		if len(retry) == 0 {
-			delete(p.backoff, host)
 			p.mu.Unlock()
 			continue
 		}
-		d := p.nextRetry(host)
-		p.mu.Unlock()
-		rt.wg.Add(1)
-		go func() {
-			defer rt.wg.Done()
-			if wait(rt.ctx, rt.svc.clock, d) {
-				rt.markLanes(retry...)
+		for id := range batch {
+			err := rt.pushWorker(rt.ctx, api, id, false)
+			again := false
+			if err != nil && transient(err) {
+				again, _ = rt.reachability(host)
 			}
-		}()
+			rt.lanePushed(host, id, again)
+		}
 	}
+}
+
+// lanePushed records one push's outcome: a success (or a failure not worth
+// retrying) clears the worker's failures; a transient one queues it for the
+// host's retry timer, arming it unless it already is, until
+// lanePushMaxAttempts.
+func (rt *runtime) lanePushed(host, id string, again bool) {
+	p := &rt.lanes
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !again || rt.ctx.Err() != nil {
+		delete(p.failures, id)
+		return
+	}
+	if p.failures == nil {
+		p.failures, p.retry, p.armed = map[string]int{}, map[string]map[string]struct{}{}, map[string]bool{}
+	}
+	p.failures[id]++
+	if p.failures[id] > lanePushMaxAttempts {
+		delete(p.failures, id)
+		rt.svc.logf("[orchestrator %s] gave up pushing lanes to %s on %s; the next reconnect pushes them", rt.record().GetName(), id, host)
+		return
+	}
+	if p.retry[host] == nil {
+		p.retry[host] = map[string]struct{}{}
+	}
+	p.retry[host][id] = struct{}{}
+	if p.armed[host] {
+		return
+	}
+	var d time.Duration
+	for range p.failures[id] {
+		d = nextBackoff(d, lanePushRetryMin, linkRetryMax)
+	}
+	p.armed[host] = true
+	rt.wg.Add(1)
+	go func() {
+		defer rt.wg.Done()
+		ok := wait(rt.ctx, rt.svc.clock, d)
+		p.mu.Lock()
+		var ids []string
+		for id := range p.retry[host] {
+			// A worker pushed fine meanwhile has no failures left.
+			if p.failures[id] > 0 {
+				ids = append(ids, id)
+			}
+		}
+		delete(p.retry, host)
+		p.armed[host] = false
+		p.mu.Unlock()
+		if ok {
+			rt.markLanes(ids...)
+		}
+	}()
 }
 
 // definiteRefusal reports whether a remote call was answered with a refusal,
