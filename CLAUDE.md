@@ -172,8 +172,8 @@ sandboxes with an unretired token; the rest are clear at once), on an `sbx exec`
 *unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED,
 `NOTIFICATION_KIND_AGENT_CHECK_FAILED`). `agent.Registry.Session` is the one choke point that refuses to spawn beside
 it, and try-locks the sandbox's `runtimeMu` (held by stop/recreate ops, and ordering every probe and stop) from the
-gate check through `cmd.Start` (`ErrBusy` names the operation); a stop drains the sandbox's `sbx exec` clients
-before `sbx stop`, and the on-change hook clears orphan state only on a confirmed stop/destroy (never CREATING/ERROR).
+gate check through `cmd.Start` (`ErrBusy` names the operation); a stop drains every `sbx exec` client of the sandbox
+(agent and portforward, via a per-sandbox exec guard) before `sbx stop`, and the on-change hook clears orphan state only on a confirmed stop/destroy (never CREATING/ERROR).
 The daemon only detects and surfaces an orphan
 (*agent detached* notification, aggregated per start) and never stops one itself: only the developer (`t` →
 Replace, `R`, the Workers view's bulk `R` → `ReplaceDetachedAgent`, idle-last-seen only) or a sandbox stop/restart does (R14, simplified

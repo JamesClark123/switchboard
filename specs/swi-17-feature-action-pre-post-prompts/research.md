@@ -658,13 +658,22 @@ gets typed or what counts as evidence, and each needs a boundary.
          It never replaces a stored binding (revised in run-590): the file can be rewritten from inside the sandbox, so
          a mismatch is logged and the stored PID stays. Even a first bind does not trust the file alone (revised in
          run-595): the same probe script also checks that `/proc/<pid>/exe` is the agent binary, that its command line
-         starts with the fixed flags, and (revised in run-601) that its **parent PID is 0** in the container's PID
-         namespace. The real main agent is `exec`ed by the launch string under `sbx exec` → `docker exec`, so its parent
-         lies outside the namespace. Anything started from inside the sandbox, by the agent or by `script -qc claude`
-         on a new pty, has a non-zero parent. That check can't be forged from inside, unlike the stdin/tty value, which
-         comes from the same writable file and is now only a consistency check. If T006 finds an intermediate shell,
-         the rule becomes "its parent's parent PID is 0". Otherwise the bind is refused and logged, so a process in the
-         sandbox can't name itself main.
+         starts with the fixed flags, and (revised in run-601, made runtime-independent in run-607) that it was **started by the
+         runtime's exec path, not from inside the sandbox**. The rule doesn't hard-code ppid 0, which holds for `docker
+         exec` into a plain container but is unverified on the microVM runtime, where an in-VM exec agent may be the
+         parent. Instead, it compares the candidate with a reference taken on the spot. The probe script is itself
+         started by `sbx exec` through the same path, so its own parent (`$PPID` of the probe shell) is what the exec
+         path's parent looks like on this runtime. The candidate's parent must match it:
+         - both are 0 (a plain container);
+         - or both are non-zero and have the same `/proc/<ppid>/exe`, which must not be a shell, `script`, `tmux`, or
+           the agent binary.
+
+         Anything started from inside the sandbox, by the agent or by `script -qc claude` on a new pty, has a shell,
+         `script` or the agent as its parent and fails. If T006 finds an intermediate shell between the exec and the
+         agent, the same comparison applies to the agent's grandparent. Quickstart Scenario 0 records what the real
+         runtime shows, and T045's test pins it. The stdin/tty value comes from the same writable file and is only a
+         consistency check. Otherwise the bind is refused and logged, so a process in the sandbox can't name itself
+         main.
        - **Fallback, if T006 finds `$PPID` isn't the `claude` process** (an intermediate shell): the hook sends
          `readlink /proc/$PPID/fd/0` (or of its parent) instead, and the main agent is the process whose stdin is the
          generation's PTY device (recorded at launch with the PID). A nested `claude -p` run from a tool has pipes,
@@ -770,8 +779,9 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
   generation is the current one, and the daemon died before binding or the binding write was lost. A probe never
   replaces a stored binding. On a mismatch the stored PID stays and the mismatch is logged, since anything inside the
   sandbox can rewrite the file. A first bind also needs the process itself to look like the main agent: its
-  executable is the agent binary, its command line starts with the fixed flags, and its parent PID is 0 inside the
-  container (started by `docker exec`, not from inside the sandbox; run-601). The recorded tty is only a
+  executable is the agent binary, its command line starts with the fixed flags, and its parent matches the parent of the
+  probe's own `sbx exec` shell (both 0, or the same non-shell exec-agent executable), so it was started by the
+  runtime's exec path and not from inside the sandbox (run-601, made runtime-independent in run-607). The recorded tty is only a
   consistency check, since it comes from the same writable file.
 
 **One lock orders probes and kills against lifecycle operations: `runtimeMu`.**
@@ -811,11 +821,22 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     `Refresh`, does the following under `runtimeMu`, **before** `sbx stop`:
     - it closes the sandbox's agent session and its terminal broadcaster with `closing` set (no EXITED, no exit
       probe);
-    - it **waits for each `sbx exec` client process to exit**: TERM, then KILL after `orphanKillWait`, then `Wait`.
-      Killing a host process is always possible.
+    - it **cancels the sandbox's `portforward` exec clients** (revised in run-607): the IN_SANDBOX service launches
+      (`launch_sandbox.go`), the readiness loops (`probe.go`, which poll `sbx exec` with backoff) and any in-flight
+      kill (`stop.go`). It cancels their contexts, stops the readiness loops, and marks the instances stopping;
+    - it **waits for every one of those `sbx exec` client processes to exit**: TERM, then KILL after
+      `orphanKillWait`. It waits on the **existing watcher**, never with a second `Wait`. The agent session's
+      `sessionEntry` gets a `done` channel closed by `onExit` (the registry's `watch` goroutine already owns
+      `cmd.Wait`, and a second `Wait` returns at once with `Wait was already called`). The portforward instances
+      expose the same kind of done signal. Killing a host process is always possible.
 
-    No client of this sandbox then exists, and `Session` can't start one while the lock is held, so nothing can
-    issue a start after the stop. The in-container agent outlives its client only until `sbx stop` ends the
+    **One per-sandbox exec guard.** Every `sbx exec` for a sandbox goes through it: `Registry.Session`'s factory,
+    `Runner.Exec` (portforward) and the probe/reap scripts. The guard **refuses** new execs while a stop holds
+    `runtimeMu`, except the stop's own and the probe/reap that already hold the lock. It also counts in-flight
+    clients, so the drain knows when the count reaches zero. After the drain no `sbx exec` client of this sandbox
+    exists, and none can start until the lock is released, so nothing can issue a start after the stop. (`Restart`'s
+    `sbx exec <N> true` runs under the lock as the operation's own call.) The hook's later service teardown finds
+    the instances already stopping. The in-container agent outlives its client only until `sbx stop` ends the
     container. If `sbx stop` then **fails**, the sandbox stays RUNNING with an agent and no session. The outcome
     rule's RUNNING branch marks it *unknown* and probes, so it is surfaced as detached (`t` → Replace or Wait),
     never silently doubled.
@@ -850,8 +871,15 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
 
 **When the daemon probes.** It probes on the events below. None of them stops anything.
 - **Daemon start: clear by default, check only what may have an agent** (revised in run-595).
-  - Every sandbox that isn't running gets the STOPPED branch: its agent status becomes EXITED and its unretired tokens
-    are retired, since its container's processes are gone. It is never probed.
+  - Every sandbox that a **successful** listing reports as stopped or absent gets the STOPPED branch: its agent
+    status becomes EXITED and its unretired tokens are retired, since its container's processes are gone. It is
+    never probed.
+  - **A listing that can't answer retires nothing** (revised in run-607). If `ListStatuses` errors at start, or
+    reports a status the daemon doesn't recognise for a sandbox (a transient `starting`), no token is retired and no
+    EXITED is written for the sandboxes concerned. This matches `ReconcileRecords`, which keeps the last-known state
+    when the runtime is unreadable. Every may-have-agent sandbox among them is marked *unknown*. Its probe's own
+    RUNNING pre-check fails and retries with backoff, the listing is retried with it, and the bounded-*unknown* rule
+    surfaces it if the runtime stays unreadable. Sandboxes with no unretired token stay clear.
   - A running sandbox is marked **unknown** synchronously only if it **may** have a surviving agent: it has a
     generation token in the store that was never retired (an agent this daemon launched that isn't known to be gone),
     or, on the first start after the upgrade (no store entry), its recorded agent status is set and not EXITED.
@@ -875,7 +903,9 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
       exits, gets its own individual notification, so none goes unreported.
     - **Shape:** a `NotificationEvent` with **empty `sandbox_id`** and the daemon's `host_id`. The TUI shows it as
       a host-level notification. It is never suppressed by being attached to a sandbox, it is acked by id like any
-      other, and it is replayed on resubscribe like any other (run-601).
+      other, and it is replayed on resubscribe like any other (run-601). In the TUI's list its item identity is the
+      notification id, and `enter` opens the Workers view that `R` acts on, rather than selecting an empty sandbox id
+      (run-607).
   - **Bulk Replace (developer action).** `R` on the orchestrator's Workers view (only there: on the sandbox list,
     including its Orchestrator Sandboxes tab, `R` is Rename) opens one confirm. It lists every worker whose orphan
     was last seen **idle** (`agent_check.last_status` IDLE) with no run, all ticked by default. An orphan last seen
@@ -928,6 +958,10 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     - on gone, it restores the previous note in the update that writes EXITED. So a run failed by that EXITED
       takes its reason from the previous note, or `agent exited` when there was none, and never from the
       check-failed text.
+
+    **Other note writes while CHECK_FAILED** (run-607): any other write to `step_note` while the overlay shows (a
+    `waiting: …` or not-accepted note from `DeliverWorkerStep`) goes into the **saved** note, the value that will
+    be restored, and the overlay stays visible. The restore then brings back the latest note, never a stale one.
 
     The previous note is held in memory. After a daemon restart, the daemon drops a leftover check-failed note
     (recognised by its fixed prefix) while marking the sandbox *unknown*, and the check starts again.

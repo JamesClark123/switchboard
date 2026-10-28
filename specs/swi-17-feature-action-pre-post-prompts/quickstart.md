@@ -21,6 +21,14 @@ This is a run guide. The behaviour each scenario proves is defined in [spec.md](
    - after `/clear`, the redraw with an empty prompt.
 3. **If any line differs**, update the fixture and matcher (`agent/claudeui.go`) **before** the other scenarios. A
    mismatch shows up as *not accepted* halts, never as wrong typing.
+4. **Exec-path parent (research R13, run-607).** On the real `sbx` host, compare the agent's parent with a fresh exec
+   shell's parent:
+   - `sbx exec <N> sh -c 'cut -d" " -f4 /proc/$(cut -d" " -f2 ~/.sxb/agent.pid)/stat; readlink /proc/$(cut -d" " -f4 /proc/$(cut -d" " -f2 ~/.sxb/agent.pid)/stat)/exe'`
+   - `sbx exec <N> sh -c 'echo $PPID; readlink /proc/$PPID/exe'`
+
+   They must match: both 0, or the same non-shell executable. Record the shape in T045's test fixture. If they
+   differ (a fresh parent process per exec with a different exe), stop and revise the R13 rule before relying on
+   main-PID recovery.
 
 ## Scenario 1 — defaults on a new and an existing action (US1 #1, #4, #5; FR-203, FR-210)
 
