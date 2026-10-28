@@ -67,6 +67,26 @@ type lanePusher struct {
 	mu      sync.Mutex
 	dirty   map[string]map[string]struct{} // host id -> worker ids
 	running map[string]bool
+	// backoff is each host's delay before its failed pushes are queued again;
+	// it doubles while they keep failing and resets after a clean round.
+	backoff map[string]time.Duration
+}
+
+// nextRetry is a host's next retry delay: lanePushRetryMin, doubling to
+// linkRetryMax (callers hold p.mu).
+func (p *lanePusher) nextRetry(host string) time.Duration {
+	if p.backoff == nil {
+		p.backoff = map[string]time.Duration{}
+	}
+	d := p.backoff[host]
+	switch {
+	case d == 0:
+		d = lanePushRetryMin
+	case d < linkRetryMax:
+		d = min(2*d, linkRetryMax)
+	}
+	p.backoff[host] = d
+	return d
 }
 
 // markLanes queues lane display pushes for workers (by sandbox id); workers
@@ -97,8 +117,9 @@ func (rt *runtime) markLanes(sandboxIDs ...string) {
 }
 
 // drainLanes pushes a host's dirty workers until none is left. A push that
-// fails while the host is up for a transient reason is queued again; a host
-// that is down is left to the reconnect push (pushWorkerStateTo).
+// fails while the host is up for a transient reason is queued again after the
+// host's backoff, without holding up the host's other pushes; a host that is
+// down is left to the reconnect push (pushWorkerStateTo).
 func (rt *runtime) drainLanes(host string) {
 	defer rt.wg.Done()
 	p := &rt.lanes
@@ -124,22 +145,21 @@ func (rt *runtime) drainLanes(host string) {
 				}
 			}
 		}
-		if len(retry) > 0 && rt.ctx.Err() == nil {
-			// A host answering with transient errors is not retried in a tight
-			// loop: wait before the next round.
-			select {
-			case <-rt.ctx.Done():
-			case <-time.After(lanePushRetryDelay):
-			}
-			p.mu.Lock()
-			if p.dirty[host] == nil {
-				p.dirty[host] = map[string]struct{}{}
-			}
-			for _, id := range retry {
-				p.dirty[host][id] = struct{}{}
-			}
+		p.mu.Lock()
+		if len(retry) == 0 {
+			delete(p.backoff, host)
 			p.mu.Unlock()
+			continue
 		}
+		d := p.nextRetry(host)
+		p.mu.Unlock()
+		rt.wg.Add(1)
+		go func() {
+			defer rt.wg.Done()
+			if wait(rt.ctx, rt.svc.clock, d) {
+				rt.markLanes(retry...)
+			}
+		}()
 	}
 }
 

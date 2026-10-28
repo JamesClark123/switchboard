@@ -170,26 +170,35 @@ func unlanedWork(rec *pb.Orchestrator, queued []*pb.Run) (actions, runs []string
 	return actions, runs
 }
 
-// guardFires is FR-308a's rule: the change takes the last open-lane worker
-// away while un-laned work exists, or saves an un-laned prompt action while
-// there is none. detaching is the set after the change.
-func guardFires(before, after *pb.Orchestrator, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) bool {
-	openAfter := openLaneCount(after, detachingAfter)
-	if openAfter != 0 {
+// guardFires is FR-308a's rule: with no open-lane worker after the change, it
+// fires when the change takes the last one away while un-laned work exists,
+// saves an un-laned prompt action, or leaves any other work un-laned that was
+// not before (a lane delete, or any future change that strips lanes — read
+// from the records, so no change has to remember to say so).
+func guardFires(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) bool {
+	if openLaneCount(after, detachingAfter) != 0 {
 		return false
 	}
 	if savesUnlaned {
 		return true
 	}
 	actions, runs := unlanedWork(after, queuedAfter)
-	return openLaneCount(before, detachingBefore) >= 1 && (len(actions) > 0 || len(runs) > 0)
+	if len(actions) == 0 && len(runs) == 0 {
+		return false
+	}
+	if openLaneCount(before, detachingBefore) >= 1 {
+		return true
+	}
+	actionsBefore, runsBefore := unlanedWork(before, queuedBefore)
+	return slices.ContainsFunc(actions, func(a string) bool { return !slices.Contains(actionsBefore, a) }) ||
+		slices.ContainsFunc(runs, func(r string) bool { return !slices.Contains(runsBefore, r) })
 }
 
 // guardImpact returns the guard's list when it fires (an empty impact when it
 // does not).
-func guardImpact(before, after *pb.Orchestrator, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) *pb.LaneChangeImpact {
+func guardImpact(before, after *pb.Orchestrator, queuedBefore, queuedAfter []*pb.Run, detachingBefore, detachingAfter map[string]struct{}, savesUnlaned bool) *pb.LaneChangeImpact {
 	out := &pb.LaneChangeImpact{}
-	if guardFires(before, after, queuedAfter, detachingBefore, detachingAfter, savesUnlaned) {
+	if guardFires(before, after, queuedBefore, queuedAfter, detachingBefore, detachingAfter, savesUnlaned) {
 		out.UnlanedActions, out.UnlanedRuns = unlanedWork(after, queuedAfter)
 	}
 	return out

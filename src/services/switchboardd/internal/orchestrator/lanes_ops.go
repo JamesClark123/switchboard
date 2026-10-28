@@ -19,8 +19,7 @@ import (
 
 // laneChange is what a guarded change's builder reports about itself.
 type laneChange struct {
-	// savesUnlaned: the change saves an un-laned prompt action, or a lane
-	// delete leaves one (or a kept run's setting) un-laned (FR-308a).
+	// savesUnlaned: the change saves an un-laned prompt action (FR-308a).
 	savesUnlaned bool
 	// detaching: a worker that leaves the open-lane count (a detach).
 	detaching string
@@ -62,7 +61,7 @@ func (rt *runtime) impactOf(before, after *pb.Orchestrator, queuedBefore, queued
 		}
 		detAfter[ch.detaching] = struct{}{}
 	}
-	impact := guardImpact(before, after, queuedAfter, detBefore, detAfter, ch.savesUnlaned)
+	impact := guardImpact(before, after, queuedBefore, queuedAfter, detBefore, detAfter, ch.savesUnlaned)
 	if ch.deletedLane != "" {
 		laneDeleteImpact(impact, before, queuedBefore, ch.deletedLane, rt.displayName)
 	}
@@ -291,8 +290,6 @@ func deleteLaneChange(laneID string) changeFn {
 				a.LaneIds = ids
 				if len(ids) == 0 {
 					a.LaneMode = pb.LaneMode_LANE_MODE_UNSPECIFIED
-					// Left un-laned: guarded like saving it so (FR-308a).
-					ch.savesUnlaned = ch.savesUnlaned || a.GetType() == pb.ActionType_ACTION_TYPE_PROMPT
 				}
 				ch.briefing = true
 			}
@@ -303,7 +300,6 @@ func deleteLaneChange(laneID string) changeFn {
 					kept.LaneIds = ids
 					if len(ids) == 0 {
 						kept.Mode = pb.LaneMode_LANE_MODE_UNSPECIFIED
-						ch.savesUnlaned = ch.savesUnlaned || r.GetType() == pb.ActionType_ACTION_TYPE_PROMPT
 					}
 					ch.rewritten = append(ch.rewritten, r)
 				}

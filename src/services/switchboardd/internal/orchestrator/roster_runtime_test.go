@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,9 +228,11 @@ func TestLaneDisplayPushes(t *testing.T) {
 	}
 	// The first push fails transiently and is retried.
 	var fails sync.Once
+	var waPushes atomic.Int32
 	w.mu.Lock()
 	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
 		if req.GetLanes() != nil && req.GetSandboxId() == "wa" {
+			waPushes.Add(1)
 			var err error
 			fails.Do(func() { err = status.Error(codes.Unavailable, "blip") })
 			return err
@@ -239,7 +242,18 @@ func TestLaneDisplayPushes(t *testing.T) {
 	w.mu.Unlock()
 	wbPushes := w.countPrefix("update wb")
 	rt.markLanes("wa")
-	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
+	// The retry waits on the runtime's clock (lanePushRetryMin), not real time.
+	waitFor(t, func() bool { return waPushes.Load() >= 1 })
+	if slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) {
+		t.Fatal("the failed push should not have landed")
+	}
+	waitFor(t, func() bool {
+		env.clock.Advance(lanePushRetryMin)
+		return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"})
+	})
+	if waPushes.Load() != 2 {
+		t.Errorf("wa pushes = %d, want the failure and one retry", waPushes.Load())
+	}
 	quiesce(t, rt)
 	if w.countPrefix("update wb") != wbPushes {
 		t.Error("an unmarked worker was pushed")

@@ -698,3 +698,28 @@ func TestDeleteLaneGuardsWithNoOpenLaneWorker(t *testing.T) {
 		t.Errorf("confirmed delete = %v", err)
 	}
 }
+
+// The same with a deleted action's queued run: deleting the lane its kept
+// setting names leaves the run un-laned, so the guard lists it.
+func TestDeleteLaneGuardsAKeptRun(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 1, false)
+	id := o.GetId()
+	ids := seedLanes(t, rt, map[string][]string{"c": {"wa"}, "b": nil})
+	if _, err := putAction(env.svc, id, laned("build", pb.LaneMode_LANE_MODE_EXCLUSIVE, ids["b"])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.CallAction(id, "build", map[string]string{"number": "1", "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.DeleteAction(id, "build"); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, rt)
+	impact, err := env.svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_DeleteLane{DeleteLane: &pb.DeleteLaneRequest{LaneId: ids["b"]}}})
+	if err != nil || len(impact.GetUnlanedRuns()) != 1 {
+		t.Fatalf("check = %+v / %v", impact, err)
+	}
+	if _, err := env.svc.DeleteLane(id, ids["b"], nil); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("unconfirmed delete = %v", err)
+	}
+}
