@@ -71,8 +71,9 @@ judged by evidence after its submit.
    - **One per-sandbox lock, `runtimeMu`,** is held by Stop, Destroy, Refresh, kit attach and Restart for their
      runtime calls (Refresh continuously, stop through bring-up). Every probe and stop try-locks it, so none can
      overlap or follow `sbx stop`, and `Registry.Session` holds it from the gate check until `cmd.Start` returns, so
-     no spawn can race a stop; a stop also drains every `sbx exec` client of the sandbox (agent and port-forward) before `sbx stop`. Only developer requests that start an `sbx exec` (agent spawn, service start and stop)
-     try-lock `runtimeMu`; there is no exec guard. Each operation
+     no spawn can race a stop; a stop also drains the sandbox's `sbx exec` clients (the agent's and still-starting
+     port-forward ones) before `sbx stop`, best effort and bounded (run-629). Only developer requests that start an
+     `sbx exec` (agent spawn, service start and stop) try-lock `runtimeMu`; there is no exec guard. Each operation
      settles the orphan record from the state it wrote (STOPPED drops it; RUNNING re-probes). The on-change hook
      settles external stops, but only on a confirmed stop or destroy (STOPPED, or DESTROYING after the delete),
      never on CREATING or ERROR.

@@ -815,40 +815,37 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     `runtimeMu` and may then take `r.mu` (the on-change hook's `agents.Close`), but `Session` never waits on
     `runtimeMu` while holding `r.mu`, so there is no lock cycle. A lifecycle operation waits at most for one
     `cmd.Start`.
-  - **A stop drains the exec clients first** (revised in run-601, replacing a one-shot `ListStatuses` re-check).
-    Holding the lock through `cmd.Start` orders only the *fork* of `sbx exec`. The client reaches the runtime later,
-    with unbounded lag, and `sbx exec` starts a stopped sandbox in place. So `Stop`, and the stop inside `Destroy` and
-    `Refresh`, does the following under `runtimeMu`, **before** `sbx stop`:
-    - it closes the sandbox's agent session and its terminal broadcaster with `closing` set (no EXITED, no exit
-      probe);
-    - it **cancels only the `portforward` exec clients that are still starting** (revised in run-607, narrowed in
-      run-618): an IN_SANDBOX launch that hasn't announced its PGID yet (`launch_sandbox.go`), and the readiness
-      loops (`probe.go`, which poll `sbx exec` with backoff), including any readiness exec in flight. Cancelling a
-      readiness loop ends its `bringUp` in `readinessFailed`'s cancel branch (`portforward/start.go:167`). That
-      branch already signals the instance's in-sandbox group through `stopProc` (TERM through `sbx exec` using the
-      announced PGID, KILL after `stopGrace`), records STOPPED and releases the port (revised in run-625). Those
-      execs follow from the drain's own cancellation while it holds the lock, with the container up. A launch
-      cancelled before its PGID arrives has no group to signal, and ends FAILED (`cancelled by a stop`) through
-      `markFailed`. A **RUNNING** service (ready, with its PGID known) keeps its client.
-      Its exec session is already up, so it can't start a stopped sandbox. It ends with the container on `sbx stop`,
-      and the hook's `StopAll(id, true)`
-      records it, as today. That matters because `gone(h)` reads that very client (`portforward/stop.go:133`), so
-      killing it would leave the supervisor unable to stop or observe the service. A developer's service stop holds
-      its try-lock for its whole duration, so no kill is in flight when the drain runs;
-    - it **waits for every one of those `sbx exec` client processes to exit**: TERM, then KILL after
-      `orphanKillWait`. It waits on the **existing watcher**, never with a second `Wait`. The agent session's
-      `sessionEntry` gets a `done` channel closed by `onExit` (the registry's `watch` goroutine already owns
-      `cmd.Wait`, and a second `Wait` returns at once with `Wait was already called`). A drained portforward
-      instance's done signal is its `bringUp` goroutine returning, so the group signal and the port release
-      (`UnpublishPort`) of a cancelled readiness check both land **before** `sbx stop` (run-625).
-      Killing a host process is always possible. **Where the wait happens** (revised in run-613): `Registry.Close`
-      marks the entry `closing`, removes it and **returns** its `done`
-      channel; the drain waits on it only **after** `Close` has released `r.mu` and the terminal registry's global
-      lock, because `onExit` takes `r.mu` (`agent/pty.go:117`). The wait is bounded: TERM, then KILL after
-      `orphanKillWait`, then `orphanKillWait` again. A client still alive after that (for example, stuck in
-      uninterruptible sleep on a hung host mount) is logged, and the stop **proceeds** with `sbx stop` (run-618). One
-      stuck host process must not block every stop. If the stop then fails, the outcome rule's RUNNING probe covers
-      the agent.
+  - **A stop drains the exec clients first, best effort** (revised in run-601; simplified to best effort in run-629,
+    replacing the ordering guarantees of runs 607–625). `sbx exec` starts a stopped sandbox in place, and a client
+    reaches the runtime with unbounded lag, so a stop quiets the sandbox's exec clients before `sbx stop`. A
+    successful `sbx stop` ends every process in the container anyway, so the drain only narrows the window. It
+    promises no ordering against `sbx stop` and nothing about what survives a **failed** stop; both are listed under
+    *Proposed deferrals*. Under `runtimeMu`, before `sbx stop`, `Stop` (and the stop inside `Destroy` and
+    `Refresh`):
+    - closes the sandbox's agent session and its terminal broadcaster with `closing` set (no EXITED, no exit probe),
+      and sends its client process TERM, then KILL after `orphanKillWait`. It waits on the **existing watcher**,
+      never with a second `Wait`: `Registry.Close` marks the entry `closing`, removes it and returns its `done`
+      channel (closed by `onExit`), and the drain waits on it only after `Close` has released `r.mu` and the
+      terminal registry's global lock, because `onExit` takes `r.mu` (`agent/pty.go:117`);
+    - records every service instance of the sandbox that is still **starting** (not RUNNING) FAILED through
+      `markFailed` (`LAUNCH_FAILED`, detail `start interrupted by a sandbox stop; if the stop failed it may still be
+      running in the sandbox`). `markFailed` releases the handle, which cancels the instance's context (so
+      `exec.CommandContext` kills its launch client and any readiness exec, and starts no new one) and unpublishes
+      its port. For each of those with an announced PGID, the drain sends the in-sandbox group TERM through `sbx
+      exec`, then KILL after `orphanKillWait`. The KILL is sent whatever the host client did, because the client's
+      exit says nothing about the group (run-627's Medium);
+    - leaves RUNNING services alone. Their exec sessions are already up, so they can't start a stopped sandbox, and
+      `gone(h)` reads those very clients (`portforward/stop.go:133`). They end with the container on `sbx stop`, and
+      the hook's `StopAll(id, true)` records them STOPPED, as today;
+    - then runs `sbx stop`. Every step above is bounded (the `orphanKillWait` waits, and each exec's own 10 s
+      timeout). Anything still pending, such as a client stuck in uninterruptible sleep on a hung host mount, is
+      logged and abandoned. One stuck process must not block every stop.
+
+    `bringUp` defers to whoever cancelled it, as `watchExit` already does on `ctx.Done`: once its context is
+    cancelled it neither signals nor records anything (its `stopProc` calls are skipped, and its writes apply only
+    while the instance is STARTING, checked inside the `insts.Update` mutate). So a `bringUp` racing the drain,
+    including one whose readiness succeeds as it is cancelled, never overwrites FAILED. A developer's
+    `Supervisor.Stop` of a starting instance already signals and records it itself through `stopInstance`.
 
     **No exec guard** (simplified in run-613, replacing the per-sandbox exec guard of run-601/607). Only a
     **developer request** can start a new `sbx exec` client while an operation holds the lock, so only the three
@@ -868,8 +865,8 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     - readiness loops, which `bringUp` starts only after a gated launch, under the instance's context. The drain
       cancels that context, and `exec.CommandContext` with a cancelled context never starts.
 
-    So after the drain, no `sbx exec` client of this sandbox is still **starting** (RUNNING service sessions
-    are already connected), and none can start before `sbx stop`.
+    So once the drain has cancelled a context, no new `sbx exec` starts under it. An exec already in flight may still
+    reach the runtime after `sbx stop` (best effort, above).
 
     **Assumption (verified in quickstart Scenario 0, step 5; run-618).** Only `sbx exec` starts a stopped sandbox in
     place. Two other per-sandbox calls run outside `runtimeMu`, and are assumed not to start a stopped sandbox:
@@ -882,11 +879,10 @@ workers (revised in run-595). Workers whose agent did not survive are clear imme
     - **If `sbx stop` then fails**, the container is still up:
       - **Agent.** The sandbox stays RUNNING with an agent and no session. The outcome rule's RUNNING branch marks
         it *unknown* and probes, so it is surfaced as detached (`t` → Replace or Wait), never silently doubled.
-      - **Services** (revised in run-618 and run-625). RUNNING services were never drained, so they are still
-        RUNNING and tracked by their own clients, with nothing to do. A readiness check the drain cancelled has
-        already signalled its group and is STOPPED with its port released (above), so nothing it started is left
-        untracked. A launch cancelled before its PGID arrived is FAILED (`cancelled by a stop`) with its port
-        released (FR-046).
+      - **Services** (revised in run-629). RUNNING services were never drained, so they are still RUNNING and
+        tracked by their own clients. Every instance the drain interrupted is already FAILED with the *may still be
+        running* detail, and its `SERVICE_FAILED` notification asks for attention, so none is claimed stopped. The
+        stop's error is surfaced by the operation as today.
 - **Outcome rule.** The operation applies it as it releases the lock, judging from the state it wrote, not from the
   fact that it ran:
   - **STOPPED, or destroyed.** STOPPED is written only once the container is down, so its processes are gone. The

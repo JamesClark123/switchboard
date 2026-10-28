@@ -401,21 +401,24 @@ sequence model. No user story can be delivered before this phase.
     - **Check and spawn hold it together.** `Registry.Session` try-locks `runtimeMu` before the gate check and holds
       it until the factory's `cmd.Start` returns and the session is registered (T048). The try-lock never waits, so
       there is no lock cycle with `r.mu`.
-    - **A stop drains exec clients first.** `Stop` (and the stops inside `Destroy` and `Refresh`), under the lock and
-      before `sbx stop`, closes the sandbox's agent session and broadcaster with `closing` set, cancels only the `portforward`
-      exec clients still starting (launches with no PGID marker yet, readiness loops and their in-flight exec;
-      RUNNING services keep their clients, because `gone(h)` reads them), and waits for those clients to exit.
-      A cancelled readiness loop's `bringUp` signals its group through `readinessFailed`'s `stopProc`, records
-      STOPPED and releases the port; the drain waits for that `bringUp` to return, so this lands before `sbx stop`
-      (TERM, then KILL after `orphanKillWait`). It waits on the watcher's `done` channel (closed by `onExit`) and the
-      instances' done signals, **never a second `cmd.Wait`**. `Registry.Close` returns the entry's `done`
-      channel, and the drain waits on it only after `Close` has released `r.mu` and the global lock (`onExit` takes
-      `r.mu`). There is **no exec guard** (research R14, simplified in run-613): only developer requests are gated.
+    - **A stop drains exec clients first, best effort** (research R14, simplified in run-629). `Stop` (and the stops
+      inside `Destroy` and `Refresh`), under the lock and before `sbx stop`: closes the sandbox's agent session and
+      broadcaster with `closing` set and sends its client TERM, then KILL after `orphanKillWait`, waiting on the
+      watcher's `done` channel (closed by `onExit`), **never a second `cmd.Wait`** (`Registry.Close` returns it, and
+      the drain waits only after `Close` has released `r.mu` and the global lock); records every still-starting
+      service instance FAILED through `markFailed` (`LAUNCH_FAILED`, `start interrupted by a sandbox stop; if the
+      stop failed it may still be running in the sandbox`), which cancels its context and unpublishes its port;
+      sends each of their announced in-sandbox groups TERM through `sbx exec`, then KILL after `orphanKillWait`
+      unconditionally; leaves RUNNING services alone (`gone(h)` reads their clients); then runs `sbx stop`. Each
+      step is bounded, and anything still pending is logged and abandoned. No ordering against `sbx stop` and
+      nothing about a failed stop is promised. `bringUp` defers to whoever cancelled it: after cancellation it skips
+      `stopProc`, and its writes apply only while the instance is STARTING (checked inside the `insts.Update`
+      mutate). There is **no exec guard** (research R14, simplified in run-613): only developer requests are gated.
       `bringUp`'s IN_SANDBOX launch and `Supervisor.Stop` try-lock `runtimeMu` like `Registry.Session` (a held lock
       → `sandbox is busy; try again`). Execs from the lock holder or its on-change hook (`Restart`, probe/reap,
-      `StopAll` teardown on CREATING/ERROR) are never gated. A failed `sbx stop` afterwards leaves the sandbox RUNNING
-      and *unknown*, so the outcome rule probes it; RUNNING services are untouched and stay RUNNING and
-      tracked. A client still alive after the final `orphanKillWait` is logged, and the stop proceeds.
+      `StopAll` teardown on CREATING/ERROR) are never gated. A failed `sbx stop` afterwards surfaces its error and
+      leaves the sandbox RUNNING and *unknown*, so the outcome rule probes it; RUNNING services stay RUNNING and
+      tracked, and the interrupted ones are FAILED with the *may still be running* detail, never claimed stopped.
     - **Lifecycle operations block** on it, which waits out an in-flight probe or stop.
     - The agent session is closed by the on-change hook as today, except for the stop's drain above.
     - **Outcome rule**, applied as the operation releases the lock, from the state it wrote:
@@ -519,21 +522,21 @@ sequence model. No user story can be delivered before this phase.
       - the gate passes, then `Stop` starts while the factory is blocked: `Stop` waits for `cmd.Start` and the
         registration, so its stop ends the new agent; no agent survives the STOPPED write;
       - with a fake exec client that "reaches the runtime" (marks the fake sandbox running) only after a delay, and
-        that ignores TERM: `Stop` kills and reaps it before `sbx stop`, and the sandbox is not running after the
-        STOPPED write at any later time;
+        that ignores TERM: `Stop` sends it TERM then KILL and reaps it within the bound before `sbx stop` (best
+        effort: no assertion about a client that outlives the bound);
       - a `sbx stop` that fails after the drain leaves the sandbox RUNNING and *unknown*; its probe makes an orphan
         record (surfaced), and no second agent spawns;
-      - a service in its readiness loop during `Stop`: the loop is cancelled, its client is reaped before `sbx stop`,
-        and no `sbx exec` from portforward follows `sbx stop`; a service start or a developer service stop attempted
+      - a service in its readiness loop during `Stop`: the loop is cancelled and its `bringUp` issues no further
+        `sbx exec` and writes nothing; a service start or a developer service stop attempted
         while the stop holds the lock is refused (`sandbox is busy`), and the start keeps no port;
       - `AddKit` (CREATING under the lock) with a running IN_SANDBOX service: the hook's teardown signals it through
         `sbx exec`, which is not refused; the same holds for a Refresh whose stop fails;
       - a `Stop` with one RUNNING IN_SANDBOX service and one whose PGID has arrived but whose readiness takes 30 s:
-        the drain cancels only the second, whose group gets TERM through `sbx exec` **before** `sbx stop` and which
-        ends STOPPED with its port unpublished. A launch cancelled before its PGID arrives ends FAILED. If `sbx stop`
-        then fails, the RUNNING one is still RUNNING, tracked, and stoppable by `p` → stop; if it succeeds, the hook
-        records it STOPPED. A fake client that survives KILL is
-        logged and doesn't block the stop;
+        the second is FAILED (`start interrupted by a sandbox stop; …`) with its port unpublished, and its group
+        gets TERM and then KILL through `sbx exec` even though its host client has already exited; a fake readiness
+        that succeeds as it is cancelled leaves it FAILED, not RUNNING. If `sbx stop` then fails, the RUNNING one is
+        still RUNNING, tracked and stoppable by `p` → stop, and the error is returned; if it succeeds, the hook
+        records it STOPPED. A fake client that survives KILL is logged and doesn't block the stop;
       - under `-race`, a fake agent client that exits only on KILL: the drain waits outside `r.mu` (`onExit` runs),
         and the stop completes after `orphanKillWait`;
       - the drain records `sbx stop` only after the fake agent client's `onExit` has run (no second `Wait`);
