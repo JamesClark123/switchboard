@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -569,4 +570,42 @@ func putAction(svc *Service, id string, a *pb.Action) (*pb.Action, error) {
 		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions(), UnlanedRuns: impact.GetUnlanedRuns()}
 	}
 	return svc.PutAction(req)
+}
+
+// seedLanes creates lanes by name and puts the listed roster workers in them
+// (tests seed lanes directly rather than through the lane RPCs). It returns
+// the lane ids by name.
+func seedLanes(t *testing.T, rt *runtime, members map[string][]string) map[string]string {
+	t.Helper()
+	ids := map[string]string{}
+	if _, err := rt.update(func(o *pb.Orchestrator) error {
+		names := make([]string, 0, len(members))
+		for name := range members {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			l := laneByName(o, name)
+			if l == nil {
+				l = &pb.Lane{Id: newLaneID(), Name: name}
+				o.Lanes = append(o.Lanes, l)
+			}
+			ids[name] = l.GetId()
+			for _, id := range members[name] {
+				w := onRosterEntry(o, id)
+				if w == nil {
+					return fmt.Errorf("seedLanes: %s is not on the roster", id)
+				}
+				if !slices.Contains(w.GetLaneIds(), l.GetId()) {
+					w.LaneIds = append(w.LaneIds, l.GetId())
+				}
+				w.LanesPending = false
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.triggerDispatch()
+	return ids
 }
