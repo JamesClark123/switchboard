@@ -37,7 +37,7 @@ type probeRunner struct {
 }
 
 func newProbeRunner() *probeRunner {
-	return &probeRunner{fakeRunner: newFakeRunner(), out: map[string]string{}, slow: map[string]bool{}, reapOut: "nofile\nreaped\t1\n"}
+	return &probeRunner{fakeRunner: newFakeRunner(), out: map[string]string{}, slow: map[string]bool{}, reapOut: "agent\t/c\nnofile\nreaped\t1\n"}
 }
 
 func (p *probeRunner) record(kind, ref string) {
@@ -244,12 +244,37 @@ func newOrphanEnv(t *testing.T) *orphanEnv {
 	t.Cleanup(func() { _ = reg.Close() })
 	e := &orphanEnv{reg: reg, run: newProbeRunner(), tokens: newFakeTokens(), live: &fakeLive{m: map[string]int64{}}, notes: &fakeNotes{}, dir: dir}
 	e.m = NewManager(reg, e.run, filepath.Join(dir, "workspaces"), "host-1")
+	t.Cleanup(e.quiesce)
 	e.m.SetOrphanDeps(OrphanDeps{Agents: e.live, Tokens: e.tokens, Notify: e.notes, OnClear: func(sb *pb.Sandbox) {
 		e.cmu.Lock()
 		e.cleared = append(e.cleared, sb.GetId())
 		e.cmu.Unlock()
 	}})
 	return e
+}
+
+// quiesce drops every sandbox's check (cancelling its retries) and waits for
+// probes in flight, so none outlives the test and reads the bounds that
+// fastOrphans restores.
+func (e *orphanEnv) quiesce() {
+	o := e.m.orphans
+	for range 300 {
+		o.mu.Lock()
+		ids := make([]string, 0, len(o.st))
+		for id := range o.st {
+			ids = append(ids, id)
+		}
+		o.mu.Unlock()
+		busy := false
+		for _, id := range ids {
+			o.drop(id)
+			busy = busy || e.probing(id)
+		}
+		if !busy {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // put records a sandbox directly (its ref is its id).
@@ -337,7 +362,7 @@ func TestOrphansAtStart(t *testing.T) {
 	e.tokens.issue("cleanup", 6)
 	e.run.setOut("cleanup", aliveOut(6))
 	e.put(t, "upgrade", running, idle, nil) // no token entry, a set status: may have an agent
-	e.run.setOut("upgrade", "nofile\n")
+	e.run.setOut("upgrade", "agent\t/c\nnofile\n")
 	e.put(t, "upgrade-exited", running, pb.AgentStatus_AGENT_STATUS_EXITED, nil)
 
 	// Probes are held until every sandbox has been classified.
@@ -375,7 +400,7 @@ func TestOrphansAtStart(t *testing.T) {
 	e.waitState(t, "gone", pb.AgentCheck_STATE_CLEAR)
 	e.waitState(t, "cleanup", pb.AgentCheck_STATE_DETACHED)
 	e.waitState(t, "upgrade", pb.AgentCheck_STATE_CLEAR)
-	// The refused Admit above asks for one more probe of "orphan" (single-flight).
+	// The refused Admit above is answered by the probe in flight: no second one.
 	probed := map[string]bool{}
 	for _, c := range e.run.callLog() {
 		probed[strings.TrimPrefix(c, "probe ")] = true
@@ -638,6 +663,9 @@ func TestRuntimeLockOrdersOperations(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
+			if op.start == pb.SandboxState_SANDBOX_STATE_STOPPED {
+				close(probeGo) // the restart's own probe
+			}
 			// No `sbx exec` follows a stop.
 			log := e.run.callLog()
 			if i := slices.Index(log, "stop p"); i >= 0 && name == "stop" {
@@ -858,6 +886,68 @@ func TestOrphanBackstop(t *testing.T) {
 	e.m.RecheckOrphan("nothing") // no state: nothing to probe
 }
 
+// A container the listing says is stopped under a RUNNING record is not
+// "gone": the probe fails (the sandbox stays unknown, the gate refuses), so
+// nothing warm-starts into it and no token is retired (SWI-17 review).
+func TestListedStoppedIsNotGone(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("s", 2)
+	e.run.mu.Lock()
+	e.run.running["s"] = false
+	e.run.mu.Unlock()
+	e.m.AgentClientExited("s", 2)
+	e.waitState(t, "s", pb.AgentCheck_STATE_CHECK_FAILED)
+	sb := e.get(t, "s")
+	if e.wasCleared("s") || sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED || len(e.tokens.Unretired("s")) != 1 {
+		t.Errorf("a stopped container read as gone: %v, cleared %v", sb.GetAgent(), e.wasCleared("s"))
+	}
+	if err := sb.GetAgent().GetAgentCheck().GetError(); !strings.Contains(err, "stopped") {
+		t.Errorf("check error %q", err)
+	}
+	if _, err := e.m.Admit("s"); !errors.Is(err, agent.ErrChecking) {
+		t.Errorf("Admit = %v", err)
+	}
+	if e.run.count("probe") != 0 {
+		t.Error("`sbx exec` into a stopped container")
+	}
+}
+
+// A probe dropped because another holder (a service start or stop, a spawn)
+// had the runtime lock is retried, so the sandbox does not stay unknown
+// (SWI-17 review).
+func TestBusyProbeRetried(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("s", 2)
+	e.run.setOut("s", aliveOut(2))
+	unlock, ok := e.m.TryLockRuntime("s")
+	if !ok {
+		t.Fatal("lock")
+	}
+	e.m.AgentClientExited("s", 2)
+	time.Sleep(30 * time.Millisecond)
+	if err := e.m.orphans.refusal("s"); !errors.Is(err, agent.ErrChecking) || e.run.count("probe") != 0 {
+		t.Fatalf("probed under a held lock: %v", err)
+	}
+	unlock()
+	e.waitState(t, "s", pb.AgentCheck_STATE_DETACHED)
+}
+
+// agent.pid's generation is sandbox-writable: one the daemon never issued
+// (or retired) is not the run's hold generation (SWI-17 review).
+func TestForgedFileGenIsNotTheHoldGen(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r", StepRole: pb.StepRole_STEP_ROLE_CLEANUP})
+	e.tokens.issue("s", 2)
+	e.run.setOut("s", aliveOut(1<<40))
+	e.m.AgentClientExited("s", 2)
+	e.waitState(t, "s", pb.AgentCheck_STATE_DETACHED)
+	if g := e.get(t, "s").GetController().GetRun().GetHoldGen(); g != 2 {
+		t.Errorf("hold_gen = %d, want 2", g)
+	}
+}
+
 // --- the developer's stop ---
 
 func TestReapOrphan(t *testing.T) {
@@ -905,12 +995,13 @@ func TestReapOrphan(t *testing.T) {
 		t.Errorf("after a restart reap: %v", sb)
 	}
 
-	// Not running: refused. Listed stopped: nothing to stop.
+	// Not running: refused. Listed stopped under a RUNNING record: refused
+	// too, so the attach never spawns into the stopped sandbox.
 	e.m.orphans.setUnknown("plain")
 	e.run.mu.Lock()
 	e.run.running["plain"] = false
 	e.run.mu.Unlock()
-	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); err != nil || e.run.count("reap") != 3 {
+	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); err == nil || !strings.Contains(err.Error(), "stopped") || e.run.count("reap") != 3 {
 		t.Errorf("listed stopped: %v, %d reaps", err, e.run.count("reap"))
 	}
 	e.put(t, "down", pb.SandboxState_SANDBOX_STATE_STOPPED, pb.AgentStatus_AGENT_STATUS_IDLE, nil)

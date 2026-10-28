@@ -73,23 +73,27 @@ func pidRecord(gen int64) string {
 //     path a first bind compares against (research R13);
 //   - file <gen> <pid> <start>, then proc … for that process only if
 //     /proc/<pid>/stat still has the recorded start time (a reused PID never
-//     matches);
-//   - with no parseable agent.pid, or one naming a live process that is not
-//     the agent binary with the fixed flags (the file is writable inside the
-//     sandbox, so a forged record never keeps a probe alive or steers a
-//     signal), nofile, then proc … for every process whose executable is the
-//     agent binary and whose command line starts with the fixed flags, except
-//     those whose parent is such a process (nested ones).
+//     matches) and it is the agent binary with the fixed flags;
+//   - otherwise (no parseable agent.pid, or one naming a dead process, or one
+//     naming a live process that is not the agent: the file is writable
+//     inside the sandbox, so a forged record never keeps a probe alive or
+//     steers a signal), nofile, then proc … for every process whose
+//     executable is the agent binary and whose command line starts with the
+//     fixed flags, except those whose parent is such a process (nested ones).
 //
-// The start time is read after the last ")" of the stat line, so a comm with
-// spaces never shifts the fields.
+// It fails closed (exits non-zero: the probe failed, never "gone") when it
+// cannot resolve the agent binary, or when the scan finds nothing while
+// agent.pid names a live process with its recorded start time that it cannot
+// identify as the agent. The start time is read after the last ")" of the
+// stat line, so a comm with spaces never shifts the fields; tabs and line
+// breaks in a command line are blanked, so it cannot inject output lines.
 const probeDetect = `u=$(printf '\037')
 a=$(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null)
+[ -n "$a" ] || { echo 'probe: claude not found' >&2; exit 1; }
 st() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 pp() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f2; }
-cl() { tr '\000' '\037' < "/proc/$1/cmdline" 2>/dev/null; }
+cl() { tr '\000\t\n\r' '\037   ' < "/proc/$1/cmdline" 2>/dev/null; }
 isagent() {
-  [ -n "$a" ] || return 1
   e=$(readlink "/proc/$1/exe" 2>/dev/null); e=${e% (deleted)}
   [ -n "$e" ] && [ "${e%/*}" = "${a%/*}" ] || return 1
   c=$(cl "$1"); a0=${c%%"$u"*}; r=${c#*"$u"}; a1=${r%%"$u"*}
@@ -104,24 +108,26 @@ read -r g p s _ < "$HOME/.sxb/agent.pid" 2>/dev/null
 f=
 case "$g:$p:$s" in
   *[!0-9:]*|:*|*::*|*:) ;;
-  *) if [ "$(st "$p")" != "$s" ]; then f=gone; elif isagent "$p"; then f=live; fi ;;
+  *) if [ "$(st "$p")" != "$s" ]; then f=gone; elif isagent "$p"; then f=live; else f=other; fi ;;
 esac
-case $f in
-  gone) printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s" ;;
-  live) printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s"
-    show "$p"; T="$p:$s" ;;
-  *) printf 'nofile\n'
-    m=
-    for d in /proc/[0-9]*; do q=${d#/proc/}; isagent "$q" && m="$m $q"; done
-    for q in $m; do
-      case " $m " in *" $(pp "$q") "*) continue ;; esac
-      t=$(st "$q"); [ -n "$t" ] || continue
-      show "$q"; T="$T $q:$t"
-    done ;;
-esac
+if [ "$f" = live ]; then
+  printf 'file\t%s\t%s\t%s\n' "$g" "$p" "$s"
+  show "$p"; T="$p:$s"
+else
+  printf 'nofile\n'
+  m=
+  for d in /proc/[0-9]*; do q=${d#/proc/}; isagent "$q" && m="$m $q"; done
+  for q in $m; do
+    case " $m " in *" $(pp "$q") "*) continue ;; esac
+    t=$(st "$q"); [ -n "$t" ] || continue
+    show "$q"; T="$T $q:$t"
+  done
+  if [ "$f" = other ] && [ -z "$T" ]; then echo "probe: agent.pid names live process $p, not the agent" >&2; exit 1; fi
+fi
 `
 
-// ProbeScript is the read-only probe: one `sbx exec <ref> sh -c` (T047).
+// ProbeScript is the read-only probe: one `sbx exec <ref> bash -lc` (T047),
+// the launch's login shell, so `claude` resolves on the same PATH.
 func ProbeScript() string { return probeDetect }
 
 // ReapScript is the developer's stop of an orphan (ReapOrphan): the same
@@ -192,7 +198,8 @@ func (r ProbeResult) Main() (ProbedAgent, bool) {
 }
 
 // ParseProbe reads a probe's (or reap's) output. Output with neither a file
-// nor a nofile line is an error: the script did not run to its decision.
+// nor a nofile line, or with no agent binary, is an error: the script did not
+// run to its decision, and a failed probe is never "gone".
 func ParseProbe(out string) (ProbeResult, error) {
 	var r ProbeResult
 	decided := false
@@ -239,6 +246,9 @@ func ParseProbe(out string) (ProbeResult, error) {
 	}
 	if !decided {
 		return r, errors.New("probe: no answer from the sandbox")
+	}
+	if r.AgentExe == "" {
+		return r, errors.New("probe: no agent binary in the sandbox")
 	}
 	return r, nil
 }

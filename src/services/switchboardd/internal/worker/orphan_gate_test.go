@@ -51,12 +51,12 @@ func newGateEnv(t *testing.T) *gateEnv {
 	if err := os.WriteFile(answer, []byte(garbled), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(answer+".reap", []byte("nofile\nreaped\t1\n"), 0o644); err != nil {
+	if err := os.WriteFile(answer+".reap", []byte("agent\t/c\nnofile\nreaped\t1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cases := `  "ls --json") printf '{"sandboxes":[{"name":"` + gateName + `","id":"` + gateID + `","status":"running"}]}' ;;
-  "exec ` + gateName + ` -- /bin/sh -c "*"kill -KILL"*) cat "` + answer + `.reap" ;;
-  "exec ` + gateName + ` -- /bin/sh -c "*) cat "` + answer + `" ;;`
+  "exec ` + gateName + ` -- bash -lc "*"kill -KILL"*) cat "` + answer + `.reap" ;;
+  "exec ` + gateName + ` -- bash -lc "*) cat "` + answer + `" ;;`
 	g := &gateEnv{env: newEnv(t, cases), answer: answer}
 	g.agents = agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
 		g.mu.Lock()

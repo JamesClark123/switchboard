@@ -48,7 +48,7 @@ func (r *orphanRunner) Exec(ctx context.Context, _ string, argv []string) *exec.
 	defer r.mu.Unlock()
 	if strings.Contains(argv[len(argv)-1], "kill -KILL") {
 		r.reaps++
-		return exec.CommandContext(ctx, "printf", "%s", "nofile\nreaped\t1\n")
+		return exec.CommandContext(ctx, "printf", "%s", "agent\t/c\nnofile\nreaped\t1\n")
 	}
 	return exec.CommandContext(ctx, "printf", "%s", r.answer)
 }

@@ -91,21 +91,26 @@ func (e agentEnv) writePID(t *testing.T, line string) {
 	}
 }
 
-// run runs a script as the daemon's `sbx exec <ref> sh -c` would, in the fake
-// sandbox, and parses its output.
+// run runs a script as the daemon's `sbx exec <ref> bash -lc` would (without
+// the host's profile), in the fake sandbox, and parses its output.
 func (e agentEnv) run(t *testing.T, script string) ProbeResult {
 	t.Helper()
+	r, err := e.try(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// try is run that returns the script's or the parse's error.
+func (e agentEnv) try(script string) (ProbeResult, error) {
 	c := exec.Command("/bin/sh", "-c", script)
 	c.Env = append(os.Environ(), "PATH="+e.bin+":"+os.Getenv("PATH"), "HOME="+e.home)
 	out, err := c.Output()
 	if err != nil {
-		t.Fatalf("script: %v", err)
+		return ProbeResult{}, fmt.Errorf("script: %w (%q)", err, out)
 	}
-	r, err := ParseProbe(string(out))
-	if err != nil {
-		t.Fatalf("parse %q: %v", out, err)
-	}
-	return r
+	return ParseProbe(string(out))
 }
 
 func alive(pid int) bool {
@@ -168,10 +173,11 @@ func TestProbeScriptRecordedAgent(t *testing.T) {
 		t.Errorf("CheckProbed: %v", err)
 	}
 
-	// The same PID with another start time is a reused PID: gone.
+	// The same PID with another start time is a reused PID: not the file's
+	// agent, but the scan still finds the live one.
 	e.writePID(t, fmt.Sprintf("5 %d 1 /dev/pts/0", pid))
-	if r := e.run(t, ProbeScript()); !r.File || r.Alive() {
-		t.Errorf("a reused PID read as alive: %+v", r)
+	if r := e.run(t, ProbeScript()); r.File || len(r.Procs) != 1 || r.Procs[0].PID != pid {
+		t.Errorf("a reused PID read as %+v", r)
 	}
 	if _, ok := (ProbeResult{File: true}).Main(); ok {
 		t.Error("no process, no main")
@@ -215,21 +221,24 @@ func TestReapScript(t *testing.T) {
 	e := newAgentEnv(t)
 	plain := e.start(t, "plain", agentFlag)
 	deaf := e.start(t, "deaf", agentFlag)
+	sleeper := exec.Command("sleep", "30")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sleeper.Process.Kill(); _ = sleeper.Wait() })
 	time.Sleep(100 * time.Millisecond) // the deaf one ignores TERM once running
 
-	// A reused PID (start time differs): nothing is signalled.
-	e.writePID(t, fmt.Sprintf("3 %d 1 /dev/pts/0", plain.Process.Pid))
-	if r := e.run(t, ReapScript(time.Second)); r.Reaped != 0 || !alive(plain.Process.Pid) {
-		t.Fatalf("reaped %d of a reused PID", r.Reaped)
-	}
-
-	// No file: both pre-feature agents are stopped, the deaf one by KILL.
-	_ = os.Remove(filepath.Join(e.home, ".sxb", "agent.pid"))
+	// A reused PID (start time differs) is never signalled; the scan stops
+	// both agents, the deaf one by KILL.
+	e.writePID(t, fmt.Sprintf("3 %d 1 /dev/pts/0", sleeper.Process.Pid))
 	r := e.run(t, ReapScript(time.Second))
 	if r.Reaped != 2 {
 		t.Errorf("reaped %d, want 2", r.Reaped)
 	}
 	waitFor(t, func() bool { return !alive(plain.Process.Pid) && !alive(deaf.Process.Pid) })
+	if !alive(sleeper.Process.Pid) {
+		t.Error("a reused PID was signalled")
+	}
 	if ReapScript(0) == "" || !strings.Contains(ReapScript(3*time.Second), "-lt 3 ") {
 		t.Error("the wait is in whole seconds, at least one")
 	}
@@ -238,6 +247,7 @@ func TestReapScript(t *testing.T) {
 // A forged agent.pid naming a live process that is not the agent (the file is
 // writable inside the sandbox) is ignored: the probe falls back to the binary
 // scan, so it never reads that process as alive, and a reap never signals it.
+// With nothing found, the probe fails (closed): never "gone".
 func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	e := newAgentEnv(t)
 	other := e.start(t, "plain", "--other") // the agent binary, not the fixed flags
@@ -249,11 +259,11 @@ func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	for _, c := range []*exec.Cmd{other, sleeper} {
 		pid := c.Process.Pid
 		e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", pid, startTime(t, pid)))
-		if r := e.run(t, ProbeScript()); r.File || r.Alive() {
+		if r, err := e.try(ProbeScript()); err == nil {
 			t.Errorf("pid %d: forged record read as %+v", pid, r)
 		}
-		if r := e.run(t, ReapScript(time.Second)); r.Reaped != 0 || !alive(pid) {
-			t.Errorf("pid %d: reap of a forged record signalled %d", pid, r.Reaped)
+		if r, err := e.try(ReapScript(time.Second)); err == nil || !alive(pid) {
+			t.Errorf("pid %d: reap of a forged record: %+v, %v", pid, r, err)
 		}
 	}
 	// The scan still finds a real agent beside the forged record.
@@ -313,18 +323,73 @@ func TestProbeAfterAgentUpdate(t *testing.T) {
 	waitFor(t, func() bool { return !alive(pid) })
 }
 
+// The probe fails closed (SWI-17 review): with no resolvable claude it errs
+// rather than reading "gone" beside a live agent.
+func TestProbeFailsWithoutTheAgentBinary(t *testing.T) {
+	e := newAgentEnv(t)
+	a := e.start(t, "plain", agentFlag)
+	e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", a.Process.Pid, startTime(t, a.Process.Pid)))
+	if err := os.Remove(e.claude); err != nil {
+		t.Fatal(err)
+	}
+	// Only the tools the script uses: no claude anywhere on PATH.
+	tools := t.TempDir()
+	for _, name := range []string{"readlink", "sed", "cut", "tr"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Skip(err)
+		}
+		if err := os.Symlink(path, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := exec.Command("/bin/sh", "-c", ProbeScript())
+	c.Env = append(os.Environ(), "PATH="+tools, "HOME="+e.home)
+	if out, err := c.Output(); err == nil {
+		t.Errorf("probe without claude = %q, want a failure", out)
+	}
+}
+
+// A stale agent.pid (a dead PID, e.g. a failed write by a later generation)
+// does not hide a live agent: the scan still runs (SWI-17 review).
+func TestStaleAgentPIDStillScans(t *testing.T) {
+	e := newAgentEnv(t)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	e.writePID(t, fmt.Sprintf("5 %d 12345 /dev/pts/0", dead.Process.Pid))
+	if r := e.run(t, ProbeScript()); r.Alive() {
+		t.Fatalf("no agent: %+v", r)
+	}
+	a := e.start(t, "plain", agentFlag)
+	if r := e.run(t, ProbeScript()); r.File || len(r.Procs) != 1 || r.Procs[0].PID != a.Process.Pid {
+		t.Errorf("a stale agent.pid hid the agent: %+v", r)
+	}
+}
+
+// Tabs and line breaks in a command line cannot inject probe lines.
+func TestProbeCmdlineInjection(t *testing.T) {
+	e := newAgentEnv(t)
+	a := e.start(t, "plain", agentFlag, "\nfile\t9\t1\t1\nref\t1\t/x")
+	r := e.run(t, ProbeScript())
+	if r.File || r.FileGen != 0 || r.RefPPIDExe == "/x" || len(r.Procs) != 1 || r.Procs[0].PID != a.Process.Pid {
+		t.Errorf("injected: %+v", r)
+	}
+}
+
 func TestParseProbe(t *testing.T) {
 	r, err := ParseProbe("agent\t/c\nref\t1\t/x\nfile\t4\t10\t99\nproc\t10\t99\t1\t/c\t/x\tclaude\x1f--dangerously-skip-permissions\x1f\nreaped\t1\nnoise\n")
 	if err != nil || r.FileGen != 4 || r.RefPPID != 1 || r.RefPPIDExe != "/x" || len(r.Procs) != 1 || len(r.Procs[0].Cmdline) != 2 || r.Reaped != 1 {
 		t.Fatalf("parse = %+v, %v", r, err)
 	}
-	for _, bad := range []string{"", "agent\t/c\n", "file\t1\n", "nofile\nproc\t1\n"} {
+	for _, bad := range []string{"", "agent\t/c\n", "file\t1\n", "agent\t/c\nnofile\nproc\t1\n", "agent\t\nnofile\n", "nofile\n"} {
 		if _, err := ParseProbe(bad); err == nil {
 			t.Errorf("ParseProbe(%q) accepted", bad)
 		}
 	}
 	// A proc with no PID or start time is no process.
-	if r, err := ParseProbe("nofile\nproc\t0\t\t0\t\t\t\n"); err != nil || r.Alive() {
+	if r, err := ParseProbe("agent\t/c\nnofile\nproc\t0\t\t0\t\t\t\n"); err != nil || r.Alive() {
 		t.Errorf("parse = %+v, %v", r, err)
 	}
 }

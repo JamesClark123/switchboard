@@ -1,10 +1,12 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -201,8 +203,12 @@ func (o *orphans) refused(id string) {
 		return
 	}
 	st.refusedAt = now
+	// A probe in flight (e.g. the start-up one) answers this refusal too.
+	inFlight := st.probing
 	o.mu.Unlock()
-	go o.probe(id)
+	if !inFlight {
+		go o.probe(id)
+	}
 }
 
 // markUnknown marks a sandbox unknown at once (the gate refuses from here on)
@@ -401,7 +407,9 @@ func (o *orphans) probe(id string) {
 
 // running re-reads the record and the runtime's listing: the probe runs only
 // against a sandbox that is RUNNING in both, since `sbx exec` would start a
-// stopped one. A listing that says stopped means its agent is gone.
+// stopped one. A listing that says stopped under a RUNNING record fails the
+// probe (never "gone", which would warm-start into the stopped sandbox): the
+// sandbox stays unknown until a reconcile publishes the stop.
 func (o *orphans) running(ctx context.Context, id string) (*pb.Sandbox, probeOutcome, error) {
 	sb, err := o.m.store.Get(id)
 	if err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
@@ -416,26 +424,32 @@ func (o *orphans) running(ctx context.Context, id string) (*pb.Sandbox, probeOut
 	case unknown != "":
 		return nil, probeFailed, fmt.Errorf("sandbox status %q", unknown)
 	case state != pb.SandboxState_SANDBOX_STATE_RUNNING:
-		return nil, probeGone, nil
+		return nil, probeFailed, fmt.Errorf("sandbox is listed %s", stateWord(state))
 	}
 	return sb, probeAlive, nil
 }
 
-// execScript runs a script in the sandbox (one `sbx exec`) and returns its
-// stdout.
+// execScript runs a script in the sandbox (one `sbx exec`) under the agent
+// launch's login shell (agent.agentCommand) and returns its stdout; a failure
+// carries the script's stderr.
 func (o *orphans) execScript(ctx context.Context, sb *pb.Sandbox, script string) (string, error) {
 	ref := sb.GetContainerRef()
 	if ref == "" {
 		ref = sb.GetDisplayName()
 	}
-	cmd := o.m.runner.Exec(ctx, ref, []string{"/bin/sh", "-c", script})
+	cmd := o.m.runner.Exec(ctx, ref, []string{"bash", "-lc", script})
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+		err = fmt.Errorf("%w: %s", err, bytes.TrimSpace(ee.Stderr))
+	}
 	return string(out), err
 }
 
 // probeOnce runs one probe under the runtime lock (try-lock: dropped while an
-// operation holds it, whose outcome rule settles the sandbox instead). It
+// operation holds it, and retried after orphanRetryBase while the sandbox is
+// pending, since a service start or stop, or a spawn, settles nothing). It
 // returns the sandbox's epoch as of taking the lock.
 func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult, error) {
 	o.mu.Lock()
@@ -448,6 +462,14 @@ func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult,
 	}
 	unlock, ok := o.m.TryLockRuntime(id)
 	if !ok {
+		o.mu.Lock()
+		if st := o.st[id]; st != nil && (st.unknown || st.record != nil) {
+			if st.retry != nil {
+				st.retry.Stop()
+			}
+			st.retry = time.AfterFunc(orphanRetryBase, func() { o.probe(id) })
+		}
+		o.mu.Unlock()
 		return probeDropped, 0, agent.ProbeResult{}, nil
 	}
 	defer unlock()
@@ -576,11 +598,14 @@ func (o *orphans) alive(id string, epoch uint64, res agent.ProbeResult) {
 		return
 	}
 	if d.Tokens != nil {
-		if p, ok := res.Main(); ok && slices.Contains(d.Tokens.Unretired(id), p.Gen) {
+		unretired := d.Tokens.Unretired(id)
+		if p, ok := res.Main(); ok && slices.Contains(unretired, p.Gen) {
 			_ = d.Tokens.BindFromProbe(id, p)
 		}
-		if !res.File {
-			gen = d.Tokens.Generation(id)
+		// agent.pid is writable inside the sandbox: its generation counts only
+		// when it is one the daemon issued and has not retired.
+		if cur := d.Tokens.Generation(id); !res.File || gen > cur || !slices.Contains(unretired, gen) {
+			gen = cur
 		}
 	}
 	sb, err := o.m.store.Get(id)
