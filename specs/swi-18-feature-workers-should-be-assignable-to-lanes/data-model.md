@@ -125,8 +125,9 @@ Issued only after every lane id is checked to exist (`NotFound` otherwise). On a
 (an owning daemon that predates lanes drops it), an unexpired ticket bound to the sandbox is consumed for its lanes.
 Otherwise a listing record (never an event or an `attachReply`) consumes the oldest unexpired launch ticket bound to
 the host and issued no later than `ticketSkew` (10 min, for clock skew between the two daemons) after the sandbox's
-`created_at`, and adopts as `lanes_pending` (R11). A ticket for a launch
-that is cancelled or fails before the sandbox exists is left to expire; it counts toward the cap meanwhile.
+`created_at`, and adopts as `lanes_pending` (R11). A ticket for a launch that is cancelled or fails before the
+sandbox exists is left to expire; it counts toward the cap meanwhile. On a pre-lanes host the fallback can still
+miss (skew beyond the margin, or an earlier unlaned sandbox consuming the ticket): see the known limitation in R16.
 
 On the owning host the id stays in `SandboxController.attach_ticket` after adoption: nothing clears it, because the
 orchestrator reads it only when adopting, and a later adoption always follows a new attach or launch that rewrites

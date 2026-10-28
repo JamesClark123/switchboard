@@ -39,7 +39,8 @@ Paths are relative to the repository root. `O/` = `src/services/switchboardd/int
   first.
 - [ ] T002 [P] Add constants to `O/constants.go`: `maxLanes = 32`, `maxLaneDescription = 200`,
   `attachTicketTTL = 24 * time.Hour`, `removedMarkTTL = 24 * time.Hour`, `laneIDPrefix = "ln-"`,
-  `waitingNamesMax = 5`, and the capability name `CapabilityLanes = "lanes"` (exported for the grpc server).
+  `waitingNamesMax = 5`, `ticketSkew = 10 * time.Minute` (research R11), and the capability name
+  `CapabilityLanes = "lanes"` (exported for the grpc server).
 - [ ] T003 [P] Advertise the capability: `G/server.go` sets
   `DaemonInfo.Capabilities = []string{orchestrator.CapabilityLanes}` (T002);
   `src/libs/switchboard-dial/conn.go` adds `HasCapability(name string) bool`; the UI `Daemon` interface in
@@ -144,11 +145,11 @@ depends on this phase.
     evicts the cache, and a replayed older event then cannot re-adopt it;
   - on a revision-0 host: an event never adopts or drops; a detach reply then a buffered pre-detach event leaves the
     worker detached; a listing still adopts; a record with no ticket id but an outstanding ticket gets the ticket's
-    lanes (sandbox-bound) or `lanes_pending` (host-bound launch ticket, listing only); the launch-ticket
-    fallback consumes the oldest ticket issued no later than `ticketSkew` (10 min) after the sandbox's `created_at`
-    (a host whose `created_at` is 5 min behind the ticket still matches, one 15 min behind doesn't), so a second ticketless adoption on
-    that host joins the open lane; an `attachReply` from an attach that wrote no ticket joins the open lane even
-    with a launch ticket outstanding;
+    lanes (sandbox-bound) or `lanes_pending` (host-bound launch ticket, listing only); the launch-ticket fallback
+    consumes the oldest ticket issued no later than `ticketSkew` (10 min) after the sandbox's `created_at` (a host
+    whose `created_at` is 5 min behind the ticket still matches, one 15 min behind doesn't), so a second ticketless
+    adoption on that host joins the open lane; an `attachReply` from an attach that wrote no ticket joins the open
+    lane even with a launch ticket outstanding;
   - `TestRosterFreshness` generates revision-0 hosts and bare DESTROYING records, and models `input.cache`;
   - reasoning: a late event from a destroyed reasoning sandbox does not re-adopt it during a rebuild, and a listing
     requested before a reasoning launch commit does not drop the new entry.

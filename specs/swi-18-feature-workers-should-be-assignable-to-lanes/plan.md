@@ -76,8 +76,8 @@ fake owning daemons) plus two seeded property tests (`TestDispatchProperties`, `
 - No lock is held across a network call by any roster writer (FR-308c).
 - Status folding never waits on a roster write.
 - The proto numbers avoid SWI-17's (PR #21) claims.
-- No new env vars; TTLs (24 h tickets, 24 h removed marks), the 10 min `ticketSkew` margin and caps (32 lanes, 200-character descriptions) are
-  package constants.
+- No new env vars; TTLs (24 h tickets, 24 h removed marks), the 10 min `ticketSkew` margin and caps (32 lanes,
+  200-character descriptions) are package constants.
 
 **Scale/Scope**:
 - ≤ 32 lanes per orchestrator; rosters of tens of workers; queues of hundreds of runs (200 finished retained).

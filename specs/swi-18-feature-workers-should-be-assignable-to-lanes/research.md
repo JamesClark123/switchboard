@@ -632,6 +632,16 @@ dev builds.
     arises after a downgrade (already unsupported, below) or from a client that skips the capability check. Keeping
     expired host-bound tickets until the host's next listing would close it, but adds a ticket state. It is left
     for a follow-up; until then, update every host before using lanes (quickstart).
+
+    Under the same precondition, two more cases also land a laned launch in the open lane (re-review run-616):
+    - **Skew beyond the margin.** The worker host's clock runs more than `ticketSkew` behind the orchestrator's.
+    - **Pairing within the margin.** An unlaned and a laned launch on the same pre-lanes host within `ticketSkew`
+      are adopted by one listing. The unlaned sandbox, created up to `ticketSkew` before the ticket, can consume
+      the laned launch's ticket (and land *lanes pending*). The laned one then finds no ticket and joins the open
+      lane. Which one wins depends on listing order.
+
+    Pairing sandboxes and tickets by time order would narrow the second case; it is left for the same follow-up.
+    The remedy is the same: update every host before using lanes.
   - The Daemons screen already flags version skew; the quickstart notes that all hosts should be updated together.
 - **Downgrade** (unverified): Go protobuf keeps unknown fields when an older binary rewrites a record, so a downgraded
   host would carry its last `revision` forward unchanged, and its later writes would look stale to the roster until
