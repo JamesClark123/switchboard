@@ -66,3 +66,12 @@
   - **Reservation dispatch** (FR-314): O(runs + workers), and no run waits for a later one.
   - Minors and nits: FR-321 keeps today's triggers; FR-315 adds a reason for stopped or unreachable workers; FR-309b drops bad names instead of refusing; 32-lane cap; FR-318a refuses saves on an old daemon; FR-318b is persisted; FR-314b keeps the setting on the orchestrator record, written atomically.
   - Consistency pass: US2 #4, US4 #8, edge cases, Key Entities (live roster, attach ticket, kept lane setting, dropped worker tags), SC-002, SC-006 and Assumptions.
+- PR #22 re-review (run-564), resolved in run-567. The lifecycle was written out end to end first and is now the spec's **Lifecycle** section (L1–L8). Every FR was checked against it, and an independent consistency check was run before committing. Changes:
+  - The live roster is based on evidence (FR-308).
+  - FR-314's fallback chain covers steals and refusals, with defined precondition refusals and a reservation preference.
+  - Attach keeps link-then-commit, and the ticket closes the gap (FR-306a/b).
+  - Adoption and drops happen on events as well as reconcile.
+  - *Lanes pending* covers expired or mismatched tickets.
+  - The check/confirm handshake is serialised by a lock (FR-308a).
+  - Kept settings move onto runs atomically (FR-314b).
+  - Reason runs are scoped out of lanes.
