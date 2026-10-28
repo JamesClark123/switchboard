@@ -48,11 +48,13 @@ Paths are relative to the repository root:
     its 5000 lines). Test both in `termview_test.go`. Coverage must stay ≥ 90% for the new module.
 - [ ] T003 Apply contracts/proto-delta.md to `PROTO`, then run `make proto` (`src/libs/switchboard-proto/gen.sh`).
   - **Enums:** `ModelChoice`, `EffortChoice`, `StepRole`, `StepKind`, `StepStatus` (incl. `SENDING = 7`),
-    `StepObserved`, `WorkerHold`, `StepOutcome`, `StepResolution`.
-  - **Messages:** `ActionSequence`, `RunStep`, `DeliverWorkerStepRequest/Response`, `ResolveRunStepRequest`.
-  - **Fields:** `Action.sequence` 9, `Run` 20–28, `AgentSession` 5–10, `WorkerRun` 4–8, `WorkerView` 12–13,
-    `UpdateWorkerRequest.expect_run_id` 8, and `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED = 9`.
-  - **RPCs:** `DeliverWorkerStep`, `ResolveRunStep`.
+    `StepObserved`, `WorkerHold`, `StepOutcome`, `StepResolution`, `AgentCheck.State`.
+  - **Messages:** `ActionSequence`, `RunStep`, `AgentCheck`, `DeliverWorkerStepRequest/Response`,
+    `ResolveRunStepRequest`, `ReplaceDetachedAgentRequest`.
+  - **Fields:** `Action.sequence` 9, `Run` 20–30, `AgentSession` 5–12, `WorkerRun` 4–10, `WorkerView` 12–14,
+    `UpdateWorkerRequest.expect_run_id` 8, and `NotificationKind` 9–11 (`RUN_STEP_NOT_ACCEPTED`, `AGENT_DETACHED`,
+    `AGENT_CHECK_FAILED`).
+  - **RPCs:** `DeliverWorkerStep`, `ResolveRunStep`, `ReplaceDetachedAgent`.
   - Add labels for the new enums in `src/libs/switchboard-proto/types.go`, alongside `AgentStatusLabel`.
 - [ ] T004 [P] Mirror the proto delta in `specs/001-sandbox-session-manager/contracts/switchboard.proto`.
 
@@ -303,7 +305,9 @@ sequence model. No user story can be delivered before this phase.
     never retires it.
   - **Main PID persisted.** The store keeps `{generation → token, main PID, start time}`. The main PID (T046) is
     written when it is bound and loaded at start. A probe's `agent.pid` of the same generation fills it **only when
-    none is bound**. A mismatch is logged, and the stored PID stays (T047).
+    none is bound**, and only after checking that `/proc/<pid>/exe` is the agent binary, its command line starts
+    with the fixed flags, and its stdin is the PTY device recorded in the file; otherwise the bind is refused and
+    logged. A mismatch is logged, and the stored PID stays (T047).
   - **Reading the body.** It is parsed as a JSON token stream that keeps only the needed fields and skips large
     values without buffering them, under a 16 MiB hard cap.
   - **The escape hatch.** `/escape-hatch/run` requires a live generation's token. `writeWrapper`'s `curl` sends the
@@ -324,7 +328,8 @@ sequence model. No user story can be delivered before this phase.
     main. Any client exit keeps the token until its probe; a gone probe retires it;
   - restart the daemon mid-action: the orphan's `Stop` hook updates `last_turn_end_at` (the main PID came from the
     store); with no stored main PID, the start-up probe's `agent.pid` binds it; an `agent.pid` rewritten to name
-    another live process doesn't change an existing binding (the mismatch is logged);
+    another live process doesn't change an existing binding (the mismatch is logged); with no stored main PID, an
+    `agent.pid` naming a `sleep` process (wrong exe), or a `claude` on another tty, is not bound;
   - the generation counter after a restart is greater than any recorded `hold_gen`;
   - a generated wrapper's call carries the token and runs; a tokenless call to `/escape-hatch/run` gets 403;
   - a 5 MiB PreToolUse body is read and its `session_id` found;
@@ -376,39 +381,62 @@ sequence model. No user story can be delivered before this phase.
       binary and whose command line starts with the fixed flags (`claude --dangerously-skip-permissions`), excluding
       those whose parent is such a process.
     - **Orphan** = alive and no live session of that generation.
-    - It binds the generation's main PID from `agent.pid` only when none is bound (T045/T046).
+    - It binds the generation's main PID from `agent.pid` only when none is bound and the exe/command-line/tty
+      check passes (T045/T046).
+    - It writes `AgentSession.agent_check` (CLEAR / UNKNOWN / DETACHED / CHECK_FAILED, last status, last-seen
+      time, error, process count) only when it changes.
   - **`runtimeMu`** (`SBD/sandbox/manager.go`): a per-sandbox mutex, separate from `m.lifecycle` and the ops latch.
     - **Who holds it.** These hold it from just before their runtime call until the resulting state is written:
-      `Stop`, `Destroy`, `Refresh` (its stop, and its bring-up), `AddKit` (the recreate) and `Restart` (the bring-up).
+      `Stop`, `Destroy`, `Refresh` (**continuously** from its stop through its re-seed and bring-up), `AddKit` (the
+      recreate) and `Restart` (the bring-up).
       `Rename`, source edits and MCP attach don't take it.
     - **Probes and `ReapOrphan`.** Each runs its `sbx exec` under it with a **try-lock**, after re-reading that the
       record is RUNNING and that `ListStatuses` lists the sandbox as running. A probe that finds it held is dropped. A
-      developer's Replace or restart that finds it held is refused with `sandbox is busy (<operation>); try again`.
+      developer's Replace or restart that finds it held is refused with `ErrBusy`, which names the operation
+      (`sandbox is stopping` / `restarting` / `being refreshed` / `being recreated for a kit` / `being destroyed`).
+    - **Check and spawn hold it together.** `Registry.Session` try-locks `runtimeMu` before the gate check and holds
+      it until the factory's `cmd.Start` returns and the session is registered (T048). The try-lock never waits, so
+      there is no lock cycle with `r.mu`.
+    - **Stop backstop.** `Stop` (and the stops inside `Destroy` and `Refresh`) checks `ListStatuses` once after the
+      STOPPED write and re-runs `sbx stop` if the sandbox is still listed as running.
     - **Lifecycle operations block** on it, which waits out an in-flight probe or stop.
     - The agent session is closed by the on-change hook as today, never earlier.
     - **Outcome rule**, applied as the operation releases the lock, from the state it wrote:
       - STOPPED or destroyed → drop the orphan record, clear *unknown*, retire the token, and EXITED by the gone rule;
       - RUNNING with an orphan record or *unknown* → mark *unknown* and probe once;
       - anything else → keep the record and *unknown*.
+
+      `Refresh` applies the STOPPED branch explicitly after its stop's STOPPED write, still under the lock. The
+      STOPPED/destroyed branch also runs from the on-change hook on any first non-RUNNING publish, which covers
+      external stops seen by `Announce`.
   - **Probe triggers** (research R14), each on RUNNING sandboxes only, and none of them stops anything:
-    - **daemon start**: list running sandboxes (`ListStatuses`). Non-running ones get agent status EXITED and are
-      never probed. Mark the running ones *unknown* synchronously, start the servers, then probe asynchronously with
-      `orphanProbeConcurrency` (8), each bounded by `orphanProbeTimeout` (10 s);
+    - **daemon start** (clear by default): list running sandboxes (`ListStatuses`). Non-running ones get agent
+      status EXITED and are never probed. A running sandbox is *unknown* only if it has an unretired generation
+      token, or (first start after the upgrade, no store yet) a set, non-EXITED agent status; every other running
+      sandbox is CLEAR at once and dispatchable. Mark those *unknown* synchronously, start the servers, then probe
+      asynchronously in priority order (workers with no run, then workers with a run, then plain sandboxes) with
+      `orphanProbeConcurrency` (8), each bounded by `orphanProbeTimeout` (10 s). A gone result clears the sandbox
+      and re-kicks WarmStart and dispatch;
     - **exec-client exit**: `Registry.onExit` for a session that isn't `closing`. It **always** marks the sandbox
       *unknown*, releases `r.mu`/`statusMu`, and probes **asynchronously**. The exit status is not used. The result
       is applied under the locks: alive → orphan record, run state kept; gone → EXITED;
     - **gate refusal**: each refusal schedules a re-probe, debounced to one per sandbox per 10 s;
     - a main-agent **`SessionEnd`** from the orphan's generation;
-    - **backstop**: every `orphanBackstop` (60 s), only while an orphan record holds a run.
+    - **backstop**: every `orphanBackstop` (60 s), while an orphan record **or an *unknown* sandbox** holds a run.
 
     On a **gone** probe: drop the record, retire the token, and write EXITED only when the recorded status is set and
     not EXITED.
 
-    **Probe failures.** A failed probe leaves the sandbox *unknown*, retried with backoff. After 3 failures in a row,
-    set the row's note to `can't check for a detached agent: <error>`. The TUI then offers **Restart sandbox** or
-    **Wait**. There is no unchecked stop.
+    **Probe failures (*unknown* is bounded).** A failed probe leaves the sandbox *unknown*, retried with backoff
+    capped at 60 s. After `orphanUnknownLimit` (60 s) or 3 failures in a row, whichever comes first, surface it once:
+    `agent_check` = CHECK_FAILED, emit `NOTIFICATION_KIND_AGENT_CHECK_FAILED`, set the row's note to `can't check for
+    a detached agent: <error>`, and, if it holds a run, set `controller.run.step_note` to `can't confirm the agent is
+    still running: <error> — t to Wait or Restart sandbox; x cancels the run`. The run is not failed automatically.
+    The TUI then offers **Restart sandbox** or **Wait**. There is no unchecked stop.
   - **Surfacing.** When a probe first creates an orphan record, emit `NOTIFICATION_KIND_AGENT_DETACHED` (sandbox,
-    last state, run), once per record, and set the worker row's note to `agent detached by a daemon restart — t to
+    last state, run), once per record; the records found by one daemon start are aggregated into one notification
+    (`N agents detached by a daemon restart (M on idle workers) — R on the Workers view replaces the idle ones`).
+    Set the worker row's note to `agent detached by a daemon restart — t to
     Replace or Wait`.
   - **Phases.** For each orphan whose sandbox has a `controller.run` with a `step_role` or `hold`:
     - **ACTION:** left as is (in flight; hooks and the MCP report still work). At close, the cleanup steps are
@@ -431,9 +459,11 @@ sequence model. No user story can be delivered before this phase.
     - For `mode = restart`, write no EXITED (the fresh agent's STARTING follows).
   - **Callers that may stop an orphan**, and no others:
     - `AttachAgent` with `AttachInfo.replace_orphan`, on any sandbox;
-    - `DeliverWorkerStep.restart` (T024).
+    - `DeliverWorkerStep.restart` (T024);
+    - `ReplaceDetachedAgent` (new RPC, the TUI's bulk `R`): on a DETACHED sandbox that holds no run, `ReapOrphan`
+      under the try-lock, then `agent_check` CLEAR, EXITED and WarmStart. Errors per contracts/proto-delta.md.
 
-    The daemon itself never calls `ReapOrphan`. A guard test fails if a call site appears outside these two.
+    The daemon itself never calls `ReapOrphan`. A guard test fails if a call site appears outside these three.
   - **Orchestrator** (`SBD/orchestrator/sequence.go`): a run failed by EXITED uses `controller.run.step_note` as its
     reason when set. A run failed by a replace sends **no** custom post-prompts and no Clear.
 
@@ -443,14 +473,24 @@ sequence model. No user story can be delivered before this phase.
     - a stopped sandbox is never probed (no `sbx exec`), and its status becomes EXITED;
     - a recorded non-EXITED status with a dead PID, or a reused PID (start time differs), is **not** an orphan;
     - the servers start before the probes finish, and the gate refuses every *unknown* sandbox meanwhile; probes run
-      at most 8 at a time; a probe timeout leaves the sandbox refused and re-probed; after 3 failures `t` offers
+      at most 8 at a time; a probe timeout leaves the sandbox refused and re-probed; after 60 s or 3 failures `t` offers
       *Restart sandbox* and *Wait*;
     - **ordering, with a fake runner that records argv order and a blocking fake prober**, for each of `Stop`,
       `Refresh`, `Destroy`, `AddKit` and `Restart`:
       - a probe in flight when the operation starts finishes before its runtime call;
       - a probe or Replace triggered during the operation runs no `sbx exec` (dropped or refused `sandbox is busy`);
       - no `sbx exec` follows `sbx stop`;
-      - the gate refuses every spawn path while the lock is held (`sandbox is stopping`);
+      - the gate refuses every spawn path while the lock is held, with the operation's `ErrBusy` reason;
+      - the gate passes, then `Stop` starts while the factory is blocked: `Stop` waits for `cmd.Start` and the
+        registration, so its stop ends the new agent; no agent survives the STOPPED write;
+      - a sandbox still listed as running after the STOPPED write is stopped again;
+    - an external stop seen by `Announce` drops the orphan record and retires the token through the on-change hook;
+      `Refresh` with an orphan drops it and retires the token before its bring-up;
+    - daemon start: an idle worker with no unretired token is CLEAR and receives a run with no probe; probes run in
+      priority order; one aggregated AGENT_DETACHED is emitted; `ReplaceDetachedAgent` on two idle DETACHED
+      workers replaces both, refuses one holding a run, and reports a busy one;
+    - an *unknown* sandbox holding a run whose probe keeps failing: the backstop keeps probing, and within 60 s it is
+      CHECK_FAILED with AGENT_CHECK_FAILED emitted once and the run's step note set; the run is not failed;
     - `Rename` of a sandbox with an orphan doesn't take `runtimeMu`, and keeps the record and the token;
     - outcomes: a failing `runner.Stop` with an orphan keeps the record and the token, and re-probes; a successful
       stop drops the record and retires the token; a kit attach that recreates the container probes once and writes
@@ -480,10 +520,12 @@ sequence model. No user story can be delivered before this phase.
   OrphanGate)`. `Registry.Session` calls the gate **before the factory**. It never blocks (the terminal registry calls
   `Session` under its global lock), and it decides **only from the orphan record and `runtimeMu`** (T047), never from
   run flags:
-  - no record, and no operation holds `runtimeMu` → spawn;
+  - no record, and the try-lock on `runtimeMu` succeeds → spawn, **holding the lock** until `cmd.Start` returns and
+    the session is registered;
   - a record, or *unknown* → `ErrOrphan` with the agent's last state (`agent detached by a daemon restart; last seen
     working 10:42`, or `checking for a detached agent`);
-  - an operation holds `runtimeMu` → `ErrStopping` (`sandbox is stopping`), a non-blocking check.
+  - an operation holds `runtimeMu` → `ErrBusy` naming the operation (`sandbox is stopping`, `restarting`, `being
+    refreshed`, `being recreated for a kit`, `being destroyed`). The try-lock never waits.
 
   Nothing spawns, and **the gate never stops anything**. No caller checks for orphans itself. The two developer
   callers allowed to stop one call `ReapOrphan` first (T047). Best-effort callers log the error and are re-kicked by
@@ -500,7 +542,9 @@ sequence model. No user story can be delivered before this phase.
 
   For each path, and each state (ACTION; SETUP not yet halted; SETUP halted; hold; no run; uncontrolled; unknown;
   `runtimeMu` held), assert:
-  - the factory never runs while an orphan record exists or the lock is held;
+  - the factory never runs while an orphan record exists or the lock is held, including when an operation takes
+    `runtimeMu` between the gate check and the factory (impossible by construction: the test blocks the factory and
+    asserts `Stop` waits for it);
   - **only** `replace_orphan` and `restart` stop an orphan;
   - in particular, an escape-hatch result on a SETUP run that hasn't halted yet stops nothing and fails nothing;
   - exactly one agent exists afterwards, and two concurrent stops signal once;
@@ -682,8 +726,10 @@ needs a custom post-prompt, which arrives in US2.
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
 - [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
   like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_DETACHED` ("<sandbox>: agent detached by a daemon restart (last
-  seen <state>)[ on <run>] — t to Replace or Wait"), never suppressed, since the daemon never resolves an orphan on
-  its own (research R14).
+  seen <state>)[ on <run>] — t to Replace or Wait"; the start-up aggregate reads "N agents detached by a daemon restart
+  (M on idle workers) — R on the Workers view replaces the idle ones") and for `NOTIFICATION_KIND_AGENT_CHECK_FAILED`
+  ("<sandbox>: can't check for a detached agent: <error>[ on <run>] — t to Wait or Restart sandbox"), never
+  suppressed, since the daemon never resolves an orphan on its own (research R14).
 
 ### TUI: built-ins, run rows and controls (contracts/jobs-ui.md)
 
@@ -716,13 +762,17 @@ needs a custom post-prompt, which arrives in US2.
   - **Detached agent** (`UI/terminal.go` attach, and `T`), on **any** sandbox, worker or not: when the attach is
     refused because of a detached agent, show the Wait/Replace dialog with its last state and run (default Wait if
     it was working or waiting for input, Replace if idle); Replace re-attaches with `AttachInfo.replace_orphan` and
-    shows `replacing the detached agent…`. A refusal with `sandbox is busy`/`sandbox is stopping` shows its message.
-    After 3 failed checks (`can't check for a detached agent: <error>`), the dialog offers **Restart sandbox** (behind
+    shows `replacing the detached agent…`. A busy refusal shows its operation-specific message.
+    After 60 s or 3 failed checks (`can't check for a detached agent: <error>`), the dialog offers **Restart sandbox** (behind
     a confirm naming the run it fails) and **Wait**, with no Replace. Test every choice, on a worker and on a plain
     sandbox, with the fake daemon;
-  - a step marked `step_unconfirmed` lists `S` first and `R` asks the "may already have run" confirm.
+  - a step marked `step_unconfirmed` lists `S` first and `R` asks the "may already have run" confirm;
+  - **bulk Replace** (`UI/workers.go`): `R` on the Workers view opens one confirm listing the idle DETACHED workers
+    with no run, all ticked (`Replace N idle detached agents? Each is stopped and a fresh agent starts.`); `y` calls
+    `ReplaceDetachedAgent` per sandbox on its owning daemon and shows `replaced 5 · busy 1 (stopping) · failed 1:
+    <error>`; with none, `no idle detached agents`. Help: `R replace idle detached`. Test with the fake daemon.
 
-  Add `ResolveRunStep` to the TUI `Daemon` interface and its fakes.
+  Add `ResolveRunStep` and `ReplaceDetachedAgent` to the TUI `Daemon` interface and its fakes.
 - [ ] T031 [P] [US1] Sandbox list and Workers view:
   - `UI/sandbox_list.go` `needsDeveloper` adds `hold ∈ {NEEDS_INPUT_FREEING, NEEDS_DEVELOPER}` and
     `controller.run.halted`;

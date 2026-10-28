@@ -127,6 +127,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
 | `session_id` | The main agent's current session. The main agent is matched by **process** (the hook's `X-Sxb-Pid` equals the generation's main PID, bound by its first non-`compact` SessionStart), not by this id. The id follows `clear`/`resume` SessionStarts **from the main PID** only, never from a nested `claude -c -p` (research R13). It is used for Clear's read-back and hold release. Hook events from any other session are ignored for steps, evidence and holds. |
 | `last_needs_input_at` | A needs-input `Notification` from the main session (R8 rule 2). |
+| `agent_check` | The detached-agent check (research R14): CLEAR (unset), UNKNOWN, DETACHED or CHECK_FAILED, with the agent's last status, last-seen time, the probe error and the matched process count. Written by the owning daemon **only when it changes**. At daemon start only sandboxes that may have a surviving agent (an unretired generation token, or on the first start after upgrade a set, non-EXITED status) become UNKNOWN; every other running sandbox stays CLEAR. |
 | `input_idle_since` | Written **only when it changes** (set or unset), never per sample, so it doesn't flood `sandbox_changed`. Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
 
 ## Hold (sandbox) — state and display
@@ -137,6 +138,8 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | NEEDS_INPUT_FREEING | `needs input (freeing) · <run>` | yes |
 | NEEDS_DEVELOPER | `needing the developer — open its terminal and run /clear · <run>` | yes |
 | (run halted not accepted) | `<run> halted: <step> not accepted` | yes |
+| (agent_check DETACHED) | `agent detached by a daemon restart — t to Replace or Wait` (Workers view: `R` replaces every idle one) | yes |
+| (agent_check CHECK_FAILED) | `can't check for a detached agent: <error>` (+ the run note `can't confirm the agent is still running … x cancels the run`) | yes |
 
 ## Constants (no env vars)
 
@@ -153,6 +156,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token, main PID, start time}` and accepted until that agent is known gone (a normal exec-client exit, a gone probe, a stop or a reap; research R13/R14) |
 | `clearSettle` | 1 s | daemon: how long the screen is polled for the post-clear state after a `clear` SessionStart (research R13) |
 | `orphanProbeConcurrency` | 8 | daemon: start-up probes run at once, after the servers start (research R14) |
-| `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run asynchronously once the servers have started); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff; after 3 failures `t` offers *Restart sandbox* or *Wait* (research R14) |
-| `orphanBackstop` | 60 s | daemon: re-probe interval only while an orphan record holds a run (research R14) |
+| `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run asynchronously once the servers have started); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff; after `orphanUnknownLimit` (60 s) or 3 failures it is CHECK_FAILED and `t` offers *Restart sandbox* or *Wait* (research R14) |
+| `orphanBackstop` | 60 s | daemon: re-probe interval while an orphan record **or an *unknown* sandbox** holds a run (research R14, run-595) |
+| `orphanUnknownLimit` | 60 s | daemon: a sandbox still *unknown* this long (or after 3 failed probes, whichever is first) becomes CHECK_FAILED and is surfaced once (`AGENT_CHECK_FAILED`, row and run notes); probing continues with backoff capped at 60 s (research R14, run-595) |
 | `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, stopped only by the developer (`t` → Replace, `R` Restart setup), under the sandbox's `runtimeMu`; the daemon never stops one on its own (research R14) |

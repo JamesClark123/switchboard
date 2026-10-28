@@ -167,12 +167,15 @@ setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) f
 (R13): control characters and invalid UTF-8 refused in untrusted call values only (authored text and escape-hatch
 output untouched); a per-agent hook token passed in the agent's environment at launch (`SXB_HOOK_TOKEN`), persisted per generation;
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
-orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start, on an
-`sbx exec` client exit and on gate refusals;
-`agent.Registry.Session` is the one choke point that refuses to spawn beside it (or while a stop/recreate holds the
-sandbox's `runtimeMu`, which also orders every probe and stop). The daemon only detects and surfaces an orphan
-(*agent detached* notification) and never stops one itself: only the developer (`t` → Replace, `R`) or a sandbox
-stop/restart does (R14, simplified in run-590).
+orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start (only
+sandboxes with an unretired token; the rest are clear at once), on an `sbx exec` client exit and on gate refusals;
+*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED,
+`NOTIFICATION_KIND_AGENT_CHECK_FAILED`). `agent.Registry.Session` is the one choke point that refuses to spawn beside
+it, and try-locks the sandbox's `runtimeMu` (held by stop/recreate ops, and ordering every probe and stop) from the
+gate check through `cmd.Start` (`ErrBusy` names the operation). The daemon only detects and surfaces an orphan
+(*agent detached* notification, aggregated per start) and never stops one itself: only the developer (`t` →
+Replace, `R`, the Workers view's bulk `R` → `ReplaceDetachedAgent`) or a sandbox stop/restart does (R14, simplified
+in run-590, bounded in run-595).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

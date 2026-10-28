@@ -98,7 +98,16 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    - **During cleanup:** the worker shows *needing the developer*. `t` shows the dialog (default Replace, the agent
      is idle); Replace stops the old agent, starts a fresh one, and that frees the worker.
    - **An idle worker** keeps its detached agent: its row reads `agent detached by a daemon restart — t to Replace
-     or Wait`, and queued runs go to other workers until you press `t` → Replace.
+     or Wait`, and queued runs go to other workers until you press `t` → Replace. The restart raises **one**
+     notification (`N agents detached by a daemon restart (M on idle workers) — R on the Workers view replaces the
+     idle ones`). `R` on the Workers view lists the idle detached workers; `y` replaces them all and reports
+     `replaced N`; a worker holding a run is not listed.
+   - **An idle worker with no agent** (its agent had exited before the restart, so no token is outstanding) is
+     dispatchable at once: a queued run is delivered with no `checking for a detached agent` note.
+   - **A check that can't complete:** make the probe fail (for example, block `sbx exec` on the host). Within 60 s the
+     row reads `can't check for a detached agent: <error>`, a *can't check* notification appears, and a run on it
+     shows `can't confirm the agent is still running: … — t to Wait or Restart sandbox; x cancels the run`. The run
+     is not failed on its own.
    - **A plain sandbox** where you were mid-turn: `t` shows the dialog with default **Wait**; the turn is not
      killed unless you choose Replace.
    - **A sandbox stopped while the daemon was down** is not started by the restart, and gets no dialog.
@@ -108,7 +117,10 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
      in progress (no `agent exited`), and `t` shows the dialog; `ps` in the sandbox still shows one agent. Then
      `kill -9` the old agent inside the sandbox: within a minute the run fails with `agent exited`.
    - **Stop during a check:** restart the daemon and press Stop on a worker while it still shows `checking for a
-     detached agent`. The sandbox stops and stays stopped (no `sbx exec` restarts it), and its row clears.
+     detached agent`. The sandbox stops and stays stopped (no `sbx exec` restarts it), and its row clears. Pressing
+     `t` meanwhile shows `sandbox is stopping` (or the operation in progress: restarting, being refreshed, …).
+   - **External stop:** `sbx stop` the sandbox of a detached worker from the host. The row's detached note clears
+     and the next start gets one fresh agent.
    - In every case, `ps` inside the sandbox never shows two agents, and no agent is stopped except by your Replace,
      `R`, or a sandbox stop/restart.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect

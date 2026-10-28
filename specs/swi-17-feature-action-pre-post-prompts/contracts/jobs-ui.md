@@ -60,20 +60,36 @@ stops it:
   on <run>]). It can't be shown or typed into. Replace it? Replacing stops it[ and fails <run>]." The choices are
   **Wait** and **Replace**. Wait is the default when the agent was last seen working or waiting for input; Replace
   is the default when it was last seen idle. Replace re-attaches with `replace_orphan` and shows `replacing the
-  detached agent…` until the terminal opens. While the sandbox is being stopped, refreshed or recreated, Replace is
-  refused with `sandbox is busy (<operation>); try again`.
+  detached agent…` until the terminal opens. While the sandbox is being stopped, restarted, refreshed, recreated or
+  destroyed, Replace is refused with `sandbox is busy (<operation>); try again`, and `t` shows the gate's
+  operation-specific message (`sandbox is restarting`, `… being refreshed`, …), never "stopping" for a start.
+- **After a daemon restart, only sandboxes that may have a surviving agent are checked**; every other worker is
+  dispatchable at once. While a check runs the row reads `checking for a detached agent…`, idle workers first.
 - **An idle worker or a closed run with a detached agent** is never freed automatically: the worker row reads `agent
   detached by a daemon restart — t to Replace or Wait`, dispatch skips the worker, and a closed run's hold is
   *needing the developer* until Replace.
-- **A sandbox whose detached-agent check keeps failing** (3 probe failures) shows `can't check for a detached agent:
-  <error>`, and `t` offers **Restart sandbox** (behind a confirm naming the run it fails, if any) and **Wait**. A stop
+- **Bulk Replace: `R` on the orchestrator's Workers view** (run-595). It opens one confirm listing every worker whose
+  `agent_check` is DETACHED with no run, all ticked (space toggles):
+  `Replace N idle detached agents? Each is stopped and a fresh agent starts.`
+  - `y` calls `ReplaceDetachedAgent` on each worker's owning daemon (`connectedDaemon(host)`) and reports
+    `replaced 5 · busy 1 (stopping) · failed 1: <error>`.
+  - With none, the status reads `no idle detached agents`.
+  - Workers with a run are not listed; they go through `t` → Replace with its own confirm, because that fails the
+    run.
+  - Help: `R replace idle detached`.
+- **A sandbox whose detached-agent check keeps failing** (still unknown after `orphanUnknownLimit`, 60 s, or 3 probe
+  failures) raises one *agent check failed* notification and shows `can't check for a detached agent: <error>`. A run
+  it holds gets the note `can't confirm the agent is still running: <error> — t to Wait or Restart sandbox; x cancels
+  the run`, so it is never silently in flight. `t` offers **Restart sandbox** (behind a confirm naming the run it
+  fails, if any) and **Wait**. A stop
   of the agent alone would need the same failing `sbx exec`; restarting the sandbox ends every process in it.
 - **A worker whose detached agent asks for input** has the note `detached agent asks for input; it can't be answered
   here — replace it (fails the run) or wait`.
 - **A step halted by the restart** carries its evidence in the note (`agent detached by a daemon restart; last seen
   working 10:42; R restarts setup with a fresh agent`), so the developer can judge without a terminal.
 - **Every detached agent** raises one *agent detached* notification when it is found, naming the sandbox, its last
-  state and its run. Only the developer stops it (Replace, `R`, or a sandbox stop/restart); a replaced ACTION run
+  state and its run. Those found by the start-up probes are reported together in **one** notification per daemon
+  start: `N agents detached by a daemon restart (M on idle workers) — R on the Workers view replaces the idle ones`. Only the developer stops it (Replace, `R`, or a sandbox stop/restart); a replaced ACTION run
   fails with the usual *run failed* notification.
 
 `openRunOfEvent` (the timed-event "already open" check) skips closed runs, so a holding run listed in `in_flight`

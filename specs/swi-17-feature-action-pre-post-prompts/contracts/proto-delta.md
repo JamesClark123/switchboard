@@ -9,9 +9,9 @@ Field numbers continue from today's maximum in each message:
 |---|---|---|
 | Action | 8 | 9 |
 | Run | 19 | 20 |
-| AgentSession | 4 | 5 |
+| AgentSession | 4 | 5 (12 = `agent_check`, run-595) |
 | WorkerRun | 3 | 4 |
-| NotificationKind | 8 | 9 |
+| NotificationKind | 8 | 9 (10, 11 for R14) |
 
 No field is removed or renumbered.
 
@@ -137,6 +137,23 @@ message AgentSession {
                                                         // matched by the hook's X-Sxb-Pid, not by this id; research
                                                         // R13). Used for Clear's read-back and hold release
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
+  AgentCheck agent_check = 12;                          // the detached-agent check (research R14, run-595); unset = clear
+}
+
+// What the owning daemon knows about a possibly detached agent (research R14). Written by the daemon only, when the
+// state changes; cleared when the sandbox is clear. The Workers view, the row notes and the bulk Replace read it.
+message AgentCheck {
+  enum State {
+    STATE_CLEAR = 0;
+    STATE_UNKNOWN = 1;                   // a probe is pending or retrying; the gate refuses
+    STATE_DETACHED = 2;                  // an orphan: alive, not this daemon's session; the gate refuses
+    STATE_CHECK_FAILED = 3;              // still unknown after orphanUnknownLimit or 3 failed probes; surfaced
+  }
+  State state = 1;
+  AgentStatus last_status = 2;           // the agent's last known status (DETACHED)
+  google.protobuf.Timestamp last_seen_at = 3;
+  string error = 4;                      // CHECK_FAILED: the last probe error
+  int32 processes = 5;                   // DETACHED: live matched agent processes (2 on an upgraded host, research R14)
 }
 
 message WorkerRun {
@@ -168,7 +185,12 @@ enum NotificationKind {
   NOTIFICATION_KIND_AGENT_DETACHED = 10;         // owning daemon: a probe found an agent detached by a daemon restart
                                                  // (an orphan), once per orphan; names the sandbox, the agent's last
                                                  // state and its run. The daemon never stops it; t → Replace or Wait
-                                                 // (research R14)
+                                                 // (research R14). The start-up probes send ONE aggregated
+                                                 // notification per daemon start ("N agents detached … M on idle
+                                                 // workers — R on the Workers view replaces the idle ones")
+  NOTIFICATION_KIND_AGENT_CHECK_FAILED = 11;     // owning daemon: a sandbox stayed unknown for orphanUnknownLimit or 3
+                                                 // failed probes; names the sandbox, the error and its run, once per
+                                                 // episode (research R14, run-595)
 }
 
 // ---- New RPCs --------------------------------------------------------------
@@ -178,6 +200,13 @@ service Switchboard {
   rpc DeliverWorkerStep(DeliverWorkerStepRequest) returns (DeliverWorkerStepResponse);
   // Orchestrator side. Retry, skip or fail a halted step (FR-222).
   rpc ResolveRunStep(ResolveRunStepRequest) returns (Run);
+  // Owning daemon. Developer-initiated stop of one detached agent with no run, then WarmStart for a worker; the bulk
+  // `R` on the Workers view calls it once per selected sandbox (research R14, run-595). Never called by a daemon.
+  rpc ReplaceDetachedAgent(ReplaceDetachedAgentRequest) returns (Sandbox);
+}
+
+message ReplaceDetachedAgentRequest {
+  string sandbox_id = 1;
 }
 
 message DeliverWorkerStepRequest {
@@ -263,6 +292,7 @@ message ResolveRunStepRequest {
 | No live agent (and not a `first` step on an unheld sandbox, which starts one) | `FAILED_PRECONDITION` `no live agent`. The broadcaster is never created for a sandbox with no live agent. |
 | `restart` on a run not halted by a daemon restart | `FAILED_PRECONDITION` (`not a restart halt`) |
 | Beside an orphan, or while the restart probe hasn't finished (`Registry.Session`'s gate, research R14) | `FAILED_PRECONDITION` with the gate's reason (`agent detached by a daemon restart; last seen …` / `checking for a detached agent`); nothing spawns and nothing is reaped |
+| While a lifecycle operation holds the sandbox's `runtimeMu` (research R14) | `FAILED_PRECONDITION` with `ErrBusy`'s reason naming the operation (`sandbox is stopping` / `… restarting` / `… being refreshed` / `… being recreated for a kit` / `… being destroyed`) |
 | Unknown sandbox | `NOT_FOUND` |
 | An older daemon | `UNIMPLEMENTED`. The orchestrator **unclaims** the run, marks that worker unable to take sequenced runs until its link reconnects, and re-queues the run. It fails the run ("no worker supports pre/post prompts; update their daemons") only when no attached worker is eligible (research R6). |
 
@@ -274,3 +304,13 @@ message ResolveRunStepRequest {
 | Run not halted (except RETRY of a CLEAR step under a NEEDS_DEVELOPER hold), or `step` ≠ its halted step | `FAILED_PRECONDITION` ("the run moved on; reload") |
 | SKIP on a CLEAR step | `FAILED_PRECONDITION` ("Clear cannot be skipped") |
 | SKIP on the ACTION_PROMPT step | `FAILED_PRECONDITION` ("the action prompt cannot be skipped; retry or fail") |
+
+**`ReplaceDetachedAgent`** (research R14, run-595)
+
+| Condition | Code |
+|---|---|
+| Unknown sandbox | `NOT_FOUND` |
+| `agent_check.state` is not DETACHED, or the sandbox holds a run (`t` → Replace handles runs, with its own confirm) | `FAILED_PRECONDITION` (`no idle detached agent; reload`) |
+| `runtimeMu` held by a lifecycle operation | `FAILED_PRECONDITION` (`sandbox is busy (<operation>); try again`) |
+| The stop's `sbx exec` fails | `UNAVAILABLE` with the error; nothing is stopped or spawned |
+| Stopped | OK with the updated sandbox (`agent_check` clear, agent EXITED); a worker is then warm-started as today |

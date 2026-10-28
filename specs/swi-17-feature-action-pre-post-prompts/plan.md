@@ -59,19 +59,27 @@ judged by evidence after its submit.
    - Whether a sandbox has one is decided by **evidence**: a probe (running sandboxes only) finds a recorded agent
      process alive with no live session of its generation. It runs on every event that can create or clear an
      orphan: daemon start (asynchronously, after the servers start), any `sbx exec` client exit, a gate refusal, the
-     agent's `SessionEnd`, and a 60 s backstop while an orphan holds a run.
+     agent's `SessionEnd`, and a 60 s backstop while an orphan or an *unknown* sandbox holds a run.
+   - **Clear by default at start.** Only a sandbox that may have an agent (an unretired generation token) is
+     checked; every other running sandbox is dispatchable at once. Checks run idle workers first. A check that
+     can't complete within 60 s (or 3 failures) is surfaced (*can't check* notification, row and run notes) and
+     never left hanging.
    - **Detect and surface only** (simplified in run-590). The daemon never stops an orphan on its own. It emits an
-     *agent detached* notification and notes the row, and dispatch skips an orphaned worker until the developer acts.
+     *agent detached* notification (one aggregated per daemon start) and notes the row, and dispatch skips an orphaned
+     worker until the developer acts. `R` on the Workers view replaces every idle detached worker at once
+     (`ReplaceDetachedAgent`).
    - **One per-sandbox lock, `runtimeMu`,** is held by Stop, Destroy, Refresh, kit attach and Restart for their
-     runtime calls. Every probe and stop try-locks it, so none can overlap or follow `sbx stop`. Each operation
-     settles the orphan record from the state it wrote (STOPPED drops it; RUNNING re-probes).
+     runtime calls (Refresh continuously, stop through bring-up). Every probe and stop try-locks it, so none can
+     overlap or follow `sbx stop`, and `Registry.Session` holds it from the gate check until `cmd.Start` returns, so
+     no spawn can race a stop. Each operation settles the orphan record from the state it wrote (STOPPED drops it;
+     RUNNING re-probes); external stops are settled by the on-change hook.
    - `t` on any sandbox with one opens a Wait/Replace dialog; replacing an ACTION run's agent fails the run.
    - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
      again on the fresh agent.
    - Cleanup becomes *needing the developer*.
    - **One choke point:** every spawn goes through `agent.Registry.Session`, whose orphan gate refuses to start an
      agent beside an orphan (or while `runtimeMu` is held) and never stops anything. Only the developer (`t` → Replace,
-     `R`, or a sandbox stop/restart) stops an orphan. So two agents never share a workspace, and none is killed
+     `R`, the Workers view's bulk `R`, or a sandbox stop/restart) stops an orphan. So two agents never share a workspace, and none is killed
      unseen.
 
 ## Technical Context
