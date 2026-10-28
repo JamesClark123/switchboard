@@ -677,3 +677,24 @@ func TestLanesSurviveRestart(t *testing.T) {
 		t.Error("in-memory marks survived the restart")
 	}
 }
+
+// A lane delete that leaves a prompt action un-laned is guarded even when no
+// open-lane worker existed before it (FR-308a: like saving it un-laned).
+func TestDeleteLaneGuardsWithNoOpenLaneWorker(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 1, false)
+	id := o.GetId()
+	ids := seedLanes(t, rt, map[string][]string{"a": {"wa"}, "b": nil})
+	if _, err := putAction(env.svc, id, laned("build", pb.LaneMode_LANE_MODE_EXCLUSIVE, ids["b"])); err != nil {
+		t.Fatal(err)
+	}
+	impact, err := env.svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_DeleteLane{DeleteLane: &pb.DeleteLaneRequest{LaneId: ids["b"]}}})
+	if err != nil || !slices.Contains(impact.GetUnlanedActions(), "build") {
+		t.Fatalf("check = %+v / %v", impact, err)
+	}
+	if _, err := env.svc.DeleteLane(id, ids["b"], nil); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("unconfirmed delete = %v", err)
+	}
+	if _, err := env.svc.DeleteLane(id, ids["b"], &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions(), UnlanedRuns: impact.GetUnlanedRuns()}); err != nil {
+		t.Errorf("confirmed delete = %v", err)
+	}
+}

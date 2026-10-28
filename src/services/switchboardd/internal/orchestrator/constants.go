@@ -57,6 +57,9 @@ const (
 	removedMarkTTL = 24 * time.Hour
 	// laneIDPrefix starts every minted lane id ("ln-" + 12 hex).
 	laneIDPrefix = "ln-"
+	// lanePushRetryDelay spaces the retries of a lane display push that failed
+	// transiently while its host is up.
+	lanePushRetryDelay = 2 * time.Second
 	// ticketSkew tolerates clock skew between hosts when an attach ticket's
 	// age is checked (research R11).
 	ticketSkew = 10 * time.Minute

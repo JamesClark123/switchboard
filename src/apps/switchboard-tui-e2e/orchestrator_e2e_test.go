@@ -467,7 +467,23 @@ func addPingAction(t *testing.T, p *ptyProcess) {
 	p.tab() // arguments: blank (no lanes: Lanes and Mode are hidden)
 	m = p.mark()
 	p.send("\x13")
-	p.expectNew(t, m, "saved action ping", 15*time.Second)
+	// With no open-lane worker attached yet, the un-laned action is saved
+	// through the open-lane guard's confirm (SWI-18 FR-308a).
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		out := p.buf.String()[m:]
+		if strings.Contains(out, "saved action ping") {
+			return
+		}
+		if strings.Contains(out, "Save anyway?") {
+			m = p.mark()
+			p.send("y")
+			p.expectNew(t, m, "saved action ping", 15*time.Second)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected \"saved action ping\"\n%s", p.tail(3000))
 }
 
 // SWI-18 US1: a lane made in the Lanes view, the worker added to it, an action

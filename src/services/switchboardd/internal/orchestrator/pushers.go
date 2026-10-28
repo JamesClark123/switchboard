@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -124,6 +125,12 @@ func (rt *runtime) drainLanes(host string) {
 			}
 		}
 		if len(retry) > 0 && rt.ctx.Err() == nil {
+			// A host answering with transient errors is not retried in a tight
+			// loop: wait before the next round.
+			select {
+			case <-rt.ctx.Done():
+			case <-time.After(lanePushRetryDelay):
+			}
 			p.mu.Lock()
 			if p.dirty[host] == nil {
 				p.dirty[host] = map[string]struct{}{}
