@@ -43,10 +43,10 @@ action has no enabled built-in and no custom prompts gets **no steps**, and is d
 | `step_sent_at` | Timestamp | When the current step was typed (FR-217 evidence baseline). |
 | `step_kind_seen` | `StepObserved` (UNKNOWN, MODEL_TURN, MODEL_TURN_INPUT_ONLY, AGENT_LOCAL) | The kind the submit check observed (FR-206b). `MODEL_TURN_INPUT_ONLY`: classified only by a needs-input report. |
 | `step_note` | string | The *not accepted* reason as shown, e.g. `text still in the input box`, `picker opened`, `Model 'bogus' not found`. |
-| `step_sent_before_restart` | bool | FR-217 marker (FR-213, FR-222). |
+| `step_sent_before_restart` | bool | FR-217 marker (FR-213, FR-222). Cleared whenever the run leaves HALTED or `step` changes. |
 | `hold` | `WorkerHold` | Mirrors `WorkerRun.hold` while this run holds its sandbox (FR-213). |
 | `hold_since` | Timestamp | When the current hold began (display only; the daemon ends the hold, research R7). |
-| `step_unconfirmed` | bool | The current step halted after an UNCONFIRMED outcome: it was typed and may have run. The row shows `(may have run)`, and `R` asks the "may already have run" confirm (research R2). |
+| `step_unconfirmed` | bool | The current step halted after an UNCONFIRMED outcome: it was typed and may have run. The row shows `(may have run)`, and `R` asks the "may already have run" confirm (research R2). Cleared, like `step_sent_before_restart`, whenever the run leaves HALTED or `step` changes (with `controller.run.halted`). |
 | `step_send` | int32 | Send number of the current step's latest send. Incremented for every new send (a retry reuses it) and sent as `step_index`, so guard 3a stays monotonic even when setup is restarted from step 0 after an orphan reap (research R14). |
 
 ### StepStatus transitions
@@ -125,7 +125,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `last_submit_at` | `UserPromptSubmit` |
 | `last_turn_end_at` | `Stop` with no background tasks pending, or the WAITING backstop expiring |
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
-| `session_id` | The main agent's session: the first non-`compact` SessionStart carrying the **current generation's** hook token, rebound on any current-generation `clear` (research R13). Empty means none is bound yet, and events count for status only. Hook events from any other session are ignored for steps, evidence and holds. |
+| `session_id` | The main agent's current session. The main agent is matched by **process** (the hook's `X-Sxb-Pid` equals the generation's main PID, bound by its first non-`compact` SessionStart), not by this id. The id follows `clear`/`resume` SessionStarts **from the main PID** only, never from a nested `claude -c -p` (research R13). It is used for Clear's read-back and hold release. Hook events from any other session are ignored for steps, evidence and holds. |
 | `last_needs_input_at` | A needs-input `Notification` from the main session (R8 rule 2). |
 | `input_idle_since` | Written **only when it changes** (set or unset), never per sample, so it doesn't flood `sandbox_changed`. Sampled every 5 s and on each hook while `controller.run` is set: when the input box is empty and ready and the agent is not WORKING, the time that began; unset otherwise. Finishes a MODEL_TURN_INPUT_ONLY step after 60 s (the idle-nudge fallback, research R1). |
 
@@ -152,5 +152,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 | `screenQueue` | 256 chunks | daemon: the parser goroutine's bounded channel; overflow marks the screen stale (research R2) |
 | `hookTokenBytes` | 32 | daemon: the per-agent hook token, drawn for each spawned PTY generation and passed in the agent's environment (`SXB_HOOK_TOKEN`); persisted as `{generation → token}` and accepted until that agent is gone (research R13) |
 | `clearSettle` | 1 s | daemon: how long the screen is polled for the post-clear state after a `clear` SessionStart (research R13) |
-| `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run in parallel before the servers start); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff (research R14) |
+| `orphanProbeConcurrency` | 8 | daemon: start-up probes run at once, after the servers start (research R14) |
+| `orphanProbeTimeout` | 10 s | daemon: each start-up probe for a detached agent (one `sbx exec` per running sandbox, run asynchronously once the servers have started); a timeout leaves the sandbox *unknown*, refused and re-probed with backoff; after 3 failures `t` offers *Replace anyway* (research R14) |
+| `orphanBackstop` | 60 s | daemon: re-probe interval only while an orphan record holds a run (research R14) |
 | `orphanKillWait` | 5 s | daemon: TERM, then KILL, for an orphaned agent, reaped only by the developer (`t` → Replace, `R` Restart setup) or by the daemon's two surfaced cases (research R14) |

@@ -49,3 +49,4 @@
 - Planning amendment (run-560): a run that failed before its action prompt was delivered still gets Clear (if enabled and a pre-step was typed), never custom post-prompts, so FR-214 and SC-001 agree.
 - Planning amendment (run-566): FR-214's Clear-only exception now covers any typed step (a pre-step, or the action prompt typed but not accepted), matching contracts/jobs-ui.md and research R5.
 - Planning amendment (run-573): no spec change; orphan handling after an owning-daemon restart is now evidence-based and every kill is surfaced (research R14).
+- Planning amendment (run-579): no spec change; orphans are re-probed on every event that can create or clear one, and the main agent is matched by process (research R13, R14).

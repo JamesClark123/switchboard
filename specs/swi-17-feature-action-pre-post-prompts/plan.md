@@ -51,13 +51,15 @@ judged by evidence after its submit.
      so an agent that survives a restart keeps working hooks. The escape-hatch wrapper sends the same header and is
      re-injected at daemon start.
    - Hold release and Clear's read-back are corroborated by the daemon's own spawn generation and screen. Only the
-     main agent session counts.
+     main agent counts, matched by its process (the hook's parent PID), so a nested `claude -c -p` never does.
    - `DeliverWorkerStep` derives and checks built-in text, and accepts only increasing step indices.
 9. **Daemon restarts (R14).** The agent **survives** a daemon restart (`agentCommand`), but the daemon loses its
    PTY, so the agent is an **orphan**: hooks and its MCP report still work, but it can't be typed into or read.
    - An action in flight stays in flight.
-   - Whether a sandbox has one is decided by **evidence**: a start-up probe (running sandboxes only, before the
-     servers start) finds a recorded agent process alive with no live session of its generation.
+   - Whether a sandbox has one is decided by **evidence**: a probe (running sandboxes only) finds a recorded agent
+     process alive with no live session of its generation. It runs on every event that can create or clear an
+     orphan: daemon start (asynchronously, after the servers start), an `sbx exec` client exit, a gate refusal, the
+     agent's `SessionEnd`, and a 60 s backstop while an orphan holds a run.
    - `t` on any sandbox with one opens a Wait/Replace dialog; replacing an ACTION run's agent fails the run.
    - A setup step halts; `R` replaces the orphan and **restarts setup from step 0**, so model and effort are set
      again on the fresh agent.
@@ -178,7 +180,7 @@ src/services/switchboardd/internal/
 │   │                         #   for step_role SETUP/CLEANUP (Stop + backstop); SessionStart via SWI-15 (R12);
 │   │                         #   corroborated startup/clear SessionStart ends a NEEDS_DEVELOPER hold (R7, R13);
 │   │                         #   per-agent token (header from $SXB_HOOK_TOKEN, set at launch); every hook forwards
-│   │                         #   its input, streamed; PTY generation + main-session filter (R13)
+│   │                         #   its input, streamed; PTY generation + main-agent filter by PID (R13)
 │   └── pty.go                # TypeStep(): paste + Enter without blind ensureSubmitted; RePress(); agents.Existing;
 │                             #   gen + PID + start time recorded at launch; start-up probe; orphan gate in
 │                             #   Session (refuses only) + ReapOrphan, surfaced (R14);

@@ -60,12 +60,14 @@ research R14). Nothing ever stops it without the developer seeing it:
   **Wait** and **Replace**. Wait is the default when the agent was last seen working or waiting for input; Replace
   is the default when it was last seen idle. Replace re-attaches with `replace_orphan` and shows `replacing the
   detached agent…` until the terminal opens.
+- **A sandbox whose detached-agent check keeps failing** (3 probe failures) shows `can't check for a detached agent:
+  <error>`, and `t` offers **Replace anyway** (stops whatever agent process it finds, surfaced like any stop).
 - **A worker whose detached agent asks for input** has the note `detached agent asks for input; it can't be answered
   here — replace it (fails the run) or wait`.
 - **A step halted by the restart** carries its evidence in the note (`agent detached by a daemon restart; last seen
   working 10:42; R restarts setup with a fresh agent`), so the developer can judge without a terminal.
 - **Every stop of a detached agent**, by the developer or by the daemon (a worker idle at restart, or a run closed on
-  an idle detached agent), raises an *agent replaced* notification naming the sandbox, who stopped it, its last state
+  an idle detached agent of a finished run), raises an *agent replaced* notification naming the sandbox, who stopped it, its last state
   and the run affected.
 
 `openRunOfEvent` (the timed-event "already open" check) skips closed runs, so a holding run listed in `in_flight`

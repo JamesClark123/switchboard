@@ -66,8 +66,8 @@ If typing fails, the guard's record is rolled back as `Deliver` does today (`rol
 ## 3. Submit check (`window = submitWindow`, 2.5 s)
 
 Polling: the hook tap as events arrive, plus the screen every 50 ms. Only tap events that passed the hook token
-check **and** carry the main agent's `session_id` (`AgentSession.session_id`) count; a nested `claude -p` in the
-workspace has its own session and is ignored (research R13).
+check **and** come from the main agent's process (the hook's `X-Sxb-Pid` equals the generation's main PID) count;
+a nested `claude -p` in the workspace, including `claude -c -p`, is another process and is ignored (research R13).
 
 | Observation (since `sent_at`) | Result |
 |---|---|

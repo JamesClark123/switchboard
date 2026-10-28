@@ -167,7 +167,8 @@ setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) f
 (R13): control characters and invalid UTF-8 refused in untrusted call values only (authored text and escape-hatch
 output untouched); a per-agent hook token passed in the agent's environment at launch (`SXB_HOOK_TOKEN`), persisted per generation;
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
-orphan, found by a start-up probe of running sandboxes (a recorded agent PID alive with no live session);
+orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start, on an
+`sbx exec` client exit and on gate refusals;
 `agent.Registry.Session` is the one choke point that refuses to spawn beside it, and only the developer (or two
 surfaced daemon cases) stops it, always with an *agent replaced* notification (R14).
 See `research.md` (R1–R14),

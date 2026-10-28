@@ -132,10 +132,10 @@ message AgentSession {
   google.protobuf.Timestamp input_idle_since = 9;       // box empty + ready and agent not WORKING since (unset otherwise);
                                                         // sampled while controller.run is set (idle-nudge fallback, R1);
                                                         // written only when it is set or unset, never per sample
-  string session_id = 10;                               // the main agent's session: the first non-compact SessionStart
-                                                        // carrying the current generation's hook token, rebound on any
-                                                        // current-generation clear (research R13); empty = none bound
-                                                        // yet (status only). Other sessions are ignored for steps
+  string session_id = 10;                               // the main agent's current session; follows clear/resume
+                                                        // SessionStarts from the main PID only (the main agent is
+                                                        // matched by the hook's X-Sxb-Pid, not by this id; research
+                                                        // R13). Used for Clear's read-back and hold release
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
 }
 

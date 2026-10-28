@@ -100,6 +100,11 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    - **A plain sandbox** where you were mid-turn: `t` shows the dialog with default **Wait**; the turn is not
      killed unless you choose Replace.
    - **A sandbox stopped while the daemon was down** is not started by the restart, and gets no dialog.
+   - The daemon answers the TUI at once after the restart; a worker shows `checking for a detached agent` for at
+     most a few seconds.
+   - **Without a daemon restart:** on the host, kill the `sbx exec` client of a working worker's agent. The run stays
+     in progress (no `agent exited`), and `t` shows the dialog; `ps` in the sandbox still shows one agent. Then
+     `kill -9` the old agent inside the sandbox: within a minute the run fails with `agent exited`.
    - In every case, `ps` inside the sandbox never shows two agents, and every stopped agent produced an *agent
      replaced* notification.
 3. Drop the link to a remote worker just after a step is typed (for example by killing the SSH dial). On reconnect
@@ -138,4 +143,5 @@ one framed prompt, and no step text in the row.
 6. On the host, `ps -ef | grep SXB_HOOK_TOKEN` shows no token value. From your own `sbx exec -it <sb> bash` shell,
    the escape-hatch wrapper gets 403 `no agent token in this environment; …`; from the agent it runs.
 7. During a run, type `/resume` in the worker's terminal and pick an earlier session. The run's next step still
-   finishes when that turn ends.
+   finishes when that turn ends. Then have the agent run `claude -c -p "hi"` from a tool during a setup step: the
+   step still finishes when the main agent's turn ends.
