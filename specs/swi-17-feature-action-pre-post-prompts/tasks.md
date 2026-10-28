@@ -133,7 +133,7 @@ sequence model. No user story can be delivered before this phase.
   - It also checks that `$PPID` in a hook command is the `claude` process that fired the hook (research R13). If it
     isn't, record which ancestor is, and switch T046 to the PTY-device fallback.
   - **Back up and restore `~/.claude/settings.json` around it**: `/model` and `/effort` save defaults there.
-- [ ] T007 Implement `SBD/agent/claudeui.go` as pure functions over `[]termview.Line`:
+- [X] T007 Implement `SBD/agent/claudeui.go` as pure functions over `[]termview.Line`:
   - `InputBox(lines) (text string, present, ready bool)`. The box is every row between the last two horizontal
     rules, starting at `❯ `; wrapped rows are joined. Faint text after `❯ ` counts as empty. `ready` is false while
     any modal marker is on screen: `Esc to cancel`, `Enter to select`, `Enter to set as default`, a `Select …`
