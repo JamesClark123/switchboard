@@ -22,7 +22,11 @@ type fakeDaemonServer struct {
 }
 
 func (s *fakeDaemonServer) GetDaemonInfo(context.Context, *pb.GetDaemonInfoRequest) (*pb.DaemonInfo, error) {
-	return &pb.DaemonInfo{HostId: s.d.HostID(), DaemonVersion: s.d.daemonVer, WorkspaceRoot: s.d.workspace}, nil
+	info := &pb.DaemonInfo{HostId: s.d.HostID(), DaemonVersion: s.d.daemonVer, WorkspaceRoot: s.d.workspace}
+	if s.d.HasCapability("lanes") {
+		info.Capabilities = []string{"lanes"}
+	}
+	return info, nil
 }
 
 func (s *fakeDaemonServer) ListSandboxes(ctx context.Context, _ *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
@@ -76,15 +80,15 @@ func (s *fakeDaemonServer) SetOrchestratorHosts(ctx context.Context, r *pb.SetOr
 }
 
 func (s *fakeDaemonServer) GetWorkerBundle(ctx context.Context, r *pb.GetWorkerBundleRequest) (*pb.WorkerBundle, error) {
-	return s.d.GetWorkerBundle(ctx, r.GetOrchestratorId())
+	return s.d.GetWorkerBundle(ctx, r.GetOrchestratorId(), r.GetHostId(), r.GetLaneIds())
 }
 
 func (s *fakeDaemonServer) AttachWorker(ctx context.Context, r *pb.AttachWorkerRequest) (*pb.WorkerView, error) {
-	return s.d.AttachWorker(ctx, r.GetOrchestratorId(), r.GetHostId(), r.GetSandboxId())
+	return s.d.AttachWorker(ctx, r.GetOrchestratorId(), r.GetHostId(), r.GetSandboxId(), r.GetLaneIds())
 }
 
 func (s *fakeDaemonServer) DetachWorker(ctx context.Context, r *pb.DetachWorkerRequest) (*pb.DetachWorkerResponse, error) {
-	return &pb.DetachWorkerResponse{}, s.d.DetachWorker(ctx, r.GetOrchestratorId(), r.GetSandboxId())
+	return &pb.DetachWorkerResponse{}, s.d.DetachWorker(ctx, r.GetOrchestratorId(), r.GetSandboxId(), r.GetGuard())
 }
 
 func (s *fakeDaemonServer) DetachController(ctx context.Context, r *pb.DetachControllerRequest) (*pb.Sandbox, error) {
@@ -96,7 +100,7 @@ func (s *fakeDaemonServer) MarkWorkerFree(ctx context.Context, r *pb.MarkWorkerF
 }
 
 func (s *fakeDaemonServer) PutAction(ctx context.Context, r *pb.PutActionRequest) (*pb.Action, error) {
-	return s.d.PutAction(ctx, r.GetOrchestratorId(), r.GetAction())
+	return s.d.PutAction(ctx, r.GetOrchestratorId(), r.GetAction(), r.GetGuard())
 }
 
 func (s *fakeDaemonServer) DeleteAction(ctx context.Context, r *pb.DeleteActionRequest) (*pb.DeleteActionResponse, error) {
@@ -187,4 +191,32 @@ func twoFakeHosts(t *testing.T, a, b *fakeDaemon) (Model, *client.Manager, *stor
 	}
 	m := sized(New(a, "/work").WithHosts(mgr, hs, "hosta").WithNotifier(&recordNotifier{}))
 	return m, mgr, hs
+}
+
+func (s *fakeDaemonServer) PutLane(ctx context.Context, r *pb.PutLaneRequest) (*pb.Lane, error) {
+	return s.d.PutLane(ctx, r.GetOrchestratorId(), r.GetLaneId(), r.GetName(), r.GetDescription())
+}
+
+func (s *fakeDaemonServer) DeleteLane(ctx context.Context, r *pb.DeleteLaneRequest) (*pb.DeleteLaneResponse, error) {
+	applied, err := s.d.DeleteLane(ctx, r.GetOrchestratorId(), r.GetLaneId(), r.GetGuard())
+	if err != nil {
+		return nil, err
+	}
+	return &pb.DeleteLaneResponse{Applied: applied}, nil
+}
+
+func (s *fakeDaemonServer) SetWorkerLanes(ctx context.Context, r *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
+	return s.d.SetWorkerLanes(ctx, r)
+}
+
+func (s *fakeDaemonServer) SetLaneMembers(ctx context.Context, r *pb.SetLaneMembersRequest) (*pb.Lane, error) {
+	return s.d.SetLaneMembers(ctx, r)
+}
+
+func (s *fakeDaemonServer) CheckLaneChange(ctx context.Context, r *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error) {
+	return s.d.CheckLaneChange(ctx, r)
+}
+
+func (s *fakeDaemonServer) DismissDroppedWorkerTags(ctx context.Context, r *pb.OrchestratorIdRequest) (*pb.Orchestrator, error) {
+	return s.d.DismissDroppedWorkerTags(ctx, r.GetOrchestratorId())
 }

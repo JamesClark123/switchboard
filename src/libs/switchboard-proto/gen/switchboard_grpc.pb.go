@@ -34,72 +34,78 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Switchboard_GetDaemonInfo_FullMethodName           = "/switchboard.v1.Switchboard/GetDaemonInfo"
-	Switchboard_GetOptionManifest_FullMethodName       = "/switchboard.v1.Switchboard/GetOptionManifest"
-	Switchboard_UpdateDaemon_FullMethodName            = "/switchboard.v1.Switchboard/UpdateDaemon"
-	Switchboard_ListSandboxes_FullMethodName           = "/switchboard.v1.Switchboard/ListSandboxes"
-	Switchboard_LaunchSandbox_FullMethodName           = "/switchboard.v1.Switchboard/LaunchSandbox"
-	Switchboard_StopSandbox_FullMethodName             = "/switchboard.v1.Switchboard/StopSandbox"
-	Switchboard_RestartSandbox_FullMethodName          = "/switchboard.v1.Switchboard/RestartSandbox"
-	Switchboard_DestroySandbox_FullMethodName          = "/switchboard.v1.Switchboard/DestroySandbox"
-	Switchboard_RenameSandbox_FullMethodName           = "/switchboard.v1.Switchboard/RenameSandbox"
-	Switchboard_RefreshSandbox_FullMethodName          = "/switchboard.v1.Switchboard/RefreshSandbox"
-	Switchboard_ValidateKit_FullMethodName             = "/switchboard.v1.Switchboard/ValidateKit"
-	Switchboard_AddSandboxKit_FullMethodName           = "/switchboard.v1.Switchboard/AddSandboxKit"
-	Switchboard_ListSourceCandidates_FullMethodName    = "/switchboard.v1.Switchboard/ListSourceCandidates"
-	Switchboard_CheckResources_FullMethodName          = "/switchboard.v1.Switchboard/CheckResources"
-	Switchboard_SetSandboxTag_FullMethodName           = "/switchboard.v1.Switchboard/SetSandboxTag"
-	Switchboard_ResolveWorkspace_FullMethodName        = "/switchboard.v1.Switchboard/ResolveWorkspace"
-	Switchboard_PromptAgent_FullMethodName             = "/switchboard.v1.Switchboard/PromptAgent"
-	Switchboard_AttachAgent_FullMethodName             = "/switchboard.v1.Switchboard/AttachAgent"
-	Switchboard_Subscribe_FullMethodName               = "/switchboard.v1.Switchboard/Subscribe"
-	Switchboard_AckNotification_FullMethodName         = "/switchboard.v1.Switchboard/AckNotification"
-	Switchboard_GetVSCodeTarget_FullMethodName         = "/switchboard.v1.Switchboard/GetVSCodeTarget"
-	Switchboard_DecideEscapeHatchRun_FullMethodName    = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
-	Switchboard_ListEscapeHatchRuns_FullMethodName     = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
-	Switchboard_ListSandboxServices_FullMethodName     = "/switchboard.v1.Switchboard/ListSandboxServices"
-	Switchboard_StartSandboxService_FullMethodName     = "/switchboard.v1.Switchboard/StartSandboxService"
-	Switchboard_StopSandboxService_FullMethodName      = "/switchboard.v1.Switchboard/StopSandboxService"
-	Switchboard_ForwardPort_FullMethodName             = "/switchboard.v1.Switchboard/ForwardPort"
-	Switchboard_AddSandboxSources_FullMethodName       = "/switchboard.v1.Switchboard/AddSandboxSources"
-	Switchboard_RemoveSandboxSources_FullMethodName    = "/switchboard.v1.Switchboard/RemoveSandboxSources"
-	Switchboard_ListMcpServers_FullMethodName          = "/switchboard.v1.Switchboard/ListMcpServers"
-	Switchboard_AddMcpServer_FullMethodName            = "/switchboard.v1.Switchboard/AddMcpServer"
-	Switchboard_RemoveMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/RemoveMcpServer"
-	Switchboard_AuthorizeMcpServer_FullMethodName      = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
-	Switchboard_CompleteMcpAuthCallback_FullMethodName = "/switchboard.v1.Switchboard/CompleteMcpAuthCallback"
-	Switchboard_SetMcpServerDefault_FullMethodName     = "/switchboard.v1.Switchboard/SetMcpServerDefault"
-	Switchboard_SetMcpAttachMode_FullMethodName        = "/switchboard.v1.Switchboard/SetMcpAttachMode"
-	Switchboard_AttachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/AttachMcpServer"
-	Switchboard_DetachMcpServer_FullMethodName         = "/switchboard.v1.Switchboard/DetachMcpServer"
-	Switchboard_ListSecrets_FullMethodName             = "/switchboard.v1.Switchboard/ListSecrets"
-	Switchboard_SetSecret_FullMethodName               = "/switchboard.v1.Switchboard/SetSecret"
-	Switchboard_RemoveSecret_FullMethodName            = "/switchboard.v1.Switchboard/RemoveSecret"
-	Switchboard_ListOrchestrators_FullMethodName       = "/switchboard.v1.Switchboard/ListOrchestrators"
-	Switchboard_GetOrchestrator_FullMethodName         = "/switchboard.v1.Switchboard/GetOrchestrator"
-	Switchboard_CreateOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/CreateOrchestrator"
-	Switchboard_RenameOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/RenameOrchestrator"
-	Switchboard_RemoveOrchestrator_FullMethodName      = "/switchboard.v1.Switchboard/RemoveOrchestrator"
-	Switchboard_SetOrchestratorHosts_FullMethodName    = "/switchboard.v1.Switchboard/SetOrchestratorHosts"
-	Switchboard_GetWorkerBundle_FullMethodName         = "/switchboard.v1.Switchboard/GetWorkerBundle"
-	Switchboard_AttachWorker_FullMethodName            = "/switchboard.v1.Switchboard/AttachWorker"
-	Switchboard_DetachWorker_FullMethodName            = "/switchboard.v1.Switchboard/DetachWorker"
-	Switchboard_MarkWorkerFree_FullMethodName          = "/switchboard.v1.Switchboard/MarkWorkerFree"
-	Switchboard_PutAction_FullMethodName               = "/switchboard.v1.Switchboard/PutAction"
-	Switchboard_DeleteAction_FullMethodName            = "/switchboard.v1.Switchboard/DeleteAction"
-	Switchboard_PutTimedEvent_FullMethodName           = "/switchboard.v1.Switchboard/PutTimedEvent"
-	Switchboard_DeleteTimedEvent_FullMethodName        = "/switchboard.v1.Switchboard/DeleteTimedEvent"
-	Switchboard_FireTimedEvent_FullMethodName          = "/switchboard.v1.Switchboard/FireTimedEvent"
-	Switchboard_CallAction_FullMethodName              = "/switchboard.v1.Switchboard/CallAction"
-	Switchboard_ListRuns_FullMethodName                = "/switchboard.v1.Switchboard/ListRuns"
-	Switchboard_GetRun_FullMethodName                  = "/switchboard.v1.Switchboard/GetRun"
-	Switchboard_CancelRun_FullMethodName               = "/switchboard.v1.Switchboard/CancelRun"
-	Switchboard_RebuildReasoningSandbox_FullMethodName = "/switchboard.v1.Switchboard/RebuildReasoningSandbox"
-	Switchboard_AttachController_FullMethodName        = "/switchboard.v1.Switchboard/AttachController"
-	Switchboard_DetachController_FullMethodName        = "/switchboard.v1.Switchboard/DetachController"
-	Switchboard_UpdateWorker_FullMethodName            = "/switchboard.v1.Switchboard/UpdateWorker"
-	Switchboard_DeliverWorkerPrompt_FullMethodName     = "/switchboard.v1.Switchboard/DeliverWorkerPrompt"
-	Switchboard_OrchestratorLink_FullMethodName        = "/switchboard.v1.Switchboard/OrchestratorLink"
+	Switchboard_GetDaemonInfo_FullMethodName            = "/switchboard.v1.Switchboard/GetDaemonInfo"
+	Switchboard_GetOptionManifest_FullMethodName        = "/switchboard.v1.Switchboard/GetOptionManifest"
+	Switchboard_UpdateDaemon_FullMethodName             = "/switchboard.v1.Switchboard/UpdateDaemon"
+	Switchboard_ListSandboxes_FullMethodName            = "/switchboard.v1.Switchboard/ListSandboxes"
+	Switchboard_LaunchSandbox_FullMethodName            = "/switchboard.v1.Switchboard/LaunchSandbox"
+	Switchboard_StopSandbox_FullMethodName              = "/switchboard.v1.Switchboard/StopSandbox"
+	Switchboard_RestartSandbox_FullMethodName           = "/switchboard.v1.Switchboard/RestartSandbox"
+	Switchboard_DestroySandbox_FullMethodName           = "/switchboard.v1.Switchboard/DestroySandbox"
+	Switchboard_RenameSandbox_FullMethodName            = "/switchboard.v1.Switchboard/RenameSandbox"
+	Switchboard_RefreshSandbox_FullMethodName           = "/switchboard.v1.Switchboard/RefreshSandbox"
+	Switchboard_ValidateKit_FullMethodName              = "/switchboard.v1.Switchboard/ValidateKit"
+	Switchboard_AddSandboxKit_FullMethodName            = "/switchboard.v1.Switchboard/AddSandboxKit"
+	Switchboard_ListSourceCandidates_FullMethodName     = "/switchboard.v1.Switchboard/ListSourceCandidates"
+	Switchboard_CheckResources_FullMethodName           = "/switchboard.v1.Switchboard/CheckResources"
+	Switchboard_SetSandboxTag_FullMethodName            = "/switchboard.v1.Switchboard/SetSandboxTag"
+	Switchboard_ResolveWorkspace_FullMethodName         = "/switchboard.v1.Switchboard/ResolveWorkspace"
+	Switchboard_PromptAgent_FullMethodName              = "/switchboard.v1.Switchboard/PromptAgent"
+	Switchboard_AttachAgent_FullMethodName              = "/switchboard.v1.Switchboard/AttachAgent"
+	Switchboard_Subscribe_FullMethodName                = "/switchboard.v1.Switchboard/Subscribe"
+	Switchboard_AckNotification_FullMethodName          = "/switchboard.v1.Switchboard/AckNotification"
+	Switchboard_GetVSCodeTarget_FullMethodName          = "/switchboard.v1.Switchboard/GetVSCodeTarget"
+	Switchboard_DecideEscapeHatchRun_FullMethodName     = "/switchboard.v1.Switchboard/DecideEscapeHatchRun"
+	Switchboard_ListEscapeHatchRuns_FullMethodName      = "/switchboard.v1.Switchboard/ListEscapeHatchRuns"
+	Switchboard_ListSandboxServices_FullMethodName      = "/switchboard.v1.Switchboard/ListSandboxServices"
+	Switchboard_StartSandboxService_FullMethodName      = "/switchboard.v1.Switchboard/StartSandboxService"
+	Switchboard_StopSandboxService_FullMethodName       = "/switchboard.v1.Switchboard/StopSandboxService"
+	Switchboard_ForwardPort_FullMethodName              = "/switchboard.v1.Switchboard/ForwardPort"
+	Switchboard_AddSandboxSources_FullMethodName        = "/switchboard.v1.Switchboard/AddSandboxSources"
+	Switchboard_RemoveSandboxSources_FullMethodName     = "/switchboard.v1.Switchboard/RemoveSandboxSources"
+	Switchboard_ListMcpServers_FullMethodName           = "/switchboard.v1.Switchboard/ListMcpServers"
+	Switchboard_AddMcpServer_FullMethodName             = "/switchboard.v1.Switchboard/AddMcpServer"
+	Switchboard_RemoveMcpServer_FullMethodName          = "/switchboard.v1.Switchboard/RemoveMcpServer"
+	Switchboard_AuthorizeMcpServer_FullMethodName       = "/switchboard.v1.Switchboard/AuthorizeMcpServer"
+	Switchboard_CompleteMcpAuthCallback_FullMethodName  = "/switchboard.v1.Switchboard/CompleteMcpAuthCallback"
+	Switchboard_SetMcpServerDefault_FullMethodName      = "/switchboard.v1.Switchboard/SetMcpServerDefault"
+	Switchboard_SetMcpAttachMode_FullMethodName         = "/switchboard.v1.Switchboard/SetMcpAttachMode"
+	Switchboard_AttachMcpServer_FullMethodName          = "/switchboard.v1.Switchboard/AttachMcpServer"
+	Switchboard_DetachMcpServer_FullMethodName          = "/switchboard.v1.Switchboard/DetachMcpServer"
+	Switchboard_ListSecrets_FullMethodName              = "/switchboard.v1.Switchboard/ListSecrets"
+	Switchboard_SetSecret_FullMethodName                = "/switchboard.v1.Switchboard/SetSecret"
+	Switchboard_RemoveSecret_FullMethodName             = "/switchboard.v1.Switchboard/RemoveSecret"
+	Switchboard_ListOrchestrators_FullMethodName        = "/switchboard.v1.Switchboard/ListOrchestrators"
+	Switchboard_GetOrchestrator_FullMethodName          = "/switchboard.v1.Switchboard/GetOrchestrator"
+	Switchboard_CreateOrchestrator_FullMethodName       = "/switchboard.v1.Switchboard/CreateOrchestrator"
+	Switchboard_RenameOrchestrator_FullMethodName       = "/switchboard.v1.Switchboard/RenameOrchestrator"
+	Switchboard_RemoveOrchestrator_FullMethodName       = "/switchboard.v1.Switchboard/RemoveOrchestrator"
+	Switchboard_SetOrchestratorHosts_FullMethodName     = "/switchboard.v1.Switchboard/SetOrchestratorHosts"
+	Switchboard_GetWorkerBundle_FullMethodName          = "/switchboard.v1.Switchboard/GetWorkerBundle"
+	Switchboard_AttachWorker_FullMethodName             = "/switchboard.v1.Switchboard/AttachWorker"
+	Switchboard_DetachWorker_FullMethodName             = "/switchboard.v1.Switchboard/DetachWorker"
+	Switchboard_MarkWorkerFree_FullMethodName           = "/switchboard.v1.Switchboard/MarkWorkerFree"
+	Switchboard_PutAction_FullMethodName                = "/switchboard.v1.Switchboard/PutAction"
+	Switchboard_DeleteAction_FullMethodName             = "/switchboard.v1.Switchboard/DeleteAction"
+	Switchboard_PutTimedEvent_FullMethodName            = "/switchboard.v1.Switchboard/PutTimedEvent"
+	Switchboard_DeleteTimedEvent_FullMethodName         = "/switchboard.v1.Switchboard/DeleteTimedEvent"
+	Switchboard_FireTimedEvent_FullMethodName           = "/switchboard.v1.Switchboard/FireTimedEvent"
+	Switchboard_CallAction_FullMethodName               = "/switchboard.v1.Switchboard/CallAction"
+	Switchboard_ListRuns_FullMethodName                 = "/switchboard.v1.Switchboard/ListRuns"
+	Switchboard_GetRun_FullMethodName                   = "/switchboard.v1.Switchboard/GetRun"
+	Switchboard_CancelRun_FullMethodName                = "/switchboard.v1.Switchboard/CancelRun"
+	Switchboard_RebuildReasoningSandbox_FullMethodName  = "/switchboard.v1.Switchboard/RebuildReasoningSandbox"
+	Switchboard_AttachController_FullMethodName         = "/switchboard.v1.Switchboard/AttachController"
+	Switchboard_DetachController_FullMethodName         = "/switchboard.v1.Switchboard/DetachController"
+	Switchboard_UpdateWorker_FullMethodName             = "/switchboard.v1.Switchboard/UpdateWorker"
+	Switchboard_DeliverWorkerPrompt_FullMethodName      = "/switchboard.v1.Switchboard/DeliverWorkerPrompt"
+	Switchboard_OrchestratorLink_FullMethodName         = "/switchboard.v1.Switchboard/OrchestratorLink"
+	Switchboard_PutLane_FullMethodName                  = "/switchboard.v1.Switchboard/PutLane"
+	Switchboard_DeleteLane_FullMethodName               = "/switchboard.v1.Switchboard/DeleteLane"
+	Switchboard_SetWorkerLanes_FullMethodName           = "/switchboard.v1.Switchboard/SetWorkerLanes"
+	Switchboard_SetLaneMembers_FullMethodName           = "/switchboard.v1.Switchboard/SetLaneMembers"
+	Switchboard_CheckLaneChange_FullMethodName          = "/switchboard.v1.Switchboard/CheckLaneChange"
+	Switchboard_DismissDroppedWorkerTags_FullMethodName = "/switchboard.v1.Switchboard/DismissDroppedWorkerTags"
 )
 
 // SwitchboardClient is the client API for Switchboard service.
@@ -395,6 +401,19 @@ type SwitchboardClient interface {
 	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
 	// MUST be `hello`. See OrchestratorLinkFrame.
 	OrchestratorLink(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame], error)
+	// --- SWI-18: worker lanes (orchestrator-side) ---
+	// Create (empty lane_id) or rename/describe a lane. AlreadyExists when the name is taken.
+	PutLane(ctx context.Context, in *PutLaneRequest, opts ...grpc.CallOption) (*Lane, error)
+	// Delete a lane; guarded by the open-lane guard (FR-305, FR-308a).
+	DeleteLane(ctx context.Context, in *DeleteLaneRequest, opts ...grpc.CallOption) (*DeleteLaneResponse, error)
+	// Replace one worker's lanes (FR-306, FR-307a compare-and-set).
+	SetWorkerLanes(ctx context.Context, in *SetWorkerLanesRequest, opts ...grpc.CallOption) (*WorkerView, error)
+	// Replace one lane's members (FR-307, FR-307a compare-and-set).
+	SetLaneMembers(ctx context.Context, in *SetLaneMembersRequest, opts ...grpc.CallOption) (*Lane, error)
+	// What a guarded change would affect, without applying it.
+	CheckLaneChange(ctx context.Context, in *CheckLaneChangeRequest, opts ...grpc.CallOption) (*LaneChangeImpact, error)
+	// Clear the dropped worker-tag notice (FR-318b).
+	DismissDroppedWorkerTags(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*Orchestrator, error)
 }
 
 type switchboardClient struct {
@@ -1155,6 +1174,66 @@ func (c *switchboardClient) OrchestratorLink(ctx context.Context, opts ...grpc.C
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_OrchestratorLinkClient = grpc.BidiStreamingClient[OrchestratorLinkFrame, OrchestratorLinkFrame]
 
+func (c *switchboardClient) PutLane(ctx context.Context, in *PutLaneRequest, opts ...grpc.CallOption) (*Lane, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Lane)
+	err := c.cc.Invoke(ctx, Switchboard_PutLane_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DeleteLane(ctx context.Context, in *DeleteLaneRequest, opts ...grpc.CallOption) (*DeleteLaneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteLaneResponse)
+	err := c.cc.Invoke(ctx, Switchboard_DeleteLane_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SetWorkerLanes(ctx context.Context, in *SetWorkerLanesRequest, opts ...grpc.CallOption) (*WorkerView, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerView)
+	err := c.cc.Invoke(ctx, Switchboard_SetWorkerLanes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SetLaneMembers(ctx context.Context, in *SetLaneMembersRequest, opts ...grpc.CallOption) (*Lane, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Lane)
+	err := c.cc.Invoke(ctx, Switchboard_SetLaneMembers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) CheckLaneChange(ctx context.Context, in *CheckLaneChangeRequest, opts ...grpc.CallOption) (*LaneChangeImpact, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LaneChangeImpact)
+	err := c.cc.Invoke(ctx, Switchboard_CheckLaneChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) DismissDroppedWorkerTags(ctx context.Context, in *OrchestratorIdRequest, opts ...grpc.CallOption) (*Orchestrator, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Orchestrator)
+	err := c.cc.Invoke(ctx, Switchboard_DismissDroppedWorkerTags_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwitchboardServer is the server API for Switchboard service.
 // All implementations must embed UnimplementedSwitchboardServer
 // for forward compatibility.
@@ -1448,6 +1527,19 @@ type SwitchboardServer interface {
 	// The call relay (R6). The ORCHESTRATOR'S daemon is the client; the first frame
 	// MUST be `hello`. See OrchestratorLinkFrame.
 	OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error
+	// --- SWI-18: worker lanes (orchestrator-side) ---
+	// Create (empty lane_id) or rename/describe a lane. AlreadyExists when the name is taken.
+	PutLane(context.Context, *PutLaneRequest) (*Lane, error)
+	// Delete a lane; guarded by the open-lane guard (FR-305, FR-308a).
+	DeleteLane(context.Context, *DeleteLaneRequest) (*DeleteLaneResponse, error)
+	// Replace one worker's lanes (FR-306, FR-307a compare-and-set).
+	SetWorkerLanes(context.Context, *SetWorkerLanesRequest) (*WorkerView, error)
+	// Replace one lane's members (FR-307, FR-307a compare-and-set).
+	SetLaneMembers(context.Context, *SetLaneMembersRequest) (*Lane, error)
+	// What a guarded change would affect, without applying it.
+	CheckLaneChange(context.Context, *CheckLaneChangeRequest) (*LaneChangeImpact, error)
+	// Clear the dropped worker-tag notice (FR-318b).
+	DismissDroppedWorkerTags(context.Context, *OrchestratorIdRequest) (*Orchestrator, error)
 	mustEmbedUnimplementedSwitchboardServer()
 }
 
@@ -1655,6 +1747,24 @@ func (UnimplementedSwitchboardServer) DeliverWorkerPrompt(context.Context, *Deli
 }
 func (UnimplementedSwitchboardServer) OrchestratorLink(grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]) error {
 	return status.Error(codes.Unimplemented, "method OrchestratorLink not implemented")
+}
+func (UnimplementedSwitchboardServer) PutLane(context.Context, *PutLaneRequest) (*Lane, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutLane not implemented")
+}
+func (UnimplementedSwitchboardServer) DeleteLane(context.Context, *DeleteLaneRequest) (*DeleteLaneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteLane not implemented")
+}
+func (UnimplementedSwitchboardServer) SetWorkerLanes(context.Context, *SetWorkerLanesRequest) (*WorkerView, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetWorkerLanes not implemented")
+}
+func (UnimplementedSwitchboardServer) SetLaneMembers(context.Context, *SetLaneMembersRequest) (*Lane, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetLaneMembers not implemented")
+}
+func (UnimplementedSwitchboardServer) CheckLaneChange(context.Context, *CheckLaneChangeRequest) (*LaneChangeImpact, error) {
+	return nil, status.Error(codes.Unimplemented, "method CheckLaneChange not implemented")
+}
+func (UnimplementedSwitchboardServer) DismissDroppedWorkerTags(context.Context, *OrchestratorIdRequest) (*Orchestrator, error) {
+	return nil, status.Error(codes.Unimplemented, "method DismissDroppedWorkerTags not implemented")
 }
 func (UnimplementedSwitchboardServer) mustEmbedUnimplementedSwitchboardServer() {}
 func (UnimplementedSwitchboardServer) testEmbeddedByValue()                     {}
@@ -2769,6 +2879,114 @@ func _Switchboard_OrchestratorLink_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_OrchestratorLinkServer = grpc.BidiStreamingServer[OrchestratorLinkFrame, OrchestratorLinkFrame]
 
+func _Switchboard_PutLane_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutLaneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).PutLane(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_PutLane_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).PutLane(ctx, req.(*PutLaneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DeleteLane_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteLaneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DeleteLane(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DeleteLane_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DeleteLane(ctx, req.(*DeleteLaneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SetWorkerLanes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetWorkerLanesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetWorkerLanes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetWorkerLanes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetWorkerLanes(ctx, req.(*SetWorkerLanesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SetLaneMembers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetLaneMembersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetLaneMembers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetLaneMembers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetLaneMembers(ctx, req.(*SetLaneMembersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_CheckLaneChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckLaneChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CheckLaneChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CheckLaneChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CheckLaneChange(ctx, req.(*CheckLaneChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_DismissDroppedWorkerTags_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OrchestratorIdRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).DismissDroppedWorkerTags(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_DismissDroppedWorkerTags_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).DismissDroppedWorkerTags(ctx, req.(*OrchestratorIdRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Switchboard_ServiceDesc is the grpc.ServiceDesc for Switchboard service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2991,6 +3209,30 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeliverWorkerPrompt",
 			Handler:    _Switchboard_DeliverWorkerPrompt_Handler,
+		},
+		{
+			MethodName: "PutLane",
+			Handler:    _Switchboard_PutLane_Handler,
+		},
+		{
+			MethodName: "DeleteLane",
+			Handler:    _Switchboard_DeleteLane_Handler,
+		},
+		{
+			MethodName: "SetWorkerLanes",
+			Handler:    _Switchboard_SetWorkerLanes_Handler,
+		},
+		{
+			MethodName: "SetLaneMembers",
+			Handler:    _Switchboard_SetLaneMembers_Handler,
+		},
+		{
+			MethodName: "CheckLaneChange",
+			Handler:    _Switchboard_CheckLaneChange_Handler,
+		},
+		{
+			MethodName: "DismissDroppedWorkerTags",
+			Handler:    _Switchboard_DismissDroppedWorkerTags_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

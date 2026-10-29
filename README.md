@@ -402,14 +402,15 @@ the daemon that hosts it; the day-to-day work of every orchestrator lives on the
 **Orchestrators**: that daemon's orchestrators with their reachability, worker count and queue
 depths. `n` creates one on this daemon, `R` renames it (its identity never changes), `d` removes it
 (confirmed), `enter` opens it, `esc` returns to the daemon screen. Everything here goes to that
-daemon only: if it disconnects the section closes, and nothing is ever sent to another daemon instead. An opened orchestrator has three
-views (`←`/`→`; `esc` back to the list):
+daemon only: if it disconnects the section closes, and nothing is ever sent to another daemon instead. An opened orchestrator has four
+views (`←`/`→`; `esc` back to the list) — Lanes only when its daemon is new enough to serve lanes:
 
 | View | What it shows and does |
 |------|------------------------|
-| Workers | The roster with state and availability (free / busy / needs input / awaiting review); `x` detach, `m` mark free. The reasoning sandbox is listed last, marked `reasoning`. |
+| Workers | The roster with state and availability (free / busy / needs input / awaiting review) and each worker's lanes (`lanes: a, b`, `open lane`, `⚠ lanes pending`, `detaching…`); `x` detach, `m` mark free, `l` picks the worker's lanes (none ticked = the open lane). The reasoning sandbox is listed last, marked `reasoning`; it has no lanes. |
 | Reasoning | The orchestrator's **reasoning sandbox** `reasoning-<id>`, created with the orchestrator on its own host from an empty workspace unless you give it a setup: `e` picks folders (and kits, `K`) through the launch browser and rebuilds it, `b` rebuilds it from the saved setup, `l` shows the `sbx` output. `reason` actions run there and their summary is the answer. It is not detachable; a rebuild is refused while a run is on it; if it is destroyed outside switchboard the view says so and `reason` runs fail until you rebuild. |
 | Hosts | The machines the orchestrator can place workers on, with reachability. `a` copies an entry from your saved SSH hosts, `d` removes one (refused while workers live there). |
+| Lanes | The orchestrator's **lanes** — named groups of workers — with their members and the actions that use them. `a` adds a lane (name and description), `e` renames or re-describes it, `w` picks its members, `d` deletes it after a confirm listing the workers, actions and queued runs it affects. `D` dismisses the notice of worker tags dropped on upgrade. |
 
 **Jobs.** `shift+→` twice (or `shift+←` from the sandbox list) opens the **Jobs** screen: every
 orchestrator on every connected daemon, every row labelled `orchestrator @ host`. A daemon whose
@@ -426,7 +427,7 @@ remembered); `r` reloads, `esc` goes back to Sandboxes and `q` quits:
 | Tab | What it shows and does |
 |-----|------------------------|
 | Overview | **Upcoming** (each enabled timed event once, soonest next firing first), **Queued** (in receipt order), **In progress** and **History** (the 15 most recently finished runs across all orchestrators). On a run: `enter` shows its composed prompt, `x` cancels a queued run, `m` marks a reviewed run's worker free, `o` **Open results** on a finished run — the agent's full report (or your note, or the reason it failed or was cancelled) in a scrollable overlay (`↑`/`↓`/`pgup`/`pgdn`, `esc` closes). On an Upcoming event: `n` **enqueue now** (below). |
-| Actions | Every orchestrator's actions under a heading per orchestrator; an orchestrator with none shows a line you can add from. `a` adds to the orchestrator whose group the cursor is in, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and an optional worker tag. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
+| Actions | Every orchestrator's actions under a heading per orchestrator; an orchestrator with none shows a line you can add from. `a` adds to the orchestrator whose group the cursor is in, `e` edit, `d` delete, `enter` call. An action is a prompt body with `{name}` placeholders (`{{` is a literal `{`), declared arguments (name, required `*`, description, default), a type — `prompt` runs on a free worker, `reason` on the reasoning sandbox — and, for `prompt` actions, optional **lanes**: *exclusive* (only workers in those lanes) or *inclusive* (those lanes first, else open-lane workers). An action with no lanes runs on **open-lane** workers — workers in no lane. In the action form `ctrl+l` opens **Manage lanes** for that orchestrator without leaving the form. A queued run shows why it is waiting (`waiting for a worker in frontend`; `enter` shows it whole). Worker tags from older versions are dropped on upgrade and listed under the orchestrator with `D` to dismiss. Supplied arguments without a placeholder are appended as `name: value`. Values are capped at 16 KiB, the composed prompt at 64 KiB. |
 | Events | Timed events, grouped the same way: `a` add, `e` edit, `d` delete, `space` on/off, `n` **enqueue now** (queues one run of the event immediately without touching its schedule; refused while a run of it is already queued or in flight when dedupe is on; with dedupe off it asks first only if a run of the event is already open; a repeat press within half a second of a successful enqueue is ignored, with a hint). An event calls an action every N minutes with fixed arguments. **Dedupe** (on by default) skips a firing while a run of that event is still queued or in flight and counts the skip; after a daemon restart the schedule resumes on its phase without replaying missed slots. Deleting an action disables the events that named it. |
 | Queue | Every run the daemons keep (queued, in progress, and the history — the 200 most recent finished runs per orchestrator), with no cap of its own, in pages of 25: `]`/`pgdn` next page, `[`/`pgup` previous; `f` filters to one orchestrator (cycling through them), `F` shows all again. Runs take the Overview's `enter`/`x`/`m`/`o`. |
 
@@ -435,13 +436,16 @@ while a run is in flight on it). The orchestrator's **daemon** dials the worker'
 `ssh <target> sxbd dial-stdio`, BatchMode, keys or agent only — so the orchestrator's host must be
 able to reach the worker's host over SSH; when it cannot yet, `o` offers to copy your host entry to
 the orchestrator first. The launch wizard's `O` attaches a new sandbox from before its agent starts.
+When the orchestrator has lanes, both paths then ask which lanes the worker joins. Saving lanes,
+members or an action, or detaching a worker, warns first when it would leave un-laned work with no
+open-lane worker to run it.
 A worker's daemon registers one gateway MCP server per worker (`sxb-orch-<id>`, hidden from the
 gateway view) pointing at a loopback endpoint of that daemon's hook server; anything on that host
 holding the token can impersonate the worker to its orchestrator, which is why the endpoint stays on
 loopback and the token is revoked the moment the worker is detached.
 
 **Runs and the review rule.** A run goes to the first free, eligible worker (running, agent idle,
-no run on it, tag matching). It ends only with the agent's **completion report**
+no run on it, and in the action's lanes — or with no lanes, for an un-laned action). It ends only with the agent's **completion report**
 (`orchestrator_report_completion`). A worker that goes idle without reporting is held for
 **review**: the sandbox row surfaces at the top of every tab, the inbox gets a line, and `m` closes
 the run with your note (as completed or failed) and frees the worker. A worker that needs input is

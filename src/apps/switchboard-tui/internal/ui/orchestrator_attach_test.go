@@ -143,14 +143,15 @@ func TestDetachWorkerViaOrchestratorOrDirectly(t *testing.T) {
 	m = feed2(m, m.listDataCmd())
 	m, _ = update(m, press("O"))
 	m = selectSandbox(m, "sb")
-	m, _ = update(m, press("o"))
+	m, cmd := update(m, press("o"))
+	m = feed(m, cmd) // CheckLaneChange first (FR-308a)
 	if m.screen != screenConfirm || !strings.Contains(m.View(), "Detach sand-b from review-bot?") {
 		t.Fatalf("o on a worker should confirm the detach: %v", m.screen)
 	}
-	m, cmd := update(m, press("y"))
-	msg := runCmd(cmd)
-	if st, ok := msg.(statusMsg); !ok || !strings.Contains(string(st), "detached sand-b from review-bot") {
-		t.Fatalf("detach result = %v", msg)
+	m, cmd = update(m, press("y"))
+	m, _ = update(m, runCmd(cmd))
+	if !strings.Contains(m.status, "detached sand-b from review-bot") {
+		t.Fatalf("detach result = %q", m.status)
 	}
 	if !strings.Contains(a.orchCallsJoined(), "DetachWorker o-a sb") || strings.Contains(b.orchCallsJoined(), "DetachController") {
 		t.Errorf("detach should go through the orchestrator's daemon: a=%q b=%q", a.orchCallsJoined(), b.orchCallsJoined())
@@ -165,8 +166,12 @@ func TestDetachWorkerViaOrchestratorOrDirectly(t *testing.T) {
 	if !strings.Contains(m.View(), "not connected") {
 		t.Error("the confirm should explain the direct path")
 	}
+	// No record of far-bot: the open-lane check cannot be made (FR-308b).
+	if body := strings.Join(m.confirm.body, "\n"); !strings.Contains(body, "Cannot check open-lane workers: far-bot's daemon is not connected") {
+		t.Errorf("the direct confirm should say the guard cannot be checked:\n%s", body)
+	}
 	m, cmd = update(m, press("y"))
-	msg = runCmd(cmd)
+	msg := runCmd(cmd)
 	if st, ok := msg.(statusMsg); !ok || !strings.Contains(string(st), "(directly)") {
 		t.Fatalf("direct detach result = %v", msg)
 	}
@@ -224,11 +229,12 @@ func TestWorkersViewDetach(t *testing.T) {
 			t.Errorf("workers view missing %q", want)
 		}
 	}
-	m, _ = update(m, press("x"))
+	m, cmd := update(m, press("x"))
+	m = feed(m, cmd)
 	if m.screen != screenConfirm || !strings.Contains(m.View(), "Detach worker-one from alpha-bot?") {
 		t.Fatalf("x should confirm: %v", m.screen)
 	}
-	m, cmd := update(m, press("y"))
+	m, cmd = update(m, press("y"))
 	m = feed2(m, cmd)
 	if !strings.Contains(a.orchCallsJoined(), "DetachWorker o-a w1") || !strings.Contains(m.status, "detached worker-one") {
 		t.Errorf("calls %q status %q", a.orchCallsJoined(), m.status)

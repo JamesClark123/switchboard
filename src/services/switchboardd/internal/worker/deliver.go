@@ -41,6 +41,14 @@ func Frame(orchName, runID, action, prompt string) string {
 // (DeliverWorkerPrompt). FAILED_PRECONDITION (false, ErrPrecondition) when the
 // guards fail; a failed prompt rolls the recorded run back and returns its error.
 func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (bool, error) {
+	resp, err := s.DeliverResponse(ctx, req)
+	return resp.GetAccepted(), err
+}
+
+// DeliverResponse is Deliver answering with the accepted delivery's record
+// revision (SWI-18), so the orchestrator's cache can tell the delivery write's
+// own record from later ones.
+func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {
 	var name string
 	ready := s.agents == nil || s.agents.Ready(req.GetSandboxId())
 	starting, stray := false, false
@@ -73,7 +81,7 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 	})
 	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
-			return false, fmt.Errorf("%w: sandbox %s", ErrNotFound, req.GetSandboxId())
+			return nil, fmt.Errorf("%w: sandbox %s", ErrNotFound, req.GetSandboxId())
 		}
 		if starting && s.agents.Live(req.GetSandboxId()) {
 			if stray {
@@ -86,7 +94,7 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 		} else if starting {
 			s.startAgent(req.GetSandboxId(), "deliver")
 		}
-		return false, err
+		return nil, err
 	}
 	// Ensure the terminal broadcaster exists so the PTY is read even with no
 	// client attached (research R7), then type the framed prompt.
@@ -96,13 +104,13 @@ func (s *Service) Deliver(ctx context.Context, req *pb.DeliverWorkerPromptReques
 		}
 	}
 	if s.agents == nil {
-		return s.rollbackRun(sb.GetId(), fmt.Errorf("agent registry not configured"))
+		return nil, s.rollbackRunErr(sb.GetId(), fmt.Errorf("agent registry not configured"))
 	}
 	if err := s.agents.Prompt(sb.GetId(), sb.GetAgent().GetSpec(), Frame(name, req.GetRunId(), req.GetAction(), req.GetPrompt())); err != nil {
-		return s.rollbackRun(sb.GetId(), err)
+		return nil, s.rollbackRunErr(sb.GetId(), err)
 	}
 	s.mgr.Emit(sb)
-	return true, nil
+	return &pb.DeliverWorkerPromptResponse{Accepted: true, Revision: sb.GetRevision()}, nil
 }
 
 // startAgent starts the sandbox's agent through its persistent terminal
@@ -147,7 +155,7 @@ func (s *Service) WarmStart(sb *pb.Sandbox) {
 }
 
 // rollbackRun clears a run that could not be typed.
-func (s *Service) rollbackRun(sandboxID string, cause error) (bool, error) {
+func (s *Service) rollbackRunErr(sandboxID string, cause error) error {
 	if _, err := s.reg.Update(sandboxID, func(x *pb.Sandbox) error {
 		if c := x.GetController(); c != nil {
 			c.Run = nil
@@ -156,7 +164,7 @@ func (s *Service) rollbackRun(sandboxID string, cause error) (bool, error) {
 	}); err != nil {
 		s.logf("[worker] deliver %s: rollback: %v", sandboxID, err)
 	}
-	return false, fmt.Errorf("deliver to %s: %w", sandboxID, cause)
+	return fmt.Errorf("deliver to %s: %w", sandboxID, cause)
 }
 
 // PromptFunc is the prompt-injection signature (agent.Registry.Prompt).

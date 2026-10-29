@@ -82,6 +82,9 @@ type Daemon interface {
 	SbxMinVersion() string
 	RuntimeBaselineMet() bool
 	McpGateway() (available bool, reason string)
+	// HasCapability reports a capability the daemon advertised at handshake
+	// (SWI-18: "lanes" gates the lane UI, FR-318a).
+	HasCapability(name string) bool
 	// MCP gateway (feature 008, FR-072..FR-100): the host's registrations with
 	// switchboard's marks; register/remove/authorize; marks and attach mode.
 	ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error)
@@ -117,12 +120,12 @@ type Daemon interface {
 	RenameOrchestrator(ctx context.Context, id, name string) (*pb.Orchestrator, error)
 	RemoveOrchestrator(ctx context.Context, id string) (*pb.RemoveOrchestratorResponse, error)
 	SetOrchestratorHosts(ctx context.Context, id string, hosts []*pb.OrchestratorHost) (*pb.Orchestrator, error)
-	GetWorkerBundle(ctx context.Context, id string) (*pb.WorkerBundle, error)
-	AttachWorker(ctx context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error)
-	DetachWorker(ctx context.Context, id, sandboxID string) error
+	GetWorkerBundle(ctx context.Context, id, hostID string, laneIDs []string) (*pb.WorkerBundle, error)
+	AttachWorker(ctx context.Context, id, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error)
+	DetachWorker(ctx context.Context, id, sandboxID string, guard *pb.LaneGuardConfirm) error
 	DetachController(ctx context.Context, sandboxID, orchestratorID string, force bool) (*pb.Sandbox, error)
 	MarkWorkerFree(ctx context.Context, id, sandboxID string, failed bool, note string) (*pb.Run, error)
-	PutAction(ctx context.Context, id string, a *pb.Action) (*pb.Action, error)
+	PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error)
 	DeleteAction(ctx context.Context, id, name string) ([]string, error)
 	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
 	DeleteTimedEvent(ctx context.Context, id, eventID string) error
@@ -133,6 +136,13 @@ type Daemon interface {
 	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	CancelRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	RebuildReasoningSandbox(ctx context.Context, id string, setup *pb.ReasoningSetup, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
+	// Lanes (SWI-18): only against a daemon with the "lanes" capability.
+	PutLane(ctx context.Context, id, laneID, name, description string) (*pb.Lane, error)
+	DeleteLane(ctx context.Context, id, laneID string, guard *pb.LaneGuardConfirm) (*pb.LaneChangeImpact, error)
+	SetWorkerLanes(ctx context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error)
+	SetLaneMembers(ctx context.Context, req *pb.SetLaneMembersRequest) (*pb.Lane, error)
+	CheckLaneChange(ctx context.Context, req *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error)
+	DismissDroppedWorkerTags(ctx context.Context, id string) (*pb.Orchestrator, error)
 }
 
 type screen int
@@ -351,6 +361,9 @@ type Model struct {
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
+	// laneSaves numbers every lane form save, model-wide: a panel is rebuilt
+	// when its dialog or detail reopens, so its own count would restart.
+	laneSaves int
 
 	// --- feature 010: the Jobs screen and Daemons › Orchestrators ---
 	jobs        jobsState
@@ -794,6 +807,22 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleReasoningDone(msg)
 	case orchFormErrMsg:
 		return m.applyOrchFormErr(msg)
+	case laneFormMsg:
+		return m.applyLaneForm(msg)
+	case laneResultMsg:
+		return m.applyLaneResult(msg)
+	case manageDetailMsg:
+		return m.applyManageDetail(msg)
+	case actionLanesMsg:
+		return m.applyActionLanes(msg)
+	case launchOpenLaneMsg:
+		return m.applyLaunchOpenLane(msg)
+	case launchBundleMsg:
+		return m.applyLaunchBundle(msg)
+	case attachOpenLaneMsg:
+		return m.applyAttachOpenLane(msg)
+	case attachLaneErrMsg:
+		return m.applyAttachLaneErr(msg)
 	case runPromptMsg:
 		return m.applyRunPrompt(msg)
 

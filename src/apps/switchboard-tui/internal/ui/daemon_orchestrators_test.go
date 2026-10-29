@@ -251,7 +251,7 @@ func TestDaemonOrchestratorsOpenDetailAndBack(t *testing.T) {
 	if !strings.Contains(v, "Orchestrator gamma-bot") {
 		t.Errorf("detail should load:\n%s", v)
 	}
-	if int(orchViewCount) != 3 || orchViewNames != [orchViewCount]string{"Workers", "Reasoning", "Hosts"} {
+	if int(orchViewCount) != 4 || orchViewNames != [orchViewCount]string{"Workers", "Reasoning", "Hosts", "Lanes"} {
 		t.Errorf("the detail views = %v", orchViewNames)
 	}
 	for _, gone := range []string{"Actions", "Queue", "Events"} {

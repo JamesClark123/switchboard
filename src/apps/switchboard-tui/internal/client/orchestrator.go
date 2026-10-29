@@ -75,18 +75,23 @@ func (c *Conn) SetOrchestratorHosts(ctx context.Context, id string, hosts []*pb.
 	return out, c.orchErr(err)
 }
 
-func (c *Conn) GetWorkerBundle(ctx context.Context, id string) (*pb.WorkerBundle, error) {
-	out, err := c.API().GetWorkerBundle(ctx, &pb.GetWorkerBundleRequest{OrchestratorId: id})
+// GetWorkerBundle fetches a launch's bundle. With laneIDs (SWI-18 FR-306a)
+// the daemon issues an attach ticket bound to hostID, the target daemon's
+// host id.
+func (c *Conn) GetWorkerBundle(ctx context.Context, id, hostID string, laneIDs []string) (*pb.WorkerBundle, error) {
+	out, err := c.API().GetWorkerBundle(ctx, &pb.GetWorkerBundleRequest{OrchestratorId: id, HostId: hostID, LaneIds: laneIDs})
 	return out, c.orchErr(err)
 }
 
-func (c *Conn) AttachWorker(ctx context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error) {
-	out, err := c.API().AttachWorker(ctx, &pb.AttachWorkerRequest{OrchestratorId: id, HostId: hostID, SandboxId: sandboxID})
+func (c *Conn) AttachWorker(ctx context.Context, id, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error) {
+	out, err := c.API().AttachWorker(ctx, &pb.AttachWorkerRequest{OrchestratorId: id, HostId: hostID, SandboxId: sandboxID, LaneIds: laneIDs})
 	return out, c.orchErr(err)
 }
 
-func (c *Conn) DetachWorker(ctx context.Context, id, sandboxID string) error {
-	_, err := c.API().DetachWorker(ctx, &pb.DetachWorkerRequest{OrchestratorId: id, SandboxId: sandboxID})
+// DetachWorker detaches through the orchestrator; guard confirms the open-lane
+// guard's list (SWI-18 FR-308a; nil against a daemon without lanes).
+func (c *Conn) DetachWorker(ctx context.Context, id, sandboxID string, guard *pb.LaneGuardConfirm) error {
+	_, err := c.API().DetachWorker(ctx, &pb.DetachWorkerRequest{OrchestratorId: id, SandboxId: sandboxID, Guard: guard})
 	return c.orchErr(err)
 }
 
@@ -102,8 +107,10 @@ func (c *Conn) MarkWorkerFree(ctx context.Context, id, sandboxID string, failed 
 	return out, c.orchErr(err)
 }
 
-func (c *Conn) PutAction(ctx context.Context, id string, a *pb.Action) (*pb.Action, error) {
-	out, err := c.API().PutAction(ctx, &pb.PutActionRequest{OrchestratorId: id, Action: a})
+// PutAction saves an action as a lanes-aware client (sets_lanes, SWI-18
+// FR-318a), with guard confirming the open-lane guard's list.
+func (c *Conn) PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error) {
+	out, err := c.API().PutAction(ctx, &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, Guard: guard})
 	return out, c.orchErr(err)
 }
 
@@ -161,5 +168,78 @@ func (c *Conn) RebuildReasoningSandbox(ctx context.Context, id string, setup *pb
 		return nil, c.orchErr(err)
 	}
 	out, err := drainLaunchProgress(stream, onLog)
+	return out, c.orchErr(err)
+}
+
+// --- lanes (SWI-18) ---
+
+// ErrLaneStale matches a lane write refused because what the developer saw
+// changed since (ABORTED, FR-307a): reload and show the daemon's message.
+var ErrLaneStale = errors.New("lanes changed since they were shown")
+
+// laneErr is orchErr plus ErrLaneStale for ABORTED; the daemon's text and code
+// are kept.
+func (c *Conn) laneErr(err error) error {
+	if status.Code(err) == codes.Aborted {
+		return &laneStaleError{err: err}
+	}
+	return c.orchErr(err)
+}
+
+type laneStaleError struct{ err error }
+
+func (e *laneStaleError) Error() string              { return status.Convert(e.err).Message() }
+func (e *laneStaleError) Is(target error) bool       { return target == ErrLaneStale }
+func (e *laneStaleError) GRPCStatus() *status.Status { return status.Convert(e.err) }
+
+// ImpactFromError reads the open-lane guard's list from a refused guarded
+// write (FAILED_PRECONDITION with a LaneChangeImpact detail).
+func ImpactFromError(err error) (*pb.LaneChangeImpact, bool) {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.FailedPrecondition {
+		return nil, false
+	}
+	for _, d := range st.Details() {
+		if impact, ok := d.(*pb.LaneChangeImpact); ok {
+			return impact, true
+		}
+	}
+	return nil, false
+}
+
+// PutLane creates (empty laneID) or renames / re-describes a lane.
+func (c *Conn) PutLane(ctx context.Context, id, laneID, name, description string) (*pb.Lane, error) {
+	out, err := c.API().PutLane(ctx, &pb.PutLaneRequest{OrchestratorId: id, LaneId: laneID, Name: name, Description: description})
+	return out, c.orchErr(err)
+}
+
+// DeleteLane deletes a lane and returns the impact the daemon applied.
+func (c *Conn) DeleteLane(ctx context.Context, id, laneID string, guard *pb.LaneGuardConfirm) (*pb.LaneChangeImpact, error) {
+	resp, err := c.API().DeleteLane(ctx, &pb.DeleteLaneRequest{OrchestratorId: id, LaneId: laneID, Guard: guard})
+	if err != nil {
+		return nil, c.laneErr(err)
+	}
+	return resp.GetApplied(), nil
+}
+
+func (c *Conn) SetWorkerLanes(ctx context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
+	out, err := c.API().SetWorkerLanes(ctx, req)
+	return out, c.laneErr(err)
+}
+
+func (c *Conn) SetLaneMembers(ctx context.Context, req *pb.SetLaneMembersRequest) (*pb.Lane, error) {
+	out, err := c.API().SetLaneMembers(ctx, req)
+	return out, c.laneErr(err)
+}
+
+// CheckLaneChange reports what a guarded change would affect; nothing is
+// written. Only call it against a daemon with the lanes capability.
+func (c *Conn) CheckLaneChange(ctx context.Context, req *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error) {
+	out, err := c.API().CheckLaneChange(ctx, req)
+	return out, c.laneErr(err)
+}
+
+func (c *Conn) DismissDroppedWorkerTags(ctx context.Context, id string) (*pb.Orchestrator, error) {
+	out, err := c.API().DismissDroppedWorkerTags(ctx, &pb.OrchestratorIdRequest{OrchestratorId: id})
 	return out, c.orchErr(err)
 }

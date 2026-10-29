@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -55,9 +56,6 @@ func validateAction(a *pb.Action, existing []*pb.Action) error {
 	if strings.TrimSpace(a.GetBody()) == "" {
 		return fmt.Errorf("%w: body is empty", ErrInvalid)
 	}
-	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON && strings.TrimSpace(a.GetWorkerTag()) != "" {
-		return fmt.Errorf("%w: reason actions take no worker requirement", ErrInvalid)
-	}
 	declared := map[string]bool{}
 	for _, arg := range a.GetArguments() {
 		n := strings.TrimSpace(arg.GetName())
@@ -84,7 +82,6 @@ func validateAction(a *pb.Action, existing []*pb.Action) error {
 func normalizeAction(a *pb.Action) *pb.Action {
 	out := proto.Clone(a).(*pb.Action)
 	out.Name = strings.TrimSpace(out.GetName())
-	out.WorkerTag = strings.TrimSpace(out.GetWorkerTag())
 	for _, arg := range out.GetArguments() {
 		arg.Name = strings.TrimSpace(arg.GetName())
 	}
@@ -176,38 +173,24 @@ func findAction(o *pb.Orchestrator, name string) *pb.Action {
 }
 
 // PutAction creates or replaces an action (FR-121); runs already created are
-// untouched (FR-140). Briefings are pushed to reachable workers.
-func (s *Service) PutAction(id string, a *pb.Action) (*pb.Action, error) {
-	rt, err := s.runtimeFor(id)
+// untouched (FR-140). The lane fields are checked (FR-316/FR-316a/FR-318a) and
+// the save is guarded (FR-308a); briefings are pushed in the background.
+func (s *Service) PutAction(req *pb.PutActionRequest) (*pb.Action, error) {
+	rt, err := s.runtimeFor(req.GetOrchestratorId())
 	if err != nil {
 		return nil, err
 	}
-	a = normalizeAction(a)
-	if err := validateAction(a, rt.record().GetActions()); err != nil {
+	a, err := prepareAction(req)
+	if err != nil {
 		return nil, err
 	}
-	now := timestamppb.New(s.clock.Now())
-	var saved *pb.Action
-	if _, err := rt.update(func(o *pb.Orchestrator) error {
-		for i, ex := range o.Actions {
-			if ex.GetName() == a.GetName() {
-				a.CreatedAt, a.UpdatedAt = ex.GetCreatedAt(), now
-				o.Actions[i] = a
-				saved = a
-				return nil
-			}
-		}
-		a.CreatedAt, a.UpdatedAt = now, now
-		o.Actions = append(o.Actions, a)
-		saved = a
-		return nil
-	}); err != nil {
+	rec, ch, _, err := rt.guarded(req.GetGuard(), putActionChange(a, timestamppb.New(s.clock.Now())))
+	if err != nil {
 		return nil, err
 	}
-	s.emitChanged(id)
-	rt.pushBriefings()
+	rt.afterLaneChange(ch)
 	rt.rearmScheduler()
-	return proto.Clone(saved).(*pb.Action), nil
+	return proto.Clone(findAction(rec, a.GetName())).(*pb.Action), nil
 }
 
 // DeleteAction removes an action; timed events naming it are disabled with
@@ -218,9 +201,25 @@ func (s *Service) DeleteAction(id, name string) ([]string, error) {
 		return nil, err
 	}
 	var disabled []string
-	if _, err := rt.update(func(o *pb.Orchestrator) error {
-		if findAction(o, name) == nil {
+	if _, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
+		disabled = nil
+		gone := findAction(o, name)
+		if gone == nil {
 			return fmt.Errorf("%w: action %s", ErrNotFound, name)
+		}
+		// Queued runs keep the deleted action's lane setting (FR-314b).
+		queued, err := runs.Queued()
+		if err != nil {
+			return err
+		}
+		for _, r := range queued {
+			if r.GetAction() != name || r.GetKeptLanes() != nil {
+				continue
+			}
+			r.KeptLanes = &pb.KeptLaneSetting{LaneIds: slices.Clone(gone.GetLaneIds()), Mode: gone.GetLaneMode()}
+			if err := runs.Put(r); err != nil {
+				return err
+			}
 		}
 		kept := o.Actions[:0]
 		for _, a := range o.Actions {
@@ -241,7 +240,8 @@ func (s *Service) DeleteAction(id, name string) ([]string, error) {
 		return nil, err
 	}
 	s.emitChanged(id)
-	rt.pushBriefings()
+	rt.requestBriefing()
 	rt.rearmScheduler()
+	rt.triggerDispatch()
 	return disabled, nil
 }

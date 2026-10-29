@@ -25,7 +25,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 	for i := 0; i < n; i++ {
 		id := "w" + string(rune('a'+i))
 		w.put(running(id, "worker-"+id))
-		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id); err != nil {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +44,7 @@ func dispatchEnv(t *testing.T, n int, reasoning bool) (*testEnv, *fakeWorker, *p
 		rt.sbs["reasoning-1"] = r
 		rt.mu.Unlock()
 	}
-	if _, err := env.svc.PutAction(o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
 		t.Fatal(err)
 	}
 	return env, w, o, rt
@@ -141,21 +141,19 @@ func TestDispatchOrderAndCapacity(t *testing.T) {
 	}
 }
 
-func TestDispatchTagsReasonAndRefusals(t *testing.T) {
-	env, w, o, rt := dispatchEnv(t, 2, true)
-	// worker_tag restricts prompt runs; a reason run goes only to the reasoning sandbox.
-	tagged := reviewPR()
-	tagged.WorkerTag = "ci"
-	if _, err := env.svc.PutAction(o.GetId(), tagged); err != nil {
+func TestDispatchLanesReasonAndRefusals(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 2, true)
+	// An exclusive action runs only on its lane's workers; a reason run goes
+	// only to the reasoning sandbox.
+	ids := seedLanes(t, rt, map[string][]string{"ci": {"wb"}})
+	laned := reviewPR()
+	laned.LaneIds, laned.LaneMode = []string{ids["ci"]}, pb.LaneMode_LANE_MODE_EXCLUSIVE
+	if _, err := putAction(env.svc, o.GetId(), laned); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "triage", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {issues}", Arguments: []*pb.ActionArgument{{Name: "issues", Required: true}}}); err != nil {
 		t.Fatal(err)
 	}
-	wb := w.update("wb", func(sb *pb.Sandbox) { sb.Tag = "ci" })
-	rt.mu.Lock()
-	rt.sbs["wb"] = wb
-	rt.mu.Unlock()
 	r1 := call(t, env, o.GetId(), "1")
 	reason, _ := env.svc.CallAction(o.GetId(), "triage", map[string]string{"issues": "a, b"}, pb.EventKind_EVENT_KIND_USER, "", "")
 	settle(t, rt)
@@ -168,7 +166,7 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 		switch r.GetId() {
 		case r1.GetId():
 			if r.GetSandboxId() != "wb" {
-				t.Errorf("tagged run went to %s, want the #ci worker", r.GetSandboxId())
+				t.Errorf("laned run went to %s, want the ci worker", r.GetSandboxId())
 			}
 		case reason.GetId():
 			if r.GetSandboxId() != "reasoning-1" {
@@ -176,12 +174,12 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 			}
 		}
 	}
-	// A second tagged call waits (wa is free but not #ci) and never blocks later
-	// untagged runs.
+	// A second laned call waits (wa is free but in no lane) and never blocks
+	// later un-laned runs.
 	r2 := call(t, env, o.GetId(), "2")
-	untagged := reviewPR()
-	untagged.Name = "any"
-	if _, err := env.svc.PutAction(o.GetId(), untagged); err != nil {
+	unlaned := reviewPR()
+	unlaned.Name = "any"
+	if _, err := putAction(env.svc, o.GetId(), unlaned); err != nil {
 		t.Fatal(err)
 	}
 	r3, _ := env.svc.CallAction(o.GetId(), "any", map[string]string{"number": "3", "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", "")
@@ -191,7 +189,7 @@ func TestDispatchTagsReasonAndRefusals(t *testing.T) {
 		return got.GetState() == pb.RunState_RUN_STATE_RUNNING && got.GetSandboxId() == "wa"
 	})
 	if got, _ := env.svc.GetRun(o.GetId(), r2.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED || got.GetPosition() != 1 {
-		t.Errorf("tagged run should still be queued at 1: %+v", got)
+		t.Errorf("laned run should still be queued at 1: %+v", got)
 	}
 	// Cancel only when queued.
 	if _, err := env.svc.CancelRun(o.GetId(), r2.GetId()); err != nil {
@@ -312,10 +310,10 @@ func TestOwnHostRefusalKeepsRunQueued(t *testing.T) {
 	sb.HostId = "host-m"
 	w.put(sb)
 	waitFor(t, func() bool { ok, _ := rt.reachability("host-m"); return ok })
-	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "host-m", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.svc.PutAction(o.GetId(), reviewPR()); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), reviewPR()); err != nil {
 		t.Fatal(err)
 	}
 	// The agent turns busy as the delivery arrives (the record moved after the
@@ -353,11 +351,14 @@ func TestDeliveryRefusedAndFailed(t *testing.T) {
 	if got, _ := env.svc.GetRun(o.GetId(), r1.GetId()); got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Errorf("a refused delivery keeps the run queued: %v", got.GetState())
 	}
-	// The sandbox vanishes on the far side: delivery fails the run.
+	// The sandbox vanishes on the far side while the orchestrator's latest
+	// record (a status event that raced the delete) reads it idle: delivery
+	// fails the run.
+	idle := w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE })
 	w.mu.Lock()
 	delete(w.sbs, "wa")
 	w.mu.Unlock()
-	rt.triggerDispatch()
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: idle}}
 	settle(t, rt)
 	waitFor(t, func() bool {
 		got, _ := env.svc.GetRun(o.GetId(), r1.GetId())
@@ -447,7 +448,13 @@ func TestRefusedDeliveryFallsThroughToTheNextWorker(t *testing.T) {
 	env, w, o, rt := dispatchEnv(t, 2, false)
 	// The worker side refuses wa (as for an agent not ready yet), while the
 	// orchestrator's cached record still reads it free.
-	w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_STARTING })
+	w.mu.Lock()
+	w.onDeliver = func(req *pb.DeliverWorkerPromptRequest) {
+		if req.GetSandboxId() == "wa" {
+			w.update("wa", func(sb *pb.Sandbox) { sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_STARTING })
+		}
+	}
+	w.mu.Unlock()
 	r1 := call(t, env, o.GetId(), "1")
 	settle(t, rt)
 	waitFor(t, func() bool { return stateOf(env, o.GetId(), r1.GetId()) == pb.RunState_RUN_STATE_RUNNING })

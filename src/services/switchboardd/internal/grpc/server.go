@@ -247,6 +247,8 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 		RuntimeBaselineMet:  s.mcpAvail.BaselineMet,
 		McpGatewayAvailable: s.mcpAvail.Available,
 		McpGatewayReason:    s.mcpAvail.Reason,
+		// SWI-18 (FR-318a)
+		Capabilities: []string{orchestrator.CapabilityLanes},
 	}, nil
 }
 

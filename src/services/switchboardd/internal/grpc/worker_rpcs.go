@@ -39,11 +39,11 @@ func (s *Server) DeliverWorkerPrompt(ctx context.Context, req *pb.DeliverWorkerP
 	if s.worker == nil {
 		return nil, errNoOrchestrator
 	}
-	accepted, err := s.worker.Deliver(ctx, req)
+	resp, err := s.worker.DeliverResponse(ctx, req)
 	if err != nil {
 		return nil, orchStatus(err)
 	}
-	return &pb.DeliverWorkerPromptResponse{Accepted: accepted}, nil
+	return resp, nil
 }
 
 func (s *Server) OrchestratorLink(stream pb.Switchboard_OrchestratorLinkServer) error {

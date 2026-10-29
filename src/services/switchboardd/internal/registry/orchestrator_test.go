@@ -235,3 +235,108 @@ func TestOrchestratorCorruptRecords(t *testing.T) {
 		t.Error("expected ListRuns unmarshal error")
 	}
 }
+
+// SWI-18 (research R7): the record and its runs change in one transaction.
+func TestUpdateOrchestratorRuns(t *testing.T) {
+	r := openTemp(t)
+	const orch = "o-runs"
+	if err := r.PutOrchestrator(&pb.Orchestrator{Id: orch, Name: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(seq uint64, st pb.RunState) *pb.Run {
+		return &pb.Run{Id: fmt.Sprintf("run-o-runs-%d", seq), OrchestratorId: orch, State: st}
+	}
+	// Sequences continue NextRunSeq's counter, both ways.
+	if s, _ := r.NextRunSeq(orch); s != 1 {
+		t.Fatalf("NextRunSeq = %d", s)
+	}
+	if _, err := r.UpdateOrchestratorRuns(orch, func(o *pb.Orchestrator, runs RunTx) error {
+		for i := 0; i < 3; i++ {
+			seq, err := runs.NextSeq()
+			if err != nil {
+				return err
+			}
+			if seq != uint64(i+2) {
+				return fmt.Errorf("seq %d, want %d", seq, i+2)
+			}
+			st := pb.RunState_RUN_STATE_QUEUED
+			if i == 1 {
+				st = pb.RunState_RUN_STATE_RUNNING
+			}
+			if err := runs.Put(mk(seq, st)); err != nil {
+				return err
+			}
+		}
+		if err := runs.Put(&pb.Run{Id: "run-x-9", OrchestratorId: "other"}); err == nil {
+			return errors.New("put of another orchestrator's run accepted")
+		}
+		q, err := runs.Queued()
+		if err != nil || len(q) != 2 || q[0].GetId() != "run-o-runs-2" || q[1].GetId() != "run-o-runs-4" {
+			return fmt.Errorf("queued = %v %v", q, err)
+		}
+		if got, err := runs.Get("run-o-runs-3"); err != nil || got.GetState() != pb.RunState_RUN_STATE_RUNNING {
+			return fmt.Errorf("get = %v %v", got, err)
+		}
+		if _, err := runs.Get("run-o-runs-99"); !errors.Is(err, ErrRunNotFound) {
+			return fmt.Errorf("get missing = %v", err)
+		}
+		o.Name = "b"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := r.NextRunSeq(orch); s != 5 {
+		t.Fatalf("NextRunSeq after tx = %d, want 5", s)
+	}
+	// A failing fn writes nothing to either bucket.
+	_, err := r.UpdateOrchestratorRuns(orch, func(o *pb.Orchestrator, runs RunTx) error {
+		o.Name = "c"
+		seq, _ := runs.NextSeq()
+		_ = runs.Put(mk(seq, pb.RunState_RUN_STATE_QUEUED))
+		return errors.New("refused")
+	})
+	if err == nil || err.Error() != "refused" {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := r.GetOrchestrator(orch); got.GetName() != "b" {
+		t.Fatalf("name = %q after refused tx", got.GetName())
+	}
+	if all, _ := r.ListRuns(orch); len(all) != 3 {
+		t.Fatalf("runs = %d after refused tx, want 3", len(all))
+	}
+	if _, err := r.UpdateOrchestratorRuns("missing", func(*pb.Orchestrator, RunTx) error { return nil }); !errors.Is(err, ErrOrchestratorNotFound) {
+		t.Fatalf("missing = %v", err)
+	}
+	// The view sees the record and the queued runs of one commit.
+	if err := r.ViewOrchestratorRuns(orch, func(o *pb.Orchestrator, q []*pb.Run) error {
+		if o.GetName() != "b" || len(q) != 2 {
+			return fmt.Errorf("view: %q %d", o.GetName(), len(q))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ViewOrchestratorRuns("missing", func(*pb.Orchestrator, []*pb.Run) error { return nil }); !errors.Is(err, ErrOrchestratorNotFound) {
+		t.Fatalf("view missing = %v", err)
+	}
+	// Corrupt record and runs surface errors.
+	if err := r.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(runsBucket).Put(runKey(orch, 7), []byte{0xff})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ViewOrchestratorRuns(orch, func(*pb.Orchestrator, []*pb.Run) error { return nil }); err == nil {
+		t.Fatal("corrupt run should surface")
+	}
+	if err := r.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(orchestratorsBucket).Put([]byte(orch), []byte{0xff})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.UpdateOrchestratorRuns(orch, func(*pb.Orchestrator, RunTx) error { return nil }); err == nil {
+		t.Fatal("corrupt record should surface")
+	}
+	if err := r.ViewOrchestratorRuns(orch, func(*pb.Orchestrator, []*pb.Run) error { return nil }); err == nil {
+		t.Fatal("corrupt record should surface in view")
+	}
+}

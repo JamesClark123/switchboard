@@ -92,8 +92,19 @@ func thirdLine(sb *pb.Sandbox) string {
 			role += " (reasoning)"
 		}
 		parts = append(parts, role)
+		// SWI-18 (FR-309b): lane text only once the orchestrator has sent it.
+		switch {
+		case c.GetReasoning() || !c.GetLanesKnown():
+		case c.GetLanesPending():
+			parts = append(parts, "lanes pending")
+		case len(c.GetLaneNames()) > 0:
+			parts = append(parts, "lanes: "+strings.Join(c.GetLaneNames(), ", "))
+		default:
+			parts = append(parts, "open lane")
+		}
 	}
-	return strings.Join(parts, " · ")
+	// Daemon-supplied names (FR-309).
+	return sanitizeLine(strings.Join(parts, " · "), 0)
 }
 
 var _ = lipgloss.Left

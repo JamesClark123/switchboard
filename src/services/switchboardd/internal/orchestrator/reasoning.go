@@ -98,26 +98,19 @@ func (rt *runtime) launchReasoning(ctx context.Context, setup *pb.ReasoningSetup
 		DisplayName: rt.reasoningName(),
 		Setup:       setup,
 		Controller:  &pb.SandboxController{OrchestratorId: rt.id, Name: rec.GetName(), HostId: rt.svc.hostID, Reasoning: true},
-		Briefing:    renderBriefing(rec.GetName(), true, rec.GetActions()),
+		Briefing:    renderBriefing(rec, true),
 	}, log)
 	if err != nil {
 		rt.setReasoningErr(err.Error())
 		rt.svc.emitChanged(rt.id)
 		return nil, err
 	}
-	rt.reconcileMu.Lock()
-	defer rt.reconcileMu.Unlock()
-	if _, err := rt.update(func(o *pb.Orchestrator) error {
-		o.ReasoningSandboxId = sb.GetId()
-		if !rosterHas(o, sb.GetId()) {
-			o.Workers = append(o.Workers, &pb.Worker{SandboxId: sb.GetId(), HostId: rt.svc.hostID, AttachedAt: sb.GetController().GetAttachedAt(), Reasoning: true})
-		}
-		return nil
-	}); err != nil {
+	// Through applyRecords as a launch reply: the newer of the reply and any
+	// status record already cached is adopted as reasoning (research R4).
+	if _, err := rt.applyRoster(rosterInput{source: srcLaunchReply, hostID: rt.svc.hostID, records: []*pb.Sandbox{sb}}); err != nil {
 		return nil, err
 	}
 	rt.mu.Lock()
-	rt.sbs[sb.GetId()] = proto.Clone(sb).(*pb.Sandbox)
 	rt.reasoning.err = ""
 	rt.mu.Unlock()
 	rt.svc.emitChanged(rt.id)
@@ -133,20 +126,10 @@ func (rt *runtime) destroyReasoning() {
 	if old == "" {
 		return
 	}
-	_, _ = rt.update(func(o *pb.Orchestrator) error {
-		o.ReasoningSandboxId = ""
-		kept := o.Workers[:0]
-		for _, w := range o.Workers {
-			if w.GetSandboxId() != old {
-				kept = append(kept, w)
-			}
-		}
-		o.Workers = kept
-		return nil
-	})
-	rt.mu.Lock()
-	delete(rt.sbs, old)
-	rt.mu.Unlock()
+	// A removed mark, so a late event from the old sandbox cannot re-adopt it.
+	if _, err := rt.applyRoster(rosterInput{source: srcDestroyReasoning, hostID: rt.svc.hostID, ids: []string{old}}); err != nil {
+		rt.svc.logf("[orchestrator %s] forget reasoning sandbox %s: %v", rt.name(), old, err)
+	}
 	if rt.svc.mgr == nil {
 		return
 	}
@@ -155,18 +138,6 @@ func (rt *runtime) destroyReasoning() {
 	if _, err := rt.svc.mgr.Destroy(ctx, old); err != nil {
 		rt.svc.logf("[orchestrator %s] destroy reasoning sandbox %s: %v", rt.name(), old, err)
 	}
-}
-
-// reasoningLost records that the sandbox vanished out of band: reason runs
-// fail with the reason until a rebuild (dispatch has no target).
-func (rt *runtime) reasoningLost() {
-	_, _ = rt.update(func(o *pb.Orchestrator) error {
-		o.ReasoningSandboxId = ""
-		return nil
-	})
-	rt.setReasoningErr(reasoningLostReason)
-	rt.svc.emitChanged(rt.id)
-	rt.triggerDispatch()
 }
 
 // reasoningStatus reports whether the reasoning sandbox exists and, when it

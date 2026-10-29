@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -159,6 +161,31 @@ func (m Model) handleEvent(hostID string, ev *pb.Event) (tea.Model, tea.Cmd) {
 		// feature 009 (R14): an orchestrator on that host changed; the screen and
 		// any open detail re-fetch (filled by the orchestrator views).
 		out, cmd = m.syncOrchestratorChanged(m.subHostKey(hostID), e.OrchestratorChanged.GetOrchestratorId())
+	case *pb.Event_EventsDropped:
+		// SWI-18: the stream overflowed, so changes may have been missed: the
+		// list (every host's, aggregated) is read again, and so is everything
+		// orchestrator_changed would have refreshed for this host.
+		m.listLoading = true
+		cmds := []tea.Cmd{m.reloadCmd()}
+		hk := m.subHostKey(hostID)
+		if m.screen == screenDaemonOrchs || m.screen == screenOrchDetail {
+			cmds = append(cmds, m.orchLoadCmd())
+		}
+		if m.screen == screenOrchDetail && m.detailTarget().host == hk {
+			cmds = append(cmds, m.orchDetailLoadCmd())
+		}
+		if m.jobs.manage.open && m.jobs.manage.target.host == hk {
+			cmds = append(cmds, m.manageLoadCmd())
+		}
+		if m.jobs.started {
+			for _, key := range slices.Sorted(maps.Keys(m.jobs.meta)) {
+				if md := m.jobs.meta[key]; md.host == hk {
+					cmds = append(cmds, m.jobsReloadOrch(md.host, md.id))
+				}
+			}
+		}
+		cmd = tea.Batch(cmds...)
+		out = m
 	}
 	return out, tea.Batch(cmd, rearm)
 }

@@ -51,25 +51,41 @@ func free(sb *pb.Sandbox, hostUp bool) bool {
 		sb.GetController().GetRun() == nil
 }
 
-// eligible reports whether a run may go to a roster entry (type + tag rules).
-func eligible(run *pb.Run, w *pb.Worker, sb *pb.Sandbox, workerTag string) bool {
-	if run.GetType() == pb.ActionType_ACTION_TYPE_REASON {
-		return w.GetReasoning()
-	}
-	if w.GetReasoning() {
-		return false
-	}
-	return workerTag == "" || sb.GetTag() == workerTag
-}
+// claimResult is the outcome of re-checking a planned candidate.
+type claimResult int
 
-// dispatch runs one pass.
+const (
+	claimOK       claimResult = iota // the worker joined rt.delivering
+	claimOut                         // the worker is not free (or not a worker) any more
+	claimLaneFail                    // the worker is fine, but not allowed this run now
+)
+
+// deliverResult is the outcome of one delivery.
+type deliverResult int
+
+const (
+	delivered deliverResult = iota // the worker took the run
+	refused                        // precondition: the run stays queued, the worker leaves the pass
+	failed                         // the run was failed
+)
+
+// dispatch runs one pass (research R8, contracts/dispatch.md).
 func (rt *runtime) dispatch() {
-	runs, err := rt.svc.reg.ListRuns(rt.id)
-	if err != nil {
+	rt.mu.Lock()
+	gen0 := rt.recGen
+	detaching := make(map[string]struct{}, len(rt.detaching))
+	for id := range rt.detaching {
+		detaching[id] = struct{}{}
+	}
+	rt.mu.Unlock()
+	var rec *pb.Orchestrator
+	var queued []*pb.Run
+	if err := rt.svc.reg.ViewOrchestratorRuns(rt.id, func(o *pb.Orchestrator, q []*pb.Run) error {
+		rec, queued = o, q
+		return nil
+	}); err != nil {
 		return
 	}
-	rec := rt.record()
-	claimed := map[string]bool{}
 	// Candidates come from one view of the roster per pass: were a record
 	// re-read per run, a worker freed mid-pass could take a later run while an
 	// earlier one it could have taken stays queued (SC-003). The change that
@@ -83,56 +99,121 @@ func (rt *runtime) dispatch() {
 			ups[w.GetHostId()] = up
 		}
 	}
-	for _, run := range runs {
-		if run.GetState() != pb.RunState_RUN_STATE_QUEUED {
-			continue
-		}
-		action := findAction(rec, run.GetAction())
-		tag := ""
-		if action != nil {
-			tag = action.GetWorkerTag()
-		}
-		// A reason run has exactly one target; while it is gone (not merely
-		// coming up) the run fails with the reason (FR-145 edge case).
-		if run.GetType() == pb.ActionType_ACTION_TYPE_REASON {
-			if ready, reason := rt.reasoningStatus(); !ready && reason != "" {
-				rt.failRun(run, reason)
-				continue
-			}
-		}
-		for _, w := range rec.GetWorkers() {
-			if claimed[w.GetSandboxId()] {
-				continue
-			}
-			sb, up := sbs[w.GetSandboxId()], ups[w.GetHostId()]
-			if !free(sb, up) || !eligible(run, w, sb, tag) {
-				continue
-			}
-			// …but the latest record must still agree before delivering: a
-			// worker removed, detached or busied since the view was taken is
-			// out of this pass (the change triggers the next one), rather than
-			// failing the run with a delivery to a sandbox that is gone.
-			claimed[w.GetSandboxId()] = true
-			liveUp, _ := rt.reachability(w.GetHostId())
-			if live := rt.sandboxRecord(w.GetSandboxId()); !free(live, liveUp) || !eligible(run, w, live, tag) {
-				continue
-			}
-			// A refused delivery (the worker was not free after all, e.g. its
-			// agent is still starting) leaves the run for the next worker.
-			if rt.deliver(run, w) {
-				break
-			}
-		}
+	plan := buildPlan(rec, func(w *pb.Worker) bool {
+		_, det := detaching[w.GetSandboxId()]
+		return !det && free(sbs[w.GetSandboxId()], ups[w.GetHostId()])
+	})
+	runs := make([]planRun, len(queued))
+	for i, run := range queued {
+		ids, mode, ok := effectiveLanes(rec, run)
+		runs[i] = planRun{run: run, ids: ids, mode: mode, ok: ok, mask: plan.maskOf(ids)}
 	}
+	reasoningClaimed := false
+	plan.pass(runs, passHooks{
+		reason: func(run *pb.Run) {
+			if !reasoningClaimed {
+				reasoningClaimed = rt.dispatchReason(run, rec, sbs, ups)
+			}
+		},
+		missing: rt.failIfMissing,
+		claim:   func(w *pb.Worker, r planRun) claimResult { return rt.recheckAndClaim(w, r, gen0) },
+		deliver: rt.deliver,
+	})
 }
 
-// deliver hands one run to one worker through its host link (R7), reporting
-// whether that settled the run (delivered, or failed); false leaves it queued
-// for another worker.
-func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
+// dispatchReason hands a reason run to the reasoning sandbox when it is free,
+// reporting whether it took one. A reason run has exactly one target; while it
+// is gone (not merely coming up) the run fails with the reason (FR-145 edge
+// case).
+func (rt *runtime) dispatchReason(run *pb.Run, rec *pb.Orchestrator, sbs map[string]*pb.Sandbox, ups map[string]bool) bool {
+	if ready, reason := rt.reasoningStatus(); !ready && reason != "" {
+		rt.failRun(run, reason)
+		return false
+	}
+	for _, w := range rec.GetWorkers() {
+		if !w.GetReasoning() || !free(sbs[w.GetSandboxId()], ups[w.GetHostId()]) {
+			continue
+		}
+		// …but the latest record must still agree before delivering: a
+		// sandbox removed or busied since the view was taken is out of this
+		// pass (the change triggers the next one).
+		liveUp, _ := rt.reachability(w.GetHostId())
+		if !free(rt.sandboxRecord(w.GetSandboxId()), liveUp) {
+			return true
+		}
+		rt.deliver(run, w)
+		return true
+	}
+	return false
+}
+
+// failIfMissing fails a run whose effective lane setting is missing (its
+// action was deleted with no kept copy) once a re-read inside the
+// record-and-runs transaction agrees: a delete committed after the pass's
+// snapshot has given it a kept copy by then. The run is failed after the
+// commit, never inside the callback.
+func (rt *runtime) failIfMissing(run *pb.Run) {
+	missing := false
+	if _, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
+		cur, err := runs.Get(run.GetId())
+		if err != nil || cur.GetState() != pb.RunState_RUN_STATE_QUEUED {
+			return errNoChange
+		}
+		_, _, ok := effectiveLanes(o, cur)
+		missing = !ok
+		return errNoChange
+	}); err != nil || !missing {
+		return
+	}
+	rt.failRun(run, msgActionDeleted)
+}
+
+// recheckAndClaim validates a planned candidate against the live state just
+// before delivering (research R8): always the sandbox is still free and the
+// worker is not detaching; when a record write committed since the snapshot
+// (recGen moved), also that the worker is still a lane-capable worker and its
+// current lanes allow the run's setting. On success the worker joins
+// rt.delivering in the same critical section, so a detach through the
+// orchestrator waits for the delivery.
+func (rt *runtime) recheckAndClaim(w *pb.Worker, r planRun, gen0 uint64) claimResult {
+	id := w.GetSandboxId()
+	up, _ := rt.reachability(w.GetHostId())
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !free(rt.sbs[id], up) {
+		return claimOut
+	}
+	if _, det := rt.detaching[id]; det {
+		return claimOut
+	}
+	if _, busy := rt.delivering[id]; busy {
+		return claimOut
+	}
+	if rt.recGen != gen0 {
+		cur := onRosterEntry(rt.rec, id)
+		if cur == nil || cur.GetReasoning() || cur.GetLanesPending() {
+			return claimOut
+		}
+		// The run's kept copy is read from the snapshot run: claims never read
+		// bolt. A missing setting, or a kept lane deleted since, is a skip; the
+		// committing write's own pass re-plans the run.
+		ids, mode, ok := effectiveLanes(rt.rec, r.run)
+		if !ok || !laneIDsExist(rt.rec, ids) || !allowed(cur.GetLaneIds(), ids, mode) {
+			return claimLaneFail
+		}
+	}
+	rt.delivering[id] = struct{}{}
+	return claimOK
+}
+
+// deliver hands one run to one worker through its host link (R7). refused
+// leaves the run queued for another worker. The worker leaves rt.delivering
+// once the outcome is recorded.
+func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) deliverResult {
+	defer rt.endDelivery(w.GetSandboxId())
 	api, err := rt.apiFor(w.GetHostId())
 	if err != nil {
-		return false // the link went down between the check and the call
+		return refused // the link went down between the check and the call
 	}
 	ctx, cancel := rt.callCtx(deliverTimeout)
 	defer cancel()
@@ -143,7 +224,15 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
 	case err == nil && resp.GetAccepted():
 		rt.mu.Lock()
 		if sb, ok := rt.sbs[w.GetSandboxId()]; ok && sb.GetController() != nil {
-			sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
+			// The worker took the run: it is busy until its record says
+			// otherwise. The cache takes the delivery write's revision (when
+			// the host reports it), so a reply to a call made before it (a
+			// background push) can no longer read the worker free, while the
+			// host's next write still reads as newer.
+			if rev := resp.GetRevision(); rev == 0 || rev > sb.GetRevision() {
+				sb.Controller.Run = &pb.WorkerRun{Id: run.GetId(), Action: run.GetAction()}
+				sb.Revision = max(sb.GetRevision(), rev)
+			}
 		}
 		rt.mu.Unlock()
 		if err := rt.startRun(run, w.GetSandboxId(), w.GetHostId()); err != nil {
@@ -153,11 +242,13 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) bool {
 		// A developer got there first (or the record moved): the run stays
 		// queued and the sandbox is not free for this pass. The own host's
 		// in-process API returns the worker sentinel, not a gRPC status.
-		return false
+		return refused
 	case err != nil:
 		rt.failRun(run, "delivery failed: "+describe(err, w.GetHostId()))
+		return failed
 	default:
 		rt.failRun(run, "delivery refused")
+		return failed
 	}
-	return true
+	return delivered
 }

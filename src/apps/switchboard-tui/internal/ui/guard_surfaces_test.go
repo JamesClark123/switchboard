@@ -477,7 +477,7 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 	a.orchErr = nil
 	// ctrl+s, then keys while the call is in flight: nothing asks or sends it
 	// again (review run-465 #2); the success reply closes the form.
-	calls := strings.Count(a.orchCallsJoined(), "PutAction")
+	calls := len(a.putActions) // PutAction itself, not the un-laned save's check
 	m, cmd = update(m, ctrlS())
 	if !m.jobs.formSaving || m.jobs.status != savingText {
 		t.Fatalf("in flight: saving %v status %q", m.jobs.formSaving, m.jobs.status)
@@ -502,7 +502,7 @@ func TestGuardOpFormAsyncOutcomes(t *testing.T) {
 	if m.jobs.form != nil || m.unsaved.open || m.jobs.formSaving {
 		t.Fatalf("after success: form %v dialog %v", m.jobs.form != nil, m.unsaved.open)
 	}
-	if n := strings.Count(a.orchCallsJoined(), "PutAction") - calls; n != 1 {
+	if n := len(a.putActions) - calls; n != 1 {
 		t.Errorf("the save sent %d PutAction calls, want 1", n)
 	}
 	// A form completed by enter, whose reply is a refusal, comes back alive with

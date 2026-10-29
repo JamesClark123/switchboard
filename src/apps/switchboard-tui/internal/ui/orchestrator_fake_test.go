@@ -137,8 +137,11 @@ func (f *fakeDaemon) SetOrchestratorHosts(_ context.Context, id string, hosts []
 	return s.GetOrchestrator(), nil
 }
 
-func (f *fakeDaemon) GetWorkerBundle(_ context.Context, id string) (*pb.WorkerBundle, error) {
-	if err := f.orchCall("GetWorkerBundle %s", id); err != nil {
+func (f *fakeDaemon) GetWorkerBundle(_ context.Context, id, hostID string, laneIDs []string) (*pb.WorkerBundle, error) {
+	if err := f.orchCall("GetWorkerBundle %s", id+laneSuffix(hostID, laneIDs)); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("GetWorkerBundle"); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -153,15 +156,21 @@ func (f *fakeDaemon) GetWorkerBundle(_ context.Context, id string) (*pb.WorkerBu
 	return &pb.WorkerBundle{Controller: &pb.SandboxController{OrchestratorId: id, Name: s.GetOrchestrator().GetName(), HostId: f.HostID()}, Briefing: "briefing"}, nil
 }
 
-func (f *fakeDaemon) AttachWorker(_ context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error) {
-	if err := f.orchCall("AttachWorker %s %s %s", id, hostID, sandboxID); err != nil {
+func (f *fakeDaemon) AttachWorker(_ context.Context, id, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error) {
+	if err := f.orchCall("AttachWorker %s %s %s%s", id, hostID, sandboxID, laneSuffix("", laneIDs)); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("AttachWorker"); err != nil {
 		return nil, err
 	}
 	return &pb.WorkerView{SandboxId: sandboxID, HostId: hostID, Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE}, nil
 }
 
-func (f *fakeDaemon) DetachWorker(_ context.Context, id, sandboxID string) error {
-	return f.orchCall("DetachWorker %s %s", id, sandboxID)
+func (f *fakeDaemon) DetachWorker(_ context.Context, id, sandboxID string, guard *pb.LaneGuardConfirm) error {
+	if err := f.orchCall("DetachWorker %s %s%s", id, sandboxID, guardSuffix(guard)); err != nil {
+		return err
+	}
+	return f.popLaneErr("DetachWorker")
 }
 
 func (f *fakeDaemon) DetachController(_ context.Context, sandboxID, orchestratorID string, force bool) (*pb.Sandbox, error) {
@@ -193,8 +202,11 @@ func (f *fakeDaemon) MarkWorkerFree(_ context.Context, id, sandboxID string, fai
 	return &pb.Run{Id: closed, State: st, Summary: note, ClosedByDeveloper: true}, nil
 }
 
-func (f *fakeDaemon) PutAction(_ context.Context, id string, a *pb.Action) (*pb.Action, error) {
-	if err := f.orchCall("PutAction %s %s", id, a.GetName()); err != nil {
+func (f *fakeDaemon) PutAction(_ context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error) {
+	if err := f.orchCall("PutAction %s %s%s", id, a.GetName(), guardSuffix(guard)); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("PutAction"); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -413,4 +425,229 @@ func feed2(m Model, cmd tea.Cmd) Model {
 		m = feed(m, next)
 	}
 	return m
+}
+
+// --- SWI-18: lanes ---
+
+// laneSuffix renders the lane arguments a call recorded (empty without lanes).
+func laneSuffix(hostID string, laneIDs []string) string {
+	if len(laneIDs) == 0 {
+		return ""
+	}
+	return " host=" + hostID + " lanes=" + strings.Join(laneIDs, ",")
+}
+
+// guardSuffix renders a guard confirmation (empty when nil).
+func guardSuffix(g *pb.LaneGuardConfirm) string {
+	if g == nil {
+		return ""
+	}
+	return " guard=" + strings.Join(append(append([]string(nil), g.GetUnlanedActions()...), g.GetUnlanedRuns()...), ",")
+}
+
+// popLaneErr returns the next scripted error for a method, if any.
+func (f *fakeDaemon) popLaneErr(method string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q := f.laneErrs[method]
+	if len(q) == 0 {
+		return nil
+	}
+	f.laneErrs[method] = q[1:]
+	return q[0]
+}
+
+// queueLaneErr scripts errors for a method's next calls.
+func (f *fakeDaemon) queueLaneErr(method string, errs ...error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.laneErrs == nil {
+		f.laneErrs = map[string][]error{}
+	}
+	f.laneErrs[method] = append(f.laneErrs[method], errs...)
+}
+
+// guardRefusal is the daemon's open-lane guard refusal with its impact.
+func guardRefusal(actions ...string) error {
+	st, _ := status.New(codes.FailedPrecondition, "no open-lane worker would be left for actions "+strings.Join(actions, ", ")+" — confirm to continue").
+		WithDetails(&pb.LaneChangeImpact{UnlanedActions: actions})
+	return st.Err()
+}
+
+// orchRecord is the record the lane calls change: the detail's when scripted,
+// else the summary's (callers hold f.mu).
+func (f *fakeDaemon) orchRecord(id string) *pb.Orchestrator {
+	if f.orchDetail != nil && f.orchDetail.GetSummary().GetOrchestrator().GetId() == id {
+		return f.orchDetail.GetSummary().GetOrchestrator()
+	}
+	return f.findOrch(id).GetOrchestrator()
+}
+
+// workerViewOf is a detail worker view (callers hold f.mu).
+func (f *fakeDaemon) workerViewOf(id, sandboxID string) *pb.WorkerView {
+	if f.orchDetail == nil || f.orchDetail.GetSummary().GetOrchestrator().GetId() != id {
+		return nil
+	}
+	for _, w := range f.orchDetail.GetWorkers() {
+		if w.GetSandboxId() == sandboxID {
+			return w
+		}
+	}
+	return nil
+}
+
+func (f *fakeDaemon) PutLane(_ context.Context, id, laneID, name, description string) (*pb.Lane, error) {
+	if err := f.orchCall("PutLane %s %s %s %q", id, laneID, name, description); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("PutLane"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec := f.orchRecord(id)
+	if rec == nil {
+		return nil, status.Error(codes.NotFound, "orchestrator not found")
+	}
+	for _, l := range rec.GetLanes() {
+		if l.GetName() == name && l.GetId() != laneID {
+			return nil, status.Errorf(codes.AlreadyExists, "a lane named %q already exists", name)
+		}
+	}
+	if laneID == "" {
+		f.laneSeq++
+		l := &pb.Lane{Id: fmt.Sprintf("ln-%d", f.laneSeq), Name: name, Description: description}
+		rec.Lanes = append(rec.Lanes, l)
+		return l, nil
+	}
+	for _, l := range rec.GetLanes() {
+		if l.GetId() == laneID {
+			l.Name, l.Description = name, description
+			return l, nil
+		}
+	}
+	return nil, status.Errorf(codes.NotFound, "lane %q no longer exists", laneID)
+}
+
+func (f *fakeDaemon) DeleteLane(_ context.Context, id, laneID string, guard *pb.LaneGuardConfirm) (*pb.LaneChangeImpact, error) {
+	if err := f.orchCall("DeleteLane %s %s%s", id, laneID, guardSuffix(guard)); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("DeleteLane"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	strip := func(ids []string) []string {
+		var out []string
+		for _, x := range ids {
+			if x != laneID {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+	if rec := f.orchRecord(id); rec != nil {
+		var kept []*pb.Lane
+		for _, l := range rec.GetLanes() {
+			if l.GetId() != laneID {
+				kept = append(kept, l)
+			}
+		}
+		rec.Lanes = kept
+		for _, a := range rec.GetActions() {
+			a.LaneIds = strip(a.GetLaneIds())
+		}
+		for _, w := range rec.GetWorkers() {
+			w.LaneIds = strip(w.GetLaneIds())
+		}
+	}
+	if f.orchDetail != nil {
+		for _, w := range f.orchDetail.GetWorkers() {
+			w.LaneIds = strip(w.GetLaneIds())
+		}
+	}
+	if f.laneApplied != nil {
+		return f.laneApplied, nil
+	}
+	return &pb.LaneChangeImpact{}, nil
+}
+
+func (f *fakeDaemon) SetWorkerLanes(_ context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
+	if err := f.orchCall("SetWorkerLanes %s %s lanes=%s expected=%s%s", req.GetOrchestratorId(), req.GetSandboxId(),
+		strings.Join(req.GetLaneIds(), ","), strings.Join(req.GetExpectedLaneIds(), ","), guardSuffix(req.GetGuard())); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("SetWorkerLanes"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v := f.workerViewOf(req.GetOrchestratorId(), req.GetSandboxId()); v != nil {
+		v.LaneIds, v.LanesPending = append([]string(nil), req.GetLaneIds()...), false
+		return v, nil
+	}
+	return &pb.WorkerView{SandboxId: req.GetSandboxId(), LaneIds: req.GetLaneIds()}, nil
+}
+
+func (f *fakeDaemon) SetLaneMembers(_ context.Context, req *pb.SetLaneMembersRequest) (*pb.Lane, error) {
+	if err := f.orchCall("SetLaneMembers %s %s members=%s expected=%s%s", req.GetOrchestratorId(), req.GetLaneId(),
+		strings.Join(req.GetSandboxIds(), ","), strings.Join(req.GetExpectedSandboxIds(), ","), guardSuffix(req.GetGuard())); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("SetLaneMembers"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.orchDetail != nil {
+		for _, w := range f.orchDetail.GetWorkers() {
+			in := false
+			for _, id := range req.GetSandboxIds() {
+				in = in || id == w.GetSandboxId()
+			}
+			var lanes []string
+			for _, l := range w.GetLaneIds() {
+				if l != req.GetLaneId() {
+					lanes = append(lanes, l)
+				}
+			}
+			if in {
+				lanes = append(lanes, req.GetLaneId())
+				w.LanesPending = false
+			}
+			w.LaneIds = lanes
+		}
+	}
+	return &pb.Lane{Id: req.GetLaneId()}, nil
+}
+
+func (f *fakeDaemon) CheckLaneChange(_ context.Context, req *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error) {
+	kind := strings.TrimPrefix(fmt.Sprintf("%T", req.GetChange()), "*switchboardv1.CheckLaneChangeRequest_")
+	if err := f.orchCall("CheckLaneChange %s %s", req.GetOrchestratorId(), kind); err != nil {
+		return nil, err
+	}
+	if err := f.popLaneErr("CheckLaneChange"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.laneCheck != nil {
+		return f.laneCheck, nil
+	}
+	return &pb.LaneChangeImpact{}, nil
+}
+
+func (f *fakeDaemon) DismissDroppedWorkerTags(_ context.Context, id string) (*pb.Orchestrator, error) {
+	if err := f.orchCall("DismissDroppedWorkerTags %s", id); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec := f.orchRecord(id)
+	if rec == nil {
+		return nil, status.Error(codes.NotFound, "orchestrator not found")
+	}
+	rec.DroppedWorkerTags = nil
+	return rec, nil
 }

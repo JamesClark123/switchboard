@@ -1,0 +1,484 @@
+package orchestrator
+
+import (
+	"context"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+)
+
+// SWI-18 T009a–T014: the runtime's roster paths go through applyRecords, no
+// lock is held across the network, and pushes run in the background.
+
+func rosterIDs(rec *pb.Orchestrator) []string {
+	var ids []string
+	for _, w := range rec.GetWorkers() {
+		ids = append(ids, w.GetSandboxId())
+	}
+	return ids
+}
+
+func ours(o *pb.Orchestrator, sb *pb.Sandbox) *pb.Sandbox {
+	sb.Controller = &pb.SandboxController{OrchestratorId: o.GetId(), Name: "review-bot", HostId: "host-m"}
+	return sb
+}
+
+// T009a: attach then detach round trip through the engine; the detach leaves
+// a high-water mark at the reply's revision.
+func TestAttachDetachLeavesMark(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	entry := onRoster(rt.record(), "wa")
+	if entry == nil || entry.GetRevision() != w.get("wa").GetRevision() || entry.GetWrittenSeq() == 0 {
+		t.Fatalf("entry = %+v", entry)
+	}
+	quiesce(t, rt)
+	if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	rec := rt.record()
+	if onRoster(rec, "wa") != nil {
+		t.Fatal("still on the roster")
+	}
+	if m := rec.GetHighWaterMarks()["wa"]; m == nil || m.GetRemoved() || m.GetRevision() != w.get("wa").GetRevision() || m.GetHostId() != "box" {
+		t.Fatalf("mark = %+v (host revision %d)", m, w.get("wa").GetRevision())
+	}
+	// A stale event from before the detach cannot re-adopt it.
+	stale := ours(o, running("wa", "a"))
+	stale.Revision = 1
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: stale}}
+	eventBarrier(t, w, o, rt, "sentinel-1")
+	if onRoster(rt.record(), "wa") != nil {
+		t.Fatal("a stale event re-adopted a detached worker")
+	}
+}
+
+// T010: an event arriving while a listing is in flight is not lost, and no
+// lock is held across ListSandboxes (a record write succeeds meanwhile).
+func TestReconcileHoldsNoLockAcrossListing(t *testing.T) {
+	_, w, o, rt := remoteEnv(t)
+	listed, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	w.mu.Lock()
+	w.onList = func() {
+		once.Do(func() {
+			close(listed)
+			<-release
+		})
+	}
+	w.mu.Unlock()
+	api, _ := rt.apiFor("box")
+	done := make(chan error, 1)
+	go func() { done <- rt.reconcile(bg(), "box", api, false) }()
+	<-listed
+	// A write commits while the listing is blocked.
+	if _, err := rt.update(func(x *pb.Orchestrator) error { x.Name = "renamed-during-list"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// A launched worker's first event adopts it while the listing is out.
+	w.put(ours(o, running("nw", "new")))
+	sb := w.get("nw")
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: sb}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "nw") != nil })
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// The listing (requested before the adoption) did not drop it.
+	if onRoster(rt.record(), "nw") == nil {
+		t.Fatalf("roster after reconcile = %v", rosterIDs(rt.record()))
+	}
+}
+
+// T010: an events_dropped marker on the link's subscription re-lists the host
+// (coalesced) and pushes no names or briefings.
+func TestEventsDroppedMarkerResyncs(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	before, briefs := w.listCount(), w.countPrefix("update wa name=\"review-bot\" briefing=true")
+	// The worker was detached directly on the host while events were lost.
+	w.update("wa", func(sb *pb.Sandbox) { sb.Controller = nil })
+	w.events <- &pb.Event{Event: &pb.Event_EventsDropped{EventsDropped: &pb.EventsDropped{}}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "wa") == nil })
+	if w.listCount() != before+1 {
+		t.Errorf("lists = %d, want %d", w.listCount(), before+1)
+	}
+	quiesce(t, rt)
+	if got := w.countPrefix("update wa name=\"review-bot\" briefing=true"); got != briefs {
+		t.Errorf("a marker resync pushed briefings: %d → %d", briefs, got)
+	}
+	_ = o
+}
+
+// T011: events adopt and drop; a stale event is ignored; a removal is
+// terminal and evicts the cache.
+func TestEventsAdoptAndDrop(t *testing.T) {
+	_, w, o, rt := remoteEnv(t)
+	w.put(ours(o, running("ev", "launched")))
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: w.get("ev")}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "ev") != nil })
+	old := w.get("ev")
+	// The controller changes on the host: the next event drops it.
+	gone := w.update("ev", func(sb *pb.Sandbox) { sb.Controller = &pb.SandboxController{OrchestratorId: "someone-else"} })
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: gone}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "ev") == nil })
+	// The older record arriving late is ignored.
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: old}}
+	back := w.update("ev", func(sb *pb.Sandbox) { ours(o, sb) })
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: back}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "ev") != nil })
+	if onRoster(rt.record(), "ev").GetRevision() != back.GetRevision() {
+		t.Fatalf("re-adopted from %d, want %d", onRoster(rt.record(), "ev").GetRevision(), back.GetRevision())
+	}
+	// Removal: terminal, cache gone.
+	w.events <- &pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: "ev"}}}
+	waitFor(t, func() bool { return onRoster(rt.record(), "ev") == nil && rt.sandboxRecord("ev") == nil })
+	if !rt.record().GetHighWaterMarks()["ev"].GetRemoved() {
+		t.Fatal("removal should leave a removed mark")
+	}
+	newer := proto.Clone(back).(*pb.Sandbox)
+	newer.Revision += 10
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: newer}}
+	eventBarrier(t, w, o, rt, "sentinel-2")
+	if onRoster(rt.record(), "ev") != nil {
+		t.Fatal("a removed sandbox was re-adopted")
+	}
+}
+
+// T013: a save returns while a host blocks the briefing push, and ten
+// triggers coalesce into at most two pushes per worker.
+func TestBriefingPushIsBackgroundAndCoalesced(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	block := make(chan struct{})
+	entered := make(chan struct{}, 64)
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.Briefing != nil {
+			entered <- struct{}{}
+			<-block
+		}
+		return nil
+	}
+	w.mu.Unlock()
+	before := w.countPrefix("update wa name=")
+	saved := make(chan error, 1)
+	go func() { _, err := putAction(env.svc, o.GetId(), reviewPR()); saved <- err }()
+	select {
+	case err := <-saved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(testWaitTimeout):
+		t.Fatal("PutAction waited on a blocked host")
+	}
+	<-entered
+	for i := 0; i < 10; i++ {
+		rt.requestBriefing()
+	}
+	close(block)
+	quiesce(t, rt)
+	if n := w.countPrefix("update wa name=") - before; n < 1 || n > 2 {
+		t.Errorf("briefing pushes = %d, want 1..2", n)
+	}
+}
+
+// T014: an adopted worker gets one lanes push (so lanes_known is set); a
+// marked worker's display follows its lanes; a transiently failing push is
+// retried; the reconnect push carries lanes.
+func TestLaneDisplayPushes(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	w.put(running("wb", "b"))
+	for _, id := range []string{"wa", "wb"} {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quiesce(t, rt)
+	if c := w.get("wa").GetController(); !c.GetLanesKnown() || len(c.GetLaneNames()) != 0 {
+		t.Fatalf("adoption push: %+v", c)
+	}
+	// wa joins lane fast; only wa is marked and pushed.
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Lanes = []*pb.Lane{{Id: "ln-1", Name: "fast"}}
+		onRoster(x, "wa").LaneIds = []string{"ln-1"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The first push fails transiently and is retried.
+	var fails sync.Once
+	var waPushes atomic.Int32
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.GetLanes() != nil && req.GetSandboxId() == "wa" {
+			waPushes.Add(1)
+			var err error
+			fails.Do(func() { err = status.Error(codes.Unavailable, "blip") })
+			return err
+		}
+		return nil
+	}
+	w.mu.Unlock()
+	wbPushes := w.countPrefix("update wb")
+	rt.markLanes("wa")
+	// The retry waits on the runtime's clock (lanePushRetryMin), not real time.
+	waitFor(t, func() bool { return waPushes.Load() >= 1 })
+	if slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) {
+		t.Fatal("the failed push should not have landed")
+	}
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 1) })
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
+	if waPushes.Load() != 2 {
+		t.Errorf("wa pushes = %d, want the failure and one retry", waPushes.Load())
+	}
+	quiesce(t, rt)
+	if w.countPrefix("update wb") != wbPushes {
+		t.Error("an unmarked worker was pushed")
+	}
+	// A reconnect pushes every worker's lanes with the name and briefing.
+	w.update("wa", func(sb *pb.Sandbox) { sb.Controller.LaneNames = nil })
+	api, _ := rt.apiFor("box")
+	rt.pushWorkerStateTo(context.Background(), "box", api)
+	if !slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) {
+		t.Fatalf("reconnect push: %+v", w.get("wa").GetController())
+	}
+}
+
+// T014: a lane push and a reconnect push racing leave the latest lanes on
+// the host, because both push under the worker's pushMu and read the record
+// while holding it.
+func TestLanePushRaceKeepsLatest(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	api, _ := rt.apiFor("box")
+	for i := 0; i < 20; i++ {
+		name := []string{"red", "blue"}[i%2]
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = rt.update(func(x *pb.Orchestrator) error {
+				x.Lanes = []*pb.Lane{{Id: "ln-1", Name: name}}
+				onRoster(x, "wa").LaneIds = []string{"ln-1"}
+				return nil
+			})
+			rt.markLanes("wa")
+		}()
+		go func() { defer wg.Done(); rt.pushWorkerStateTo(bg(), "box", api) }()
+		wg.Wait()
+		quiesce(t, rt)
+		if got := w.get("wa").GetController().GetLaneNames(); !slices.Equal(got, []string{name}) {
+			t.Fatalf("round %d: host shows %v, want %s", i, got, name)
+		}
+	}
+}
+
+// A worker whose lane pushes keep failing transiently is retried
+// lanePushMaxAttempts times, with one timer per host, then given up on.
+func TestLanePushRetriesAreBounded(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	var pushes atomic.Int32
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.GetLanes() != nil && req.GetSandboxId() == "wa" {
+			pushes.Add(1)
+			return status.Error(codes.Unavailable, "wedged")
+		}
+		return nil
+	}
+	w.mu.Unlock()
+	rt.markLanes("wa")
+	for i := 1; i <= lanePushMaxAttempts; i++ {
+		waitFor(t, func() bool { return retryAfter(rt, "wa", i) })
+		env.clock.Advance(linkRetryMax)
+	}
+	waitFor(t, func() bool {
+		rt.lanes.mu.Lock()
+		defer rt.lanes.mu.Unlock()
+		return int(pushes.Load()) == lanePushMaxAttempts+1 && rt.lanes.retriers["box"] == nil && rt.lanes.retry["wa"] == nil
+	})
+	env.clock.Advance(linkRetryMax)
+	quiesce(t, rt)
+	if got := int(pushes.Load()); got != lanePushMaxAttempts+1 {
+		t.Errorf("pushes = %d, want %d", got, lanePushMaxAttempts+1)
+	}
+}
+
+// retryAfter reports whether worker id's n-th failure has been recorded and
+// its retry is scheduled (not yet re-marked).
+func retryAfter(rt *runtime, id string, n int) bool {
+	rt.lanes.mu.Lock()
+	defer rt.lanes.mu.Unlock()
+	r := rt.lanes.retry[id]
+	return r != nil && r.n == n && !r.queued
+}
+
+// Each worker keeps its own backoff on a shared host loop: a first failure is
+// retried after lanePushRetryMin even while another worker on the host waits
+// longer, and a worker that leaves the roster drops its retry.
+func TestLanePushRetryIsPerWorker(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	w.put(running("wb", "b"))
+	for _, id := range []string{"wa", "wb"} {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", id, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quiesce(t, rt)
+	var pa, pb_ atomic.Int32
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		if req.GetLanes() == nil {
+			return nil
+		}
+		switch req.GetSandboxId() {
+		case "wa":
+			pa.Add(1)
+		case "wb":
+			pb_.Add(1)
+		}
+		return status.Error(codes.Unavailable, "wedged")
+	}
+	w.mu.Unlock()
+	// wa fails three times: its next retry is 8 s away.
+	rt.markLanes("wa")
+	for i := 1; i <= 3; i++ {
+		waitFor(t, func() bool { return retryAfter(rt, "wa", i) })
+		if i < 3 {
+			env.clock.Advance(linkRetryMax)
+		}
+	}
+	rt.markLanes("wb")
+	waitFor(t, func() bool { return retryAfter(rt, "wb", 1) })
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return retryAfter(rt, "wb", 2) })
+	if pa.Load() != 3 {
+		t.Fatalf("wa pushes = %d: retried on wb's schedule", pa.Load())
+	}
+	// wb leaves the roster; its due retry is dropped, not leaked.
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Workers = slices.DeleteFunc(x.Workers, func(w *pb.Worker) bool { return w.GetSandboxId() == "wb" })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.clock.Advance(4 * lanePushRetryMin)
+	waitFor(t, func() bool {
+		rt.lanes.mu.Lock()
+		defer rt.lanes.mu.Unlock()
+		return rt.lanes.retry["wb"] == nil
+	})
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 4) })
+	if pb_.Load() != 2 {
+		t.Errorf("wb pushes = %d after leaving the roster", pb_.Load())
+	}
+	// A successful reconnect push drops wa's pending retry.
+	w.mu.Lock()
+	w.onUpdate = nil
+	w.mu.Unlock()
+	api, _ := rt.apiFor("box")
+	rt.pushWorkerStateTo(bg(), "box", api)
+	quiesce(t, rt)
+	if n := pa.Load(); n != 4 {
+		t.Errorf("wa pushes = %d, want no retry after the reconnect push", n)
+	}
+}
+
+// A reconnect push that fails transiently while the host is up is retried
+// like a lane push, not left for the next reconnect (PR #24 review).
+func TestReconnectPushFailureIsRetried(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	if _, err := rt.update(func(x *pb.Orchestrator) error {
+		x.Lanes = []*pb.Lane{{Id: "ln-1", Name: "fast"}}
+		onRoster(x, "wa").LaneIds = []string{"ln-1"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var fails sync.Once
+	w.mu.Lock()
+	w.onUpdate = func(req *pb.UpdateWorkerRequest) error {
+		var err error
+		if req.Name != nil { // the full push
+			fails.Do(func() { err = status.Error(codes.Unavailable, "blip") })
+		}
+		return err
+	}
+	w.mu.Unlock()
+	api, _ := rt.apiFor("box")
+	rt.pushWorkerStateTo(bg(), "box", api)
+	waitFor(t, func() bool { return retryAfter(rt, "wa", 1) })
+	env.clock.Advance(lanePushRetryMin)
+	waitFor(t, func() bool { return slices.Equal(w.get("wa").GetController().GetLaneNames(), []string{"fast"}) })
+	quiesce(t, rt)
+}
+
+// eventBarrier sends an event adopting a fresh sandbox id and waits for it:
+// the link applies events in order, so every event sent before it has been
+// applied too.
+func eventBarrier(t *testing.T, w *fakeWorker, o *pb.Orchestrator, rt *runtime, id string) {
+	t.Helper()
+	sb := ours(o, running(id, id))
+	sb.Revision = 1
+	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: sb}}
+	waitFor(t, func() bool { return onRoster(rt.record(), id) != nil })
+}
+
+// A listing from another host never overwrites the cached record of a worker
+// on this one (PR #24 review: the cache is shared by every host's input).
+func TestForeignListingDoesNotCache(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	rev := rt.sandboxRecord("wa").GetRevision()
+	forged := ours(o, running("wa", "a"))
+	forged.Revision, forged.State = ^uint64(0), pb.SandboxState_SANDBOX_STATE_STOPPED
+	if _, err := rt.applyRoster(rosterInput{source: srcListing, hostID: "elsewhere", records: []*pb.Sandbox{forged}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.sandboxRecord("wa"); got.GetRevision() != rev || got.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("a foreign listing overwrote the cache: %+v", got)
+	}
+	if onRoster(rt.record(), "wa") == nil {
+		t.Error("a foreign listing dropped the worker")
+	}
+}

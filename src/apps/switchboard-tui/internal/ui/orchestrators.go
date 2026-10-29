@@ -284,6 +284,10 @@ func (m Model) applyOrchDone(msg orchDoneMsg) (tea.Model, tea.Cmd) {
 	if m.jobs.started {
 		cmds = append(cmds, m.jobsAfterChange(msg.target))
 	}
+	if m.jobs.manage.open {
+		m.jobs.manage.loading = true
+		cmds = append(cmds, m.manageLoadCmd())
+	}
 	return m, tea.Batch(cmds...)
 }
 

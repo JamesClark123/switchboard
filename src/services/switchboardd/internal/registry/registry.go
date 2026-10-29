@@ -64,12 +64,25 @@ func (r *Registry) Put(s *pb.Sandbox) error {
 	if s.GetId() == "" {
 		return errors.New("sandbox id is required")
 	}
-	blob, err := proto.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("marshal sandbox: %w", err)
-	}
 	return r.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(sandboxBucket).Put([]byte(s.GetId()), blob)
+		b := tx.Bucket(sandboxBucket)
+		// SWI-18 (research R3): the revision is stamped here, in the write's own
+		// transaction — stored + 1, or 1 for a new record. A caller's value is
+		// overwritten, so it can never go backwards.
+		var rev uint64
+		if prev := b.Get([]byte(s.GetId())); prev != nil {
+			old := &pb.Sandbox{}
+			if e := proto.Unmarshal(prev, old); e != nil {
+				return e
+			}
+			rev = old.GetRevision()
+		}
+		s.Revision = rev + 1
+		blob, err := proto.Marshal(s)
+		if err != nil {
+			return fmt.Errorf("marshal sandbox: %w", err)
+		}
+		return b.Put([]byte(s.GetId()), blob)
 	})
 }
 
@@ -140,9 +153,11 @@ func (r *Registry) Update(id string, mutate func(*pb.Sandbox) error) (*pb.Sandbo
 		if e := proto.Unmarshal(blob, s); e != nil {
 			return e
 		}
+		rev := s.GetRevision()
 		if e := mutate(s); e != nil {
 			return e
 		}
+		s.Revision = rev + 1 // SWI-18 (research R3): stamped, never caller-set
 		nb, e := proto.Marshal(s)
 		if e != nil {
 			return e

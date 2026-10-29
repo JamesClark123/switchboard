@@ -46,6 +46,8 @@ type fakeDaemon struct {
 	baselineMet bool
 	mcpAvail    bool
 	mcpReason   string
+	// SWI-18: the fake advertises "lanes" unless noLanes is set.
+	noLanes     bool
 	mcpServers  []*pb.McpServer
 	mcpSettings *pb.McpGatewaySettings
 	mcpListErr  error
@@ -120,6 +122,13 @@ type fakeDaemon struct {
 	putActions     []*pb.Action
 	putEvents      []*pb.TimedEvent
 	disabledEvents []string
+	// SWI-18 lane fakes: laneErrs queues errors per method (popped one per
+	// call), laneCheck is what CheckLaneChange answers, laneApplied what
+	// DeleteLane returns.
+	laneErrs    map[string][]error
+	laneCheck   *pb.LaneChangeImpact
+	laneApplied *pb.LaneChangeImpact
+	laneSeq     int
 
 	// feature 007 fakes: source edits (see sources_test.go)
 	addedSources     map[string][]*pb.SourceRef
@@ -347,6 +356,8 @@ func (f *fakeDaemon) SbxVersion() string         { return f.sbxVer }
 func (f *fakeDaemon) SbxMinVersion() string      { return f.sbxMin }
 func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
 func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
+
+func (f *fakeDaemon) HasCapability(name string) bool { return name == "lanes" && !f.noLanes }
 
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {
 	f.mu.Lock()

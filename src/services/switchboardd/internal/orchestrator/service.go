@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -116,9 +117,38 @@ func (s *Service) Start(ctx context.Context) error {
 		return err
 	}
 	for _, rec := range recs {
-		s.startRuntimeLocked(rec)
+		s.startRuntimeLocked(s.loadTidy(rec))
 	}
 	return nil
+}
+
+// loadTidy is the load-time pass over a stored record (SWI-18): retired worker
+// tags are dropped into the notice list and logged (FR-318b), expired attach
+// tickets swept and old removal marks pruned. A failed write keeps the record
+// as loaded; the next load tries again.
+func (s *Service) loadTidy(rec *pb.Orchestrator) *pb.Orchestrator {
+	now := s.clock.Now()
+	var dropped []*pb.DroppedWorkerTag
+	out, err := s.reg.UpdateOrchestrator(rec.GetId(), func(o *pb.Orchestrator) error {
+		dropped = dropWorkerTags(o, timestamppb.New(now))
+		changed := len(dropped) > 0
+		changed = sweepTickets(o, now) || changed
+		changed = pruneRemovedMarks(o, now) || changed
+		if !changed {
+			return errNoChange
+		}
+		return nil
+	})
+	if err != nil {
+		if !errors.Is(err, errNoChange) {
+			s.logf("orchestrator %s: load-time tidy failed: %v", rec.GetName(), err)
+		}
+		return rec
+	}
+	for _, d := range dropped {
+		s.logf("orchestrator %s: dropped worker tag %q from action %q", rec.GetName(), d.GetTag(), d.GetAction())
+	}
+	return out
 }
 
 // Stop ends every runtime (links, timers). Records stay.
@@ -199,7 +229,7 @@ func (s *Service) summary(rec *pb.Orchestrator) (*pb.OrchestratorSummary, error)
 	if err != nil {
 		return nil, err
 	}
-	sum := &pb.OrchestratorSummary{Orchestrator: rec}
+	sum := &pb.OrchestratorSummary{Orchestrator: forClient(rec)}
 	for _, w := range rec.GetWorkers() {
 		if !w.GetReasoning() {
 			sum.WorkerCount++
@@ -341,8 +371,8 @@ func (s *Service) Rename(id, name string) (*pb.Orchestrator, error) {
 		return nil, err
 	}
 	s.emitChanged(id)
-	rt.pushBriefings()
-	return rec, nil
+	rt.requestBriefing()
+	return forClient(rec), nil
 }
 
 // Remove is DESTRUCTIVE (FR-153): every reachable worker is detached, the
@@ -414,7 +444,7 @@ func (s *Service) SetHosts(id string, hosts []*pb.OrchestratorHost) (*pb.Orchest
 	}
 	rt.syncLinks()
 	s.emitChanged(id)
-	return rec, nil
+	return forClient(rec), nil
 }
 
 // --- workers (user story 2) ---
@@ -431,7 +461,7 @@ func (s *Service) Bundle(id string) (*pb.WorkerBundle, error) {
 
 // AttachWorker attaches an existing sandbox on hostID through the
 // orchestrator's link to that host (FR-107/FR-108/FR-109).
-func (s *Service) AttachWorker(ctx context.Context, id, hostID, sandboxID string) (*pb.WorkerView, error) {
+func (s *Service) AttachWorker(ctx context.Context, id, hostID, sandboxID string, laneIDs []string) (*pb.WorkerView, error) {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
 		return nil, err
@@ -439,17 +469,17 @@ func (s *Service) AttachWorker(ctx context.Context, id, hostID, sandboxID string
 	if hostID == "" || sandboxID == "" {
 		return nil, fmt.Errorf("%w: host id and sandbox id are required", ErrInvalid)
 	}
-	return rt.attach(ctx, hostID, sandboxID)
+	return rt.attach(ctx, hostID, sandboxID, laneIDs)
 }
 
 // DetachWorker detaches a worker (FR-111); refused while a run is on it and
 // for the reasoning sandbox.
-func (s *Service) DetachWorker(ctx context.Context, id, sandboxID string) error {
+func (s *Service) DetachWorker(ctx context.Context, id, sandboxID string, confirm *pb.LaneGuardConfirm) error {
 	rt, err := s.runtimeFor(id)
 	if err != nil {
 		return err
 	}
-	return rt.detach(ctx, sandboxID)
+	return rt.detach(ctx, sandboxID, confirm)
 }
 
 // errTooOld is the message for a worker daemon that predates the worker-side RPCs.

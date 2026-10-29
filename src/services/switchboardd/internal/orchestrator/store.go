@@ -23,7 +23,13 @@ type Store interface {
 	GetRun(orchID, runID string) (*pb.Run, error)
 	ListRuns(orchID string) ([]*pb.Run, error)
 	DeleteRun(orchID, runID string) error
+	// SWI-18 (research R7): the record and its runs in one transaction.
+	UpdateOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, runs registry.RunTx) error) (*pb.Orchestrator, error)
+	ViewOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, queued []*pb.Run) error) error
 }
+
+// RunTx is the registry's in-transaction run bucket.
+type RunTx = registry.RunTx
 
 // notFound maps the registry's absent-key sentinels onto ErrNotFound.
 func notFound(err error) error {

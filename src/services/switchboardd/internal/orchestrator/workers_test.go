@@ -10,6 +10,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func running(id, name string) *pb.Sandbox {
@@ -34,13 +35,13 @@ func TestAttachDetachOverLink(t *testing.T) {
 	w.put(running("sb-1", "worker-one"))
 
 	// No entry for an unknown host.
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "nowhere", "sb-1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "no host entry for nowhere") {
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "nowhere", "sb-1", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "no host entry for nowhere") {
 		t.Errorf("attach on a missing entry = %v", err)
 	}
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "", ""); !errors.Is(err, ErrInvalid) {
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "", "", nil); !errors.Is(err, ErrInvalid) {
 		t.Errorf("attach without ids = %v", err)
 	}
-	view, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1")
+	view, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestAttachDetachOverLink(t *testing.T) {
 	o2, _ := env.svc.Create("other")
 	rt2 := withHost(t, env, o2.GetId(), "box", "me@box")
 	waitFor(t, func() bool { ok, _ := rt2.reachability("box"); return ok })
-	_, err = env.svc.AttachWorker(context.Background(), o2.GetId(), "box", "sb-1")
+	_, err = env.svc.AttachWorker(context.Background(), o2.GetId(), "box", "sb-1", nil)
 	if st := status.Convert(err); st.Code() != codes.AlreadyExists || !strings.Contains(st.Message(), "controlled by review-bot") {
 		t.Errorf("second orchestrator = %v", err)
 	}
@@ -80,13 +81,13 @@ func TestAttachDetachOverLink(t *testing.T) {
 	rt.mu.Lock()
 	rt.sbs["sb-1"].Controller.Run = &pb.WorkerRun{Id: "run-1", Action: "review-pr"}
 	rt.mu.Unlock()
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "run-1") {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "run-1") {
 		t.Errorf("detach with a run = %v", err)
 	}
 	rt.mu.Lock()
 	rt.sbs["sb-1"].Controller.Run = nil
 	rt.mu.Unlock()
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); err != nil {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if w.get("sb-1").GetController() != nil {
@@ -96,7 +97,7 @@ func TestAttachDetachOverLink(t *testing.T) {
 	if len(rec.GetWorkers()) != 0 {
 		t.Error("roster should be empty")
 	}
-	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1"); !errors.Is(err, ErrNotFound) {
+	if err := env.svc.DetachWorker(context.Background(), o.GetId(), "sb-1", nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("detach a non-worker = %v", err)
 	}
 	if _, err := env.svc.Bundle("nope"); !errors.Is(err, ErrNotFound) {
@@ -110,7 +111,7 @@ func TestAttachOnUnreachableHost(t *testing.T) {
 	o, _ := env.svc.Create("bot")
 	withHost(t, env, o.GetId(), "box", "me@box")
 	waitFor(t, func() bool { return env.dials.count() >= 1 })
-	_, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1")
+	_, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-1", nil)
 	var ue *UnreachableError
 	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "Connection refused") {
 		t.Errorf("attach on a down link = %v", err)
@@ -135,7 +136,7 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.reconcile(context.Background(), "box", api); err != nil {
+	if err := rt.reconcile(context.Background(), "box", api, true); err != nil {
 		t.Fatal(err)
 	}
 	rec, _ := env.reg.GetOrchestrator(o.GetId())
@@ -163,9 +164,8 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	if _, err := env.svc.Rename(o.GetId(), "rb2"); err != nil {
 		t.Fatal(err)
 	}
-	if w.get("sb-launched").GetController().GetName() != "rb2" {
-		t.Errorf("remote name after rename = %q", w.get("sb-launched").GetController().GetName())
-	}
+	// The push runs in the background (SWI-18 FR-321).
+	waitFor(t, func() bool { return w.get("sb-launched").GetController().GetName() == "rb2" })
 	// Status events fold into the record cache; removal drops it.
 	w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: &pb.Sandbox{Id: "sb-launched", State: pb.SandboxState_SANDBOX_STATE_STOPPED, Controller: launched.Controller}}}
 	waitFor(t, func() bool {
@@ -178,20 +178,26 @@ func TestReconcileAdoptsDropsAndRenamePushes(t *testing.T) {
 	}
 	w.events <- &pb.Event{Event: &pb.Event_Removed{Removed: &pb.Event_SandboxRemoved{SandboxId: "sb-launched"}}}
 	waitFor(t, func() bool { return rt.sandboxRecord("sb-launched") == nil })
+	// A removal is terminal (SWI-18 FR-308c): a record for the id is ignored.
+	if rec, _ := env.reg.GetOrchestrator(o.GetId()); !rec.GetHighWaterMarks()["sb-launched"].GetRemoved() {
+		t.Errorf("removal should leave a removed mark: %v", rec.GetHighWaterMarks())
+	}
 	// Removing the orchestrator force-detaches reachable workers.
-	w.put(launched)
-	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-launched"); err != nil {
+	again := running("sb-again", "again")
+	w.put(again)
+	if _, err := env.svc.AttachWorker(context.Background(), o.GetId(), "box", "sb-again", nil); err != nil {
 		t.Fatal(err)
 	}
+	quiesce(t, rt)
 	resp, err := env.svc.Remove(o.GetId())
 	if err != nil || resp.GetWorkersDetached() != 1 {
 		t.Errorf("remove = %+v / %v", resp, err)
 	}
-	if w.get("sb-launched").GetController() != nil {
+	if w.get("sb-again").GetController() != nil {
 		t.Error("remove should detach the remote worker")
 	}
 	last := w.recorded()[len(w.recorded())-1]
-	if last != "detach sb-launched force=true" {
+	if last != "detach sb-again force=true" {
 		t.Errorf("last remote call = %q", last)
 	}
 }
@@ -250,7 +256,7 @@ func reconcileAround(t *testing.T, w *fakeWorker, rt *runtime, op func()) {
 	}
 	stale := staleListAPI{WorkerAPI: api, listed: make(chan struct{}), release: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- rt.reconcile(bg(), "box", stale) }()
+	go func() { done <- rt.reconcile(bg(), "box", stale, true) }()
 	<-stale.listed
 	opDone := make(chan struct{})
 	go func() { op(); close(opDone) }()
@@ -277,7 +283,7 @@ func TestReconcileDuringAttachKeepsWorker(t *testing.T) {
 	w.calls = nil
 	w.mu.Unlock()
 	reconcileAround(t, w, rt, func() {
-		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+		if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
 			t.Error(err)
 		}
 	})
@@ -293,7 +299,7 @@ func TestReconcileDuringAttachKeepsWorker(t *testing.T) {
 func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
 	env, w, o, rt := remoteEnv(t)
 	w.put(running("wa", "worker-wa"))
-	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, rt)
@@ -301,11 +307,52 @@ func TestReconcileDuringDetachKeepsItDetached(t *testing.T) {
 	w.calls = nil
 	w.mu.Unlock()
 	reconcileAround(t, w, rt, func() {
-		if err := env.svc.DetachWorker(bg(), o.GetId(), "wa"); err != nil {
+		if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", nil); err != nil {
 			t.Error(err)
 		}
 	})
 	if rosterHas(rt.record(), "wa") {
 		t.Errorf("detached worker re-adopted by a stale reconcile: roster = %v", rt.record().GetWorkers())
+	}
+}
+
+// An attach or detach reply about another sandbox than the one asked for is
+// ignored and reported: replies are trusted over marks and the cache, so a
+// misbehaving host must not adopt or freeze another sandbox through one
+// (PR #24 review).
+func TestRepliesForAnotherSandboxAreIgnored(t *testing.T) {
+	env, w, o, rt := remoteEnv(t)
+	w.put(running("wa", "a"))
+	w.put(running("wb", "b"))
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wa", nil); err != nil {
+		t.Fatal(err)
+	}
+	quiesce(t, rt)
+	// wb's record is newer than wa's cached one, so a forged reply (wb's
+	// record named wa) would replace the cache if it were applied.
+	for range 3 {
+		w.update("wb", func(*pb.Sandbox) {})
+	}
+	before := proto.Clone(rt.sandboxRecord("wa")).(*pb.Sandbox)
+	w.mu.Lock()
+	w.replyAs = "wa"
+	w.mu.Unlock()
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wb", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
+		t.Errorf("attach with a foreign reply = %v", err)
+	}
+	if got := rt.sandboxRecord("wa"); !proto.Equal(got, before) || got.GetDisplayName() != "a" {
+		t.Errorf("the reply was applied to wa's cache: %+v, want %+v", got, before)
+	}
+	if onRoster(rt.record(), "wb") != nil {
+		t.Errorf("the reply was applied: roster %+v", rt.record().GetWorkers())
+	}
+	w.mu.Lock()
+	w.replyAs = "wb"
+	w.mu.Unlock()
+	if err := env.svc.DetachWorker(bg(), o.GetId(), "wa", &pb.LaneGuardConfirm{}); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "another sandbox") {
+		t.Errorf("detach with a foreign reply = %v", err)
+	}
+	if rt.isDetaching("wa") {
+		t.Error("a refused reply left the detaching mark")
 	}
 }

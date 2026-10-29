@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -220,6 +222,24 @@ func newEnv(t *testing.T) *testEnv {
 // 2-core CI runners, where a 3 s deadline proved flaky.
 const testWaitTimeout = 15 * time.Second
 
+// quiesce waits until the runtime's background pushes (briefings, lane
+// displays) are done.
+func quiesce(t *testing.T, rt *runtime) {
+	t.Helper()
+	waitFor(t, func() bool {
+		rt.brief.mu.Lock()
+		busy := rt.brief.running
+		rt.brief.mu.Unlock()
+		rt.lanes.mu.Lock()
+		for _, r := range rt.lanes.running {
+			busy = busy || r
+		}
+		busy = busy || len(rt.lanes.retriers) > 0 // a retry is still pending
+		rt.lanes.mu.Unlock()
+		return !busy
+	})
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(testWaitTimeout)
@@ -252,6 +272,29 @@ type fakeWorker struct {
 	// onDeliver, when set (under mu), runs at the start of each
 	// DeliverWorkerPrompt, before the fake decides; it may change records.
 	onDeliver func(req *pb.DeliverWorkerPromptRequest)
+	// noRevisions makes the fake a host that predates lanes: its records
+	// carry no revision (SWI-18 research R16). Otherwise every write stamps
+	// one, as the registry does (R3).
+	noRevisions bool
+	// onUpdate, when set (under mu), runs at the start of each UpdateWorker
+	// with no lock held; a non-nil error is returned as the call's.
+	onUpdate func(req *pb.UpdateWorkerRequest) error
+	// onList, when set (under mu), runs at the start of each ListSandboxes
+	// with no lock held.
+	onList func()
+	lists  int
+	// replyAs, when set (under mu), makes attach and detach replies name this
+	// sandbox id instead of the asked-for one (a misbehaving host).
+	replyAs string
+}
+
+// stamp bumps a record's revision as the registry would (caller holds mu).
+func (w *fakeWorker) stamp(sb *pb.Sandbox, prev uint64) {
+	if w.noRevisions {
+		sb.Revision = 0
+		return
+	}
+	sb.Revision = prev + 1
 }
 
 func newFakeWorker(hostID string) *fakeWorker {
@@ -269,6 +312,13 @@ func (w *fakeWorker) GetDaemonInfo(context.Context, *pb.GetDaemonInfoRequest) (*
 }
 
 func (w *fakeWorker) ListSandboxes(context.Context, *pb.ListSandboxesRequest) (*pb.ListSandboxesResponse, error) {
+	w.mu.Lock()
+	hook := w.onList
+	w.lists++
+	w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	out := &pb.ListSandboxesResponse{}
@@ -340,7 +390,17 @@ func (w *fakeWorker) AttachController(_ context.Context, req *pb.AttachControlle
 		return nil, status.Errorf(codes.AlreadyExists, "sandbox is controlled by %s", c.GetName())
 	}
 	sb.Controller = proto.Clone(req.GetController()).(*pb.SandboxController)
-	return proto.Clone(sb).(*pb.Sandbox), nil
+	w.stamp(sb, sb.GetRevision())
+	return w.reply(sb), nil
+}
+
+// reply is an attach or detach reply: sb, renamed to replyAs when set.
+func (w *fakeWorker) reply(sb *pb.Sandbox) *pb.Sandbox {
+	out := proto.Clone(sb).(*pb.Sandbox)
+	if w.replyAs != "" {
+		out.Id = w.replyAs
+	}
+	return out
 }
 
 func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControllerRequest) (*pb.Sandbox, error) {
@@ -352,11 +412,20 @@ func (w *fakeWorker) DetachController(_ context.Context, req *pb.DetachControlle
 		return nil, status.Error(codes.NotFound, "sandbox not found")
 	}
 	sb.Controller = nil
-	return proto.Clone(sb).(*pb.Sandbox), nil
+	w.stamp(sb, sb.GetRevision())
+	return w.reply(sb), nil
 }
 
 func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest) (*pb.Sandbox, error) {
 	w.record("update %s name=%q briefing=%v", req.GetSandboxId(), req.GetName(), req.Briefing != nil)
+	w.mu.Lock()
+	hook := w.onUpdate
+	w.mu.Unlock()
+	if hook != nil {
+		if err := hook(req); err != nil {
+			return nil, err
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb, ok := w.sbs[req.GetSandboxId()]
@@ -380,6 +449,12 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
 		}
 	}
+	if req.GetLanes() != nil {
+		sb.Controller.LaneNames = req.GetLanes().GetNames()
+		sb.Controller.LanesPending = req.GetLanes().GetPending()
+		sb.Controller.LanesKnown = true
+	}
+	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }
 
@@ -406,7 +481,8 @@ func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorke
 		return nil, status.Error(codes.FailedPrecondition, "not free")
 	}
 	sb.Controller.Run = &pb.WorkerRun{Id: req.GetRunId(), Action: req.GetAction()}
-	return &pb.DeliverWorkerPromptResponse{Accepted: true}, nil
+	w.stamp(sb, sb.GetRevision())
+	return &pb.DeliverWorkerPromptResponse{Accepted: true, Revision: sb.GetRevision()}, nil
 }
 
 func (w *fakeWorker) frameKinds() []string {
@@ -428,6 +504,24 @@ func (w *fakeWorker) frameKinds() []string {
 	return out
 }
 
+// listCount reports how many ListSandboxes calls the fake served.
+func (w *fakeWorker) listCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lists
+}
+
+// countPrefix counts recorded calls starting with prefix.
+func (w *fakeWorker) countPrefix(prefix string) int {
+	n := 0
+	for _, c := range w.recorded() {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func (w *fakeWorker) recorded() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -437,6 +531,7 @@ func (w *fakeWorker) recorded() []string {
 func (w *fakeWorker) put(sb *pb.Sandbox) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.stamp(sb, w.sbs[sb.GetId()].GetRevision())
 	w.sbs[sb.GetId()] = sb
 }
 
@@ -457,7 +552,9 @@ func (w *fakeWorker) update(id string, fn func(sb *pb.Sandbox)) *pb.Sandbox {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sb := w.sbs[id]
+	prev := sb.GetRevision()
 	fn(sb)
+	w.stamp(sb, prev)
 	return proto.Clone(sb).(*pb.Sandbox)
 }
 
@@ -477,3 +574,51 @@ func (w *fakeWorker) serve(t *testing.T) string {
 }
 
 func sprintf(format string, args ...any) string { return fmtSprintf(format, args...) }
+
+// putAction saves an action as a lanes-aware client does: the guard's current
+// list is fetched with CheckLaneChange and confirmed.
+func putAction(svc *Service, id string, a *pb.Action) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	if impact, err := svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
+		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions(), UnlanedRuns: impact.GetUnlanedRuns()}
+	}
+	return svc.PutAction(req)
+}
+
+// seedLanes creates lanes by name and puts the listed roster workers in them
+// (tests seed lanes directly rather than through the lane RPCs). It returns
+// the lane ids by name.
+func seedLanes(t *testing.T, rt *runtime, members map[string][]string) map[string]string {
+	t.Helper()
+	ids := map[string]string{}
+	if _, err := rt.update(func(o *pb.Orchestrator) error {
+		names := make([]string, 0, len(members))
+		for name := range members {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			l := laneByName(o, name)
+			if l == nil {
+				l = &pb.Lane{Id: newLaneID(), Name: name}
+				o.Lanes = append(o.Lanes, l)
+			}
+			ids[name] = l.GetId()
+			for _, id := range members[name] {
+				w := onRosterEntry(o, id)
+				if w == nil {
+					return fmt.Errorf("seedLanes: %s is not on the roster", id)
+				}
+				if !slices.Contains(w.GetLaneIds(), l.GetId()) {
+					w.LaneIds = append(w.LaneIds, l.GetId())
+				}
+				w.LanesPending = false
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.triggerDispatch()
+	return ids
+}

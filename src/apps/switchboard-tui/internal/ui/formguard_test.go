@@ -61,14 +61,21 @@ func textForms(t *testing.T) []textForm {
 
 // focusField moves the form's focus onto target, searching forward and then
 // back (huh does not wrap, and callers visit fields in map order).
+// focusField moves f's focus to target, crossing groups (the action form's
+// lanes sit in groups of their own) at a group's end. It searches backwards
+// first: PrevGroup on the first group is a no-op, NextGroup on the last submits.
 func focusField(t testing.TB, f *huh.Form, target huh.Field) {
 	t.Helper()
-	for _, step := range []func() tea.Cmd{f.NextField, f.PrevField} {
+	for _, step := range [][2]func() tea.Cmd{{f.PrevField, f.PrevGroup}, {f.NextField, f.NextGroup}} {
 		for range 20 {
 			if f.GetFocusedField() == target {
 				return
 			}
-			step()
+			before := f.GetFocusedField()
+			step[0]()
+			if f.GetFocusedField() == before && f.State == huh.StateNormal {
+				step[1]()
+			}
 		}
 	}
 	t.Fatalf("could not focus %T", target)

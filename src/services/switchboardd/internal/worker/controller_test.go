@@ -424,3 +424,34 @@ func TestGoBringUpMarksBeforeReturning(t *testing.T) {
 		t.Error("an uncontrolled sandbox should not be marked")
 	}
 }
+
+// SWI-18 (FR-309a/b): UpdateWorker{lanes} sets the display copy; names that
+// break the lane rule are dropped while the rest of the request applies; a
+// same-orchestrator re-attach keeps it and records the attach ticket.
+func TestUpdateWorkerLanes(t *testing.T) {
+	e := newEnv(t, "")
+	sb := e.sandbox(t, "66666666-ffff", "lanes", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	ctl := controller("orch-1", "a")
+	ctl.AttachTicket = "0123456789abcdef"
+	out, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: ctl})
+	if err != nil || out.GetController().GetAttachTicket() != "0123456789abcdef" || out.GetController().GetLanesKnown() {
+		t.Fatalf("attach = %+v / %v", out.GetController(), err)
+	}
+	name := "renamed"
+	out, err = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", Name: &name,
+		Lanes: &pb.WorkerLaneDisplay{Names: []string{"fast", "Bad Name", "open", "gpu"}, Pending: true}})
+	c := out.GetController()
+	if err != nil || c.GetName() != "renamed" || !c.GetLanesKnown() || !c.GetLanesPending() || strings.Join(c.GetLaneNames(), ",") != "fast,gpu" {
+		t.Fatalf("update = %+v / %v", c, err)
+	}
+	// Without lanes in the request, the display stays.
+	out, _ = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1"})
+	if strings.Join(out.GetController().GetLaneNames(), ",") != "fast,gpu" {
+		t.Errorf("display lost: %+v", out.GetController())
+	}
+	// A same-orchestrator re-attach carries the display forward.
+	out, err = e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")})
+	if err != nil || !out.GetController().GetLanesKnown() || len(out.GetController().GetLaneNames()) != 2 || out.GetController().GetAttachTicket() != "" {
+		t.Errorf("re-attach = %+v / %v", out.GetController(), err)
+	}
+}

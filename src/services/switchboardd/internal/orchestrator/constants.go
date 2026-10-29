@@ -43,4 +43,34 @@ const (
 	maxPromptBytes   = 64 * 1024
 	// maxNameLen bounds an orchestrator's name (FR-105).
 	maxNameLen = 64
+
+	// --- SWI-18: worker lanes ---
+	// maxLanes caps the lanes on one orchestrator (FR-302).
+	maxLanes = 32
+	// maxLaneDescription bounds a lane's description, in runes (FR-303).
+	maxLaneDescription = 200
+	// attachTicketTTL is how long the lanes picked at launch or attach wait for
+	// the sandbox to be adopted (FR-306b).
+	attachTicketTTL = 24 * time.Hour
+	// removedMarkTTL is how long a removed sandbox's high-water mark is kept
+	// once no listing of its host still shows it (FR-308c).
+	removedMarkTTL = 24 * time.Hour
+	// laneIDPrefix starts every minted lane id ("ln-" + 12 hex).
+	laneIDPrefix = "ln-"
+	// lanePushRetryMin is the first delay before a lane display push that
+	// failed transiently while its host is up is tried again; it doubles to
+	// linkRetryMax while the host keeps failing.
+	lanePushRetryMin = 2 * time.Second
+	// lanePushMaxAttempts bounds those retries per worker; its next lane
+	// change, briefing refresh or reconnect push corrects a worker given up on.
+	lanePushMaxAttempts = 6
+	// ticketSkew tolerates clock skew between hosts when an attach ticket's
+	// age is checked (research R11).
+	ticketSkew = 10 * time.Minute
+	// maxAttachTickets caps the unexpired attach tickets per orchestrator.
+	maxAttachTickets = 256
 )
+
+// CapabilityLanes is advertised in DaemonInfo.capabilities by a daemon that
+// serves worker lanes (FR-318a).
+const CapabilityLanes = "lanes"

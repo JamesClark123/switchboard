@@ -47,7 +47,7 @@ func TestTwoDaemonsToolCallOverTheLink(t *testing.T) {
 	if _, err := m.client.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{
 		Name: "review-pr", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "Review {number} in {repo}.",
 		Arguments: []*pb.ActionArgument{{Name: "number", Required: true}, {Name: "repo", Required: true}},
-	}}); err != nil {
+	}, SetsLanes: true, Guard: &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +109,7 @@ func TestTwoDaemonsToolCallOverTheLink(t *testing.T) {
 		t.Errorf("check_run = %+v / %v", res, err)
 	}
 	// Detached ⇒ the token is revoked and the endpoint answers 404.
-	if _, err := m.client.DetachWorker(ctx, &pb.DetachWorkerRequest{OrchestratorId: o.GetId(), SandboxId: sb.GetId()}); err != nil {
+	if _, err := m.client.DetachWorker(ctx, &pb.DetachWorkerRequest{OrchestratorId: o.GetId(), SandboxId: sb.GetId(), Guard: &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := http.Post(hs.URL+worker.EndpointPrefix+tok+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))

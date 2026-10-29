@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sync"
 	"time"
 
@@ -136,17 +137,23 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 			return &AlreadyControlledError{Name: cur.GetName()}
 		}
 		attachedAt := now
-		var run *pb.WorkerRun
+		next := &pb.SandboxController{
+			OrchestratorId: ctl.GetOrchestratorId(), Name: ctl.GetName(), HostId: ctl.GetHostId(),
+			Reasoning: ctl.GetReasoning(),
+			// SWI-18 (research R11): the orchestrator's attach ticket, read
+			// back only when it adopts the sandbox.
+			AttachTicket: ctl.GetAttachTicket(),
+		}
 		if cur != nil {
 			if cur.GetAttachedAt() != nil {
 				attachedAt = cur.GetAttachedAt()
 			}
-			run = cur.GetRun()
+			next.Run = cur.GetRun()
+			// A same-orchestrator re-attach keeps the lane display (R11).
+			next.LaneNames, next.LanesPending, next.LanesKnown = cur.GetLaneNames(), cur.GetLanesPending(), cur.GetLanesKnown()
 		}
-		x.Controller = &pb.SandboxController{
-			OrchestratorId: ctl.GetOrchestratorId(), Name: ctl.GetName(), HostId: ctl.GetHostId(),
-			AttachedAt: attachedAt, Reasoning: ctl.GetReasoning(), Run: run,
-		}
+		next.AttachedAt = attachedAt
+		x.Controller = next
 		x.UpdatedAt = now
 		return nil
 	})
@@ -254,6 +261,19 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 		}
 		if req.GetSetRun() {
 			cur.Run = req.GetRun()
+		}
+		if l := req.GetLanes(); l != nil {
+			// SWI-18 (FR-309a/b): a display copy only. A name breaking the
+			// lane rule is dropped (and logged); the rest still applies.
+			names := make([]string, 0, len(l.GetNames()))
+			for _, n := range l.GetNames() {
+				if validLaneName(n) {
+					names = append(names, n)
+				} else {
+					s.logf("[worker] update %s: lane name %q dropped (breaks the lane-name rule)", req.GetSandboxId(), n)
+				}
+			}
+			cur.LaneNames, cur.LanesPending, cur.LanesKnown = names, l.GetPending(), true
 		}
 		if req.GetClearNeedsInput() {
 			// The developer's "mark free" on a worker parked NEEDS_INPUT with
@@ -433,4 +453,13 @@ func sandboxRef(sb *pb.Sandbox) string {
 		return n
 	}
 	return sb.GetId()
+}
+
+// laneNameRe is the orchestrator's lane-name rule (SWI-18 FR-303), repeated
+// here because the worker side never imports the orchestrator.
+var laneNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// validLaneName reports whether a pushed display name obeys the lane rule.
+func validLaneName(n string) bool {
+	return n != "open" && len(n) <= 64 && laneNameRe.MatchString(n)
 }

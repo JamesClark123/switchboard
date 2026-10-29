@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -262,8 +263,15 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 	label := fitCol(r.target.label(), 24)
 	switch run.GetState() {
 	case pb.RunState_RUN_STATE_QUEUED:
-		return dimStyle.Render(fitCol(fmt.Sprintf("#%d", run.GetPosition()), 4)) + selectedStyle.Render(fitCol(run.GetAction(), 14)) + " " +
+		line := dimStyle.Render(fitCol(fmt.Sprintf("#%d", run.GetPosition()), 4)) + selectedStyle.Render(fitCol(run.GetAction(), 14)) + " " +
 			dimStyle.Render(fitCol(runOrigin(run), 16)) + " " + label + "  " + dimStyle.Render("received "+ago(run.GetReceivedAt()))
+		if why := run.GetWaitingReason(); why != "" {
+			// SWI-18 (FR-320): the rest of the row; + marks a cut, enter shows it whole.
+			if room := m.bodyWidth() - 2 - lipgloss.Width(line) - 4; room > 0 {
+				line += dimStyle.Render("  · " + ansi.Truncate(sanitizeLine(why, 0), room, "+"))
+			}
+		}
+		return line
 	case pb.RunState_RUN_STATE_RUNNING, pb.RunState_RUN_STATE_AWAITING_INPUT, pb.RunState_RUN_STATE_AWAITING_REVIEW:
 		style := agentWorkStyle
 		if run.GetState() != pb.RunState_RUN_STATE_RUNNING {

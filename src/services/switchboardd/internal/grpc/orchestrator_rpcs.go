@@ -51,6 +51,10 @@ func orchStatus(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, orchestrator.ErrForbidden), errors.Is(err, worker.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, orchestrator.ErrAborted):
+		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, orchestrator.ErrExhausted):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
@@ -111,7 +115,7 @@ func (s *Server) GetWorkerBundle(_ context.Context, req *pb.GetWorkerBundleReque
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator
 	}
-	out, err := s.orchestrator.Bundle(req.GetOrchestratorId())
+	out, err := s.orchestrator.BundleFor(req.GetOrchestratorId(), req.GetHostId(), req.GetLaneIds())
 	return out, orchStatus(err)
 }
 
@@ -119,7 +123,7 @@ func (s *Server) AttachWorker(ctx context.Context, req *pb.AttachWorkerRequest) 
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator
 	}
-	out, err := s.orchestrator.AttachWorker(ctx, req.GetOrchestratorId(), req.GetHostId(), req.GetSandboxId())
+	out, err := s.orchestrator.AttachWorker(ctx, req.GetOrchestratorId(), req.GetHostId(), req.GetSandboxId(), req.GetLaneIds())
 	return out, orchStatus(err)
 }
 
@@ -127,7 +131,7 @@ func (s *Server) DetachWorker(ctx context.Context, req *pb.DetachWorkerRequest) 
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator
 	}
-	if err := s.orchestrator.DetachWorker(ctx, req.GetOrchestratorId(), req.GetSandboxId()); err != nil {
+	if err := s.orchestrator.DetachWorker(ctx, req.GetOrchestratorId(), req.GetSandboxId(), req.GetGuard()); err != nil {
 		return nil, orchStatus(err)
 	}
 	return &pb.DetachWorkerResponse{}, nil
@@ -145,7 +149,7 @@ func (s *Server) PutAction(_ context.Context, req *pb.PutActionRequest) (*pb.Act
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator
 	}
-	out, err := s.orchestrator.PutAction(req.GetOrchestratorId(), req.GetAction())
+	out, err := s.orchestrator.PutAction(req)
 	return out, orchStatus(err)
 }
 
@@ -291,4 +295,57 @@ func (s *Server) LaunchReasoning(ctx context.Context, req orchestrator.Reasoning
 		Controller:          req.Controller,
 		ControllerBriefing:  req.Briefing,
 	}, func(duplicate.Progress) {}, onLog)
+}
+
+// --- lanes (SWI-18) ---
+
+func (s *Server) PutLane(_ context.Context, req *pb.PutLaneRequest) (*pb.Lane, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.PutLane(req.GetOrchestratorId(), req.GetLaneId(), req.GetName(), req.GetDescription())
+	return out, orchStatus(err)
+}
+
+func (s *Server) DeleteLane(_ context.Context, req *pb.DeleteLaneRequest) (*pb.DeleteLaneResponse, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	applied, err := s.orchestrator.DeleteLane(req.GetOrchestratorId(), req.GetLaneId(), req.GetGuard())
+	if err != nil {
+		return nil, orchStatus(err)
+	}
+	return &pb.DeleteLaneResponse{Applied: applied}, nil
+}
+
+func (s *Server) SetWorkerLanes(_ context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.SetWorkerLanes(req)
+	return out, orchStatus(err)
+}
+
+func (s *Server) SetLaneMembers(_ context.Context, req *pb.SetLaneMembersRequest) (*pb.Lane, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.SetLaneMembers(req)
+	return out, orchStatus(err)
+}
+
+func (s *Server) CheckLaneChange(_ context.Context, req *pb.CheckLaneChangeRequest) (*pb.LaneChangeImpact, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.CheckLaneChange(req)
+	return out, orchStatus(err)
+}
+
+func (s *Server) DismissDroppedWorkerTags(_ context.Context, req *pb.OrchestratorIdRequest) (*pb.Orchestrator, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.DismissDroppedWorkerTags(req.GetOrchestratorId())
+	return out, orchStatus(err)
 }

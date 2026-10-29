@@ -41,36 +41,46 @@ func (s *Service) CallAction(id, action string, args map[string]string, kind pb.
 }
 
 func (rt *runtime) callAction(action string, args map[string]string, kind pb.EventKind, origin, originLabel string) (*pb.Run, error) {
-	rec := rt.record()
-	a := findAction(rec, action)
-	if a == nil {
-		return nil, fmt.Errorf("%w: action %s", ErrNotFound, action)
-	}
 	if args == nil {
 		args = map[string]string{}
 	}
-	if err := validateCall(a, args); err != nil {
+	// The action is read and the run queued in one transaction, so a run never
+	// names an action deleted before it was written (SWI-18 research R7).
+	var run *pb.Run
+	var pos uint32
+	if _, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
+		a := findAction(o, action)
+		if a == nil {
+			return fmt.Errorf("%w: action %s", ErrNotFound, action)
+		}
+		if err := validateCall(a, args); err != nil {
+			return err
+		}
+		prompt, err := compose(a, args)
+		if err != nil {
+			return err
+		}
+		queued, err := runs.Queued()
+		if err != nil {
+			return err
+		}
+		seq, err := runs.NextSeq()
+		if err != nil {
+			return err
+		}
+		run = &pb.Run{
+			Id: newRunID(rt.id, seq), OrchestratorId: rt.id, Action: a.GetName(), Type: a.GetType(),
+			Arguments: args, Prompt: prompt, EventKind: kind, Origin: origin, OriginLabel: originLabel,
+			ReceivedAt: timestamppb.New(rt.svc.clock.Now()), State: pb.RunState_RUN_STATE_QUEUED,
+		}
+		// The position is taken before dispatch can pick the run up, so the
+		// caller sees where it queued (>= 1) rather than 0 when a free worker
+		// takes it at once.
+		pos = uint32(len(queued)) + 1
+		return runs.Put(run)
+	}); err != nil {
 		return nil, err
 	}
-	prompt, err := compose(a, args)
-	if err != nil {
-		return nil, err
-	}
-	seq, err := rt.svc.reg.NextRunSeq(rt.id)
-	if err != nil {
-		return nil, err
-	}
-	run := &pb.Run{
-		Id: newRunID(rt.id, seq), OrchestratorId: rt.id, Action: a.GetName(), Type: a.GetType(),
-		Arguments: args, Prompt: prompt, EventKind: kind, Origin: origin, OriginLabel: originLabel,
-		ReceivedAt: timestamppb.New(rt.svc.clock.Now()), State: pb.RunState_RUN_STATE_QUEUED,
-	}
-	if err := rt.svc.reg.PutRun(run); err != nil {
-		return nil, err
-	}
-	// The position is read before dispatch can pick the run up, so the caller sees
-	// where it queued (>= 1) rather than 0 when a free worker takes it at once.
-	pos := rt.position(run.GetId())
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
 	out := proto.Clone(run).(*pb.Run)
@@ -97,11 +107,14 @@ func (rt *runtime) position(runID string) uint32 {
 	return 0
 }
 
-// ListRuns returns the three Queue-view groups (FR-131).
+// ListRuns returns the three Queue-view groups (FR-131), queued prompt runs
+// with their waiting reasons (FR-315).
 func (s *Service) ListRuns(id string) (*pb.ListRunsResponse, error) {
-	if _, err := s.runtimeFor(id); err != nil {
+	rt, err := s.runtimeFor(id)
+	if err != nil {
 		return nil, err
 	}
+	counts := rt.laneCounts()
 	runs, err := s.reg.ListRuns(id)
 	if err != nil {
 		return nil, err
@@ -113,6 +126,7 @@ func (s *Service) ListRuns(id string) (*pb.ListRunsResponse, error) {
 		case r.GetState() == pb.RunState_RUN_STATE_QUEUED:
 			pos++
 			r.Position = pos
+			r.WaitingReason = waitingReason(r, counts, false)
 			out.Queued = append(out.Queued, r)
 		case inFlight(r):
 			out.InFlight = append(out.InFlight, r)
@@ -139,6 +153,7 @@ func (s *Service) GetRun(id, runID string) (*pb.Run, error) {
 	if run.GetState() == pb.RunState_RUN_STATE_QUEUED {
 		rt, _ := s.runtimeFor(id)
 		run.Position = rt.position(runID)
+		run.WaitingReason = waitingReason(run, rt.laneCounts(), false)
 	}
 	return run, nil
 }
@@ -209,7 +224,7 @@ func (rt *runtime) clearNeedsInput(hostID, sandboxID string) error {
 		return err
 	}
 	rt.mu.Lock()
-	rt.sbs[sandboxID] = sb
+	rt.cacheLocked(sb)
 	rt.mu.Unlock()
 	rt.svc.emitChanged(rt.id)
 	rt.triggerDispatch()
@@ -225,6 +240,7 @@ func stateLabel(st pb.RunState) string {
 
 // putRun persists a run and announces the change.
 func (rt *runtime) putRun(run *pb.Run) error {
+	run.WaitingReason = "" // derived on read, never stored (FR-315)
 	if err := rt.svc.reg.PutRun(run); err != nil {
 		return err
 	}
@@ -496,7 +512,7 @@ func (rt *runtime) setWorkerRun(hostID, sandboxID string, run *pb.WorkerRun) {
 		return
 	}
 	rt.mu.Lock()
-	rt.sbs[sandboxID] = sb
+	rt.cacheLocked(sb)
 	rt.mu.Unlock()
 	if run == nil {
 		// The worker may be free now; don't rely on its host's status event.
@@ -542,48 +558,63 @@ func (rt *runtime) closeAllRuns(reason string) (failed, cancelled uint32) {
 // --- status folding (research R7) ---
 
 // onSandboxEvent folds a host's sandbox event into the runtime: the latest
-// record per worker, and the in-flight run on it.
+// record per relevant sandbox, roster adoption and drops (through
+// applyRecords, research R4), and the in-flight run on it.
 func (rt *runtime) onSandboxEvent(_ context.Context, hostID string, ev *pb.Event) {
 	switch e := ev.GetEvent().(type) {
 	case *pb.Event_SandboxChanged:
 		sb := e.SandboxChanged
-		rt.mu.Lock()
-		mine := hostOf(rt.rec, sb.GetId()) != "" || sb.GetController().GetOrchestratorId() == rt.id
-		if mine {
-			rt.sbs[sb.GetId()] = sb
-		}
-		rt.mu.Unlock()
-		if !mine {
-			return
-		}
 		if sb.GetState() == pb.SandboxState_SANDBOX_STATE_DESTROYING {
-			rt.onSandboxRemoved(sb.GetId())
+			rt.onSandboxRemoved(hostID, sb.GetId())
 			return
 		}
-		rt.foldStatus(sb)
+		if !rt.observe(hostID, sb) {
+			return
+		}
+		if cur := rt.sandboxRecord(sb.GetId()); cur != nil {
+			rt.foldStatus(cur)
+		}
 		rt.triggerDispatch()
 	case *pb.Event_Removed:
-		rt.onSandboxRemoved(e.Removed.GetSandboxId())
+		rt.onSandboxRemoved(hostID, e.Removed.GetSandboxId())
 	}
 }
 
-// onSandboxRemoved fails any run on a removed sandbox and drops it.
-func (rt *runtime) onSandboxRemoved(sandboxID string) {
+// observe caches an event's record when it concerns this orchestrator and,
+// when applying it would change the roster, applies it. Status-only events
+// touch only the cache, under mu: they never wait on a record write.
+func (rt *runtime) observe(hostID string, sb *pb.Sandbox) bool {
+	in := rosterInput{source: srcEvent, hostID: hostID, records: []*pb.Sandbox{sb}}
 	rt.mu.Lock()
-	_, known := rt.sbs[sandboxID]
-	onRoster := hostOf(rt.rec, sandboxID) != ""
-	delete(rt.sbs, sandboxID)
+	if !rt.relevantLocked(rt.rec, sb) || foreignTo(rt.rec, sb.GetId(), hostID) {
+		rt.mu.Unlock()
+		return false
+	}
+	rt.cacheLocked(sb)
+	in.cache = rt.snapshotCacheLocked(in.rosterIDs())
+	dry := applyRecords(proto.Clone(rt.rec).(*pb.Orchestrator), in, rt.svc.clock.Now())
 	rt.mu.Unlock()
-	if !known && !onRoster {
-		return
+	if dry.changed {
+		if _, err := rt.applyRoster(in); err != nil {
+			rt.svc.logf("[orchestrator %s] apply event for %s: %v", rt.name(), sb.GetId(), err)
+		}
 	}
-	rt.failRunsOn(sandboxID, "sandbox removed")
-	rt.dropWorker(sandboxID)
-	if rt.record().GetReasoningSandboxId() == sandboxID {
-		rt.reasoningLost()
+	return true
+}
+
+// onSandboxRemoved applies a removal: terminal for a roster sandbox (runs on
+// it fail, the entry and cache go, a removed mark stops re-adoption).
+func (rt *runtime) onSandboxRemoved(hostID, sandboxID string) {
+	rt.mu.Lock()
+	_, cached := rt.sbs[sandboxID]
+	tracked := cached || hostOf(rt.rec, sandboxID) != "" || rt.rec.GetHighWaterMarks()[sandboxID] != nil
+	rt.mu.Unlock()
+	if !tracked {
+		return // an unrelated sandbox: nothing to write
 	}
-	rt.svc.emitChanged(rt.id)
-	rt.triggerDispatch()
+	if _, err := rt.applyRoster(rosterInput{source: srcRemoval, hostID: hostID, ids: []string{sandboxID}}); err != nil {
+		rt.svc.logf("[orchestrator %s] apply removal of %s: %v", rt.name(), sandboxID, err)
+	}
 }
 
 // foldStatus maps a worker's record onto the run on it (data-model state machine).

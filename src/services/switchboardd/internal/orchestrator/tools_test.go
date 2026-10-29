@@ -62,7 +62,7 @@ func TestToolCallActionFromWorkers(t *testing.T) {
 	}
 
 	// A reason action from a worker is accepted and runs on the reasoning sandbox.
-	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}}); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	body, err = rt.runTool("box", "wb", toolCallAction, `{"action":"think","arguments":{"topic":"x"}}`)
@@ -98,7 +98,7 @@ func TestToolListCheckAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"orchestrator":"review-bot","actions":[{"name":"review-pr","description":"","type":"prompt","worker_tag":"","arguments":[{"name":"number","description":"","required":true,"default":""},{"name":"repo","description":"","required":true,"default":""},{"name":"focus","description":"","required":false,"default":""}]}]}`
+	want := `{"orchestrator":"review-bot","actions":[{"name":"review-pr","description":"","type":"prompt","arguments":[{"name":"number","description":"","required":true,"default":""},{"name":"repo","description":"","required":true,"default":""},{"name":"focus","description":"","required":false,"default":""}]}]}`
 	if body != want {
 		t.Errorf("list_actions =\n%s\nwant\n%s", body, want)
 	}
@@ -120,7 +120,7 @@ func TestToolListCheckAndReport(t *testing.T) {
 	// report_completion refusals: no summary, oversized, a stranger, a worker
 	// with no run.
 	w.put(running("wb", "worker-wb"))
-	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wb"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), o.GetId(), "box", "wb", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ sb, args, want string }{

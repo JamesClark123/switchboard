@@ -34,10 +34,6 @@ func TestValidateActionRefusals(t *testing.T) {
 		"undeclared placeholder": {func(a *pb.Action) {
 			a.Body = "Look at {nope}"
 		}, "placeholder {nope} names no argument"},
-		"tag on reason": {func(a *pb.Action) {
-			a.Type = pb.ActionType_ACTION_TYPE_REASON
-			a.WorkerTag = "ci"
-		}, "reason actions take no worker requirement"},
 	}
 	for name, c := range cases {
 		a := reviewPR()
@@ -126,18 +122,18 @@ func TestValidateCall(t *testing.T) {
 func TestPutAndDeleteAction(t *testing.T) {
 	env := newEnv(t)
 	o, _ := env.svc.Create("bot")
-	a, err := env.svc.PutAction(o.GetId(), reviewPR())
+	a, err := putAction(env.svc, o.GetId(), reviewPR())
 	if err != nil || a.GetCreatedAt() == nil || a.GetUpdatedAt() == nil {
 		t.Fatalf("PutAction = %+v / %v", a, err)
 	}
-	if _, err := env.svc.PutAction(o.GetId(), &pb.Action{Name: "bad"}); !errors.Is(err, ErrInvalid) {
+	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "bad"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("invalid action = %v", err)
 	}
 	// Replace keeps created_at, bumps updated_at.
 	env.clock.Advance(1_000_000_000)
 	a2 := reviewPR()
 	a2.Description = "v2"
-	saved, _ := env.svc.PutAction(o.GetId(), a2)
+	saved, _ := putAction(env.svc, o.GetId(), a2)
 	rec, _ := env.reg.GetOrchestrator(o.GetId())
 	if len(rec.GetActions()) != 1 || rec.GetActions()[0].GetDescription() != "v2" || !saved.GetCreatedAt().AsTime().Equal(a.GetCreatedAt().AsTime()) || saved.GetUpdatedAt().AsTime().Equal(a.GetUpdatedAt().AsTime()) {
 		t.Errorf("replace: %+v", rec.GetActions())
@@ -161,7 +157,7 @@ func TestPutAndDeleteAction(t *testing.T) {
 	if _, err := env.svc.DeleteAction(o.GetId(), "review-pr"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete twice = %v", err)
 	}
-	if _, err := env.svc.PutAction("nope", reviewPR()); !errors.Is(err, ErrNotFound) {
+	if _, err := putAction(env.svc, "nope", reviewPR()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("put on unknown = %v", err)
 	}
 	if _, err := env.svc.DeleteAction("nope", "x"); !errors.Is(err, ErrNotFound) {

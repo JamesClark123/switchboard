@@ -39,6 +39,7 @@ func (r *launchRecorder) launch(_ context.Context, req ReasoningLaunch, onLog fu
 	sb.Controller = proto.Clone(req.Controller).(*pb.SandboxController)
 	sb.Sources = req.Setup.GetSources()
 	r.w.put(proto.Clone(sb).(*pb.Sandbox)) // the fake owns its copy; sb stays ours
+	sb = r.w.get(sb.GetId())               // with the revision the put stamped
 	// The real manager publishes the new record on the host's stream.
 	r.w.events <- &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: proto.Clone(sb).(*pb.Sandbox)}}
 	return proto.Clone(sb).(*pb.Sandbox), nil
@@ -145,14 +146,14 @@ func TestReasoningSandboxLifecycle(t *testing.T) {
 
 	// A prompt worker beside it; a reason action and a prompt action.
 	w.put(running("wa", "worker-wa"))
-	if _, err := env.svc.AttachWorker(bg(), id, "host-m", "wa"); err != nil {
+	if _, err := env.svc.AttachWorker(bg(), id, "host-m", "wa", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range []*pb.Action{
 		{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}},
 		reviewPR(),
 	} {
-		if _, err := env.svc.PutAction(id, a); err != nil {
+		if _, err := putAction(env.svc, id, a); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -184,7 +185,7 @@ func TestReasoningSandboxLifecycle(t *testing.T) {
 	waitFor(t, func() bool { return w.get("reasoning-1").GetController().GetRun() == nil })
 
 	// Not detachable.
-	if err := env.svc.DetachWorker(bg(), id, "reasoning-1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "not detachable") {
+	if err := env.svc.DetachWorker(bg(), id, "reasoning-1", nil); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "not detachable") {
 		t.Errorf("detach reasoning = %v", err)
 	}
 	// Rebuild while a run is on it is refused.

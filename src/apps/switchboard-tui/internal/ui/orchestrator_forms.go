@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,10 +29,28 @@ import (
 
 // actionFormVals binds the action editor.
 type actionFormVals struct {
-	name, description, body, workerTag string
-	kind                               string // "prompt" | "reason"
-	args                               string // one per line: name [*] [description] [= default]
-	original                           string // the name being edited ("" = new)
+	name, description, body string
+	kind                    string // "prompt" | "reason"
+	args                    string // one per line: name [*] [description] [= default]
+	original                string // the name being edited ("" = new)
+	// lanes are the ticked lane ids, mode "exclusive" | "inclusive" (SWI-18,
+	// FR-316); options are the lanes the form offers, by id.
+	lanes   []string
+	mode    string
+	options []*pb.Lane
+}
+
+// keepLanes follows the orchestrator's lanes (FR-316a, FR-317): options are
+// rebuilt by id, a deleted lane's tick is dropped.
+func (v *actionFormVals) keepLanes(rec *pb.Orchestrator) {
+	v.options = rec.GetLanes()
+	kept := v.lanes[:0:0]
+	for _, id := range v.lanes {
+		if laneByID(rec, id) != nil {
+			kept = append(kept, id)
+		}
+	}
+	v.lanes = kept
 }
 
 // callFormVals binds a call form: one value per declared argument.
@@ -72,9 +92,13 @@ func actionKindOptions() []huh.Option[string] {
 // openActionForm opens the editor for a new action (a == nil) or an existing one
 // on the target orchestrator.
 func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
-	v := &actionFormVals{kind: "prompt"}
+	v := &actionFormVals{kind: "prompt", mode: "exclusive"}
 	if a != nil {
-		v.name, v.description, v.body, v.workerTag, v.original = a.GetName(), a.GetDescription(), a.GetBody(), a.GetWorkerTag(), a.GetName()
+		v.name, v.description, v.body, v.original = a.GetName(), a.GetDescription(), a.GetBody(), a.GetName()
+		v.lanes = append([]string(nil), a.GetLaneIds()...)
+		if a.GetLaneMode() == pb.LaneMode_LANE_MODE_INCLUSIVE {
+			v.mode = "inclusive"
+		}
 		if a.GetType() == pb.ActionType_ACTION_TYPE_REASON {
 			v.kind = "reason"
 		}
@@ -84,16 +108,96 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 		}
 		v.args = strings.Join(lines, "\n")
 	}
-	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form {
-		return m.newOrchForm(spec,
-			spec.input("name", "Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
-			spec.input("description", "Description").Value(&v.description),
-			huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
-			spec.text(&v.body, "Body").Key("body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {"),
-			spec.input("tag", "Worker tag (prompt only)").Description("only workers tagged #<tag> are eligible; blank = any worker").Value(&v.workerTag),
+	v.keepLanes(t.rec)
+	return m, m.setOpForm(s, t, "action", v, func(m Model, spec *formSpec) *huh.Form { return m.actionForm(spec, v) })
+}
+
+// reasonLanesText is the action form's note while a reason action has ticks.
+const reasonLanesText = "lanes not saved: reason actions have no lanes"
+
+// actionForm builds the action editor over v. Lanes and Mode are their own
+// groups (stacked, so the form reads as one page) to hide them: Lanes for a
+// reason action or an orchestrator with none, Mode while no lane is ticked.
+func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
+	laneOpts := make([]huh.Option[string], 0, len(v.options))
+	for _, l := range v.options {
+		laneOpts = append(laneOpts, huh.NewOption(sanitizeLine(l.GetName(), 0), l.GetId()).Selected(slices.Contains(v.lanes, l.GetId())))
+	}
+	noLanes := func() bool { return v.kind == "reason" || len(v.options) == 0 }
+	head := []huh.Field{
+		spec.input("name", "Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
+		spec.input("description", "Description").Value(&v.description),
+		huh.NewSelect[string]().Key("kind").Title("Type").Options(actionKindOptions()...).Value(&v.kind),
+		spec.text(&v.body, "Body").Key("body").Lines(5).Description("{name} placeholders name declared arguments; {{ is a literal {"),
+	}
+	spec.settleInputs(head)
+	groups := []*huh.Group{
+		huh.NewGroup(head...),
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().Key("lanes").Title("Lanes (prompt only)").Description("none = open-lane workers only · ctrl+l manage lanes").Options(laneOpts...).Value(&v.lanes),
+		).WithHideFunc(noLanes),
+		huh.NewGroup(
+			huh.NewSelect[string]().Key("mode").Title("Mode").Options(
+				huh.NewOption("exclusive — only these lanes", "exclusive"),
+				huh.NewOption("inclusive — these lanes, else open-lane workers", "inclusive"),
+			).Value(&v.mode),
+		).WithHideFunc(func() bool { return noLanes() || len(v.lanes) == 0 }),
+		huh.NewGroup(
 			spec.text(&v.args, "Arguments").Key("args").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required"),
-		)
-	})
+		),
+	}
+	return huh.NewForm(groups...).WithLayout(huh.LayoutStack).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
+		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
+}
+
+// action is the action the form saves; a reason action has no lanes.
+func (v *actionFormVals) action(args []*pb.ActionArgument) *pb.Action {
+	a := &pb.Action{Name: strings.TrimSpace(v.name), Description: strings.TrimSpace(v.description), Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: v.body, Arguments: args}
+	if v.kind == "reason" {
+		a.Type = pb.ActionType_ACTION_TYPE_REASON
+		return a
+	}
+	if len(v.lanes) > 0 {
+		a.LaneIds = append([]string(nil), v.lanes...)
+		a.LaneMode = pb.LaneMode_LANE_MODE_EXCLUSIVE
+		if v.mode == "inclusive" {
+			a.LaneMode = pb.LaneMode_LANE_MODE_INCLUSIVE
+		}
+	}
+	return a
+}
+
+// rebuildActionForm rebuilds a surface's open action form over its values
+// (lane options changed, or a refusal kept it open), with a fresh Text registry.
+func (m *Model) rebuildActionForm(s orchSurface, v *actionFormVals) tea.Cmd {
+	op := m.opState(s)
+	op.formSpec = newFormSpec()
+	op.form = m.actionForm(op.formSpec, v)
+	if e := &m.enlarge; e.open && e.surface == opGuard(s) {
+		// An enlarged field writes back to the rebuilt Text bound to its value,
+		// not to the replaced one (whose stale text the new field would keep).
+		for t, te := range op.formSpec.texts {
+			if te.ptr == e.ptr {
+				e.field = t
+			}
+		}
+	}
+	return op.form.Init()
+}
+
+// pruneActionLanes follows an open action form to rec's lanes. A deleted
+// lane's tick goes from the values and from the baseline alike: the pruning is
+// not the user's edit, so it never reads as unsaved.
+func (m *Model) pruneActionLanes(s orchSurface, v *actionFormVals, rec *pb.Orchestrator) {
+	v.keepLanes(rec)
+	op := m.opState(s)
+	if b, ok := op.formBaseline.(actionFormVals); ok {
+		b.lanes = slices.DeleteFunc(b.lanes, func(id string) bool { return laneByID(rec, id) == nil })
+		if len(b.lanes) == 0 {
+			b.lanes = nil
+		}
+		op.formBaseline = b
+	}
 }
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.
@@ -454,6 +558,18 @@ func (m Model) advanceOrchOpForm(s orchSurface, msg tea.Msg) (tea.Model, tea.Cmd
 	if ff, ok := f.(*huh.Form); ok {
 		op.form = ff
 	}
+	if v, ok := op.formVals.(*actionFormVals); ok && op.form.State == huh.StateNormal {
+		// Reason actions have no lanes (FR-316): the Lanes group hides and the
+		// save sends none. The ticks are kept, not cleared, so moving the Type
+		// cursor across reason and back loses nothing.
+		// The note never covers another message (a refusal stays shown).
+		switch {
+		case v.kind == "reason" && len(v.lanes) > 0 && op.status == "":
+			op.status = reasonLanesText
+		case op.status == reasonLanesText && (v.kind != "reason" || len(v.lanes) == 0):
+			op.status = ""
+		}
+	}
 	switch op.form.State {
 	case huh.StateCompleted:
 		// A submit that sent its call (cmd) waits for the reply with the form
@@ -517,6 +633,9 @@ func (m Model) submitOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		case orchFormErrMsg:
 			msg.formCall = call
 			return msg
+		case laneResultMsg:
+			msg.w.call = call
+			return msg
 		default:
 			return msg
 		}
@@ -565,8 +684,11 @@ func markFreeCallKey(v *markFreeVals) string {
 func sentOpVals(vals any) any {
 	switch v := vals.(type) {
 	case *actionFormVals:
-		c := *v
-		c.name, c.description, c.workerTag, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.description), strings.TrimSpace(c.workerTag), trimLines(c.args)
+		c := actionSnapshot(v)
+		c.name, c.description, c.args = strings.TrimSpace(c.name), strings.TrimSpace(c.description), trimLines(c.args)
+		if c.kind == "reason" || len(c.lanes) == 0 {
+			c.lanes, c.mode = nil, ""
+		}
 		return c
 	case *eventFormVals:
 		c := *v
@@ -663,19 +785,25 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			op.status = err.Error()
 			return m, nil
 		}
-		kind := pb.ActionType_ACTION_TYPE_PROMPT
-		if v.kind == "reason" {
-			kind = pb.ActionType_ACTION_TYPE_REASON
+		if !od.HasCapability("lanes") {
+			// FR-318a: an older daemon would drop the lanes silently.
+			op.status = m.tooOldForLanes(t.host)
+			return m, nil
 		}
-		a := &pb.Action{Name: strings.TrimSpace(v.name), Description: strings.TrimSpace(v.description), Type: kind, Body: v.body, WorkerTag: strings.TrimSpace(v.workerTag), Arguments: args}
-		return m, func() tea.Msg {
-			ctx, cancel := ctxTimeout()
-			defer cancel()
-			if _, err := od.PutAction(ctx, id, a); err != nil {
-				return orchFormErrMsg{err: err, sink: s}
+		a := v.action(args)
+		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true, owner: v,
+			save: func(ctx context.Context, g *pb.LaneGuardConfirm) error {
+				_, err := od.PutAction(ctx, id, a, g)
+				return err
+			},
+		}
+		if a.GetType() == pb.ActionType_ACTION_TYPE_PROMPT && len(a.GetLaneIds()) == 0 {
+			// Un-laned: the open-lane guard applies (FR-308a).
+			w.check = func(ctx context.Context) (*pb.LaneChangeImpact, error) {
+				return od.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: &pb.PutActionRequest{Action: a, SetsLanes: true}}})
 			}
-			return orchDoneMsg{status: "saved action " + a.GetName(), reload: true, closeForm: true, sink: s, target: t}
 		}
+		return m, laneWriteCmd(w, nil, true)
 	case *callFormVals:
 		args := map[string]string{}
 		for _, arg := range v.action.GetArguments() {
@@ -766,8 +894,9 @@ type orchFormErrMsg struct {
 
 // --- renderers ---
 
-// actionLine renders one action: name (type) description #tag {args}.
-func actionLine(a *pb.Action) string {
+// actionLine renders one action: name (type) description ⇢ lanes · mode {args}
+// (SWI-18, FR-315: lane names from rec; no lanes, no lane cell).
+func actionLine(a *pb.Action, rec *pb.Orchestrator) string {
 	kind := "prompt"
 	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON {
 		kind = "reason"
@@ -776,8 +905,8 @@ func actionLine(a *pb.Action) string {
 	if a.GetDescription() != "" {
 		line += "  " + sanitizeLine(a.GetDescription(), 60)
 	}
-	if a.GetWorkerTag() != "" {
-		line += "  " + tagBadgeStyle.Render("#"+sanitizeLine(a.GetWorkerTag(), 0))
+	if names := laneNames(rec, a.GetLaneIds()); len(names) > 0 {
+		line += "  " + tagBadgeStyle.Render("⇢ "+capNames(names)+" · "+modeWord(a.GetLaneMode()))
 	}
 	var args []string
 	for _, arg := range a.GetArguments() {
