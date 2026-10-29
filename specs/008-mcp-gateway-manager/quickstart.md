@@ -155,6 +155,9 @@ and `sbxkit.MinSbxVersion` confirmed as the first schema-2 release.
    its tools work.
 3. Enter a client ID with a space, or a relative **OAuth authorization server** path: the form stays
    open with the message; nothing runs. Either field on a host command is refused likewise.
+4. To change the client later (manual, on the host): store the new `mcp:slack:client_secret`, run
+   `sbx secret rm mcp:slack:client_secret:identity`, then `A` re-authorizes. A different client ID
+   means remove and re-add the server.
 
 
 ## Automated coverage map
