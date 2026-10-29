@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -337,8 +338,9 @@ func TestLongStepDetailLeavesTheOrigin(t *testing.T) {
 
 // FR-216: m on a worker whose closed run is cleaning up while its agent asks
 // for input frees it directly, with no outcome dialog (the run is already
-// closed and keeps its outcome); a cleanup that isn't asking is refused, as is
-// a worker held for the developer.
+// closed and keeps its outcome); a cleanup that isn't asking is refused. A
+// worker held for the developer (or already being freed) goes to the daemon,
+// whose refusal says what frees it (SWI-17 re-review).
 func TestMarkFreeCleaningUpWorker(t *testing.T) {
 	m, a, b := attachEnv(t)
 	held := func(hold pb.WorkerHold, st pb.AgentStatus) Model {
@@ -354,8 +356,6 @@ func TestMarkFreeCleaningUpWorker(t *testing.T) {
 		st   pb.AgentStatus
 	}{
 		{pb.WorkerHold_WORKER_HOLD_CLEANING_UP, pb.AgentStatus_AGENT_STATUS_WORKING},
-		{pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
-		{pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
 	} {
 		m = held(c.hold, c.st)
 		before := a.orchCallsJoined()
@@ -364,6 +364,15 @@ func TestMarkFreeCleaningUpWorker(t *testing.T) {
 			t.Errorf("%v/%v: m should be refused locally: status %q", c.hold, c.st, mm.status)
 		}
 	}
+	a.orchErr = errors.New("sandbox sb is held after run run-7 until a fresh session starts")
+	for _, hold := range []pb.WorkerHold{pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING} {
+		m = held(hold, pb.AgentStatus_AGENT_STATUS_IDLE)
+		_, cmd := update(m, press("m"))
+		if done, ok := runCmd(cmd).(orchDoneMsg); !ok || done.err == nil || !strings.Contains(done.err.Error(), "until a fresh session starts") {
+			t.Errorf("%v: the daemon's answer should reach the developer: %+v", hold, done)
+		}
+	}
+	a.orchErr = nil
 	m = held(pb.WorkerHold_WORKER_HOLD_CLEANING_UP, pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT)
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "sand-b") || !strings.Contains(v, "cleaning up run-7 · needs input") || !strings.Contains(v, "mark free") {
 		t.Fatalf("a held worker asking for input is surfaced, with m offered:\n%s", v)
@@ -399,5 +408,21 @@ func TestWorkersViewMarkFreeCleaningUp(t *testing.T) {
 	}
 	if !strings.Contains(a.orchCallsJoined(), `MarkWorkerFree o-a w1 false ""`) {
 		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+}
+
+// The Workers view sends m on a worker held for the developer to the daemon
+// too, so its refusal (what frees it) is shown (SWI-17 re-review).
+func TestWorkersViewMarkFreeHeldWorker(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
+		{SandboxId: "w1", DisplayName: "worker-one", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-7", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER},
+	}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	a.orchErr = errors.New("sandbox w1 is held after run run-7 until a fresh session starts")
+	_, cmd := update(m, press("m"))
+	if done, ok := runCmd(cmd).(orchDoneMsg); !ok || done.err == nil || !strings.Contains(done.err.Error(), "fresh session") {
+		t.Errorf("result = %+v", done)
 	}
 }

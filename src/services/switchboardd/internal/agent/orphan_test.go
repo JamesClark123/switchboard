@@ -246,8 +246,9 @@ func TestReapScript(t *testing.T) {
 
 // A forged agent.pid naming a live process that is not the agent (the file is
 // writable inside the sandbox) is ignored: the probe falls back to the binary
-// scan, so it never reads that process as alive, and a reap never signals it.
-// With nothing found, the probe fails (closed): never "gone".
+// scan, so it never reads that process as alive, and a reap never signals it
+// (its command line lacks the fixed flag). With nothing found, the probe fails
+// (closed): never "gone"; the reap still clears.
 func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	e := newAgentEnv(t)
 	other := e.start(t, "plain", "--other") // the agent binary, not the fixed flags
@@ -262,7 +263,8 @@ func TestForgedAgentPIDIsIgnored(t *testing.T) {
 		if r, err := e.try(ProbeScript()); err == nil {
 			t.Errorf("pid %d: forged record read as %+v", pid, r)
 		}
-		if r, err := e.try(ReapScript(time.Second)); err == nil || !alive(pid) {
+		// The developer's Replace clears the sandbox but signals nothing.
+		if r, err := e.try(ReapScript(time.Second)); err != nil || r.Reaped != 0 || !alive(pid) {
 			t.Errorf("pid %d: reap of a forged record: %+v, %v", pid, r, err)
 		}
 	}
@@ -348,6 +350,80 @@ func TestProbeFailsWithoutTheAgentBinary(t *testing.T) {
 	if out, err := c.Output(); err == nil {
 		t.Errorf("probe without claude = %q, want a failure", out)
 	}
+}
+
+// With no claude binary at all, the probe fails with its own message (not a
+// bare error), and the developer's reap still runs to its end: it stops the
+// agent.pid process carrying the fixed flag and clears (SWI-17 re-review).
+func TestReapWithoutTheAgentBinary(t *testing.T) {
+	e := newAgentEnv(t)
+	a := e.start(t, "plain", agentFlag)
+	e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", a.Process.Pid, startTime(t, a.Process.Pid)))
+	if err := os.Remove(e.claude); err != nil {
+		t.Fatal(err)
+	}
+	tools := t.TempDir()
+	for _, name := range []string{"readlink", "sed", "cut", "tr", "sleep", "kill"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Skip(err)
+		}
+		if err := os.Symlink(path, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sh := func(script string) ([]byte, error) {
+		c := exec.Command("/bin/sh", "-c", script)
+		c.Env = append(os.Environ(), "PATH="+tools, "HOME="+e.home)
+		return c.Output()
+	}
+	_, err := sh(ProbeScript())
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || !strings.Contains(string(ee.Stderr), "no claude binary in the sandbox") {
+		t.Errorf("probe without claude = %v, want the no-binary failure", err)
+	}
+	out, err := sh(ReapScript(time.Second))
+	if err != nil {
+		t.Fatalf("reap without claude = %v (%q)", err, out)
+	}
+	if r, err := ParseProbe(string(out)); err != nil || r.Reaped != 1 {
+		t.Errorf("reap = %+v, %v", r, err)
+	}
+	waitFor(t, func() bool { return !alive(a.Process.Pid) })
+}
+
+// An agent the binary check can't identify (an npm install: exe and argv0 are
+// node) fails the probe closed, but the developer's reap stops it through
+// agent.pid, since its command line carries the fixed flag (SWI-17 re-review).
+func TestReapStopsAnUnidentifiedAgent(t *testing.T) {
+	e := newAgentEnv(t)
+	node := filepath.Join(t.TempDir(), "node")
+	data, err := os.ReadFile(e.claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(node, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command(node, filepath.Join(e.bin, "cli.js"), agentFlag)
+	c.Args[0] = "node"
+	c.Env = append(os.Environ(), "SXB_FAKE_AGENT=plain")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = c.Wait(); close(done) }()
+	t.Cleanup(func() { _ = c.Process.Kill(); <-done })
+	pid := c.Process.Pid
+	waitFor(t, func() bool { l, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); return l == node })
+	e.writePID(t, fmt.Sprintf("5 %d %s /dev/pts/0", pid, startTime(t, pid)))
+	if r, err := e.try(ProbeScript()); err == nil {
+		t.Errorf("probe of an unidentified agent = %+v, want a failure", r)
+	}
+	if r := e.run(t, ReapScript(time.Second)); r.Reaped != 1 {
+		t.Errorf("reap = %+v, want 1 signalled", r)
+	}
+	<-done
 }
 
 // A stale agent.pid (a dead PID, e.g. a failed write by a later generation)

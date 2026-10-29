@@ -347,7 +347,10 @@ func (m Model) markFreeSaving(v *markFreeVals) (string, bool) {
 func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	c := sb.GetController()
 	asking := sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
-	parked := asking && (c.GetRun() == nil || c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP)
+	// A worker held for the developer (or already being freed) goes to the
+	// daemon too, which answers with what frees it (SWI-17 re-review).
+	parked := asking && (c.GetRun() == nil || c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP) ||
+		heldOtherwise(c.GetRun().GetHold())
 	if !c.GetRun().GetNeedsReview() && !parked {
 		m.status = "no run awaiting review on this sandbox"
 		return m, nil
@@ -389,9 +392,17 @@ func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT &&
 		(w.GetRunId() == "" || w.GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP):
 		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
+	case heldOtherwise(w.GetHold()):
+		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
 	}
 	m.orchDetail.status = "that worker has no run awaiting review"
 	return m, nil
+}
+
+// heldOtherwise reports a hold mark free can't end (needing the developer, or
+// already being freed): the daemon's refusal says what does.
+func heldOtherwise(h pb.WorkerHold) bool {
+	return h == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || h == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
 }
 
 // freeParkedWorker asks the orchestrator's daemon to set a worker that is

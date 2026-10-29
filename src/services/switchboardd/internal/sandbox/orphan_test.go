@@ -1018,6 +1018,35 @@ func TestReapOrphan(t *testing.T) {
 	}
 }
 
+// A sandbox whose probe keeps failing (no claude binary in it, or an agent the
+// binary check can't identify) stays unknown and refuses spawns (fail closed),
+// but the developer's Replace clears it: the reap runs to its end without an
+// agent binary (SWI-17 re-review).
+func TestReplaceClearsAFailingProbe(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("s", 2)
+	e.m.AgentClientExited("s", 2) // no probe answer: every probe fails
+	waitUntil(t, func() bool { return e.run.count("probe") >= 1 })
+	if _, err := e.m.Admit("s"); !errors.Is(err, agent.ErrChecking) {
+		t.Fatalf("Admit beside a failing probe = %v", err)
+	}
+	e.run.pmu.Lock()
+	e.run.reapOut = "agent\t\nref\t0\t\nnofile\nreaped\t0\n"
+	e.run.pmu.Unlock()
+	if err := e.m.ReapOrphan(context.Background(), "s", ReapReplace); err != nil {
+		t.Fatalf("Replace = %v", err)
+	}
+	if e.state("s") != pb.AgentCheck_STATE_CLEAR {
+		t.Errorf("after Replace: %v", e.state("s"))
+	}
+	release, err := e.m.Admit("s")
+	if err != nil {
+		t.Fatalf("Admit after Replace = %v", err)
+	}
+	release()
+}
+
 // A probe's result is recorded only if nothing dropped the sandbox since it
 // took the runtime lock: a reap (or stop) slipping in between its unlock and
 // its record is never overwritten by a stale "alive".
