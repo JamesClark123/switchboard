@@ -143,10 +143,11 @@ func ProbeScript() string { return "sxb_reap=\n" + probeDetect }
 // every signal; TERM to each live matched process, up to wait for them to go,
 // then KILL to any still alive with its recorded start time. It reports the
 // processes it signalled (`reaped <n>`, 0 when every one was already gone).
-// It fails, stopping nothing, when it would signal nothing while agent.pid
-// names a live process with its recorded start time that it can't identify as
-// claude (another agent kind, a wrapper): reporting it stopped would let
-// Replace spawn a second agent beside it (SWI-17 re-review).
+// It fails, stopping nothing, when agent.pid names a live process with its
+// recorded start time that it can't identify as claude (another agent kind, a
+// wrapper) and so would not signal, whatever else the scan matched: reporting
+// the agent stopped would let Replace spawn a second one beside it (SWI-17
+// re-reviews).
 func ReapScript(wait time.Duration) string {
 	secs := int(wait / time.Second)
 	if secs < 1 {
@@ -154,10 +155,12 @@ func ReapScript(wait time.Duration) string {
 	}
 	return "sxb_reap=1\n" + probeDetect + fmt.Sprintf(`n=0
 live() { [ "$(st "${1%%%%:*}")" = "${1#*:}" ]; }
-for t in $T; do if live "$t"; then kill -TERM "${t%%%%:*}" 2>/dev/null; n=$((n+1)); fi; done
-if [ $n = 0 ] && [ "$f" = other ] && live "$p:$s"; then
-  echo "reap: agent.pid names live process $p, which is not a claude agent; nothing was stopped (restart the sandbox to stop it)" >&2; exit 1
+if [ "$f" = other ]; then
+  case " $T " in *" $p:$s "*) ;; *) if live "$p:$s"; then
+    echo "reap: agent.pid names live process $p, which is not a claude agent; nothing was stopped (restart the sandbox to stop it)" >&2; exit 1
+  fi ;; esac
 fi
+for t in $T; do if live "$t"; then kill -TERM "${t%%%%:*}" 2>/dev/null; n=$((n+1)); fi; done
 i=0
 while [ $i -lt %d ]; do
   left=0; for t in $T; do live "$t" && left=1; done

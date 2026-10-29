@@ -75,6 +75,9 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 	var ch laneChange
 	var impact *pb.LaneChangeImpact
 	marked := false
+	// runs.mu orders a rewrite of queued runs' kept settings (a lane delete)
+	// after a stepper's read-modify-write of a queued run (claim, unclaim).
+	rt.runs.mu.Lock()
 	rec, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
 		queued, err := runs.Queued()
 		if err != nil {
@@ -105,6 +108,7 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 		}
 		return nil
 	})
+	rt.runs.mu.Unlock()
 	if err != nil {
 		if marked {
 			rt.clearDetaching(ch.detaching)

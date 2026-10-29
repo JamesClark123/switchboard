@@ -372,7 +372,10 @@ func (s *Service) DeleteAction(id, name string) ([]string, error) {
 		return nil, err
 	}
 	var disabled []string
-	if _, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
+	// runs.mu orders the kept-setting writes after a stepper's read-modify-write
+	// of a queued run (claim, unclaim), which would otherwise overwrite them.
+	rt.runs.mu.Lock()
+	_, err = rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
 		disabled = nil
 		gone := findAction(o, name)
 		if gone == nil {
@@ -407,7 +410,9 @@ func (s *Service) DeleteAction(id, name string) ([]string, error) {
 			}
 		}
 		return nil
-	}); err != nil {
+	})
+	rt.runs.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	s.emitChanged(id)

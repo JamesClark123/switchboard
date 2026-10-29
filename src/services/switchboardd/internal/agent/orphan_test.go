@@ -279,6 +279,11 @@ func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	if r := e.run(t, ProbeScript()); r.File || len(r.Procs) != 1 || r.Procs[0].PID != a.Process.Pid {
 		t.Errorf("forged record hid the agent: %+v", r)
 	}
+	// Replace still fails, stopping nothing, while agent.pid names a live
+	// process it can't identify, even though the scan matched another agent.
+	if r, err := e.try(ReapScript(time.Second)); err == nil || !strings.Contains(err.Error(), "restart the sandbox") || !alive(sleeper.Process.Pid) || !alive(a.Process.Pid) {
+		t.Errorf("reap beside a matched agent: %+v, %v", r, err)
+	}
 }
 
 // An auto-update repoints claude at a sibling version (or replaces the file)

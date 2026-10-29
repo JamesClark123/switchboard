@@ -64,6 +64,13 @@ conflict; research R14 lists the same items as known limitations.
 - **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them.
 - **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step).
 
+**Also deferred from PR #25's re-review 5692052431 (run-746, addressed in run-749; follow-up SWI-19):**
+
+- **A dispatch pass reads the runs twice**: `ViewOrchestratorRuns` for the queued runs, then `ListRuns` for the
+  claimed and holding sandboxes. One read needs a registry view that returns both.
+- **Rebuilding the paged action form returns it to page 1** (refused save, guard confirm, back from `ctrl+l`, lane
+  reload), with no page indicator. Restoring focus means stepping huh's groups, which validate on the way.
+
 Tests that exist only for a deferred item are dropped.
 
 ## Format: `[ID] [P?] [Story] Description`

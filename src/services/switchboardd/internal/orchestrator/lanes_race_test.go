@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -294,5 +296,58 @@ func TestDispatchLaneRaceSeeded(t *testing.T) {
 	}
 	if delivered == 0 {
 		t.Error("no seed delivered any run: the test checked nothing")
+	}
+}
+
+// staleRewrite is a stepper's read-modify-write of a queued run (claim,
+// unclaim) with change running between the read and the write: change must
+// wait for runs.mu, so its write lands after the stale one, not under it.
+func staleRewrite(t *testing.T, rt *runtime, runID string, change func() error) {
+	t.Helper()
+	rt.runs.mu.Lock()
+	stale, err := rt.svc.reg.GetRun(rt.id, runID)
+	if err != nil {
+		rt.runs.mu.Unlock()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- change() }()
+	select {
+	case err := <-done:
+		rt.runs.mu.Unlock()
+		t.Fatalf("the change committed while runs.mu was held (err %v)", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	err = rt.putRun(stale)
+	rt.runs.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeletesWaitForAStepperRewrite(t *testing.T) {
+	env, _, o, rt := dispatchEnv(t, 1, false)
+	id := o.GetId()
+	ids := seedLanes(t, rt, map[string][]string{"a": nil})
+	if _, err := putAction(env.svc, id, laned("review-pr", pb.LaneMode_LANE_MODE_EXCLUSIVE, ids["a"])); err != nil {
+		t.Fatal(err)
+	}
+	run := call(t, env, id, "1")
+	staleRewrite(t, rt, run.GetId(), func() error {
+		_, err := env.svc.DeleteAction(id, "review-pr")
+		return err
+	})
+	if kept := runOf(t, env, id, run.GetId()).GetKeptLanes(); kept == nil || !slices.Equal(kept.GetLaneIds(), []string{ids["a"]}) {
+		t.Fatalf("the action delete's kept setting was lost: %+v", kept)
+	}
+	staleRewrite(t, rt, run.GetId(), func() error {
+		_, err := env.svc.DeleteLane(id, ids["a"], &pb.LaneGuardConfirm{})
+		return err
+	})
+	if kept := runOf(t, env, id, run.GetId()).GetKeptLanes(); kept == nil || len(kept.GetLaneIds()) != 0 {
+		t.Fatalf("the lane delete's strip was lost: %+v", kept)
 	}
 }
