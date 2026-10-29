@@ -148,6 +148,11 @@ action, the sandbox's record names that server, and a sandbox launched on a *dif
     with a masked value, **Then** the daemon pipes it to `sbx secret set` on stdin, the list shows the
     new row masked, and the value appears nowhere else; **When** they remove a row and confirm,
     **Then** `sbx secret rm` runs for that scope (FR-104).
+13. **Given** the register form, **When** the developer enters an OAuth client ID `123.456` (and
+    optionally an authorization server) for a remote server, **Then** the registration runs with
+    `--client-id 123.456 [--oauth-authorization-server <v>] --skip-auth` and the form points at
+    storing `mcp:<name>:client_secret` under Secrets first; **Given** either field on a host-command
+    server, **Then** the form refuses it and nothing is sent (FR-105).
 
 ---
 
@@ -499,6 +504,17 @@ and the toggle is still off.
   process argument. Custom secrets (`set-custom`) are listed but not removable from switchboard. The
   option MUST be unavailable, with the reason, when the host's runtime is missing or below the
   baseline (FR-096), and changes MUST reach other clients through a daemon event.
+- **FR-105** *(added 2026-10-29, SWI-20)*: Registering a remote server MUST accept an optional
+  pre-registered **OAuth client ID** (for servers without Dynamic Client Registration, e.g. Slack)
+  and an optional **OAuth authorization server** (an http(s) URL, or an absolute path on the daemon's
+  host, to RFC 8414 metadata for a server that publishes none), passed as `--client-id` and
+  `--oauth-authorization-server`. There is no client-secret field: a confidential client's secret is
+  the host secret `mcp:<server>:client_secret` (FR-104), which MUST be stored before adding (without
+  it the runtime silently skips authorization), and the form MUST say so next to the field. A client
+  ID that is not one token (whitespace, control characters, a leading `-`, over 256 characters) or an
+  authorization server that is neither an http(s) URL nor an absolute path MUST be refused before any
+  CLI call; either field on a host-command server MUST be refused. That both flags combine with
+  `--skip-auth` is assumed from the documentation, not verified on a real host.
 - **FR-088**: When on, the TUI MUST at startup attempt every saved remote host in turn (the local
   daemon excluded, already-connected hosts skipped), connecting without a prompt where no password is
   needed and otherwise showing a masked password prompt centered on screen that names the host.

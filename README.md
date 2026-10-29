@@ -331,8 +331,11 @@ that daemon only:
   runtime prints. The register form's **Headers** field takes one `Name: value` per line for a
   remote endpoint (each becomes a `--header` flag); write a credential as `${placeholder}` and store
   its value as the secret `mcp:<server>:<placeholder>` under **Secrets** (below) — the gateway fills it
-  in on the host, so no token ever reaches a registration or a log. OAuth client IDs and
-  registry-based local servers are still managed on the host directly.
+  in on the host, so no token ever reaches a registration or a log. For a server without Dynamic
+  Client Registration (e.g. Slack), fill **OAuth client ID** (and, only if the server publishes no
+  OAuth metadata, **OAuth authorization server**); a confidential client's secret is stored first as
+  `mcp:<server>:client_secret` under **Secrets**. Registry-based local servers are still managed on
+  the host directly.
 - `space` marks a server **attach by default**: every sandbox launched on that daemon gets it.
   `m` toggles the daemon's **default attach mode** — *additive* (default: the sandbox keeps the
   runtime's dynamic gateway, so the agent can still discover other registered servers) or

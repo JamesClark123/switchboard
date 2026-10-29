@@ -405,6 +405,51 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	}
 }
 
+func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpModel(t, d)
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "slack"
+	m.mcpView.vals.url = "https://slack.example.com/mcp"
+	m.mcpView.vals.clientID = " 123.456 "
+	m.mcpView.vals.authServer = "/etc/slack-as.json"
+	if !m.guardDirty(gMcp) {
+		t.Error("editing the OAuth fields should mark the form dirty")
+	}
+	m, cmd := update(m, ctrlS())
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 1 || d.addedMcp[0].GetClientId() != "123.456" || d.addedMcp[0].GetOauthAuthorizationServer() != "/etc/slack-as.json" {
+		t.Fatalf("added = %+v", d.addedMcp)
+	}
+	for _, c := range []struct{ id, as, want string }{
+		{"a b", "", "single token"},
+		{"--x", "", "single token"},
+		{"c1", "relative.json", "http(s) URL or an absolute path"},
+	} {
+		m = pressCmd(m, "a")
+		m.mcpView.vals.name = "bad"
+		m.mcpView.vals.url = "https://x/mcp"
+		m.mcpView.vals.clientID, m.mcpView.vals.authServer = c.id, c.as
+		m, _ = update(m, ctrlS())
+		if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, c.want) {
+			t.Errorf("%+v: status %q", c, m.mcpView.status)
+		}
+		m = escDiscard(t, m)
+	}
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "pw"
+	m.mcpView.vals.kind = "command"
+	m.mcpView.vals.command = "npx"
+	m.mcpView.vals.clientID = "c1"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "OAuth client settings apply to remote endpoints only") {
+		t.Errorf("a client ID on a host command should be refused; status %q", m.mcpView.status)
+	}
+	if len(d.addedMcp) != 1 {
+		t.Errorf("refused forms must not register; added %d", len(d.addedMcp))
+	}
+}
+
 // openerDaemon lets a fakeDaemon satisfy forward.Opener; its streams never carry
 // traffic here, the tests only observe whether the callback listener exists.
 type openerDaemon struct{ *fakeDaemon }

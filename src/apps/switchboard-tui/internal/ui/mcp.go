@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,6 +71,7 @@ type mcpState struct {
 type mcpFormVals struct {
 	name, kind, url, command, args, dir string
 	headers                             string // one "Name: value" per line (remote only, FR-103)
+	clientID, authServer                string // pre-registered OAuth client (remote only, FR-105)
 	attach                              bool
 }
 
@@ -357,6 +359,10 @@ func (m Model) mcpForm(spec *formSpec, v *mcpFormVals) *huh.Form {
 		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp").Value(&v.url),
 		spec.text(&v.headers, "Headers (remote only)").Key("headers").Lines(3).
 			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets). Tool-name collisions between servers (e.g. list_issues in both GitHub and Linear) are avoided with the server's own tool-filter headers, e.g. GitHub X-MCP-Toolsets / X-MCP-Tools."),
+		huh.NewInput().Key("client_id").Title("OAuth client ID (remote only)").
+			Description("For servers without Dynamic Client Registration (e.g. Slack): the client ID you registered with the provider. A confidential client also needs its secret stored as mcp:<name>:client_secret (daemon screen › Secrets) before adding — without it, authorization is skipped.").Value(&v.clientID),
+		huh.NewInput().Key("auth_server").Title("OAuth authorization server (remote only)").
+			Description("Only if the server publishes no OAuth metadata: an http(s) URL or an absolute path on the daemon's host to RFC 8414 metadata.").Value(&v.authServer),
 		huh.NewInput().Key("command").Title("Command").Description("Host command, e.g. npx").Value(&v.command),
 		huh.NewInput().Key("args").Title("Arguments").Description("Comma-separated, e.g. @playwright/mcp@latest").Value(&v.args),
 		huh.NewInput().Key("dir").Title("Working directory").Description("Optional, host command only.").Value(&v.dir),
@@ -407,6 +413,10 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 			v.status = "headers apply to remote endpoints only"
 			return m, nil
 		}
+		if strings.TrimSpace(vals.clientID) != "" || strings.TrimSpace(vals.authServer) != "" {
+			v.status = "OAuth client settings apply to remote endpoints only"
+			return m, nil
+		}
 		var args []string
 		for _, a := range strings.Split(vals.args, ",") {
 			if a = strings.TrimSpace(a); a != "" {
@@ -435,6 +445,16 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			req.Headers = append(req.Headers, strings.TrimSpace(name)+": "+strings.TrimSpace(value))
+		}
+		req.ClientId = strings.TrimSpace(vals.clientID)
+		if strings.ContainsFunc(req.ClientId, unicode.IsSpace) || strings.HasPrefix(req.ClientId, "-") {
+			v.status = "the OAuth client ID must be a single token"
+			return m, nil
+		}
+		req.OauthAuthorizationServer = strings.TrimSpace(vals.authServer)
+		if as := req.OauthAuthorizationServer; as != "" && !strings.HasPrefix(as, "http://") && !strings.HasPrefix(as, "https://") && !strings.HasPrefix(as, "/") {
+			v.status = "the OAuth authorization server must be an http(s) URL or an absolute path"
+			return m, nil
 		}
 		req.Definition = &pb.AddMcpServerRequest_Url{Url: url}
 	}

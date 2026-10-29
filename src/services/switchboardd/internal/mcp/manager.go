@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -220,10 +221,17 @@ func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.Mcp
 		if err != nil {
 			return nil, err
 		}
-		argv = argvAddRemote(name, url, headers)
+		clientID, authServer, err := normalizeOAuthClient(req.GetClientId(), req.GetOauthAuthorizationServer())
+		if err != nil {
+			return nil, err
+		}
+		argv = argvAddRemote(name, url, headers, clientID, authServer)
 	case *pb.AddMcpServerRequest_Command:
 		if len(req.GetHeaders()) > 0 {
 			return nil, fmt.Errorf("%w: custom headers apply to remote endpoints only", ErrInvalidArgs)
+		}
+		if strings.TrimSpace(req.GetClientId()) != "" || strings.TrimSpace(req.GetOauthAuthorizationServer()) != "" {
+			return nil, fmt.Errorf("%w: OAuth client settings apply to remote endpoints only", ErrInvalidArgs)
 		}
 		if !req.GetAcknowledgeLocalExecution() {
 			return nil, ErrLocalNotAcknowledged
@@ -663,6 +671,27 @@ func findServer(servers []*pb.McpServer, name string) *pb.McpServer {
 		}
 	}
 	return nil
+}
+
+// maxClientID bounds a pre-registered OAuth client ID (FR-105).
+const maxClientID = 256
+
+// normalizeOAuthClient trims and validates a remote server's OAuth client
+// settings (FR-105): the client ID is one token (no spaces or control
+// characters, not flag-like); the authorization server is an http(s) URL or
+// an absolute path, which the daemon's `sbx` reads on this host. Either may
+// be empty.
+func normalizeOAuthClient(clientID, authServer string) (string, string, error) {
+	clientID, authServer = strings.TrimSpace(clientID), strings.TrimSpace(authServer)
+	if clientID != "" && (utf8.RuneCountInString(clientID) > maxClientID || !utf8.ValidString(clientID) || clientID[0] == '-' ||
+		strings.IndexFunc(clientID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0) {
+		return "", "", fmt.Errorf("%w: client ID must be a single token of at most %d characters", ErrInvalidArgs, maxClientID)
+	}
+	isURL := strings.HasPrefix(authServer, "http://") || strings.HasPrefix(authServer, "https://")
+	if authServer != "" && (!isURL && !filepath.IsAbs(authServer) || strings.IndexFunc(authServer, unicode.IsControl) >= 0) {
+		return "", "", fmt.Errorf("%w: authorization server must be an http(s) URL or an absolute path on the daemon's host", ErrInvalidArgs)
+	}
+	return clientID, authServer, nil
 }
 
 // headerNameRe is an HTTP field name (RFC 9110 token).
