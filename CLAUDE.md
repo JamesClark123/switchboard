@@ -147,7 +147,41 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
+Active feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17). Every
+action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`), **Effort** (`/effort
+low|medium|high|xhigh|max|auto`; **ultracode dropped** — it is a sticky session toggle, research R1) and **Clear**
+(`/clear`), on by default incl. existing actions (absent `Action.sequence` = defaults), plus custom pre/post prompts
+(≤10 each, `{name}` placeholders, none in the first word, none in `!` steps). Steps go **one at a time, each only once
+the previous finished by evidence after its submit**. Planning gate run on Claude Code 2.1.312 (R1): `/model`/`/effort`
+raise no hook — read back from the screen's `⎿` confirmation line; `/clear` raises `SessionStart source=clear`.
+`termview` moves to **`src/libs/switchboard-termview`**; the daemon's PTY reader feeds a per-sandbox screen read by
+`agent/claudeui.go` (input box empty/ready, step text still in box, pickers, confirmation lines; fixtures in
+`agent/testdata/claudeui/`). New worker RPC **`DeliverWorkerStep`** types one step and runs the submit check locally
+(hook `Tap` + screen) → MODEL_TURN | MODEL_TURN_INPUT_ONLY | AGENT_LOCAL | NOT_ACCEPTED; runs without steps keep
+`DeliverWorkerPrompt`. Orchestrator `sequence.go` owns `Run.steps/step/step_status/…` (persisted), closes runs exactly
+as before, and holds the sandbox during cleanup via `controller.run.hold` (CLEANING_UP | NEEDS_INPUT_FREEING |
+NEEDS_DEVELOPER — the last is ended live by the owning daemon on a corroborated `startup`/`clear` `SessionStart`). `AgentSession`
+records `last_submit_at`, `last_turn_end_at`, `last_session_start_at/source` (restart resolution, FR-217). New
+`ResolveRunStep` (`R` retry · `S` skip · `X` fail), `RUN_STEP_NOT_ACCEPTED`, TASK_COMPLETE suppressed for
+setup/cleanup turns (`WorkerRun.step_role`). Builds on SWI-15 (PR #17, merged) for `SessionStart`; needs SWI-9's implementation for the form guard. Security
+(R13): control characters and invalid UTF-8 refused in untrusted call values only (authored text and escape-hatch
+output untouched); a per-agent hook token passed in the agent's environment at launch (`SXB_HOOK_TOKEN`), persisted per generation;
+daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
+orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start (only
+sandboxes with an unretired token; the rest are clear at once), on an `sbx exec` client exit and on gate refusals;
+*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED,
+`NOTIFICATION_KIND_AGENT_CHECK_FAILED`). `agent.Registry.Session` is the one choke point that refuses to spawn beside
+it, and try-locks the sandbox's `runtimeMu` (held by stop/recreate ops, and ordering every probe and stop) from the
+gate check through `cmd.Start` (`ErrBusy` names the operation); a stop drains the sandbox's `sbx exec` clients
+best effort before `sbx stop` (the agent's, plus still-starting services, recorded FAILED `may still be running`, groups TERM then KILL; RUNNING services keep their clients; bounded, no ordering promise; only developer-initiated execs try-lock `runtimeMu`, there is no exec guard), and the on-change hook clears orphan state only on a confirmed stop/destroy (never CREATING/ERROR).
+The daemon only detects and surfaces an orphan
+(*agent detached* notification, aggregated per start) and never stops one itself: only the developer (`t` →
+Replace, `R`, the Workers view's bulk `R` → `ReplaceDetachedAgent`, idle-last-seen only) or a sandbox stop/restart does (R14, simplified
+in run-590, bounded in run-595, tightened in run-601).
+See `research.md` (R1–R14),
+`data-model.md`, `contracts/`, `quickstart.md`.
+
+Prior feature: `specs/swi-18-feature-workers-should-be-assignable-to-lanes/plan.md` (Worker Lanes, SWI-18). **Lanes
 replace the action worker tag**: a lane is a named worker group per orchestrator (`pb.Lane{id "ln-…", name, description}`
 on `Orchestrator.lanes`, ≤32, action-name rule, `open` reserved); `prompt` actions are **exclusive**/**inclusive** to
 lanes (`Action.lane_ids`/`lane_mode`) or un-laned (open-lane workers only = non-reasoning, no lanes, not *lanes pending*).
