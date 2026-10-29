@@ -93,17 +93,17 @@ func TestActionSequenceE2E(t *testing.T) {
 	} {
 		a := sequenced("bad")
 		r.edit(a.Sequence)
-		_, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: a})
+		_, err := putAction(ctx, c, o.GetId(), a)
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), r.want) {
 			t.Errorf("%s: %v, want InvalidArgument naming %q", r.name, err, r.want)
 		}
 	}
 
-	if _, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: sequenced("review")}); err != nil {
+	if _, err := putAction(ctx, c, o.GetId(), sequenced("review")); err != nil {
 		t.Fatal(err)
 	}
 	legacy := &pb.Action{Name: "legacy", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "Tidy {repo}.", Arguments: []*pb.ActionArgument{{Name: "repo", Required: true}}}
-	if _, err := c.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: legacy}); err != nil {
+	if _, err := putAction(ctx, c, o.GetId(), legacy); err != nil {
 		t.Fatal(err)
 	}
 	det, err := c.GetOrchestrator(ctx, &pb.OrchestratorIdRequest{OrchestratorId: o.GetId()})
@@ -145,4 +145,14 @@ func TestActionSequenceE2E(t *testing.T) {
 	if got, err := c.GetRun(ctx, &pb.GetRunRequest{OrchestratorId: o.GetId(), RunId: run.GetId()}); err != nil || got.GetState() != pb.RunState_RUN_STATE_QUEUED || len(got.GetSteps()) != 7 {
 		t.Errorf("queued run = %v, %v", got, err)
 	}
+}
+
+// putAction saves an action as a lanes-aware client does (SWI-18): the
+// open-lane guard's current list is fetched and confirmed.
+func putAction(ctx context.Context, c pb.SwitchboardClient, id string, a *pb.Action) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	if imp, err := c.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
+		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: imp.GetUnlanedActions(), UnlanedRuns: imp.GetUnlanedRuns()}
+	}
+	return c.PutAction(ctx, req)
 }
