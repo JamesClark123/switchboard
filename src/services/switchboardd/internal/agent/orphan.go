@@ -88,7 +88,8 @@ func pidRecord(gen int64) string {
 // stop, so it does neither: with no agent binary it signals nothing and
 // clears the sandbox, and it also signals a live agent.pid process it cannot
 // identify by binary (an npm install runs claude under node) when that
-// process's command line carries the fixed flag. The start time is read after the last ")" of the
+// process's command line carries the fixed flag; when it signals nothing while
+// that process is still alive, it fails (ReapScript). The start time is read after the last ")" of the
 // stat line, so a comm with spaces never shifts the fields; tabs and line
 // breaks in a command line are blanked, so it cannot inject output lines.
 const probeDetect = `u=$(printf '\037')
@@ -142,6 +143,10 @@ func ProbeScript() string { return "sxb_reap=\n" + probeDetect }
 // every signal; TERM to each live matched process, up to wait for them to go,
 // then KILL to any still alive with its recorded start time. It reports the
 // processes it signalled (`reaped <n>`, 0 when every one was already gone).
+// It fails, stopping nothing, when it would signal nothing while agent.pid
+// names a live process with its recorded start time that it can't identify as
+// claude (another agent kind, a wrapper): reporting it stopped would let
+// Replace spawn a second agent beside it (SWI-17 re-review).
 func ReapScript(wait time.Duration) string {
 	secs := int(wait / time.Second)
 	if secs < 1 {
@@ -150,6 +155,9 @@ func ReapScript(wait time.Duration) string {
 	return "sxb_reap=1\n" + probeDetect + fmt.Sprintf(`n=0
 live() { [ "$(st "${1%%%%:*}")" = "${1#*:}" ]; }
 for t in $T; do if live "$t"; then kill -TERM "${t%%%%:*}" 2>/dev/null; n=$((n+1)); fi; done
+if [ $n = 0 ] && [ "$f" = other ] && live "$p:$s"; then
+  echo "reap: agent.pid names live process $p, which is not a claude agent; nothing was stopped (restart the sandbox to stop it)" >&2; exit 1
+fi
 i=0
 while [ $i -lt %d ]; do
   left=0; for t in $T; do live "$t" && left=1; done

@@ -108,7 +108,11 @@ func (e agentEnv) try(script string) (ProbeResult, error) {
 	c.Env = append(os.Environ(), "PATH="+e.bin+":"+os.Getenv("PATH"), "HOME="+e.home)
 	out, err := c.Output()
 	if err != nil {
-		return ProbeResult{}, fmt.Errorf("script: %w (%q)", err, out)
+		var stderr []byte
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = ee.Stderr
+		}
+		return ProbeResult{}, fmt.Errorf("script: %w (%q, stderr %q)", err, out, stderr)
 	}
 	return ParseProbe(string(out))
 }
@@ -245,10 +249,12 @@ func TestReapScript(t *testing.T) {
 }
 
 // A forged agent.pid naming a live process that is not the agent (the file is
-// writable inside the sandbox) is ignored: the probe falls back to the binary
-// scan, so it never reads that process as alive, and a reap never signals it
-// (its command line lacks the fixed flag). With nothing found, the probe fails
-// (closed): never "gone"; the reap still clears.
+// writable inside the sandbox), or a live agent of another kind, is ignored:
+// the probe falls back to the binary scan, so it never reads that process as
+// alive, and a reap never signals it (its command line lacks the fixed flag).
+// With nothing found, the probe fails (closed): never "gone"; the reap fails
+// too, with the remedy, rather than report a stop that left it running (SWI-17
+// re-review: Replace would spawn a second agent beside it).
 func TestForgedAgentPIDIsIgnored(t *testing.T) {
 	e := newAgentEnv(t)
 	other := e.start(t, "plain", "--other") // the agent binary, not the fixed flags
@@ -263,8 +269,8 @@ func TestForgedAgentPIDIsIgnored(t *testing.T) {
 		if r, err := e.try(ProbeScript()); err == nil {
 			t.Errorf("pid %d: forged record read as %+v", pid, r)
 		}
-		// The developer's Replace clears the sandbox but signals nothing.
-		if r, err := e.try(ReapScript(time.Second)); err != nil || r.Reaped != 0 || !alive(pid) {
+		// The developer's Replace signals nothing and fails, naming the remedy.
+		if r, err := e.try(ReapScript(time.Second)); err == nil || !strings.Contains(err.Error(), "restart the sandbox") || !alive(pid) {
 			t.Errorf("pid %d: reap of a forged record: %+v, %v", pid, r, err)
 		}
 	}
