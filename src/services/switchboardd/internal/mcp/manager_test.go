@@ -212,6 +212,9 @@ func TestAddRemoteOAuthClient(t *testing.T) {
 	if log := readLog(t, env.log); log[0] != "mcp add slack --url https://slack.example.com/mcp --client-id 123.456 --oauth-authorization-server /etc/slack-as.json --skip-auth" {
 		t.Errorf("first argv = %q", log[0])
 	}
+	if _, _, err := normalizeOAuthClient("", "http://127.0.0.1:9000/x"); err != nil {
+		t.Errorf("a loopback http auth server should be accepted: %v", err)
+	}
 	remote := func(id, as string) *pb.AddMcpServerRequest {
 		return &pb.AddMcpServerRequest{Name: "x", Definition: &pb.AddMcpServerRequest_Url{Url: "https://x/mcp"}, ClientId: id, OauthAuthorizationServer: as}
 	}
@@ -221,6 +224,8 @@ func TestAddRemoteOAuthClient(t *testing.T) {
 		"over-long client id":       remote(strings.Repeat("c", maxClientID+1), ""),
 		"relative auth server path": remote("", "as.json"),
 		"auth server with a line":   remote("", "https://as/x\nmore"),
+		"cleartext auth server":     remote("", "http://as.example/x"),
+		"auth server with no host":  remote("", "https:///x"),
 		"client id on a command": {Name: "pw", AcknowledgeLocalExecution: true, ClientId: "c",
 			Definition: &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: "npx"}}},
 		"auth server on a command": {Name: "pw", AcknowledgeLocalExecution: true, OauthAuthorizationServer: "https://as",

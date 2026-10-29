@@ -153,7 +153,8 @@ and `sbxkit.MinSbxVersion` confirmed as the first schema-2 release.
    `sbx mcp add slack --url … --client-id <id> --skip-auth` (the combination with `--skip-auth` is
    assumed — confirm it registers without a browser). `A` authorizes; attach `slack` to a sandbox and
    its tools work.
-3. Enter a client ID with a space, or a relative **OAuth authorization server** path: the form stays
+3. Enter a client ID with a space, or a relative or plain `http://` (non-loopback) **OAuth
+   authorization server**: the form stays
    open with the message; nothing runs. Either field on a host command is refused likewise.
 4. To change the client later (manual, on the host): store the new `mcp:slack:client_secret`, run
    `sbx secret rm mcp:slack:client_secret:identity`, then `A` re-authorizes. A different client ID

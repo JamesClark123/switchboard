@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -678,20 +679,33 @@ const maxClientID = 256
 
 // normalizeOAuthClient trims and validates a remote server's OAuth client
 // settings (FR-105): the client ID is one token (no spaces or control
-// characters, not flag-like); the authorization server is an http(s) URL or
-// an absolute path, which the daemon's `sbx` reads on this host. Either may
-// be empty.
+// characters, not flag-like); the authorization server is an https URL (http
+// only to a loopback host) or an absolute path, which the daemon's `sbx` reads
+// on this host. Either may be empty.
 func normalizeOAuthClient(clientID, authServer string) (string, string, error) {
 	clientID, authServer = strings.TrimSpace(clientID), strings.TrimSpace(authServer)
 	if clientID != "" && (utf8.RuneCountInString(clientID) > maxClientID || !utf8.ValidString(clientID) || clientID[0] == '-' ||
 		strings.IndexFunc(clientID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0) {
 		return "", "", fmt.Errorf("%w: client ID must be a single token of at most %d characters", ErrInvalidArgs, maxClientID)
 	}
-	isURL := strings.HasPrefix(authServer, "http://") || strings.HasPrefix(authServer, "https://")
-	if authServer != "" && (!isURL && !filepath.IsAbs(authServer) || strings.IndexFunc(authServer, unicode.IsControl) >= 0) {
-		return "", "", fmt.Errorf("%w: authorization server must be an http(s) URL or an absolute path on the daemon's host", ErrInvalidArgs)
+	if authServer != "" && (!authServerOK(authServer) || strings.IndexFunc(authServer, unicode.IsControl) >= 0) {
+		return "", "", fmt.Errorf("%w: authorization server must be an https URL (http only to a loopback host) or an absolute path on the daemon's host", ErrInvalidArgs)
 	}
 	return clientID, authServer, nil
+}
+
+// authServerOK accepts an absolute path, an https URL, or an http URL to a
+// loopback host: the metadata names the endpoints the client secret is sent
+// to, so it is never fetched in cleartext across a network.
+func authServerOK(s string) bool {
+	if filepath.IsAbs(s) {
+		return true
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname())
 }
 
 // headerNameRe is an HTTP field name (RFC 9110 token).

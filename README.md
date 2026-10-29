@@ -333,7 +333,7 @@ that daemon only:
   its value as the secret `mcp:<server>:<placeholder>` under **Secrets** (below) — the gateway fills it
   in on the host, so no token ever reaches a registration or a log. For a server without Dynamic
   Client Registration (e.g. Slack), fill **OAuth client ID** (and, only if the server publishes no
-  OAuth metadata, **OAuth authorization server**); a confidential client's secret is stored first as
+  OAuth metadata, **OAuth authorization server**: an https URL, http only to localhost, or an absolute path); a confidential client's secret is stored first as
   `mcp:<server>:client_secret` under **Secrets** (to rotate it later, store the new one, run
   `sbx secret rm mcp:<server>:client_secret:identity` on the host and re-authorize). Registry-based local servers are still managed on
   the host directly.

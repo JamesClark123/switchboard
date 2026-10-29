@@ -424,7 +424,11 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 	for _, c := range []struct{ id, as, want string }{
 		{"a b", "", "single token"},
 		{"--x", "", "single token"},
-		{"c1", "relative.json", "http(s) URL or an absolute path"},
+		{"c1", "relative.json", "https URL (http only to a loopback host) or an absolute path"},
+		{"c1", "http://as.example/x", "https URL (http only to a loopback host)"},
+		{strings.Repeat("c", 257), "", "at most 256 characters"},
+		{"c\x7f1", "", "single token"},
+		{"c1", "https://as/x\x01", "https URL"},
 	} {
 		m = pressCmd(m, "a")
 		m.mcpView.vals.name = "bad"
@@ -437,6 +441,15 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 		m = escDiscard(t, m)
 	}
 	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "local-as"
+	m.mcpView.vals.url = "https://x/mcp"
+	m.mcpView.vals.authServer = "http://127.0.0.1:9000/x"
+	m, cmd = update(m, ctrlS())
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 2 || d.addedMcp[1].GetOauthAuthorizationServer() != "http://127.0.0.1:9000/x" {
+		t.Fatalf("a loopback http auth server should register; added = %+v", d.addedMcp)
+	}
+	m = pressCmd(m, "a")
 	m.mcpView.vals.name = "pw"
 	m.mcpView.vals.kind = "command"
 	m.mcpView.vals.command = "npx"
@@ -445,7 +458,7 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "OAuth client settings apply to remote endpoints only") {
 		t.Errorf("a client ID on a host command should be refused; status %q", m.mcpView.status)
 	}
-	if len(d.addedMcp) != 1 {
+	if len(d.addedMcp) != 2 {
 		t.Errorf("refused forms must not register; added %d", len(d.addedMcp))
 	}
 }
