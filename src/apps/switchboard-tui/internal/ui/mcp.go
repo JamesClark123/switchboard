@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	neturl "net/url"
 	"regexp"
 	"strconv"
@@ -457,7 +458,7 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 		}
 		req.OauthAuthorizationServer = strings.TrimSpace(vals.authServer)
 		if as := req.OauthAuthorizationServer; as != "" && (!authServerOK(as) || strings.ContainsFunc(as, unicode.IsControl)) {
-			v.status = "the OAuth authorization server must be an https URL (http only to a loopback host) or an absolute path"
+			v.status = "the OAuth authorization server must be an https URL (http only to localhost or a loopback IP) or an absolute path"
 			return m, nil
 		}
 		req.Definition = &pb.AddMcpServerRequest_Url{Url: url}
@@ -470,9 +471,9 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 const maxClientID = 256
 
 // authServerOK mirrors the daemon's rule for the authorization server: an
-// absolute path, an https URL, or an http URL to a loopback host (the same
-// loopback rule, libs/switchboard-dial), since the metadata names where the
-// client secret is sent.
+// absolute path, an https URL, or an http URL to a loopback IP or exactly
+// localhost, since the metadata names where the client secret is sent. Not
+// dial.IsLoopbackHost: *.localhost is refused, as `sbx` resolves this host.
 func authServerOK(s string) bool {
 	if strings.HasPrefix(s, "/") {
 		return true
@@ -481,7 +482,12 @@ func authServerOK(s string) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return u.Scheme == "https" || u.Scheme == "http" && dial.IsLoopbackHost(u.Hostname())
+	if u.Scheme == "https" {
+		return true
+	}
+	h := u.Hostname()
+	ip := net.ParseIP(h)
+	return u.Scheme == "http" && (strings.EqualFold(h, "localhost") || ip != nil && ip.IsLoopback())
 }
 
 // --- operations ---

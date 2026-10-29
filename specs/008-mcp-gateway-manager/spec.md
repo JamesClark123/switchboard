@@ -506,13 +506,14 @@ and the toggle is still off.
   baseline (FR-096), and changes MUST reach other clients through a daemon event.
 - **FR-105** *(added 2026-10-29, SWI-20)*: Registering a remote server MUST accept an optional
   pre-registered **OAuth client ID** (for servers without Dynamic Client Registration, e.g. Slack)
-  and an optional **OAuth authorization server** (an https URL, an http URL only to a loopback host, or
+  and an optional **OAuth authorization server** (an https URL, an http URL only to `localhost` or a loopback IP, or
   an absolute path on the daemon's host, to RFC 8414 metadata for a server that publishes none), passed as `--client-id` and
   `--oauth-authorization-server`. There is no client-secret field: a confidential client's secret is
   the host secret `mcp:<server>:client_secret` (FR-104), which MUST be stored before adding (without
   it the runtime silently skips authorization), and the form MUST say so next to the field. A client
   ID that is not one token (whitespace, control characters, a leading `-`, over 256 characters) or an
-  authorization server that is not an https URL, a loopback http URL or an absolute path (plain http
+  authorization server that is not an https URL, an http URL to `localhost` or a loopback IP (never `*.localhost`, which the host may
+  resolve through the network's DNS), or an absolute path (plain http
   elsewhere would let an on-path attacker name the endpoints the client secret goes to) MUST be
   refused before any CLI call, and the TUI applies the same rules so the form stays open; either field on a host-command server MUST be refused. That both flags combine with
   `--skip-auth` is assumed from the documentation, not verified on a real host.

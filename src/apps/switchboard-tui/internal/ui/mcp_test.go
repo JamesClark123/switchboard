@@ -424,8 +424,9 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 	for _, c := range []struct{ id, as, want string }{
 		{"a b", "", "single token"},
 		{"--x", "", "single token"},
-		{"c1", "relative.json", "https URL (http only to a loopback host) or an absolute path"},
-		{"c1", "http://as.example/x", "https URL (http only to a loopback host)"},
+		{"c1", "relative.json", "https URL (http only to localhost or a loopback IP) or an absolute path"},
+		{"c1", "http://as.example/x", "https URL (http only to localhost or a loopback IP)"},
+		{"c1", "http://as.localhost/x", "https URL (http only to localhost or a loopback IP)"},
 		{strings.Repeat("c", 257), "", "at most 256 characters"},
 		{"c\x7f1", "", "single token"},
 		{"c1", "https://as/x\x01", "https URL"},
@@ -439,6 +440,11 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 			t.Errorf("%+v: status %q", c, m.mcpView.status)
 		}
 		m = escDiscard(t, m)
+	}
+	for _, as := range []string{"http://localhost:9000/x", "http://[::1]/x", "http://127.0.0.2/x"} {
+		if !authServerOK(as) {
+			t.Errorf("%s should be accepted", as)
+		}
 	}
 	m = pressCmd(m, "a")
 	m.mcpView.vals.name = "local-as"

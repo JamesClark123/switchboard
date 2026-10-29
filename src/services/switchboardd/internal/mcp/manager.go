@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -680,7 +681,7 @@ const maxClientID = 256
 // normalizeOAuthClient trims and validates a remote server's OAuth client
 // settings (FR-105): the client ID is one token (no spaces or control
 // characters, not flag-like); the authorization server is an https URL (http
-// only to a loopback host) or an absolute path, which the daemon's `sbx` reads
+// only to localhost or a loopback IP) or an absolute path, which the daemon's `sbx` reads
 // on this host. Either may be empty.
 func normalizeOAuthClient(clientID, authServer string) (string, string, error) {
 	clientID, authServer = strings.TrimSpace(clientID), strings.TrimSpace(authServer)
@@ -689,14 +690,17 @@ func normalizeOAuthClient(clientID, authServer string) (string, string, error) {
 		return "", "", fmt.Errorf("%w: client ID must be a single token of at most %d characters", ErrInvalidArgs, maxClientID)
 	}
 	if authServer != "" && (!authServerOK(authServer) || strings.IndexFunc(authServer, unicode.IsControl) >= 0) {
-		return "", "", fmt.Errorf("%w: authorization server must be an https URL (http only to a loopback host) or an absolute path on the daemon's host", ErrInvalidArgs)
+		return "", "", fmt.Errorf("%w: authorization server must be an https URL (http only to localhost or a loopback IP) or an absolute path on the daemon's host", ErrInvalidArgs)
 	}
 	return clientID, authServer, nil
 }
 
 // authServerOK accepts an absolute path, an https URL, or an http URL to a
-// loopback host: the metadata names the endpoints the client secret is sent
-// to, so it is never fetched in cleartext across a network.
+// loopback IP or exactly localhost: the metadata names the endpoints the
+// client secret is sent to, so it is never fetched in cleartext across a
+// network. Unlike the callback rule (dial.IsLoopbackHost), *.localhost is
+// refused: `sbx` dials this host, and the host's resolver may ask the
+// network's DNS for such a name.
 func authServerOK(s string) bool {
 	if filepath.IsAbs(s) {
 		return true
@@ -705,7 +709,12 @@ func authServerOK(s string) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname())
+	if u.Scheme == "https" {
+		return true
+	}
+	h := u.Hostname()
+	ip := net.ParseIP(h)
+	return u.Scheme == "http" && (strings.EqualFold(h, "localhost") || ip != nil && ip.IsLoopback())
 }
 
 // headerNameRe is an HTTP field name (RFC 9110 token).
