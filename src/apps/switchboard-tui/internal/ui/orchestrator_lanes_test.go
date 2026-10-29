@@ -323,6 +323,7 @@ func TestActionFormLanes(t *testing.T) {
 	// e on build-ui: the lanes are pre-ticked; a laned save needs no check.
 	m = keys(m, press("e"))
 	fv := m.jobs.formVals.(*actionFormVals)
+	m.jobs.form.NextGroup() // Lanes is the page after the head
 	if len(fv.lanes) != 1 || fv.mode != "exclusive" || !strings.Contains(m.View(), "Lanes (prompt only)") || !strings.Contains(helpText(m.jobsHelp()), "manage lanes") {
 		t.Fatalf("form = %+v\n%s", fv, m.View())
 	}

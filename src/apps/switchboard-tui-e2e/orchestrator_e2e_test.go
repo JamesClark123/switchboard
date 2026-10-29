@@ -798,6 +798,9 @@ func TestTUIWorkerToolsE2E(t *testing.T) {
 	m = p.mark()
 	p.send("\r")
 	p.expectNew(t, m, "Orchestrator review-bot", 10*time.Second)
+	// The closed run holds the worker until its cleanup (/clear) finished
+	// (SWI-17 FR-215); a held worker can't be detached.
+	p.expectRow(t, m, `@remote +RUNNING +free`, 20*time.Second)
 	m = p.mark()
 	p.send("x")
 	p.expectNew(t, m, "Detach", 10*time.Second)
@@ -924,6 +927,115 @@ func TestTUIReasoningSandboxE2E(t *testing.T) {
 	}
 	if !strings.Contains(typed, `[switchboard orchestrator "review-bot" · run run-`) || !strings.Contains(typed, `action "think"`) {
 		t.Errorf("the reasoning sandbox should have received the framed reason prompt; typed:\n%s", typed)
+	}
+	p.send("q")
+}
+
+// TestTUIActionSequenceE2E drives SWI-17 through the real binaries (T040): the
+// action form saves built-ins and custom prompts, which reload into the form
+// and summarise on the action's row; a call whose /model step the agent does
+// not accept halts, its row naming the step with R/S/X offered, and S skips
+// it: the sequence goes on to the custom pre-prompt and the action prompt.
+func TestTUIActionSequenceE2E(t *testing.T) {
+	requireLocalTarget(t)
+	tui, daemon := buildBinaries(t)
+	sbxDir := stubSbx(t)
+	sock := startDaemon(t, daemon, sbxDir)
+	p := spawnTUI(t, tui, sock, seedSource(t))
+	launchOne(t, p)
+	createOrchestrator(t, p)
+	backToList(t, p)
+	m := p.mark()
+	p.send("o")
+	p.expectNew(t, m, "to an orchestrator", 10*time.Second)
+	p.send("\r")
+	p.expect(t, "attached", 15*time.Second)
+
+	// Author: Model fable (the stub agent doesn't know it), Effort and Clear
+	// as offered, one pre- and one post-prompt.
+	openJobs(t, p)
+	p.gotoView(t, "no actions — press a to add one")
+	m = p.mark()
+	p.send("a")
+	p.expectNew(t, m, "Body", 10*time.Second)
+	p.send("setup-pr")
+	p.tab()
+	p.tab() // description: blank
+	p.tab() // type: prompt
+	p.send("Review pull request {number}.")
+	p.tab() // arguments (no lanes on this orchestrator: their page is hidden)
+	p.send("number *")
+	p.tab()          // Model: opus
+	p.send("\x1b[B") // ↓ fable
+	p.tab()          // Effort: medium
+	p.tab()          // Clear after run: yes
+	p.tab()
+	p.send("/pre-setupskill")
+	p.tab()
+	p.send("/tear-down-skill")
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "saved action setup-pr", 15*time.Second)
+	p.expect(t, "pre: /model fable · /effort medium · 1 custom — post: 1 custom · /clear", 10*time.Second)
+
+	// It reloads into the form as saved (the form scrolls with the focus).
+	m = p.mark()
+	p.send("e")
+	p.expectNew(t, m, "Body", 10*time.Second)
+	for i := 0; i < 5; i++ {
+		p.tab() // … to Model
+	}
+	p.expectNew(t, m, "fable", 5*time.Second)
+	for i := 0; i < 3; i++ {
+		p.tab() // … to Pre-prompts
+	}
+	p.expectNew(t, m, "/pre-setupskill", 5*time.Second)
+	p.tab()
+	p.expectNew(t, m, "/tear-down-skill", 5*time.Second)
+	m = p.mark()
+	p.send("\x1b") // unchanged: esc leaves at once
+	p.expectNew(t, m, "{number*}", 10*time.Second)
+
+	// Call it: /model fable is not accepted, and the run halts there.
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "number *", 10*time.Second)
+	p.send("7")
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "queued run-", 15*time.Second)
+	m = p.mark()
+	p.send("\x1b[D") // ← Overview
+	p.expectRow(t, m, `setup-pr +running +review-bot @.*setting up 1/3 not accepted: Model 'fable' not found`, 30*time.Second)
+	// The row's keys (the help line styles each key apart from its label).
+	p.expectNew(t, m, "retry step", 10*time.Second)
+	p.expectNew(t, m, "skip step", 5*time.Second)
+	p.expectNew(t, m, "fail run", 5*time.Second)
+
+	// S: the sequence goes on; the pre-prompt and the action prompt follow.
+	m = p.mark()
+	p.send("S")
+	p.expectNew(t, m, "Skip", 10*time.Second)
+	m = p.mark()
+	p.send("y")
+	p.expectRow(t, m, `setup-pr +running +review-bot @`, 20*time.Second)
+	deadline := time.Now().Add(30 * time.Second)
+	var typed string
+	for time.Now().Before(deadline) && !strings.Contains(typed, "Review pull request 7.") {
+		files, _ := filepath.Glob(filepath.Join(sbxDir, "agent-*.in"))
+		for _, f := range files {
+			if b, err := os.ReadFile(f); err == nil {
+				typed = string(b)
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	at := func(s string) int { return strings.Index(typed, s) }
+	if at("/model fable") < 0 || at("/effort medium") < at("/model fable") || at("/pre-setupskill") < at("/effort medium") || at("Review pull request 7.") < at("/pre-setupskill") {
+		t.Errorf("the agent should have received /model fable, /effort medium, /pre-setupskill and the action prompt in order; typed:\n%s", typed)
+	}
+	if strings.Count(typed, "/model fable") != 1 {
+		t.Errorf("a skipped step is never typed again; typed:\n%s", typed)
 	}
 	p.send("q")
 }

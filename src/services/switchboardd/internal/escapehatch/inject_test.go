@@ -1,7 +1,10 @@
 package escapehatch
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,5 +59,35 @@ func TestInjectRemovesWrapperWhenEmpty(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, wrapperRelPath)); !os.IsNotExist(err) {
 		t.Errorf("wrapper should be removed when no commands remain, err=%v", err)
+	}
+}
+
+// The generated wrapper sends the agent's token from its environment, and a
+// call from outside the agent (no token) is refused (SWI-17, research R13).
+func TestWrapperCallCarriesTheAgentToken(t *testing.T) {
+	ws := t.TempDir()
+	svc, _ := serviceWith(t, ws, shCmd("ok", "true"))
+	srv := httptest.NewServer(http.HandlerFunc(svc.HandleRun))
+	defer srv.Close()
+	if err := Inject(ws, "sb1", srv.URL, []*pb.EscapeHatchCommand{shCmd("ok", "true")}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command("sh", filepath.Join(ws, wrapperRelPath), "ok")
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("wrapper: %v: %s", err, out)
+		}
+		return string(out)
+	}
+	if out := run("SXB_HOOK_TOKEN=tok-1", "SXB_AGENT_GEN=1"); !strings.Contains(out, `"run_id"`) {
+		t.Errorf("with the agent's token = %q", out)
+	}
+	if out := run(); !strings.Contains(out, "no agent token in this environment") {
+		t.Errorf("without a token = %q", out)
+	}
+	if body, _ := os.ReadFile(filepath.Join(ws, wrapperRelPath)); strings.Contains(string(body), "tok-1") {
+		t.Error("the wrapper must not embed a token")
 	}
 }

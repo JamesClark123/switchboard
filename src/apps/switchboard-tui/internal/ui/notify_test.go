@@ -132,3 +132,27 @@ func TestSubscribeFlowAndError(t *testing.T) {
 		t.Error("subErr should be recorded")
 	}
 }
+
+// SWI-17 (FR-223, research R10/R14): a step not accepted reads like a failed
+// run; a detached agent is its own warning. Both reach the inbox and desktop.
+func TestStepAndDetachedNotifications(t *testing.T) {
+	rn := &recordNotifier{}
+	m := sized(New(&fakeDaemon{}, "/work").WithNotifier(rn))
+	m.sub = &fakeStream{ctx: context.Background(), ch: nil}
+	m, _ = update(m, eventMsg{ev: notif("n-1", "sb1", pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED)})
+	m, _ = update(m, eventMsg{ev: notif("n-2", "sb2", pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED)})
+	if len(m.inbox) != 2 || len(rn.titles) != 2 {
+		t.Fatalf("inbox %d desktop %d", len(m.inbox), len(rn.titles))
+	}
+	if !strings.Contains(strings.Join(rn.titles, "|"), "step not accepted") || !strings.Contains(strings.Join(rn.titles, "|"), "agent detached") {
+		t.Errorf("titles = %v", rn.titles)
+	}
+	if notifIcon(pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED) != notifIcon(pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED) {
+		t.Error("not accepted is shown like a failed run")
+	}
+	out, _ := m.enterNotifications()
+	m = out.(Model)
+	if v := m.View(); !strings.Contains(v, "step not accepted") || !strings.Contains(v, "agent detached") {
+		t.Errorf("inbox:\n%s", v)
+	}
+}

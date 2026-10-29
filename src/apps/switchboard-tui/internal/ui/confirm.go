@@ -46,6 +46,14 @@ type confirmState struct {
 	// confirms that open without the user pressing their key, so a repeated or
 	// held enter, or one submitting a prompt above, can never accept them.
 	yOnly bool
+	// enterCancels makes enter answer No (SWI-17): the run-step confirms default
+	// to No, and the detached-agent dialog defaults to Wait unless the agent was
+	// last seen idle. y still accepts.
+	enterCancels bool
+	// acceptLabel / cancelLabel name the two answers in the help line when the
+	// dialog is a choice rather than a yes/no ("replace" / "wait"); empty keeps
+	// "confirm" / "cancel".
+	acceptLabel, cancelLabel string
 }
 
 // enterConfirm opens the dialog over the sandbox list. The caller supplies the
@@ -57,12 +65,23 @@ func (m Model) enterConfirm(st confirmState) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) confirmHelp() helpBindings {
-	return helpBindings{hkey(m.confirmAcceptKeys(), "confirm"), hkey("n/esc", "cancel")}
+	accept, cancel := "confirm", "cancel"
+	if m.confirm.acceptLabel != "" {
+		accept = m.confirm.acceptLabel
+	}
+	if m.confirm.cancelLabel != "" {
+		cancel = m.confirm.cancelLabel
+	}
+	cancelKeys := "n/esc"
+	if m.confirm.enterCancels {
+		cancelKeys = "n/enter/esc"
+	}
+	return helpBindings{hkey(m.confirmAcceptKeys(), accept), hkey(cancelKeys, cancel)}
 }
 
 // confirmAcceptKeys names the keys that accept the showing confirm.
 func (m Model) confirmAcceptKeys() string {
-	if m.confirm.yOnly {
+	if m.confirm.yOnly || m.confirm.enterCancels {
 		return "y"
 	}
 	return "y/enter"
@@ -73,6 +92,11 @@ func (m Model) confirmAcceptKeys() string {
 func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
+		if msg.String() == "enter" && m.confirm.enterCancels {
+			m.screen = m.confirm.returnTo
+			m.confirm = confirmState{}
+			return m, nil
+		}
 		if msg.String() == "enter" && m.confirm.yOnly {
 			return m, nil
 		}

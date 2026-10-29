@@ -91,6 +91,10 @@ type fakeDaemon struct {
 	attachErr  error
 	attachedID string
 	termClosed bool
+	// SWI-17: replacedID records an AttachTerminalReplacing; replaceErr fails it.
+	replacedID string
+	replaceErr error
+	lifecycle  []string // Stop/Restart calls, in order
 
 	// feature 004 fakes: refresh + kits. streamLines stands in for the sbx
 	// output the daemon streams as LaunchProgress.log_line during Refresh/AddKit.
@@ -302,6 +306,19 @@ func (f *fakeDaemon) AttachTerminal(_ context.Context, sandboxID string, _ clien
 	return &fakeTermSession{sink: sink, d: f}, nil
 }
 
+// AttachTerminalReplacing is `t` → Replace (SWI-17): recorded, then the same
+// canned session as AttachTerminal.
+func (f *fakeDaemon) AttachTerminalReplacing(_ context.Context, sandboxID string, _, _ uint32, sink io.Writer) (client.TermSession, error) {
+	if f.replaceErr != nil {
+		return nil, f.replaceErr
+	}
+	f.mu.Lock()
+	f.replacedID, f.attachedID = sandboxID, sandboxID
+	f.mu.Unlock()
+	_, _ = sink.Write([]byte("SNAPSHOT:" + sandboxID))
+	return &fakeTermSession{sink: sink, d: f}, nil
+}
+
 type fakeTermSession struct {
 	sink   io.Writer
 	d      *fakeDaemon
@@ -410,10 +427,19 @@ func (f *fakeDaemon) Launch(_ context.Context, req *pb.LaunchSandboxRequest, onU
 }
 
 func (f *fakeDaemon) Stop(_ context.Context, id string) (*pb.Sandbox, error) {
+	f.recordLifecycle("Stop " + id)
 	return f.setState(id, pb.SandboxState_SANDBOX_STATE_STOPPED)
 }
 func (f *fakeDaemon) Restart(_ context.Context, id string) (*pb.Sandbox, error) {
+	f.recordLifecycle("Restart " + id)
 	return f.setState(id, pb.SandboxState_SANDBOX_STATE_RUNNING)
+}
+
+// recordLifecycle notes a Stop/Restart call (SWI-17's Restart sandbox).
+func (f *fakeDaemon) recordLifecycle(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lifecycle = append(f.lifecycle, call)
 }
 func (f *fakeDaemon) Destroy(_ context.Context, id string) (bool, error) {
 	f.mu.Lock()

@@ -3,6 +3,8 @@ package terminal
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // subBufFrames bounds each client's fan-out queue. A client that cannot keep up
@@ -43,7 +45,8 @@ type attachment struct {
 }
 
 // Broadcaster reads a PTY once and fans its output to N attached clients, keeping
-// the PTY alive independently of any client. One per running sandbox.
+// the PTY alive independently of any client. One per running sandbox. A
+// controlled sandbox's broadcaster also keeps an agent screen (screen.go).
 type Broadcaster struct {
 	mu       sync.Mutex
 	pty      PTY
@@ -52,16 +55,33 @@ type Broadcaster struct {
 	nextID   int
 	closed   bool
 	onChange func() // invoked (without the lock held) when the attachment set changes
+
+	cols, rows uint16    // the PTY size last set (0 until something sizes it)
+	lastNudge  time.Time // the last repaint nudge (debounce, screen.go)
+
+	scr      atomic.Pointer[screen] // the agent screen; nil when none
+	done     chan struct{}          // closed when the session ends (stops the parser)
+	doneOnce sync.Once
 }
 
 // New wraps a PTY and starts its read loop. onChange (may be nil) is called after
 // an attach/detach so the caller can publish the updated attachment count.
 func New(pty PTY, ringBytes int, onChange func()) *Broadcaster {
+	return newBroadcaster(pty, ringBytes, onChange, false)
+}
+
+// newBroadcaster is New, with the agent screen enabled before the first read
+// when withScreen is set, so the screen sees every byte.
+func newBroadcaster(pty PTY, ringBytes int, onChange func(), withScreen bool) *Broadcaster {
 	b := &Broadcaster{
 		pty:      pty,
 		ring:     newRing(ringBytes),
 		subs:     map[int]*attachment{},
 		onChange: onChange,
+		done:     make(chan struct{}),
+	}
+	if withScreen {
+		b.EnableScreen()
 	}
 	go b.readLoop()
 	return b
@@ -73,6 +93,11 @@ func (b *Broadcaster) readLoop() {
 		n, err := b.pty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
+			// The screen's parser runs on its own goroutine: hand the chunk over
+			// without blocking (a full queue marks the screen stale) and go on.
+			if sc := b.scr.Load(); sc != nil {
+				sc.offer(chunk)
+			}
 			b.mu.Lock()
 			b.ring.write(chunk)
 			for _, a := range b.subs {
@@ -104,8 +129,12 @@ func (b *Broadcaster) shutdown() {
 	}
 	b.subs = map[int]*attachment{}
 	b.mu.Unlock()
+	b.stopScreen()
 	b.notify()
 }
+
+// stopScreen ends the screen's parser goroutine. Idempotent.
+func (b *Broadcaster) stopScreen() { b.doneOnce.Do(func() { close(b.done) }) }
 
 // Conn is a single client's live attachment to a session.
 type Conn struct {
@@ -175,7 +204,9 @@ func (b *Broadcaster) detach(id int) {
 }
 
 // applyResizeLocked sets the PTY size to the smallest rows/cols across attached
-// clients (research.md R3) so no client's viewport ever overflows. Caller holds mu.
+// clients (research.md R3) so no client's viewport ever overflows. The agent
+// screen, when there is one, follows the PTY. With no client sized, the PTY
+// keeps its size. Caller holds mu.
 func (b *Broadcaster) applyResizeLocked() {
 	var cols, rows uint16
 	for _, a := range b.subs {
@@ -188,6 +219,10 @@ func (b *Broadcaster) applyResizeLocked() {
 	}
 	if cols > 0 && rows > 0 {
 		_ = b.pty.Resize(cols, rows)
+		b.cols, b.rows = cols, rows
+		if sc := b.scr.Load(); sc != nil {
+			sc.view.Resize(int(cols), int(rows))
+		}
 	}
 }
 
@@ -224,6 +259,7 @@ func (b *Broadcaster) Close() error {
 	}
 	b.subs = map[int]*attachment{}
 	b.mu.Unlock()
+	b.stopScreen()
 	b.notify()
 	return b.pty.Close()
 }

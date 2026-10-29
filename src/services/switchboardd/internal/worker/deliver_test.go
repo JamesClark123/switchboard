@@ -207,7 +207,7 @@ func TestEnsureDrained(t *testing.T) {
 	sess := newRecSession()
 	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) { return sess, nil })
 	var terms *terminal.Registry
-	prompt := EnsureDrained(func() *terminal.Registry { return terms }, agents.Prompt)
+	prompt := EnsureDrained(func() *terminal.Registry { return terms }, agents)
 	if err := prompt("sb", &pb.AgentSpec{}, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +224,67 @@ func TestEnsureDrained(t *testing.T) {
 	}
 	if !strings.Contains(sess.typed(), agent.Typed("x")) || !strings.Contains(sess.typed(), agent.Typed("y")) {
 		t.Errorf("typed = %q", sess.typed())
+	}
+}
+
+// heldStatus is a status side whose one sandbox's run holds it.
+type heldStatus struct{ hold pb.WorkerHold }
+
+func (h heldStatus) SetAgentStatus(string, pb.AgentStatus, time.Time) (*pb.Sandbox, error) {
+	return &pb.Sandbox{}, nil
+}
+
+func (h heldStatus) Get(id string) (*pb.Sandbox, error) {
+	return &pb.Sandbox{Id: id, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE},
+		Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "r1", Hold: h.hold}}}, nil
+}
+
+// SWI-17 (research R13): an escape-hatch result to a held sandbox with no live
+// agent spawns nothing; a live agent still gets it.
+func TestEnsureDrainedSpawnsNothingWhileHeld(t *testing.T) {
+	var created int
+	sess := newRecSession()
+	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) { created++; return sess, nil })
+	agents.SetStatusUpdater(heldStatus{hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER})
+	terms := terminal.NewRegistry(func(id string) (terminal.PTY, error) { return agents.Session(id, &pb.AgentSpec{}) }, 0, nil)
+	prompt := EnsureDrained(func() *terminal.Registry { return terms }, agents)
+	if err := prompt("sb", &pb.AgentSpec{}, "result"); !errors.Is(err, agent.ErrHeld) || err.Error() != "sandbox is held; open its terminal" {
+		t.Errorf("held, no agent = %v", err)
+	}
+	if err := agents.Prompt("sb", &pb.AgentSpec{}, "result"); !errors.Is(err, agent.ErrHeld) {
+		t.Errorf("Prompt, held, no agent = %v", err)
+	}
+	if created != 0 || agents.Live("sb") {
+		t.Fatal("nothing may be spawned while held")
+	}
+	// The developer's terminal (AttachAgent) still starts one; then results reach it.
+	if _, err := terms.Broadcaster("sb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := prompt("sb", &pb.AgentSpec{}, "result"); err != nil || created != 1 {
+		t.Errorf("held, live agent = %v (created %d)", err, created)
+	}
+}
+
+// A spawn that fails is refused with its cause, not read as an agent forever
+// starting.
+func TestDeliverReportsAFailedAgentStart(t *testing.T) {
+	e := newEnv(t, "")
+	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
+		return nil, errors.New("sbx: not found")
+	})
+	e.svc.agents = agents
+	e.svc.SetTerminals(terminal.NewRegistry(func(id string) (terminal.PTY, error) { return agents.Session(id, &pb.AgentSpec{}) }, 0, nil))
+	sb := e.sandbox(t, "eeeeeeee-6", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		x.Controller = controller("orch-1", "review-bot")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := e.svc.Deliver(bg, deliverReq(sb.GetId()))
+	if ok || !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "agent not started: ") || !strings.Contains(err.Error(), "sbx: not found") {
+		t.Fatalf("deliver with a failing spawn = %v / %v", ok, err)
 	}
 }
 
@@ -448,4 +509,16 @@ func TestDeliverPutsAStrayIdleBackToStarting(t *testing.T) {
 	if ok, err := e.svc.Deliver(bg, deliverReq(sb.GetId())); !ok || err != nil {
 		t.Errorf("deliver once ready = %v / %v", ok, err)
 	}
+}
+
+// Attaching gives the worker's broadcaster an agent screen even when it was
+// created without one (SWI-17, research R2).
+func TestAttachEnablesTheAgentScreen(t *testing.T) {
+	e, _, _ := deliverEnv(t, false)
+	sb := e.sandbox(t, "aaaaaaaa-5", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	attachReady(t, e, sb.GetId())
+	if _, _, ok := e.svc.terms.Screen(sb.GetId()); !ok {
+		t.Fatal("attach should enable the agent screen on the warm-started broadcaster")
+	}
+	e.svc.terms.Close(sb.GetId())
 }

@@ -203,8 +203,9 @@ func runInFlight(r *pb.Run) bool {
 // runKeyAction is a per-run key on a surface (FR-010, FR-012, FR-016): enter
 // shows the composed prompt, x cancels a queued run, m marks the worker of a run
 // awaiting review free, o opens a finished run's results, t / T open the worker
-// sandbox's terminal in place / externally (SWI-14). A key that does not apply
-// to the run's state says so on the surface's line.
+// sandbox's terminal in place / externally (SWI-14), and R / S / X retry, skip
+// or fail a halted step (SWI-17, run_steps.go). A key that does not apply to the
+// run's state says so on the surface's line.
 func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
 	switch k {
@@ -230,20 +231,23 @@ func (m Model) runKeyAction(s orchSurface, t orchTarget, run *pb.Run, k string) 
 		return m.openRunResults(t, run)
 	case "t", "T":
 		return m.runTerminal(s, run, k == "T")
+	case "R", "S", "X":
+		return m.stepKey(s, t, run, k)
 	}
 	return m, nil
 }
 
-// runTerminal opens the terminal of an in-flight run's worker sandbox: in place
-// (returning to the surface's screen on detach) or, with external, in its own
-// window. Refusals name the worker on the surface's line.
+// runTerminal opens the terminal of an in-flight run's worker sandbox, or of a
+// closed run still holding it (SWI-17: the terminal is the way out of a hold):
+// in place (returning to the surface's screen on detach) or, with external, in
+// its own window. Refusals name the worker on the surface's line.
 func (m Model) runTerminal(s orchSurface, run *pb.Run, external bool) (tea.Model, tea.Cmd) {
 	refuse := func(why string) (tea.Model, tea.Cmd) {
 		m.opState(s).status = why
 		m.status = why
 		return m, nil
 	}
-	if !runInFlight(run) {
+	if !runHasTerminal(run) {
 		return refuse("only an in-progress run has a terminal")
 	}
 	sb, host, why := m.runSandbox(run)
@@ -336,11 +340,17 @@ func (m Model) markFreeSaving(v *markFreeVals) (string, bool) {
 // markFreeKey is `m` on a sandbox row: while the worker's run awaits review
 // the outcome dialog is sent to the controller's daemon; a worker parked
 // "needs input" with no run on it is freed outright (its agent set back to
-// idle), no dialog. The dialog opens over the orchestrator detail (under
-// Daemons › Orchestrators) and returns to the list (research R8).
+// idle), no dialog, and so is one whose closed run is cleaning up while its
+// agent asks for input (SWI-17 FR-216: the run's outcome is not changed). The
+// dialog opens over the orchestrator detail (under Daemons › Orchestrators)
+// and returns to the list (research R8).
 func (m Model) markFreeKey(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	c := sb.GetController()
-	parked := c.GetRun() == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	asking := sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+	// A worker held for the developer (or already being freed) goes to the
+	// daemon too, which answers with what frees it (SWI-17 re-review).
+	parked := asking && (c.GetRun() == nil || c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP) ||
+		heldOtherwise(c.GetRun().GetHold())
 	if !c.GetRun().GetNeedsReview() && !parked {
 		m.status = "no run awaiting review on this sandbox"
 		return m, nil
@@ -379,16 +389,27 @@ func (m Model) markFreeFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
 	switch {
 	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_REVIEW:
 		return m.openMarkFreeForm(surfaceDetail, m.detailTarget(), w.GetSandboxId(), w.GetRunId())
-	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT && w.GetRunId() == "":
+	case w.GetAvailability() == pb.WorkerAvailability_WORKER_AVAILABILITY_AWAITING_INPUT &&
+		(w.GetRunId() == "" || w.GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP):
+		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
+	case heldOtherwise(w.GetHold()):
 		return m.freeParkedWorker(w.GetSandboxId(), w.GetDisplayName(), m.orchDetail.host, m.orchDetail.id)
 	}
 	m.orchDetail.status = "that worker has no run awaiting review"
 	return m, nil
 }
 
+// heldOtherwise reports a hold mark free can't end (needing the developer, or
+// already being freed): the daemon's refusal says what does.
+func heldOtherwise(h pb.WorkerHold) bool {
+	return h == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || h == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
+}
+
 // freeParkedWorker asks the orchestrator's daemon to set a worker that is
 // parked needs-input with no run back to idle (MarkWorkerFree with nothing to
-// close); the next queued run can then go to it.
+// close); the next queued run can then go to it. For a worker held by a
+// cleanup that asks for input, the same call drops the remaining custom
+// post-prompts; Clear follows once the question is answered (FR-216).
 func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model, tea.Cmd) {
 	md, err := m.connectedDaemon(host)
 	if err != nil {
@@ -408,13 +429,18 @@ func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model
 	}
 }
 
-// promptView renders the read-only prompt overlay of a run.
+// promptView renders the read-only prompt overlay of a run: its steps in order
+// when it has a sequence (SWI-17, FR-220), then the composed prompt.
 func (m Model) promptView(r *pb.Run) string {
-	// The composed prompt carries arguments other sandboxes supplied (FR-029).
 	head := sectionStyle.Render("Run "+sanitizeLine(r.GetId(), 0)) + dimStyle.Render("  "+sanitizeLine(r.GetAction(), 0)+" · "+runState(r))
 	if why := r.GetWaitingReason(); why != "" {
 		// SWI-18 (FR-320): the whole waiting reason, cut on the queue rows.
 		head += "\n" + dimStyle.Render(lipgloss.NewStyle().Width(m.bodyWidth()).Render(sanitizeLine(why, 0)))
 	}
-	return head + "\n\n" + panelStyle.Width(m.bodyWidth()-2).Render(sanitizeTerminalText(r.GetPrompt()))
+	head += "\n\n"
+	if steps := m.stepLines(r, m.bodyWidth()-12); len(steps) > 0 {
+		head += strings.Join(steps, "\n") + "\n\n"
+	}
+	// The composed prompt carries arguments other sandboxes supplied (FR-029).
+	return head + panelStyle.Width(m.bodyWidth()-2).Render(sanitizeTerminalText(r.GetPrompt()))
 }

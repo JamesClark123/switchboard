@@ -61,7 +61,8 @@ func inFlight(r *pb.Run) bool {
 }
 
 // trimHistory deletes the oldest finished runs beyond historyKeep (I-R4):
-// queued and in-flight runs are never trimmed.
+// queued and in-flight runs, and closed runs with step work left, are never
+// trimmed.
 func (s *Service) trimHistory(orchID string) error {
 	runs, err := s.reg.ListRuns(orchID)
 	if err != nil {
@@ -69,7 +70,8 @@ func (s *Service) trimHistory(orchID string) error {
 	}
 	var done []*pb.Run
 	for _, r := range runs {
-		if finished(r) {
+		// A run still holding its sandbox, or halted, is kept (FR-213).
+		if finished(r) && !stepActive(r) {
 			done = append(done, r)
 		}
 	}

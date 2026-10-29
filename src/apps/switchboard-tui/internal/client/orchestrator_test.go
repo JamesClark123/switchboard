@@ -92,6 +92,9 @@ func (s *orchServer) GetRun(_ context.Context, r *pb.GetRunRequest) (*pb.Run, er
 func (s *orchServer) CancelRun(_ context.Context, r *pb.CancelRunRequest) (*pb.Run, error) {
 	return &pb.Run{Id: r.GetRunId(), State: pb.RunState_RUN_STATE_CANCELLED}, nil
 }
+func (s *orchServer) ResolveRunStep(_ context.Context, r *pb.ResolveRunStepRequest) (*pb.Run, error) {
+	return &pb.Run{Id: r.GetRunId(), Step: r.GetStep() + 1, StepNote: r.GetResolution().String() + " " + r.GetOrchestratorId()}, nil
+}
 func (s *orchServer) RebuildReasoningSandbox(r *pb.RebuildReasoningSandboxRequest, stream pb.Switchboard_RebuildReasoningSandboxServer) error {
 	_ = stream.Send(&pb.LaunchProgress{Event: &pb.LaunchProgress_LogLine{LogLine: "creating"}})
 	return stream.Send(&pb.LaunchProgress{Event: &pb.LaunchProgress_Done{Done: &pb.Sandbox{Id: "reasoning", DisplayName: "reasoning-" + r.GetOrchestratorId()}}})
@@ -165,6 +168,10 @@ func TestOrchestratorWrappers(t *testing.T) {
 	if run, err := conn.CancelRun(ctx, "o1", "run-1"); err != nil || run.GetState() != pb.RunState_RUN_STATE_CANCELLED {
 		t.Errorf("CancelRun = %v / %v", run, err)
 	}
+	// SWI-17: ResolveRunStep sends the run, its halted step and the resolution.
+	if run, err := conn.ResolveRunStep(ctx, "o1", "run-1", 2, pb.StepResolution_STEP_RESOLUTION_SKIP); err != nil || run.GetStep() != 3 || run.GetStepNote() != "STEP_RESOLUTION_SKIP o1" {
+		t.Errorf("ResolveRunStep = %v / %v", run, err)
+	}
 	var logs []string
 	sb, err := conn.RebuildReasoningSandbox(ctx, "o1", &pb.ReasoningSetup{}, func(u client.LaunchUpdate) {
 		if u.LogLine != "" {
@@ -219,6 +226,10 @@ func TestOrchestratorTooOld(t *testing.T) {
 		"Members":   func() error { _, e := conn.SetLaneMembers(ctx, &pb.SetLaneMembersRequest{}); return e },
 		"Check":     func() error { _, e := conn.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{}); return e },
 		"Dismiss":   func() error { _, e := conn.DismissDroppedWorkerTags(ctx, "o"); return e },
+		"Resolve": func() error {
+			_, e := conn.ResolveRunStep(ctx, "o", "r", 0, pb.StepResolution_STEP_RESOLUTION_RETRY)
+			return e
+		},
 	} {
 		if err := call(); !errors.Is(err, client.ErrDaemonTooOld) {
 			t.Errorf("%s: err = %v, want ErrDaemonTooOld", name, err)

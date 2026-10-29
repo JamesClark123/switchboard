@@ -81,6 +81,19 @@ type Service struct {
 	// the load so it comes up with the orchestrator's tools.
 	bringMu  sync.Mutex
 	bringing map[string]int
+
+	// Step delivery (SWI-17, step.go): the hook tap, and the screen, typer
+	// and clock, which default to the terminal registry, the agent registry
+	// and the wall clock. Tests inject them, and shorten the timing.
+	tap    StepTap
+	screen StepScreen
+	typer  StepTyper
+	clock  StepClock
+	timing stepTiming
+
+	// reaper stops an agent detached by a daemon restart for a restart
+	// halt's R (SWI-17, research R14; sandbox.Manager). nil: R refuses.
+	reaper OrphanReaper
 }
 
 // NewService constructs a Service and loads the token index.
@@ -89,6 +102,7 @@ func NewService(d Deps) *Service {
 		mgr: d.Manager, reg: d.Registry, agents: d.Agents, hub: d.Hub,
 		hookPort: d.HookPort, hostID: d.HostID, version: d.Version, logf: d.Logf, now: d.Clock,
 		links: newLinkIndex(), tokens: map[string]string{}, servers: map[string]*sdk.Server{},
+		clock: realClock{}, timing: defaultStepTiming,
 	}
 	if s.logf == nil {
 		s.logf = log.Printf
@@ -186,6 +200,11 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 	if launching == nil {
 		s.WarmStart(sb)
 	}
+	// A broadcaster created before the sandbox became a worker has no agent
+	// screen yet (SWI-17, research R2); one created from now on gets it.
+	if s.terms != nil {
+		s.terms.EnableScreen(sb.GetId())
+	}
 	return sb, nil
 }
 
@@ -260,7 +279,11 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 			cur.Name = req.GetName()
 		}
 		if req.GetSetRun() {
-			cur.Run = req.GetRun()
+			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()))
+			if err != nil {
+				return err
+			}
+			cur.Run = run
 		}
 		if l := req.GetLanes(); l != nil {
 			// SWI-18 (FR-309a/b): a display copy only. A name breaking the
@@ -308,6 +331,60 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 	}
 	s.mgr.Emit(out)
 	return out, nil
+}
+
+// nextRun is the controller run an UpdateWorker{set_run} leaves (SWI-17,
+// research R7):
+//   - with expect_run_id, the set (or clear) applies only while that run is
+//     still recorded, so a late write never re-creates a run the daemon has
+//     released (a hold it ended, a cleared record): FAILED_PRECONDITION "run
+//     moved";
+//   - a NEEDS_DEVELOPER hold is never lowered, only cleared: an orchestrator
+//     that has not yet seen the daemon's escalation cannot downgrade it;
+//   - the daemon-written fields of the same run are kept: hold_gen, and the
+//     step_role / step_index / step_sent_at the step guard recorded (a write
+//     built from a stale view must not reopen a step it already typed, nor
+//     relabel a cleanup step ACTION, FR-223);
+//   - hold_gen is never taken from the request (research R13): a write that
+//     moves a run into NEEDS_DEVELOPER records gen, the sandbox's agent
+//     generation now; one that keeps an existing hold keeps its value.
+func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.WorkerRun, error) {
+	next := req.GetRun()
+	if want := req.GetExpectRunId(); want != "" && (cur == nil || cur.GetId() != want) {
+		return nil, fmt.Errorf("%w: run moved", ErrPrecondition)
+	}
+	if cur.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER && next != nil &&
+		(next.GetId() != cur.GetId() || next.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER) {
+		return nil, fmt.Errorf("%w: run %s is held for the developer", ErrPrecondition, cur.GetId())
+	}
+	if next == nil {
+		return nil, nil
+	}
+	same := cur != nil && next.GetId() == cur.GetId()
+	held := next.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	switch {
+	case same && cur.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+		next.HoldGen = cur.GetHoldGen() // not re-recorded
+	case held:
+		next.HoldGen = gen // the transition into the hold
+	case same:
+		next.HoldGen = cur.GetHoldGen()
+	default:
+		next.HoldGen = 0 // daemon-written only
+	}
+	if same {
+		next.StepRole, next.StepIndex, next.StepSentAt = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt()
+	}
+	return next, nil
+}
+
+// agentGen is the sandbox's agent generation (0 without an agent registry).
+// It reads no store: it runs inside the controller's write transaction.
+func (s *Service) agentGen(sandboxID string) int64 {
+	if s.agents == nil {
+		return 0
+	}
+	return s.agents.Generation(sandboxID)
 }
 
 // OnDestroy revokes a controlled sandbox's token and registration (best effort)

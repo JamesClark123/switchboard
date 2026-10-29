@@ -50,6 +50,9 @@ type Daemon interface {
 	// AttachTerminal attaches to a sandbox's persistent session, streaming
 	// snapshot + live PTY bytes into sink (US2, feature 003).
 	AttachTerminal(ctx context.Context, sandboxID string, kind client.AttachKind, cols, rows uint32, sink io.Writer) (client.TermSession, error)
+	// AttachTerminalReplacing attaches in place with AttachInfo.replace_orphan:
+	// `t` → Replace on an agent detached by a daemon restart (SWI-17, R14).
+	AttachTerminalReplacing(ctx context.Context, sandboxID string, cols, rows uint32, sink io.Writer) (client.TermSession, error)
 	ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error)
 	OptionManifest(ctx context.Context) (*pb.OptionManifest, error)
 	// US4: agent prompting + live event subscription.
@@ -135,6 +138,8 @@ type Daemon interface {
 	ListRuns(ctx context.Context, id string) (*pb.ListRunsResponse, error)
 	GetRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	CancelRun(ctx context.Context, id, runID string) (*pb.Run, error)
+	// ResolveRunStep retries, skips or fails a run's halted step (SWI-17, FR-222).
+	ResolveRunStep(ctx context.Context, id, runID string, step int32, res pb.StepResolution) (*pb.Run, error)
 	RebuildReasoningSandbox(ctx context.Context, id string, setup *pb.ReasoningSetup, onUpdate func(client.LaunchUpdate)) (*pb.Sandbox, error)
 	// Lanes (SWI-18): only against a daemon with the "lanes" capability.
 	PutLane(ctx context.Context, id, laneID, name, description string) (*pb.Lane, error)
@@ -687,6 +692,10 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case termClosedMsg:
 		return m.handleTermClosed(msg)
+	case replaceOrphanMsg:
+		return m.startReplaceOrphan(msg)
+	case orphanReplacedMsg:
+		return m.handleOrphanReplaced(msg)
 	case extTermClosedMsg:
 		// The external terminal window was closed; forget it so a later `T` opens
 		// a fresh one rather than treating the dead process as still attached. Match

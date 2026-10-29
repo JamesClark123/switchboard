@@ -43,6 +43,10 @@ func orchStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, orchestrator.ErrNameTaken), errors.Is(err, orchestrator.ErrAlreadyControlled), errors.Is(err, worker.ErrAlreadyControlled):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, worker.ErrStepSent):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, worker.ErrUnsupported):
+		return status.Error(codes.Unimplemented, err.Error())
 	case errors.Is(err, orchestrator.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, orchestrator.ErrPrecondition), errors.Is(err, worker.ErrPrecondition):
@@ -220,6 +224,15 @@ func (s *Server) CancelRun(_ context.Context, req *pb.CancelRunRequest) (*pb.Run
 		return nil, errNoOrchestrator
 	}
 	out, err := s.orchestrator.CancelRun(req.GetOrchestratorId(), req.GetRunId())
+	return out, orchStatus(err)
+}
+
+// ResolveRunStep retries, skips or fails a run's halted step (SWI-17, FR-222).
+func (s *Server) ResolveRunStep(_ context.Context, req *pb.ResolveRunStepRequest) (*pb.Run, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.ResolveRunStep(req.GetOrchestratorId(), req.GetRunId(), req.GetStep(), req.GetResolution())
 	return out, orchStatus(err)
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var hexToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -453,5 +454,103 @@ func TestUpdateWorkerLanes(t *testing.T) {
 	out, err = e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")})
 	if err != nil || !out.GetController().GetLanesKnown() || len(out.GetController().GetLaneNames()) != 2 || out.GetController().GetAttachTicket() != "" {
 		t.Errorf("re-attach = %+v / %v", out.GetController(), err)
+	}
+}
+
+// --- SWI-17: conditional run writes and holds (research R7) ---
+
+func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
+	e := newEnv(t, "")
+	sb := e.sandbox(t, "cccccccc-9", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "bot")}); err != nil {
+		t.Fatal(err)
+	}
+	set := func(run *pb.WorkerRun, expect string) (*pb.Sandbox, error) {
+		return e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", SetRun: true, Run: run, ExpectRunId: expect})
+	}
+	run := func() *pb.WorkerRun { got, _ := e.reg.Get(sb.GetId()); return got.GetController().GetRun() }
+
+	// No run recorded: an expect_run_id write never re-creates one (set or clear).
+	if _, err := set(&pb.WorkerRun{Id: "r1"}, "r1"); !errors.Is(err, ErrPrecondition) || !strings.Contains(err.Error(), "run moved") {
+		t.Errorf("set with no run = %v", err)
+	}
+	if _, err := set(nil, "r1"); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("clear with no run = %v", err)
+	}
+	if run() != nil {
+		t.Fatal("a refused write changes nothing")
+	}
+	// Recorded by the step guard: daemon-written fields.
+	sent := timestamppb.New(time.Unix(5, 0))
+	if _, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		x.Controller.Run = &pb.WorkerRun{Id: "r1", StepRole: pb.StepRole_STEP_ROLE_CLEANUP, StepIndex: 4, StepSentAt: sent, HoldGen: 3}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A mismatch, for set or clear, changes nothing.
+	if _, err := set(&pb.WorkerRun{Id: "r2"}, "r2"); !errors.Is(err, ErrPrecondition) {
+		t.Errorf("mismatched set = %v", err)
+	}
+	if _, err := set(nil, "r2"); !errors.Is(err, ErrPrecondition) || run().GetId() != "r1" {
+		t.Errorf("mismatched clear = %v / %+v", err, run())
+	}
+	// A matching write keeps the daemon-written fields whatever it sends: a
+	// stale view's ACTION never relabels the cleanup step (FR-223).
+	if _, err := set(&pb.WorkerRun{Id: "r1", NeedsReview: true, StepRole: pb.StepRole_STEP_ROLE_ACTION, StepIndex: 1, HoldGen: 0}, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(); !r.GetNeedsReview() || r.GetStepRole() != pb.StepRole_STEP_ROLE_CLEANUP || r.GetStepIndex() != 4 ||
+		!proto.Equal(r.GetStepSentAt(), sent) || r.GetHoldGen() != 3 {
+		t.Errorf("kept fields = %+v", r)
+	}
+	// Into NEEDS_DEVELOPER, then never lowered: only cleared. The transition
+	// records the agent generation now as hold_gen (research R13), whatever
+	// the request says.
+	tokens, err := agent.LoadHookTokens(e.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.agents = agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) { return nil, errors.New("unused") })
+	e.svc.agents.SetHookTokens(tokens)
+	for range 2 {
+		if _, err := tokens.Issue(sb.GetId()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := set(&pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 0}, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if run().GetHoldGen() != 2 {
+		t.Errorf("hold_gen = %d, want the generation at the transition (2)", run().GetHoldGen())
+	}
+	if _, err := tokens.Issue(sb.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	for _, lower := range []*pb.WorkerRun{
+		{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP},
+		{Id: "r1"},
+		{Id: "r9", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER},
+	} {
+		if _, err := set(lower, ""); !errors.Is(err, ErrPrecondition) {
+			t.Errorf("lowering to %+v = %v", lower, err)
+		}
+	}
+	if run().GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		t.Fatal("the hold must stand")
+	}
+	// Re-sending the hold (a step_note mirror) is fine.
+	if _, err := set(&pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, StepNote: "waiting: x"}, "r1"); err != nil || run().GetStepNote() != "waiting: x" {
+		t.Errorf("re-sent hold = %v", err)
+	}
+	if run().GetHoldGen() != 2 {
+		t.Errorf("a re-sent hold re-recorded hold_gen: %d", run().GetHoldGen())
+	}
+	if _, err := set(nil, "r1"); err != nil || run() != nil {
+		t.Errorf("clear = %v / %+v", err, run())
+	}
+	// A new run never takes a hold_gen from the request.
+	if _, err := set(&pb.WorkerRun{Id: "r3", HoldGen: 99}, ""); err != nil || run().GetHoldGen() != 0 {
+		t.Errorf("new run = %v / %+v", err, run())
 	}
 }

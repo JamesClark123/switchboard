@@ -148,9 +148,10 @@ func (m Model) listHelp() helpBindings {
 	}
 	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.OrchestratorAttach)
 	// feature 009: mark free is offered only while the selected worker's run
-	// awaits review (FR-156); every other per-sandbox key works on a worker
-	// wherever it is shown (FR-116).
-	if sb := m.current(); sb != nil && sb.GetController().GetRun().GetNeedsReview() {
+	// awaits review (FR-156), or its cleanup is stalled on a question (SWI-17
+	// FR-216); every other per-sandbox key works on a worker wherever it is
+	// shown (FR-116).
+	if sb := m.current(); sb != nil && (sb.GetController().GetRun().GetNeedsReview() || cleanupNeedsInput(sb)) {
 		hb = append(hb, k.MarkFree)
 	}
 	hb = append(hb, k.OrchestratedTab, m.screenNextKey(), k.Settings)

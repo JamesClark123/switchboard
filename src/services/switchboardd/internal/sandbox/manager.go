@@ -90,6 +90,17 @@ type Manager struct {
 	// registers + loads the gateway server and writes the briefing. A failure is
 	// logged and never fails the launch. MAY be nil (controller ignored).
 	applyController func(ctx context.Context, sb *pb.Sandbox, controller *pb.SandboxController, briefing string) error
+	// agentGeneration reads a sandbox's agent generation for hold_gen (SWI-17).
+	// MAY be nil (0).
+	agentGeneration func(sandboxID string) int64
+
+	// --- SWI-17 (research R14): detached agents after a daemon restart ---
+	// runtime is the per-sandbox runtimeMu (runtime.go); orphans the
+	// detached-agent check (orphan.go); stopDrain the best-effort drain a stop
+	// runs before `sbx stop` (MAY be nil).
+	runtime   runtimeLocks
+	orphans   *orphans
+	stopDrain func(sb *pb.Sandbox, wait time.Duration) bool
 }
 
 // SetOnDestroy registers the destroy observer (feature 009).
@@ -132,13 +143,26 @@ func (m *Manager) Controller(id string) (*pb.SandboxController, error) {
 // (its run was failed on the stop) and keep the worker from dispatch until it
 // is marked free. It becomes IDLE; the next session reports its own status. A
 // run awaiting review stays visible through the kept controller run.
-func leaveRunning(s *pb.Sandbox, state pb.SandboxState) {
+//
+// A run that still has cleanup to run (any hold, or a cleanup step on it) is
+// kept too, held NEEDS_DEVELOPER (SWI-17, research R7): the agent's session
+// was never cleared, so a restarted sandbox must not read free before the
+// developer (or a fresh session's SessionStart) clears it (FR-216, SC-001).
+//
+// gen is the sandbox's agent generation, recorded as hold_gen when the run
+// enters the hold here (SWI-17, research R13).
+func leaveRunning(s *pb.Sandbox, state pb.SandboxState, gen int64) {
 	s.State = state
 	if state == pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return
 	}
-	if c := s.GetController(); c != nil && c.GetRun() != nil && !c.GetRun().GetNeedsReview() {
-		c.Run = nil
+	if c := s.GetController(); c != nil && c.GetRun() != nil {
+		switch run := c.GetRun(); {
+		case cleanupPending(run):
+			holdForDeveloper(run, gen)
+		case !run.GetNeedsReview():
+			c.Run = nil
+		}
 	}
 	if a := s.GetAgent(); a != nil &&
 		(a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING || a.GetStatus() == pb.AgentStatus_AGENT_STATUS_WAITING ||
@@ -172,16 +196,24 @@ func (m *Manager) injectEscapeHatchInto(sb *pb.Sandbox, onLog func(string)) {
 
 // NewManager constructs a Manager.
 func NewManager(store Store, runner Runner, workspaceRoot, hostID string) *Manager {
-	return &Manager{store: store, runner: runner, workspaceRoot: workspaceRoot, hostID: hostID, started: time.Now()}
+	m := &Manager{store: store, runner: runner, workspaceRoot: workspaceRoot, hostID: hostID, started: time.Now()}
+	m.orphans = newOrphans(m)
+	return m
 }
 
 // SetOnChange registers a sandbox-change observer.
 func (m *Manager) SetOnChange(fn func(*pb.Sandbox)) { m.onChange = fn }
 
 func (m *Manager) emit(s *pb.Sandbox) {
-	if m.onChange != nil && s != nil {
+	if s == nil {
+		return
+	}
+	if m.onChange != nil {
 		m.onChange(s)
 	}
+	// After the observers: a confirmed stop or destroy ends the sandbox's
+	// detached-agent check, whose own write is then published after this one.
+	m.orphans.published(s)
 }
 
 // Emit publishes a record another component changed through the registry
@@ -450,7 +482,7 @@ func (m *Manager) seed(ctx context.Context, sb *pb.Sandbox, onProgress func(dupl
 
 func (m *Manager) fail(sb *pb.Sandbox, cause error) (*pb.Sandbox, error) {
 	out, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
-		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_ERROR)
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_ERROR, m.agentGen(s.GetId()))
 		s.Error = cause.Error()
 		s.UpdatedAt = timestamppb.Now()
 		return nil
@@ -504,18 +536,21 @@ func tryRefs(refs []string, op func(string) error) error {
 // Stop stops the container but RETAINS the workspace copy (FR-012a).
 func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
+	defer m.runtimeOp(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
 	}
 	log.Printf("[debug] stop sandbox %s via %v (stored container_ref=%q)", id, sbxRefs(sb), sb.GetContainerRef())
 	if sb.GetContainerRef() != "" {
+		drained := m.drain(sb)
 		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Stop(ctx, r) }); err != nil {
+			m.stopFailed(id, drained)
 			return nil, err
 		}
 	}
 	out, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED, m.agentGen(s.GetId()))
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -533,6 +568,8 @@ func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 // clearing any stale container first.
 func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
+	release := sync.OnceFunc(m.runtimeOp(id))
+	defer release()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -552,11 +589,14 @@ func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*
 		return nil, err
 	}
 	m.emit(out)
+	release()
 	m.broughtUp(out)
 	return out, nil
 }
 
 // broughtUp runs the bring-up observer for a controlled sandbox (feature 009).
+// Callers have released the runtime lock: the observer warm-starts the agent
+// (worker.WarmStart), whose spawn try-locks it (research R14).
 func (m *Manager) broughtUp(sb *pb.Sandbox) {
 	if m.onBringUp != nil && sb.GetController() != nil {
 		m.onBringUp(sb)
@@ -667,6 +707,11 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 		return nil, err
 	}
 	defer m.ops.release(id)
+	// Held continuously from the stop through the re-seed and bring-up, so
+	// nothing spawns into the half-seeded workspace (research R14), and
+	// released before the bring-up observer starts the agent.
+	release := sync.OnceFunc(m.runtimeOp(id))
+	defer release()
 
 	sb, err := m.store.Get(id)
 	if err != nil {
@@ -684,12 +729,16 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// container must not block a refresh.
 	leave := pb.SandboxState_SANDBOX_STATE_STOPPED
 	if sb.GetContainerRef() != "" {
+		drained := m.drain(sb)
 		if err := tryRefs(sbxRefs(sb), func(r string) error { return m.runner.Stop(ctx, r) }); err != nil {
+			m.stopFailed(id, drained)
 			log.Printf("[warn] refresh %s: stop failed (continuing): %v", id, err)
 			if onLog != nil {
 				onLog("warning: stop failed, continuing: " + err.Error())
 			}
-			if m.listedRunning(ctx, sb) {
+			// Written STOPPED only when the runtime confirms it: a listing
+			// error counts as still running (research R14).
+			if m.listedRunningStrict(ctx, sb) {
 				// STOPPED tells the teardown the container is down, so its
 				// in-sandbox services are not signalled (SWI-13). This one is
 				// still up: CREATING, as for a kit being attached, has them
@@ -703,7 +752,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// sit in the workspace we are about to delete, and a stale PTY would hand the
 	// next attach an immediate EOF.
 	stopped, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		leaveRunning(s, leave)
+		leaveRunning(s, leave, m.agentGen(s.GetId()))
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -746,6 +795,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 		return nil, err
 	}
 	m.emit(out)
+	release()
 	m.broughtUp(out)
 	return out, nil
 }
@@ -767,6 +817,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // merged into the sandbox's resolved set with the same later-kit-wins rule.
 func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, newServices []*pb.KitService, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
+	defer m.runtimeOp(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -792,7 +843,7 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands 
 	}
 
 	applying, err := m.store.Update(id, func(s *pb.Sandbox) error {
-		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_CREATING)
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_CREATING, m.agentGen(s.GetId()))
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -838,11 +889,13 @@ func (m *Manager) ValidateKit(ctx context.Context, kitDir string) (string, error
 // Destroy removes the container and DELETES the retained copy (FR-012c).
 func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
 	defer m.lifecycle.begin(id)()
+	defer m.runtimeOp(id)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return false, err
 	}
 	if sb.GetContainerRef() != "" {
+		m.drain(sb) // the record goes either way: DESTROYING ends the check
 		// Best-effort: the container may already be gone or out of sync (renamed
 		// without its folder, etc.). Try the name then the id; if both fail, log
 		// and still remove the workspace + record so the entry can be cleared.
@@ -869,6 +922,12 @@ func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
 
 // SetAgentStatus updates a sandbox's agent status (driven by injected Claude Code
 // hooks — FR-024/025) and publishes the change so subscribers see it live.
+//
+// An agent that exits while its run still has cleanup to run holds the
+// sandbox NEEDS_DEVELOPER (SWI-17, research R7): no hook reports an exit (it
+// arrives from agent.Registry's exit watch), and the remaining custom cleanup
+// steps must not be typed into the fresh session that follows, whose own
+// SessionStart then ends the hold.
 func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now time.Time) (*pb.Sandbox, error) {
 	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
 		if s.Agent == nil {
@@ -877,6 +936,9 @@ func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now ti
 		s.Agent.Status = status
 		s.Agent.LastEventAt = timestamppb.New(now)
 		s.UpdatedAt = timestamppb.Now()
+		if run := s.GetController().GetRun(); status == pb.AgentStatus_AGENT_STATUS_EXITED && cleanupPending(run) {
+			holdForDeveloper(run, m.agentGen(sandboxID))
+		}
 		return nil
 	})
 	if err != nil {
@@ -884,6 +946,79 @@ func (m *Manager) SetAgentStatus(sandboxID string, status pb.AgentStatus, now ti
 	}
 	m.emit(out)
 	return out, nil
+}
+
+// SetAgentEvidence records hook evidence on a sandbox's agent session (SWI-17,
+// research R4: last_submit_at, last_turn_end_at, …) through fn and publishes
+// the change once. The status is left as it is: SetAgentStatus owns it.
+func (m *Manager) SetAgentEvidence(sandboxID string, fn func(*pb.AgentSession)) (*pb.Sandbox, error) {
+	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
+		if s.Agent == nil {
+			s.Agent = &pb.AgentSession{}
+		}
+		fn(s.Agent)
+		s.UpdatedAt = timestamppb.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.emit(out)
+	return out, nil
+}
+
+// ClearHeldRun ends a NEEDS_DEVELOPER hold (SWI-17, FR-216, research R7): the
+// sandbox's agent started a fresh session, so the held run's context is gone
+// and the worker is free again. A compare-and-set: the run is cleared only
+// while its hold is still NEEDS_DEVELOPER, and cleared reports whether it was.
+func (m *Manager) ClearHeldRun(sandboxID string) (cleared bool, err error) {
+	out, err := m.store.Update(sandboxID, func(s *pb.Sandbox) error {
+		cleared = false
+		if c := s.GetController(); c != nil && c.GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+			c.Run = nil
+			s.UpdatedAt = timestamppb.Now()
+			cleared = true
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if cleared {
+		m.emit(out)
+	}
+	return cleared, nil
+}
+
+// cleanupPending reports whether a worker run still has cleanup to run: it is
+// held (cleaning up, freeing or already needing the developer), or its last
+// step was a cleanup step (SWI-17, data-model.md WorkerRun).
+func cleanupPending(run *pb.WorkerRun) bool {
+	return run != nil && (run.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || run.GetStepRole() == pb.StepRole_STEP_ROLE_CLEANUP)
+}
+
+// holdForDeveloper raises a run's hold to NEEDS_DEVELOPER, recording hold_gen:
+// the sandbox's agent generation when the hold begins (research R13). Only a
+// later generation's startup ends it. An existing NEEDS_DEVELOPER hold is left
+// as it is, its hold_gen with it.
+func holdForDeveloper(run *pb.WorkerRun, gen int64) {
+	if run.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		return
+	}
+	run.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	run.HoldGen = gen
+}
+
+// SetAgentGeneration registers where a sandbox's agent generation is read
+// (agent.Registry.Generation; SWI-17). It is called inside the store's write
+// transactions, so it must not touch the store. nil reads 0.
+func (m *Manager) SetAgentGeneration(fn func(sandboxID string) int64) { m.agentGeneration = fn }
+
+func (m *Manager) agentGen(sandboxID string) int64 {
+	if m.agentGeneration == nil {
+		return 0
+	}
+	return m.agentGeneration(sandboxID)
 }
 
 // SetTag sets (or clears, when tag is "") a sandbox's mutable purpose tag
@@ -1077,7 +1212,7 @@ func (m *Manager) Rename(ctx context.Context, id, newName string) (*pb.Sandbox, 
 		s.DisplayName = newName
 		s.WorkspacePath = newPath
 		s.ContainerRef = "" // recreated from the renamed copy on next start
-		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+		leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED, m.agentGen(s.GetId()))
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -1154,7 +1289,7 @@ func (m *Manager) ReconcileRecords(ctx context.Context) ([]*pb.Sandbox, error) {
 			if s.GetState() != state || !proto.Equal(s.GetUpdatedAt(), seen) || m.busy(s.GetId()) {
 				return errReconcileSkip
 			}
-			leaveRunning(s, want)
+			leaveRunning(s, want, m.agentGen(s.GetId()))
 			if want == pb.SandboxState_SANDBOX_STATE_RUNNING {
 				s.Error = "" // running again: an old failure no longer applies
 			}
@@ -1189,6 +1324,12 @@ func (m *Manager) Announce(changed []*pb.Sandbox) {
 			continue
 		}
 		if cur.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
+			// A sandbox found running again whose check is pending (its probe
+			// was dropped while the record read otherwise) is probed now
+			// (SWI-17, research R14).
+			if m.orphans.pending(cur.GetId()) {
+				go m.orphans.probe(cur.GetId())
+			}
 			// The bring-up is marked before the record is published: the emit is
 			// what wakes a local orchestrator's dispatch, which must find the
 			// agent start held until the gateway is reloaded (PR #17 run-505).
@@ -1229,18 +1370,6 @@ func (m *Manager) busy(id string) bool {
 	return latched || m.lifecycle.has(id)
 }
 
-// listedRunning reports whether the runtime lists the sandbox's container as
-// running. An unreadable runtime reads as not running: a teardown then skips
-// `sbx exec`, which would start a stopped container again.
-func (m *Manager) listedRunning(ctx context.Context, sb *pb.Sandbox) bool {
-	statuses, err := m.runner.ListStatuses(ctx)
-	if err != nil {
-		return false
-	}
-	state, _ := listedState(statuses, sb)
-	return state == pb.SandboxState_SANDBOX_STATE_RUNNING
-}
-
 // errReconcileSkip aborts a reconcile write whose record moved under it.
 var errReconcileSkip = errors.New("record changed during reconcile")
 
@@ -1275,8 +1404,10 @@ func listedState(statuses map[string]string, sb *pb.Sandbox) (state pb.SandboxSt
 // RefreshHooks rewrites the agent hook settings of every sandbox that still has
 // a workspace, so a daemon upgrade's hook changes reach sandboxes launched by an
 // older daemon (effective when their agent next starts; a running Claude Code
-// keeps the hooks it started with). Best effort: a failure is reported through
-// onLog and never stops the daemon.
+// keeps the hooks it started with). The escape-hatch wrappers are re-injected
+// with them (SWI-17), so no workspace keeps a wrapper that sends no agent
+// token. Best effort: a failure is reported through onLog and never stops the
+// daemon.
 func (m *Manager) RefreshHooks(onLog func(string)) {
 	if m.injectHooks == nil {
 		return
@@ -1299,6 +1430,7 @@ func (m *Manager) RefreshHooks(onLog func(string)) {
 		if err := m.injectHooks(sb.GetId(), wp); err != nil && onLog != nil {
 			onLog("warning: hook refresh for " + sb.GetId() + " failed: " + err.Error())
 		}
+		m.injectEscapeHatchInto(sb, onLog)
 	}
 }
 

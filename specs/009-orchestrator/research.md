@@ -215,6 +215,10 @@ N opening a connection to M — rejected by the spec (Key Decision 18).
 && agent.status == IDLE && controller.run == nil`. Hooks fire for developer-typed prompts too, so
 `WORKING`/`NEEDS_INPUT` from any cause makes the worker busy (FR-119) with no extra signal.
 
+> **Since SWI-17** (`specs/swi-17-feature-action-pre-post-prompts`): a run with steps (an action
+> sequence) is delivered **per step** with `DeliverWorkerStep`, one step at a time, each after the
+> previous one finished by evidence; only runs without steps still use `DeliverWorkerPrompt` below.
+
 **Delivery** is `DeliverWorkerPrompt` (R3) on the owning daemon, which: re-checks the three
 conditions under the registry write (refusing with `FAILED_PRECONDITION` if a developer got
 there first — the run goes back to *queued*), **ensures the terminal broadcaster exists**

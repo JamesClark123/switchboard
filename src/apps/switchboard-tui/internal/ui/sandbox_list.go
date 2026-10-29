@@ -177,9 +177,54 @@ func (m *Model) insertSandbox(sb *pb.Sandbox, host string) {
 }
 
 // needsDeveloper reports whether a sandbox needs the developer right now
-// (data-model I-C3): its agent asks for input, or its run awaits review.
+// (data-model I-C3): its agent asks for input, or its run awaits review. SWI-17
+// adds a hold that needs them (NEEDS_INPUT_FREEING, NEEDS_DEVELOPER), a halted
+// run, a cleanup whose step waits, and a detached agent or a failing check for
+// one (contracts/jobs-ui.md).
 func needsDeveloper(sb *pb.Sandbox) bool {
-	return sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT || sb.GetController().GetRun().GetNeedsReview()
+	if sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT || sb.GetController().GetRun().GetNeedsReview() {
+		return true
+	}
+	if _, surfaced := orphanNote(sb); surfaced {
+		return true
+	}
+	_, surfaced := workerHoldNote(sb.GetController().GetRun())
+	return surfaced
+}
+
+// workerHoldNote is the worker row's text for its run's hold or halt (without
+// the "⚑ worker · " prefix; "" when none), and whether it surfaces the row. A
+// cleanup is surfaced only once its step waits (a `waiting:` note from
+// controller.run.step_note) or halts, so one that progresses stays hidden.
+func workerHoldNote(r *pb.WorkerRun) (string, bool) {
+	return holdNote(r.GetHold(), r.GetHalted(), r.GetStepNote(), r.GetId())
+}
+
+// cleanupNeedsInput reports whether a worker's cleanup is stalled on its
+// agent's question, which m resolves (FR-216).
+func cleanupNeedsInput(sb *pb.Sandbox) bool {
+	return sb.GetController().GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_CLEANING_UP &&
+		sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
+}
+
+// holdNote phrases a hold or halt for the sandbox list and the Workers view
+// (WorkerView carries the same three fields).
+func holdNote(hold pb.WorkerHold, halted bool, note, runID string) (string, bool) {
+	run := sanitizeLine(runID, 0)
+	switch {
+	case halted:
+		return run + " halted: step not accepted", true
+	case hold == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+		return "needing the developer — open its terminal and run /clear " + run, true
+	case hold == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING:
+		return "needs input (freeing) " + run, true
+	case hold == pb.WorkerHold_WORKER_HOLD_CLEANING_UP:
+		if strings.HasPrefix(note, "waiting:") {
+			return "cleaning up " + run + " · " + sanitizeLine(note, 60), true
+		}
+		return "cleaning up " + run, false
+	}
+	return "", false
 }
 
 // hiddenWorker reports whether a controlled sandbox stays out of the everyday
@@ -397,12 +442,29 @@ func (m Model) sandboxItem(row sandboxRow, showHost bool) listItem {
 		if c.GetReasoning() {
 			role = "reasoning"
 		}
+		hold, surfaced := workerHoldNote(c.GetRun())
+		needsInput := row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT
 		switch {
+		case hold != "" && surfaced:
+			title += "   " + agentWaitStyle.Render("⚑ "+role+" · "+hold)
+		case hold != "" && needsInput:
+			title += "   " + agentWaitStyle.Render("⚑ "+role+" · "+hold+" · needs input")
+		case hold != "":
+			title += "   " + dimStyle.Render("⚑ "+role+" · "+hold)
 		case c.GetRun().GetNeedsReview():
 			title += "   " + agentWaitStyle.Render("⚑ "+role+" · review")
-		case row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+		case needsInput:
 			title += "   " + agentWaitStyle.Render(role+" · needs input")
 		}
+	}
+	// SWI-17 (research R14): an agent detached by a daemon restart, on any
+	// sandbox, or a check for one that is running or keeps failing.
+	if note, surfaced := orphanNote(row.sb); note != "" {
+		style := dimStyle
+		if surfaced {
+			style = statusErrStyle
+		}
+		title += "   " + style.Render(note)
 	}
 	return listItem{
 		id:      row.sb.GetId(),
@@ -570,7 +632,16 @@ func renderFieldsDiffer(a, b *pb.Sandbox) bool {
 		!sameSources(a.GetSources(), b.GetSources()) ||
 		thirdLine(a) != thirdLine(b) ||
 		needsDeveloper(a) != needsDeveloper(b) ||
+		rowNotes(a) != rowNotes(b) ||
 		hiddenWorker(a) != hiddenWorker(b)
+}
+
+// rowNotes is the SWI-17 text a row renders from the record: the hold or halt
+// and the detached-agent check.
+func rowNotes(sb *pb.Sandbox) string {
+	hold, _ := workerHoldNote(sb.GetController().GetRun())
+	orphan, _ := orphanNote(sb)
+	return hold + "|" + orphan
 }
 
 // sameSources reports whether two recorded source sets list the same paths in

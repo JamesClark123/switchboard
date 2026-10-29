@@ -42,11 +42,20 @@ func reapExtTermCmd(key string, cmd *exec.Cmd) tea.Cmd {
 // a separate terminal window running `sxb attach`. Only one external terminal per
 // sandbox is allowed: if one is already tracked (or the daemon reports an external
 // attachment), it is brought to the front / reported rather than duplicated.
+// A sandbox with a detached agent gets the dialog of orphan.go first (SWI-17).
 func (m Model) openExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		m.status = "start the sandbox before opening its terminal"
 		return m, nil
 	}
+	if mm, cmd, gated := m.orphanGate(sb, host, m.daemonForHost(host), true, m.screen); gated {
+		return mm, cmd
+	}
+	return m.spawnExternalTerminal(sb, host)
+}
+
+// spawnExternalTerminal opens the external window, past the detached-agent gate.
+func (m Model) spawnExternalTerminal(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd) {
 	id, name := sb.GetId(), sb.GetDisplayName()
 	key := extTermKey(host, id)
 

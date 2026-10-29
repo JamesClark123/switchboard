@@ -50,9 +50,15 @@ func buildBinaries(t *testing.T) (tui, daemon string) {
 // PATH-prefix directory containing it. Every invocation is appended to
 // <dir>/sbx.log (one argv per line) so a test can assert which lifecycle
 // commands ran — e.g. that a source edit never stopped the sandbox (feature 007).
+// Its agent is fakeclaude, built into the same directory.
 func stubSbx(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	build := exec.Command("go", "build", "-tags", "e2e", "-o", filepath.Join(dir, "fakeclaude"), "./src/apps/switchboard-tui-e2e/fakeclaude")
+	build.Dir = repoRoot(t)
+	if b, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeclaude: %v\n%s", err, b)
+	}
 	script := `#!/usr/bin/env bash
 echo "$*" >> "` + filepath.Join(dir, "sbx.log") + `"
 case "$1" in
@@ -72,19 +78,30 @@ case "$1" in
     echo ']}' ;;
   exec)
     # feature 009: the daemon's agent PTY runs "sbx exec -it <ref> bash -lc ...";
-    # the stub agent copies everything typed into it to <dir>/agent-<ref>.in so a
-    # test can assert what a delivered run looked like. Like Claude Code, it fires
+    # the stub agent (fakeclaude, SWI-17: an input box the step checks read,
+    # Claude Code's confirmations and hooks) appends every text submitted to it
+    # to <dir>/agent-<ref>.in so a test can assert what a delivered run looked
+    # like. Like Claude Code, it fires
     # the SessionStart hook injected into its workspace once it is up (SWI-15:
     # nothing is typed into an agent before that; host.docker.internal is the
-    # host's loopback from a container). "sbx exec <ref> true"
-    # (resume) starts the sandbox.
+    # host's loopback from a container). Like the injected hook command it
+    # sends the agent's token and generation, which the daemon passes by name
+    # ("-e SXB_HOOK_TOKEN -e SXB_AGENT_GEN") from the client's environment
+    # (SWI-17), and the agent's PID. "sbx exec <ref> true" (resume) starts
+    # the sandbox.
     if [ "$2" = "-it" ]; then
-      wd=$(printf '%s' "$6" | sed -n "s/^cd '\([^']*\)'.*/\1/p")
+      shift 2
+      while [ "$1" = "-e" ]; do shift 2; done
+      ref=$1; launch=$4
+      wd=$(printf '%s' "$launch" | sed -n "s/^cd '\([^']*\)'.*/\1/p")
       hook=$(grep -o "http://[^'?]*?event=SessionStart[^']*" "$wd/.claude/settings.local.json" 2>/dev/null | head -1 | sed -e 's/\\u0026/\&/g' -e 's#//host.docker.internal:#//127.0.0.1:#')
       if [ -n "$hook" ]; then
-        ( sleep 0.3; curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"hook_event_name":"SessionStart","source":"startup"}' "$hook" ) &
+        ( sleep 0.3; curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' \
+            -H "X-Sxb-Token: $SXB_HOOK_TOKEN" -H "X-Sxb-Gen: $SXB_AGENT_GEN" -H "X-Sxb-Pid: $$" \
+            -d "{\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"session_id\":\"e2e-$ref\"}" "$hook" ) &
       fi
-      cat > "` + dir + `/agent-$3.in"
+      stty raw -echo 2>/dev/null
+      exec "` + dir + `/fakeclaude" "e2e-$ref" "$wd" "` + dir + `/agent-$ref.in"
     elif [ -f "` + dir + `/sbx-state/$2" ]; then echo running > "` + dir + `/sbx-state/$2"; fi ;;
   mcp)
     # feature 008: one registered remote server; add/rm/load/auth succeed.

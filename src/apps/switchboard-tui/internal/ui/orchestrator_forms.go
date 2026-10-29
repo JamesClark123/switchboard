@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,6 +39,13 @@ type actionFormVals struct {
 	lanes   []string
 	mode    string
 	options []*pb.Lane
+	// The action's sequence (SWI-17, FR-218): model and effort are a choice or
+	// "off"; modelKept/effortKept are the values "off" keeps (model_enabled =
+	// false keeps the stored model). pre and post hold one prompt per line.
+	model, effort         string
+	modelKept, effortKept string
+	clearAfter            bool
+	pre, post             string
 }
 
 // keepLanes follows the orchestrator's lanes (FR-316a, FR-317): options are
@@ -90,9 +98,12 @@ func actionKindOptions() []huh.Option[string] {
 }
 
 // openActionForm opens the editor for a new action (a == nil) or an existing one
-// on the target orchestrator.
+// on the target orchestrator. A new action starts with the default sequence
+// (FR-203); an existing one with its effective sequence, which for an action
+// saved before SWI-17 is the defaults too (FR-210).
 func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
 	v := &actionFormVals{kind: "prompt", mode: "exclusive"}
+	sequenceToForm(v, effectiveSequence(a))
 	if a != nil {
 		v.name, v.description, v.body, v.original = a.GetName(), a.GetDescription(), a.GetBody(), a.GetName()
 		v.lanes = append([]string(nil), a.GetLaneIds()...)
@@ -116,8 +127,10 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 const reasonLanesText = "lanes not saved: reason actions have no lanes"
 
 // actionForm builds the action editor over v. Lanes and Mode are their own
-// groups (stacked, so the form reads as one page) to hide them: Lanes for a
-// reason action or an orchestrator with none, Mode while no lane is ticked.
+// groups to hide them: Lanes for a reason action or an orchestrator with none,
+// Mode while no lane is ticked. The groups show one at a time (tab crosses
+// them), each scrolling to its focused field: with the sequence (SWI-17) the
+// form is taller than a screen, and stacked groups would not scroll.
 func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 	laneOpts := make([]huh.Option[string], 0, len(v.options))
 	for _, l := range v.options {
@@ -144,9 +157,14 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 		).WithHideFunc(func() bool { return noLanes() || len(v.lanes) == 0 }),
 		huh.NewGroup(
 			spec.text(&v.args, "Arguments").Key("args").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required"),
+			huh.NewSelect[string]().Key("model").Title("Model").Description("typed as /model before each run; off skips it").Options(stringOptions(modelOptions)...).Value(&v.model),
+			huh.NewSelect[string]().Key("effort").Title("Effort").Description("typed as /effort before each run; off skips it").Options(stringOptions(effortOptions)...).Value(&v.effort),
+			huh.NewConfirm().Key("clear").Title("Clear after run").Description("/clear once the run closes, so the next run starts fresh").Value(&v.clearAfter),
+			spec.text(&v.pre, "Pre-prompts").Key("pre").Lines(4).Description("one prompt per line, sent in order before the action prompt; a prompt can't span lines"),
+			spec.text(&v.post, "Post-prompts").Key("post").Lines(4).Description("one prompt per line, sent in order after the run closes; a prompt can't span lines"),
 		),
 	}
-	return huh.NewForm(groups...).WithLayout(huh.LayoutStack).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
+	return huh.NewForm(groups...).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
@@ -198,6 +216,158 @@ func (m *Model) pruneActionLanes(s orchSurface, v *actionFormVals, rec *pb.Orche
 		}
 		op.formBaseline = b
 	}
+}
+
+// The built-in choices the form offers (FR-201): ultracode is deliberately
+// absent (research R1). "off" disables the built-in and keeps its value.
+var (
+	modelOptions  = []string{"off", "opus", "fable", "sonnet", "haiku"}
+	effortOptions = []string{"off", "low", "medium", "high", "xhigh", "max", "auto"}
+)
+
+// stringOptions makes Select options whose label is their value.
+func stringOptions(vals []string) []huh.Option[string] {
+	out := make([]huh.Option[string], 0, len(vals))
+	for _, v := range vals {
+		out = append(out, huh.NewOption(v, v))
+	}
+	return out
+}
+
+// effectiveSequence mirrors the orchestrator's reader (R9): an action with no
+// sequence (a new one, or one saved before SWI-17) has the defaults — Opus,
+// medium, Clear on, no custom prompts (FR-203, FR-210).
+func effectiveSequence(a *pb.Action) *pb.ActionSequence {
+	if seq := a.GetSequence(); seq != nil {
+		return seq
+	}
+	return &pb.ActionSequence{
+		ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_OPUS,
+		EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM,
+		ClearEnabled: true,
+	}
+}
+
+// sequenceToForm loads a sequence into the form's values.
+func sequenceToForm(v *actionFormVals, seq *pb.ActionSequence) {
+	v.modelKept = strings.ToLower(swb.ModelChoiceLabel(seq.GetModel()))
+	if !slices.Contains(modelOptions[1:], v.modelKept) {
+		v.modelKept = "opus"
+	}
+	v.effortKept = swb.EffortChoiceLabel(seq.GetEffort())
+	if !slices.Contains(effortOptions[1:], v.effortKept) {
+		v.effortKept = "medium"
+	}
+	v.model, v.effort = v.modelKept, v.effortKept
+	if !seq.GetModelEnabled() {
+		v.model = "off"
+	}
+	if !seq.GetEffortEnabled() {
+		v.effort = "off"
+	}
+	v.clearAfter = seq.GetClearEnabled()
+	v.pre, v.post = strings.Join(seq.GetPrePrompts(), "\n"), strings.Join(seq.GetPostPrompts(), "\n")
+}
+
+// sequenceFromForm builds the sequence a save always sends: "off" keeps the
+// last value with the built-in disabled; the prompts are trimmed, empty lines
+// dropped.
+func sequenceFromForm(v *actionFormVals) *pb.ActionSequence {
+	model, effort := v.model, v.effort
+	if model == "off" {
+		model = v.modelKept
+	}
+	if effort == "off" {
+		effort = v.effortKept
+	}
+	return &pb.ActionSequence{
+		ModelEnabled: v.model != "off", Model: modelChoice(model),
+		EffortEnabled: v.effort != "off", Effort: effortChoice(effort),
+		ClearEnabled: v.clearAfter,
+		PrePrompts:   promptLines(v.pre),
+		PostPrompts:  promptLines(v.post),
+	}
+}
+
+// modelChoice is the ModelChoice a form value names (UNSPECIFIED when none,
+// which the daemon refuses).
+func modelChoice(s string) pb.ModelChoice {
+	for c := range pb.ModelChoice_name {
+		if mc := pb.ModelChoice(c); mc != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED && strings.ToLower(swb.ModelChoiceLabel(mc)) == s {
+			return mc
+		}
+	}
+	return pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED
+}
+
+// effortChoice is the EffortChoice a form value names.
+func effortChoice(s string) pb.EffortChoice {
+	for c := range pb.EffortChoice_name {
+		if ec := pb.EffortChoice(c); ec != pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED && swb.EffortChoiceLabel(ec) == s {
+			return ec
+		}
+	}
+	return pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED
+}
+
+// promptLines splits a prompts field into its trimmed, non-empty lines.
+func promptLines(text string) []string {
+	if t := trimLines(text); t != "" {
+		return strings.Split(t, "\n")
+	}
+	return nil
+}
+
+// stepPlaceholder matches the daemon's placeholder syntax: {name}, with {{ a
+// literal brace.
+var stepPlaceholder = regexp.MustCompile(`\{\{|\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// Bounds the daemon enforces on custom prompts (FR-204), mirrored for an
+// inline refusal before the round trip.
+const (
+	maxStepPrompts     = 10
+	maxStepPromptBytes = 16 * 1024
+)
+
+// checkStepPrompts mirrors the daemon's FR-204 rules for one list (what is
+// "pre-prompt" or "post-prompt"), worded as the daemon words them: at most 10,
+// each within 16 KiB, naming only declared arguments, none in the first word,
+// none at all in a prompt starting with `!`. The daemon stays the authority.
+func checkStepPrompts(what string, prompts []string, args []*pb.ActionArgument) error {
+	if len(prompts) > maxStepPrompts {
+		return fmt.Errorf("more than %d %ss", maxStepPrompts, what)
+	}
+	declared := map[string]bool{}
+	for _, a := range args {
+		declared[a.GetName()] = true
+	}
+	names := func(s string) []string {
+		var out []string
+		for _, m := range stepPlaceholder.FindAllStringSubmatch(s, -1) {
+			if m[0] != "{{" {
+				out = append(out, m[1])
+			}
+		}
+		return out
+	}
+	for i, p := range prompts {
+		if len(p) > maxStepPromptBytes {
+			return fmt.Errorf("%s %d is larger than %d bytes", what, i+1, maxStepPromptBytes)
+		}
+		all := names(p)
+		for _, n := range all {
+			if !declared[n] {
+				return fmt.Errorf("%s %d: placeholder {%s} names no argument", what, i+1, n)
+			}
+		}
+		if first := names(strings.Fields(p)[0]); len(first) > 0 {
+			return fmt.Errorf("%s %d: placeholder {%s} is in the first word; start with your own text", what, i+1, first[0])
+		}
+		if strings.HasPrefix(p, "!") && len(all) > 0 {
+			return fmt.Errorf("%s %d: a prompt starting with ! may not contain a placeholder ({%s})", what, i+1, all[0])
+		}
+	}
+	return nil
 }
 
 // confirmDeleteAction gates deleting an action of the target orchestrator.
@@ -429,9 +599,14 @@ var fireTokens atomic.Uint64
 // loaded (nil when none is known). The daemon stays the authority — this only
 // decides whether to ask first. The list can lag a moment behind other clients,
 // and the run it names may have just finished; both only affect the prompt.
+// A closed run listed in flight because it still holds its worker (SWI-17,
+// FR-213) is not open: it never blocks its event.
 func openRunOfEvent(r *pb.ListRunsResponse, eventID string) *pb.Run {
 	for _, group := range [][]*pb.Run{r.GetQueued(), r.GetInFlight()} {
 		for _, run := range group {
+			if runFinished(run) {
+				continue
+			}
 			if run.GetEventKind() == pb.EventKind_EVENT_KIND_TIMED && run.GetOrigin() == eventID {
 				return run
 			}
@@ -689,6 +864,7 @@ func sentOpVals(vals any) any {
 		if c.kind == "reason" || len(c.lanes) == 0 {
 			c.lanes, c.mode = nil, ""
 		}
+		c.pre, c.post = trimLines(c.pre), trimLines(c.post)
 		return c
 	case *eventFormVals:
 		c := *v
@@ -790,7 +966,20 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			op.status = m.tooOldForLanes(t.host)
 			return m, nil
 		}
+		// The sequence is always sent, so an action saved before SWI-17 is
+		// written with the defaults it showed (FR-210).
+		seq := sequenceFromForm(v)
+		for _, l := range []struct {
+			what    string
+			prompts []string
+		}{{"pre-prompt", seq.GetPrePrompts()}, {"post-prompt", seq.GetPostPrompts()}} {
+			if err := checkStepPrompts(l.what, l.prompts, args); err != nil {
+				op.status = err.Error()
+				return m, nil
+			}
+		}
 		a := v.action(args)
+		a.Sequence = seq
 		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true, owner: v,
 			save: func(ctx context.Context, g *pb.LaneGuardConfirm) error {
 				_, err := od.PutAction(ctx, id, a, g)
@@ -919,7 +1108,41 @@ func actionLine(a *pb.Action, rec *pb.Orchestrator) string {
 	if len(args) > 0 {
 		line += dimStyle.Render("  {" + strings.Join(args, ", ") + "}")
 	}
+	if seq := sequenceSummary(a); seq != "" {
+		line += dimStyle.Render("   " + seq)
+	}
 	return line
+}
+
+// sequenceSummary is the action line's sequence segment (FR-219): `pre:
+// /model opus · /effort medium · 1 custom — post: 1 custom · /clear`, either
+// side left out when empty; "" when no step is enabled.
+func sequenceSummary(a *pb.Action) string {
+	seq := effectiveSequence(a)
+	var pre, post []string
+	if seq.GetModelEnabled() {
+		pre = append(pre, "/model "+strings.ToLower(swb.ModelChoiceLabel(seq.GetModel())))
+	}
+	if seq.GetEffortEnabled() {
+		pre = append(pre, "/effort "+swb.EffortChoiceLabel(seq.GetEffort()))
+	}
+	if n := len(seq.GetPrePrompts()); n > 0 {
+		pre = append(pre, fmt.Sprintf("%d custom", n))
+	}
+	if n := len(seq.GetPostPrompts()); n > 0 {
+		post = append(post, fmt.Sprintf("%d custom", n))
+	}
+	if seq.GetClearEnabled() {
+		post = append(post, "/clear")
+	}
+	var parts []string
+	if len(pre) > 0 {
+		parts = append(parts, "pre: "+strings.Join(pre, " · "))
+	}
+	if len(post) > 0 {
+		parts = append(parts, "post: "+strings.Join(post, " · "))
+	}
+	return strings.Join(parts, " — ")
 }
 
 // eventLine renders one timed event: [on|off] name → action · any disabled

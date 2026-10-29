@@ -628,3 +628,157 @@ func TestResetClearsScrollback(t *testing.T) {
 		t.Fatalf("scrollback survived reset: moved %d lines", n)
 	}
 }
+
+func TestWithoutScrollbackKeepsNoHistory(t *testing.T) {
+	s := New(20, 2, WithoutScrollback())
+	_, _ = s.Write([]byte("first\r\nsecond\r\nthird"))
+	if n := s.ScrollUp(1); n != 0 {
+		t.Fatalf("ScrollUp moved %d lines with no scrollback, want 0", n)
+	}
+	if got := stripStyle(s.Render()); strings.Contains(got, "first") || !strings.Contains(got, "third") {
+		t.Fatalf("live view = %q, want 'second'/'third' only", got)
+	}
+}
+
+func TestScrollbackIsBounded(t *testing.T) {
+	s := New(10, 1)
+	for i := 0; i < maxScrollback+10; i++ {
+		_, _ = s.Write([]byte("x\r\n"))
+	}
+	if n := s.ScrollUp(maxScrollback + 100); n != maxScrollback {
+		t.Fatalf("scrollback held %d lines, want the cap %d", n, maxScrollback)
+	}
+}
+
+func TestLines(t *testing.T) {
+	const (
+		faintOn = "\x1b[2m"
+		reset   = "\x1b[0m"
+	)
+	tests := []struct {
+		name      string
+		cols      int
+		rows      int
+		input     string
+		want      []string
+		wantFaint map[int][]bool // row -> mask (rows not listed: all false)
+	}{
+		{
+			name:  "plain rows, trailing blanks trimmed",
+			cols:  10,
+			rows:  3,
+			input: "ab  \r\n\r\ncd",
+			want:  []string{"ab", "", "cd"},
+		},
+		{
+			name:      "faint text is marked per rune",
+			cols:      12,
+			rows:      1,
+			input:     "❯ " + faintOn + "Try" + reset + " x",
+			want:      []string{"❯ Try x"},
+			wantFaint: map[int][]bool{0: {false, false, true, true, true, false, false}},
+		},
+		{
+			name:  "inner blanks kept, styling dropped",
+			cols:  12,
+			rows:  1,
+			input: "\x1b[1;31ma\x1b[0m   b",
+			want:  []string{"a   b"},
+		},
+		{
+			name:  "a wide character is read once",
+			cols:  10,
+			rows:  1,
+			input: "日本x",
+			want:  []string{"日本x"},
+		},
+		{
+			name:  "scrolled-off rows are not included",
+			cols:  10,
+			rows:  2,
+			input: "one\r\ntwo\r\nthree",
+			want:  []string{"two", "three"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(tt.cols, tt.rows)
+			_, _ = s.Write([]byte(tt.input))
+			got := s.Lines()
+			if len(got) != len(tt.want) {
+				t.Fatalf("Lines() returned %d rows, want %d", len(got), len(tt.want))
+			}
+			for i, l := range got {
+				if l.Text != tt.want[i] {
+					t.Errorf("row %d text = %q, want %q", i, l.Text, tt.want[i])
+				}
+				if n := len([]rune(l.Text)); len(l.Faint) != n {
+					t.Errorf("row %d faint mask has %d entries, want %d", i, len(l.Faint), n)
+				}
+				want := tt.wantFaint[i]
+				for j, f := range l.Faint {
+					if w := j < len(want) && want[j]; f != w {
+						t.Errorf("row %d rune %d faint = %v, want %v", i, j, f, w)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLinesIgnoresViewportAndIsACopy(t *testing.T) {
+	s := New(10, 2)
+	_, _ = s.Write([]byte("a\r\nb\r\nc"))
+	s.ScrollUp(1)
+	got := s.Lines()
+	if got[0].Text != "b" || got[1].Text != "c" {
+		t.Fatalf("Lines() while scrolled up = %+v, want the live rows b, c", got)
+	}
+	_, _ = s.Write([]byte("\x1b[H\x1b[2Jzz"))
+	if got[0].Text != "b" {
+		t.Fatalf("snapshot changed after a later write: %q", got[0].Text)
+	}
+}
+
+func TestOSCStringsNeverReachTheScreen(t *testing.T) {
+	tests := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{"BEL-terminated title", []string{"ab\x1b]0;✳ Claude Code\x07cd"}, "abcd"},
+		{"ST-terminated title", []string{"ab\x1b]0;✳ Claude Code\x1b\\cd"}, "abcd"},
+		{"hyperlink", []string{"\x1b]8;;https://x.example\x07link\x1b]8;;\x07!"}, "link!"},
+		{"split across writes", []string{"ab\x1b", "]0;✳ Cla", "ude\x1b", "\\cd"}, "abcd"},
+		{"held ESC then CSI", []string{"ab\x1b", "[1mcd"}, "abcd"},
+		{"double ESC", []string{"a\x1b\x1b[1mb"}, "ab"},
+		{"unterminated OSC then CSI", []string{"a\x1b]0;t\x1b[1mb"}, "ab"},
+		{"unterminated OSC then OSC", []string{"a\x1b]0;t\x1b]0;u\x07b"}, "ab"},
+		{"unterminated OSC then ESC", []string{"a\x1b]0;t\x1b\x1b[1mb"}, "ab"},
+		{"CAN aborts an OSC", []string{"a\x1b]0;t\x18b"}, "ab"},
+		{"SUB aborts an OSC", []string{"a\x1b]0;t", "\x1ab"}, "ab"},
+		{"a long OSC is dropped whole", []string{"a\x1b]52;c;" + strings.Repeat("Q", 10000), "Q\x07b"}, "ab"},
+		{"a line break ends a stray OSC", []string{"a\x1b]junk\nb"}, "a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(40, 2)
+			for _, w := range tt.writes {
+				_, _ = s.Write([]byte(w))
+			}
+			if got := s.Lines()[0].Text; got != tt.want {
+				t.Fatalf("row = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResetForgetsAHalfReadSequence(t *testing.T) {
+	s := New(40, 2)
+	_, _ = s.Write([]byte("\x1b]0;half a title"))
+	s.Reset()
+	_, _ = s.Write([]byte("fresh"))
+	if got := s.Lines()[0].Text; got != "fresh" {
+		t.Fatalf("row after reset = %q, want %q", got, "fresh")
+	}
+}

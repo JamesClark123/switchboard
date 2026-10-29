@@ -272,6 +272,11 @@ type fakeWorker struct {
 	// onDeliver, when set (under mu), runs at the start of each
 	// DeliverWorkerPrompt, before the fake decides; it may change records.
 	onDeliver func(req *pb.DeliverWorkerPromptRequest)
+	// steps answers DeliverWorkerStep (SWI-17); nil is a daemon that predates
+	// it (UNIMPLEMENTED). See stepWorker in sequence_test.go.
+	steps stepScript
+	// stepReqs records every DeliverWorkerStep request received.
+	stepReqs []*pb.DeliverWorkerStepRequest
 	// noRevisions makes the fake a host that predates lanes: its records
 	// carry no revision (SWI-18 research R16). Otherwise every write stamps
 	// one, as the registry does (R3).
@@ -298,7 +303,7 @@ func (w *fakeWorker) stamp(sb *pb.Sandbox, prev uint64) {
 }
 
 func newFakeWorker(hostID string) *fakeWorker {
-	return &fakeWorker{hostID: hostID, sbs: map[string]*pb.Sandbox{}, events: make(chan *pb.Event, 16), linkOut: make(chan *pb.OrchestratorLinkFrame, 16)}
+	return &fakeWorker{hostID: hostID, sbs: map[string]*pb.Sandbox{}, events: make(chan *pb.Event, 256), linkOut: make(chan *pb.OrchestratorLinkFrame, 16)}
 }
 
 func (w *fakeWorker) record(format string, args ...any) {
@@ -435,11 +440,29 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 	if sb.Controller == nil {
 		return nil, status.Error(codes.PermissionDenied, "not a worker")
 	}
+	// As the real worker side (R7): expect_run_id is a compare-and-set key.
+	if e := req.GetExpectRunId(); e != "" && sb.GetController().GetRun().GetId() != e {
+		return nil, status.Error(codes.FailedPrecondition, "run moved")
+	}
 	if req.Name != nil {
 		sb.Controller.Name = req.GetName()
 	}
 	if req.GetSetRun() {
-		sb.Controller.Run = req.GetRun()
+		// As the real nextRun (R7): a NEEDS_DEVELOPER hold is never lowered,
+		// and the step guard's fields of the same run are kept.
+		cur := sb.GetController().GetRun()
+		var next *pb.WorkerRun
+		if req.GetRun() != nil {
+			next = proto.Clone(req.GetRun()).(*pb.WorkerRun)
+		}
+		if cur.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER && next != nil &&
+			(next.GetId() != cur.GetId() || next.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER) {
+			return nil, status.Error(codes.FailedPrecondition, "held for the developer")
+		}
+		if next != nil && cur.GetId() == next.GetId() {
+			next.StepRole, next.StepIndex, next.StepSentAt, next.HoldGen = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt(), cur.GetHoldGen()
+		}
+		sb.Controller.Run = next
 	}
 	if req.GetClearNeedsInput() {
 		if sb.Controller.Run != nil {
@@ -456,6 +479,19 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 	}
 	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
+}
+
+// DeliverWorkerStep is answered by the test's script (SWI-17); without one
+// this fake predates step delivery.
+func (w *fakeWorker) DeliverWorkerStep(ctx context.Context, req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+	w.mu.Lock()
+	w.stepReqs = append(w.stepReqs, proto.Clone(req).(*pb.DeliverWorkerStepRequest))
+	script := w.steps
+	w.mu.Unlock()
+	if script == nil {
+		return nil, status.Error(codes.Unimplemented, "DeliverWorkerStep")
+	}
+	return script(ctx, w, req)
 }
 
 func (w *fakeWorker) DeliverWorkerPrompt(_ context.Context, req *pb.DeliverWorkerPromptRequest) (*pb.DeliverWorkerPromptResponse, error) {

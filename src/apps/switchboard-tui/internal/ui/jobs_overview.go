@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -215,7 +216,7 @@ func (m Model) updateOverviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch k {
-	case "enter", "x", "m", "o", "t", "T":
+	case "enter", "x", "m", "o", "t", "T", "R", "S", "X":
 		return m.runKeyAction(surfaceJobs, it.run.target, it.run.run, k)
 	}
 	return m, nil
@@ -277,8 +278,17 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 		if run.GetState() != pb.RunState_RUN_STATE_RUNNING {
 			style = agentWaitStyle
 		}
-		line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  " +
-			dimStyle.Render("on "+sanitizeLine(m.workerName(run), 16)+" · "+ago(run.GetStartedAt()))
+		on := "on " + sanitizeLine(m.workerName(run), 16) + " · " + ago(run.GetStartedAt())
+		line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  "
+		tail := m.stepDetailText(run, on)
+		if run.GetEventKind() != pb.EventKind_EVENT_KIND_USER {
+			// A long step detail gives way to the origin's first columns.
+			keep := min(ansi.StringWidth(runOrigin(run)), originMinWidth)
+			if most := m.bodyWidth() - 2 - lipgloss.Width(line) - 2 - keep; most > 0 && lipgloss.Width(tail) > most {
+				tail = ansi.Truncate(tail, most, "…")
+			}
+		}
+		line += tail
 		if run.GetEventKind() != pb.EventKind_EVENT_KIND_USER {
 			// The origin takes what is left of the row, like the History snippet.
 			if room := m.bodyWidth() - 2 - lipgloss.Width(line) - 2; room > 0 {
@@ -291,8 +301,13 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 	if run.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		style = statusErrStyle
 	}
-	line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  " +
-		dimStyle.Render("ended "+ago(run.GetEndedAt()))
+	// A closed run still holding its worker (cleanup, a hold, a halt) says where
+	// it is instead of when it ended (SWI-17, FR-213).
+	tail := dimStyle.Render("ended " + ago(run.GetEndedAt()))
+	if runHoldsSandbox(run) {
+		tail = m.stepDetailText(run, "on "+sanitizeLine(m.workerName(run), 16))
+	}
+	line := selectedStyle.Render(fitCol(run.GetAction(), 16)) + " " + style.Render(fitCol(runState(run), 15)) + " " + label + "  " + tail
 	if detail := runResultLine(run); detail != "" {
 		// The snippet takes what is left of the row (the cursor column is 2 wide).
 		if room := m.bodyWidth() - 2 - lipgloss.Width(line) - 3; room > 0 {
@@ -300,6 +315,27 @@ func (m Model) jobsRunLine(r jobsRunRow) string {
 		}
 	}
 	return line
+}
+
+// originMinWidth is how much of a running row's origin a long step detail
+// leaves showing.
+const originMinWidth = 24
+
+// stepDetailText is a run row's "where" part: the step detail (SWI-17,
+// contracts/jobs-ui.md) before on, which names the worker. A halt reads as an
+// error, a hold or a wait as a warning; plain progress stays dim.
+func (m Model) stepDetailText(run *pb.Run, on string) string {
+	detail := runStepDetail(run)
+	switch {
+	case detail == "":
+		return dimStyle.Render(on)
+	case runHalted(run):
+		return statusErrStyle.Render(detail) + dimStyle.Render(" · "+on)
+	case run.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, run.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING,
+		strings.Contains(run.GetStepNote(), "waiting:"):
+		return agentWaitStyle.Render(detail) + dimStyle.Render(" "+on)
+	}
+	return dimStyle.Render(detail + " " + on)
 }
 
 // workerName is the display name of the sandbox a run is on, from the TUI's

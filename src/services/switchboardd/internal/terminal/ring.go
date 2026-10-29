@@ -7,7 +7,9 @@
 // the client's real terminal performs VT interpretation, so no VT-emulation
 // dependency is needed daemon-side (research.md R1/R2; the candidate
 // charmbracelet/x/vt was rejected during T001 as an unstable pseudo-version that
-// hangs at runtime).
+// hangs at runtime). The one exception is a worker's agent screen (SWI-17,
+// screen.go), parsed with the shared switchboard-termview renderer off the
+// reader's path.
 package terminal
 
 // defaultRingBytes bounds the recent-output history replayed to a reconnecting

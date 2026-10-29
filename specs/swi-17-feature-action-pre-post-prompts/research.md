@@ -59,6 +59,27 @@ Other findings:
   - **Multi-line paste.** The framed action prompt is pasted as several lines; its box rendering (a paste
     placeholder) is captured as a fixture (R2).
 
+- **Closed by T006 (2026-10-28, Claude Code 2.1.312, `TestCaptureFixtures` with `SXB_CAPTURE_CLAUDE=1`).**
+  - **Report latency.** A real skill turn (a project skill, `/sxb-ping`) raised `UserPromptSubmit` **15–17 ms** after
+    the Enter (two runs). That is far below half of `submitWindow` (1.25 s), so `submitWindow` stays 2.5 s.
+  - **Idle nudge.** The `Notification` hook's input carries `notification_type` (`"idle_prompt"`, message `Claude is
+    waiting for your input`, about 60 s after the turn). The `input_idle_since` fallback stays as planned for hooks
+    that do not forward it.
+  - **`$PPID` (R13).** In every hook (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`), `$PPID` of the hook
+    command's shell **is** the `claude` process that fired it. T046 keeps `X-Sxb-Pid: $PPID`; the PTY-device fallback
+    is not needed.
+  - **Screen details the fixtures pin.** The input box's prompt is `❯` followed by a **no-break space** (U+00A0),
+    while an echoed command is `❯` and a plain space. The placeholder hint is drawn faint. A multi-line paste shows
+    as `[Pasted text #1 +6 lines]`; a long one-line paste is shown in full, wrapped with a two-space indent. Typing
+    `/` opens the command autocomplete **above** the box (its rows are indented, the selected one marked `❯`), with
+    the box still present. The bare `/model` picker replaces the top rule with a `▔` border and has `Select model`,
+    numbered rows and `Enter to set as default · s to use this session only · Esc to cancel`.
+  - **Window titles.** Claude Code sets the terminal title on each turn (`OSC 0;✳ Claude Code`). The ANSI parser
+    printed the rest of an OSC string after its first non-ASCII byte, so termview now drops OSC strings before
+    parsing (`switchboard-termview`, `filterOSC`).
+  - **Fixtures.** Every T006 fixture was captured except `auto-mode-dialog`: no start-up dialog appeared with the
+    capturing account's settings, so that one is **hand-authored** from the picker's layout and R1's description.
+
 **Decision.** The built-ins are **agent-local** with a **screen read-back**:
 
 - Model: the confirmation line must start `Set model to <Family>` with the chosen family (Opus, Fable, Sonnet, Haiku).
@@ -718,6 +739,24 @@ gets typed or what counts as evidence, and each needs a boundary.
   session over. Matching by process can't be taken over that way.
 
 ## R14 — Recovery when the owning daemon restarts
+
+**Known limitations (deferred, accepted 2026-10-28; follow-up SWI-19).** The implementation ships this section's
+safety core without:
+- bulk Replace (`ReplaceDetachedAgent`, `R` on the Workers view): detached workers are replaced one at a time with
+  `t` → Replace;
+- the aggregated start-up notification: one *agent detached* notification per orphan;
+- `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and the run-note overlay: a failing check shows only on the row and in the
+  `t` dialog;
+- the probe priority order: start-up probes run in list order;
+- operation-specific `ErrBusy` messages: a generic `sandbox is busy; try again` (this includes the ~20 s hold during
+  a developer's service stop);
+- detailed orphan notes: no last-seen state or time in notes;
+- the PID-1/subreaper first-bind refusal, a shared rate-limited `ListStatuses`, and `runtimeMu` gating of
+  `sbx mcp`/`sbx ports` (pending quickstart Scenario 0 step 5);
+- the best-effort drain's guarantees: no ordering against `sbx stop`, nothing promised after a failed stop.
+
+Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence.
+
 
 **Context, verified against the code.**
 - **The agent survives.** The agent is launched with `sbx exec -it … exec claude` and deliberately **not** wrapped

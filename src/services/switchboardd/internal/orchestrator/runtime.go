@@ -71,6 +71,8 @@ type runtime struct {
 	// (SWI-18 research R12/R13). Both push in the background, no lock held.
 	brief briefer
 	lanes lanePusher
+	// seq is the step machinery's transient state (sequence.go). Guarded by mu.
+	seq seqState
 }
 
 func newRuntime(ctx context.Context, svc *Service, rec *pb.Orchestrator) *runtime {
@@ -88,6 +90,7 @@ func newRuntime(ctx context.Context, svc *Service, rec *pb.Orchestrator) *runtim
 		reviewTimers:  map[string]Timer{},
 		reported:      map[string]bool{},
 		inputNotified: map[string]bool{},
+		seq:           newSeqState(),
 	}
 	return rt
 }
@@ -106,6 +109,7 @@ func (rt *runtime) stop() {
 		t.Stop()
 	}
 	rt.reviewTimers = map[string]Timer{}
+	rt.seq.stopTimers()
 	rt.mu.Unlock()
 	rt.stopScheduler()
 	rt.wg.Wait()

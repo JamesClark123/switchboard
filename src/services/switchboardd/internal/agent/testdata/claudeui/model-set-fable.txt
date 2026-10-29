@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Fable 5.1 · Claude Max
+ ▝▝   ▝▝   /tmp/TestCaptureFixtures2397333408/001
+
+▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ /model opus
+  ⎿  Set model to Opus 5.5 and saved as your default for new sessions
+
+❯ /model fable
+  ⎿  Set model to Fable 5.1 and saved as your default for new sessions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                          ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

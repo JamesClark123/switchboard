@@ -159,6 +159,13 @@ func (c *Conn) CancelRun(ctx context.Context, id, runID string) (*pb.Run, error)
 	return out, c.orchErr(err)
 }
 
+// ResolveRunStep retries, skips or fails a run's halted step (SWI-17, FR-222).
+// step must be the run's halted step; FAILED_PRECONDITION means the run moved on.
+func (c *Conn) ResolveRunStep(ctx context.Context, id, runID string, step int32, res pb.StepResolution) (*pb.Run, error) {
+	out, err := c.API().ResolveRunStep(ctx, &pb.ResolveRunStepRequest{OrchestratorId: id, RunId: runID, Step: step, Resolution: res})
+	return out, c.orchErr(err)
+}
+
 // RebuildReasoningSandbox destroys and relaunches the orchestrator's reasoning
 // sandbox with setup (saved first when non-nil), draining the LaunchProgress
 // stream like Refresh (FR-146).

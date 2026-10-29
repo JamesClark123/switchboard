@@ -45,13 +45,14 @@ existing SSH with no new network port or auth system.
 
 ## Repository layout
 
-A Go `go.work` workspace with five modules (plus E2E siblings), placed under the constitution's
+A Go `go.work` workspace with six modules (plus E2E siblings), placed under the constitution's
 category taxonomy:
 
 ```
 src/
 ├── libs/switchboard-proto/      # shared gRPC/protobuf contract + domain helpers
 ├── libs/switchboard-dial/       # daemon dialer shared by the TUI and the daemon (local socket, `ssh … sxbd dial-stdio`)
+├── libs/switchboard-termview/   # VT renderer shared by the TUI's terminal view and the daemon's agent screen
 ├── services/switchboardd/       # the daemon  (cmd/sxbd, internal/…)
 ├── services/switchboardd-e2e/   # daemon E2E (real Docker, gated)
 ├── libs/switchboard-update/     # shared self-update core (release lookup, verify, apply)
@@ -471,6 +472,35 @@ four MCP tools on the `sxb-orch-…` server — `orchestrator_list_actions`,
 [When this run is finished, call orchestrator_report_completion with a short summary. …]
 ```
 
+**Action sequence.** Every action carries a **sequence** around its prompt, edited in the
+action form: built-in **Model** (`/model opus|fable|sonnet|haiku`) and **Effort** (`/effort
+low|medium|high|xhigh|max|auto`), typed before the prompt, and **Clear** (`/clear`), typed once the
+run closes; plus up to 10 custom **pre-prompts** (before the action prompt) and 10 **post-prompts**
+(after the run closes), one per line, with the same `{name}` placeholders (not in a prompt's first
+word, and none at all in a prompt starting with `!`). The defaults are Model `opus`, Effort
+`medium` and Clear on, with no custom prompts; an action saved before sequences existed gets the
+defaults. `off` disables a built-in. Steps go one at a time: each is typed only once the agent is
+ready, and the next only once the previous one has finished by evidence (a hook or the screen's
+confirmation line). A run with steps is delivered step by step; a run without any keeps the
+single-prompt delivery. The run's row reads `setting up 2/3` / `cleaning up 1/2` meanwhile, and the
+completion report still closes the run as before (setup and cleanup turns raise no task-complete
+notice).
+
+**Holds.** After a run closes, its worker stays held until cleanup finishes: *cleaning up* (post
+prompts, then Clear; surfaced only once a step is waiting), *needs input (freeing)* (the agent asked
+a question during cleanup and you marked it free with `m`: the remaining post-prompts are dropped,
+Clear follows once the question is answered) and *needing the developer* (Clear could not be
+confirmed: open the worker's terminal and run `/clear`, which ends the hold).
+
+**Halted steps: `R` / `S` / `X`.** A step the agent did not accept (a refused `/model`, a prompt left
+in the input box) halts the run, and its row offers `R` retry, `S` skip and `X` fail, each behind a
+confirm that defaults to No. Retry warns when the step may already have run; Clear can't be
+skipped; failing at a setup step sends no post-prompt but still sends Clear. A run whose agent was
+detached by a daemon restart halts the same way, and `R` stops the detached agent and restarts
+setup from the first step. `t` on any sandbox whose agent is detached opens **Wait / Replace**
+instead of the terminal; Replace stops it and attaches a fresh agent. The daemon only
+detects and reports a detached agent and never stops one itself.
+
 ### Settings & startup sign-in
 
 `,` opens the settings screen. Its first entry, **automatic host sign-in** (on by default), makes
@@ -496,6 +526,10 @@ sandbox's workspace — and delivers each result back to the agent, even with no
   use each and that they run on the host. The agent invokes one via a daemon-injected wrapper; the
   daemon validates the name against the sandbox's allowlist and runs only the fixed, pre-authorized
   string — never anything the agent supplies.
+- **Only the agent's own process tree.** The wrapper sends the agent's per-launch token, which the
+  daemon passes in the agent's environment. A call without one — from your own `sbx exec … bash`
+  shell, an IDE terminal or a service — gets 403 `no agent token in this environment; run the escape
+  hatch from the agent's session`. On the host you can run the command directly instead.
 - **Consent & bounds.** *auto-run* commands run unattended; *requires-approval* commands pause for a
   developer's approval (a 5-minute, deny-by-default window). Every run is bounded by its own or a
   30-minute default timeout, its output capped at 1 MiB, and cancelled if its sandbox stops.

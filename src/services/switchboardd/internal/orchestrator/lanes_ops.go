@@ -75,6 +75,9 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 	var ch laneChange
 	var impact *pb.LaneChangeImpact
 	marked := false
+	// runs.mu orders a rewrite of queued runs' kept settings (a lane delete)
+	// after a stepper's read-modify-write of a queued run (claim, unclaim).
+	rt.runs.mu.Lock()
 	rec, err := rt.updateRuns(func(o *pb.Orchestrator, runs RunTx) error {
 		queued, err := runs.Queued()
 		if err != nil {
@@ -105,6 +108,7 @@ func (rt *runtime) guarded(confirm *pb.LaneGuardConfirm, fn changeFn) (*pb.Orche
 		}
 		return nil
 	})
+	rt.runs.mu.Unlock()
 	if err != nil {
 		if marked {
 			rt.clearDetaching(ch.detaching)
@@ -467,6 +471,12 @@ func putActionChange(a *pb.Action, now *timestamppb.Timestamp) changeFn {
 		saved := proto.Clone(a).(*pb.Action)
 		for i, ex := range o.Actions {
 			if ex.GetName() == a.GetName() {
+				// A client from before SWI-17 sends no sequence (the TUI always
+				// sends one): keep the stored one rather than resetting it to
+				// the defaults.
+				if saved.GetSequence() == nil && ex.GetSequence() != nil {
+					saved.Sequence = proto.Clone(ex.GetSequence()).(*pb.ActionSequence)
+				}
 				saved.CreatedAt, saved.UpdatedAt = ex.GetCreatedAt(), now
 				o.Actions[i] = saved
 				return ch, nil

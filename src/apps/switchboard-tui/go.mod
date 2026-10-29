@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260622092256-25656177ba8e
 	github.com/jamesclark123/switchboard/libs/switchboard-dial v0.0.0
 	github.com/jamesclark123/switchboard/libs/switchboard-proto v0.0.0
+	github.com/jamesclark123/switchboard/libs/switchboard-termview v0.0.0
 	github.com/pelletier/go-toml/v2 v2.2.3
 	golang.org/x/term v0.40.0
 	google.golang.org/grpc v1.81.1
@@ -72,3 +73,5 @@ replace github.com/jamesclark123/switchboard/libs/switchboard-proto => ../../lib
 replace github.com/jamesclark123/switchboard/libs/switchboard-update => ../../libs/switchboard-update
 
 replace github.com/jamesclark123/switchboard/libs/switchboard-dial => ../../libs/switchboard-dial
+
+replace github.com/jamesclark123/switchboard/libs/switchboard-termview => ../../libs/switchboard-termview

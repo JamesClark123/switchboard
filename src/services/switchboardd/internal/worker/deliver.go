@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -92,7 +93,9 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 				go s.agents.ReassertUnready(req.GetSandboxId(), seen)
 			}
 		} else if starting {
-			s.startAgent(req.GetSandboxId(), "deliver")
+			if serr := s.startAgentErr(req.GetSandboxId()); serr != nil {
+				return nil, gateRefusal(serr)
+			}
 		}
 		return nil, err
 	}
@@ -121,22 +124,39 @@ func (s *Service) DeliverResponse(ctx context.Context, req *pb.DeliverWorkerProm
 // agent would come up without the orchestrator's tools, and OnBringUp starts it
 // once the load is done.
 func (s *Service) startAgent(sandboxID, why string) {
-	if s.agents == nil || s.agents.Live(sandboxID) || s.bringingUp(sandboxID) {
-		return
-	}
-	var err error
-	if s.terms != nil {
-		_, err = s.terms.Broadcaster(sandboxID)
-	} else {
-		sb, gerr := s.reg.Get(sandboxID)
-		if gerr != nil {
-			return
-		}
-		_, err = s.agents.Session(sandboxID, sb.GetAgent().GetSpec())
-	}
-	if err != nil {
+	if err := s.startAgentErr(sandboxID); err != nil {
 		s.logf("[worker] %s %s: agent not started: %v", why, sandboxID, err)
 	}
+}
+
+// startAgentErr is startAgent returning why the agent was not started. Every
+// spawn goes through the orphan gate (agent.Registry.Session), which refuses
+// beside an agent detached by a daemon restart (research R14).
+func (s *Service) startAgentErr(sandboxID string) error {
+	if s.agents == nil || s.agents.Live(sandboxID) || s.bringingUp(sandboxID) {
+		return nil
+	}
+	if s.terms != nil {
+		_, err := s.terms.Broadcaster(sandboxID)
+		return err
+	}
+	sb, err := s.reg.Get(sandboxID)
+	if err != nil {
+		return nil
+	}
+	_, err = s.agents.Session(sandboxID, sb.GetAgent().GetSpec())
+	return err
+}
+
+// gateRefusal is the delivery's refusal when its agent could not be started:
+// FAILED_PRECONDITION with the orphan gate's reason (research R14), or
+// `agent not started: <err>` for any other failure, so a spawn that keeps
+// failing is not read as an agent forever starting.
+func gateRefusal(startErr error) error {
+	if errors.Is(startErr, agent.ErrOrphan) || errors.Is(startErr, agent.ErrBusy) {
+		return fmt.Errorf("%w: %v", ErrPrecondition, startErr)
+	}
+	return fmt.Errorf("%w: agent not started: %v", ErrPrecondition, startErr)
 }
 
 // WarmStart starts a running worker's agent ahead of its first run (SWI-15), so
@@ -170,15 +190,23 @@ func (s *Service) rollbackRunErr(sandboxID string, cause error) error {
 // PromptFunc is the prompt-injection signature (agent.Registry.Prompt).
 type PromptFunc = func(sandboxID string, spec *pb.AgentSpec, text string) error
 
-// EnsureDrained wraps a prompt function so the sandbox's persistent terminal
-// session exists before text is typed — the escape hatch's result delivery
-// shares the unattended-PTY exposure delivery fixes (research R7). terms is
-// resolved at call time because the gRPC server owns the registry.
-func EnsureDrained(terms func() *terminal.Registry, prompt PromptFunc) PromptFunc {
+// EnsureDrained wraps the agent registry's Prompt so the sandbox's persistent
+// terminal session exists before text is typed — the escape hatch's result
+// delivery shares the unattended-PTY exposure delivery fixes (research R7).
+// terms is resolved at call time because the gRPC server owns the registry.
+//
+// It starts no agent for a held sandbox (agent.ErrHeld, SWI-17 research R13):
+// the broadcaster would spawn one, and a result arriving after the agent
+// exited must not start the session that ends the hold. A live agent still
+// gets the result.
+func EnsureDrained(terms func() *terminal.Registry, agents *agent.Registry) PromptFunc {
 	return func(sandboxID string, spec *pb.AgentSpec, text string) error {
+		if !agents.Live(sandboxID) && agents.Held(sandboxID) {
+			return agent.ErrHeld
+		}
 		if t := terms(); t != nil {
 			_, _ = t.Broadcaster(sandboxID)
 		}
-		return prompt(sandboxID, spec, text)
+		return agents.Prompt(sandboxID, spec, text)
 	}
 }

@@ -29,6 +29,7 @@ import (
 
 	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/config"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/daemonctl"
@@ -197,12 +198,25 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return agent.Target{Ref: ref, Workdir: sb.GetWorkspacePath()}
 	}
-	agents := agent.NewRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
+	// SWI-17 (research R13): each agent PTY is a new generation with its own
+	// hook token, persisted so an agent that outlives this daemon keeps working
+	// hooks after a restart.
+	hookTokens, err := agent.LoadHookTokens(reg)
+	if err != nil {
+		return err
+	}
+	hookTokens.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
+	agents := agent.NewSpawnRegistry(agent.PTYFactory(cfg.SbxBin, sbxTarget))
+	agents.SetHookTokens(hookTokens)
+	// A NEEDS_DEVELOPER hold records the agent generation it began under.
+	mgr.SetAgentGeneration(agents.Generation)
 	// Feature 009 (research R7): an agent that exits on its own is reported as
 	// AGENT_STATUS_EXITED so the orchestrator can fail the run it was on.
 	agents.SetStatusUpdater(mgr)
 	agents.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	hookServer := agent.NewHookServer(hub, mgr)
+	hookServer.SetTokens(hookTokens)
+	hookServer.SetLogger(func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) })
 	// SWI-12: a WAITING agent's backstop lives in memory; restore it for agents
 	// recorded WAITING before this start.
 	if all, err := mgr.List(); err == nil {
@@ -211,6 +225,19 @@ func runServe(cfg *config.Config, debug bool) error {
 	// SWI-15: any hook means the agent's input box is up; a stuck start notifies.
 	agents.SetNotifier(hub)
 	hookServer.SetOnReady(agents.MarkReady)
+	// SWI-17 (research R14): an agent outlives this daemon, so after a restart
+	// it may be detached (an orphan). Every spawn asks the manager's gate
+	// first; an exec client that exits on its own, or a detached agent's
+	// SessionEnd, is probed rather than taken for an exit.
+	agents.SetOrphanGate(mgr)
+	agents.SetOnClientExit(mgr.AgentClientExited)
+	hookServer.SetOnSessionEnd(mgr.RecheckOrphan)
+	// Before the hook server serves (an orphan's escape-hatch result would
+	// spawn an agent), every sandbox that may still have the previous
+	// daemon's agent is unknown; CheckOrphansAtStart settles each below. The
+	// deps are completed once the worker service exists.
+	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub})
+	mgr.MarkOrphanCandidates()
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
@@ -228,10 +255,6 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetHookInjector(func(sandboxID, workspacePath string) error {
 		return agent.InjectHooks(workspacePath, sandboxID, callbackURL)
 	})
-	// Sandboxes launched by an older daemon carry its hook command; rewrite them
-	// so this daemon's mapping (e.g. Claude Code's idle nudge is IDLE, not
-	// NEEDS_INPUT) applies once their agent restarts.
-	mgr.RefreshHooks(func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 
 	// Escape hatch (feature 005): the service runs allowlisted commands on the host
 	// and delivers results back to the agent via the PTY-injection Prompt path. The
@@ -248,15 +271,43 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return srv.Terminals()
 	}
-	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents.Prompt))
+	ehService := escapehatch.New(mgr, hub, worker.EnsureDrained(terms, agents))
+	// SWI-17: only the agent's own process tree (its hook token) runs a command.
+	ehService.SetAgentAuth(func(sandboxID, gen, token string) bool {
+		_, ok := hookTokens.Verify(sandboxID, gen, token)
+		return ok
+	})
+	// SWI-17: a worker's input_idle_since is sampled from its agent screen, on
+	// each hook and every few seconds while a run is recorded.
+	hookServer.SetScreen(func(sandboxID string) ([]termview.Line, bool, bool) {
+		if t := terms(); t != nil {
+			return t.Screen(sandboxID)
+		}
+		return nil, false, false
+	})
+	hookServer.SetRepaint(func(sandboxID string) bool {
+		if t := terms(); t != nil {
+			return t.RequestRepaint(sandboxID)
+		}
+		return false
+	})
+	go hookServer.SampleIdle(ctx)
 	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)
 	})
+	// Sandboxes launched by an older daemon carry its hook command; rewrite them
+	// so this daemon's mapping (e.g. Claude Code's idle nudge is IDLE, not
+	// NEEDS_INPUT) applies once their agent restarts. The escape-hatch wrappers
+	// are re-injected with them, so each sends its agent's token (SWI-17).
+	mgr.RefreshHooks(func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 
 	// Port forwarding (feature 006): the supervisor owns service lifecycle on this
 	// host. It reaches sandboxes through the same `sbx` runner the manager uses, and
 	// publishes state changes on the hub the client is already subscribed to.
 	services := portforward.NewSupervisor(mgr, runner, hub)
+	// SWI-17: a developer's in-sandbox start or service stop is refused while a
+	// lifecycle operation holds the sandbox's runtime lock (research R14).
+	services.SetRuntimeLock(mgr.TryLockRuntime)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hook", hookServer.Handle)
@@ -290,6 +341,11 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetGoBringUp(workerSvc.GoBringUp)
 	mgr.SetOnLaunched(workerSvc.WarmStart)
 	mgr.SetControllerApplier(workerSvc.Apply)
+	// SWI-17 (research R14): the detached-agent check; a sandbox found clear
+	// again has its worker's agent warm-started, and R on a restart halt
+	// stops the detached agent first.
+	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub, OnClear: workerSvc.WarmStart})
+	workerSvc.SetOrphanReaper(mgr)
 	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
 	// /orchestrator/w/<token>/mcp. The gateway reaches it on 127.0.0.1:<port>
 	// from the host, so the `localhost:<port>` policy allow above already
@@ -342,6 +398,8 @@ func runServe(cfg *config.Config, debug bool) error {
 		Debug:           debug,
 	})
 	workerSvc.SetTerminals(srv.Terminals())
+	// SWI-17: a step's submit check listens to the agent's hooks.
+	workerSvc.SetHookTap(hookServer)
 	// SWI-15: agent sessions do not survive a daemon restart, so every running
 	// worker's agent is started now rather than on the first delivery attempt
 	// (WarmStart leaves a worker with a run in flight alone).
@@ -354,6 +412,11 @@ func runServe(cfg *config.Config, debug bool) error {
 			}
 		}
 	}
+	// SWI-17 (research R14): before any agent can start, every running sandbox
+	// that may still have the previous daemon's agent is marked unknown (the
+	// gate refuses it) and probed in the background; the rest are clear.
+	mgr.CheckOrphansAtStart(ctx)
+	go mgr.RunOrphanBackstop(ctx)
 	if readoptErr == nil {
 		// Workers re-adopted RUNNING at startup were moved before the bring-up
 		// observer existed: they are brought up now, as after a Restart.

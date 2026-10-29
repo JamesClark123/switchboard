@@ -365,6 +365,14 @@ func (f *fakeDaemon) CancelRun(_ context.Context, id, runID string) (*pb.Run, er
 	return &pb.Run{Id: runID, State: pb.RunState_RUN_STATE_CANCELLED}, nil
 }
 
+// ResolveRunStep records the call (SWI-17); orchErr fails it.
+func (f *fakeDaemon) ResolveRunStep(_ context.Context, id, runID string, step int32, res pb.StepResolution) (*pb.Run, error) {
+	if err := f.orchCall("ResolveRunStep %s %s %d %s", id, runID, step, res); err != nil {
+		return nil, err
+	}
+	return &pb.Run{Id: runID}, nil
+}
+
 func (f *fakeDaemon) RebuildReasoningSandbox(_ context.Context, id string, setup *pb.ReasoningSetup, onLog func(client.LaunchUpdate)) (*pb.Sandbox, error) {
 	var srcs []string
 	for _, s := range setup.GetSources() {

@@ -3,9 +3,22 @@ package escapehatch
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 )
+
+// The headers the wrapper identifies the agent with (agent.HookServer's).
+const (
+	HeaderToken = "X-Sxb-Token"
+	HeaderGen   = "X-Sxb-Gen"
+)
+
+// maxRunBody bounds a run request's body.
+const maxRunBody = 1 << 20
+
+// ErrNoAgentToken refuses a call made outside the agent's process tree.
+var ErrNoAgentToken = errors.New("no agent token in this environment; run the escape hatch from the agent's session")
 
 // runRequest is the body the injected wrapper POSTs to /escape-hatch/run. It carries
 // the sandbox id, the command NAME, and — for commands that permit it — an optional
@@ -38,12 +51,23 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req runRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRunBody)).Decode(&req); err != nil {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(req.SandboxID) == "" || strings.TrimSpace(req.Name) == "" {
 		http.Error(w, "sandbox_id and name are required", http.StatusBadRequest)
+		return
+	}
+
+	// Only the agent's own process tree may run a command (SWI-17, research
+	// R13): the call must carry a live generation's token of this sandbox.
+	switch tok := r.Header.Get(HeaderToken); {
+	case tok == "":
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: ErrNoAgentToken.Error()})
+		return
+	case s.agentAuth == nil || !s.agentAuth(req.SandboxID, r.Header.Get(HeaderGen), tok):
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "unknown agent token"})
 		return
 	}
 

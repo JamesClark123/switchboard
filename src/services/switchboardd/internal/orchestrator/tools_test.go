@@ -62,7 +62,7 @@ func TestToolCallActionFromWorkers(t *testing.T) {
 	}
 
 	// A reason action from a worker is accepted and runs on the reasoning sandbox.
-	if _, err := putAction(env.svc, o.GetId(), &pb.Action{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}}); err != nil {
+	if _, err := putAction(env.svc, o.GetId(), plain(&pb.Action{Name: "think", Type: pb.ActionType_ACTION_TYPE_REASON, Body: "Think about {topic}.", Arguments: []*pb.ActionArgument{{Name: "topic", Required: true}}})); err != nil {
 		t.Fatal(err)
 	}
 	body, err = rt.runTool("box", "wb", toolCallAction, `{"action":"think","arguments":{"topic":"x"}}`)

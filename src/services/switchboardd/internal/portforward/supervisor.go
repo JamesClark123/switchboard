@@ -26,6 +26,11 @@ const (
 // not own.
 var ErrUnknownSandbox = errors.New("unknown sandbox")
 
+// ErrSandboxBusy refuses a service start or stop inside a sandbox while a
+// lifecycle operation (stop, restart, refresh, kit attach, destroy) holds the
+// sandbox's runtime lock (SWI-17, research R14).
+var ErrSandboxBusy = errors.New("sandbox is busy; try again")
+
 // ErrServiceNotDeclared is returned when a request names a service absent from the
 // sandbox's persisted set. This is the security boundary: only a declared name can
 // resolve to something startable (FR-045).
@@ -81,6 +86,10 @@ type Supervisor struct {
 
 	mu      sync.Mutex
 	handles map[string]*procHandle // instance id -> handle
+
+	// tryRuntime try-locks a sandbox's runtime lock (SWI-17, research R14:
+	// sandbox.Manager.TryLockRuntime); nil = never gated. It never waits.
+	tryRuntime func(sandboxID string) (unlock func(), ok bool)
 }
 
 // NewSupervisor constructs a Supervisor.
@@ -95,6 +104,22 @@ func NewSupervisor(sandboxes SandboxLookup, runner Runner, emitter Emitter) *Sup
 		stopGrace:        stopGracePeriod,
 		handles:          map[string]*procHandle{},
 	}
+}
+
+// SetRuntimeLock registers the sandbox runtime try-lock the developer's
+// requests take (SWI-17, research R14): an in-sandbox launch and a service
+// stop are refused while a lifecycle operation holds it.
+func (s *Supervisor) SetRuntimeLock(fn func(sandboxID string) (unlock func(), ok bool)) {
+	s.tryRuntime = fn
+}
+
+// lockRuntime try-locks the sandbox's runtime lock, or reports ok with a no-op
+// unlock when none is registered.
+func (s *Supervisor) lockRuntime(sandboxID string) (func(), bool) {
+	if s.tryRuntime == nil {
+		return func() {}, true
+	}
+	return s.tryRuntime(sandboxID)
 }
 
 // SetClock overrides the supervisor clock; used in tests for deterministic stamps.
@@ -168,6 +193,37 @@ func (s *Supervisor) publish(inst *pb.ServiceInstance) {
 func (s *Supervisor) markFailed(id string, reason pb.ServiceFailureReason, detail string) *pb.ServiceInstance {
 	s.release(id)
 	return s.transition(id, func(i *pb.ServiceInstance) {
+		i.State = pb.ServiceState_SERVICE_STATE_FAILED
+		i.FailureReason = reason
+		i.FailureDetail = detail
+		i.LocalPort = 0
+		i.EndedAt = timestamppb.New(s.now())
+	})
+}
+
+// transitionStarting is transition for a start attempt (bringUp): mutate
+// applies only while the instance is still STARTING, checked inside the store
+// update, and a skipped write is not published. Whoever moved it on (a stop's
+// drain, a developer's stop) owns the outcome (SWI-17, research R14).
+func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
+	applied := false
+	inst, ok := s.insts.Update(id, func(i *pb.ServiceInstance) {
+		if i.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
+			applied = true
+			mutate(i)
+		}
+	})
+	if ok && applied {
+		s.publish(inst)
+	}
+	return applied
+}
+
+// failStarting is markFailed for a start attempt: the resources are released
+// and the instance FAILED only while it is still STARTING (transitionStarting).
+func (s *Supervisor) failStarting(id string, reason pb.ServiceFailureReason, detail string) {
+	s.release(id)
+	s.transitionStarting(id, func(i *pb.ServiceInstance) {
 		i.State = pb.ServiceState_SERVICE_STATE_FAILED
 		i.FailureReason = reason
 		i.FailureDetail = detail

@@ -117,6 +117,40 @@ message AgentSession {
   AgentStatus status = 2;
   google.protobuf.Timestamp last_event_at = 3;
   bool pty_attached = 4;
+  // --- SWI-17: per-agent evidence (research R4, R7, R8, R13, R14) ---
+  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit
+  google.protobuf.Timestamp last_turn_end_at = 6;       // Stop w/o background tasks, or backstop expiry
+  google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
+  string last_session_source = 8;                       // "startup" | "resume" | "clear"
+  // Box empty + ready and agent not WORKING since (unset otherwise); sampled
+  // while controller.run is set (the idle-nudge fallback, R1); written only when
+  // it is set or unset, never per sample.
+  google.protobuf.Timestamp input_idle_since = 9;
+  // The main agent's current session; follows clear/resume SessionStarts from
+  // the main PID only (the main agent is matched by the hook's X-Sxb-Pid, not by
+  // this id; research R13). Used for Clear's read-back and hold release.
+  string session_id = 10;
+  google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
+  AgentCheck agent_check = 12;                          // the detached-agent check (research R14); unset = clear
+}
+
+// What the owning daemon knows about a possibly detached agent (SWI-17,
+// research R14). Written by the daemon only, when the state changes; cleared
+// when the sandbox is clear. The Workers view and the row notes read it.
+// The rest of the SWI-17 delta touches messages this 001 subset does not carry
+// (specs/swi-17-feature-action-pre-post-prompts/contracts/proto-delta.md).
+message AgentCheck {
+  enum State {
+    STATE_CLEAR = 0;
+    STATE_UNKNOWN = 1;                   // a probe is pending or retrying; the gate refuses
+    STATE_DETACHED = 2;                  // an orphan: alive, not this daemon's session; the gate refuses
+    STATE_CHECK_FAILED = 3;              // still unknown after orphanUnknownLimit or 3 failed probes; surfaced
+  }
+  State state = 1;
+  AgentStatus last_status = 2;           // the agent's last known status (DETACHED)
+  google.protobuf.Timestamp last_seen_at = 3;
+  string error = 4;                      // CHECK_FAILED: the last probe error
+  int32 processes = 5;                   // DETACHED: live matched agent processes (may stay 0)
 }
 
 message Sandbox {

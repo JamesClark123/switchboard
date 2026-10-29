@@ -126,11 +126,11 @@ func TestLeavingRunningClearsRunUnlessReview(t *testing.T) {
 
 	// leaveRunning into RUNNING is a no-op for the run.
 	s := &pb.Sandbox{Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "r"}}}
-	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_RUNNING, 0)
 	if s.GetController().GetRun() == nil {
 		t.Error("RUNNING must not clear the run")
 	}
-	leaveRunning(&pb.Sandbox{}, pb.SandboxState_SANDBOX_STATE_STOPPED) // no controller: fine
+	leaveRunning(&pb.Sandbox{}, pb.SandboxState_SANDBOX_STATE_STOPPED, 0) // no controller: fine
 }
 
 func TestOnDestroyAndBringUpHooks(t *testing.T) {
@@ -181,6 +181,34 @@ func TestOnDestroyAndBringUpHooks(t *testing.T) {
 		t.Errorf("prune should run the destroy hook: %v", destroyed)
 	}
 	_ = runner
+}
+
+// The bring-up observer runs after the runtime lock is released: its warm
+// start's spawn asks the gate (Admit), which try-locks it (research R14).
+func TestBringUpHookCanStartTheAgent(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	var admitted []error
+	m.SetOnBringUp(func(sb *pb.Sandbox) {
+		release, err := m.Admit(sb.GetId())
+		if err == nil {
+			release()
+		}
+		admitted = append(admitted, err)
+	})
+	w := controlled(t, m, reg, dir, "worker", nil)
+	if _, err := m.Stop(ctx, w.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Restart(ctx, w.GetId(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Refresh(ctx, w.GetId(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(admitted) != 2 || admitted[0] != nil || admitted[1] != nil {
+		t.Errorf("bring-up spawns = %v, want two admitted (restart + refresh)", admitted)
+	}
 }
 
 func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
@@ -289,8 +317,132 @@ func TestStopResetsABusyAgent(t *testing.T) {
 		Agent:      &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT},
 		Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "run-1", NeedsReview: true}},
 	}
-	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	leaveRunning(s, pb.SandboxState_SANDBOX_STATE_STOPPED, 0)
 	if s.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || !s.GetController().GetRun().GetNeedsReview() {
 		t.Errorf("after leaving RUNNING: agent %v, run %v; want IDLE with the review run kept", s.GetAgent().GetStatus(), s.GetController().GetRun())
+	}
+}
+
+// --- SWI-17: holds survive a stop, and an agent exit during cleanup ---
+
+func TestStopKeepsARunWithCleanupHeld(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	for _, c := range []struct {
+		name string
+		run  *pb.WorkerRun
+		kept bool
+	}{
+		{"cleaning", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepRole: pb.StepRole_STEP_ROLE_CLEANUP}, true},
+		{"freeing", &pb.WorkerRun{Id: "r2", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING}, true},
+		{"cleanup-step", &pb.WorkerRun{Id: "r3", StepRole: pb.StepRole_STEP_ROLE_CLEANUP}, true},
+		{"held", &pb.WorkerRun{Id: "r4", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 7}, true},
+		{"setup", &pb.WorkerRun{Id: "r5", StepRole: pb.StepRole_STEP_ROLE_SETUP}, false},
+		{"action", &pb.WorkerRun{Id: "r6", StepRole: pb.StepRole_STEP_ROLE_ACTION}, false},
+	} {
+		sb := controlled(t, m, reg, dir, c.name, c.run)
+		out, err := m.Stop(ctx, sb.GetId())
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := out.GetController().GetRun()
+		if !c.kept {
+			if run != nil {
+				t.Errorf("%s: a run in setup or action is cleared by a stop: %+v", c.name, run)
+			}
+			continue
+		}
+		if run.GetId() != c.run.GetId() || run.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+			t.Errorf("%s: kept run = %+v, want held NEEDS_DEVELOPER", c.name, run)
+		}
+	}
+	got, _ := reg.Get(controlled(t, m, reg, dir, "gen", &pb.WorkerRun{Id: "r7", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 7}).GetId())
+	leaveRunning(got, pb.SandboxState_SANDBOX_STATE_STOPPED, 0)
+	if got.GetController().GetRun().GetHoldGen() != 7 {
+		t.Error("an existing NEEDS_DEVELOPER hold is left as it is")
+	}
+}
+
+// hold_gen is the agent generation when the hold begins, written by the daemon
+// on the transition into NEEDS_DEVELOPER only (SWI-17, research R13).
+func TestHoldRecordsTheAgentGeneration(t *testing.T) {
+	ctx := context.Background()
+	m, reg, _, dir := newTestManager(t)
+	gens := map[string]int64{}
+	m.SetAgentGeneration(func(id string) int64 { return gens[id] })
+	exited := controlled(t, m, reg, dir, "exited", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP})
+	stopped := controlled(t, m, reg, dir, "stopped", &pb.WorkerRun{Id: "r2", StepRole: pb.StepRole_STEP_ROLE_CLEANUP})
+	gens[exited.GetId()], gens[stopped.GetId()] = 4, 9
+	if _, err := m.SetAgentStatus(exited.GetId(), pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.Stop(ctx, stopped.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.GetController().GetRun().GetHoldGen(); got != 9 {
+		t.Errorf("stop: hold_gen = %d, want 9", got)
+	}
+	// A later write of the same hold (another exit) keeps the recorded value.
+	gens[exited.GetId()] = 5
+	if _, err := m.SetAgentStatus(exited.GetId(), pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := reg.Get(exited.GetId())
+	if got.GetController().GetRun().GetHoldGen() != 4 {
+		t.Errorf("exit: hold_gen = %d, want 4 (recorded on the transition only)", got.GetController().GetRun().GetHoldGen())
+	}
+}
+
+func TestAgentExitDuringCleanupHolds(t *testing.T) {
+	m, reg, _, dir := newTestManager(t)
+	cleaning := controlled(t, m, reg, dir, "cleaning", &pb.WorkerRun{Id: "r1", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepRole: pb.StepRole_STEP_ROLE_CLEANUP})
+	action := controlled(t, m, reg, dir, "action", &pb.WorkerRun{Id: "r2", StepRole: pb.StepRole_STEP_ROLE_ACTION})
+	for _, id := range []string{cleaning.GetId(), action.GetId()} {
+		if _, err := m.SetAgentStatus(id, pb.AgentStatus_AGENT_STATUS_EXITED, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := reg.Get(cleaning.GetId())
+	if got.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER {
+		t.Errorf("exit during cleanup = %+v, want NEEDS_DEVELOPER", got.GetController().GetRun())
+	}
+	got, _ = reg.Get(action.GetId())
+	if got.GetController().GetRun().GetHold() != pb.WorkerHold_WORKER_HOLD_NONE {
+		t.Error("a run with nothing left to clean gets no hold")
+	}
+	// A fresh session's corroborated startup then ends the hold at once.
+	var emits int
+	m.SetOnChange(func(*pb.Sandbox) { emits++ })
+	if cleared, err := m.ClearHeldRun(cleaning.GetId()); err != nil || !cleared {
+		t.Fatalf("ClearHeldRun = %v / %v", cleared, err)
+	}
+	got, _ = reg.Get(cleaning.GetId())
+	if got.GetController().GetRun() != nil || got.GetController() == nil || emits != 1 {
+		t.Errorf("hold not ended: %+v (emits %d)", got.GetController(), emits)
+	}
+	// The CAS: a run not held NEEDS_DEVELOPER is left alone, silently.
+	if cleared, err := m.ClearHeldRun(action.GetId()); err != nil || cleared || emits != 1 {
+		t.Errorf("unheld = %v / %v (emits %d)", cleared, err, emits)
+	}
+	if _, err := m.ClearHeldRun("nope"); err == nil {
+		t.Error("unknown sandbox must error")
+	}
+}
+
+func TestSetAgentEvidence(t *testing.T) {
+	m, reg, _, dir := newTestManager(t)
+	sb := controlled(t, m, reg, dir, "ev", nil)
+	var emits int
+	m.SetOnChange(func(*pb.Sandbox) { emits++ })
+	if _, err := reg.Update(sb.GetId(), func(s *pb.Sandbox) error { s.Agent = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.SetAgentEvidence(sb.GetId(), func(a *pb.AgentSession) { a.SessionId = "s-1" })
+	if err != nil || out.GetAgent().GetSessionId() != "s-1" || emits != 1 {
+		t.Errorf("evidence = %+v / %v (emits %d)", out.GetAgent(), err, emits)
+	}
+	if _, err := m.SetAgentEvidence("nope", func(*pb.AgentSession) {}); err == nil {
+		t.Error("unknown sandbox must error")
 	}
 }

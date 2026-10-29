@@ -245,6 +245,9 @@ func (s *Service) summary(rec *pb.Orchestrator) (*pb.OrchestratorSummary, error)
 			sum.InFlight++
 			sum.AwaitingReview++
 		}
+		if holding(r) {
+			sum.InFlight++ // listed in progress until its hold or halt ends (FR-213)
+		}
 	}
 	if rt, err := s.runtimeFor(rec.GetId()); err == nil {
 		sum.ReasoningReady, sum.ReasoningError = rt.reasoningStatus()

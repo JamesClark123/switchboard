@@ -18,6 +18,61 @@ Paths are relative to the repository root:
 - `UI/` = `src/apps/switchboard-tui/internal/ui/`
 - `PROTO` = `src/libs/switchboard-proto/proto/switchboard.proto`
 
+## Deferred items (accepted by the developer, 2026-10-28; follow-up SWI-19)
+
+The developer accepted PR #21's *Proposed deferrals*. **This list overrides the task text below** wherever they
+conflict; research R14 lists the same items as known limitations.
+
+- **No bulk Replace.** No `ReplaceDetachedAgent` RPC (T003, T047) and no `R` on the Workers view (T031). Each
+  detached worker is replaced with `t` → Replace (`AttachAgent.replace_orphan`). The `ReapOrphan` call-site guard
+  test (T047) allows two callers: `AttachAgent` with `replace_orphan` and `DeliverWorkerStep.restart`.
+- **No aggregated start-up notification.** Every orphan record gets its own `NOTIFICATION_KIND_AGENT_DETACHED` once
+  (T047 *Surfacing*); there is no host-level notice or `enter` → Workers routing (T027).
+- **No `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and no run-note overlay.** Field number 11 of `NotificationKind` is
+  reserved, not added (T003). After `orphanUnknownLimit` or 3 failures the sandbox becomes `agent_check`
+  CHECK_FAILED and the row note reads `can't check for a detached agent: <error>`; `controller.run.step_note` is
+  **not** touched, and the `t` dialog offers *Restart sandbox* / *Wait* (T047, T027, T029).
+- **No probe priority order.** Start-up probes run in list order (T047).
+- **Generic busy message.** Every `runtimeMu` refusal is `ErrBusy` with the text `sandbox is busy; try again`; it
+  doesn't name the operation (T047, T048).
+- **Plain orphan notes.** The row note is `agent detached by a daemon restart — t to Replace or Wait`, and halt notes
+  say `agent detached by a daemon restart`, without the last-seen state or time. `AgentCheck` keeps its fields;
+  `last_status` is still filled (for the `t` dialog), `processes` may stay 0.
+- **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise), **no shared rate-limited
+  `ListStatuses`** for probe pre-checks, and **no `runtimeMu` gating of `sbx mcp load/unload` or `sbx ports`**.
+- **The pre-stop drain is best effort** (T047, as already written): no ordering against `sbx stop`, and nothing
+  promised about what survives a failed stop.
+
+**Also deferred from PR #25's review (run-718, addressed in run-721; follow-up SWI-19):**
+
+- **Service starts/stops during a probe still fail as busy.** A bounded retry would have to outlast a probe (10 s)
+  or reap (15 s); a read/write split of `runtimeMu` is a design change.
+- **`CheckOrphansAtStart` stays synchronous** before the gRPC server serves (at most 10 s on a slow runtime): async
+  classification could retire a fresh agent's token on a stale listing.
+- **Model/Effort confirmation counts echoes**, so an identical echo scrolling off a full screen can halt a retried
+  setup step (R/S/X recover); termview exposes no scroll offset.
+- **Main-agent bind is the first tokened SessionStart**; a lost first hook can bind a nested `claude -p` (Replace
+  recovers). Nested events no longer drive status once a main PID is bound.
+- **The hook token is expanded into curl's argv** in the hook command (it is already in `/proc/<pid>/environ`, R13).
+- **Hooks still forward their full body** (reading stops once the wanted fields are seen); `sampleIdle` is not
+  rate-limited.
+- **ACTION_PROMPT may still be AGENT_LOCAL** when its turn hook is lost, as contracts/worker-step.md §3 says.
+- **A resize doesn't mark the daemon screen stale.**
+- **A claimed queued run stays with its worker** while that worker refuses for a non-terminal reason (T019/R6).
+- **No in-memory sandbox→run index**, and the action step's text still duplicates `Run.Prompt`.
+- **Old daemons are shown the default sequence** in the TUI (no capability signal).
+- **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them.
+- **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step).
+
+**Also deferred from PR #25's re-review 5692052431 (run-746, addressed in run-749; follow-up SWI-19):**
+
+- **A dispatch pass reads the runs twice**: `ViewOrchestratorRuns` for the queued runs, then `ListRuns` for the
+  claimed and holding sandboxes. One read needs a registry view that returns both.
+- **Rebuilding the paged action form returns it to page 1** (refused save, guard confirm, back from `ctrl+l`, lane
+  reload), with no page indicator. Restoring focus means stepping huh's groups, which validate on the way.
+
+Tests that exist only for a deferred item are dropped.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: can run in parallel (different files, no dependency on an incomplete task)
@@ -29,7 +84,7 @@ Paths are relative to the repository root:
 
 **Purpose**: Start from the prerequisites, move the VT renderer to a library, and land the proto delta.
 
-- [ ] T001 **Prerequisites (research R12).** **PR #17 (SWI-15) has merged.** Start the implement branch from `main`
+- [X] T001 **Prerequisites (research R12).** **PR #17 (SWI-15) has merged.** Start the implement branch from `main`
   once **SWI-9's implementation** has merged too. Check both are there:
   - from SWI-15, in `SBD/agent/hooks.go`: the `SessionStart` registration, `hookPayload.Source`, `sessionStart()`;
     also `Ready`/`MarkReady`, `AGENT_STATUS_STARTING` and `startAgent`;
@@ -37,7 +92,7 @@ Paths are relative to the repository root:
 
   If SWI-9 is still open, stop and ask the developer. A partial cherry-pick would leave step guard 5 or the form
   guard with nothing to call.
-- [ ] T002 Create the library module `src/libs/switchboard-termview` (`go.mod` module path
+- [X] T002 Create the library module `src/libs/switchboard-termview` (`go.mod` module path
   `github.com/jamesclark123/switchboard/libs/switchboard-termview`) by **moving**
   `src/apps/switchboard-tui/internal/termview/{termview.go,termview_test.go}`, with `git mv` so history is kept.
   - Add it to `go.work`. The Makefile's module list derives from `go.work` (SWI-11), so check that `make lint test
@@ -46,7 +101,7 @@ Paths are relative to the repository root:
   - Add `func (s *Screen) Lines() []Line`, where `Line{Text string; Faint []bool}` is the live screen without
     scrollback, with each cell's faint attribute, and a `WithoutScrollback()` option for the daemon (the TUI keeps
     its 5000 lines). Test both in `termview_test.go`. Coverage must stay ≥ 90% for the new module.
-- [ ] T003 Apply contracts/proto-delta.md to `PROTO`, then run `make proto` (`src/libs/switchboard-proto/gen.sh`).
+- [X] T003 Apply contracts/proto-delta.md to `PROTO`, then run `make proto` (`src/libs/switchboard-proto/gen.sh`).
   - **Enums:** `ModelChoice`, `EffortChoice`, `StepRole`, `StepKind`, `StepStatus` (incl. `SENDING = 7`),
     `StepObserved`, `WorkerHold`, `StepOutcome`, `StepResolution`, `AgentCheck.State`.
   - **Messages:** `ActionSequence`, `RunStep`, `AgentCheck`, `DeliverWorkerStepRequest/Response`,
@@ -56,7 +111,7 @@ Paths are relative to the repository root:
     `AGENT_CHECK_FAILED`).
   - **RPCs:** `DeliverWorkerStep`, `ResolveRunStep`, `ReplaceDetachedAgent`.
   - Add labels for the new enums in `src/libs/switchboard-proto/types.go`, alongside `AgentStatusLabel`.
-- [ ] T004 [P] Mirror the proto delta in `specs/001-sandbox-session-manager/contracts/switchboard.proto`.
+- [X] T004 [P] Mirror the proto delta in `specs/001-sandbox-session-manager/contracts/switchboard.proto`.
 
 ---
 
@@ -67,7 +122,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Daemon screen and UI reader (research R2)
 
-- [ ] T005 In `SBD/terminal/broadcaster.go`, keep a `termview.Screen` (no scrollback) per broadcaster **whose sandbox
+- [X] T005 In `SBD/terminal/broadcaster.go`, keep a `termview.Screen` (no scrollback) per broadcaster **whose sandbox
   has an orchestrator controller**; other sandboxes get none (research R2):
   - `readLoop` hands each chunk to a per-broadcaster parser goroutine through a bounded channel (`screenQueue`, 256)
     and goes straight on to fan-out. Parsing never runs under the broadcaster mutex; the screen has its own lock.
@@ -89,7 +144,7 @@ sequence model. No user story can be delivered before this phase.
     a slow parser never blocks fan-out; overflow marks the screen stale, then reset + nudge recover it; an uncontrolled
     sandbox keeps no screen; `EnableScreen` on an existing broadcaster; `Screen`/`BroadcasterExisting` never spawn,
     including when the agent exits mid-call.
-- [ ] T006 [P] Add the R1 screen fixtures under `SBD/agent/testdata/claudeui/`, as plain text plus a faint-mask
+- [X] T006 [P] Add the R1 screen fixtures under `SBD/agent/testdata/claudeui/`, as plain text plus a faint-mask
   sidecar:
   - `startup-placeholder`, `empty-after-command`;
   - `model-set-opus`, `model-set-fable`, `model-set-sonnet`, `model-set-haiku`, `model-not-found`;
@@ -106,7 +161,7 @@ sequence model. No user story can be delivered before this phase.
   - It also checks that `$PPID` in a hook command is the `claude` process that fired the hook (research R13). If it
     isn't, record which ancestor is, and switch T046 to the PTY-device fallback.
   - **Back up and restore `~/.claude/settings.json` around it**: `/model` and `/effort` save defaults there.
-- [ ] T007 Implement `SBD/agent/claudeui.go` as pure functions over `[]termview.Line`:
+- [X] T007 Implement `SBD/agent/claudeui.go` as pure functions over `[]termview.Line`:
   - `InputBox(lines) (text string, present, ready bool)`. The box is every row between the last two horizontal
     rules, starting at `❯ `; wrapped rows are joined. Faint text after `❯ ` counts as empty. `ready` is false while
     any modal marker is on screen: `Esc to cancel`, `Enter to select`, `Enter to set as default`, a `Select …`
@@ -122,7 +177,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Hook evidence, hold release and typing (research R3, R4, R7)
 
-- [ ] T008 In `SBD/agent/hooks.go`:
+- [X] T008 In `SBD/agent/hooks.go`:
   - add `type HookEvent{Event, Source, NotificationType string; BackgroundTasks int; At time.Time}` and
     `func (s *HookServer) Tap(sandboxID string) (<-chan HookEvent, func())`, a buffered, best-effort fan-out after
     `dispatch` applies the status;
@@ -139,7 +194,7 @@ sequence model. No user story can be delivered before this phase.
   Extend the `StatusUpdater` interface accordingly. Tests in `SBD/agent/hooks_test.go`: tap order; evidence per
   event; the hold ends on a corroborated `startup` and `clear` but not on `resume` or `compact`; no hold → nothing
   cleared; `input_idle_since` set and unset, and repeated samples in the same state write nothing.
-- [ ] T009 In `SBD/sandbox/manager.go`:
+- [X] T009 In `SBD/sandbox/manager.go`:
   - add `SetAgentEvidence(id, func(*pb.AgentSession))`, which writes the fields and emits once, beside
     `SetAgentStatus`;
   - add `ClearHeldRun(id)` for T008's hold release: a CAS that clears only while the hold is still NEEDS_DEVELOPER;
@@ -158,14 +213,14 @@ sequence model. No user story can be delivered before this phase.
   NEEDS_DEVELOPER; stop during SETUP/ACTION clears it as today; an exit during cleanup followed at once by a
   corroborated `startup` ends the hold; an update can't lower NEEDS_DEVELOPER; an `expect_run_id` mismatch, for set or
   clear, changes nothing.
-- [ ] T010 In `SBD/agent/pty.go`, add `TypeStep(sandboxID string, spec *pb.AgentSpec, text string) (sentAt time.Time,
+- [X] T010 In `SBD/agent/pty.go`, add `TypeStep(sandboxID string, spec *pb.AgentSpec, text string) (sentAt time.Time,
   err error)`: one bracketed paste, `\r` after `promptSubmitDelay`, and **no** `ensureSubmitted`. Also add
   `RePress(sandboxID string, n int) error`, which sends `\r` for n = 0 and keypad Enter after that, as
   `ensureSubmitted` does today. Tests in `SBD/agent/pty_test.go` with the fake PTY.
 
 ### The step RPC (contracts/worker-step.md)
 
-- [ ] T011 Implement `SBD/worker/step.go` `func (s *Service) DeliverStep(ctx, req *pb.DeliverWorkerStepRequest)
+- [X] T011 Implement `SBD/worker/step.go` `func (s *Service) DeliverStep(ctx, req *pb.DeliverWorkerStepRequest)
   (*pb.DeliverWorkerStepResponse, error)`:
   1. **Read the screen without creating anything** (`terms.Screen`). Create a broadcaster only through
      `terms.BroadcasterExisting` (provider `agents.Existing`, atomic), so the step path never spawns an agent (except
@@ -195,7 +250,7 @@ sequence model. No user story can be delivered before this phase.
 
   The submit window and re-presses are injectable for tests. Inject the hook tap, the screen source and the clock
   through small interfaces on `Service`.
-- [ ] T012 Tests in `SBD/worker/step_test.go`, one per row of contracts/worker-step.md §1 and §3, using a fake tap
+- [X] T012 Tests in `SBD/worker/step_test.go`, one per row of contracts/worker-step.md §1 and §3, using a fake tap
   and a scripted screen built from the T006 fixtures:
   - MODEL_TURN on `UserPromptSubmit`;
   - INPUT_ONLY on a needs-input `Notification`;
@@ -218,7 +273,7 @@ sequence model. No user story can be delivered before this phase.
   - a rollback on a type error;
   - `check_only`;
   - the 10 s bound.
-- [ ] T013 Wire `DeliverWorkerStep` in `SBD/grpc/worker_rpcs.go` (same auth and attribution as
+- [X] T013 Wire `DeliverWorkerStep` in `SBD/grpc/worker_rpcs.go` (same auth and attribution as
   `DeliverWorkerPrompt`). Add it to the `worker.API` interface, `worker.Local` and `remoteAPI`
   (`SBD/worker/api.go`, `SBD/worker/local.go`).
   - An `UNIMPLEMENTED` from a remote daemon maps to `worker.ErrUnsupported`. An `ALREADY_EXISTS` maps to
@@ -228,7 +283,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Action sequence model (research R9)
 
-- [ ] T014 In `SBD/orchestrator/actions.go`, add:
+- [X] T014 In `SBD/orchestrator/actions.go`, add:
   - `effectiveSequence(a *pb.Action) *pb.ActionSequence` (absent = Opus, medium, Clear, empty lists; FR-210);
   - `buildSteps(a, args) []*pb.RunStep`, in FR-205 order, with `expect` set for Model/Effort and the text from
     `composeStep`;
@@ -244,7 +299,7 @@ sequence model. No user story can be delivered before this phase.
   - refuse UNSPECIFIED enums.
 
   Errors name the entry (`pre-prompt 2: …`). `normalizeAction` stores the trimmed text.
-- [ ] T015 Tests in `SBD/orchestrator/actions_test.go`, covering every FR-204 rule and every edge case in the spec's
+- [X] T015 Tests in `SBD/orchestrator/actions_test.go`, covering every FR-204 rule and every edge case in the spec's
   list:
   - `{skill} for {ticket}`, `{cmd}`, `/{skill}`, `!git checkout {branch}`, `  !echo {x}` after trimming, and an 11th
     entry;
@@ -252,10 +307,10 @@ sequence model. No user story can be delivered before this phase.
   - `buildSteps` order for all built-ins on and all off (no steps);
   - placeholder fill with defaults and with a missing optional argument;
   - an argument referenced only by a pre-prompt is still appended to the action prompt (FR-207).
-- [ ] T016 In `SBD/orchestrator/runs.go` `callAction`, snapshot `Run.steps = buildSteps(...)` next to `Run.prompt`.
+- [X] T016 In `SBD/orchestrator/runs.go` `callAction`, snapshot `Run.steps = buildSteps(...)` next to `Run.prompt`.
   The `ACTION_PROMPT` step's text is the composed prompt. Test: a later `PutAction` doesn't change a queued run's
   steps (FR-207).
-- [ ] T017 Add `workerRunFor(run, live *pb.WorkerRun) *pb.WorkerRun` in `SBD/orchestrator/runs.go`. It copies
+- [X] T017 Add `workerRunFor(run, live *pb.WorkerRun) *pb.WorkerRun` in `SBD/orchestrator/runs.go`. It copies
   **every** field from the live record and overlays the orchestrator's (`needs_review`, `hold`, `halted`). Route
   every existing `WorkerRun` write through it: `deliver`'s local mirror, `syncReviewFlag`, `repairReviewFlag`. Every
   write to an existing run sends `expect_run_id`.
@@ -264,7 +319,7 @@ sequence model. No user story can be delivered before this phase.
 
 ### Security and restart recovery (research R13, R14)
 
-- [ ] T044 [P] **Untrusted values (R13 §1).** Add `checkValue(v string) (string, error)` in
+- [X] T044 [P] **Untrusted values (R13 §1).** Add `checkValue(v string) (string, error)` in
   `SBD/orchestrator/values.go`; the orchestrator is its only user, so there's no import cycle. It:
   1. normalises CRLF and lone CR to LF;
   2. refuses invalid UTF-8;
@@ -281,7 +336,7 @@ sequence model. No user story can be delivered before this phase.
   - an invalid-UTF-8 0x9B byte is refused;
   - an action body containing ANSI is saved unchanged;
   - an escape-hatch result with ANSI output is still delivered.
-- [ ] T045 **Per-agent hook token (R13 §2).** In `SBD/agent/pty.go`, `SBD/agent/hooks.go`,
+- [X] T045 **Per-agent hook token (R13 §2).** In `SBD/agent/pty.go`, `SBD/agent/hooks.go`,
   `SBD/escapehatch/inject.go` and the daemon store:
   - **Generation and token.** `agent.Registry` numbers each PTY it spawns per sandbox from a counter **persisted** in
     the daemon store (it only grows, across restarts too), and draws a random `hookTokenBytes` token for it. The
@@ -338,7 +393,7 @@ sequence model. No user story can be delivered before this phase.
   - a generated wrapper's call carries the token and runs; a tokenless call to `/escape-hatch/run` gets 403;
   - a 5 MiB PreToolUse body is read and its `session_id` found;
   - `ListSandboxes` output contains no token.
-- [ ] T046 **Corroboration and the main session (R13 §2).** In `SBD/agent/hooks.go`, `SBD/agent/pty.go`,
+- [X] T046 **Corroboration and the main session (R13 §2).** In `SBD/agent/hooks.go`, `SBD/agent/pty.go`,
   `SBD/worker/controller.go` and `SBD/worker/deliver.go`:
   - **`hold_gen`.** Written by the daemon only on the **transition into** NEEDS_DEVELOPER (controller `Update`,
     `SetAgentStatus`, `leaveRunning`, T047), with the current generation. The controller `Update` always keeps the
@@ -374,7 +429,7 @@ sequence model. No user story can be delivered before this phase.
   - an escape-hatch result to a held sandbox with no live agent spawns nothing;
   - a nested session's `UserPromptSubmit` doesn't classify a step;
   - a `--continue` agent (first SessionStart `resume`) binds its session.
-- [ ] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
+- [X] T047 **Owning-daemon restart (R14).** The agent **survives** a daemon restart (`agentCommand`), so this task
   handles it as an orphan, decided by **evidence**, never by state flags. The daemon **detects and surfaces**
   orphans and **never stops one on its own** (simplified in run-590):
   - **Record generation, PID, start time and PTY.** In `SBD/agent/pty.go` `agentCommand`: `mkdir -p ~/.sxb; echo
@@ -591,7 +646,7 @@ sequence model. No user story can be delivered before this phase.
     - replace on an ACTION orphan fails the run with the replace reason and sends no post-prompt;
     - a SETUP step halts, and `R` stops the orphan, starts a fresh agent and re-sends every pre-step from step 0;
       the action prompt is typed only after `/model` and `/effort` were confirmed on the fresh agent.
-- [ ] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
+- [X] T048 **One orphan gate for every spawn (R14).** In `SBD/agent/pty.go`, add `Registry.SetOrphanGate(g
   OrphanGate)`. `Registry.Session` calls the gate **before the factory**. It never blocks (the terminal registry calls
   `Session` under its global lock), and it decides **only from the orphan record and `runtimeMu`** (T047), never from
   run flags:
@@ -645,7 +700,7 @@ needs a custom post-prompt, which arrives in US2.
 
 ### Orchestrator sequence (research R5–R7)
 
-- [ ] T018 [US1] Create `SBD/orchestrator/sequence.go` with a per-sandbox **stepper**: one goroutine per sandbox
+- [X] T018 [US1] Create `SBD/orchestrator/sequence.go` with a per-sandbox **stepper**: one goroutine per sandbox
   with a run in sequence, **single-flight**, started on demand and stopped when the run is done or the orchestrator
   stops. `sandbox_changed`, the retry ticker and `ResolveRunStep` only *kick* it. Kicks during a call are
   **coalesced, never dropped**, and after **every** response the stepper re-evaluates `stepFinished` against the
@@ -695,13 +750,13 @@ needs a custom post-prompt, which arrives in US2.
 
   Add `stepRetryEvery = 2s` and `stepWaitNote = 10s` to `SBD/orchestrator/constants.go`. The retry ticker kicks
   steppers only while some run has a `PENDING` step on a reachable host.
-- [ ] T019 [US1] In `SBD/orchestrator/dispatch.go`, `dispatch` claims the worker for a run with `len(steps) > 0` and
+- [X] T019 [US1] In `SBD/orchestrator/dispatch.go`, `dispatch` claims the worker for a run with `len(steps) > 0` and
   kicks its stepper; it **never waits** on a step. Runs without steps keep `deliver` unchanged (FR-208).
   - **Claim:** record `sandbox_id`/`sandbox_host_id` on the still-QUEUED run before the first call. Dispatch skips
     QUEUED runs with a sandbox set, and `free()` counts that sandbox as busy.
   - Cancelling or failing a claimed QUEUED run clears the daemon's record (`UpdateWorker{set_run, expect_run_id}`
     with no run).
-- [ ] T020 [US1] In `SBD/orchestrator/runs.go`:
+- [X] T020 [US1] In `SBD/orchestrator/runs.go`:
   - `foldStatus` kicks the stepper for runs with steps; it does no step work inline.
   - Gate **`runAwaitingReview` itself** (so `armReview` and `reconcileInFlight`'s IDLE branch both obey it) on the action
     step having been accepted (`step_status` TURN or AWAIT_CLOSE on the ACTION step; FR-209, FR-214).
@@ -712,7 +767,7 @@ needs a custom post-prompt, which arrives in US2.
   - `toolReportCompletion` in `SBD/orchestrator/tools.go` refuses until the action prompt was delivered: the action
     step is TURN or AWAIT_CLOSE, **or** `controller.run.step_index` equals its index (only the response was lost).
     Otherwise: "the action prompt has not been delivered yet" (FR-211).
-- [ ] T021 [US1] Run close and holding runs in `SBD/orchestrator/runs.go` and `SBD/orchestrator/store.go`:
+- [X] T021 [US1] Run close and holding runs in `SBD/orchestrator/runs.go` and `SBD/orchestrator/store.go`:
   - `completeRun` and `MarkWorkerFree` close the run as today (FR-215). When CLEANUP steps exist, instead of
     `clearWorkerRun` they set `hold = CLEANING_UP` on the Run and `WorkerRun`, and set `step` to the first cleanup
     step, `PENDING`. If the sandbox isn't RUNNING, or its agent can't be typed into at close (EXITED, or an orphan
@@ -727,7 +782,7 @@ needs a custom post-prompt, which arrives in US2.
     `step_status == HALTED`, used by the stepper, folding, `ResolveRunStep` and hold release.
   - `onSandboxRemoved` and `Detach` of a held sandbox end its holding run's cleanup (DONE, `hold = NONE`).
   - `trimHistory` skips holding runs (FR-213 retention).
-- [ ] T022 [US1] Reconcile against the daemon record (`SBD/orchestrator/sequence.go`), on `sandbox_changed` and in
+- [X] T022 [US1] Reconcile against the daemon record (`SBD/orchestrator/sequence.go`), on `sandbox_changed` and in
   `reconcileInFlight`:
   - **Hold release:** a holding run whose sandbox's `controller.run` is no longer this run is finished: DONE, `hold
     = NONE`, any waiting retried Clear dropped (FR-216, run-538). The daemon ended the hold (T008).
@@ -736,10 +791,10 @@ needs a custom post-prompt, which arrives in US2.
     link blip never strands a run. Evidence-based finishing of SENT/TURN steps after a restart is T037.
   - **Halted repair:** a HALTED run whose `controller.run.halted` is false is re-pushed (as `repairReviewFlag` does).
   - **Stale records:** a worker record naming a finished run that isn't holding is cleared with `expect_run_id`.
-- [ ] T023 [US1] Reasoning sandbox (`SBD/orchestrator/reasoning.go`): `RebuildReasoningSandbox` is allowed while its
+- [X] T023 [US1] Reasoning sandbox (`SBD/orchestrator/reasoning.go`): `RebuildReasoningSandbox` is allowed while its
   sandbox is held. The old sandbox's removal ends the holding run's cleanup (T021), and the new sandbox starts free
   (research R7, FR-222).
-- [ ] T024 [US1] `ResolveRunStep` in `SBD/orchestrator/sequence.go`, wired in `SBD/grpc/orchestrator_rpcs.go`
+- [X] T024 [US1] `ResolveRunStep` in `SBD/orchestrator/sequence.go`, wired in `SBD/grpc/orchestrator_rpcs.go`
   (through the stepper):
   - **Guard**: the run is halted, or its CLEAR step is under a NEEDS_DEVELOPER hold (RETRY only), and `req.step`
     equals its step. SKIP on CLEAR or on ACTION_PROMPT is refused.
@@ -761,7 +816,7 @@ needs a custom post-prompt, which arrives in US2.
   - Clear `controller.run.halted` when the run leaves HALTED (SKIP, FAIL; RETRY clears it on the daemon), and with
     it `step_unconfirmed` and `step_sent_before_restart`, which are also cleared whenever `step` changes (test: a
     later halt of another step never shows `(may have run)`).
-- [ ] T025 [US1] Tests in `SBD/orchestrator/sequence_test.go`, with a fake `WorkerAPI` that scripts step outcomes,
+- [X] T025 [US1] Tests in `SBD/orchestrator/sequence_test.go`, with a fake `WorkerAPI` that scripts step outcomes,
   delays and `sandbox_changed`:
   - **Order and advance:** the default order; AGENT_LOCAL advances; TURN waits for the turn end; the INPUT_ONLY
     fallback finishes after 60 s of an empty box.
@@ -796,10 +851,10 @@ needs a custom post-prompt, which arrives in US2.
 
 ### Notifications (FR-223, research R10)
 
-- [ ] T026 [P] [US1] In `SBD/agent/hooks.go`, skip `EmitNotification(TASK_COMPLETE, …)` on `Stop` and in
+- [X] T026 [P] [US1] In `SBD/agent/hooks.go`, skip `EmitNotification(TASK_COMPLETE, …)` on `Stop` and in
   `backstopExpired` when the sandbox's `controller.run.step_role` is SETUP or CLEANUP. Read it through the status
   updater's sandbox lookup. Tests in `SBD/agent/hooks_test.go`.
-- [ ] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
+- [X] T027 [P] [US1] `UI/notifications.go`: a label and message for `NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED`, routed
   like `RUN_FAILED`, and for `NOTIFICATION_KIND_AGENT_DETACHED` ("<sandbox>: agent detached by a daemon restart (last
   seen <state>)[ on <run>] — t to Replace or Wait"; the start-up aggregate, which has an empty `sandbox_id`, reads "N agents detached by a daemon
   restart (M on idle workers) — R on the Workers view replaces the idle ones" and is shown at host level. It is
@@ -812,7 +867,7 @@ needs a custom post-prompt, which arrives in US2.
 
 ### TUI: built-ins, run rows and controls (contracts/jobs-ui.md)
 
-- [ ] T028 [US1] In `UI/orchestrator_forms.go`:
+- [X] T028 [US1] In `UI/orchestrator_forms.go`:
   - `actionFormVals` gains `model`, `effort` (strings incl. `off`) and `clearAfter bool`;
   - `openActionForm` adds the Model Select, the Effort Select and the `Clear after run` Confirm after Arguments;
   - new actions get `opus`/`medium`/yes (FR-203);
@@ -820,7 +875,7 @@ needs a custom post-prompt, which arrives in US2.
   - `off` keeps the stored value (`*_enabled = false`);
   - `submitOrchOpForm` always sends `Action.sequence`;
   - in `UI/formguard.go` (SWI-9), the action snapshot includes the new fields, so the guard sees them.
-- [ ] T029 [US1] Run rows in `UI/jobs_overview.go` `jobsRunLine` and `UI/run_actions.go` `runState`: show
+- [X] T029 [US1] Run rows in `UI/jobs_overview.go` `jobsRunLine` and `UI/run_actions.go` `runState`: show
   setting up n/m, cleaning up n/m, `not accepted: <note>`, `waiting: <reason>`, sent before a restart, and the holds
   (contracts/jobs-ui.md).
   - Holding and halted closed runs arrive in `in_flight` from the server (T021), so *In progress* shows them once and
@@ -829,7 +884,7 @@ needs a custom post-prompt, which arrives in US2.
   - `t`/`T` (`runTerminal`) also open the terminal of a closed run that holds its sandbox, not only one in flight.
   - `openRunOfEvent` (`UI/orchestrator_forms.go`) skips closed runs, so a holding run in `in_flight` never triggers a
     spurious "already open" prompt for its timed event.
-- [ ] T030 [US1] Keys in `UI/run_actions.go` `runKeyAction` and `UI/jobs.go` help (after T029, same file):
+- [X] T030 [US1] Keys in `UI/run_actions.go` `runKeyAction` and `UI/jobs.go` help (after T029, same file):
   - `R` retry, `S` skip (hidden for Clear) and `X` fail, only on halted runs;
   - the confirms use `UI/confirm.go`, defaulting to **No**. `X` is only offered on halted runs and `x` only on queued
     ones, so a Shift slip opens a confirm or does nothing, never an action. For a step sent before a restart, `S` is
@@ -853,7 +908,7 @@ needs a custom post-prompt, which arrives in US2.
     Orchestrator Sandboxes tab) it stays Rename. Test both, with the fake daemon.
 
   Add `ResolveRunStep` and `ReplaceDetachedAgent` to the TUI `Daemon` interface and its fakes.
-- [ ] T031 [P] [US1] Sandbox list and Workers view:
+- [X] T031 [P] [US1] Sandbox list and Workers view:
   - `UI/sandbox_list.go` `needsDeveloper` adds `hold ∈ {NEEDS_INPUT_FREEING, NEEDS_DEVELOPER}` and
     `controller.run.halted`;
   - `sandboxItem`'s worker suffix shows each hold, incl. `needing the developer — open its terminal and run /clear`;
@@ -863,7 +918,7 @@ needs a custom post-prompt, which arrives in US2.
     sandbox list can see;
   - `UI/orchestrator_views.go` Workers view shows the same text from `WorkerView.hold`/`halted`/`step_note`, set in
     `SBD/orchestrator/workers.go` alongside `availability()`.
-- [ ] T032 [US1] TUI tests with the `jobsWith`/`fakeDaemon` helpers:
+- [X] T032 [US1] TUI tests with the `jobsWith`/`fakeDaemon` helpers:
   - in `UI/orchestrator_forms_test.go`: the defaults on a new action; a legacy action shows the defaults and saves
     them explicitly; the option lists match the spec (no ultracode, US1 #5); `off` round-trips and keeps the value;
     the guard reports dirty after a Model change;
@@ -884,7 +939,7 @@ needs a custom post-prompt, which arrives in US2.
 
 **Independent Test**: quickstart Scenarios 2, 3, 5 (step 1) and 6.
 
-- [ ] T033 [US2] In `UI/orchestrator_forms.go`:
+- [X] T033 [US2] In `UI/orchestrator_forms.go`:
   - add `Pre-prompts` and `Post-prompts` Text fields through `spec.text` (enlargeable). They hold one prompt per
     line; the description says so and notes that a prompt can't span lines;
   - on save, trim lines and drop empty ones, then send `pre_prompts`/`post_prompts`;
@@ -892,7 +947,7 @@ needs a custom post-prompt, which arrives in US2.
   - `actionLine` appends the FR-219 summary (`pre: /model opus · /effort medium · 1 custom — post: 1 custom ·
     /clear`), omitted when there are no steps. It is used by `UI/jobs_groups.go` `renderGroups` and the
     orchestrator Actions view.
-- [ ] T034 [US2] Freeing during cleanup (FR-216):
+- [X] T034 [US2] Freeing during cleanup (FR-216):
   - In `SBD/orchestrator/runs.go` `MarkWorkerFree` and `SBD/orchestrator/sequence.go`: when a run holds a sandbox
     in CLEANING_UP and the agent is NEEDS_INPUT, the custom cleanup steps are dropped and the hold becomes
     `NEEDS_INPUT_FREEING`.
@@ -902,7 +957,7 @@ needs a custom post-prompt, which arrives in US2.
   - In `UI/run_actions.go` `markFreeKey`, also accept a sandbox with `hold == CLEANING_UP` whose agent is NEEDS_INPUT
     (contracts/jobs-ui.md). The run is already closed, so this frees directly: **no outcome/note dialog**, and the
     run's outcome is never changed.
-- [ ] T035 [US2] Tests:
+- [X] T035 [US2] Tests:
   - in `SBD/orchestrator/sequence_test.go`: custom pre and post order around the built-ins (US2 #2); placeholders
     filled per call; a needs-input during a pre-prompt gives an AWAITING_INPUT run that continues after idle
     (US2 #4); FR-216 freeing with and without Clear;
@@ -910,7 +965,7 @@ needs a custom post-prompt, which arrives in US2.
     `actionLine` summary;
   - in `UI/run_actions_test.go`: mark free is offered on a cleaning-up worker asking for input, and frees it with no
     outcome dialog.
-- [ ] T036 [P] [US2] e2e in `src/services/switchboardd-e2e/`: `PutAction` with prompts that break each FR-204 rule
+- [X] T036 [P] [US2] e2e in `src/services/switchboardd-e2e/`: `PutAction` with prompts that break each FR-204 rule
   is refused naming the entry; a valid action round-trips its `sequence`; a legacy action without `sequence` reads
   back with no `sequence`, and the orchestrator applies the defaults.
 
@@ -925,7 +980,7 @@ the run surfaces.
 
 **Independent Test**: quickstart Scenarios 7 and 9, and US3 #1–#6.
 
-- [ ] T037 [US3] Restart resolution (research R8) in `SBD/orchestrator/runs.go` `reconcileInFlight` and at
+- [X] T037 [US3] Restart resolution (research R8) in `SBD/orchestrator/runs.go` `reconcileInFlight` and at
   orchestrator start. Hook evidence keeps arriving from an orphan after an owning-daemon restart (T047), so rules 1–2
   apply to it too; the screen read-back does not.
   SENDING was already resolved by T022:
@@ -939,7 +994,7 @@ the run surfaces.
     through `workerRunFor` with `expect_run_id`) so that `R` passes guard 3a.
 
   It never re-sends, and it only compares daemon-clock times.
-- [ ] T038 [US3] Tests in `SBD/orchestrator/sequence_test.go` for restarts:
+- [X] T038 [US3] Tests in `SBD/orchestrator/sequence_test.go` for restarts:
   - a TURN step classified INPUT_ONLY finishes or waits, never halting;
   - a SENT step with a needs-input report after the send is awaited;
   - a restart halt sets `controller.run.halted`, and `R` then types it once;
@@ -947,9 +1002,9 @@ the run surfaces.
   - a built-in confirmed; Clear confirmed;
   - no evidence → halted with the marker;
   - a lost response on a later step resolved on reconnect.
-- [ ] T039 [P] [US3] Prompt overlay in `UI/run_actions.go` `promptView`: steps in order, marking `▶` current and `✓`
+- [X] T039 [P] [US3] Prompt overlay in `UI/run_actions.go` `promptView`: steps in order, marking `▶` current and `✓`
   done; without steps it is unchanged (FR-220). Tests in `UI/run_actions_test.go`.
-- [ ] T040 [P] [US3] e2e in `src/apps/switchboard-tui-e2e/`: an action form with built-ins and prompts saves and
+- [X] T040 [P] [US3] e2e in `src/apps/switchboard-tui-e2e/`: an action form with built-ins and prompts saves and
   reloads; a halted run shows `R`/`S`/`X`.
 
 **Checkpoint**: all stories work. Run quickstart Scenarios 7 and 9.
@@ -958,10 +1013,10 @@ the run surfaces.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T041 [P] Docs: the README's orchestrator section covers the action sequence, the defaults, the holds and the
+- [X] T041 [P] Docs: the README's orchestrator section covers the action sequence, the defaults, the holds and the
   R/S/X controls. `CLAUDE.md` (SPECKIT block) marks the implementation as done. The `specs/009-orchestrator`
   cross-reference notes that delivery is per step for runs with steps.
-- [ ] T042 Gates: `make proto` output checked in, then `golangci-lint fmt ./...` and `make fmt-check vet lint
+- [X] T042 Gates: `make proto` output checked in, then `golangci-lint fmt ./...` and `make fmt-check vet lint
   cover`. Coverage must be ≥ 90% for `switchboardd`, `switchboard-tui`, `switchboard-termview` and
   `switchboard-proto`. Then `make e2e`.
 - [ ] T043 Manual: quickstart.md Scenarios 0–11 on a real worker (Scenario 0 first). Record the agent version and any

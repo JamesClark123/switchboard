@@ -1,14 +1,15 @@
-// Package termview is the client-side VT renderer for the persistent terminal
-// session (feature 003, T012). It maintains a bounded screen grid, feeds raw
-// PTY bytes (snapshot + live frames from the daemon) through the ANSI parser,
-// and produces a drawable string sized to the client's viewport so the in-TUI
-// terminal view (US2) and the full-screen `sxb attach` mode (US3) can share
-// one renderer.
+// Package termview is switchboard's VT renderer (feature 003, T012; moved to a
+// library by SWI-17). It maintains a bounded screen grid, feeds raw PTY bytes
+// through the ANSI parser, and produces a drawable string sized to the
+// viewport so the in-TUI terminal view (US2) and the full-screen `sxb attach`
+// mode (US3) can share one renderer.
 //
-// The daemon does NOT run a VT emulator: it fans raw PTY bytes to attached
-// clients (research.md R1, task T001 note). All screen interpretation happens
-// here, on the client, and every attached client renders identically because
-// every attached client sees the same byte stream.
+// The daemon uses it too (SWI-17, research R2): a sandbox with an orchestrator
+// controller keeps a Screen without scrollback, fed from the broadcaster's
+// single PTY reader, and reads its live rows through Lines() to see the
+// agent's input box and confirmation lines. Every other sandbox's bytes are
+// interpreted only by the clients, and every attached client renders
+// identically because every attached client sees the same byte stream.
 package termview
 
 import (
@@ -44,6 +45,44 @@ type Screen struct {
 	// scrolled up from the live screen (0 == following live output).
 	scroll     []string
 	viewOffset int
+	maxScroll  int // scrollback cap: maxScrollback, or 0 under WithoutScrollback
+
+	osc oscState // OSC filter state, carried across writes (see filterOSC)
+}
+
+// oscState tracks an operating-system command (ESC ] … BEL | ESC \) across
+// writes. OSC strings (window titles, hyperlinks) are dropped before the ANSI
+// parser sees them: its OSC state ends at the first non-ASCII byte and prints
+// the rest of the string, so a title such as "✳ Claude Code" (Claude Code
+// sets one on every turn) would land on the screen.
+type oscState uint8
+
+const (
+	oscNone   oscState = iota
+	oscEsc             // an ESC was seen; held until the next byte
+	oscBody            // inside an OSC string
+	oscBodyEs          // an ESC inside an OSC string (ST or a new sequence)
+)
+
+// Option configures a Screen at construction.
+type Option func(*Screen)
+
+// WithoutScrollback keeps no history: lines scrolled off the top are dropped,
+// not rendered and retained. The daemon's per-sandbox screen uses it (SWI-17,
+// research R2) since it only ever reads the live rows; the TUI keeps its
+// maxScrollback lines.
+func WithoutScrollback() Option {
+	return func(s *Screen) { s.maxScroll = 0 }
+}
+
+// Line is one live screen row as plain text: Text holds the row's cells
+// without styling (wide characters once, their continuation cells skipped),
+// with trailing blanks trimmed, and Faint[i] reports whether the i-th rune of
+// Text was drawn with the faint (dim) attribute. Claude Code draws its input
+// box's placeholder hint faint, so a reader can tell it from typed text.
+type Line struct {
+	Text  string
+	Faint []bool
 }
 
 // maxScrollback bounds the client-side history retained for scroll-back. Older
@@ -51,7 +90,8 @@ type Screen struct {
 const maxScrollback = 5000
 
 // New returns a Screen sized to cols×rows. cols/rows below 1 are clamped to 1.
-func New(cols, rows int) *Screen {
+// It keeps maxScrollback lines of history unless WithoutScrollback is given.
+func New(cols, rows int, opts ...Option) *Screen {
 	if cols < 1 {
 		cols = 1
 	}
@@ -59,10 +99,14 @@ func New(cols, rows int) *Screen {
 		rows = 1
 	}
 	s := &Screen{
-		buf:  cellbuf.NewBuffer(cols, rows),
-		cols: cols,
-		rows: rows,
-		pars: ansi.NewParser(),
+		buf:       cellbuf.NewBuffer(cols, rows),
+		cols:      cols,
+		rows:      rows,
+		pars:      ansi.NewParser(),
+		maxScroll: maxScrollback,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.pars.SetHandler(ansi.Handler{
 		Print:     s.print,
@@ -106,8 +150,62 @@ func (s *Screen) Size() (cols, rows int) {
 func (s *Screen) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pars.Parse(p)
+	s.pars.Parse(s.filterOSC(p))
 	return len(p), nil
+}
+
+// filterOSC returns p without OSC strings, carrying a split sequence over to
+// the next write in s.osc. An ESC is held back until the byte after it shows
+// whether it opens an OSC. Called with s.mu held.
+func (s *Screen) filterOSC(p []byte) []byte {
+	out := make([]byte, 0, len(p)+1)
+	for _, b := range p {
+		switch s.osc {
+		case oscNone:
+			if b == 0x1b {
+				s.osc = oscEsc
+			} else {
+				out = append(out, b)
+			}
+		case oscEsc:
+			switch b {
+			case ']':
+				s.osc = oscBody
+			case 0x1b:
+				out = append(out, 0x1b) // the held ESC; hold this one
+			default:
+				out = append(out, 0x1b, b)
+				s.osc = oscNone
+			}
+		case oscBody:
+			switch b {
+			case 0x07, 0x18, 0x1a:
+				s.osc = oscNone // BEL ends it; CAN and SUB abort it
+			case '\n', '\r':
+				// No OSC payload has a line break: this is a stray ESC ] (in
+				// binary output, say), so the line break and what follows
+				// print again. A long OSC (an OSC 52 clipboard write) is
+				// dropped whole, never spilled onto the screen.
+				out = append(out, b)
+				s.osc = oscNone
+			case 0x1b:
+				s.osc = oscBodyEs
+			}
+		case oscBodyEs:
+			switch b {
+			case '\\':
+				s.osc = oscNone
+			case 0x1b:
+				s.osc = oscEsc // an unterminated OSC, then a new ESC
+			case ']':
+				s.osc = oscBody // an unterminated OSC, then another one
+			default:
+				out = append(out, 0x1b, b) // an unterminated OSC, then a sequence
+				s.osc = oscNone
+			}
+		}
+	}
+	return out
 }
 
 // Reset clears the screen, resets the cursor to the origin, and drops any
@@ -123,6 +221,52 @@ func (s *Screen) Reset() {
 	s.cursorHidden = false
 	s.scroll = nil
 	s.viewOffset = 0
+	// A reset may follow dropped bytes (the daemon's screen): forget any
+	// half-read escape sequence too.
+	s.pars.Reset()
+	s.osc = oscNone
+}
+
+// Lines returns the live screen, without scrollback and ignoring any scrolled
+// viewport, one Line per row (top to bottom). The result is a copy: later
+// writes never change it. No cursor is overlaid.
+func (s *Screen) Lines() []Line {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Line, s.rows)
+	for y := 0; y < s.rows; y++ {
+		out[y] = s.line(y)
+	}
+	return out
+}
+
+// line renders row y as a Line. Called with s.mu held.
+func (s *Screen) line(y int) Line {
+	var (
+		text  strings.Builder
+		faint []bool
+		keep  int // len(faint) up to the last non-blank rune
+		bytes int // text.Len() at the same point
+	)
+	for x := 0; x < s.cols; x++ {
+		c := s.buf.Cell(x, y)
+		if c.Width == 0 && c.Rune == 0 {
+			continue // the right half of a wide character
+		}
+		r := c.Rune
+		if r == 0 {
+			r = ' '
+		}
+		f := c.Style.Attrs.Contains(cellbuf.FaintAttr)
+		for _, cr := range append([]rune{r}, c.Comb...) {
+			text.WriteRune(cr)
+			faint = append(faint, f)
+		}
+		if r != ' ' {
+			keep, bytes = len(faint), text.Len()
+		}
+	}
+	return Line{Text: text.String()[:bytes], Faint: faint[:keep:keep]}
 }
 
 // ScrollUp moves the viewport up by n lines into scrollback history, returning
@@ -306,7 +450,7 @@ func (s *Screen) scrollUp(n int) {
 	if n > s.rows {
 		n = s.rows
 	}
-	for y := 0; y < n; y++ {
+	for y := 0; y < n && s.maxScroll > 0; y++ {
 		_, line := cellbuf.RenderLine(s.buf, y)
 		s.pushScrollback(line)
 	}
@@ -329,7 +473,7 @@ func (s *Screen) scrollUp(n int) {
 // pushScrollback appends a displaced line to the bounded scrollback history.
 func (s *Screen) pushScrollback(line string) {
 	s.scroll = append(s.scroll, line)
-	if over := len(s.scroll) - maxScrollback; over > 0 {
+	if over := len(s.scroll) - s.maxScroll; over > 0 {
 		s.scroll = s.scroll[over:]
 	}
 }

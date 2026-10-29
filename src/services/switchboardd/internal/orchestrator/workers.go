@@ -31,6 +31,7 @@ func (rt *runtime) reconcile(ctx context.Context, hostID string, api WorkerAPI, 
 	if full {
 		rt.pushWorkerStateTo(ctx, hostID, api)
 	}
+	rt.forgetUnsupported(hostID)
 	rt.reconcileInFlight(hostID)
 	rt.svc.emitChanged(rt.id)
 	return nil
@@ -92,7 +93,7 @@ func (rt *runtime) relevantLocked(o *pb.Orchestrator, sb *pb.Sandbox) bool {
 }
 
 // afterRoster runs a committed roster change's follow-ups: runs on dropped
-// workers fail, a lost reasoning sandbox is recorded, adopted workers get
+// workers fail and their holds and claims end (SWI-17), a lost reasoning sandbox is recorded, adopted workers get
 // their lanes shown and the briefing, and a dispatch pass is asked for.
 func (rt *runtime) afterRoster(res rosterResult) {
 	if !res.changed {
@@ -104,6 +105,8 @@ func (rt *runtime) afterRoster(res rosterResult) {
 			reason = "sandbox removed"
 		}
 		rt.failRunsOn(d.id, reason)
+		rt.endHoldingOn(d.id)
+		rt.unclaimOn(d.id)
 	}
 	if res.reasoningLost {
 		rt.setReasoningErr(reasoningLostReason)
@@ -175,6 +178,9 @@ func (rt *runtime) workerViews() []*pb.WorkerView {
 			v.Availability = availability(sb, up)
 			v.RunId = sb.GetController().GetRun().GetId()
 			v.RunAction = sb.GetController().GetRun().GetAction()
+			v.Hold = sb.GetController().GetRun().GetHold()
+			v.Halted = sb.GetController().GetRun().GetHalted()
+			v.StepNote = sb.GetController().GetRun().GetStepNote()
 		} else {
 			v.Availability = pb.WorkerAvailability_WORKER_AVAILABILITY_UNREACHABLE
 			if up {

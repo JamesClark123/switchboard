@@ -20,15 +20,54 @@ func serviceWith(t *testing.T, ws string, commands ...*pb.EscapeHatchCommand) (*
 		prompts <- text
 		return nil
 	})
+	svc.SetAgentAuth(func(sandboxID, gen, token string) bool {
+		return sandboxID == "sb1" && gen == "1" && token == "tok-1"
+	})
 	return svc, prompts
 }
 
 func postRun(t *testing.T, svc *Service, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postRunAs(t, svc, body, "1", "tok-1")
+}
+
+// postRunAs posts a run request with the given agent generation and token
+// headers (none when token is empty).
+func postRunAs(t *testing.T, svc *Service, body, gen, token string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/escape-hatch/run", strings.NewReader(body))
+	if token != "" {
+		req.Header.Set(HeaderToken, token)
+		req.Header.Set(HeaderGen, gen)
+	}
 	rec := httptest.NewRecorder()
 	svc.HandleRun(rec, req)
 	return rec
+}
+
+// Only the agent's own process tree runs a command (SWI-17, research R13).
+func TestHandleRunNeedsALiveAgentToken(t *testing.T) {
+	svc, _ := serviceWith(t, t.TempDir(), shCmd("x", "true"))
+	body := `{"sandbox_id":"sb1","name":"x"}`
+	rec := postRunAs(t, svc, body, "", "")
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "no agent token in this environment; run the escape hatch from the agent's session") {
+		t.Errorf("tokenless = %d %q", rec.Code, rec.Body.String())
+	}
+	for _, c := range [][2]string{{"1", "wrong"}, {"2", "tok-1"}} {
+		if rec := postRunAs(t, svc, body, c[0], c[1]); rec.Code != http.StatusForbidden {
+			t.Errorf("gen %s token %s = %d, want 403", c[0], c[1], rec.Code)
+		}
+	}
+	if rec := postRunAs(t, svc, `{"sandbox_id":"sb2","name":"x"}`, "1", "tok-1"); rec.Code != http.StatusForbidden {
+		t.Errorf("another sandbox's token = %d, want 403", rec.Code)
+	}
+	if len(svc.ListRuns("sb1")) != 0 {
+		t.Error("a refused call runs nothing")
+	}
+	svc.SetAgentAuth(nil)
+	if rec := postRun(t, svc, body); rec.Code != http.StatusForbidden {
+		t.Errorf("no token check configured = %d, want 403", rec.Code)
+	}
 }
 
 func TestHandleRunUnknownNameIs404AndRunsNothing(t *testing.T) {

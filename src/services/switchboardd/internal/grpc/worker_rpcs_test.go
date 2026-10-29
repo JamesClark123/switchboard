@@ -47,6 +47,8 @@ func TestTwoDaemonsToolCallOverTheLink(t *testing.T) {
 	if _, err := m.client.PutAction(ctx, &pb.PutActionRequest{OrchestratorId: o.GetId(), Action: &pb.Action{
 		Name: "review-pr", Type: pb.ActionType_ACTION_TYPE_PROMPT, Body: "Review {number} in {repo}.",
 		Arguments: []*pb.ActionArgument{{Name: "number", Required: true}, {Name: "repo", Required: true}},
+		// No steps (SWI-17, FR-208): this test exercises the prompt delivery.
+		Sequence: &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_OPUS, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM},
 	}, SetsLanes: true, Guard: &pb.LaneGuardConfirm{UnlanedActions: []string{"review-pr"}}}); err != nil {
 		t.Fatal(err)
 	}

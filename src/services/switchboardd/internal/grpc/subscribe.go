@@ -6,6 +6,8 @@ import (
 	"io"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/terminal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -88,9 +90,17 @@ func (s *Server) AttachAgent(stream pb.Switchboard_AttachAgentServer) error {
 		return errors.New("first AgentInput must set sandbox_id")
 	}
 
+	// `t` → Replace on an agent detached by a daemon restart (SWI-17, research
+	// R14): the developer's stop of the orphan comes first. Without it, the
+	// spawn below is refused beside one by the orphan gate.
+	if first.GetAttach().GetReplaceOrphan() && s.mgr != nil {
+		if err := s.mgr.ReapOrphan(stream.Context(), sandboxID, sandbox.ReapReplace); err != nil {
+			return status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	bc, err := s.terms.Broadcaster(sandboxID)
 	if err != nil {
-		return err
+		return spawnStatus(err)
 	}
 
 	kind := terminal.KindInTUI
@@ -186,4 +196,14 @@ func (s *Server) agentSpecFor(sandboxID string) *pb.AgentSpec {
 		return &pb.AgentSpec{}
 	}
 	return sb.GetAgent().GetSpec()
+}
+
+// spawnStatus maps a refused spawn to FAILED_PRECONDITION with the refusal's
+// text (the orphan gate, a held sandbox): the TUI recognises the gate's
+// texts (research R14). Anything else passes through.
+func spawnStatus(err error) error {
+	if errors.Is(err, agent.ErrOrphan) || errors.Is(err, agent.ErrBusy) || errors.Is(err, agent.ErrHeld) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return err
 }

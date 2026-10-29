@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,13 +45,21 @@ func twoDaemonsAgents(t *testing.T) (m *orchEnv, nClient pb.SwitchboardClient, n
 	typed := filepath.Join(nDir, "typed.txt")
 	// Like Claude Code, each fake agent fires SessionStart once it is up; the
 	// hook server is wired as sxbd wires it (SWI-15).
+	// SWI-17: each agent gets a hook token, as sxbd launches it.
+	tokens, err := agent.LoadHookTokens(nReg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hooks := agent.NewHookServer(nHub, nMgr)
+	hooks.SetTokens(tokens)
 	hookSrv := httptest.NewServer(http.HandlerFunc(hooks.Handle))
 	t.Cleanup(hookSrv.Close)
-	agents := agent.NewRegistry(func(id string, _ *pb.AgentSpec) (agent.Session, error) {
-		go reportStarted(nMgr, hookSrv.URL, id)
+	agents := agent.NewSpawnRegistry(func(id string, _ *pb.AgentSpec, sp agent.Spawn) (agent.Session, error) {
+		go reportStarted(nMgr, hookSrv.URL, id, sp)
 		return newFileSession(typed), nil
 	})
+	agents.SetHookTokens(tokens)
+	nMgr.SetAgentGeneration(agents.Generation)
 	agents.SetStatusUpdater(nMgr)
 	hooks.SetOnReady(agents.MarkReady)
 	sbxBin := filepath.Join(nDir, "sbx")
@@ -145,14 +154,23 @@ func (s *fileSession) Close() error {
 
 // reportStarted fires a fake agent's SessionStart hook once its session is
 // recorded STARTING (the registry records that after the factory returns).
-func reportStarted(mgr *sandbox.Manager, hookURL, id string) {
+func reportStarted(mgr *sandbox.Manager, hookURL, id string, sp agent.Spawn) {
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if sb, err := mgr.Get(id); err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_STARTING {
 			break
 		}
 	}
-	body := `{"hook_event_name":"SessionStart","source":"startup"}`
-	if resp, err := http.Post(hookURL+"?event=SessionStart&sandbox_id="+id, "application/json", strings.NewReader(body)); err == nil {
+	body := `{"hook_event_name":"SessionStart","source":"startup","session_id":"s-` + id + `"}`
+	req, err := http.NewRequest(http.MethodPost, hookURL+"?event=SessionStart&sandbox_id="+id, strings.NewReader(body))
+	if err != nil {
+		return
+	}
+	// The hook command's headers: the agent's token and generation, and the
+	// claude process (one fake process per spawn).
+	req.Header.Set("X-Sxb-Token", sp.Token)
+	req.Header.Set("X-Sxb-Gen", strconv.FormatInt(sp.Gen, 10))
+	req.Header.Set("X-Sxb-Pid", strconv.FormatInt(1000+sp.Gen, 10))
+	if resp, err := http.DefaultClient.Do(req); err == nil {
 		_ = resp.Body.Close()
 	}
 }

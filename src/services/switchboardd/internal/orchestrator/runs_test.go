@@ -4,8 +4,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // startOne attaches one worker, calls review-pr once and waits for it to run.
@@ -284,5 +287,145 @@ func TestReconcileInFlightTable(t *testing.T) {
 	}
 	if stateLabel(pb.RunState_RUN_STATE_AWAITING_REVIEW) != "awaiting_review" {
 		t.Error("stateLabel")
+	}
+}
+
+// A run snapshots its steps at call time; a later edit to the action leaves a
+// queued run's steps alone (FR-207).
+func TestCallActionSnapshotsSteps(t *testing.T) {
+	env := newEnv(t)
+	o, _ := env.svc.Create("bot")
+	if _, err := putAction(env.svc, o.GetId(), withSequence([]string{"Open {ticket}"}, []string{"Wrap up"})); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]string{"number": "1\r\n", "repo": "r", "ticket": "SWI-1"}
+	run, err := env.svc.CallAction(o.GetId(), "review-pr", args, pb.EventKind_EVENT_KIND_USER, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args["number"] != "1\r\n" {
+		t.Error("the caller's argument map must not be normalised in place")
+	}
+	want := []string{
+		"STEP_ROLE_SETUP STEP_KIND_MODEL /model opus|Opus",
+		"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort medium|medium",
+		"STEP_ROLE_SETUP STEP_KIND_CUSTOM Open SWI-1|",
+		"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT " + run.GetPrompt() + "|",
+		"STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Wrap up|",
+		"STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|",
+	}
+	if got := stepsOf(run.GetSteps()); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("steps = %q", got)
+	}
+	if !strings.Contains(run.GetPrompt(), "Review pull request 1\n in r") {
+		t.Errorf("prompt = %q (values are stored normalised)", run.GetPrompt())
+	}
+	edited := withSequence([]string{"Something else {ticket}"}, nil)
+	edited.Sequence.ModelEnabled = false
+	if _, err := putAction(env.svc, o.GetId(), edited); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := env.svc.GetRun(o.GetId(), run.GetId())
+	if strings.Join(stepsOf(got.GetSteps()), "\n") != strings.Join(want, "\n") {
+		t.Errorf("after edit, steps = %q", stepsOf(got.GetSteps()))
+	}
+	// A step composed over maxPromptBytes refuses the call; nothing is queued.
+	if _, err := putAction(env.svc, o.GetId(), withSequence([]string{"Open {ticket}{ticket}{ticket}{ticket}{ticket}"}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	big := map[string]string{"number": "1", "repo": "r", "ticket": strings.Repeat("x", maxArgumentBytes)}
+	if _, err := env.svc.CallAction(o.GetId(), "review-pr", big, pb.EventKind_EVENT_KIND_USER, "", ""); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "pre-prompt 1: ") {
+		t.Errorf("oversized step = %v", err)
+	}
+	if runs, _ := env.svc.ListRuns(o.GetId()); len(runs.GetQueued()) != 1 {
+		t.Errorf("queued = %d, want only the first run", len(runs.GetQueued()))
+	}
+}
+
+func TestWorkerRunFor(t *testing.T) {
+	live := &pb.WorkerRun{
+		Id: "run-1", Action: "a", StepRole: pb.StepRole_STEP_ROLE_CLEANUP, StepIndex: 4,
+		StepSentAt: timestamppb.New(time.Unix(5, 0)), StepNote: "waiting: x", HoldGen: 3,
+		Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, Halted: true, NeedsReview: true,
+	}
+	cases := map[string]struct {
+		run  *pb.Run
+		live *pb.WorkerRun
+		want *pb.WorkerRun
+	}{
+		"keeps live fields, overlays orchestrator's, never lowers NEEDS_DEVELOPER": {
+			&pb.Run{Id: "run-1", Action: "a", State: pb.RunState_RUN_STATE_RUNNING, Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepStatus: pb.StepStatus_STEP_STATUS_TURN},
+			live,
+			&pb.WorkerRun{Id: "run-1", Action: "a", StepRole: pb.StepRole_STEP_ROLE_CLEANUP, StepIndex: 4,
+				StepSentAt: timestamppb.New(time.Unix(5, 0)), StepNote: "waiting: x", HoldGen: 3,
+				Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER},
+		},
+		"review and halt": {
+			&pb.Run{Id: "run-1", Action: "a", State: pb.RunState_RUN_STATE_AWAITING_REVIEW, StepStatus: pb.StepStatus_STEP_STATUS_HALTED},
+			&pb.WorkerRun{Id: "run-1", StepIndex: 2},
+			&pb.WorkerRun{Id: "run-1", Action: "a", StepIndex: 2, NeedsReview: true, Halted: true},
+		},
+		"another run's record contributes nothing": {
+			&pb.Run{Id: "run-2", Action: "b"}, live, &pb.WorkerRun{Id: "run-2", Action: "b"},
+		},
+		"no record": {&pb.Run{Id: "run-2", Action: "b"}, nil, &pb.WorkerRun{Id: "run-2", Action: "b"}},
+	}
+	for name, c := range cases {
+		before := proto.Clone(live)
+		if got := workerRunFor(c.run, c.live); !proto.Equal(got, c.want) {
+			t.Errorf("%s:\n got %v\nwant %v", name, got, c.want)
+		}
+		if !proto.Equal(before, live) {
+			t.Errorf("%s: the live record was modified", name)
+		}
+	}
+}
+
+// A review-flag sync keeps the daemon-written fields of the worker's record
+// and the orchestrator's hold/halt (set_run replaces the whole message).
+func TestReviewFlagSyncKeepsStepFields(t *testing.T) {
+	env, w, o, rt, run := startOne(t)
+	sb := w.update("wa", func(sb *pb.Sandbox) {
+		sb.Controller.Run.StepRole = pb.StepRole_STEP_ROLE_ACTION
+		sb.Controller.Run.StepIndex = 3
+		sb.Controller.Run.HoldGen = 7
+	})
+	rt.mu.Lock()
+	rt.sbs["wa"] = sb
+	rt.mu.Unlock()
+	live, _ := env.reg.GetRun(o.GetId(), run.GetId())
+	live.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
+	live.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING
+	live.StepStatus = pb.StepStatus_STEP_STATUS_HALTED
+	if err := env.reg.PutRun(live); err != nil {
+		t.Fatal(err)
+	}
+	rt.syncReviewFlag(run.GetId())
+	wr := w.get("wa").GetController().GetRun()
+	if !wr.GetNeedsReview() || wr.GetStepRole() != pb.StepRole_STEP_ROLE_ACTION || wr.GetStepIndex() != 3 || wr.GetHoldGen() != 7 ||
+		wr.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING || !wr.GetHalted() {
+		t.Errorf("worker run = %v", wr)
+	}
+}
+
+// Every write to an existing run carries expect_run_id: a late write after the
+// worker's daemon released the run doesn't re-create it.
+func TestLateWorkerRunWriteDoesNotRecreate(t *testing.T) {
+	env, w, o, rt, run := startOne(t)
+	w.update("wa", func(sb *pb.Sandbox) { sb.Controller.Run = nil }) // released by the daemon; no event yet
+	live, _ := env.reg.GetRun(o.GetId(), run.GetId())
+	live.State = pb.RunState_RUN_STATE_AWAITING_REVIEW
+	if err := env.reg.PutRun(live); err != nil {
+		t.Fatal(err)
+	}
+	rt.syncReviewFlag(run.GetId())
+	if wr := w.get("wa").GetController().GetRun(); wr != nil {
+		t.Errorf("review sync re-created the run: %v", wr)
+	}
+	// A clear for a run the record no longer holds leaves the newer run alone.
+	w.update("wa", func(sb *pb.Sandbox) { sb.Controller.Run = &pb.WorkerRun{Id: "run-other"} })
+	rt.clearWorkerRun(live)
+	if wr := w.get("wa").GetController().GetRun(); wr.GetId() != "run-other" {
+		t.Errorf("clear removed another run: %v", wr)
 	}
 }

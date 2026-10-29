@@ -130,7 +130,7 @@ func TestAgentCommandMapping(t *testing.T) {
 	// The agent is launched from the sandbox's code directory via a bash -lc that
 	// cd's then execs, so the terminal opens where `sbx run <agent>` would.
 	c := agentCommand("sbx", Target{Ref: "sb-ref", Workdir: "/home/u/ws"},
-		&pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}})
+		&pb.AgentSpec{Kind: "claude-code", Args: []string{"--model", "opus"}}, Spawn{})
 	want := []string{"exec", "-it", "sb-ref", "bash", "-lc"}
 	if len(c.Args) != len(want)+2 { // Args[0] is the binary; +1 for the launch script
 		t.Fatalf("args = %v", c.Args)
@@ -154,12 +154,89 @@ func TestAgentCommandMapping(t *testing.T) {
 
 	// An unset kind still targets the agent (claude) with the skip-permissions
 	// flag, matching the sbx runner, rather than dropping to a bare shell.
-	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{})
+	c2 := agentCommand("sbx", Target{Ref: "sb-ref"}, &pb.AgentSpec{}, Spawn{})
 	if s := c2.Args[len(c2.Args)-1]; !strings.Contains(s, "exec 'claude' '--dangerously-skip-permissions'") {
 		t.Errorf("default launch = %q, want it to exec claude with --dangerously-skip-permissions", s)
 	}
 	// With no workdir there is no cd prefix.
 	if s := c2.Args[len(c2.Args)-1]; strings.Contains(s, "cd ") {
 		t.Errorf("launch %q should not cd when workdir is empty", s)
+	}
+}
+
+// written drains what was written into a memSession.
+func (s *memSession) written() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := string(s.buf)
+	s.buf = nil
+	return out
+}
+
+func TestTypeStepAndRePress(t *testing.T) {
+	sess := newMemSession()
+	created := 0
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { created++; return sess, nil })
+	at := time.Unix(1_700_000_000, 0)
+	reg.now = func() time.Time { return at }
+	// No live agent: nothing is spawned, nothing typed.
+	if _, err := reg.TypeStep("sb", &pb.AgentSpec{}, "/model opus"); !errors.Is(err, ErrNoLiveAgent) || created != 0 {
+		t.Fatalf("TypeStep with no agent = %v (created %d)", err, created)
+	}
+	if err := reg.RePress("sb", 0); !errors.Is(err, ErrNoLiveAgent) || created != 0 {
+		t.Fatalf("RePress with no agent = %v (created %d)", err, created)
+	}
+	if _, err := reg.Session("sb", &pb.AgentSpec{Kind: "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	sentAt, err := reg.TypeStep("sb", &pb.AgentSpec{}, "/model opus")
+	if err != nil || !sentAt.Equal(at) {
+		t.Fatalf("TypeStep = %v / %v", sentAt, err)
+	}
+	if got := sess.written(); got != Typed("/model opus") {
+		t.Errorf("typed %q, want one paste then Enter", got)
+	}
+	// No blind re-press follows on its own.
+	time.Sleep(20 * time.Millisecond)
+	if got := sess.written(); got != "" {
+		t.Errorf("TypeStep must not re-press by itself: %q", got)
+	}
+	for n, want := range []string{"\r", keypadEnter, keypadEnter} {
+		if err := reg.RePress("sb", n); err != nil {
+			t.Fatal(err)
+		}
+		if got := sess.written(); got != want {
+			t.Errorf("re-press %d = %q, want %q", n, got, want)
+		}
+	}
+	// A write failure is returned.
+	_ = sess.Close()
+	if _, err := reg.TypeStep("sb", nil, "x"); err == nil {
+		t.Error("a failed paste must error")
+	}
+}
+
+// failAfter is a Session whose writes fail after the first n.
+type failAfter struct {
+	memSession
+	n int
+}
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.n == 0 {
+		return 0, errors.New("pty gone")
+	}
+	f.n--
+	return len(p), nil
+}
+
+func TestTypeStepEnterFailure(t *testing.T) {
+	sess := &failAfter{n: 1}
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) { return sess, nil })
+	if _, err := reg.Session("sb", &pb.AgentSpec{Kind: "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.TypeStep("sb", nil, "x"); err == nil {
+		t.Error("a failed Enter must error")
 	}
 }

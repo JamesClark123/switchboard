@@ -172,3 +172,31 @@ func TestHubPublishUnderConcurrentSubscribe(t *testing.T) {
 		t.Errorf("published event not received: %v", ev)
 	}
 }
+
+// Existing returns the live session or ErrNoLiveAgent, and never spawns
+// (SWI-17: the step path's broadcaster provider).
+func TestExistingNeverSpawns(t *testing.T) {
+	spawned := 0
+	reg := NewRegistry(func(string, *pb.AgentSpec) (Session, error) {
+		spawned++
+		return newMemSession(), nil
+	})
+	if _, err := reg.Existing("sb1"); err != ErrNoLiveAgent {
+		t.Fatalf("Existing with no session err = %v, want ErrNoLiveAgent", err)
+	}
+	if spawned != 0 || reg.Live("sb1") {
+		t.Fatal("Existing must not start an agent")
+	}
+	s, err := reg.Session("sb1", &pb.AgentSpec{Kind: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reg.Existing("sb1")
+	if err != nil || got != s || spawned != 1 {
+		t.Fatalf("Existing over a live session = %v, %v (spawned %d)", got, err, spawned)
+	}
+	reg.Close("sb1")
+	if _, err := reg.Existing("sb1"); err != ErrNoLiveAgent || spawned != 1 {
+		t.Fatalf("Existing after Close err = %v (spawned %d)", err, spawned)
+	}
+}

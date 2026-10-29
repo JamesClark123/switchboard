@@ -184,3 +184,82 @@ func TestOrchestratedTabLifetime(t *testing.T) {
 	}
 	mgr.Disconnect("hostb")
 }
+
+// SWI-17 (FR-213, contracts/jobs-ui.md): holds, halts and detached agents on
+// the sandbox list. A hold that needs the developer, a halt, a cleanup that
+// waits, a detached agent and a failing check surface on the All, host and
+// group tabs; a cleanup that progresses stays hidden.
+func TestHoldsSurfaceOnTheList(t *testing.T) {
+	held := func(id string, run *pb.WorkerRun) *pb.Sandbox {
+		sb := worker(id, "worker-"+id, false, false)
+		sb.Controller.Run = run
+		return sb
+	}
+	cleaning := held("wc", &pb.WorkerRun{Id: "run-c", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP})
+	a := &fakeDaemon{sandboxes: []*pb.Sandbox{
+		{Id: "plain", DisplayName: "plain", State: pb.SandboxState_SANDBOX_STATE_RUNNING},
+		cleaning,
+		held("wd", &pb.WorkerRun{Id: "run-d", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER}),
+		held("wf", &pb.WorkerRun{Id: "run-f", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING}),
+		held("wh", &pb.WorkerRun{Id: "run-h", Halted: true}),
+		detachedSandbox("orph", pb.AgentStatus_AGENT_STATUS_IDLE, false),
+	}}
+	m, _, _ := twoFakeHosts(t, a, &fakeDaemon{})
+	m = feed2(m, m.listDataCmd())
+	m, _ = update(m, tea.WindowSizeMsg{Width: 200, Height: 60})
+	got := strings.Join(rowIDs(m.currentTabRows()), ",")
+	if got != "wd,wf,wh,orph,plain" {
+		t.Fatalf("All rows = %v", got)
+	}
+	v := m.View()
+	for _, want := range []string{
+		"⚑ worker · needing the developer — open its terminal and run /clear run-d",
+		"⚑ worker · needs input (freeing) run-f",
+		"⚑ worker · run-h halted: step not accepted",
+		"agent detached by a daemon restart — t to Replace or Wait",
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("list missing %q:\n%s", want, v)
+		}
+	}
+	// Host tab: the same rule.
+	for i, tab := range m.tabs {
+		if tab.kind == tabOrchestrated {
+			continue
+		}
+		m.tabIndex = i
+		for _, r := range m.currentTabRows() {
+			if r.sb.GetId() == "wc" {
+				t.Errorf("tab %q shows a progressing cleanup", tab.label)
+			}
+		}
+	}
+	m.tabIndex = 0
+	// The cleanup's step waits: it surfaces, with the reason.
+	m.sub = nil
+	waiting := held("wc", &pb.WorkerRun{Id: "run-c", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepNote: "waiting: input box not empty"})
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: waiting}}})
+	if got := rowIDs(m.currentTabRows()); got[0] != "wc" {
+		t.Errorf("a waiting cleanup surfaces first: %v", got)
+	}
+	if !strings.Contains(m.View(), "⚑ worker · cleaning up run-c · waiting: input box not empty") {
+		t.Errorf("waiting cleanup:\n%s", m.View())
+	}
+	// A failing check surfaces with its error; a running check doesn't.
+	failed := &pb.Sandbox{Id: "plain", DisplayName: "plain", State: pb.SandboxState_SANDBOX_STATE_RUNNING,
+		Agent: &pb.AgentSession{AgentCheck: &pb.AgentCheck{State: pb.AgentCheck_STATE_CHECK_FAILED, Error: "exec timed out"}}}
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: failed}}})
+	if !strings.Contains(m.View(), "can't check for a detached agent: exec timed out") {
+		t.Errorf("check failed:\n%s", m.View())
+	}
+	checking := &pb.Sandbox{Id: "x", Agent: &pb.AgentSession{AgentCheck: &pb.AgentCheck{State: pb.AgentCheck_STATE_UNKNOWN}}}
+	if note, surfaced := orphanNote(checking); note != "checking for a detached agent…" || surfaced || needsDeveloper(checking) {
+		t.Errorf("checking: %q %v", note, surfaced)
+	}
+	// The Orchestrator Sandboxes tab shows a progressing cleanup, dimmed.
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: cleaning}}})
+	m, _ = update(m, press("O"))
+	if !strings.Contains(m.View(), "⚑ worker · cleaning up run-c") {
+		t.Errorf("orchestrator tab:\n%s", m.View())
+	}
+}

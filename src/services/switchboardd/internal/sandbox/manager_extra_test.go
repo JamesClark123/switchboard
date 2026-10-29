@@ -118,10 +118,18 @@ func TestRefreshHooksRewritesLiveWorkspaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	failFor = one.GetId()
-	var logged []string
+	var logged, wrappers []string
+	// The escape-hatch wrappers are re-injected alongside (SWI-17).
+	m.SetEscapeHatchInjector(func(id, _ string, _ []*pb.EscapeHatchCommand) error {
+		wrappers = append(wrappers, id)
+		return nil
+	})
 	m.RefreshHooks(func(s string) { logged = append(logged, s) })
 	if len(calls) != 1 || calls[0] != one.GetId() {
 		t.Errorf("refresh calls = %v, want just %s", calls, one.GetId())
+	}
+	if len(wrappers) != 1 || wrappers[0] != one.GetId() {
+		t.Errorf("wrapper refresh = %v, want just %s", wrappers, one.GetId())
 	}
 	if len(logged) != 1 || !strings.Contains(logged[0], "disk full") {
 		t.Errorf("logged = %v", logged)

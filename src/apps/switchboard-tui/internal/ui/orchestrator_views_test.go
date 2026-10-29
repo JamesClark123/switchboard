@@ -179,3 +179,45 @@ func TestDetailHelpAndEmptyViews(t *testing.T) {
 		t.Error("esc's hint names where it returns")
 	}
 }
+
+// SWI-17 (FR-213): the Workers view shows a worker's hold, halt and waiting
+// note, and t opens its terminal (through the detached-agent gate).
+func TestWorkersViewHoldsAndTerminal(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
+		{SandboxId: "w-run", HostId: "test-host", DisplayName: "worker-w-run", State: pb.SandboxState_SANDBOX_STATE_RUNNING, Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-d", Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HostReachable: true},
+		{SandboxId: "w2", HostId: "test-host", DisplayName: "w-two", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-h", Halted: true, HostReachable: true},
+		{SandboxId: "w3", HostId: "test-host", DisplayName: "w-three", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-c", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, StepNote: "waiting: agent busy", HostReachable: true},
+		{SandboxId: "w4", HostId: "test-host", DisplayName: "w-four", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-p", Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP, HostReachable: true},
+		{SandboxId: "w5", HostId: "test-host", DisplayName: "w-five", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE, HostReachable: true},
+	}}
+	m := withSandboxes(sized(New(a, "/work")), []*pb.Sandbox{runningWorker("w-run"), detachedSandbox("w5", pb.AgentStatus_AGENT_STATUS_IDLE, false)})
+	m, _ = update(m, tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = openDetail(t, m)
+	v := m.View()
+	for _, want := range []string{"⚑ needing the developer — open its terminal and run /clear run-d", "⚑ run-h halted: step not accepted",
+		"⚑ cleaning up run-c · waiting: agent busy", "⚑ cleaning up run-p", "agent detached by a daemon restart — t to Replace or Wait", "t terminal"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("workers view missing %q:\n%s", want, v)
+		}
+	}
+	m, cmd := update(m, press("t"))
+	opened, ok := runCmd(cmd).(termOpenedMsg)
+	if !ok {
+		t.Fatalf("t should attach: %q", m.orchDetail.status)
+	}
+	m, _ = update(m, opened)
+	if m.screen != screenTerminal || a.attachedID != "w-run" {
+		t.Fatalf("screen %v attached %q", m.screen, a.attachedID)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if m.screen != screenOrchDetail {
+		t.Errorf("ctrl+q returns to the Workers view: %v", m.screen)
+	}
+	// A worker the TUI doesn't list is refused on the view's line.
+	m, _ = update(m, press("j"))
+	m, cmd = update(m, press("t"))
+	if cmd != nil || !strings.Contains(m.orchDetail.status, "worker sandbox w-two was not found") {
+		t.Errorf("unknown worker: %q", m.orchDetail.status)
+	}
+}

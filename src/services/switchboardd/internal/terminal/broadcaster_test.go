@@ -108,7 +108,11 @@ func TestSnapshotReplaysPriorOutput(t *testing.T) {
 	pty.feed([]byte("line1\r\n"))
 	pty.feed([]byte("line2\r\n"))
 	// Give the read loop time to buffer both chunks.
-	waitFor(t, func() bool { return len(b.ring.snapshot()) == len("line1\r\nline2\r\n") })
+	waitFor(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return len(b.ring.snapshot()) == len("line1\r\nline2\r\n")
+	})
 
 	c, err := b.Attach(KindInTUI, 80, 24)
 	if err != nil {
@@ -136,7 +140,11 @@ func TestDetachKeepsSessionAlive(t *testing.T) {
 
 	// A later reattach still works and sees earlier output.
 	pty.feed([]byte("after-detach"))
-	waitFor(t, func() bool { return len(b.ring.snapshot()) > 0 })
+	waitFor(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return len(b.ring.snapshot()) > 0
+	})
 	c2, err := b.Attach(KindInTUI, 80, 24)
 	if err != nil {
 		t.Fatal(err)

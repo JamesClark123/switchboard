@@ -173,7 +173,7 @@ func (m Model) orchDetailHelp() helpBindings {
 	hb := helpBindings{hkey("←/→", "view"), hkey("↑/↓", "move")}
 	switch d.view {
 	case viewWorkers:
-		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"))
+		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"), hkey("t", "terminal"))
 		if m.hostHasLanes(d.host) {
 			hb = append(hb, hkey("l", "lanes"))
 		}
