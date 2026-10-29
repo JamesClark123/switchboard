@@ -6034,9 +6034,16 @@ type AddMcpServerRequest struct {
 	// Custom HTTP headers for a remote endpoint, each "Name: value" → one
 	// `--header` flag (FR-103). Credential headers use a `${placeholder}` whose
 	// value is the host secret `mcp:<name>:<placeholder>` (see Secrets).
-	Headers       []string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Headers []string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty"`
+	// Pre-registered OAuth client for a remote server without Dynamic Client
+	// Registration → `--client-id` (FR-105, SWI-20). Remote only. A confidential
+	// client's secret is the host secret `mcp:<name>:client_secret`, set first.
+	ClientId string `protobuf:"bytes,7,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	// RFC 8414 metadata (an absolute path on the daemon's host, or an http(s)
+	// URL) for a server that publishes none → `--oauth-authorization-server`.
+	OauthAuthorizationServer string `protobuf:"bytes,8,opt,name=oauth_authorization_server,json=oauthAuthorizationServer,proto3" json:"oauth_authorization_server,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *AddMcpServerRequest) Reset() {
@@ -6120,6 +6127,20 @@ func (x *AddMcpServerRequest) GetHeaders() []string {
 		return x.Headers
 	}
 	return nil
+}
+
+func (x *AddMcpServerRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *AddMcpServerRequest) GetOauthAuthorizationServer() string {
+	if x != nil {
+		return x.OauthAuthorizationServer
+	}
+	return ""
 }
 
 type isAddMcpServerRequest_Definition interface {
@@ -13385,14 +13406,16 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x15ListMcpServersRequest\"\x8d\x01\n" +
 	"\x16ListMcpServersResponse\x123\n" +
 	"\aservers\x18\x01 \x03(\v2\x19.switchboard.v1.McpServerR\aservers\x12>\n" +
-	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\"\xef\x02\n" +
+	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\"\xca\x03\n" +
 	"\x13AddMcpServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x03url\x18\x02 \x01(\tH\x00R\x03url\x12L\n" +
 	"\acommand\x18\x03 \x01(\v20.switchboard.v1.AddMcpServerRequest.LocalCommandH\x00R\acommand\x12*\n" +
 	"\x11attach_by_default\x18\x04 \x01(\bR\x0fattachByDefault\x12>\n" +
 	"\x1backnowledge_local_execution\x18\x05 \x01(\bR\x19acknowledgeLocalExecution\x12\x18\n" +
-	"\aheaders\x18\x06 \x03(\tR\aheaders\x1aN\n" +
+	"\aheaders\x18\x06 \x03(\tR\aheaders\x12\x1b\n" +
+	"\tclient_id\x18\a \x01(\tR\bclientId\x12<\n" +
+	"\x1aoauth_authorization_server\x18\b \x01(\tR\x18oauthAuthorizationServer\x1aN\n" +
 	"\fLocalCommand\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +

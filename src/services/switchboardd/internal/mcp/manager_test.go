@@ -193,6 +193,58 @@ func TestAddRemoteArgvMarkAndEvent(t *testing.T) {
 	}
 }
 
+// A server without Dynamic Client Registration is registered with its
+// pre-registered client ID and, optionally, its authorization server metadata
+// (FR-105, SWI-20); invalid values and host-command servers are refused
+// before anything runs.
+func TestAddRemoteOAuthClient(t *testing.T) {
+	env := newEnv(t, `
+  "mcp add slack --url https://slack.example.com/mcp --client-id 123.456 --oauth-authorization-server /etc/slack-as.json --skip-auth") echo registered ;;
+  "mcp ls") `+twoServerTable+` ;;
+  "mcp auth status notion --json") echo '[]' ;;`)
+	_, err := env.m.Add(context.Background(), &pb.AddMcpServerRequest{
+		Name: "slack", Definition: &pb.AddMcpServerRequest_Url{Url: "https://slack.example.com/mcp"},
+		ClientId: " 123.456 ", OauthAuthorizationServer: " /etc/slack-as.json ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if log := readLog(t, env.log); log[0] != "mcp add slack --url https://slack.example.com/mcp --client-id 123.456 --oauth-authorization-server /etc/slack-as.json --skip-auth" {
+		t.Errorf("first argv = %q", log[0])
+	}
+	for _, as := range []string{"http://127.0.0.1:9000/x", "http://127.0.0.2/x", "http://[::1]:9000/x", "http://localhost:9000/x", "http://LocalHost/x"} {
+		if _, _, err := normalizeOAuthClient("", as); err != nil {
+			t.Errorf("%s: a loopback http auth server should be accepted: %v", as, err)
+		}
+	}
+	remote := func(id, as string) *pb.AddMcpServerRequest {
+		return &pb.AddMcpServerRequest{Name: "x", Definition: &pb.AddMcpServerRequest_Url{Url: "https://x/mcp"}, ClientId: id, OauthAuthorizationServer: as}
+	}
+	for name, req := range map[string]*pb.AddMcpServerRequest{
+		"client id with a space":     remote("a b", ""),
+		"flag-like client id":        remote("--skip-auth", ""),
+		"over-long client id":        remote(strings.Repeat("c", maxClientID+1), ""),
+		"relative auth server path":  remote("", "as.json"),
+		"auth server with a line":    remote("", "https://as/x\nmore"),
+		"cleartext auth server":      remote("", "http://as.example/x"),
+		"auth server with no host":   remote("", "https:///x"),
+		"http to a *.localhost name": remote("", "http://as.localhost/x"),
+		"http to localhost.":         remote("", "http://localhost./x"),
+		"client id on a command": {Name: "pw", AcknowledgeLocalExecution: true, ClientId: "c",
+			Definition: &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: "npx"}}},
+		"auth server on a command": {Name: "pw", AcknowledgeLocalExecution: true, OauthAuthorizationServer: "https://as",
+			Definition: &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: "npx"}}},
+	} {
+		before := len(readLog(t, env.log))
+		if _, err := env.m.Add(context.Background(), req); !errors.Is(err, ErrInvalidArgs) {
+			t.Errorf("%s: err = %v, want ErrInvalidArgs", name, err)
+		}
+		if after := len(readLog(t, env.log)); after != before {
+			t.Errorf("%s: something ran", name)
+		}
+	}
+}
+
 func TestAddLocalAcknowledgementAndArgv(t *testing.T) {
 	env := newEnv(t, `
   "mcp add pw --command npx --args @playwright/mcp@latest,--headless --dir /srv --skip-auth") exit 0 ;;

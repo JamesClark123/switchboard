@@ -1214,6 +1214,13 @@ message AddMcpServerRequest {
   // `--header` flag (FR-103). Credential headers use a `${placeholder}` whose
   // value is the host secret `mcp:<name>:<placeholder>` (see Secrets).
   repeated string headers = 6;
+  // Pre-registered OAuth client for a remote server without Dynamic Client
+  // Registration → `--client-id` (FR-105, SWI-20). Remote only. A confidential
+  // client's secret is the host secret `mcp:<name>:client_secret`, set first.
+  string client_id = 7;
+  // RFC 8414 metadata (an absolute path on the daemon's host, or an http(s)
+  // URL) for a server that publishes none → `--oauth-authorization-server`.
+  string oauth_authorization_server = 8;
   message LocalCommand {
     string command = 1;
     repeated string args = 2;

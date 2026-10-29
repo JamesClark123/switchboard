@@ -405,6 +405,70 @@ func TestMcpRegisterRemoteWithHeaders(t *testing.T) {
 	}
 }
 
+func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpModel(t, d)
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "slack"
+	m.mcpView.vals.url = "https://slack.example.com/mcp"
+	m.mcpView.vals.clientID = " 123.456 "
+	m.mcpView.vals.authServer = "/etc/slack-as.json"
+	if !m.guardDirty(gMcp) {
+		t.Error("editing the OAuth fields should mark the form dirty")
+	}
+	m, cmd := update(m, ctrlS())
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 1 || d.addedMcp[0].GetClientId() != "123.456" || d.addedMcp[0].GetOauthAuthorizationServer() != "/etc/slack-as.json" {
+		t.Fatalf("added = %+v", d.addedMcp)
+	}
+	for _, c := range []struct{ id, as, want string }{
+		{"a b", "", "single token"},
+		{"--x", "", "single token"},
+		{"c1", "relative.json", "https URL (http only to localhost or a loopback IP) or an absolute path"},
+		{"c1", "http://as.example/x", "https URL (http only to localhost or a loopback IP)"},
+		{"c1", "http://as.localhost/x", "https URL (http only to localhost or a loopback IP)"},
+		{strings.Repeat("c", 257), "", "at most 256 characters"},
+		{"c\x7f1", "", "single token"},
+		{"c1", "https://as/x\x01", "https URL"},
+	} {
+		m = pressCmd(m, "a")
+		m.mcpView.vals.name = "bad"
+		m.mcpView.vals.url = "https://x/mcp"
+		m.mcpView.vals.clientID, m.mcpView.vals.authServer = c.id, c.as
+		m, _ = update(m, ctrlS())
+		if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, c.want) {
+			t.Errorf("%+v: status %q", c, m.mcpView.status)
+		}
+		m = escDiscard(t, m)
+	}
+	for _, as := range []string{"http://localhost:9000/x", "http://[::1]/x", "http://127.0.0.2/x"} {
+		if !authServerOK(as) {
+			t.Errorf("%s should be accepted", as)
+		}
+	}
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "local-as"
+	m.mcpView.vals.url = "https://x/mcp"
+	m.mcpView.vals.authServer = "http://127.0.0.1:9000/x"
+	m, cmd = update(m, ctrlS())
+	m = drainMcp(m, cmd)
+	if len(d.addedMcp) != 2 || d.addedMcp[1].GetOauthAuthorizationServer() != "http://127.0.0.1:9000/x" {
+		t.Fatalf("a loopback http auth server should register; added = %+v", d.addedMcp)
+	}
+	m = pressCmd(m, "a")
+	m.mcpView.vals.name = "pw"
+	m.mcpView.vals.kind = "command"
+	m.mcpView.vals.command = "npx"
+	m.mcpView.vals.clientID = "c1"
+	m, _ = update(m, ctrlS())
+	if m.mcpView.form == nil || !strings.Contains(m.mcpView.status, "OAuth client settings apply to remote endpoints only") {
+		t.Errorf("a client ID on a host command should be refused; status %q", m.mcpView.status)
+	}
+	if len(d.addedMcp) != 2 {
+		t.Errorf("refused forms must not register; added %d", len(d.addedMcp))
+	}
+}
+
 // openerDaemon lets a fakeDaemon satisfy forward.Opener; its streams never carry
 // traffic here, the tests only observe whether the callback listener exists.
 type openerDaemon struct{ *fakeDaemon }

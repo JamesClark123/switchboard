@@ -53,8 +53,11 @@ func TestArgvTable(t *testing.T) {
 	cases := map[string][]string{
 		"mcp ls":                        argvList(),
 		"mcp auth status notion --json": argvAuthStatus("notion"),
-		"mcp add notion --url https://x/mcp --skip-auth":                                                                       argvAddRemote("notion", "https://x/mcp", nil),
-		"mcp add gh --url https://x/mcp --header Authorization: Bearer ${token} --header Accept: application/json --skip-auth": argvAddRemote("gh", "https://x/mcp", []string{"Authorization: Bearer ${token}", "Accept: application/json"}),
+		"mcp add notion --url https://x/mcp --skip-auth":                                                                       argvAddRemote("notion", "https://x/mcp", nil, "", ""),
+		"mcp add gh --url https://x/mcp --header Authorization: Bearer ${token} --header Accept: application/json --skip-auth": argvAddRemote("gh", "https://x/mcp", []string{"Authorization: Bearer ${token}", "Accept: application/json"}, "", ""),
+		"mcp add slack --url https://x/mcp --client-id 123.456 --skip-auth":                                                    argvAddRemote("slack", "https://x/mcp", nil, "123.456", ""),
+		"mcp add sx --url https://x/mcp --oauth-authorization-server /etc/sx.json --skip-auth":                                 argvAddRemote("sx", "https://x/mcp", nil, "", "/etc/sx.json"),
+		"mcp add sx --url https://x/mcp --header A: b --client-id c1 --oauth-authorization-server https://as/x --skip-auth":    argvAddRemote("sx", "https://x/mcp", []string{"A: b"}, "c1", "https://as/x"),
 		"mcp add pw --command npx --args a,b --dir /d --skip-auth":                                                             argvAddLocal("pw", "npx", []string{"a", "b"}, "/d"),
 		"mcp add pw --command npx --skip-auth":                                                                                 argvAddLocal("pw", "npx", nil, ""),
 		"mcp rm notion --force":                                                                                                argvRemove("notion"),

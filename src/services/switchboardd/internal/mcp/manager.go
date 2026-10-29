@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -220,10 +223,17 @@ func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.Mcp
 		if err != nil {
 			return nil, err
 		}
-		argv = argvAddRemote(name, url, headers)
+		clientID, authServer, err := normalizeOAuthClient(req.GetClientId(), req.GetOauthAuthorizationServer())
+		if err != nil {
+			return nil, err
+		}
+		argv = argvAddRemote(name, url, headers, clientID, authServer)
 	case *pb.AddMcpServerRequest_Command:
 		if len(req.GetHeaders()) > 0 {
 			return nil, fmt.Errorf("%w: custom headers apply to remote endpoints only", ErrInvalidArgs)
+		}
+		if strings.TrimSpace(req.GetClientId()) != "" || strings.TrimSpace(req.GetOauthAuthorizationServer()) != "" {
+			return nil, fmt.Errorf("%w: OAuth client settings apply to remote endpoints only", ErrInvalidArgs)
 		}
 		if !req.GetAcknowledgeLocalExecution() {
 			return nil, ErrLocalNotAcknowledged
@@ -663,6 +673,48 @@ func findServer(servers []*pb.McpServer, name string) *pb.McpServer {
 		}
 	}
 	return nil
+}
+
+// maxClientID bounds a pre-registered OAuth client ID (FR-105).
+const maxClientID = 256
+
+// normalizeOAuthClient trims and validates a remote server's OAuth client
+// settings (FR-105): the client ID is one token (no spaces or control
+// characters, not flag-like); the authorization server is an https URL (http
+// only to localhost or a loopback IP) or an absolute path, which the daemon's `sbx` reads
+// on this host. Either may be empty.
+func normalizeOAuthClient(clientID, authServer string) (string, string, error) {
+	clientID, authServer = strings.TrimSpace(clientID), strings.TrimSpace(authServer)
+	if clientID != "" && (utf8.RuneCountInString(clientID) > maxClientID || !utf8.ValidString(clientID) || clientID[0] == '-' ||
+		strings.IndexFunc(clientID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0) {
+		return "", "", fmt.Errorf("%w: client ID must be a single token of at most %d characters", ErrInvalidArgs, maxClientID)
+	}
+	if authServer != "" && (!authServerOK(authServer) || strings.IndexFunc(authServer, unicode.IsControl) >= 0) {
+		return "", "", fmt.Errorf("%w: authorization server must be an https URL (http only to localhost or a loopback IP) or an absolute path on the daemon's host", ErrInvalidArgs)
+	}
+	return clientID, authServer, nil
+}
+
+// authServerOK accepts an absolute path, an https URL, or an http URL to a
+// loopback IP or exactly localhost: the metadata names the endpoints the
+// client secret is sent to, so it is never fetched in cleartext across a
+// network. Unlike the callback rule (dial.IsLoopbackHost), *.localhost is
+// refused: `sbx` dials this host, and the host's resolver may ask the
+// network's DNS for such a name.
+func authServerOK(s string) bool {
+	if filepath.IsAbs(s) {
+		return true
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	h := u.Hostname()
+	ip := net.ParseIP(h)
+	return u.Scheme == "http" && (strings.EqualFold(h, "localhost") || ip != nil && ip.IsLoopback())
 }
 
 // headerNameRe is an HTTP field name (RFC 9110 token).

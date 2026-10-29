@@ -46,14 +46,24 @@ func argvAuthorize(name string) []string { return []string{"mcp", "auth", name} 
 // argvVersion is `sbx version` (confirmed on a real host: it prints
 // "sbx version: v0.47.0 <commit>"); there is no --version flag.
 func argvVersion() []string { return []string{"version"} }
-func argvAddRemote(name, url string, headers []string) []string {
+func argvAddRemote(name, url string, headers []string, clientID, authServer string) []string {
 	// Always --skip-auth: authorization is the separate Authorize step (R2).
 	// Each custom header is one documented `--header 'Name: value'` flag
 	// (FR-103); credential headers carry a `${placeholder}` the gateway fills
-	// from the host secret `mcp:<name>:<placeholder>`.
+	// from the host secret `mcp:<name>:<placeholder>`. A server without
+	// Dynamic Client Registration takes a pre-registered `--client-id` and,
+	// when it publishes no OAuth metadata, `--oauth-authorization-server`
+	// (FR-105). Their combination with --skip-auth is assumed, not confirmed
+	// on a real host (SWI-20).
 	a := []string{"mcp", "add", name, "--url", url}
 	for _, h := range headers {
 		a = append(a, "--header", h)
+	}
+	if clientID != "" {
+		a = append(a, "--client-id", clientID)
+	}
+	if authServer != "" {
+		a = append(a, "--oauth-authorization-server", authServer)
 	}
 	return append(a, "--skip-auth")
 }
@@ -89,7 +99,7 @@ func argvUnload(name, sandbox string) []string {
 func (c *CLI) AddRemote(ctx context.Context, name, url string) (string, error) {
 	mctx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
 	defer cancel()
-	return c.run(mctx, argvAddRemote(name, url, nil)...)
+	return c.run(mctx, argvAddRemote(name, url, nil, "", "")...)
 }
 
 // Load attaches a registered server to a sandbox live:

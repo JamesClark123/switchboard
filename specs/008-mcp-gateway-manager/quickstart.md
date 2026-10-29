@@ -145,6 +145,21 @@ and `sbxkit.MinSbxVersion` confirmed as the first schema-2 release.
    GitHub tools work; the token appears nowhere in switchboard.
 3. Enter a header without a colon: the form stays open with the message; nothing runs.
 
+## Scenario 9 — Pre-registered OAuth client (FR-105; added 2026-10-29, SWI-20)
+
+1. Under Secrets store `mcp:slack:client_secret` with the Slack app's client secret (Scenario 7).
+2. In the MCP gateway view press `a`, name `slack`, URL `https://mcp.slack.com/mcp`, **OAuth client
+   ID** = the Slack app's client ID; `ctrl+s`. The daemon log shows
+   `sbx mcp add slack --url … --client-id <id> --skip-auth` (the combination with `--skip-auth` is
+   assumed — confirm it registers without a browser). `A` authorizes; attach `slack` to a sandbox and
+   its tools work.
+3. Enter a client ID with a space, or a relative or plain `http://` (other than `localhost` or a loopback IP) **OAuth
+   authorization server**: the form stays
+   open with the message; nothing runs. Either field on a host command is refused likewise.
+4. To change the client later (manual, on the host): store the new `mcp:slack:client_secret`, run
+   `sbx secret rm mcp:slack:client_secret:identity`, then `A` re-authorizes. A different client ID
+   means remove and re-add the server.
+
 
 ## Automated coverage map
 
