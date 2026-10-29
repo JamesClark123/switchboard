@@ -68,6 +68,7 @@ func TestActionFormOptionLists(t *testing.T) {
 	m, _ := jobsWith(t, jobsActions, nil, nil)
 	m, _ = update(m, tea.WindowSizeMsg{Width: 160, Height: 120})
 	m, _ = update(m, press("a"))
+	m.jobs.form.NextGroup() // the sequence follows the arguments, a page of their own
 	for _, want := range []string{"Model", "Effort", "Clear after run", "Pre-prompts", "Post-prompts", "one prompt per line"} {
 		if !strings.Contains(ansi.Strip(m.View()), want) {
 			t.Errorf("form missing %q", want)

@@ -963,8 +963,7 @@ func TestTUIActionSequenceE2E(t *testing.T) {
 	p.tab() // description: blank
 	p.tab() // type: prompt
 	p.send("Review pull request {number}.")
-	p.tab() // worker tag: blank
-	p.tab()
+	p.tab() // arguments (no lanes on this orchestrator: their page is hidden)
 	p.send("number *")
 	p.tab()          // Model: opus
 	p.send("\x1b[B") // ↓ fable
@@ -983,7 +982,7 @@ func TestTUIActionSequenceE2E(t *testing.T) {
 	m = p.mark()
 	p.send("e")
 	p.expectNew(t, m, "Body", 10*time.Second)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 5; i++ {
 		p.tab() // … to Model
 	}
 	p.expectNew(t, m, "fable", 5*time.Second)

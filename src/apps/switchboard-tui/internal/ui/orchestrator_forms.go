@@ -127,8 +127,10 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 const reasonLanesText = "lanes not saved: reason actions have no lanes"
 
 // actionForm builds the action editor over v. Lanes and Mode are their own
-// groups (stacked, so the form reads as one page) to hide them: Lanes for a
-// reason action or an orchestrator with none, Mode while no lane is ticked.
+// groups to hide them: Lanes for a reason action or an orchestrator with none,
+// Mode while no lane is ticked. The groups show one at a time (tab crosses
+// them), each scrolling to its focused field: with the sequence (SWI-17) the
+// form is taller than a screen, and stacked groups would not scroll.
 func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 	laneOpts := make([]huh.Option[string], 0, len(v.options))
 	for _, l := range v.options {
@@ -162,7 +164,7 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 			spec.text(&v.post, "Post-prompts").Key("post").Lines(4).Description("one prompt per line, sent in order after the run closes; a prompt can't span lines"),
 		),
 	}
-	return huh.NewForm(groups...).WithLayout(huh.LayoutStack).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
+	return huh.NewForm(groups...).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
 
