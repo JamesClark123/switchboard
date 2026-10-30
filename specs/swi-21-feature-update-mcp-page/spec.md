@@ -114,10 +114,10 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    still complete on the host (FR-406, FR-412). The save can then be retried, from scratch, with the
    edited definition or with the **previous definition**: the removed secrets are named and entered
    again for the retried definition (their old values are gone, even for the previous definition),
-   and a secret whose removal failed is never kept blank by a retry (a cancel names it as left on
-   the host for the developer to remove). Discarding the form asks for a `y`-only confirmation that names the server
-   as not registered and says its attach-by-default mark and switchboard's record of it will be
-   dropped (FR-406). If the failed add
+   and a secret whose removal failed is never kept blank by a retry (a cancel or discard tries to
+   remove it and names any still left on the host for the developer to remove). Discarding the form asks for a `y`-only confirmation that names the server
+   as not registered, says its attach-by-default mark and switchboard's record of it will be
+   dropped, and names any *removal failed* secrets it will remove (FR-406). If the failed add
    finishes on the host later, the server shows as *registered by another path*: its mark and
    switchboard's record of it are dropped, and Edit shows only what the runtime reports (FR-406).
    **Given**
@@ -451,7 +451,9 @@ runtime adds it to recorded defaults).
     that name, so whatever is later listed under it is a server switchboard has no record of. Under
     the same lock, before dropping the pending replace, Cancel makes a **best-effort removal** of
     every secret it holds as *removal failed* (a failed removal is re-checked against the global
-    secret list as for a retry). The confirmation names these secrets as ones the cancel will remove.
+    secret list as for a retry). The confirmation names, as ones the cancel will remove, those of these secrets
+    still in the host's global secret list (if the list cannot be read, it names all of them as
+    *may be left on the host*).
     Cancel is never refused because a removal fails: the outcome names only the secrets still listed
     (or not confirmed gone) as left on the host, for the developer to remove in the Secrets view or
     the host CLI (a known limitation, see *Out of scope*); or
@@ -550,10 +552,11 @@ runtime adds it to recorded defaults).
   clear the binding and the mark. For a server switchboard has no definition of (so no *re-bind
   pending* flag can be known), a save that stores a client secret MUST clear the binding as well.
   The edit form MUST show the pending state next to the client-secret
-  field. A failed clear of the binding is re-checked against the host's secret list under the same
-  lock and counts as success if the identity record is not listed (so the daemon does not rely on
-  recognising the runtime's *not found* answer). Any other failure MUST be shown verbatim, without
-  rolling back the registration.
+  field. A failed clear of the binding MUST be shown verbatim, without rolling back the
+  registration, and the server MUST keep (or get) the *client re-bind pending* mark, so a later save
+  that stores a client secret clears it again. The clear counts as success after a failed removal only
+  once the real-host run confirms the secret list shows the identity record (FR-422) and the record is
+  not listed; until then the mark stays set whenever the clear is not confirmed.
 
 ### Scopes
 
@@ -591,7 +594,7 @@ runtime adds it to recorded defaults).
   authorize, the per-server inspect, scopes read from the authorization status, removing the identity
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
-  `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
+  `,` literally (FR-417), whether the secret list shows the `:identity` record (FR-415), whether the authorization status and inspect positively report scopes and
   headers (FR-402), whether a killed `mcp add` / `mcp rm` can still complete on the host (FR-406),
   whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
@@ -809,4 +812,5 @@ runtime adds it to recorded defaults).
   outcome as left on the host, and the developer removes it in the Secrets view or the host CLI.
   Switchboard does not track it after the cancel, so a later add of that name from the form shows
   it as *set* and a blank field keeps it without a warning. This keeps Cancel always available at
-  the cost of a named leftover that exists only while secret storage is failing.
+  the cost of a named leftover, which arises only when the removal fails on Cancel (or cannot be
+  confirmed) and stays on the host until the developer removes it.
