@@ -114,8 +114,8 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    still complete on the host (FR-406, FR-412). The save can then be retried, from scratch, with the
    edited definition or with the **previous definition**: the removed secrets are named and entered
    again for the retried definition (their old values are gone, even for the previous definition),
-   and a secret whose removal failed is never kept blank by a retry (nor left behind by a cancel,
-   which is refused while one is still on the host). Discarding the form asks for a `y`-only confirmation that names the server
+   and a secret whose removal failed is never kept blank by a retry (a cancel names it as left on
+   the host for the developer to remove). Discarding the form asks for a `y`-only confirmation that names the server
    as not registered and says its attach-by-default mark and switchboard's record of it will be
    dropped (FR-406). If the failed add
    finishes on the host later, the server shows as *registered by another path*: its mark and
@@ -436,9 +436,10 @@ runtime adds it to recorded defaults).
   never kept for another, even if the earlier add finishes on the host later. A name whose removal
   failed MUST NOT be kept blank by a retry: its field shows *removal failed; will be removed unless
   re-entered* (FR-409), and if the retry enters no value for it, removing it is the retry's **first**
-  step (under the same lock, right after the definition check, before any store or add). If that
-  removal fails, the retry stops with no change: nothing is stored, no add runs, and the pending
-  replace is left as it was. The pending replace is persisted beside the
+  step (under the same lock, right after the definition check, before any store or add). A *not
+  found* answer counts as removed (the secret is already gone, e.g. removed in the Secrets view or the
+  host CLI). If that removal fails for any other reason, the retry stops with no change: nothing is
+  stored, no add runs, and the pending replace is left as it was. The pending replace is persisted beside the
   definitions (it holds no credential-header literals, FR-423), so it survives a daemon restart. It is
   exempt from the stale-mark drop, MUST NOT be applied at sandbox launch (FR-425), and ends only when:
   - a **retry** succeeds (mark and the retried definition become live);
@@ -446,9 +447,10 @@ runtime adds it to recorded defaults).
     behind a `y`-only confirmation that names the server as not registered and says its
     attach-by-default mark will be dropped. Cancel also drops switchboard's stored definition for
     that name, so whatever is later listed under it is a server switchboard has no record of. Cancel
-    MUST be refused while any name the pending replace holds as *removal failed* is still in the
-    host's global secret list, with a message naming those secrets and pointing to the Secrets view
-    (or Retry); discarding the form then leaves the pending replace and its row in place; or
+    is never refused because of a *removal failed* secret: the confirmation and the cancel's outcome
+    name every secret the pending replace holds as *removal failed* as possibly left on the host,
+    for the developer to check and remove in the Secrets view or the host CLI (a known limitation,
+    see *Out of scope*); or
   - the runtime lists a server of that name (a late finish of the failed add, or a registration
     through the host CLI): *registered by another path*. The held mark is dropped, not applied, no
     FR-415 step runs, the sandboxes' skipped entries are cleared as on cancel (FR-425), the
@@ -490,9 +492,11 @@ runtime adds it to recorded defaults).
   is currently stored on the daemon's host **in the global scope** (from the host's secret list; never
   the value; a sandbox-scoped secret of the same name does not count). A blank field MUST mean *keep
   the stored value*, except after a URL change, or for a name a pending replace holds as *removal
-  failed* (FR-406): such a field shows *removal failed; will be removed unless re-entered*, and saving
-  with it blank names it, together with FR-411's missing-secret prompt, as a secret this save will
-  remove. After a URL change the runtime binds header secrets to the server's
+  failed* (FR-406): while that name is in the host's global secret list, such a field shows *removal
+  failed; will be removed unless re-entered* instead of *set* (once it is not listed, the field shows
+  *missing* like any other), and saving with it blank MUST name it in a confirmation (combined with
+  FR-411's prompt when that is shown) as a secret this save will remove; for `client_secret` the
+  confirmation also repeats FR-414's note that it is needed for a confidential client. After a URL change the runtime binds header secrets to the server's
   endpoint, so when an edit changes the URL, every placeholder field MUST be marked *must be re-entered*,
   and saving with any of them blank MUST warn that the header will not be sent until that secret is set
   again. That a blank-kept secret is not sent to the new endpoint relies on the runtime's documented
@@ -670,8 +674,8 @@ runtime adds it to recorded defaults).
   names, from the pending replace, the secrets the failed save removed and those whose removal
   failed; when the previous definition is chosen it says the removed secrets' old values are gone and
   must be entered again; its save completes the pending replace, FR-406) and
-  **Cancel** (the same `y`-only confirmation as discarding the form, refused while a *removal failed*
-  secret is still on the host, FR-406). Because the pending replace is
+  **Cancel** (the same `y`-only confirmation as discarding the form, naming any *removal failed*
+  secrets as possibly left on the host, FR-406). Because the pending replace is
   persisted and has no time limit, it is never dropped without the developer seeing this row, except
   when the runtime lists that name again (registered by another path, FR-406).
 
@@ -790,3 +794,9 @@ runtime adds it to recorded defaults).
   (FR-406), so a secret whose rollback removal failed is reported only in the save's outcome (its
   response and gateway-changed event); a developer whose client was gone when the save ended does not
   see it. The developer removes or re-enters it by hand.
+- Known limitation (review round 12): **Cancel** of a pending replace is never blocked by a secret
+  whose rollback removal failed. The confirmation and the outcome name it as possibly left on the
+  host, and the developer removes it in the Secrets view or the host CLI. Switchboard does not track
+  it after the cancel. This keeps Cancel always available (secret storage may be failing, the list
+  may be unreadable, or the developer may have set that value on purpose) at the cost of a named,
+  not silent, leftover secret.
