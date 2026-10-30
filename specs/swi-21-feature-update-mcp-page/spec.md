@@ -114,7 +114,8 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    still complete on the host (FR-406, FR-412). The save can then be retried, from scratch, with the
    edited definition or with the **previous definition**: the removed secrets are named and entered
    again for the retried definition (their old values are gone, even for the previous definition),
-   and a secret whose removal failed is never kept blank by a retry. Discarding the form asks for a `y`-only confirmation that names the server
+   and a secret whose removal failed is never kept blank by a retry (nor left behind by a cancel,
+   which is refused while one is still on the host). Discarding the form asks for a `y`-only confirmation that names the server
    as not registered and says its attach-by-default mark and switchboard's record of it will be
    dropped (FR-406). If the failed add
    finishes on the host later, the server shows as *registered by another path*: its mark and
@@ -433,18 +434,26 @@ runtime adds it to recorded defaults).
   starts from scratch: the removed secrets are named as removed and must be entered again for
   whatever definition is retried (FR-409, FR-411), so a value typed for one endpoint or client is
   never kept for another, even if the earlier add finishes on the host later. A name whose removal
-  failed MUST NOT be kept blank by a retry: if the retry enters no value for it, the retry's save
-  removes it (under the same lock, before the add, and the add does not run if that removal fails). The pending replace is persisted beside the
+  failed MUST NOT be kept blank by a retry: its field shows *removal failed; will be removed unless
+  re-entered* (FR-409), and if the retry enters no value for it, removing it is the retry's **first**
+  step (under the same lock, right after the definition check, before any store or add). If that
+  removal fails, the retry stops with no change: nothing is stored, no add runs, and the pending
+  replace is left as it was. The pending replace is persisted beside the
   definitions (it holds no credential-header literals, FR-423), so it survives a daemon restart. It is
   exempt from the stale-mark drop, MUST NOT be applied at sandbox launch (FR-425), and ends only when:
   - a **retry** succeeds (mark and the retried definition become live);
   - the developer **cancels** it: discarding the form, or Cancel on its gateway row (FR-426), each
     behind a `y`-only confirmation that names the server as not registered and says its
     attach-by-default mark will be dropped. Cancel also drops switchboard's stored definition for
-    that name, so whatever is later listed under it is a server switchboard has no record of; or
+    that name, so whatever is later listed under it is a server switchboard has no record of. Cancel
+    MUST be refused while any name the pending replace holds as *removal failed* is still in the
+    host's global secret list, with a message naming those secrets and pointing to the Secrets view
+    (or Retry); discarding the form then leaves the pending replace and its row in place; or
   - the runtime lists a server of that name (a late finish of the failed add, or a registration
     through the host CLI): *registered by another path*. The held mark is dropped, not applied, no
-    FR-415 step runs, the sandboxes' skipped entries are cleared as on cancel (FR-425), and
+    FR-415 step runs, the sandboxes' skipped entries are cleared as on cancel (FR-425), the
+    gateway-changed event names any secrets the pending replace held as *removal failed* (so the
+    developer can check them in the Secrets view), and
     switchboard **drops its stored definition** for that name, so Edit treats it as a server
     switchboard has no record of (FR-402: only runtime-reported fields, the rest empty and named)
     and never pre-fills a URL or client the host may not hold. An add of that name from
@@ -455,7 +464,9 @@ runtime adds it to recorded defaults).
   is compared with the **previous** definition (the last one that was live), exactly as the failed
   save was. A failed retry is handled by this same rule and updates the existing pending replace (the
   held definition becomes the retried one, the secret names become the failed retry's own; the
-  previous definition stays the last live one). A Retry
+  previous definition stays the last live one). Because carried *removal failed* names are removed
+  first or the retry changes nothing, none is lost this way; names an earlier attempt *removed* and
+  the retry did not re-enter are not carried (see the review round 9 cut). A Retry
   save's definition check (FR-404) also compares the pending replace the form was opened on, so a
   pending replace updated by another client's retry refuses the save and reloads the form (FR-404).
   Retry and cancel are daemon operations available from every client, not only the form that ran the
@@ -478,7 +489,10 @@ runtime adds it to recorded defaults).
 - **FR-409**: Each secret field (placeholder secrets and the client secret) MUST show whether the secret
   is currently stored on the daemon's host **in the global scope** (from the host's secret list; never
   the value; a sandbox-scoped secret of the same name does not count). A blank field MUST mean *keep
-  the stored value*, except after a URL change: the runtime binds header secrets to the server's
+  the stored value*, except after a URL change, or for a name a pending replace holds as *removal
+  failed* (FR-406): such a field shows *removal failed; will be removed unless re-entered*, and saving
+  with it blank names it, together with FR-411's missing-secret prompt, as a secret this save will
+  remove. After a URL change the runtime binds header secrets to the server's
   endpoint, so when an edit changes the URL, every placeholder field MUST be marked *must be re-entered*,
   and saving with any of them blank MUST warn that the header will not be sent until that secret is set
   again. That a blank-kept secret is not sent to the new endpoint relies on the runtime's documented
@@ -656,7 +670,8 @@ runtime adds it to recorded defaults).
   names, from the pending replace, the secrets the failed save removed and those whose removal
   failed; when the previous definition is chosen it says the removed secrets' old values are gone and
   must be entered again; its save completes the pending replace, FR-406) and
-  **Cancel** (the same `y`-only confirmation as discarding the form). Because the pending replace is
+  **Cancel** (the same `y`-only confirmation as discarding the form, refused while a *removal failed*
+  secret is still on the host, FR-406). Because the pending replace is
   persisted and has no time limit, it is never dropped without the developer seeing this row, except
   when the runtime lists that name again (registered by another path, FR-406).
 
@@ -760,7 +775,9 @@ runtime adds it to recorded defaults).
 - Cut in review round 9 (follow-up, not specified here): after a failed or timed-out add, switchboard
   does not try to work out what the host holds. It does not re-check a failed add and count it as
   succeeded when the listed server matches the saved definition, does not carry secret names from
-  earlier attempts into a retry (only the latest failed attempt's names are held), and does not compare a retry with earlier attempts per field. All of these are
+  earlier attempts into a retry (only the latest failed attempt's names are held, so Retry stops
+  naming an earlier attempt's *removed* secrets that a failed retry did not re-enter; FR-409 still
+  shows them as missing), and does not compare a retry with earlier attempts per field. All of these are
   replaced by FR-406's single rule (host state unknown, every stored secret removed, retry from
   scratch). The pending replace keeps only secret names (removed, or removal failed), never values. The cost
   is that a failed add which in fact registered, or which finishes later, needs its mark set and its
@@ -770,5 +787,6 @@ runtime adds it to recorded defaults).
   whether a killed `mcp add` can still complete and whether inspect reports URL, client ID and
   authorization server (FR-422).
 - Known limitation (review round 10): for a **new server's** failed add no pending replace is held
-  (FR-406), so a secret whose rollback removal failed is reported only in the form that saved; the
-  developer removes or re-enters it by hand. A failed rollback removal is reported, never silent.
+  (FR-406), so a secret whose rollback removal failed is reported only in the save's outcome (its
+  response and gateway-changed event); a developer whose client was gone when the save ended does not
+  see it. The developer removes or re-enters it by hand.
