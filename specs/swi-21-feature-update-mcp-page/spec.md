@@ -115,9 +115,11 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    overwrote, so one endpoint's or client's credential is never used for the other; secrets the failed
    save did not touch keep their state, because the retry is compared with the previous definition as
    the save was. A remove or add that reports a failure is re-checked against the server list once its
-   process has exited: a server still listed after a failed add, or gone after a failed remove, counts
+   process has exited: a server still listed (and matching the saved definition) after a failed add, or gone after a failed remove, counts
    as that step having succeeded (FR-406). A timed-out add is handled like any other failed add; if
-   the host still finishes it later, the server simply shows up as registered by another path (FR-406).
+   the host still finishes it later, the server simply shows up as registered by another path (FR-406);
+   if that races a Retry, the retry counts as succeeded only when the listed server matches the retried
+   definition, otherwise the secrets the retry stored are removed (FR-406).
    **Given**
    the saving TUI quit or lost its link, **When** any client opens the gateway view, **Then** the server
    shows as *not registered (replace failed <age> ago)* with **Retry** and **Cancel** (FR-426).
@@ -394,8 +396,8 @@ runtime adds it to recorded defaults).
   secret is dropped and marked *must be re-entered*, and when it replaces the form's client ID,
   authorization server or URL, an entered client secret is dropped the same way, so a secret typed for
   one endpoint or client is never stored for another (as FR-406 and FR-415). An entered value whose
-  placeholder is not in the reloaded headers, or an entered client secret when the reloaded
-  definition has no client ID, is dropped too, so no secret is stored that nothing references; the
+  placeholder is not in the form's headers after the reload, or an entered client secret when the
+  form's definition after the reload has no client ID, is dropped too, so no secret is stored that nothing references; the
   refusal message names every dropped secret. A pending replace's **Retry** form (FR-406) reloads
   differently: it re-reads the **pending replace**, not the server, and keeps FR-406's comparisons
   (the previous definition, plus the held edited one for the overwritten names) taken from it. If the
@@ -420,18 +422,26 @@ runtime adds it to recorded defaults).
   the name shows on the next list like any server registered outside switchboard: it ends a pending
   replace as *registered by another path* (mark dropped, no FR-415 step), its fields are read from the
   runtime (FR-402), and secrets removed by the rollback show as missing in Edit (FR-409, FR-411). A
-  late add racing a Retry can make the retry's add fail with the name listed, which counts as
-  succeeded under the rule below; its note to check the server's settings in Edit covers that case.
-  This is accepted rather than handled, pending the FR-422 check of whether a killed add can complete.
+  late add racing a Retry can make the retry's add fail with the name listed; the rule below counts
+  that as succeeded only when the listed server matches the retried definition, so a secret typed for
+  one endpoint or client is never left live under another's registration.
   A timed-out remove that the host finishes later shows on the next list as an unregistered server,
   like any other host-side remove.
   After a failed
   **remove**, if the name is not listed the remove counts as succeeded and the save goes on (stores,
   then add, FR-410); only when it is still listed is the outcome *still registered*. After a failed
-  **add**, if the name is listed, the add counts as
-  succeeded (no rollback, no pending replace, the mark and the saved definition become live, FR-415
+  **add**, if the name is listed and its runtime-reported URL, client ID, authorization server and
+  header templates (each where positively reported, FR-402) match the definition being saved, the add
+  counts as succeeded (no rollback, no pending replace, the mark and the saved definition become live, FR-415
   applies) and the host's message is still shown verbatim with a note to check the server's settings
-  in Edit. Only when the name is not listed is the outcome *not registered*. In the
+  in Edit. When the name is listed but a reported field differs, or when the save is a retry whose
+  URL, client ID or authorization server differs from the held edited definition and the runtime
+  reports none of those three, the listed server is not counted as this save's: the outcome is
+  *registered by another path* (as below: mark dropped, no FR-415 step), every secret this save
+  stored (created and overwritten) MUST be removed (best effort, as FR-412), and the developer is
+  shown the host's message, told the host holds a different definition, and told by name which
+  secrets were removed (Edit then names them as missing, FR-409, FR-411). Only when the name is not
+  listed is the outcome *not registered*. In the
   *not registered* case, the daemon MUST hold a **pending replace** of that name: the server's
   attach-by-default mark, the definition being saved, the **previous** definition, and the **names**
   (never values) of the secrets the failed save overwrote. Secrets it created were already removed
@@ -445,6 +455,13 @@ runtime adds it to recorded defaults).
   - a server of that name is registered by another path (the host CLI). The held mark is then dropped,
     not applied, and the sandboxes' skipped entries are cleared as on cancel (FR-425). An add of that
     name from switchboard's own form is refused, pointing to Retry.
+  A failed retry that ends *not registered* again MUST update the existing pending replace, not start
+  a new one: the **previous** definition stays the last live one, the held edited definition becomes
+  the retried definition, and the overwritten list becomes the union of the old list and the names the
+  retry overwrote (every name already listed was re-entered for the retried definition whenever it
+  differed from the held one, so each listed value belongs to the newly held definition). A Retry
+  save's definition check (FR-404) also compares the pending replace the form was opened on, so a
+  pending replace updated by another client's retry refuses the save and reloads the form (FR-404).
   A **retry** is an ordinary save (FR-404) from the edit form, pre-filled with the definition being
   saved or, at the developer's choice, the **previous definition** (which is how the previous
   registration is restored; there is no separate restore operation). For FR-409 and FR-415 the retry is compared
