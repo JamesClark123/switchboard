@@ -116,14 +116,19 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    save did not touch keep their state, because the retry is compared with the previous definition as
    the save was. A remove or add that reports a failure is re-checked against the server list once its
    process has exited: a server still listed after a failed add, or gone after a failed remove, counts
-   as that step having succeeded (FR-406). **Given**
+   as that step having succeeded (FR-406). After an add that **timed out**, the secrets the save created
+   are kept and named with the overwritten ones, because the host may still finish the add (FR-406).
+   **Given**
    the saving TUI quit or lost its link, **When** any client opens the gateway view, **Then** the server
    shows as *not registered (replace failed <age> ago)* with **Retry** and **Cancel** (FR-426).
 6. **Given** a host-command server, **When** the developer edits its command, arguments or working
    directory, **Then** the local-execution warning (008 FR-076) is shown again before anything is
    registered (FR-407).
 7. **Given** another client changed the server after this form was opened, **When** the developer saves,
-   **Then** the save is refused with no change and the developer is told to reopen Edit (FR-404).
+   **Then** the save is refused with no change and the form reloads in place: fields the developer
+   edited keep their values (flagged where the host also changed them), the others take the host's
+   values, and an entered secret is dropped and must be re-entered when the reload replaces the URL
+   (header secrets) or the client ID, authorization server or URL (client secret) (FR-404).
 8. **Given** a server registered by hand with a setting the form cannot express (for example, a resource
    override), **When** the developer opens Edit, **Then** it is refused with the reason, or the developer
    must confirm that the replace drops that named setting (FR-402).
@@ -377,10 +382,17 @@ runtime adds it to recorded defaults).
   the raw reported value of every header, including one that counts as *not reported* (FR-423). The
   token also carries a random id of the key, so a daemon restart (new key) is told apart from a change:
   a save from a form opened before the restart is refused as *stale (daemon restarted)*, not
-  *changed*. On either refusal the form reloads in place: it re-reads the definition, keeps the
-  developer's edits and entered secret values, and only a field whose re-read value differs from the
-  one the form opened with takes the re-read value and is flagged *changed on the host*. A pending
-  replace's Retry form (FR-406) is handled the same way. Changes made directly on the host with the runtime's CLI bypass the
+  *changed*. On either refusal the form reloads in place: it re-reads the definition, and the re-read
+  definition becomes the form's baseline (for FR-402 flags, FR-409, FR-415 and the next fingerprint).
+  A field the developer did not edit takes the re-read value, flagged *changed on the host* where it
+  differs from the one the form opened with. A field the developer edited keeps the developer's value;
+  where the host also changed it, it is flagged *changed on the host: was <opened>, host now
+  <re-read>* (redacted where FR-423 applies), and the save needs no further confirmation. Entered
+  secret values are kept, except that when the reload replaces the form's URL, every entered header
+  secret is dropped and marked *must be re-entered*, and when it replaces the form's client ID,
+  authorization server or URL, an entered client secret is dropped the same way, so a secret typed for
+  one endpoint or client is never stored for another (as FR-406 and FR-415); the refusal message names
+  the dropped secrets. A pending replace's Retry form (FR-406) is handled the same way. Changes made directly on the host with the runtime's CLI bypass the
   lock and are caught only as far as this comparison can see them; that is accepted. Before anything is
   sent, the form MUST warn that the server's authorization will be discarded unless its state is known
   to be unauthorized, and MUST proceed only on confirmation.
@@ -392,7 +404,14 @@ runtime adds it to recorded defaults).
   before the registration) or *not registered* (the remove succeeded and the add failed). When the
   remove or the add reports a failure (including a timeout), the daemon MUST first make sure the CLI
   process has exited (on a timeout it kills the process and waits for it to exit), and only then read
-  the runtime's server list again under the per-name lock before choosing the outcome. After a failed
+  the runtime's server list again under the per-name lock before choosing the outcome. An exited CLI
+  does not prove that the host has dropped the request (FR-422), so after a **timed-out add**
+  the secrets this save created are not removed (FR-412): they are added to the pending replace's
+  list of overwritten names, and the developer is told the add may still complete on the host. If it
+  does, the server is registered with its secrets in place (the *another path* ending below); if not,
+  a retry treats those secrets like any other overwritten one. A timed-out remove that the host
+  finishes later shows on the next list as an unregistered server, like any other host-side remove.
+  After a failed
   **remove**, if the name is not listed the remove counts as succeeded and the save goes on (stores,
   then add, FR-410); only when it is still listed is the outcome *still registered*. After a failed
   **add**, if the name is listed, the add counts as
@@ -466,7 +485,8 @@ runtime adds it to recorded defaults).
   change the registration, nothing removed). Whether each secret was *created* or *overwritten* is
   decided from the host's secret list read by the save operation under the per-name lock, immediately
   before the stores. If a store **or the add** fails, the secrets this save created MUST be removed
-  again (best effort, with any failure reported), and the secrets it overwrote MUST be named as
+  again (best effort, with any failure reported; except after an add that timed out, whose created
+  secrets are kept and named as overwritten, FR-406), and the secrets it overwrote MUST be named as
   changed, because their old values cannot be restored. That a secret set outside this save (from the Secrets view or the host CLI, neither of which
   takes the per-name lock) in the window between the list and the stores could be rolled back is
   accepted.
@@ -529,7 +549,8 @@ runtime adds it to recorded defaults).
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
   `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
-  headers (FR-402), whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
+  headers (FR-402), whether a killed `mcp add` / `mcp rm` can still complete on the host (FR-406),
+  whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
   secret removal, the pending-replace state carried by the server list and the gateway-changed event
   (FR-426), the definition read for the edit form with its redacted-header flag and fingerprint
@@ -564,8 +585,10 @@ runtime adds it to recorded defaults).
   switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder is
   handled by one behaviour flag pinned in the host CLI contract (FR-422), *inspect returns templates*
   or *inspect returns resolved values*. With **templates** (the default until a real host confirms
-  otherwise), such a value can only be a hand edit: it is redacted, flagged and blocks re-registering
-  like any other literal. With **resolved values**, the header is taken to be that template resolved:
+  otherwise), such a value can only be a hand edit. For a credential header it is redacted, flagged
+  and blocks re-registering like any other literal; a non-credential header is an ordinary host-side
+  change, pre-filled with the reported value and flagged *changed on the host* (FR-402), with no
+  redaction and no block. With **resolved values**, the header is taken to be that template resolved:
   its value is never sent to a client and it counts as *not reported* (FR-402), so the form pre-fills
   the record's template with no flag, and the form MUST say that the host value cannot be checked
   against the template and that a re-registering save registers the template, so an overwrite is
@@ -657,7 +680,9 @@ runtime adds it to recorded defaults).
   succeeds without the developer running any host command (the identity binding is handled), and the
   previous client's secret is never sent for the new client. A retry after a failed replace never
   keeps a client secret or header secret that the failed save stored for a different client or
-  endpoint (created ones are removed, overwritten ones must be re-entered, FR-406, FR-412). For an
+  endpoint (created ones are removed, overwritten ones and those created by a timed-out add must be
+  re-entered, FR-406, FR-412). A form reloaded after a refused save never stores a secret typed for
+  the URL or client it replaced (FR-404). For an
   ordinary edit that changes the URL and keeps a header secret blank, keeping it from the new endpoint
   relies on the runtime's endpoint binding (FR-409), which is reconciled on a real host (FR-422).
 - **SC-005**: A server registered with default scopes requests those scopes on every plain
@@ -688,7 +713,8 @@ runtime adds it to recorded defaults).
   secret, FR-409); and whether the scope flags on add and
   authorize treat a `,` in a scope literally (FR-417); whether the authorization status and inspect
   positively report scopes and headers, so an empty answer can be read as "none" (until then it is
-  *not reported*, FR-402); and whether `mcp load` attaches a server to a sandbox launched with
+  *not reported*, FR-402); whether a killed `mcp add` / `mcp rm` can still complete on the host
+  (until then a timed-out add keeps the secrets it created, FR-406); and whether `mcp load` attaches a server to a sandbox launched with
   `--static-mcp` (FR-425). Storing secrets after a replace's remove
   (FR-410) means a header secret is never stored while the old endpoint is still registered, so which
   endpoint it binds to is no longer an open question.
