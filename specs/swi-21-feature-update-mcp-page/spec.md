@@ -112,7 +112,10 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    or with the **previous definition**, and discarding the form asks for a `y`-only confirmation that
    names the server as not registered and says its attach-by-default mark will be dropped (FR-406). A
    retry whose URL or client differs from the failed save's cannot leave blank a secret that save
-   overwrote, so one endpoint's or client's credential is never used for the other (FR-406). **Given**
+   overwrote, so one endpoint's or client's credential is never used for the other; secrets the failed
+   save did not touch keep their state, because the retry is compared with the previous definition as
+   the save was. An add that reports a failure but leaves the server listed counts as succeeded
+   (FR-406). **Given**
    the saving TUI quit or lost its link, **When** any client opens the gateway view, **Then** the server
    shows as *not registered (replace failed <age> ago)* with **Retry** and **Cancel** (FR-426).
 6. **Given** a host-command server, **When** the developer edits its command, arguments or working
@@ -147,9 +150,10 @@ definition. The attach-by-default mark and the server's sandbox records are unch
 11. **Given** a sandbox is launched while a replace of a marked server is running or pending, **When**
     the launch output reports the server, **Then** it is reported as *skipped: being replaced* (not as a
     stale mark), the mark is kept, and the skip is recorded on the sandbox. **When** the pending
-    replace ends with the server registered, **Then** the sandbox's entry says the server was not
-    attached at launch and can be attached from its MCP overlay, and the sandbox is in the FR-419 list.
-    **When** it ends with the server not registered (cancel), **Then** the entry is cleared (FR-425).
+    replace ends with a retry that registers the server, **Then** the sandbox's entry says the server
+    was not attached at launch and can be attached from its MCP overlay, and the sandbox is in the
+    FR-419 list. **When** it ends with a cancel or a registration by the host CLI, **Then** the entry
+    is cleared (FR-425).
 
 ---
 
@@ -364,9 +368,13 @@ runtime adds it to recorded defaults).
   mid-replace MUST NOT drop them), and emits one gateway-changed event when it finishes. The save MUST
   be refused, with no change, when the server no longer matches what the form was opened with
   (switchboard's stored definition and the runtime-reported fields, FR-402); the check runs under the
-  lock before any secret is stored. The fingerprint is opaque and computed by the daemon over the
-  **unredacted** runtime-reported fields; it is returned with the definition read and echoed back by
-  the form, so a host-side change to a redacted literal (FR-423) is still caught. Changes made directly on the host with the runtime's CLI bypass the
+  lock before any secret is stored. The fingerprint is computed by the daemon over the
+  **unredacted** runtime-reported fields as a keyed MAC (HMAC-SHA-256) under a random key the daemon
+  generates at start, keeps in memory only and never sends to a client, so a client cannot use it to
+  test guessed values of a redacted literal. It is returned with the definition read and echoed back
+  by the form, so a host-side change to a redacted literal (FR-423) is still caught. A daemon restart
+  changes the key, so a save from a form opened before it is refused as changed and the form is
+  opened again. Changes made directly on the host with the runtime's CLI bypass the
   lock and are caught only as far as this comparison can see them; that is accepted. Before anything is
   sent, the form MUST warn that the server's authorization will be discarded unless its state is known
   to be unauthorized, and MUST proceed only on confirmation.
@@ -375,7 +383,12 @@ runtime adds it to recorded defaults).
 - **FR-406**: If the replace fails, the host's message MUST be shown verbatim (008 FR-078), the form MUST
   stay open with the developer's edits, and the developer MUST be told the resulting state:
   *still registered, authorization may be lost* (the remove failed: the runtime deletes the OAuth token
-  before the registration) or *not registered* (the remove succeeded and the add failed). In the
+  before the registration) or *not registered* (the remove succeeded and the add failed). When the
+  add reports a failure (including a timeout), the daemon MUST read the runtime's server list again
+  under the per-name lock before choosing the outcome: if the name is listed, the add counts as
+  succeeded (no rollback, no pending replace, the mark and the saved definition become live, FR-415
+  applies) and the host's message is still shown verbatim with a note to check the server's settings
+  in Edit. Only when the name is not listed is the outcome *not registered*. In the
   *not registered* case, the daemon MUST hold a **pending replace** of that name: the server's
   attach-by-default mark, the definition being saved, the **previous** definition, and the **names**
   (never values) of the secrets the failed save overwrote. Secrets it created were already removed
@@ -387,16 +400,19 @@ runtime adds it to recorded defaults).
     behind a `y`-only confirmation that names the server as not registered and says its
     attach-by-default mark will be dropped; or
   - a server of that name is registered by another path (the host CLI). The held mark is then dropped,
-    not applied. An add of that name from switchboard's own form is refused, pointing to Retry.
+    not applied, and the sandboxes' skipped entries are cleared as on cancel (FR-425). An add of that
+    name from switchboard's own form is refused, pointing to Retry.
   A **retry** is an ordinary save (FR-404) from the edit form, pre-filled with the definition being
   saved or, at the developer's choice, the **previous definition** (which is how the previous
-  registration is restored; there is no separate restore operation). For the retry, the held
-  definition counts as the server's current definition for FR-409 and FR-415, and a secret named as
-  overwritten MUST NOT be left blank where FR-409 marks it *must be re-entered* (URL differs) or where
-  FR-415 applies (client ID, authorization server or URL of a pre-registered client differs): the
-  retry is refused until it is entered, so the other endpoint's or client's credential is never kept
-  for this one. If the developer does not have that value, the way out is Cancel. A retry clears the
-  identity binding only as FR-415 says. In either failure state, the developer MUST be told by name
+  registration is restored; there is no separate restore operation). For FR-409 and FR-415 the retry is compared
+  with the **previous** definition (the last one that was live), exactly as the failed save was, so
+  secrets the failed save never touched keep their state. A client secret named as overwritten counts
+  as stored by the retry (it was stored for the definition being saved). Only for the names in the
+  overwritten list is the retry also compared with the **held edited** definition: when the retried
+  definition's URL differs from it (a header secret), or its client ID, authorization server or URL
+  differs from it (the client secret), that secret MUST NOT be left blank, and the retry is refused
+  until it is entered, so the other endpoint's or client's credential is never kept for this one. If
+  the developer does not have that value, the way out is Cancel. In either failure state, the developer MUST be told by name
   which secrets this save overwrote. Retry and cancel are daemon operations available from every
   client, not only the form that ran the save (FR-426).
 - **FR-407**: An edit that results in a host-command definition MUST show the local-execution warning
@@ -502,7 +518,7 @@ runtime adds it to recorded defaults).
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
   `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
-  headers (FR-402), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
+  headers (FR-402), whether inspect returns header templates or resolved values (FR-423), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
   secret removal, the pending-replace state carried by the server list and the gateway-changed event
   (FR-426), the definition read for the edit form with its redacted-header flag and fingerprint
@@ -534,8 +550,11 @@ runtime adds it to recorded defaults).
   the definition read returns them**: a credential header whose value holds literal text (for example
   one added by hand on the host) is returned redacted (scheme token kept, the rest replaced by `••••`)
   and flagged *literal credential on host*; the literal value is never sent to a client. A header that
-  switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder may
-  be the resolved secret, and MUST be redacted the same way whatever its name. The form MUST refuse a
+  switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder is
+  taken to be that template resolved: its value is never sent to a client, and the header counts as
+  *not reported* (FR-402), so the form pre-fills the record's template with no *changed on the host*
+  or *literal credential on host* flag and it does not block a save; the fingerprint still catches a
+  host-side change to it between open and save. The form MUST refuse a
   save that would **re-register** the server while such a header is unconverted; the conversion needs
   the secret re-entered, since its value is not available. A save that does not change the
   registration (mark or secrets only, FR-403) is allowed, keeps the warning on the form, and stores the
@@ -564,9 +583,10 @@ runtime adds it to recorded defaults).
   not as a stale mark. The skip MUST be recorded on the sandbox itself (a skipped-server list beside
   its attached servers, persisted with the sandbox record), so it survives a daemon restart and every
   client sees it on the sandbox's row and in its MCP overlay. When the replace or pending replace
-  ends with a server of that name registered (by switchboard or another path), each entry changes to
-  *not attached at launch* and the overlay offers to attach it; attaching clears the entry. When it
-  ends with the server not registered (cancel), the daemon clears the entries. No notification is
+  ends with switchboard registering the server (a retry), each entry changes to *not attached at
+  launch* and the overlay offers to attach it; attaching clears the entry. When it ends any other way
+  (cancel, or a registration by the host CLI, which is not the server the developer chose and whose
+  mark is dropped), the daemon clears the entries. No notification is
   raised: the entries carry the per-sandbox detail, and on success the FR-419 list shown by the form
   that saved also includes those sandboxes with the same note. For a sandbox launched in
   **exclusive** mode (`--static-mcp`), the
@@ -598,8 +618,8 @@ runtime adds it to recorded defaults).
   (FR-425), has no time limit, and ends as FR-406 states.
 - **Skipped server on a sandbox** (new, persisted with the sandbox record): an attach-by-default
   server skipped at launch because a replace was running or pending (FR-425). It becomes *not
-  attached at launch* when the server is registered again, and is cleared when it is attached from
-  the overlay or the pending replace is cancelled.
+  attached at launch* when a retry registers the server, and is cleared when it is attached from
+  the overlay, the pending replace is cancelled, or the host CLI registers the name.
 - **Server secret** (existing host secret, not stored by switchboard): `mcp:<server>:<placeholder>` for
   header placeholders, `mcp:<server>:client_secret` for a confidential client, and the runtime-managed
   binding record `mcp:<server>:client_secret:identity`. Switchboard reads only whether each is set.
