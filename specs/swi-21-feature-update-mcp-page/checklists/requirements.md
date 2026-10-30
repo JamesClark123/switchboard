@@ -34,3 +34,4 @@
 - Host-runtime vocabulary (secret names such as `mcp:<server>:client_secret`, the replace semantics) is
   kept on purpose: it is the user-facing contract the developer types and sees, as in 008's spec.
 - Clarified 2026-10-30: the fixed OAuth callback port (ticket item 5) is deferred to a follow-up ticket, and an edit never touches live sandboxes (FR-419).
+- Review round 3 (pr-review run run-c275c8f2-938): scope cut rather than extended — Restore folded into Retry, *client secret mismatch* and *not a credential* removed, pending replace persisted with no time limit, no new notifications.

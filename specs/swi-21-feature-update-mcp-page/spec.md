@@ -107,15 +107,14 @@ definition. The attach-by-default mark and the server's sandbox records are unch
 5. **Given** a step of the replace fails on the host, **When** the error comes back, **Then** the
    runtime's message is shown verbatim, the form stays open with the developer's edits, and the
    developer is told whether the server is *still registered, authorization may be lost* or is now
-   **not registered**, and which secrets this save already stored (FR-406). In the *not registered*
-   case the form offers **Restore previous definition** beside retrying the save, and discarding the
-   form asks for a `y`-only confirmation that names the server as not registered and says its
-   attach-by-default mark will be dropped (FR-406). If that save overwrote header secrets and the
-   previous definition has a different URL, the restore asks for each of those secrets again by name,
-   or removes them behind a confirmation, so the other endpoint's credential is never sent to the old
-   one (FR-406). **Given** the saving TUI quit or lost its link, **When** any client opens the gateway
-   view, **Then** the server shows as *not registered (replace failed <age> ago)* with **Retry**,
-   **Restore previous definition** and **Cancel** (FR-426).
+   **not registered**, and which secrets this save overwrote (secrets it created are removed again,
+   FR-412) (FR-406). In the *not registered* case the save can be retried with the edited definition
+   or with the **previous definition**, and discarding the form asks for a `y`-only confirmation that
+   names the server as not registered and says its attach-by-default mark will be dropped (FR-406). A
+   retry whose URL or client differs from the failed save's cannot leave blank a secret that save
+   overwrote, so one endpoint's or client's credential is never used for the other (FR-406). **Given**
+   the saving TUI quit or lost its link, **When** any client opens the gateway view, **Then** the server
+   shows as *not registered (replace failed <age> ago)* with **Retry** and **Cancel** (FR-426).
 6. **Given** a host-command server, **When** the developer edits its command, arguments or working
    directory, **Then** the local-execution warning (008 FR-076) is shown again before anything is
    registered (FR-407).
@@ -135,21 +134,22 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    **Given** the host reports a credential header holding a literal value (for example,
    `Authorization: Bearer sk-live-…` added by hand), **When** Edit opens, **Then** the value arrives
    redacted (`Bearer ••••`) and flagged *literal credential on host*, never in clear on any client, and
-   the form refuses to save until the header is converted to a placeholder and its secret entered
-   (FR-423).
+   the form refuses a save that would re-register the server until the header is converted to a
+   placeholder and its secret entered. A save that only changes the mark or stores secrets is allowed
+   (FR-403, FR-423).
 10. **Given** an authorization of the server is in progress, **When** the developer saves an edit that
-    would replace it, or that would store `mcp:<server>:client_secret` or clear its binding record
-    (including a secrets-only save, or storing that secret from the Secrets view), **Then** the save
-    is refused with no change and a message saying to finish or cancel the authorization first. A
+    would replace it, or that would store or remove `mcp:<server>:client_secret` or clear its binding
+    record (including a secrets-only save, or the FR-413 removal offered after a save), **Then** it is
+    refused with no change and a message saying to finish or cancel the authorization first. A
     save that only stores header secrets is allowed. **Given** a save or replace of the server is running, or a pending
     replace holds its name, **When** the developer chooses **Authorize** or **Authorize with
     scopes…**, **Then** it is refused with a message saying the server is being replaced (FR-424).
 11. **Given** a sandbox is launched while a replace of a marked server is running or pending, **When**
     the launch output reports the server, **Then** it is reported as *skipped: being replaced* (not as a
-    stale mark), the mark is kept, and the skip is recorded on the sandbox. **When** the replace ends,
-    whatever the ending (success, restore, cancel, expiry or daemon restart), **Then** one
-    notification per affected sandbox is raised on every client, and on success or restore the sandbox
-    is also in the FR-419 list with a note to attach the server from its MCP overlay (FR-425).
+    stale mark), the mark is kept, and the skip is recorded on the sandbox. **When** the pending
+    replace ends with the server registered, **Then** the sandbox's entry says the server was not
+    attached at launch and can be attached from its MCP overlay, and the sandbox is in the FR-419 list.
+    **When** it ends with the server not registered (cancel), **Then** the entry is cleared (FR-425).
 
 ---
 
@@ -182,8 +182,9 @@ server is registered. No visit to the Secrets view is needed.
 4. **Given** a placeholder whose secret is missing and no value is entered, **When** the developer saves,
    **Then** the form names the missing secret and asks whether to register anyway (the header will not
    work until it is set) or go back (FR-411).
-5. **Given** a secret store fails part-way through a save, **When** the error comes back, **Then**
-   nothing is added, the error is shown, secrets this save **created** are removed again, and
+5. **Given** a secret store fails part-way through a save, or the add after the stores fails,
+   **When** the error comes back, **Then** nothing is added, the error is shown, secrets this save
+   **created** are removed again, and
    secrets it **overwrote** are reported by name as changed (FR-412).
 6. **Given** an edit removes a header whose placeholder secret is stored, **When** the save completes,
    **Then** the developer is told that the secret is no longer used and is offered its removal. It is
@@ -196,11 +197,12 @@ server is registered. No visit to the Secrets view is needed.
    developer leaves the header field, **Then** the form offers to turn the value into a `${placeholder}`
    with a masked secret field holding the typed value, and saving with the literal value is refused, so
    the credential never reaches switchboard's record. A value that mixes a placeholder with other
-   literal text (`Bearer sk-live-abc ${x}`, `session=abc; csrf=${t}`) is refused the same way (FR-423).
+   literal text (`Bearer sk-live-abc ${x}`, `session=abc; csrf=${t}`) is refused the same way, while
+   `ApiKey ${k}` and `Cookie: session=${session}` are accepted (FR-423).
 9. **Given** a non-secret header whose name matches the credential rule (for example
-   `X-Auth-Mode: oauth`), **When** the developer saves, **Then** the form asks a `y`-only
-   *not a credential* confirmation for that header; on `y` the value is kept as typed and the choice is
-   recorded in the definition (FR-423).
+   `X-Auth-Mode: oauth`), **When** the developer saves, **Then** it is refused like any literal
+   credential, and the same one-step conversion moves the value into a placeholder secret. There is no
+   override (FR-423).
 10. **Given** a URL with a credential-looking query parameter (`?api_key=…`) or host-command arguments
     with a credential-looking flag (`--token=…`), **When** the developer saves, **Then** the form warns
     that the value is stored in plain text in switchboard's record and shown to every client, and
@@ -295,17 +297,16 @@ runtime adds it to recorded defaults).
 - **Placeholder names**: a `${…}` placeholder that breaks the placeholder name rule (no `:`), or that
   is the reserved name `client_secret`, is refused before saving, with a message naming it (FR-408).
 - **Literal credentials in headers**: a credential header (matched on name segments) must take its
-  credential from placeholders, with at most a leading auth-scheme token. The form offers to convert a
-  typed literal value into a placeholder and secret, a header that only looks like a credential can be
-  confirmed *not a credential*, and a literal credential found on the host is redacted by the daemon
-  before any client sees it (FR-423).
+  credential from placeholders, with at most a leading auth-scheme token (and cookie names in
+  `Cookie`). The form offers to convert a typed literal value into a placeholder and secret, which is
+  also the way through for a header that only looks like a credential. A literal credential found on
+  the host is redacted by the daemon before any client sees it (FR-423).
 - **Credentials in URLs or host-command arguments**: stored in plain text in switchboard's record;
   the form warns and points to placeholders or environment-based secrets (FR-423).
 - **Client drops mid-save**: the TUI quits or its SSH link drops while a save is running. The daemon
   finishes the save, including rollback and the identity clear, and the outcome is visible to every
   client through the gateway-changed and secrets-changed events (FR-404). If it ends *not registered*,
-  the pending replace is a row on every client's gateway view with Retry, Restore and Cancel, and its
-  expiry or drop raises a notification (FR-426).
+  the pending replace is a row on every client's gateway view with Retry and Cancel (FR-426).
 - **Gateway or Secrets unavailable**: the host runtime is missing or below the baseline. Edit is
   unavailable with the reason (008 FR-079). If only secret storage is unavailable, the secret fields are
   shown disabled with the reason, and saving a form that needs a new secret is refused.
@@ -336,7 +337,8 @@ runtime adds it to recorded defaults).
   reported*, never "the host has none". Before flagging, both sides MUST be compared in normalised
   form: scopes sorted and de-duplicated, ignoring an `offline_access` the runtime added to recorded
   defaults; headers by case-insensitive name with the value trimmed around `:`. A difference only in
-  presentation is not a change. Fields the runtime does not report come from switchboard's
+  presentation is not a change. A runtime-added `offline_access` (one not in switchboard's record) MUST
+  also be left out of the pre-filled scopes, so a later save never records it as a default. Fields the runtime does not report come from switchboard's
   record. For a server switchboard has no record of, only the runtime's fields are available. Any field
   that cannot be recovered MUST be left empty and named in the form, so that saving does not silently
   drop it. Host-side changes to fields the runtime does not report cannot be seen; that is accepted. If
@@ -362,7 +364,9 @@ runtime adds it to recorded defaults).
   mid-replace MUST NOT drop them), and emits one gateway-changed event when it finishes. The save MUST
   be refused, with no change, when the server no longer matches what the form was opened with
   (switchboard's stored definition and the runtime-reported fields, FR-402); the check runs under the
-  lock before any secret is stored. Changes made directly on the host with the runtime's CLI bypass the
+  lock before any secret is stored. The fingerprint is opaque and computed by the daemon over the
+  **unredacted** runtime-reported fields; it is returned with the definition read and echoed back by
+  the form, so a host-side change to a redacted literal (FR-423) is still caught. Changes made directly on the host with the runtime's CLI bypass the
   lock and are caught only as far as this comparison can see them; that is accepted. Before anything is
   sent, the form MUST warn that the server's authorization will be discarded unless its state is known
   to be unauthorized, and MUST proceed only on confirmation.
@@ -372,40 +376,29 @@ runtime adds it to recorded defaults).
   stay open with the developer's edits, and the developer MUST be told the resulting state:
   *still registered, authorization may be lost* (the remove failed: the runtime deletes the OAuth token
   before the registration) or *not registered* (the remove succeeded and the add failed). In the
-  *not registered* case, the daemon MUST hold the server's attach-by-default mark and the definition
-  being saved as a **pending replace** of that name, and the form's save MUST then act as an add that
-  completes it. A pending replace is exempt from the stale-mark drop, MUST NOT be applied at sandbox
-  launch (FR-425), and ends when the add succeeds (mark and definition become live), when the developer discards
-  the form (the TUI tells the daemon through an explicit cancel), after 30 minutes, or when the daemon restarts (mark and definition dropped, as for any
-  removed server). A server registered under that name by any other path also ends it, and the held
-  mark is then dropped, not applied. The pending replace MUST also hold the **previous** definition,
-  and in the *not registered* state the form MUST offer **Restore previous definition**: one daemon
-  operation that re-adds the previous definition without authorizing, makes the held mark live, and
-  then offers authorization (FR-405). The restore guards secrets this save overwrote, because a
-  restore is itself a re-bind back to the previous definition:
-  - **Header secrets**: if this save overwrote any placeholder secret and the previous definition's
-    URL differs, the restore MUST show a masked field for each such secret, named
-    `mcp:<server>:<placeholder>`, and warn that the stored value belongs to the other endpoint. For each
-    one the developer either enters the previous value (stored as part of the restore, before the add)
-    or confirms its removal (`y`-only, per FR-413); the restore MUST NOT proceed while any of them would
-    keep the other endpoint's value, so that credential is never sent to the old endpoint.
-  - **Client secret**: if this save overwrote `mcp:<server>:client_secret` and the previous definition
-    differs from the saved one by any of FR-415's triggers (client ID, authorization server, or the URL
-    of a server with a pre-registered client), the restore MUST first ask for the previous client's
-    secret. If the developer restores without it, the definition is marked *client secret mismatch*
-    and switchboard refuses to authorize the server (FR-424) while it is set. The flag is shown next to
-    the client-secret field (like *re-bind pending*, FR-415) and in the gateway view row, with how to
-    clear it. Any store of `mcp:<server>:client_secret` through this daemon clears it: an MCP-form save
-    (including secrets-only) or a store from the Secrets view, both of which go through the daemon's
-    secret manager, which clears the flag after a successful store. A store made directly with the host
-    CLI is not seen; the flag's text says to store the secret through switchboard instead.
-  - **Identity binding**: the restore MUST NOT clear `mcp:<server>:client_secret:identity`. The
-    replace's add never succeeded, so FR-415 never cleared it, and it still binds the previous client.
-  Discarding the form in the *not registered* state MUST go through a `y`-only
-  confirmation that names the server as not registered and says its attach-by-default mark will be
-  dropped. In either failure state, the developer MUST be told by name which secrets this save already
-  stored or overwrote. Retry, restore and cancel of a pending replace are daemon operations available
-  from every client, not only the form that ran the save (FR-426).
+  *not registered* case, the daemon MUST hold a **pending replace** of that name: the server's
+  attach-by-default mark, the definition being saved, the **previous** definition, and the **names**
+  (never values) of the secrets the failed save overwrote. Secrets it created were already removed
+  again (FR-412). The pending replace is persisted beside the definitions (it holds no secret values
+  and no credential-header literals, FR-423), so it survives a daemon restart. It is exempt from the
+  stale-mark drop, MUST NOT be applied at sandbox launch (FR-425), and ends only when:
+  - a **retry** succeeds (mark and the retried definition become live);
+  - the developer **cancels** it: discarding the form, or Cancel on its gateway row (FR-426), each
+    behind a `y`-only confirmation that names the server as not registered and says its
+    attach-by-default mark will be dropped; or
+  - a server of that name is registered by another path (the host CLI). The held mark is then dropped,
+    not applied. An add of that name from switchboard's own form is refused, pointing to Retry.
+  A **retry** is an ordinary save (FR-404) from the edit form, pre-filled with the definition being
+  saved or, at the developer's choice, the **previous definition** (which is how the previous
+  registration is restored; there is no separate restore operation). For the retry, the held
+  definition counts as the server's current definition for FR-409 and FR-415, and a secret named as
+  overwritten MUST NOT be left blank where FR-409 marks it *must be re-entered* (URL differs) or where
+  FR-415 applies (client ID, authorization server or URL of a pre-registered client differs): the
+  retry is refused until it is entered, so the other endpoint's or client's credential is never kept
+  for this one. If the developer does not have that value, the way out is Cancel. A retry clears the
+  identity binding only as FR-415 says. In either failure state, the developer MUST be told by name
+  which secrets this save overwrote. Retry and cancel are daemon operations available from every
+  client, not only the form that ran the save (FR-426).
 - **FR-407**: An edit that results in a host-command definition MUST show the local-execution warning
   and require acceptance again (008 FR-076), even if the server was a host command before.
 
@@ -427,7 +420,9 @@ runtime adds it to recorded defaults).
   the stored value*, except after a URL change: the runtime binds header secrets to the server's
   endpoint, so when an edit changes the URL, every placeholder field MUST be marked *must be re-entered*,
   and saving with any of them blank MUST warn that the header will not be sent until that secret is set
-  again.
+  again. That a blank-kept secret is not sent to the new endpoint relies on the runtime's documented
+  endpoint binding (Assumptions, FR-422); switchboard itself enforces it only for a retry of a pending
+  replace (FR-406).
 - **FR-410**: On save, every secret with an entered value MUST be stored on that daemon's host by the
   daemon's save operation (FR-404), in the global scope and through the existing secret path (008
   FR-104: request → CLI standard input only), **after** the definition check. For a new server, or a
@@ -443,14 +438,15 @@ runtime adds it to recorded defaults).
 - **FR-412**: If storing secrets fails part-way, nothing MUST be added (and for a save that does not
   change the registration, nothing removed). Whether each secret was *created* or *overwritten* is
   decided from the host's secret list read by the save operation under the per-name lock, immediately
-  before the stores. The secrets this save created MUST be removed again (best effort, with any failure
-  reported), and the secrets it overwrote MUST be named as changed, because their old values cannot be
-  restored. That a secret set outside this save (from the Secrets view or the host CLI, neither of which
+  before the stores. If a store **or the add** fails, the secrets this save created MUST be removed
+  again (best effort, with any failure reported), and the secrets it overwrote MUST be named as
+  changed, because their old values cannot be restored. That a secret set outside this save (from the Secrets view or the host CLI, neither of which
   takes the per-name lock) in the window between the list and the stores could be rolled back is
   accepted.
 - **FR-413**: When an edit stops using a stored secret (a placeholder removed from the headers, or the
   client ID cleared), the TUI MUST name that secret after the save and offer to remove it behind a
-  confirmation. Switchboard MUST never remove a secret silently.
+  confirmation. Switchboard MUST never remove a secret silently. The removal it offers runs as a
+  daemon operation under the server's per-name lock (FR-404, FR-424).
 
 ### Pre-registered client secret
 
@@ -507,36 +503,44 @@ runtime adds it to recorded defaults).
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
   `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
   headers (FR-402), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
-  (FR-425). The new client-facing operations (the save, retry, restore previous definition and cancel
-  of a pending replace, the pending-replace state carried by the server list and the gateway-changed
-  event (FR-426), the definition read for the edit form with its redacted-header flag (FR-423), the
-  sandbox's skipped-server record (FR-425), scopes on add, one-time scopes on authorize) are additive
-  to the existing daemon contract; older clients keep working unchanged.
+  (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
+  secret removal, the pending-replace state carried by the server list and the gateway-changed event
+  (FR-426), the definition read for the edit form with its redacted-header flag and fingerprint
+  (FR-404, FR-423), the sandbox's skipped-server record (FR-425), scopes on add, one-time scopes on
+  authorize) are additive to the existing daemon contract; older clients keep working unchanged. This
+  feature adds **no** `NotificationKind`.
 - **FR-423**: A header is a **credential header** when its name is `Authorization`,
   `Proxy-Authorization` or `Cookie`, or when any of its name segments (the name split on `-` and `_`,
   case-insensitive) is `key`, `apikey`, `token`, `secret`, `password`, `auth` or `credential(s)`. Name
   segments, not substrings, are matched, so `Keycloak-Realm` is not a credential header while
   `X-Api-Key` is. A credential header's value MUST consist only of `${placeholder}`s, optionally led by
-  one auth-scheme token (`Bearer`, `Basic`, `Token`, `Bot` or `Digest`, case-insensitive) and joined
-  by literal separators (space, `:`, `;`, `=`, `,`); any other literal text is refused by the TUI and
-  the daemon (FR-420), with a message saying which part is literal and why. When such a value is
+  one auth-scheme token from a fixed list (`Bearer`, `Basic`, `Token`, `Bot`, `ApiKey`, `Key`, `SSWS`,
+  `DPoP`, `Splunk`, `GenieKey`; case-insensitive) and joined by literal separators (space, `:`, `;`,
+  `,`). In a `Cookie` header each placeholder MAY also be led by a cookie name and `=`
+  (`<cookie-name>=${…}`, the name an RFC 6265 token), since a cookie name is not a secret. Any other
+  literal text is refused by the TUI and the daemon (FR-420), with a message saying which part is
+  literal and why; for an unlisted scheme the message says the scheme then has to go inside the secret.
+  The list is not open-ended on purpose, so `sk-live-abc ${x}` stays refused. When such a value is
   typed, the form MUST offer to convert it in one step: the value is replaced by the scheme token (if
   any) and a `${placeholder}`, and the rest of the typed value moves into that placeholder's masked
   secret field. The derived placeholder name is the header name lower-cased with `_` mapped to `-`, MUST
   satisfy FR-408, MUST NOT be `client_secret`, and MUST NOT collide with a placeholder already used by
   another header; on collision or an invalid name the form appends `-2`, `-3`, … and the field stays
-  editable, so two credentials are never merged into one secret. For a header that matches the rule but
-  carries no secret (for example `X-Auth-Mode: oauth`), the developer MAY confirm *not a credential*
-  (`y`-only) for that header; the choice is recorded per header in the definition, shown on the form,
-  and the value is then kept as typed. Other headers keep their values as typed, and the form says that
-  those values are kept in switchboard's record and shown when the form opens. Runtime-reported headers
-  (FR-402) go through the same rule **in the daemon, before the definition read returns them**: a
-  credential header whose value holds literal text (for example one added by hand on the host) is
-  returned redacted (scheme token kept, the rest replaced by `••••`) and flagged *literal credential on
-  host*; the literal value is never sent to a client. The form MUST refuse to save while such a header
-  is unconverted; the conversion needs the secret re-entered, since its value is not available. The
-  stored definition and the definition read for the edit form therefore never hold a credential
-  header's literal value. **URL query parameters and host-command arguments** are not covered by this
+  editable, so two credentials are never merged into one secret. There is no *not a credential*
+  override: a header that matches the rule but carries no secret (for example `X-Auth-Mode: oauth`)
+  is converted the same way, and its value is then held as a host secret. Other headers keep their
+  values as typed, and the form says that those values are kept in switchboard's record and shown when
+  the form opens. Runtime-reported headers (FR-402) go through the same rule **in the daemon, before
+  the definition read returns them**: a credential header whose value holds literal text (for example
+  one added by hand on the host) is returned redacted (scheme token kept, the rest replaced by `••••`)
+  and flagged *literal credential on host*; the literal value is never sent to a client. A header that
+  switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder may
+  be the resolved secret, and MUST be redacted the same way whatever its name. The form MUST refuse a
+  save that would **re-register** the server while such a header is unconverted; the conversion needs
+  the secret re-entered, since its value is not available. A save that does not change the
+  registration (mark or secrets only, FR-403) is allowed, keeps the warning on the form, and stores the
+  header in switchboard's record only in redacted, flagged form. The stored definition and the
+  definition read for the edit form therefore never hold a credential header's literal value. **URL query parameters and host-command arguments** are not covered by this
   rule, because the runtime offers no `${…}` substitution for host-command arguments and a URL cannot
   hold a header. When the URL has a query parameter, or the arguments a flag, whose name segment is one
   of the credential words above or `sig`/`signature`, the form MUST warn before saving that the value
@@ -544,55 +548,58 @@ runtime adds it to recorded defaults).
   placeholder headers (remote) or environment-based secrets (host command). It does not refuse.
 - **FR-424**: While an authorization of a server name is in progress, the daemon MUST refuse, with no
   change and a message to finish or cancel it first (the existing `ErrAuthInProgress` pattern): a save
-  that would remove the server (a replace); any save, including a secrets-only save (FR-403), that
-  would store `mcp:<server>:client_secret` or clear `mcp:<server>:client_secret:identity` (FR-415); and
-  a store of `mcp:<server>:client_secret` from the Secrets view. A save that only stores header
-  secrets, without re-registering, is allowed: header secrets are read per request, not at the token
-  exchange. **Authorize** and **Authorize with scopes…** MUST be refused while a save of that name
-  holds the per-name lock, while a pending replace of that name exists (FR-406), or while its
-  definition is marked *client secret mismatch*, each with its reason. The in-flight authorization
-  record and the per-name lock MUST be checked and taken in one critical section, so neither side can
-  start between the other's check and its start.
+  that would remove the server (a replace); and any save, including a secrets-only save (FR-403), or
+  FR-413 removal that would store or remove `mcp:<server>:client_secret` or remove
+  `mcp:<server>:client_secret:identity` (FR-415). A save that only stores header secrets, without
+  re-registering, is allowed: header secrets are read per request, not at the token exchange.
+  **Authorize** and **Authorize with scopes…** MUST be refused while a save of that name holds the
+  per-name lock or while a pending replace of that name exists (FR-406), each with its reason. The
+  in-flight authorization record and the per-name lock MUST be checked and taken in one critical
+  section, so neither side can start between the other's check and its start. The Secrets view and
+  the host CLI do not take the per-name lock and are not covered, as for FR-412: a `client_secret`
+  changed there during an authorization can only make that authorization fail, and the developer
+  runs it again.
 - **FR-425**: A launch that resolves attach-by-default servers while a replace of a marked server is
   running or pending MUST skip that server, keep its mark, and report it as *skipped: being replaced*,
   not as a stale mark. The skip MUST be recorded on the sandbox itself (a skipped-server list beside
   its attached servers, persisted with the sandbox record), so it survives a daemon restart and every
-  client sees it on the sandbox's row and in its MCP overlay. Attaching the server from the overlay
-  clears its entry. When the replace ends, whatever the ending (success, restore, cancel, expiry, or
-  the daemon restarting with the pending replace gone), the daemon MUST raise one notification per
-  affected sandbox naming the server and the ending. On success or restore, the FR-419 list MUST also
-  include those sandboxes, with a note that the server was not attached at launch and can be attached
-  from the sandbox's MCP overlay. For a sandbox launched in **exclusive** mode (`--static-mcp`), the
+  client sees it on the sandbox's row and in its MCP overlay. When the replace or pending replace
+  ends with a server of that name registered (by switchboard or another path), each entry changes to
+  *not attached at launch* and the overlay offers to attach it; attaching clears the entry. When it
+  ends with the server not registered (cancel), the daemon clears the entries. No notification is
+  raised: the entries carry the per-sandbox detail, and on success the FR-419 list shown by the form
+  that saved also includes those sandboxes with the same note. For a sandbox launched in
+  **exclusive** mode (`--static-mcp`), the
   note MUST instead say that the server is missing from its fixed set and the sandbox must be
   relaunched to include it, unless the real-host run shows `mcp load` works in that mode (FR-422).
 - **FR-426**: A pending replace (FR-406) MUST be visible on every connected client, not only in the
   form that ran the save: the server list and the gateway-changed event carry it, and the gateway view
   shows it as a row `<server> — not registered (replace failed <age> ago)` with **Retry** (opens the
-  edit form pre-filled from the held definition, whose save completes the pending replace),
-  **Restore previous definition** and **Cancel** (the same `y`-only confirmation as discarding the
-  form). When a pending replace expires or is dropped for any other reason than a successful retry or
-  restore, the daemon MUST raise a notification naming the server and saying its attach-by-default
-  mark was dropped. After a daemon restart, which drops pending replaces, the daemon MUST raise that
-  notification at start-up for each one it had persisted a marker for.
+  edit form pre-filled from the held definition or, at the developer's choice, the previous one, and
+  names the secrets the failed save overwrote; its save completes the pending replace, FR-406) and
+  **Cancel** (the same `y`-only confirmation as discarding the form). Because the pending replace is
+  persisted and has no time limit, it is never dropped without the developer seeing this row, except
+  when the host CLI registers that name (FR-406).
 
 ### Key Entities
 
 - **MCP server definition** (new, switchboard-owned, per daemon): what switchboard last registered for a
   server name: kind, URL or command/args/dir, headers (credential headers only as `${placeholder}`
-  templates, never secret values, FR-423, plus the per-header *not a credential* confirmations), client
-  ID, authorization server, default scopes, and the *client re-bind pending* (FR-415) and *client
-  secret mismatch* (FR-406) flags. Kept beside the existing attach marks and removed when
+  templates, never secret values, or redacted and flagged *literal credential on host*, FR-423),
+  client ID, authorization server, default scopes, and the *client re-bind pending* flag (FR-415).
+  Kept beside the existing attach marks and removed when
   the server is removed. It is the source for the edit form. The host runtime stays the authority on what
   is registered: a definition whose name the runtime no longer lists is dropped, like a stale mark, except
   while a replace of that name is in progress or is a *pending replace* (FR-404, FR-406).
-- **Pending replace** (new, transient, per daemon and server name): the mark, the definition being
-  saved and the previous definition, held after a replace's add (or a store after its remove) failed,
-  so a retry can finish it or a restore can undo it, from any client (FR-426). It is never applied at
-  launch (FR-425) and ends as FR-406 states. Only a marker (server name and the sandboxes skipped for
-  it) is persisted, so the endings after a daemon restart can still be notified (FR-425, FR-426).
+- **Pending replace** (new, persisted, per daemon and server name): the mark, the definition being
+  saved, the previous definition and the names (never values) of the secrets the failed save
+  overwrote, held after a replace's add (or a store after its remove) failed, so a retry from any
+  client can finish it with either definition (FR-406, FR-426). It is never applied at launch
+  (FR-425), has no time limit, and ends as FR-406 states.
 - **Skipped server on a sandbox** (new, persisted with the sandbox record): an attach-by-default
-  server skipped at launch because a replace was running or pending (FR-425), cleared when it is
-  attached from the overlay.
+  server skipped at launch because a replace was running or pending (FR-425). It becomes *not
+  attached at launch* when the server is registered again, and is cleared when it is attached from
+  the overlay or the pending replace is cancelled.
 - **Server secret** (existing host secret, not stored by switchboard): `mcp:<server>:<placeholder>` for
   header placeholders, `mcp:<server>:client_secret` for a confidential client, and the runtime-managed
   binding record `mcp:<server>:client_secret:identity`. Switchboard reads only whether each is set.
@@ -612,10 +619,11 @@ runtime adds it to recorded defaults).
   developer types a secret name by hand.
 - **SC-004**: After a client ID change saved with the new client's secret, the next authorization
   succeeds without the developer running any host command (the identity binding is handled), and the
-  previous client's secret is never sent for the new client. A failed replace never lets switchboard
-  authorize the old client with the new client's secret (a restore without the previous secret is
-  marked *client secret mismatch* and refused authorization, FR-406), and never sends one endpoint's
-  header secret to another endpoint.
+  previous client's secret is never sent for the new client. A retry after a failed replace never
+  keeps a client secret or header secret that the failed save stored for a different client or
+  endpoint (created ones are removed, overwritten ones must be re-entered, FR-406, FR-412). For an
+  ordinary edit that changes the URL and keeps a header secret blank, keeping it from the new endpoint
+  relies on the runtime's endpoint binding (FR-409), which is reconciled on a real host (FR-422).
 - **SC-005**: A server registered with default scopes requests those scopes on every plain
   authorization, a one-time override requests exactly the scopes given, and an override never changes
   the recorded defaults.
@@ -640,7 +648,8 @@ runtime adds it to recorded defaults).
   not, FR-402's *named empty field* rule covers the gap.
 - Documentation-derived, to reconcile on a real host: the runtime's `${…}` placeholder grammar; whether the
   secret list shows the `:identity` and `:endpoint` records; and whether a header secret has to be set
-  again after an endpoint change, or only checked again; and whether the scope flags on add and
+  again after an endpoint change, or only checked again (SC-004 relies on the former for a blank-kept
+  secret, FR-409); and whether the scope flags on add and
   authorize treat a `,` in a scope literally (FR-417); whether the authorization status and inspect
   positively report scopes and headers, so an empty answer can be read as "none" (until then it is
   *not reported*, FR-402); and whether `mcp load` attaches a server to a sandbox launched with
@@ -660,3 +669,8 @@ runtime adds it to recorded defaults).
   `redirect_uri` itself. The existing callback relay and paste-back (008 FR-075) are unchanged.
 - Out of scope: editing the per-worker orchestrator servers, the runtime's `--resource` override,
   hosted-gateway or cloud-sandbox registrations, and moving secrets on rename.
+- Cut in review round 3 to keep the feature small: a separate *Restore previous definition*
+  operation (a retry pre-filled with the previous definition does the same through the ordinary
+  save), a *not a credential* header override (the value goes into a placeholder secret instead), a
+  time limit on pending replaces and notifications when a replace ends (the gateway row and the
+  sandbox entries carry that state), and per-name locking of the Secrets view (FR-424).
