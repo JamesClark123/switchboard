@@ -292,7 +292,7 @@ runtime adds it to recorded defaults).
   being saved as a **pending replace** of that name, and the form's save MUST then act as an add that
   completes it. A pending replace is exempt from the stale-mark drop, MUST NOT be applied at sandbox
   launch, and ends when the add succeeds (mark and definition become live), when the developer discards
-  the form, after 30 minutes, or when the daemon restarts (mark and definition dropped, as for any
+  the form (the TUI tells the daemon through an explicit cancel), after 30 minutes, or when the daemon restarts (mark and definition dropped, as for any
   removed server). A server registered under that name by any other path also ends it, and the held
   mark is then dropped, not applied. In either case, the developer MUST be told by name which secrets
   this save already stored or overwrote.
