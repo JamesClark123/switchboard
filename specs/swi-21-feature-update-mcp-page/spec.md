@@ -29,16 +29,24 @@ The facts below come from the host runtime's documentation (Docker Sandboxes *MC
   server has to be authorized again afterwards. A pre-registered client's secret and its identity binding
   stay in the host credential store across a remove.
 - The runtime's server list does **not** show a remote server's address, headers, client ID or scopes.
-  The runtime offers an **inspect** command for one server that shows its registration (header templates
-  and whether their secrets are set, never their values). Switchboard does not keep a copy of what it
+  The runtime offers an **inspect** command for one server, documented to show its header templates and
+  whether their secrets are set (never their values) and its resource identifier. The authorization status
+  reports the default scopes recorded at registration. Switchboard does not keep a copy of what it
   registered today.
+- `sbx mcp rm` deletes the OAuth access token **before** it removes the registration, so a failed remove
+  can leave the server registered without its token.
+- The runtime binds each header secret to the server's endpoint (a managed `:endpoint` record). After the
+  endpoint changes, the CLI asks for the secret to be set again.
 - Header placeholders `${name}` read the host secret `mcp:<server>:<name>`. A confidential client's secret
   is the host secret `mcp:<server>:client_secret`, and it must be stored **before** the server is
   registered, or the runtime silently skips authorization. When a server is re-registered with a
   **different client**, the runtime refuses the old secret until the developer stores the new client's
-  secret **and** clears the binding record `mcp:<server>:client_secret:identity`.
+  secret **and** clears the binding record `mcp:<server>:client_secret:identity`. The documented order is
+  to store the new secret first, then clear the binding.
 - Registration accepts a repeatable **scope** setting that records the default OAuth scopes requested at
-  authorization. Authorization accepts scopes that override the defaults for one run.
+  authorization. Authorization accepts scopes that override the defaults for one run, or *no scopes*. With
+  recorded defaults the runtime also requests `offline_access` when the server advertises it. One-time
+  scopes are requested exactly as given.
 - During authorization the runtime listens for the OAuth callback on a loopback port on the daemon's host
   and puts it in the link's `redirect_uri` (`http://localhost:<port>`). The documentation does not say how
   that port is chosen or whether it can be fixed. Providers that only accept safelisted callback URLs
@@ -53,7 +61,7 @@ The facts below come from the host runtime's documentation (Docker Sandboxes *MC
   The fixed callback port is out of scope here (see Assumptions).
 - Q: After an edit replaces a registration, what happens to sandboxes that already loaded the server?
   → A: **Tell, don't touch.** List this daemon's sandboxes that have the server attached and say they pick
-  up the new definition after a restart or a re-attach. Nothing is stopped or reloaded (FR-425).
+  up the new definition after a restart or a re-attach. Nothing is stopped or reloaded (FR-419).
 - Q: Edit flow: how does an edited registration reach the host, given the runtime has no edit verb?
   → A (informed default): a change to the registration is a **replace** (remove, then add with the new
   definition), as 008's FR-077 already requires, behind a warning when the server's authorization will be
@@ -93,16 +101,21 @@ definition. The attach-by-default mark and the server's sandbox records are unch
 3. **Given** the developer changes only the attach-by-default mark, **When** they save, **Then** the
    server is not re-registered and its authorization is untouched (FR-403).
 4. **Given** the developer changes the URL of an authorized OAuth server, **When** they save, **Then**
-   the form first warns that the server will need to be authorized again and proceeds only on
-   confirmation. After the replace, the developer is offered the authorize step at once (FR-404,
-   FR-405).
-5. **Given** the replace's add step fails on the host, **When** the error comes back, **Then** the
+   the form first warns that the server will need to be authorized again, marks its header secrets as
+   *must be re-entered*, and proceeds only on confirmation. After the replace, the developer is offered
+   the authorize step at once (FR-404, FR-405, FR-409).
+5. **Given** a step of the replace fails on the host, **When** the error comes back, **Then** the
    runtime's message is shown verbatim, the form stays open with the developer's edits, and the
-   developer is told whether the server is still registered as before or is now **not registered**
-   (FR-406).
+   developer is told whether the server is *still registered, authorization may be lost* or is now
+   **not registered**, and which secrets this save already stored (FR-406).
 6. **Given** a host-command server, **When** the developer edits its command, arguments or working
    directory, **Then** the local-execution warning (008 FR-076) is shown again before anything is
    registered (FR-407).
+7. **Given** another client changed the server after this form was opened, **When** the developer saves,
+   **Then** the save is refused with no change and the developer is told to reopen Edit (FR-404).
+8. **Given** a server registered by hand with a setting the form cannot express (for example, a resource
+   override), **When** the developer opens Edit, **Then** it is refused with the reason, or the developer
+   must confirm that the replace drops that named setting (FR-402).
 
 ---
 
@@ -167,12 +180,13 @@ provider's consent page.
 2. **Given** a client secret is entered, **When** the developer saves, **Then** it is stored as
    `mcp:<server>:client_secret` on that daemon's host before the server is registered (FR-410, FR-414).
 3. **Given** an edit changes the client ID, the authorization server, or the URL of a server with a
-   pre-registered client, **When** the save completes, **Then** switchboard clears the binding record
-   `mcp:<server>:client_secret:identity`, so the next authorization binds the new client, and the
-   developer is told this happened (FR-415).
+   pre-registered client and enters the new client's secret, **When** the save completes, **Then**
+   switchboard stores the secret, then clears the binding record `mcp:<server>:client_secret:identity`,
+   so the next authorization binds the new client, and the developer is told this happened (FR-415).
 4. **Given** the client ID is changed but no new client secret is entered while one is stored, **When**
-   the developer saves, **Then** the form warns that the stored secret belongs to the previous client
-   and asks for confirmation (FR-415).
+   the developer saves, **Then** the form warns that the runtime will refuse to authorize until the new
+   client's secret is entered, and the binding is left in place, so the old secret is never offered to
+   the new client (FR-415).
 5. **Given** the client ID is cleared on edit while a client secret is stored, **When** the save
    completes, **Then** the developer is offered removal of `mcp:<server>:client_secret` and its binding
    record (FR-413).
@@ -190,7 +204,8 @@ recorded defaults.
 as today.
 
 **Independent Test**: register a remote server with scopes `read` and `write`, authorize it, and confirm
-the authorization link requests exactly those scopes.
+the authorization link requests those scopes (plus `offline_access` if the server advertises it, as the
+runtime adds it to recorded defaults).
 
 **Acceptance Scenarios**:
 
@@ -213,18 +228,19 @@ the authorization link requests exactly those scopes.
 - **Edit of a server that disappeared**: the server was removed on the host (or by another client) while
   the form was open. Save reports that it no longer exists and offers to add it as new. Nothing is
   removed.
-- **Concurrent edit from two clients**: the second save is a replace of whatever is registered at that
-  moment. The gateway view of every client refreshes on the existing `mcp_gateway_changed` event.
+- **Concurrent edit from two clients**: replaces of one name are serialised on the daemon, and a save
+  whose form was opened on a definition that has since changed is refused (FR-404). The gateway view of
+  every client refreshes on the existing `mcp_gateway_changed` event.
 - **Kind change on edit** (remote ↔ host command): allowed as a replace. Every remote-only field (headers,
   client ID, authorization server, scopes, secrets) is cleared from the form, and the local-execution
   warning is shown.
 - **Sandboxes that already loaded the server**: the runtime keeps the old definition in sandboxes that
-  already loaded it. FR-425 covers what the developer is told; nothing is stopped, unloaded or reloaded.
+  already loaded it. FR-419 covers what the developer is told; nothing is stopped, unloaded or reloaded.
 - **Secret values**: never shown, logged, persisted by switchboard, echoed in errors, or placed in a
   process argument (008 FR-104 applies unchanged). They are single-line, and a multi-line value is
   refused.
-- **Placeholder names**: a `${…}` placeholder whose name would not make a valid secret name is refused
-  with the same message the daemon's header validation gives today.
+- **Placeholder names**: a `${…}` placeholder whose full secret name would break the secret name rule is
+  refused before saving, with a message naming it (FR-408).
 - **Gateway or Secrets unavailable**: the host runtime is missing or below the baseline. Edit is
   unavailable with the reason (008 FR-079). If only secret storage is unavailable, the secret fields are
   shown disabled with the reason, and saving a form that needs a new secret is refused.
@@ -240,23 +256,36 @@ the authorization link requests exactly those scopes.
   per-worker orchestrator servers) through a single documented keystroke. Edit opens the same form used
   to add, in an edit mode in which the server's **name is shown but not editable**.
 - **FR-402**: The edit form MUST be pre-filled with the server's current definition: kind, URL or
-  command/arguments/working directory, headers, client ID, authorization server, scopes, and the
+  command/arguments/working directory, headers, client ID, authorization server, default scopes, and the
   attach-by-default mark. Switchboard MUST remember the definition of every server it registers or
   replaces (per daemon, beside the existing attach marks) and use that first. For a server it has no
-  record of, it MUST pre-fill from what the host runtime reports for that server. Any field that cannot
-  be recovered MUST be left empty and named in the form, so that saving does not silently drop it.
+  record of, it MUST pre-fill from what the host runtime reports: header templates from the per-server
+  inspect, and default scopes from the authorization status, which reports them. Any field that cannot
+  be recovered MUST be left empty and named in the form, so that saving does not silently drop it. If
+  the runtime reports a setting or kind the form cannot express (for example, a resource override, an
+  SSRF-check override, or a registry/image-based local server), Edit MUST either refuse with the reason
+  or require the developer to confirm that the replace will drop each named setting.
 - **FR-403**: Saving an edit that changes only switchboard-side settings (the attach-by-default mark)
   MUST NOT re-register or re-authorize the server (008 FR-077).
-- **FR-404**: Saving an edit that changes the registration MUST be carried out as a replace: remove the
-  registration, then add the edited definition, always registering without authorizing. Before
-  anything is sent, the form MUST warn when the server is authorized and the replace will discard that
-  authorization, and MUST proceed only on confirmation.
-- **FR-405**: After a successful replace of an OAuth-capable remote server, the TUI MUST offer to start
-  authorization immediately, using the existing authorization flow (008 FR-075).
+- **FR-404**: Saving an edit that changes the registration MUST be carried out as a **replace**: remove
+  the registration, then add the edited definition, always registering without authorizing. The replace
+  MUST be a single daemon operation, not two client calls. It runs under a per-server-name lock that also
+  serialises add, remove and other replaces of that name. It keeps the attach-by-default mark and
+  switchboard's definition across the remove and add (a list taken mid-replace MUST NOT drop them). It
+  emits one gateway-changed event when it finishes. The replace MUST be refused, with no change, when
+  the server's stored definition no longer matches the one the form was opened with (another client
+  changed it in the meantime). Before anything is sent, the form MUST warn that the server's
+  authorization will be discarded unless its state is known to be unauthorized, and MUST proceed only on
+  confirmation.
+- **FR-405**: After a successful replace of a remote server, the TUI MUST offer to start authorization
+  immediately, using the existing authorization flow (008 FR-075).
 - **FR-406**: If the replace fails, the host's message MUST be shown verbatim (008 FR-078), the form MUST
-  stay open with the developer's edits, and the developer MUST be told the resulting state: *unchanged*
-  (the remove failed) or *not registered* (the remove succeeded and the add failed). In the
-  *not registered* case the form's save MUST then act as an add.
+  stay open with the developer's edits, and the developer MUST be told the resulting state:
+  *still registered, authorization may be lost* (the remove failed: the runtime deletes the OAuth token
+  before the registration) or *not registered* (the remove succeeded and the add failed). In the
+  *not registered* case, the daemon MUST still hold the mark and the definition being saved, and the
+  form's save MUST then act as an add. In either case, the developer MUST be told by name which secrets
+  this save already stored or overwrote.
 - **FR-407**: An edit that results in a host-command definition MUST show the local-execution warning
   and require acceptance again (008 FR-076), even if the server was a host command before.
 
@@ -264,19 +293,31 @@ the authorization link requests exactly those scopes.
 
 - **FR-408**: For a remote server, the form MUST list one masked value field for each distinct
   `${placeholder}` in its headers, each labelled with its full secret name
-  `mcp:<server>:<placeholder>`. The list MUST follow the header field as it is edited.
+  `mcp:<server>:<placeholder>`. The list MUST follow the header field as it is edited. A placeholder is
+  `${` + name + `}`. The full secret name MUST satisfy the host secret name rule switchboard already
+  applies (`^[A-Za-z0-9][A-Za-z0-9._:@/-]*$`, 008 FR-104), and a placeholder whose secret name would not
+  MUST be refused with a message naming it. The runtime's exact placeholder grammar is
+  documentation-derived (see Assumptions).
 - **FR-409**: Each secret field (placeholder secrets and the client secret) MUST show whether the secret
-  is currently stored on the daemon's host (from the host's secret list; never the value). A blank field
-  MUST mean *keep the stored value*.
+  is currently stored on the daemon's host **in the global scope** (from the host's secret list; never
+  the value; a sandbox-scoped secret of the same name does not count). A blank field MUST mean *keep
+  the stored value*, except after a URL change: the runtime binds header secrets to the server's
+  endpoint, so when an edit changes the URL, every placeholder field MUST be marked *must be re-entered*,
+  and saving with any of them blank MUST warn that the header will not be sent until that secret is set
+  again.
 - **FR-410**: On save, every secret with an entered value MUST be stored on that daemon's host, in the
   global scope and through the existing secret path (008 FR-104: request → CLI standard input only),
-  **before** the server is added. The add MUST NOT run unless every store succeeded.
+  **before** the server is added or replaced. The add or replace MUST NOT run unless every store
+  succeeded.
 - **FR-411**: When a placeholder's secret is missing and no value was entered, saving MUST name each
   missing secret and ask the developer to register anyway or go back. It MUST NOT block a deliberate
   register.
-- **FR-412**: If storing secrets fails part-way, nothing MUST be registered or removed. The secrets this
-  save **created** MUST be removed again (best effort, with any failure reported), and secrets it
-  **overwrote** MUST be named as changed, because their old values cannot be restored.
+- **FR-412**: If storing secrets fails part-way, nothing MUST be registered or removed. Whether each
+  secret was *created* or *overwritten* is decided from the host's secret list read immediately before
+  the stores. The secrets this save created MUST be removed again (best effort, with any failure
+  reported), and the secrets it overwrote MUST be named as changed, because their old values cannot be
+  restored. That a secret set by another client in the window between the list and the stores could be
+  rolled back is accepted.
 - **FR-413**: When an edit stops using a stored secret (a placeholder removed from the headers, or the
   client ID cleared), the TUI MUST name that secret after the save and offer to remove it behind a
   confirmation. Switchboard MUST never remove a secret silently.
@@ -286,43 +327,49 @@ the authorization link requests exactly those scopes.
 - **FR-414**: When a client ID is present, the form MUST show a masked **client secret** field that
   stores `mcp:<server>:client_secret`. The field MUST say it is needed only for a confidential client.
   The 008 FR-105 instruction to set the secret under Secrets first MUST be replaced by this field.
-- **FR-415**: When a save changes the client ID or the authorization server of a server that has a
-  stored client secret, or changes the URL of such a server, switchboard MUST remove the binding record
-  `mcp:<server>:client_secret:identity` after the replace succeeds and tell the developer. If no new
-  client secret was entered, the form MUST first warn that the stored secret belongs to the previous
-  client and require confirmation.
+- **FR-415**: When a save changes the client ID, the authorization server or the URL of a server with a
+  pre-registered client, switchboard MUST clear the binding record `mcp:<server>:client_secret:identity`
+  after the replace succeeds **only if** a new client secret was stored in the same save, and MUST tell
+  the developer. If no new client secret was entered, the binding MUST be left in place, and the form MUST
+  warn before saving that the runtime will refuse to authorize until the new client's secret is entered
+  (and the edit is saved again). A *not found* answer from clearing the binding counts as success. Any
+  other failure MUST be shown verbatim, without rolling back the registration.
 
 ### Scopes
 
 - **FR-416**: A remote server registration MUST accept an optional list of **default OAuth scopes**,
   recorded with the registration (one runtime scope setting per scope) and shown and editable on the
   edit form.
-- **FR-417**: Each scope MUST be a single token with no whitespace, no control or format characters,
-  valid UTF-8, no leading `-`, and at most 256 characters, and there MUST be at most 32 distinct scopes.
-  Duplicates MUST be refused. Scopes on a host-command server MUST be refused. The TUI and the daemon
-  MUST apply the same rule, so a daemon refusal never discards the form (the SWI-20 pattern).
+- **FR-417**: Each scope MUST be a valid OAuth scope token: printable ASCII with no space, `"` or `\`,
+  no leading `-`, and at most 256 characters. There MUST be at most 32 distinct scopes (these two limits
+  are switchboard's own bounds). Duplicates MUST be refused. Scopes on a host-command server MUST be
+  refused. The TUI and the daemon MUST apply the same rule, so a daemon refusal never discards the form
+  (the SWI-20 pattern).
 - **FR-418**: The gateway view MUST offer **Authorize with scopes…** for a registered remote server. It
   takes a one-time scope list (same rule as FR-417) or *no scopes*, both passed to that one
-  authorization only. The recorded defaults are unchanged. The plain authorize action keeps today's
-  behaviour, using the recorded defaults. The runtime's output about requested, advertised or refused
-  scopes MUST be shown verbatim.
+  authorization only. The recorded defaults are unchanged. The option MUST say that one-time scopes are
+  requested exactly as given, so no refresh-token scope is added. The plain authorize action keeps
+  today's behaviour, using the recorded defaults. The runtime's output about requested, advertised or
+  refused scopes MUST be shown verbatim.
 
 ### Cross-cutting
 
-- **FR-425**: After a successful replace, the TUI MUST list this daemon's sandboxes whose records show
+- **FR-419**: After a successful replace, the TUI MUST list this daemon's sandboxes whose records show
   the server attached, and say that each picks up the new definition only after a restart or a re-attach
   from the sandbox's MCP overlay. Switchboard MUST NOT stop, unload or reload any sandbox as part of an
   edit, and the sandboxes' attached-server records MUST be unchanged.
-
-- **FR-422**: Every validation rule the daemon applies to a definition (headers, client ID, authorization
-  server, scopes, placeholder-derived secret names) MUST also be applied by the TUI before any request
-  is sent, so the form stays open on an invalid value.
-- **FR-423**: Every completed save, edit, secret store or secret removal MUST refresh the gateway view
+- **FR-420**: Every validation rule the daemon applies to a definition (headers, placeholder-derived
+  secret names, client ID, authorization server, scopes) MUST also be applied by the TUI before any
+  request is sent, so the form stays open on an invalid value.
+- **FR-421**: Every completed save, edit, secret store or secret removal MUST refresh the gateway view
   and the Secrets view, and MUST reach other connected clients through the existing
   `mcp_gateway_changed` and `secrets_changed` events.
-- **FR-424**: Every new runtime command or flag this feature uses (scope on add and authorize, the
-  per-server inspect, removing the identity record) MUST be pinned by an argv-asserting test and listed
-  in the host CLI contract as *documentation-derived* until it is run on a real host.
+- **FR-422**: Every new runtime command or flag this feature uses (scope on add, scope and no-scope on
+  authorize, the per-server inspect, scopes read from the authorization status, removing the identity
+  record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
+  *documentation-derived* until it is run on a real host. The new client-facing operations (replace, the
+  definition read for the edit form, scopes on add, one-time scopes on authorize) are additive to the
+  existing daemon contract; older clients keep working unchanged.
 
 ### Key Entities
 
@@ -330,7 +377,9 @@ the authorization link requests exactly those scopes.
   server name: kind, URL or command/args/dir, headers (templates with `${placeholder}`, never values),
   client ID, authorization server, default scopes. Kept beside the existing attach marks and removed when
   the server is removed. It is the source for the edit form. The host runtime stays the authority on what
-  is registered: a definition whose name the runtime no longer lists is dropped, like a stale mark.
+  is registered: a definition whose name the runtime no longer lists is dropped, like a stale mark, except
+  while a replace of that name is in progress or after a replace left it *not registered* (FR-404,
+  FR-406).
 - **Server secret** (existing host secret, not stored by switchboard): `mcp:<server>:<placeholder>` for
   header placeholders, `mcp:<server>:client_secret` for a confidential client, and the runtime-managed
   binding record `mcp:<server>:client_secret:identity`. Switchboard reads only whether each is set.
@@ -348,11 +397,15 @@ the authorization link requests exactly those scopes.
 - **SC-003**: In 100% of saves, every secret the form stores lands under the exact name the runtime
   reads (`mcp:<server>:<placeholder>` / `mcp:<server>:client_secret`). There is no path where the
   developer types a secret name by hand.
-- **SC-004**: After a client ID change, the next authorization succeeds without the developer running
-  any host command (the identity binding is handled).
-- **SC-005**: A server registered with default scopes requests exactly those scopes on every
-  authorization, and a one-time override never changes the recorded defaults.
-- **SC-006**: No secret value ever appears in a log line, error message, process argument, the
+- **SC-004**: After a client ID change saved with the new client's secret, the next authorization
+  succeeds without the developer running any host command (the identity binding is handled), and the
+  previous client's secret is never sent for the new client.
+- **SC-005**: A server registered with default scopes requests those scopes on every plain
+  authorization, a one-time override requests exactly the scopes given, and an override never changes
+  the recorded defaults.
+- **SC-006**: An edit never leaves a server without its attach-by-default mark, and a failed replace
+  always tells the developer which of the two failure states the server is in.
+- **SC-007**: No secret value ever appears in a log line, error message, process argument, the
   switchboard registry, or the TUI's screen (masked entry only).
 
 ## Assumptions
@@ -360,10 +413,13 @@ the authorization link requests exactly those scopes.
 - The runtime's *remove then add* is the only way to change a registration, and removing deletes the
   OAuth access token (documented). The client secret and its identity binding survive a remove
   (documented).
-- The runtime's inspect command reports enough of a registration (URL, headers, client ID, scopes) to
-  pre-fill an edit for servers switchboard did not register. Its exact output is **documentation-derived
-  and must be reconciled on a real host**. If it does not report a field, FR-402's *named empty field*
-  rule covers the gap.
+- For servers switchboard did not register, the runtime's inspect output (header templates, resource) and
+  authorization status (default scopes) are the only documented sources. Whether inspect also reports the
+  URL, client ID or authorization server is **unknown and must be reconciled on a real host**. If it does
+  not, FR-402's *named empty field* rule covers the gap.
+- Documentation-derived, to reconcile on a real host: the runtime's `${…}` placeholder grammar; whether the
+  secret list shows the `:identity` and `:endpoint` records; and whether a header secret has to be set
+  again after an endpoint change, or only checked again.
 - Scope flags on add and authorize, the *no scopes* authorize option, and removing
   `mcp:<server>:client_secret:identity` through the existing secret removal are taken from the runtime's
   documentation (2026-10-30), not yet run on a real host.
