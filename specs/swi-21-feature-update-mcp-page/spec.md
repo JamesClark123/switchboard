@@ -114,8 +114,9 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    retry whose URL or client differs from the failed save's cannot leave blank a secret that save
    overwrote, so one endpoint's or client's credential is never used for the other; secrets the failed
    save did not touch keep their state, because the retry is compared with the previous definition as
-   the save was. An add that reports a failure but leaves the server listed counts as succeeded
-   (FR-406). **Given**
+   the save was. A remove or add that reports a failure is re-checked against the server list once its
+   process has exited: a server still listed after a failed add, or gone after a failed remove, counts
+   as that step having succeeded (FR-406). **Given**
    the saving TUI quit or lost its link, **When** any client opens the gateway view, **Then** the server
    shows as *not registered (replace failed <age> ago)* with **Retry** and **Cancel** (FR-426).
 6. **Given** a host-command server, **When** the developer edits its command, arguments or working
@@ -372,9 +373,14 @@ runtime adds it to recorded defaults).
   **unredacted** runtime-reported fields as a keyed MAC (HMAC-SHA-256) under a random key the daemon
   generates at start, keeps in memory only and never sends to a client, so a client cannot use it to
   test guessed values of a redacted literal. It is returned with the definition read and echoed back
-  by the form, so a host-side change to a redacted literal (FR-423) is still caught. A daemon restart
-  changes the key, so a save from a form opened before it is refused as changed and the form is
-  opened again. Changes made directly on the host with the runtime's CLI bypass the
+  by the form, so a host-side change to a redacted literal (FR-423) is still caught. The MAC covers
+  the raw reported value of every header, including one that counts as *not reported* (FR-423). The
+  token also carries a random id of the key, so a daemon restart (new key) is told apart from a change:
+  a save from a form opened before the restart is refused as *stale (daemon restarted)*, not
+  *changed*. On either refusal the form reloads in place: it re-reads the definition, keeps the
+  developer's edits and entered secret values, and only a field whose re-read value differs from the
+  one the form opened with takes the re-read value and is flagged *changed on the host*. A pending
+  replace's Retry form (FR-406) is handled the same way. Changes made directly on the host with the runtime's CLI bypass the
   lock and are caught only as far as this comparison can see them; that is accepted. Before anything is
   sent, the form MUST warn that the server's authorization will be discarded unless its state is known
   to be unauthorized, and MUST proceed only on confirmation.
@@ -384,8 +390,12 @@ runtime adds it to recorded defaults).
   stay open with the developer's edits, and the developer MUST be told the resulting state:
   *still registered, authorization may be lost* (the remove failed: the runtime deletes the OAuth token
   before the registration) or *not registered* (the remove succeeded and the add failed). When the
-  add reports a failure (including a timeout), the daemon MUST read the runtime's server list again
-  under the per-name lock before choosing the outcome: if the name is listed, the add counts as
+  remove or the add reports a failure (including a timeout), the daemon MUST first make sure the CLI
+  process has exited (on a timeout it kills the process and waits for it to exit), and only then read
+  the runtime's server list again under the per-name lock before choosing the outcome. After a failed
+  **remove**, if the name is not listed the remove counts as succeeded and the save goes on (stores,
+  then add, FR-410); only when it is still listed is the outcome *still registered*. After a failed
+  **add**, if the name is listed, the add counts as
   succeeded (no rollback, no pending replace, the mark and the saved definition become live, FR-415
   applies) and the host's message is still shown verbatim with a note to check the server's settings
   in Edit. Only when the name is not listed is the outcome *not registered*. In the
@@ -406,8 +416,9 @@ runtime adds it to recorded defaults).
   saved or, at the developer's choice, the **previous definition** (which is how the previous
   registration is restored; there is no separate restore operation). For FR-409 and FR-415 the retry is compared
   with the **previous** definition (the last one that was live), exactly as the failed save was, so
-  secrets the failed save never touched keep their state. A client secret named as overwritten counts
-  as stored by the retry (it was stored for the definition being saved). Only for the names in the
+  secrets the failed save never touched keep their state. Every secret named as overwritten (header
+  secrets and the client secret) counts as stored by the retry (it was stored for the definition being
+  saved), so it gets no FR-409 re-entry mark and FR-415 treats it as entered. Only for the names in the
   overwritten list is the retry also compared with the **held edited** definition: when the retried
   definition's URL differs from it (a header secret), or its client ID, authorization server or URL
   differs from it (the client secret), that secret MUST NOT be left blank, and the retry is refused
@@ -518,7 +529,7 @@ runtime adds it to recorded defaults).
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
   `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
-  headers (FR-402), whether inspect returns header templates or resolved values (FR-423), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
+  headers (FR-402), whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
   secret removal, the pending-replace state carried by the server list and the gateway-changed event
   (FR-426), the definition read for the edit form with its redacted-header flag and fingerprint
@@ -551,10 +562,15 @@ runtime adds it to recorded defaults).
   one added by hand on the host) is returned redacted (scheme token kept, the rest replaced by `••••`)
   and flagged *literal credential on host*; the literal value is never sent to a client. A header that
   switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder is
-  taken to be that template resolved: its value is never sent to a client, and the header counts as
-  *not reported* (FR-402), so the form pre-fills the record's template with no *changed on the host*
-  or *literal credential on host* flag and it does not block a save; the fingerprint still catches a
-  host-side change to it between open and save. The form MUST refuse a
+  handled by one behaviour flag pinned in the host CLI contract (FR-422), *inspect returns templates*
+  or *inspect returns resolved values*. With **templates** (the default until a real host confirms
+  otherwise), such a value can only be a hand edit: it is redacted, flagged and blocks re-registering
+  like any other literal. With **resolved values**, the header is taken to be that template resolved:
+  its value is never sent to a client and it counts as *not reported* (FR-402), so the form pre-fills
+  the record's template with no flag, and the form MUST say that the host value cannot be checked
+  against the template and that a re-registering save registers the template, so an overwrite is
+  never silent. The fingerprint still covers its raw value (FR-404); that a secret set elsewhere then
+  makes open forms reload as changed is accepted. The form MUST refuse a
   save that would **re-register** the server while such a header is unconverted; the conversion needs
   the secret re-entered, since its value is not available. A save that does not change the
   registration (mark or secrets only, FR-403) is allowed, keeps the warning on the form, and stores the
