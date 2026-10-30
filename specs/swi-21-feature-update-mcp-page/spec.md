@@ -260,21 +260,26 @@ runtime adds it to recorded defaults).
   attach-by-default mark. Switchboard MUST remember the definition of every server it registers or
   replaces (per daemon, beside the existing attach marks) and use that first. For a server it has no
   record of, it MUST pre-fill from what the host runtime reports: header templates from the per-server
-  inspect, and default scopes from the authorization status, which reports them. Any field that cannot
+  inspect, and default scopes from the authorization status, which is documented to report them (the
+  2026-10-10 real-host run saw only name and status there, so in practice this may come back empty). Any field that cannot
   be recovered MUST be left empty and named in the form, so that saving does not silently drop it. If
   the runtime reports a setting or kind the form cannot express (for example, a resource override, an
   SSRF-check override, or a registry/image-based local server), Edit MUST either refuse with the reason
   or require the developer to confirm that the replace will drop each named setting.
 - **FR-403**: Saving an edit that changes only switchboard-side settings (the attach-by-default mark)
-  MUST NOT re-register or re-authorize the server (008 FR-077).
+  and/or secret fields MUST NOT re-register or re-authorize the server (008 FR-077). It updates the mark
+  and stores the entered secrets (FR-410), and applies FR-415 when it applies.
 - **FR-404**: Saving an edit that changes the registration MUST be carried out as a **replace**: remove
   the registration, then add the edited definition, always registering without authorizing. The replace
   MUST be a single daemon operation, not two client calls. It runs under a per-server-name lock that also
   serialises add, remove and other replaces of that name. It keeps the attach-by-default mark and
   switchboard's definition across the remove and add (a list taken mid-replace MUST NOT drop them). It
   emits one gateway-changed event when it finishes. The replace MUST be refused, with no change, when
-  the server's stored definition no longer matches the one the form was opened with (another client
-  changed it in the meantime). Before anything is sent, the form MUST warn that the server's
+  the server's definition no longer matches the one the form was opened with: switchboard's stored
+  definition, or for a server without one, the runtime-reported fields the form was pre-filled from.
+  This check runs **before** any secret is stored, and again under the lock. Changes made directly on
+  the host with the runtime's CLI bypass the lock and are caught only as far as this comparison can see
+  them; that is accepted. Before anything is sent, the form MUST warn that the server's
   authorization will be discarded unless its state is known to be unauthorized, and MUST proceed only on
   confirmation.
 - **FR-405**: After a successful replace of a remote server, the TUI MUST offer to start authorization
@@ -283,8 +288,13 @@ runtime adds it to recorded defaults).
   stay open with the developer's edits, and the developer MUST be told the resulting state:
   *still registered, authorization may be lost* (the remove failed: the runtime deletes the OAuth token
   before the registration) or *not registered* (the remove succeeded and the add failed). In the
-  *not registered* case, the daemon MUST still hold the mark and the definition being saved, and the
-  form's save MUST then act as an add. In either case, the developer MUST be told by name which secrets
+  *not registered* case, the daemon MUST hold the server's attach-by-default mark and the definition
+  being saved as a **pending replace** of that name, and the form's save MUST then act as an add that
+  completes it. A pending replace is exempt from the stale-mark drop, MUST NOT be applied at sandbox
+  launch, and ends when the add succeeds (mark and definition become live), when the developer discards
+  the form, after 30 minutes, or when the daemon restarts (mark and definition dropped, as for any
+  removed server). A server registered under that name by any other path also ends it, and the held
+  mark is then dropped, not applied. In either case, the developer MUST be told by name which secrets
   this save already stored or overwrote.
 - **FR-407**: An edit that results in a host-command definition MUST show the local-execution warning
   and require acceptance again (008 FR-076), even if the server was a host command before.
@@ -307,7 +317,7 @@ runtime adds it to recorded defaults).
   again.
 - **FR-410**: On save, every secret with an entered value MUST be stored on that daemon's host, in the
   global scope and through the existing secret path (008 FR-104: request → CLI standard input only),
-  **before** the server is added or replaced. The add or replace MUST NOT run unless every store
+  **after** the FR-404 definition check and **before** the server is added or replaced. The add or replace MUST NOT run unless every store
   succeeded.
 - **FR-411**: When a placeholder's secret is missing and no value was entered, saving MUST name each
   missing secret and ask the developer to register anyway or go back. It MUST NOT block a deliberate
@@ -330,9 +340,12 @@ runtime adds it to recorded defaults).
 - **FR-415**: When a save changes the client ID, the authorization server or the URL of a server with a
   pre-registered client, switchboard MUST clear the binding record `mcp:<server>:client_secret:identity`
   after the replace succeeds **only if** a new client secret was stored in the same save, and MUST tell
-  the developer. If no new client secret was entered, the binding MUST be left in place, and the form MUST
-  warn before saving that the runtime will refuse to authorize until the new client's secret is entered
-  (and the edit is saved again). A *not found* answer from clearing the binding counts as success. Any
+  the developer. If no new client secret was entered, the binding MUST be left in place, the server's
+  definition MUST be marked **client re-bind pending**, and the form MUST warn before saving that the
+  runtime will refuse to authorize until the new client's secret is entered. A later save that stores a
+  client secret for a server marked *re-bind pending*, including a secrets-only save (FR-403), MUST then
+  clear the binding and the mark. The edit form MUST show the pending state next to the client-secret
+  field. A *not found* answer from clearing the binding counts as success. Any
   other failure MUST be shown verbatim, without rolling back the registration.
 
 ### Scopes
@@ -375,11 +388,13 @@ runtime adds it to recorded defaults).
 
 - **MCP server definition** (new, switchboard-owned, per daemon): what switchboard last registered for a
   server name: kind, URL or command/args/dir, headers (templates with `${placeholder}`, never values),
-  client ID, authorization server, default scopes. Kept beside the existing attach marks and removed when
+  client ID, authorization server, default scopes, and the *client re-bind pending* flag (FR-415). Kept beside the existing attach marks and removed when
   the server is removed. It is the source for the edit form. The host runtime stays the authority on what
   is registered: a definition whose name the runtime no longer lists is dropped, like a stale mark, except
-  while a replace of that name is in progress or after a replace left it *not registered* (FR-404,
-  FR-406).
+  while a replace of that name is in progress or is a *pending replace* (FR-404, FR-406).
+- **Pending replace** (new, transient, per daemon and server name): the mark and definition held after a
+  replace's add failed, so a retry can finish it. It is never applied at launch and ends as FR-406
+  states.
 - **Server secret** (existing host secret, not stored by switchboard): `mcp:<server>:<placeholder>` for
   header placeholders, `mcp:<server>:client_secret` for a confidential client, and the runtime-managed
   binding record `mcp:<server>:client_secret:identity`. Switchboard reads only whether each is set.
@@ -403,8 +418,9 @@ runtime adds it to recorded defaults).
 - **SC-005**: A server registered with default scopes requests those scopes on every plain
   authorization, a one-time override requests exactly the scopes given, and an override never changes
   the recorded defaults.
-- **SC-006**: An edit never leaves a server without its attach-by-default mark, and a failed replace
-  always tells the developer which of the two failure states the server is in.
+- **SC-006**: A successful edit never loses a server's attach-by-default mark, a failed replace always
+  tells the developer which of the two failure states the server is in, and a held mark is never
+  applied at launch or to a different registration.
 - **SC-007**: No secret value ever appears in a log line, error message, process argument, the
   switchboard registry, or the TUI's screen (masked entry only).
 
@@ -419,7 +435,9 @@ runtime adds it to recorded defaults).
   not, FR-402's *named empty field* rule covers the gap.
 - Documentation-derived, to reconcile on a real host: the runtime's `${…}` placeholder grammar; whether the
   secret list shows the `:identity` and `:endpoint` records; and whether a header secret has to be set
-  again after an endpoint change, or only checked again.
+  again after an endpoint change, or only checked again; and whether a header secret stored before a
+  replace that changes the URL is bound to the old endpoint or the new one (if the old one, the store
+  must move to after the replace for URL changes; the plan settles this on a real host).
 - Scope flags on add and authorize, the *no scopes* authorize option, and removing
   `mcp:<server>:client_secret:identity` through the existing secret removal are taken from the runtime's
   documentation (2026-10-30), not yet run on a real host.
