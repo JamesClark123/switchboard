@@ -16,12 +16,18 @@ daemon advertises the `mcp-edit` capability (research R15); otherwise the view i
 | `space`, `m` | registered server | Toggle the mark (unchanged), except on a `saving…` or `recovering interrupted save` row: shows that status and does not call `SetMcpServerDefault` | FR-425 |
 | `d`, `r` | unchanged | | |
 
-Rows: a registered server shows `rebind pending` in its status column when marked, `saving…` while another
-client's save of it runs (`save_in_progress`), and `recovering interrupted save` while a leftover in-progress
+Rows: a registered server shows `rebind pending` in its status column when marked, `saving…` while a save of it
+runs or its result is still being recorded (`save_in_progress`; this client's own save after `UNAVAILABLE`
+too), and `recovering interrupted save` while a leftover in-progress
 record from before a daemon restart waits for recovery (`recovering`; Edit, Remove, Authorize and the mark
-toggle are refused until it clears, so `e` shows the status instead of opening the form). `d`, `e`, `R` and `X` on a
-`saving…` row send their request as usual; the daemon refuses it at once (`BEING_REPLACED`) and the TUI shows the
-message on the status line. A pending replace shows
+toggle are refused until it clears, so `e` shows the status instead of opening the form). `e` and `R` on a
+`saving…` row are refused **locally**, like `m`/`space`: the TUI shows "a save of this server is still running;
+try again later" and does not open the form or call `GetMcpServerDefinition`, because that read takes no lock and
+would pre-fill the form from a definition that is changing. If the row was not yet `saving…` when `e`/`R` was
+pressed and the read reports `save_in_progress`, the TUI shows the same message instead of opening the form
+(research R11). Only `d` and `X` on a `saving…` row reach the daemon, which refuses them at once
+(`BEING_REPLACED`, same message); the TUI shows it on the status line. The message is neutral on purpose: the row
+may be the developer's own save after `UNAVAILABLE`, whose result can take until the settings store recovers. A pending replace shows
 `<server> — not registered (replace failed <age> ago)`. The orchestrator per-worker servers stay hidden.
 
 ## Form
@@ -68,8 +74,13 @@ A save refused `UNVERIFIED` shows the refusal's `message` as sent by the daemon 
 from the host; try again", or "recovering an interrupted save; try again" for a leftover), keeps the form as it
 was (no reload) and re-lists the servers, so a leftover's row shows `recovering interrupted save`.
 
-A save that fails `UNAVAILABLE` (the host was changed, but the daemon has not recorded the result yet and keeps
-retrying the write) closes the form, because saving again is pointless, and shows the message as a status line.
+A save refused `BEING_REPLACED` (the form was opened just before another client's save of the server started)
+keeps the form and every value as they were (no reload), shows the message on the status line and re-lists, so
+the row shows `saving…`. A later save from the same form is usually refused `STALE_CHANGED` once the other save
+lands, and then reloads in place by the FR-404 rules (edited fields keep the developer's values).
+
+A save that fails `UNAVAILABLE` (the save ran, but the daemon has not recorded the result yet and keeps
+retrying the write; the message says whether the host was changed) closes the form, because saving again is pointless, and shows the message as a status line.
 The row shows `saving…` until the daemon records the result and emits `mcp_gateway_changed`; the view then
 re-lists. The TUI does **not** open the outcome panel or its follow-up offers (FR-405 authorize, FR-413
 removal) for this save when the result lands later. This is a deliberate scope cut for a rare registry failure:

@@ -194,8 +194,8 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Fingerprint differs | `FAILED_PRECONDITION` | `McpSaveRefusal{STALE_CHANGED \| STALE_RESTARTED}` |
 | Fingerprint re-read failed (`ls`/`inspect`/`auth status`) | `FAILED_PRECONDITION` | `UNVERIFIED` (retryable; the form is not reloaded) |
 | Leftover in-progress record not yet recovered (research R2), on `SaveMcpServer`, Cancel, `RemoveMcpServer`, `RemoveMcpServerSecrets`, `AddMcpServer` or `SetMcpServerDefault` | `FAILED_PRECONDITION` | `UNVERIFIED` ("recovering an interrupted save; try again") |
-| `SetMcpServerDefault` while a live save holds an in-progress record | `FAILED_PRECONDITION` | `BEING_REPLACED` ("being saved on another client; try again") |
-| Runtime `persist` failed after 3 attempts (the host was changed; the daemon keeps retrying the same write) | `UNAVAILABLE` | message "the host was changed but the result could not be recorded yet; retrying" (no refusal detail) |
+| `SetMcpServerDefault`, `RemoveMcpServer`, `RemoveMcpServerSecrets`, Cancel, `SaveMcpServer` or `AddMcpServer` while a live save holds an in-progress record or retries its `persist` (`saving`/`recording`), including a caller already queued on the lock | `FAILED_PRECONDITION` | `BEING_REPLACED` ("a save of this server is still running; try again later") |
+| Runtime `persist` failed after 3 attempts (the daemon keeps retrying the same write) | `UNAVAILABLE` | registration change: "the host was changed but the result could not be recorded yet; retrying"; switchboard-only save: "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying" plus the stored secrets (no refusal detail) |
 | Empty `secret_values` entry, or one containing `••••` | `INVALID_ARGUMENT` | message names the secret, never the value |
 | Retry of an ended pending replace | `FAILED_PRECONDITION` | `PENDING_ENDED` |
 | Retry pre-step removal still listed | `FAILED_PRECONDITION` | `PENDING_REMOVAL_FAILED` |
@@ -217,13 +217,14 @@ Error messages never quote a credential header's value (research R1).
 ## Compatibility
 
 The one behaviour change to an existing RPC: `SetMcpServerDefault` on a name that another client is saving
-(`saving`) or that has a leftover in-progress record (`recovering`) is refused with `FAILED_PRECONDITION` and
+(`saving`, or `recording` for a switchboard-only save retrying its `persist`) or that has a leftover in-progress record (`recovering`) is refused with `FAILED_PRECONDITION` and
 changes nothing (research R2 *Leftover records*), until the save's result is recorded (normally within
 `saveTimeout`; longer only while a failed `persist` is retried, research R2 *Failed `persist`*). `AddMcpServer`
-and `RemoveMcpServer` of a `saving` name are likewise refused at once with `BEING_REPLACED` instead of waiting
-for the lock; a name is `saving` only while a new client's `SaveMcpServer` runs. An older TUI has
-no refusal handling, so its `m`/`space` toggle shows the status message on its usual error line: "being saved
-on another client; try again" or "recovering an interrupted save; try again". This is deliberate: a mark
+and `RemoveMcpServer` of a `saving`/`recording` name are likewise refused at once with `BEING_REPLACED` instead
+of waiting for the lock, also when they were already queued on it; a name is `saving`/`recording` only while a
+new client's `SaveMcpServer` runs. An older TUI has
+no refusal handling, so its `m`/`space` toggle shows the status message on its usual error line: "a save of
+this server is still running; try again later" or "recovering an interrupted save; try again". This is deliberate: a mark
 changed under an in-progress record would be overwritten by that save's `persist` or by recovery.
 
 Secret values: `SaveMcpServerRequest.secret_values` is excluded from every log line; the gRPC logging

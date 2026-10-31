@@ -86,7 +86,7 @@ and deleted by its `persist`. Separate from `pending_replaces`, so it never over
 (registration change, under the lock, before rm/add) ──► SAVING
 SAVING ──save persists──► (gone; the outcome is persisted in the same write)
 SAVING ──persist fails 3 times──► SAVING (the save returns UNAVAILABLE, keeps the lock and re-runs its own
-                                  per-name mutate func every 30 s; other lock takers are refused at once;
+                                  per-name mutate func every 30 s; other lock takers, queued or new, are refused at once;
                                   on success the record is gone and the post-persist tail runs, as above)
 SAVING ──daemon exits──► RECOVERING (NewManager loads every record as recovering and queues it; no host call;
                          the only way into RECOVERING)
@@ -97,6 +97,11 @@ RECOVERING ──recovery, name listed──► (gone) replace: mark + previous 
                                       rebind_pending set if definition vs previous is a client change
 RECOVERING ──list or registry write fails──► RECOVERING (the routine retries with backoff; never resolved by reconcile)
 ```
+
+A switchboard-only save (no registration change) writes no record. If its `persist` fails 3 times it returns
+`UNAVAILABLE`, sets the state map's record-less `recording` flag and keeps the lock with the same retry; it is
+refused and reported like `SAVING` (`save_in_progress`) but not skipped at launch, and its tail clears the flag.
+A daemon stop loses only its mark and `rebind_pending` (research R2 *Failed `persist`*).
 
 `SAVING` and `RECOVERING` are the state map's `saving` and `recovering` (research R12); the persisted record is
 the same in both.
@@ -148,7 +153,7 @@ NOT_RECOVERABLE | LITERAL_ON_HOST | RESOLVED_UNCHECKABLE, host_value (redacted)}
 also returned `for_add`), `pending_removal_failed_listed` + `pending_removal_failed_list_unknown` (for the Cancel
 confirmation),
 `auth_state`, `has_record` (switchboard has a definition), `pending_replace`, `fingerprint`,
-`secrets_available` (+ reason), `save_in_progress` (a live save holds an in-progress record), `recovering` (a
+`secrets_available` (+ reason), `save_in_progress` (a live save holds an in-progress record, or a switchboard-only save retries its `persist`), `recovering` (a
 leftover in-progress record waits for recovery); either is returned instead of `GONE` when the name is not listed.
 
 ## Secret names (existing host secrets)
