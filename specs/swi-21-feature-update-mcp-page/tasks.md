@@ -99,10 +99,12 @@ hold runs **after** the in-progress write lands, never inside its mutate func, s
 `saving` or closed channel (a taker queued in between is refused at the close). The `m.mu` hold whose state-map
 update clears `saving`/`recording` (the post-`persist` tail) swaps a closed channel for a fresh one and resets
 the flag (an unclosed one is kept, so waiters that queued under an earlier holder still select on the current
-channel); as a backstop for the early exits that skip the tail (the `persist` retry ending on daemon shutdown, a
-panic through the deferred unlock), unlock also swaps it if `refused` is still set, in its `m.mu` hold before
+channel); as a backstop for the one early exit that skips the tail (the `persist` retry ending on daemon
+shutdown), unlock also swaps it if `refused` is still set, in its `m.mu` hold before
 freeing the slot. The backstop never clears `saving`/`recording`: it only keeps "a closed channel has no live
-waiters" true (research R2 *Leftover records*). A waiting
+waiters" true (research R2 *Leftover records*). A save never recovers a panic (it crashes the daemon and the
+restart resolves the record as `recovering`); every `m.mu` hold inside the save releases through `defer` in a
+small closure helper, so a panic inside a hold cannot leave `m.mu` locked and deadlock the deferred unlock. A waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
@@ -111,8 +113,9 @@ zero (so `Authorize` is refused only for the lock held); holder A unlocks normal
 queued behind it, the `Save` takes the slot and becomes `saving`, and the `Remove` returns `BEING_REPLACED`
 without blocking; a `Remove` arriving after A's tail clears `saving` but before A unlocks (held in
 `onReplaceEnded`) waits for the slot, is not refused, and takes the lock once A unlocks; closing the channel a
-second time in one hold is a no-op (no double-close panic); an unlock with `refused` still set (an early exit
-that skipped the tail, so the name is still `saving`) leaves a fresh channel with `refused` false, a new taker is
+second time in one hold is a no-op (no double-close panic); an unlock with `refused` still set (the shutdown
+exit, driven by cancelling the daemon context during the `persist` retry so the tail is skipped and the name is
+still `saving`; no simulated panic) leaves a fresh channel with `refused` false, a new taker is
 still refused `BEING_REPLACED` by the state-map check while the flag stands, and a later close of the new channel
 does not panic. Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
@@ -262,9 +265,11 @@ unchanged.
   write lands: state-map update (with the `refuse` channel swap, T009), `onReplaceEnded` where the normal path calls it, outcome event, unlock and
   generation bump. It never hands the name to `recoverLoop`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
   refuse `UNVERIFIED` with no change (it can only be a leftover); `SetDefault` (`SetMcpServerDefault`) refuses
-  while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`), and re-checks
-  `saves_in_progress[name]` inside its own `UpdateMcpSettings` mutate func, refusing with no write when the record
-  is present (`UNVERIFIED` if the state map shows `recovering`, else `BEING_REPLACED`; research R2 *Leftover
+  while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`), checked before its
+  `listRows` (`sbx mcp ls`), and re-checks `saves_in_progress[name]` inside its own `UpdateMcpSettings` mutate
+  func, which returns a refusal sentinel (aborting the write) when the record is present (`UNVERIFIED` if the
+  state map shows `recovering`, else `BEING_REPLACED`); both refusals map to `FAILED_PRECONDITION` with the
+  `McpSaveRefusal` detail and return before `reconcile(rows)` and `emitChanged()` (research R2 *Leftover
   records*). `NewManager` makes **no**
   host call: it loads the state map with every record as `recovering`, queues them, and starts the one
   `recoverLoop` goroutine (start-up leftovers only; nothing is queued later). Each attempt runs one `sbx mcp ls`, then resolves each queued name under `lockName`
@@ -293,7 +298,10 @@ unchanged.
   queued `Remove` gets the slot once the save unlocks and is not refused `BEING_REPLACED`. A save paused after its
   in-progress write lands but before the `m.mu` hold that marks it `saving`, with a `SetMcpServerDefault` of the
   name sent then ⇒ the toggle is refused `BEING_REPLACED` with no write to `marks`, and after `persist` the mark
-  is the save's own (never a reported toggle silently reverted). `persist` fails once ⇒ the retry succeeds and the outcome is normal; a registration change whose `persist` fails 3 times ⇒
+  is the save's own (never reverted after a toggle that saw the record). A `SetMcpServerDefault` sent during a
+  save's step 1–4 pause (before the record) ⇒ the toggle returns OK and emits `mcp_gateway_changed`, and after
+  `persist` the mark is the form's (last save wins, research R2). A `SetMcpServerDefault` on a `recovering` name
+  with a failing `ls` stub ⇒ `UNVERIFIED` with no `ls` call; a refused toggle emits no `mcp_gateway_changed`. `persist` fails once ⇒ the retry succeeds and the outcome is normal; a registration change whose `persist` fails 3 times ⇒
   `UNAVAILABLE` with both events, the name reports `save_in_progress`, `SetMcpServerDefault` is refused
   `BEING_REPLACED`, a `RemoveMcpServer`, a second `Save` and an `AddMcpServer` of the name return
   `BEING_REPLACED` at once (they do not block), and once the registry accepts writes the save's own outcome is recorded with no restart:

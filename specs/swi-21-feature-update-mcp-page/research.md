@@ -153,11 +153,17 @@ so nothing is lost. For `recording`, it is the hold after the third failed `pers
 `m.mu` hold whose state-map update **clears** `saving`/`recording` (the post-`persist` tail's first step) also
 swaps a closed channel for a fresh one and resets the flag, so on the normal path the swap happens there, not at
 unlock. Every save path that sets `saving`/`recording` reaches that tail (a failed host step goes through rollback
-and `persist`), except two early exits: the `persist` retry returning because the daemon's context is done
-(shutdown), and a panic unwinding through the save's deferred unlock. Both leave the name `saving`/`recording` in
-the state map on purpose, because the host may already be mutated and the record still exists: lock takers stay
-refused by the state-map check above until the process exits, and a restart loads the record as `recovering`
-(a `recording` name has no record and simply starts clean). As a backstop for those exits, unlock also swaps the
+and `persist`), except one early exit: the `persist` retry returning because the daemon's context is done
+(shutdown). It leaves the name `saving`/`recording` in the state map on purpose, because the host may already be
+mutated and the record still exists: lock takers stay refused by the state-map check above until the process
+exits, and a restart loads the record as `recovering` (a `recording` name has no record and simply starts
+clean). A panic is not an exit the save handles: the daemon has no `recover()` and the save runs on its own
+goroutine, so a panic crashes the daemon and the restart resolves the record as `recovering`, like any other
+crash. So that a panic always reaches that crash instead of hanging, every `m.mu` hold inside the save (the
+state-map update with the `refuse` close/swap, `recheckInflight`, the tail's clear) releases through `defer` in a
+small closure helper, never an explicit `Unlock` on the path that can panic; otherwise a panic inside a hold would
+leave `m.mu` locked and the deferred unlock below would block on it forever, wedging every `m.mu` caller with no
+crash and no restart. As a backstop for the shutdown exit, unlock also swaps the
 channel if `refused` is still set, in its own `m.mu` hold before it frees the slot. It restores only the
 invariant "a closed channel has no live waiters", so a later close can neither double-close nor refuse a waiter
 it should not; it never clears `saving`/`recording`. On the normal path it finds `refused` false and keeps the
@@ -171,16 +177,27 @@ ctx.Done(), refuse }` and returns `ErrBeingReplaced` (dropping its waiter count)
 taker waits on a save that has written its record or entered the persist retry, whether it arrived before or
 after, and a queued `Save` (whose context is the detached `saveTimeout` one, not the client's) never sits on the
 lock for its full 10 minutes keeping `Authorize` refused. `SetMcpServerDefault` (the
-existing mark RPC) takes no lock. As a fast path it reads the state map: while the name is `saving`, `recording` or
+existing mark RPC) takes no lock. As a fast path it reads the state map, first, before today's `listRows` (one
+`sbx mcp ls`), so a toggle on a `saving`/`recovering` row costs no host call and a `recovering` row whose `ls` is
+failing still gets `UNVERIFIED`, not the `ls` error: while the name is `saving`, `recording` or
 `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED` as above / `UNVERIFIED`, message
 "recovering an interrupted save; try again") and changes nothing. That check alone would miss the gap between a
 save's in-progress write and the `m.mu` hold that marks the name `saving` (step 4a), so the mark write also
 re-checks `saves_in_progress[name]` **inside its own `UpdateMcpSettings` mutate func** (the in-transaction
-re-check of the *Late launch race*, R12). When the record is present it writes nothing and refuses: `UNVERIFIED`
-if the state map (`stateMu`, a leaf, read in that transaction) shows `recovering`, `BEING_REPLACED` otherwise.
-bbolt serializes write transactions, so a toggle either commits before the record exists (an ordinary earlier
-write; the save then persists its own mark, as it would for a switchboard-only save) or sees the record and is
-refused. It never holds `m.mu`. So `marks` never changes under an in-progress record (the state map, re-checked
+re-check of the *Late launch race*, R12). When the record is present the mutate func returns a refusal sentinel,
+which aborts the transaction (`UpdateMcpSettings` writes nothing on a mutate error): `UNVERIFIED` if the state map
+(`stateMu`, a leaf, read in that transaction) shows `recovering`, `BEING_REPLACED` otherwise. `SetDefault` maps
+that sentinel, like the fast-path refusal, to `FAILED_PRECONDITION` with the `McpSaveRefusal` detail (never a
+plain `mcpStatus(err)`, which would surface an unknown error as `Internal`), and returns before today's trailing
+`reconcile(rows)` and `emitChanged()`, so a refused toggle emits no `mcp_gateway_changed`.
+bbolt serializes write transactions, so a toggle either commits before the record exists or sees the record and
+is refused. A toggle that commits before the record, including one sent while a save of the name is in its steps
+1–4 (before the record; a switchboard-only save, which writes no record, is the same for its whole run), returns
+OK and emits `mcp_gateway_changed`, and is then **overwritten** by the save's `persist`, which writes the form's
+mark: the last *save* wins over a toggle that never saw the save. This is accepted and documented, not detected
+(the R5 fingerprint does not cover the mark); the developer sees the row's mark change back on the save's
+`mcp_gateway_changed`. What the record guarantees is narrower: a toggle that reaches the record is refused, never
+reverted. It never holds `m.mu`. So `marks` never changes under an in-progress record (the state map, re-checked
 against the record in the same transaction), and recovery always applies the record's own copy of the mark. Only the save that wrote a record, or the recovery routine for a leftover,
 deletes it. This refusal is a deliberate change to an existing RPC (proto delta *Compatibility*): an older TUI
 shows the status message on its usual error line. The new TUI does not send the toggle for such a row
