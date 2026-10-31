@@ -159,11 +159,11 @@ mutated and the record still exists: lock takers stay refused by the state-map c
 exits, and a restart loads the record as `recovering` (a `recording` name has no record and simply starts
 clean). A panic is not an exit the save handles: the daemon has no `recover()` and the save runs on its own
 goroutine, so a panic crashes the daemon and the restart resolves the record as `recovering`, like any other
-crash. So that a panic always reaches that crash instead of hanging, every `m.mu` hold inside the save (the
-state-map update with the `refuse` close/swap, `recheckInflight`, the tail's clear) releases through `defer` in a
-small closure helper, never an explicit `Unlock` on the path that can panic; otherwise a panic inside a hold would
-leave `m.mu` locked and the deferred unlock below would block on it forever, wedging every `m.mu` caller with no
-crash and no restart. As a backstop for the shutdown exit, unlock also swaps the
+crash. So that a panic always reaches that crash instead of hanging, the save's deferred unlock starts with
+`if r := recover(); r != nil { panic(r) }`: a panicking save skips the unlock body entirely (it takes neither
+`m.mu` nor `stateMu`) and the crash goes ahead. Otherwise a panic while the save holds `m.mu` or `stateMu` (for
+example inside a bbolt mutate func, which takes `stateMu` alone) would leave that lock held and the unlock body
+would block on it forever, wedging every `m.mu` caller with no crash and no restart. As a backstop for the shutdown exit, unlock also swaps the
 channel if `refused` is still set, in its own `m.mu` hold before it frees the slot. It restores only the
 invariant "a closed channel has no live waiters", so a later close can neither double-close nor refuse a waiter
 it should not; it never clears `saving`/`recording`. On the normal path it finds `refused` false and keeps the
@@ -192,7 +192,7 @@ plain `mcpStatus(err)`, which would surface an unknown error as `Internal`), and
 `reconcile(rows)` and `emitChanged()`, so a refused toggle emits no `mcp_gateway_changed`.
 bbolt serializes write transactions, so a toggle either commits before the record exists or sees the record and
 is refused. A toggle that commits before the record, including one sent while a save of the name is in its steps
-1–4 (before the record; a switchboard-only save, which writes no record, is the same for its whole run), returns
+1–4 (before the record; a switchboard-only save, which writes no record, is the same until it is marked `recording` (*Failed `persist`*)), returns
 OK and emits `mcp_gateway_changed`, and is then **overwritten** by the save's `persist`, which writes the form's
 mark: the last *save* wins over a toggle that never saw the save. This is accepted and documented, not detected
 (the R5 fingerprint does not cover the mark); the developer sees the row's mark change back on the save's

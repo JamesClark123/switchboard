@@ -103,8 +103,9 @@ channel); as a backstop for the one early exit that skips the tail (the `persist
 shutdown), unlock also swaps it if `refused` is still set, in its `m.mu` hold before
 freeing the slot. The backstop never clears `saving`/`recording`: it only keeps "a closed channel has no live
 waiters" true (research R2 *Leftover records*). A save never recovers a panic (it crashes the daemon and the
-restart resolves the record as `recovering`); every `m.mu` hold inside the save releases through `defer` in a
-small closure helper, so a panic inside a hold cannot leave `m.mu` locked and deadlock the deferred unlock. A waiting
+restart resolves the record as `recovering`); the save's deferred unlock starts with
+`if r := recover(); r != nil { panic(r) }`, so a panicking save skips the unlock body (taking neither `m.mu` nor
+`stateMu`) and a panic while either lock is held cannot deadlock the unlock instead of crashing. A waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
@@ -265,7 +266,7 @@ unchanged.
   write lands: state-map update (with the `refuse` channel swap, T009), `onReplaceEnded` where the normal path calls it, outcome event, unlock and
   generation bump. It never hands the name to `recoverLoop`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
   refuse `UNVERIFIED` with no change (it can only be a leftover); `SetDefault` (`SetMcpServerDefault`) refuses
-  while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`), checked before its
+  while the state map shows `saving` or `recording` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`), checked before its
   `listRows` (`sbx mcp ls`), and re-checks `saves_in_progress[name]` inside its own `UpdateMcpSettings` mutate
   func, which returns a refusal sentinel (aborting the write) when the record is present (`UNVERIFIED` if the
   state map shows `recovering`, else `BEING_REPLACED`); both refusals map to `FAILED_PRECONDITION` with the
