@@ -93,7 +93,7 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings
-  record) shows a pending replace or in-progress record (`pending`/`saving`), checked in the same `m.mu` hold that records
+  record) shows a pending replace or in-progress record (`pending`/`saving`/`recovering`), checked in the same `m.mu` hold that records
   `inflight`. No registry read happens under `m.mu`. The lock records `replacing` (set under `m.mu` once `classify` decides the
   save re-registers), and each name has a `generation` bumped under `m.mu` on every release (research R3). Race tests with `-race`: authorize vs. save in both orders; a
   header-only save is allowed during an authorization. An authorization is in flight, then a URL-only edit is
@@ -107,8 +107,8 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   returns. It keeps a definition (and mark) whose name has a pending replace, and otherwise drops it
   like a stale mark. `List` returns `settings` with
   `definitions`/`pending_replaces` cleared and fills `ListMcpServersResponse.pending_replaces`. `decorate`
-  sets `McpServer.rebind_pending` from the definition and `McpServer.save_in_progress` when the name has an
-  in-progress record (research R2); the mark is reported from `marks` as usual. `reconcile` also keeps the
+  sets `McpServer.rebind_pending` from the definition, and `McpServer.save_in_progress` (state map `saving`) or
+  `McpServer.recovering` (state map `recovering`) when the name has an in-progress record (research R2); the mark is reported from `marks` as usual. `reconcile` also keeps the
   definition and mark of a name with an in-progress record, and never resolves one. Tests: a list taken while a name is locked keeps its
   mark and definition; a list taken **before** a lock that is released by the time it applies (stale snapshot)
   changes nothing for that name; stale definitions drop.
@@ -176,7 +176,8 @@ unchanged.
   named for fields with no source; `unsupported_settings` lists resource, SSRF override and image kinds. Set
   `has_record`, `attach_by_default`, `auth_state` and `pending_replace` (with
   `pending_removal_failed_listed` / `_unknown` from `ListGlobal`). It takes **no** lock (research R11). When the name is not listed but the state map shows a save running, it
-  returns `save_in_progress` (not `GONE`); the TUI says the server is being saved elsewhere. With
+  returns `save_in_progress` (`saving`) or `recovering` (`recovering`) instead of `GONE`; a listed name gets the
+  same flag. The TUI says the server is being saved elsewhere, or that an interrupted save is being recovered. With
   `for_add` it returns only `stored_secrets` + `secrets_available`/reason for any name, registered or not. In
   edit mode it fills `stored_secrets` too. Tests cover each FR-402 rule and US1 #2, #8, #9.
 - [ ] T019 [US1] `M/definition.go` redaction (FR-423, US1 #9): every reported credential header runs through
@@ -221,25 +222,35 @@ unchanged.
   the save's mark as a copy, `planned_created_secrets` and `planned_overwritten_secrets` from the snapshot) in
   one `UpdateMcpSettings` call before `removeStep` of any registration change. It changes nothing else: the
   mark stays in `marks` (or in the Retry's pending replace) and the pending replace is untouched. `persist`
-  deletes it in the same write as the outcome. `Save`, Cancel, `Remove` and FR-413 removals that find a record
-  under the lock refuse `UNVERIFIED` with no change (it can only be a leftover). `recoverInProgress` in
-  `NewManager` runs before the first `reconcile` and the state-map load, under `lockName` per name, against one
-  `sbx mcp ls`: not listed ⇒ replace: new pending replace (mark moved out of `marks`, error `daemon stopped
-  during the save`, planned-created names as `removal_failed_secrets`, overwritten names in the error); Retry:
-  its pending replace kept and updated as a failed Retry (`previous`, `removed_secrets` and the carried
-  `removal_failed_secrets` kept, planned-created names added); new server: record dropped, planned-created
-  names removed best effort. Listed ⇒ record dropped; replace keeps mark and `previous`; new server/Retry get
-  `definition` + mark (Retry's pending dropped, `onReplaceEnded(name, true)`); `rebind_pending` set when
-  `definition` vs `previous` is `mcprules.ClientChanged` (FR-415). List fails ⇒ records kept and the start-up
-  goroutine retries the list with backoff (5 s doubling to 5 min); `reconcile` never resolves them. Tests: the
-  manager is stopped between `rm` and `add`, a new manager starts on the same registry, and expect a pending
+  deletes it in the same write as the outcome; a failed `persist` write is retried up to 3 times (1 s apart, own
+  contexts), and if it still fails the save marks the name `recovering`, queues it for recovery and returns
+  `UNAVAILABLE`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
+  refuse `UNVERIFIED` with no change (it can only be a leftover); `SetDefault` (`SetMcpServerDefault`) refuses
+  while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`). `NewManager` makes **no**
+  host call: it loads the state map with every record as `recovering`, queues them, and starts the one
+  `recoverLoop` goroutine. Each attempt runs one `sbx mcp ls`, then resolves each queued name under `lockName`
+  (record re-read under the lock; gone ⇒ skipped): not listed ⇒ replace: new pending replace (mark moved out of
+  `marks`, error `daemon stopped during the save`, planned-created names as `removal_failed_secrets`, overwritten
+  names in the error); Retry: its pending replace kept and updated as a failed Retry (`previous`,
+  `removed_secrets` and the carried `removal_failed_secrets` kept, planned-created names added); new server:
+  record dropped, planned-created names removed best effort. Listed ⇒ record dropped; replace keeps mark and
+  `previous`; new server/Retry get `definition` + mark (Retry's pending dropped); replace and Retry call
+  `onReplaceEnded(name, true)` after the registry write returns (a new server: no call); `rebind_pending` set
+  when `definition` vs `previous` is `mcprules.ClientChanged` (FR-415). A failed list or registry write keeps
+  the names queued and retries with backoff (5 s doubling to 5 min); `reconcile` never resolves records. Tests:
+  the manager is stopped between `rm` and `add`, a new manager starts on the same registry, and expect a pending
   row with the mark held, Retry and Cancel working, and `reconcile` not dropping it. Stopped before `rm` ⇒ mark
   and previous definition live. Stopped after the add ⇒ mark live, and for a client change (new client ID)
-  `rebind_pending` set. A Retry stopped after its first store, then a restart ⇒ a pending row with the original
-  `previous`, `removed_secrets` and `removal_failed_secrets` plus the planned-created names. A save paused
-  between `rm` and `add` while `reconcile` runs ⇒ the record, mark and definition are untouched. A list failure
-  at start keeps the record; a `Save` of that name is refused `UNVERIFIED`; the retry loop resolves it once the
-  list succeeds. The recovered error names `planned_overwritten_secrets`.
+  `rebind_pending` set. For both, a sandbox launched during the save records `SKIPPED_BEING_REPLACED`, and after
+  the restart and recovery its entry is `NOT_ATTACHED_AT_LAUNCH`. A Retry stopped after its first store, then a
+  restart ⇒ a pending row with the original `previous`, `removed_secrets` and `removal_failed_secrets` plus the
+  planned-created names. A save paused between `rm` and `add` while `reconcile` runs ⇒ the record, mark and
+  definition are untouched. A leftover plus a blocking `ls` stub ⇒ `NewManager` returns at once, and `List`
+  reports the name `recovering`. A list failure keeps the record; a `Save`, an old-client `AddMcpServer` and a
+  `SetMcpServerDefault` of that name are refused `UNVERIFIED`; the retry loop resolves it once the list
+  succeeds. `persist` fails once ⇒ the retry succeeds and the outcome is normal; `persist` fails 3 times ⇒
+  `UNAVAILABLE`, the name reports `recovering`, and once the registry accepts writes the record is resolved
+  and the name is usable again with no restart. The recovered error names `planned_overwritten_secrets`.
 - [ ] T023 [US1] `G/mcp_rpcs.go`: handlers for `GetMcpServerDefinition` and `CancelMcpPendingReplace`; and
   `ListMcpServers` returns `pending_replaces`. Tests in `G/mcp_rpcs_test.go`.
 - [ ] T024 [US1] FR-425 launch skip (research R12): `ResolveAttach` returns `BeingReplaced` (marked names
@@ -250,7 +261,7 @@ unchanged.
   to `NOT_ATTACHED_AT_LAUNCH` (registered) or clears them, emitting `sandbox_changed`. `sandbox.Manager.AttachMcp` (the `AttachMcpServer`
   RPC) clears a matching entry. Wire `onReplaceEnded` in `cmd/sxbd/main.go` and call it on **every** end:
   `REGISTERED` (any replace or retry) or `STILL_REGISTERED` ⇒ true; cancel or another path ⇒ false; nothing while a
-  pending replace is held. Add the leaf state map (`stateMu`; `name → {replacing, pending, saving, generation}`, loaded at start after recovery) in
+  pending replace is held. Add the leaf state map (`stateMu`; `name → {replacing, pending, saving, recovering, generation}`, loaded in `NewManager` with leftovers as `recovering`) in
   `M/locks.go`. The launch writes its `mcp_skipped` entry in a registry update whose mutate func calls
   `Manager.ReplaceState(name)`, which reads only that map, and writes the post-sweep state when the replace
   already ended. No registry write and no `onReplaceEnded` call happens under `m.mu` (research R12 *Lock order*);
@@ -281,7 +292,8 @@ unchanged.
   previous, then opens the form in retry mode (names removed and removal-failed secrets; the "old values are
   gone" note for previous); `X` opens the `y`-only Cancel confirm naming the server as not registered, the
   dropped mark and record, and the secrets it will remove (or *may be left on the host*). Rows show `rebind
-  pending`. Help bindings updated. Tests.
+  pending`, `saving…` (`save_in_progress`) and `recovering interrupted save` (`recovering`); `e` on a
+  `recovering` row shows that status instead of opening the form. Help bindings updated. Tests.
 - [ ] T028 [US1] `UI/mcp_form.go` save sequence: client rules → confirmations in the contract's order, each
   `y`-only through `confirm.go` with back-out reopening the form: dropped settings (FR-402), local execution
   for any resulting host-command definition (FR-407), authorization will be discarded (FR-404). Then

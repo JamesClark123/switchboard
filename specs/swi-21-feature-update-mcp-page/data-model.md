@@ -85,16 +85,24 @@ and deleted by its `persist`. Separate from `pending_replaces`, so it never over
 ```text
 (registration change, under the lock, before rm/add) ──► SAVING
 SAVING ──save persists──► (gone; the outcome is persisted in the same write)
-SAVING ──daemon start, name not listed──► (gone) replace: new PENDING, planned-created names = removal_failed;
+SAVING ──persist fails 3 times──► RECOVERING (queued for the recovery routine; the save returns UNAVAILABLE)
+SAVING ──daemon exits──► RECOVERING (NewManager loads every record as recovering and queues it; no host call)
+RECOVERING ──recovery, name not listed──► (gone) replace: new PENDING, planned-created names = removal_failed;
                                           Retry: its PENDING updated as a failed Retry; new server: names removed best effort
-SAVING ──daemon start, name listed──► (gone) replace: mark + previous kept; new server/Retry: definition + mark live,
-                                      Retry's PENDING dropped; rebind_pending set if definition vs previous is a client change
-SAVING ──daemon start, list fails──► SAVING (start-up recovery retries the list with backoff; never resolved by reconcile)
+RECOVERING ──recovery, name listed──► (gone) replace: mark + previous kept; new server/Retry: definition + mark live,
+                                      Retry's PENDING dropped; onReplaceEnded(name, true) for a replace or Retry;
+                                      rebind_pending set if definition vs previous is a client change
+RECOVERING ──list or registry write fails──► RECOVERING (the routine retries with backoff; never resolved by reconcile)
 ```
 
-Invariants: S1 a lock holder that finds one refuses with `UNVERIFIED` (it can only be a leftover); S2 while it
-exists the name is kept by `reconcile`, refused by `Authorize`, skipped at launch while marked, and reported
-`save_in_progress` by `List`.
+`SAVING` and `RECOVERING` are the state map's `saving` and `recovering` (research R12); the persisted record is
+the same in both.
+
+Invariants: S1 a lock holder (`Save`, Cancel, `Remove`, FR-413 removals, `AddMcpServer`) that finds one refuses
+with `UNVERIFIED` (it can only be a leftover); only the recovery routine resolves it. S2 while it exists the name
+is kept by `reconcile`, refused by `Authorize` and by `SetMcpServerDefault` (so `marks` never changes under it),
+skipped at launch while marked, and reported by `List` as `save_in_progress` (SAVING) or `recovering`
+(RECOVERING).
 
 ## McpGatewaySettings (existing, extended)
 
@@ -136,7 +144,8 @@ NOT_RECOVERABLE | LITERAL_ON_HOST | RESOLVED_UNCHECKABLE, host_value (redacted)}
 also returned `for_add`), `pending_removal_failed_listed` + `pending_removal_failed_list_unknown` (for the Cancel
 confirmation),
 `auth_state`, `has_record` (switchboard has a definition), `pending_replace`, `fingerprint`,
-`secrets_available` (+ reason), `save_in_progress` (not listed because a save of it is running).
+`secrets_available` (+ reason), `save_in_progress` (a live save holds an in-progress record), `recovering` (a
+leftover in-progress record waits for recovery); either is returned instead of `GONE` when the name is not listed.
 
 ## Secret names (existing host secrets)
 

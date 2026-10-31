@@ -15,7 +15,10 @@ daemon advertises the `mcp-edit` capability (research R15); otherwise the view i
 | `X` | pending-replace row | Cancel: `y`-only confirm | FR-426 |
 | `d`, `space`, `m`, `r` | unchanged | | |
 
-Rows: a registered server shows `rebind pending` in its status column when marked. A pending replace shows
+Rows: a registered server shows `rebind pending` in its status column when marked, `saving…` while another
+client's save of it runs (`save_in_progress`), and `recovering interrupted save` while a leftover in-progress
+record waits for recovery (`recovering`; Edit, Remove, Authorize and the mark toggle are refused until it
+clears, so `e` shows the status instead of opening the form). A pending replace shows
 `<server> — not registered (replace failed <age> ago)`. The orchestrator per-worker servers stay hidden.
 
 ## Form

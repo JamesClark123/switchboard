@@ -49,7 +49,8 @@ message McpPendingReplace {
 }
 
 // Crash safety (research R2): written by a registration change under the per-name lock before its
-// first host mutation, deleted by its persist. Leftovers are resolved only at daemon start.
+// first host mutation, deleted by its persist. Leftovers (an earlier daemon run, or a persist that failed)
+// are resolved only by the manager's recovery routine.
 // Never sent to clients. Kept apart from McpPendingReplace so a Retry's pending replace is untouched.
 message McpSaveInProgress {
   string name = 1;
@@ -105,8 +106,11 @@ message McpDefinitionView {
   // Every global-scope mcp:<name>:* secret name (never values); the form derives
   // set/missing for placeholders typed after it opened (FR-409, FR-411).
   repeated string stored_secrets = 15;
-  // The name is not listed because a save of it is running (instead of NOT_FOUND).
+  // A live save of the name holds an in-progress record (research R2); when the name is not listed
+  // this is returned instead of NOT_FOUND.
   bool save_in_progress = 16;
+  // A leftover in-progress record is waiting for recovery (research R2); same NOT_FOUND rule.
+  bool recovering = 17;
 }
 
 message SaveMcpServerRequest {
@@ -171,7 +175,7 @@ message McpSaveRefusal {                // carried as a status detail on FAILED_
 |---------|-------|--------|
 | `AddMcpServerRequest` | `repeated string scopes` | 9 |
 | `AuthorizeMcpServerRequest` | `repeated string scopes`, `bool no_scope` | 2, 3 |
-| `McpServer` | `bool rebind_pending`, `bool save_in_progress` (an in-progress record exists, research R2) | 9, 10 |
+| `McpServer` | `bool rebind_pending`, `bool save_in_progress` (a live save's in-progress record, research R2), `bool recovering` (a leftover in-progress record waiting for recovery) | 9, 10, 11 |
 | `McpGatewaySettings` | `map<string, McpServerDefinition> definitions`, `map<string, McpPendingReplace> pending_replaces`, `map<string, McpSaveInProgress> saves_in_progress` | 3, 4, 5 |
 | `ListMcpServersResponse` | `repeated McpPendingReplace pending_replaces` | 3 |
 | `Event.McpGatewayChanged` | `McpSaveOutcome outcome`, `repeated McpPendingReplace pending_replaces` | 2, 3 |
@@ -189,7 +193,9 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Rule violation (FR-408/417/420/423) | `INVALID_ARGUMENT` | message names the field/placeholder |
 | Fingerprint differs | `FAILED_PRECONDITION` | `McpSaveRefusal{STALE_CHANGED \| STALE_RESTARTED}` |
 | Fingerprint re-read failed (`ls`/`inspect`/`auth status`) | `FAILED_PRECONDITION` | `UNVERIFIED` (retryable; the form is not reloaded) |
-| Leftover in-progress record not yet recovered (research R2) | `FAILED_PRECONDITION` | `UNVERIFIED` ("recovering an interrupted save; try again") |
+| Leftover in-progress record not yet recovered (research R2), on `SaveMcpServer`, Cancel, `RemoveMcpServer`, `RemoveMcpServerSecrets`, `AddMcpServer` or `SetMcpServerDefault` | `FAILED_PRECONDITION` | `UNVERIFIED` ("recovering an interrupted save; try again") |
+| `SetMcpServerDefault` while a live save holds an in-progress record | `FAILED_PRECONDITION` | `BEING_REPLACED` |
+| Runtime `persist` failed after 3 attempts (the host was changed) | `UNAVAILABLE` | message "the host was changed but the result could not be recorded; recovering" (no refusal detail) |
 | Empty `secret_values` entry, or one containing `••••` | `INVALID_ARGUMENT` | message names the secret, never the value |
 | Retry of an ended pending replace | `FAILED_PRECONDITION` | `PENDING_ENDED` |
 | Retry pre-step removal still listed | `FAILED_PRECONDITION` | `PENDING_REMOVAL_FAILED` |

@@ -113,18 +113,34 @@ launch and other clients see the same mark as before. Step 10 deletes the in-pro
 write that persists the outcome. If the in-progress write fails, the save stops with no host change.
 
 While an in-progress record exists, `reconcile` keeps the name's definition and mark (D2), `Authorize` is
-refused (R3), `ResolveAttach` counts a marked name as being replaced (R12), and `List`/`decorate` report
-`save_in_progress` on the server. The state map (R12) tracks it as `saving`.
+refused (R3), `ResolveAttach` counts a marked name as being replaced (R12), and `List`/`decorate` report it on
+the server. The state map (R12) tracks two cases apart: **`saving`** (a live save wrote the record and still
+holds the lock) and **`recovering`** (a leftover waiting for the recovery routine below). Both get the
+protections above. They differ only in what the developer is told: `save_in_progress` ("being saved on another
+client") vs `recovering` ("recovering an interrupted save").
 
 **Leftover records**: a running save writes and deletes its in-progress record while it holds the per-name
-lock (R3). So an in-progress record seen **by a holder of that lock** is always a leftover of an earlier daemon
-run (or of a `persist` that failed), never a live save's. That gives one simple rule: every operation that
-takes the lock (`Save`, Cancel, `Remove`, FR-413 removals) and finds an in-progress record refuses with
-`UNVERIFIED` ("recovering an interrupted save; try again") and changes nothing. Only recovery resolves it.
+lock (R3). So an in-progress record seen **by a holder of that lock** is always a leftover (of an earlier daemon
+run, or of a `persist` that failed), never a live save's. That gives one simple rule: **every** operation that
+takes the lock and finds an in-progress record refuses with `UNVERIFIED` ("recovering an interrupted save; try
+again") and changes nothing. The lock takers are `Save`, Cancel, `Remove`, FR-413 removals and the old-client
+`AddMcpServer`. `SetMcpServerDefault` (the existing mark RPC) takes no lock, so it reads the state map instead:
+while the name is `saving` or `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED` /
+`UNVERIFIED`) and changes nothing. So `marks` never changes under an in-progress record, and recovery always
+applies the record's own copy of the mark. Only the recovery routine resolves a record.
 
-**Recovery** runs only at daemon start, in `NewManager`, before the first `reconcile` and the state-map load. No
-save is running yet, and recovery still takes `lockName` for each name it resolves. It resolves every leftover
-against one `sbx mcp ls`:
+**Failed `persist`**: step 10 retries its write up to 3 times (1 s apart, each on its own context). If every
+attempt fails, the save still knows the record is its own: it marks the name `recovering` in the state map, hands
+it to the recovery routine, releases the lock and returns `UNAVAILABLE` ("the host was changed but the result
+could not be recorded; recovering"). The daemon does not need a restart.
+
+**Recovery** is one routine on one goroutine, started by `NewManager`. `NewManager` does no host call: it loads
+the state map with every leftover as `recovering` and queues all of them, then returns, so daemon start never
+waits on `sbx`. A failed `persist` queues its name the same way at runtime. Each attempt runs one `sbx mcp ls`,
+then resolves every queued name under `lockName` (re-reading the record under the lock; a name whose record is
+already gone is skipped). It is the only lock holder allowed to act on a record. The listed state of a queued
+name cannot change through switchboard between the list and the lock, because every other operation on it is
+refused (above). Each name is resolved as follows:
 
 - **Name not listed** (the exit came after `rm`, and before the add finished):
   - a replace ⇒ it becomes a normal pending replace: the mark moves out of `marks` into it, `definition` and
@@ -139,18 +155,27 @@ against one `sbx mcp ls`:
     planned-created names are removed best effort, with a re-check and a log line.
 - **Name listed** (the exit came before `rm`, or after the add) ⇒ the record is dropped. A replace keeps its
   mark and `previous` definition (both were never moved). A new server or a Retry gets the record's
-  `definition` and mark; a Retry's pending replace is dropped and `onReplaceEnded(name, true)` runs. Which
-  registration the host holds is not known. The next Edit's definition read merges with `inspect`, so any
-  difference shows as `changed on the host`. Secrets are left in place, because the registration may use
-  them. **FR-415**: when `definition` vs `previous` is a client change (`mcprules.ClientChanged`), the
-  surviving definition gets `rebind_pending = true`, because whether the identity clear ran is not known (the
-  same reasoning as `UNCONFIRMED`, R9). The next save that stores the client secret then clears the binding.
-- **List fails** ⇒ recovery retries the same list with backoff (5 s doubling to 5 min) on a start-up goroutine
-  until it succeeds, and resolves the leftovers then. It is still the start-up recovery: `reconcile` never
-  resolves in-progress records. Until then the names stay protected as above: kept by `reconcile`, refused
-  by `Authorize` and by every lock holder with `UNVERIFIED`, and skipped at launch while marked.
+  `definition` and mark; a Retry's pending replace is dropped. For a replace and a Retry,
+  `onReplaceEnded(name, true)` runs after the registry write returns (R12 *Lock order*): the replace has ended
+  with the server registered, and launches that ran while it was in progress recorded `SKIPPED_BEING_REPLACED`.
+  A new server had no mark in `marks`, so no launch skipped it and no call is made. Which registration the host
+  holds is not known. The next Edit's definition read merges with `inspect`, so any difference shows as
+  `changed on the host`. Secrets are left in place, because the registration may use them. **FR-415**: when
+  `definition` vs `previous` is a client change (`mcprules.ClientChanged`), the surviving definition gets
+  `rebind_pending = true`, because whether the identity clear ran is not known (the same reasoning as
+  `UNCONFIRMED`, R9). The next save that stores the client secret then clears the binding. This is
+  conservative: after an exit **before** `rm` the host still holds the old client and its binding, so the
+  warning is spurious there. The developer clears it by saving with the client secret entered (or, for a public
+  client, with the FR-413 removal). Telling the two exits apart would need an extra `inspect` comparison or a
+  second durable write before `rm`; neither is worth it for a rare crash window.
+- **List fails, or a registry write fails** ⇒ the names stay queued and the routine retries with backoff (5 s
+  doubling to 5 min) until it succeeds. `reconcile` never resolves in-progress records. Until then the names
+  stay protected as above: kept by `reconcile`, refused by `Authorize`, by `SetMcpServerDefault` and by every
+  lock holder, and skipped at launch while marked.
 
-Every recovery logs `mcp: <name>: recovered interrupted save (<result>)` and emits one `mcp_gateway_changed`.
+Every recovery logs `mcp: <name>: recovered interrupted save (<result>)`, clears `recovering` in the state map
+and emits one `mcp_gateway_changed`. The routine stops with the daemon; anything still queued is found again at
+the next start.
 Secrets the save **overwrote** cannot be restored after a crash, because the old value is gone. The recovered
 pending replace's error names them from `planned_overwritten_secrets` (the listed case logs them). Shutdown
 does not wait for in-flight saves: recovery covers every exit point the same way, including a crash, which a
@@ -191,7 +216,7 @@ after the caller leaves; the existing auth wait is deliberately the opposite (ki
 spec needs no progress; a stream ties completion to the connection unless detached anyway.
 
 `AddMcpServer` stays for older clients and keeps its behaviour, but now also records a definition (R4) and
-takes the per-name lock. The new TUI uses only `SaveMcpServer` for form saves. `AddMcpServer` keeps today's
+takes the per-name lock (so it refuses `UNVERIFIED` on a leftover in-progress record, R2 *Leftover records*). The new TUI uses only `SaveMcpServer` for form saves. `AddMcpServer` keeps today's
 validation (FR-422 / proto delta *old RPCs keep their behaviour*). It does **not** apply the broader
 `mcprules.CheckCredentialValue` rule, which would newly refuse `X-Api-Key: abc` or `X-Auth-Mode: oauth` from an
 older TUI that has no conversion UI to recover. The runtime still enforces its own `Authorization` rule (F5).
@@ -213,7 +238,7 @@ allowed for saves, adds, removes and FR-413 removals; serialised, FR-404). Befor
 **request alone** shows it touches `client_secret`/`:identity` or removes the registration (`Remove`, an
 FR-413 removal of those names, a request carrying `mcp:<s>:client_secret`) checks `inflight[name]` under `m.mu`
 and fails with `ErrAuthInProgress` (FR-424 refusals). `Authorize` checks, under the same `m.mu` hold, that no
-lock is held or waited for **and** that no pending replace or in-progress record (R2, the state map's `pending`/`saving`) exists, before it
+lock is held or waited for **and** that no pending replace or in-progress record (R2, the state map's `pending`/`saving`/`recovering`) exists, before it
 records `inflight[name]`; otherwise `ErrBeingReplaced` (`FAILED_PRECONDITION`). It reads the pending state from
 the R12 state map (`stateMu`, a leaf), **never** from the settings record, so `m.mu` is never held across a
 registry read, and "pending" has one in-memory source of truth. The check-and-take for both directions
@@ -363,9 +388,11 @@ check under the lock catches any race, and a read never blocks Authorize or anot
 `for_add` (add mode, or any name that is not registered) it runs only step 5 and returns only the secret
 status: every global-scope `mcp:<name>:*` name (`stored_secrets`) plus `secrets_available`/reason (from whether
 `ListGlobal` succeeded). The TUI derives each field's *set / missing* from `stored_secrets` as headers are
-typed, in add and edit mode alike. The same field is filled in edit mode. When the name is not listed but
-the state map shows a save running, the read returns `save_in_progress = true` (with `stored_secrets`)
-instead of `GONE`, and the TUI says "being saved on another client, try again". Otherwise the daemon:
+typed, in add and edit mode alike. The same field is filled in edit mode. When the state map shows an
+in-progress record (R2), the read reports which case it is: `save_in_progress = true` for `saving` (a live
+save; the TUI says "being saved on another client, try again") or `recovering = true` for `recovering` (a
+leftover; the TUI says "recovering an interrupted save; try again shortly"). When such a name is not listed,
+the read returns that flag (with `stored_secrets`) instead of `GONE`. Otherwise the daemon:
 
 1. reads `sbx mcp ls` (kind from TRANSPORT), `sbx mcp inspect <name> --json` (new argv) and
    `sbx mcp auth status <name> --json` (existing argv);
@@ -404,10 +431,10 @@ changes or clears entries and emits `sandbox_changed`. It is called for **every*
 replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pending).
 
 **Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending, saving,
-generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
+recovering, generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
 save turns `replacing`, a pending replace is created or ends, or an in-progress record (R2) is written or
-deleted (`saving`). It is loaded from the settings record at start, after the start-up recovery pass (R2);
-leftovers that pass could not resolve (failed list) load as `saving`. It is the only source `Authorize`, `reconcile` and
+deleted (`saving`), or a leftover is queued for or resolved by recovery (`recovering`). It is loaded from the
+settings record in `NewManager`, with every in-progress record as `recovering` (R2). It is the only source `Authorize`, `reconcile` and
 `ReplaceState` read for "pending". `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
 inside a bbolt transaction. Rules: no registry write (bbolt `Update`) and no `onReplaceEnded` call happens
 while `m.mu` is held, and no registry read is opened inside another registry transaction.
