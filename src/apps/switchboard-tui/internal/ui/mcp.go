@@ -34,9 +34,11 @@ import (
 // Client-side bounds (package constants, never env vars; research R11).
 const (
 	mcpOpTimeout = 2 * time.Minute // register / remove / marks / mode
-	// The daemon's worst case: a 10-minute wait for the name's lock, then its own
-	// 10-minute save budget and the persist retries; plus slack. A shorter bound
-	// would give the form back while the detached save is still queued.
+	// Covers the daemon's 10-minute wait for the name's lock, then its own
+	// 10-minute save budget and the persist retries, plus slack. A rollback or
+	// re-list on a slow host runs on its own contexts and can go past it; the
+	// save then still runs detached, so a reply lost to this bound is handled
+	// like a save not recorded yet (applyMcpSave), never as a failure.
 	mcpSaveTimeout = 21 * time.Minute
 	mcpAuthTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute wait plus slack
 )
@@ -817,17 +819,26 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome, savedRemote bool) []confirmS
 }
 
 // openDeferredMcpFollowups offers a background save's follow-ups once the
-// list is idle: no form, panel or modal open (Update calls it after every
-// message).
-func (m Model) openDeferredMcpFollowups() (Model, tea.Cmd) {
+// list is idle: no form, panel or modal open and no credential prompt up
+// (Update calls it after every message). It opens on a non-key message, so the
+// offer never takes a second press of the key that closed the form; after a
+// key it asks for one (mcpFollowupsReadyMsg).
+func (m Model) openDeferredMcpFollowups(msg tea.Msg) (Model, tea.Cmd) {
 	v := &m.mcpView
-	if len(v.deferred) == 0 || m.screen != screenMcp || v.vals != nil || v.mcpModalOpen() {
+	if len(v.deferred) == 0 || m.screen != screenMcp || v.vals != nil || v.mcpModalOpen() || m.credentialPromptUp() {
 		return m, nil
+	}
+	if _, key := msg.(tea.KeyMsg); key {
+		return m, func() tea.Msg { return mcpFollowupsReadyMsg{} }
 	}
 	steps := v.deferred
 	v.deferred = nil
 	return m, m.mcpFollowChain(steps)
 }
+
+// mcpFollowupsReadyMsg wakes openDeferredMcpFollowups after a key left the list
+// idle; it carries nothing.
+type mcpFollowupsReadyMsg struct{}
 
 // mcpFollowChain opens the follow-up offers one after another; declining one
 // moves on to the next.
@@ -1354,7 +1365,6 @@ func mcpAge(p *pb.McpPendingReplace) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// mcpModalOpen reports a modal layer over the gateway view.
 // mcpLoadingMsg is the status line while name's definition read is in flight.
 func mcpLoadingMsg(name string) string { return "loading " + name + "…" }
 
@@ -1365,6 +1375,7 @@ func (v *mcpState) clearMcpLoading(name string) {
 	}
 }
 
+// mcpModalOpen reports a modal layer over the gateway view.
 func (v mcpState) mcpModalOpen() bool {
 	return v.auth != nil || v.pending != nil || v.outcome != nil || v.choose != nil || v.scopes != nil
 }

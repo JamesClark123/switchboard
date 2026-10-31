@@ -76,14 +76,16 @@ func TestConvert(t *testing.T) {
 		{"X_Api_Key", "abc", nil, "${x-api-key}", "x-api-key", "abc"},
 		{"X-Auth-Mode", "oauth", map[string]bool{"x-auth-mode": true}, "${x-auth-mode-2}", "x-auth-mode-2", "oauth"},
 		{"X-Auth-Mode", "oauth", map[string]bool{"x-auth-mode": true, "x-auth-mode-2": true}, "${x-auth-mode-3}", "x-auth-mode-3", "oauth"},
-		{"Cookie", "session=abc", nil, "session=${cookie}", "cookie", "abc"},
+		{"Cookie", "session=abc", nil, "session=${cookie-session}", "cookie-session", "abc"},
+		{"Cookie", "abc", nil, "${cookie}", "cookie", "abc"},
 		{"Client_Secret", "v", nil, "${client-secret}", "client-secret", "v"},
 		{"Authorization", "Custom abc", nil, "${authorization}", "authorization", "Custom abc"},
 		// Review: existing placeholders stay in the value, never in the secret.
 		{"Authorization", "Bearer ${x} tail", nil, "Bearer ${x} ${authorization}", "authorization", "tail"},
 		{"Authorization", "Custom ${k}", nil, "${authorization} ${k}", "authorization", "Custom"},
-		{"Cookie", "a=${a}; b=lit", nil, "a=${a}; b=${cookie}", "cookie", "lit"},
-		{"Cookie", "session=${cookie}; csrf=def", map[string]bool{"cookie": true}, "session=${cookie}; csrf=${cookie-2}", "cookie-2", "def"},
+		{"Cookie", "a=${a}; b=lit", nil, "a=${a}; b=${cookie-b}", "cookie-b", "lit"},
+		{"Cookie", "session=${cookie-csrf}; csrf=def", map[string]bool{"cookie-csrf": true}, "session=${cookie-csrf}; csrf=${cookie-csrf-2}", "cookie-csrf-2", "def"},
+		{"Cookie", "My_Pref=dark", nil, "My_Pref=${cookie-my-pref}", "cookie-my-pref", "dark"},
 		{"Authorization", "Bearer abc ${x", nil, "Bearer ${authorization}", "authorization", "abc ${x"},
 	} {
 		v, p, s := Convert(tc.name, tc.value, tc.used)
@@ -96,8 +98,20 @@ func TestConvert(t *testing.T) {
 	}
 	// Review: each cookie's value is its own run; later cookie names stay out
 	// of the secret.
-	if v, _, sec := Convert("Cookie", "session=abc; csrf=def", nil); v != "session=${cookie}; csrf=def" || sec != "abc" {
+	if v, _, sec := Convert("Cookie", "session=abc; csrf=def", nil); v != "session=${cookie-session}; csrf=def" || sec != "abc" {
 		t.Errorf("multi-cookie: %q %q", v, sec)
+	}
+	// Review round 3: LiteralCookie names the cookie the next Convert moves.
+	for _, c := range []struct{ name, value, want string }{
+		{"Cookie", "session=${s}; csrf=def", "csrf"},
+		{"Cookie", "session=abc; csrf=def", "session"},
+		{"Cookie", "abc", ""},
+		{"Cookie", "a=${a}", ""},
+		{"Authorization", "session=abc", ""},
+	} {
+		if got := LiteralCookie(c.name, c.value); got != c.want {
+			t.Errorf("LiteralCookie(%q, %q) = %q, want %q", c.name, c.value, got, c.want)
+		}
 	}
 	// Two literal runs convert one per call; no secret holds ${…}.
 	v, _, sec := Convert("Authorization", "lit1 ${x} lit2", nil)

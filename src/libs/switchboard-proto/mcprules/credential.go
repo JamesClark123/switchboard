@@ -172,31 +172,50 @@ func CheckCredentialHeaders(headers []string, skip map[string]bool) error {
 // the value's existing `${…}`s, and its first run of literal text becomes `${placeholder}`;
 // secret is that literal text, so a secret never holds `${…}` itself. A value
 // with more than one literal run (in a Cookie header, each cookie's value is
-// one) is converted one run per call. The placeholder
-// is derived from the header name (lower-cased, `_` → `-`) and gets `-2`, `-3`,
-// … when it is invalid, reserved or in use. A value with no literal text comes
-// back unchanged with an empty secret.
+// one) is converted one run per call. The placeholder is derived from the
+// header name (lower-cased, `_` → `-`), or for a cookie's value from
+// `cookie-<cookie name>`, and gets `-2`, `-3`, … when it is invalid, reserved
+// or in use. A value with no literal text comes back unchanged with an empty
+// secret.
 func Convert(name, value string, used map[string]bool) (newValue, placeholder, secret string) {
 	value = strings.TrimSpace(value)
-	head, rest := "", value
-	if s, r := splitScheme(value); s != "" && schemes[strings.ToLower(s)] && r != "" {
-		head, rest = s+" ", r
+	head, rest, start, end, cookie := convertRun(name, value)
+	if cookie != "" {
+		name = "cookie-" + cookie
 	}
 	placeholder = derivePlaceholder(name, used)
-	start, end := literalRun(rest, strings.EqualFold(strings.TrimSpace(name), "cookie"))
 	if start < 0 {
 		return value, placeholder, ""
 	}
 	return head + rest[:start] + "${" + placeholder + "}" + rest[end:], placeholder, rest[start:end]
 }
 
+// LiteralCookie names the cookie whose value the next Convert of a Cookie
+// header moves into a secret; it is "" for another header, or literal text
+// with no cookie name.
+func LiteralCookie(name, value string) string {
+	_, _, _, _, cookie := convertRun(name, strings.TrimSpace(value))
+	return cookie
+}
+
+// convertRun splits off a listed scheme (head) and finds the first literal run
+// in the rest, with the name of the cookie it is the value of.
+func convertRun(name, value string) (head, rest string, start, end int, cookie string) {
+	rest = value
+	if s, r := splitScheme(value); s != "" && schemes[strings.ToLower(s)] && r != "" {
+		head, rest = s+" ", r
+	}
+	start, end, cookie = literalRun(rest, strings.EqualFold(strings.TrimSpace(name), "cookie"))
+	return head, rest, start, end, cookie
+}
+
 // literalRun returns the bounds of the first run of literal text in v: text
 // that is neither a separator (space, `:`, `;`, `,`) nor a well-formed `${…}`,
 // up to the next well-formed `${…}`, trailing separators trimmed. In a cookie
-// header a leading `<cookie-name>=` is not literal and a `;` ends the run, so
-// each cookie's value converts on its own and later cookie names stay visible.
-// start is -1 when there is none.
-func literalRun(v string, cookie bool) (start, end int) {
+// header a leading `<cookie-name>=` is not literal (cookieName returns it) and
+// a `;` ends the run, so each cookie's value converts on its own and later
+// cookie names stay visible. start is -1 when there is none.
+func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 	placeholderAt := func(i int) int {
 		if !strings.HasPrefix(v[i:], "${") {
 			return -1
@@ -219,12 +238,14 @@ func literalRun(v string, cookie bool) (start, end int) {
 				continue
 			}
 			if loc := cookieNameRe.FindStringIndex(v[i:]); cookie && loc != nil {
+				cookieName = v[i : i+loc[1]-1]
 				i += loc[1]
 				if e := placeholderAt(i); e >= 0 {
-					i = e
+					i, cookieName = e, ""
 					continue
 				}
 				if i == len(v) {
+					cookieName = ""
 					break
 				}
 			}
@@ -237,12 +258,12 @@ func literalRun(v string, cookie bool) (start, end int) {
 		end = i
 	}
 	if start < 0 {
-		return -1, -1
+		return -1, -1, ""
 	}
 	for end > start && strings.IndexByte(" \t:;,", v[end-1]) >= 0 {
 		end--
 	}
-	return start, end
+	return start, end, cookieName
 }
 
 func derivePlaceholder(name string, used map[string]bool) string {

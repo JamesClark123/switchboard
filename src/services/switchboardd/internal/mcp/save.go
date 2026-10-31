@@ -151,8 +151,8 @@ func checkSaveRequest(name string, req *pb.SaveMcpServerRequest) (*pb.McpServerD
 		if def.Url == "" && (req.GetIsNew() || req.GetRetryOfRevision() != 0) {
 			return nil, errNoURL
 		}
-		// The URL rule (FR-103) applies to a save that registers; an edit or a
-		// Retry that re-registers is checked in classify, so a mark-only save of
+		// The URL rule (FR-103) applies to a save that registers; an edit that
+		// re-registers is checked in classify and a Retry in retryPreStep, so a mark-only save of
 		// a server registered by hand with an odd URL still goes through, and so
 		// does a Retry that restores the previous URL.
 		if req.GetIsNew() && req.GetRetryOfRevision() == 0 {
@@ -430,6 +430,16 @@ func (j *saveJob) retryPreStep(ctx context.Context) error {
 	if !j.retry {
 		return nil
 	}
+	// The URL rule (FR-103) is checked before any host removal, so a Retry
+	// with a bad URL is refused with no change. One that keeps the previous
+	// URL is not checked: the host accepted it once (a server registered by
+	// hand, FR-402), and refusing it would leave the removed server impossible
+	// to restore as it was.
+	if j.def.Kind == pb.McpServerKind_MCP_SERVER_KIND_REMOTE && j.def.Url != j.pending.GetPrevious().GetUrl() {
+		if err := mcprules.ValidURL(j.def.Url); err != nil {
+			return ruleErr(err)
+		}
+	}
 	for _, n := range j.pending.GetRemovalFailedSecrets() {
 		if _, entered := j.req.GetSecretValues()[n]; entered {
 			continue
@@ -533,10 +543,8 @@ func (j *saveJob) classify() error {
 		if j.def.Url == "" {
 			return errNoURL
 		}
-		// A Retry that keeps the previous URL is not checked: the host accepted
-		// it once (a server registered by hand, FR-402), and refusing it would
-		// leave the removed server impossible to restore as it was.
-		if !j.retry || j.def.Url != j.prev.GetUrl() {
+		// A Retry's URL was checked by retryPreStep.
+		if !j.retry {
 			if err := mcprules.ValidURL(j.def.Url); err != nil {
 				return ruleErr(err)
 			}

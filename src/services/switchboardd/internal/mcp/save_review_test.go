@@ -406,6 +406,27 @@ func TestRetryPreviousKeepsAHandRegisteredURL(t *testing.T) {
 	}
 }
 
+// A Retry with a bad URL is refused before its pre-step touches the host: the
+// carried removal-failed secret is neither removed nor moved off the list.
+func TestRetryBadURLRefusedBeforePreStep(t *testing.T) {
+	e := newSaveEnv(t)
+	e.add("gh", remote("https://x/mcp"), false, nil)
+	v := e.open("gh")
+	e.touch("add.fail")
+	e.sec.failRm["mcp:gh:k"] = true
+	out, _ := e.edit(v, remote("https://y/mcp", "A: ${k}"), false, map[string]string{"mcp:gh:k": "v-k"})
+	rev := out.GetPendingReplace().GetRevision()
+	delete(e.sec.failRm, "mcp:gh:k")
+	calls := len(e.sec.callLog())
+	if _, err := e.m.Save(context.Background(), &pb.SaveMcpServerRequest{Name: "gh", Definition: remote("ftp://y/mcp"), RetryOfRevision: rev}); !errors.Is(err, ErrInvalidArgs) {
+		t.Fatalf("retry = %v", err)
+	}
+	p := e.settings().GetPendingReplaces()["gh"]
+	if got := e.sec.callLog()[calls:]; len(got) != 0 || !e.sec.has("mcp:gh:k") || !has(p.GetRemovalFailedSecrets(), "mcp:gh:k") {
+		t.Errorf("secret calls %v, pending %v", got, p)
+	}
+}
+
 // The legacy Add applies the placeholder-name rule (FR-408).
 func TestLegacyAddChecksPlaceholders(t *testing.T) {
 	e := newSaveEnv(t)

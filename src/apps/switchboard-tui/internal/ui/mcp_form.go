@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"strconv"
@@ -762,6 +763,7 @@ func (m *Model) focusMcpField(key string) {
 // mcpConversion is one literal-credential conversion offer (FR-423).
 type mcpConversion struct {
 	header string // the header's name as typed
+	cookie string // in a Cookie header, the cookie whose value converts next
 	line   int    // its index in headerLines
 	onHost bool   // the view's redacted LITERAL_ON_HOST value: no literal to move
 }
@@ -783,7 +785,7 @@ func (v mcpState) mcpConversions() []mcpConversion {
 		if onHost && v.declinedHost[strings.ToLower(n)] {
 			continue
 		}
-		out = append(out, mcpConversion{header: n, line: i, onHost: onHost})
+		out = append(out, mcpConversion{header: n, cookie: mcprules.LiteralCookie(n, val), line: i, onHost: onHost})
 	}
 	return out
 }
@@ -822,6 +824,12 @@ func (m *Model) convertMcpHeader(c mcpConversion) string {
 func (m Model) mcpConversionConfirm(c mcpConversion) confirmState {
 	v := m.mcpView
 	body := []string{"The " + selectedStyle.Render(c.header) + " header is a credential header and holds literal text."}
+	title := "Convert " + c.header + " to a secret?"
+	if c.cookie != "" {
+		// A Cookie header is offered once per cookie: say which one.
+		body = []string{"The " + selectedStyle.Render(c.cookie) + " cookie in the " + c.header + " header holds literal text."}
+		title = "Convert the " + c.cookie + " cookie to a secret?"
+	}
 	if c.onHost {
 		body = append(body,
 			"The host holds that credential; its value cannot be read back.",
@@ -833,7 +841,7 @@ func (m Model) mcpConversionConfirm(c mcpConversion) confirmState {
 			"into a masked secret field ("+mcprules.SecretName(v.secretServer(), "<placeholder>")+").")
 	}
 	return confirmState{
-		title:       "Convert " + c.header + " to a secret?",
+		title:       title,
 		body:        body,
 		notice:      "Saving a credential header with literal text is refused.",
 		acceptLabel: "convert", cancelLabel: "keep as typed",
@@ -1257,7 +1265,8 @@ func (m *Model) sendMcpSave(req *pb.SaveMcpServerRequest) tea.Cmd {
 		defer cancel()
 		out, err := d.SaveMcpServer(ctx, req)
 		remote := req.GetDefinition().GetKind() == pb.McpServerKind_MCP_SERVER_KIND_REMOTE
-		return mcpSaveMsg{host: host, name: req.GetName(), gen: gen, remote: remote, outcome: out, err: err}
+		timedOut := err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
+		return mcpSaveMsg{host: host, name: req.GetName(), gen: gen, remote: remote, outcome: out, err: err, timedOut: timedOut}
 	}
 }
 
@@ -1268,6 +1277,7 @@ type mcpSaveMsg struct {
 	remote     bool   // the saved definition's kind, for the authorize offer
 	outcome    *pb.McpSaveOutcome
 	err        error
+	timedOut   bool // err is this client's mcpSaveTimeout, not the daemon's reply
 }
 
 // mcpFormIs reports whether the open form is the one gen and name identify.
@@ -1293,7 +1303,12 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 			return m.applyMcpRefusal(msg.name, ref, formOpen)
 		}
 		text := status.Convert(msg.err).Message()
-		if client.IsSaveNotRecorded(msg.err) {
+		if msg.timedOut {
+			// The daemon may still be running the save (a slow rollback can
+			// outlast mcpSaveTimeout): handled like a save not recorded yet.
+			text = "the save of " + msg.name + " is still running on the daemon; the row shows saving… until it lands"
+		}
+		if msg.timedOut || client.IsSaveNotRecorded(msg.err) {
 			// The save ran; its result is not recorded yet. Saving again is
 			// pointless: close, and the row shows saving… until it lands. A
 			// bare UNAVAILABLE (daemon unreachable) is a plain error below:

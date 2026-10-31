@@ -52,7 +52,7 @@ func drainEdit(m Model, cmd tea.Cmd) Model {
 		msg := queue[0]
 		queue = queue[1:]
 		switch msg.(type) {
-		case mcpDefMsg, mcpSaveMsg, mcpLoadedMsg, mcpDoneMsg:
+		case mcpDefMsg, mcpSaveMsg, mcpLoadedMsg, mcpDoneMsg, mcpFollowupsReadyMsg:
 			var c tea.Cmd
 			m, c = update(m, msg)
 			queue = append(queue, runQuick(c)...)
@@ -466,6 +466,26 @@ func TestMcpKindChangeClearsAndRestoresRemoteFields(t *testing.T) {
 	m.mcpView.vals.url, m.mcpView.vals.kind = "https://typed/mcp", "remote"
 	if m.mcpView.switchMcpKind() || m.mcpView.vals.url != "https://typed/mcp" || m.mcpView.remoteStash != nil {
 		t.Errorf("typed remote values are kept: %+v", *m.mcpView.vals)
+	}
+}
+
+// A Cookie header is offered once per cookie, each naming its cookie, and each
+// secret is named after its cookie (review round 3).
+func TestMcpCookieConversionNamesEachCookie(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Cookie: session=abc; csrf=def"
+	m = leaveGroup1(t, m)
+	for _, c := range []string{"session", "csrf"} {
+		if !strings.Contains(m.View(), "Convert the "+c+" cookie to a secret?") {
+			t.Fatalf("expected the %s offer:\n%s", c, m.View())
+		}
+		m = accept(t, m)
+	}
+	v := m.mcpView
+	if v.vals.headers != "Cookie: session=${cookie-session}; csrf=${cookie-csrf}" ||
+		v.secretValue("mcp:linear:cookie-session") != "abc" || v.secretValue("mcp:linear:cookie-csrf") != "def" {
+		t.Errorf("headers %q secrets %v", v.vals.headers, v.secretVals)
 	}
 }
 
@@ -1577,5 +1597,36 @@ func TestMcpPendingRowWhoseReplaceEndedRelists(t *testing.T) {
 	m = keyIn(m, press("h"))
 	if m.mcpView.form != nil || !strings.Contains(m.mcpView.status, "has ended") {
 		t.Errorf("R: form %v status %q", m.mcpView.form != nil, m.mcpView.status)
+	}
+}
+
+// A save whose reply outlasts the client's bound is handled like one not
+// recorded yet: the daemon may still be running it, so the form closes and the
+// row shows saving… instead of offering the form back for a second save.
+func TestMcpSaveClientTimeoutClosesTheForm(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := openEdit(t, editModel(t, d))
+	v := m.mcpView
+	m, _ = update(m, mcpSaveMsg{host: v.host, name: "linear", gen: v.formGen, err: status.Error(codes.DeadlineExceeded, "context deadline exceeded"), timedOut: true})
+	if m.mcpView.vals != nil || !m.mcpView.localSaving["linear"] || !strings.Contains(m.mcpView.status, "still running on the daemon") {
+		t.Errorf("form open %v, saving %v, status %q", m.mcpView.vals != nil, m.mcpView.localSaving, m.mcpView.status)
+	}
+}
+
+// A background save's follow-ups never open under a credential prompt; they
+// wait until it is gone (SWI-9 R7).
+func TestMcpDeferredFollowupsWaitForACredentialPrompt(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}}
+	m := editModel(t, d)
+	m.mcpView.deferred = []confirmState{{title: "Remove unused secrets?"}}
+	m.hosts.connecting, m.hosts.pwMode = true, pwDaemonsScreen
+	m, _ = update(m, mcpFollowupsReadyMsg{})
+	if m.screen != screenMcp || len(m.mcpView.deferred) != 1 {
+		t.Fatalf("the offer opened under the prompt: screen %v", m.screen)
+	}
+	m.hosts.connecting = false
+	m, _ = update(m, mcpFollowupsReadyMsg{})
+	if m.screen != screenConfirm || m.mcpView.deferred != nil {
+		t.Errorf("the offer should open once the prompt is gone: screen %v", m.screen)
 	}
 }

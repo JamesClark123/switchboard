@@ -673,7 +673,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if nm, ok := next.(Model); ok {
 		nm.reconcileGuardLayers()
 		nm, ocmd := nm.openParkedOverride(msg)
-		nm, fcmd := nm.openDeferredMcpFollowups()
+		nm, fcmd := nm.openDeferredMcpFollowups(msg)
 		return nm, tea.Batch(cmd, ocmd, fcmd)
 	}
 	return next, cmd

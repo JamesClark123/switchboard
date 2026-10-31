@@ -664,7 +664,7 @@ runtime adds it to recorded defaults).
   cookie names and any `${…}` it already holds, its first run of literal text is replaced by a
   `${placeholder}`, and that literal text moves into the placeholder's masked secret field, so a secret
   never holds `${…}` (a value with several literal runs converts one run per step; in a Cookie header each
-  cookie's value is its own run, so every cookie name stays in the header). The derived placeholder name is the header name lower-cased with `_` mapped to `-`, MUST
+  cookie's value is its own run, so every cookie name stays in the header, and each offer names its cookie). The derived placeholder name is the header name lower-cased with `_` mapped to `-` (for a cookie's value, `cookie-<cookie name>`), MUST
   satisfy FR-408, MUST NOT be `client_secret`, and MUST NOT collide with a placeholder already used by
   another header; on collision or an invalid name the form appends `-2`, `-3`, … and the field stays
   editable, so two credentials are never merged into one secret. There is no *not a credential*
