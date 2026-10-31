@@ -62,7 +62,7 @@ E2E uses `switchboard-tui-e2e` (`stubSbx`). Gates are `make fmt-check vet lint t
 parallel, bounded by the existing 60 s list bound. A save runs O(secrets) CLI calls in sequence; before any
 mutation, every save (including a mark-only one) repeats the three definition reads (fingerprint check) plus
 `secret ls`, while it holds the per-name lock. A registration change adds one extra registry write (the
-crash-safety in-progress record, research R2). No new polling.
+crash-safety in-progress record, research R2; recovery runs only at daemon start). No new polling.
 
 **Constraints**:
 - Secret values only travel request → CLI stdin. They never reach argv, logs, errors, responses, or the

@@ -94,7 +94,7 @@ Steps, all under the per-name lock (R3):
 7. `sbx mcp add … --skip-auth` with the new definition (scopes added, R10).
 8. Identity clear (R9).
 9. Rollback on failure (R7), pending replace on a replace's failure (R8).
-10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call, which also clears the
+10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call, which also deletes the
     in-progress record; emit once.
 
 **Crash safety (SC-006, FR-406)**: the save runs on `context.WithoutCancel`, but the daemon can still exit
@@ -102,35 +102,61 @@ partway through: SIGTERM, an update through `switchboard-update`, an OOM or a pa
 an exit after `rm` and before `persist` would leave the record holding the definition and mark while the host
 no longer lists the name. The next `reconcile` would then drop both (D2), and the server would disappear
 silently. So, before step 5 of any registration change (a replace, a new-server add, or a Retry), the save
-writes a provisional `McpPendingReplace` with `in_progress = true` in one `UpdateMcpSettings` call. It holds the
-new `definition`, `previous` (the live definition, absent for a new server), the held mark, and
-`planned_created_secrets`: the `secret_values` names that the step-3 snapshot shows absent. For a replace,
-that write also moves the mark out of `marks`, as a real pending replace does. Step 10 clears the record, or
-turns it into the real pending replace. An in-progress record counts as a pending replace for `reconcile` (D2)
-and for the state map (R12), so a list cannot drop the name while the save runs.
+writes an **in-progress record** in one `UpdateMcpSettings` call. It is a separate `McpSaveInProgress` entry
+in `McpGatewaySettings.saves_in_progress`, never a pending replace, so it never overwrites anything. It holds
+the new `definition`, `previous` (the live definition for a replace, the pending replace's `previous` for a
+Retry, absent for a new server), `retry` (a Retry: a pending replace of the name already exists), the save's
+mark, `planned_created_secrets` (the `secret_values` names that the step-3 snapshot shows absent) and
+`planned_overwritten_secrets` (the `secret_values` names it shows present). The write changes nothing
+else: the mark stays in `marks` (a replace) or in the pending replace (a Retry) until `persist`, so `List`,
+launch and other clients see the same mark as before. Step 10 deletes the in-progress record in the same
+write that persists the outcome. If the in-progress write fails, the save stops with no host change.
 
-**Recovery** at `NewManager`, before the first `reconcile`: each leftover in-progress record is resolved
+While an in-progress record exists, `reconcile` keeps the name's definition and mark (D2), `Authorize` is
+refused (R3), `ResolveAttach` counts a marked name as being replaced (R12), and `List`/`decorate` report
+`save_in_progress` on the server. The state map (R12) tracks it as `saving`.
+
+**Leftover records**: a running save writes and deletes its in-progress record while it holds the per-name
+lock (R3). So an in-progress record seen **by a holder of that lock** is always a leftover of an earlier daemon
+run (or of a `persist` that failed), never a live save's. That gives one simple rule: every operation that
+takes the lock (`Save`, Cancel, `Remove`, FR-413 removals) and finds an in-progress record refuses with
+`UNVERIFIED` ("recovering an interrupted save; try again") and changes nothing. Only recovery resolves it.
+
+**Recovery** runs only at daemon start, in `NewManager`, before the first `reconcile` and the state-map load. No
+save is running yet, and recovery still takes `lockName` for each name it resolves. It resolves every leftover
 against one `sbx mcp ls`:
 
-- **Name not listed** (the exit came after `rm` and before the add finished) ⇒ it becomes a normal pending
-  replace with `in_progress = false` and error `daemon stopped during the save`. Its
-  `planned_created_secrets` are added to `removal_failed_secrets`, so Retry removes the ones it leaves blank and
-  Cancel removes them best effort. Both run the usual re-check, so an absent name is simply confirmed gone.
-  Retry and Cancel then work as usual. For a new server, there is no previous registration to restore, so the
-  record is dropped and the planned-created names are removed best effort, with a re-check and a log line.
-- **Name listed** (the exit came before `rm`, or after the add) ⇒ the record is dropped, the mark goes back into
-  `marks`, and the definition is set to `previous` for a replace, or to `definition` for a new server. Which
+- **Name not listed** (the exit came after `rm`, and before the add finished):
+  - a replace ⇒ it becomes a normal pending replace: the mark moves out of `marks` into it, `definition` and
+    `previous` come from the record, error `daemon stopped during the save`, and `planned_created_secrets`
+    become its `removal_failed_secrets`, so Retry removes the ones it leaves blank and Cancel removes them best
+    effort. Both run the usual re-check, so an absent name is simply confirmed gone.
+  - a Retry ⇒ the existing pending replace is kept as it is (held mark, `previous`, `removed_secrets`,
+    `removal_failed_secrets`) and updated as a failed Retry would be (R8): `definition` = the record's,
+    error `daemon stopped during the retry`, `planned_created_secrets` added to `removal_failed_secrets`,
+    `revision` + 1.
+  - a new server ⇒ there is no previous registration to restore, so the record is dropped and the
+    planned-created names are removed best effort, with a re-check and a log line.
+- **Name listed** (the exit came before `rm`, or after the add) ⇒ the record is dropped. A replace keeps its
+  mark and `previous` definition (both were never moved). A new server or a Retry gets the record's
+  `definition` and mark; a Retry's pending replace is dropped and `onReplaceEnded(name, true)` runs. Which
   registration the host holds is not known. The next Edit's definition read merges with `inspect`, so any
-  difference shows as `changed on the host`. Secrets are left in place, because the registration may use them.
-- **List fails** ⇒ the record stays in progress, and recovery runs again on the next `reconcile`. The name is
-  never dropped while the record exists.
+  difference shows as `changed on the host`. Secrets are left in place, because the registration may use
+  them. **FR-415**: when `definition` vs `previous` is a client change (`mcprules.ClientChanged`), the
+  surviving definition gets `rebind_pending = true`, because whether the identity clear ran is not known (the
+  same reasoning as `UNCONFIRMED`, R9). The next save that stores the client secret then clears the binding.
+- **List fails** ⇒ recovery retries the same list with backoff (5 s doubling to 5 min) on a start-up goroutine
+  until it succeeds, and resolves the leftovers then. It is still the start-up recovery: `reconcile` never
+  resolves in-progress records. Until then the names stay protected as above: kept by `reconcile`, refused
+  by `Authorize` and by every lock holder with `UNVERIFIED`, and skipped at launch while marked.
 
 Every recovery logs `mcp: <name>: recovered interrupted save (<result>)` and emits one `mcp_gateway_changed`.
 Secrets the save **overwrote** cannot be restored after a crash, because the old value is gone. The recovered
-pending replace's error names them. Shutdown does not wait for in-flight saves: recovery covers every exit
-point the same way, including a crash, which a shutdown wait could not. A switchboard-only save writes no
-in-progress record. It makes no host-registration change, so an exit before `persist` loses only that save's
-mark change, and the stored secrets stay listed under their names.
+pending replace's error names them from `planned_overwritten_secrets` (the listed case logs them). Shutdown
+does not wait for in-flight saves: recovery covers every exit point the same way, including a crash, which a
+shutdown wait could not. A switchboard-only save writes no in-progress record. It makes no host-registration
+change, so an exit before `persist` loses only that save's mark change, and the stored secrets stay listed
+under their names.
 
 **Contexts**: the forward steps (1–7) share the `saveTimeout` budget. Every cleanup call runs on its **own**
 fresh context derived from `context.WithoutCancel`: each rollback removal, each re-check list, the identity
@@ -187,7 +213,7 @@ allowed for saves, adds, removes and FR-413 removals; serialised, FR-404). Befor
 **request alone** shows it touches `client_secret`/`:identity` or removes the registration (`Remove`, an
 FR-413 removal of those names, a request carrying `mcp:<s>:client_secret`) checks `inflight[name]` under `m.mu`
 and fails with `ErrAuthInProgress` (FR-424 refusals). `Authorize` checks, under the same `m.mu` hold, that no
-lock is held or waited for **and** that no pending replace (or in-progress record, R2) exists, before it
+lock is held or waited for **and** that no pending replace or in-progress record (R2, the state map's `pending`/`saving`) exists, before it
 records `inflight[name]`; otherwise `ErrBeingReplaced` (`FAILED_PRECONDITION`). It reads the pending state from
 the R12 state map (`stateMu`, a leaf), **never** from the settings record, so `m.mu` is never held across a
 registry read, and "pending" has one in-memory source of truth. The check-and-take for both directions
@@ -218,7 +244,7 @@ The definition read (R11) **does not take the lock**.
 **Decision**: Extend `pb.McpGatewaySettings` (the one record in the `mcp` bucket) with
 `map<string, McpServerDefinition> definitions = 3` and `map<string, McpPendingReplace> pending_replaces = 4`.
 Marks, definitions and pending replaces therefore change in one bbolt write. `reconcile` drops a definition
-whose name the host no longer lists unless the name is locked (save running) or has a pending replace; it
+whose name the host no longer lists unless the name is locked (save running), has a pending replace, or has an in-progress record (R2); it
 detects *registered by another path* (R8). Definitions hold credential headers only as templates or as
 redacted+flagged values (R11). `AddMcpServer` (old clients) and `SaveMcpServer` both write it; `Remove`
 deletes it.
@@ -281,7 +307,8 @@ pending replace (so launch never applies it, FR-425); the previous definition is
 - **Cancel**: new RPC `CancelMcpPendingReplace{name, revision}`. Under the lock: best-effort removal of every
   `removal_failed` name (with re-check), then drop pending, mark and definition; clear skipped entries.
   Never refused for a failed removal; the response names secrets still listed (or unconfirmed).
-- **Registered by another path**: `reconcile` sees a listed name that has a pending replace and no lock ⇒
+- **Registered by another path**: `reconcile` sees a listed name that has a pending replace, no lock and no
+  in-progress record (R2) ⇒
   drop pending, mark and definition; clear skipped entries; the emitted event's outcome lists the pending
   replace's `removal_failed` names.
 - An `AddMcpServer`/new-server save of a name with a pending replace is refused (`FAILED_PRECONDITION`,
@@ -363,8 +390,10 @@ is computed once, after a save, not on every Edit open.
 
 ### R12 — Launch skip and per-sandbox record (FR-425)
 
-**Decision**: `ResolveAttach` returns `BeingReplaced []string` (marked names whose lock is `replacing`, plus
-names held in pending replaces whose held mark is on). `sandbox.McpAttach` carries it, the
+**Decision**: `ResolveAttach` returns `BeingReplaced []string` (marked names whose lock is `replacing` or that
+have an in-progress record (R2 *Crash safety*: live or leftover), plus names held in pending replaces whose held
+mark is on). The mark stays in `marks` while a replace runs, so the first clause covers a launch at any point
+between the in-progress write and `persist`. `sandbox.McpAttach` carries it, the
 launch log reports `mcp: <name> skipped: being replaced`, and the sandbox record gets
 `repeated McpSkippedServer mcp_skipped = 25` (`{name, state}` with `McpSkipState`
 `SKIPPED_BEING_REPLACED` / `NOT_ATTACHED_AT_LAUNCH`). When a pending replace or a running replace ends, the
@@ -374,10 +403,11 @@ changes or clears entries and emits `sandbox_changed`. It is called for **every*
 `STILL_REGISTERED` ⇒ `true` (the server is still registered, and it was skipped only because of the
 replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pending).
 
-**Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending,
+**Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending, saving,
 generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
-save turns `replacing`, or a pending replace (or in-progress record, R2) is created or ends; it is loaded from
-the settings record at start, after crash recovery (R2). It is the only source `Authorize`, `reconcile` and
+save turns `replacing`, a pending replace is created or ends, or an in-progress record (R2) is written or
+deleted (`saving`). It is loaded from the settings record at start, after the start-up recovery pass (R2);
+leftovers that pass could not resolve (failed list) load as `saving`. It is the only source `Authorize`, `reconcile` and
 `ReplaceState` read for "pending". `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
 inside a bbolt transaction. Rules: no registry write (bbolt `Update`) and no `onReplaceEnded` call happens
 while `m.mu` is held, and no registry read is opened inside another registry transaction.

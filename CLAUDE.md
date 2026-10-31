@@ -155,10 +155,10 @@ reserved `client_secret`, credential-header rule + one-step conversion + `Redact
 server). Every MCP form save is one RPC **`SaveMcpServer`**, run on `context.WithoutCancel` under a per-name lock
 (`mcp/locks.go`, checked with the auth `inflight` record in one `Manager.mu` section, FR-424): fingerprint (HMAC-SHA-256
 under a per-start key; `STALE_CHANGED`/`STALE_RESTARTED`; a failed re-read is `UNVERIFIED`) → secret snapshot →
-classify (re-checks `inflight`) → crash-safety *in-progress* pending record (resolved at daemon start) → `rm` (re-listed on failure) → stores
+classify (re-checks `inflight`) → crash-safety *in-progress* record (`saves_in_progress`, separate from pending replaces; mark stays in `marks`; a lock holder that finds one refuses `UNVERIFIED`; resolved only at daemon start, `rebind_pending` on a client change) → `rm` (re-listed on failure) → stores
 (stdin) → `add` (never re-checked on failure; rollback) → identity clear of `mcp:<s>:client_secret:identity` (re-checked;
 *client re-bind pending* mark) → one persist + one event. Definitions and **pending replaces** (Retry held/previous,
-Cancel, ended by *registered by another path*) live in `McpGatewaySettings.definitions`/`pending_replaces` (3–4).
+Cancel, ended by *registered by another path*) live in `McpGatewaySettings.definitions`/`pending_replaces`/`saves_in_progress` (3–5).
 `GetMcpServerDefinition` merges the record with `sbx mcp inspect --json` + `auth status --json` (runtime wins where
 positively reported; credential literals redacted in the daemon). Scopes: `--scope` on add, `--scope`/`--no-scope` on
 authorize. Launch skips a marked server being replaced → `Sandbox.mcp_skipped` (25). New RPCs

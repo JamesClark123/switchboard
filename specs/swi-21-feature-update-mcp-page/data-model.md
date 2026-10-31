@@ -24,7 +24,7 @@ What switchboard last registered (or saved) for a name. Key: server name in
 
 - D1: never holds a secret value or a credential-header literal (SC-007).
 - D2: dropped by `reconcile` when the host no longer lists the name, unless the name is locked by a save or
-  has a pending replace, including an `in_progress` one (FR-404, research R2 *Crash safety*).
+  has a pending replace or an in-progress record (`McpSaveInProgress`, FR-404, research R2 *Crash safety*).
 - D3: written in the same `UpdateMcpSettings` call as the mark it belongs with.
 - D5: created only by a save that registers. A mark- or secrets-only save of a server with no record does not
   create one (FR-402 keeps naming its unrecoverable fields).
@@ -47,31 +47,59 @@ Key: server name in `McpGatewaySettings.pending_replaces`.
 | `error` | string | host message, verbatim |
 | `failed_at` | Timestamp | for `replace failed <age> ago` |
 | `revision` | uint64 | +1 on each update; part of the Retry fingerprint |
-| `in_progress` | bool | provisional record written before a registration change's first host mutation (research R2) |
-| `planned_created_secrets` | repeated string | names the in-progress save would create; moved to `removal_failed_secrets` on recovery |
 
 **State transitions**
 
 ```text
-(registration change, before rm/add) ──► IN_PROGRESS
-IN_PROGRESS ──save persists──► (gone, or PENDING if the replace failed)
-IN_PROGRESS ──daemon start, name not listed──► PENDING (error "daemon stopped during the save"; new server: gone)
-IN_PROGRESS ──daemon start, name listed──► (gone; mark restored; definition = previous, or the new one for a new server)
-IN_PROGRESS ──daemon start, list fails──► IN_PROGRESS (retried on the next reconcile)
+McpSaveInProgress (replace) ──daemon start, name not listed──► PENDING (error "daemon stopped during the save")
+McpSaveInProgress (Retry) ──daemon start, name not listed──► PENDING kept, updated as a failed Retry
 (replace fails after remove) ──► PENDING
 PENDING ──retry ok──► (gone; definition+mark live; skipped entries → NOT_ATTACHED_AT_LAUNCH)
 PENDING ──retry fails──► PENDING (definition, names, error, failed_at, revision updated; previous kept)
 PENDING ──retry pre-step: removal-failed name still listed──► PENDING (unchanged; save refused)
 PENDING ──cancel──► (gone; mark + definition dropped; skipped entries cleared)
-PENDING ──name listed by host while unlocked──► (gone, "registered by another path"; mark + definition dropped; skipped entries cleared)
+PENDING ──name listed by host while unlocked, no in-progress record──► (gone, "registered by another path"; mark + definition dropped; skipped entries cleared)
 ```
 
 Invariants: P1 never holds a value; P2 no time limit; P3 never applied at launch; P4 an add of the name
 from switchboard's form is refused while it exists.
 
+## McpSaveInProgress (new, persisted per daemon and server name)
+
+Key: server name in `McpGatewaySettings.saves_in_progress`. Crash safety (research R2): written by a
+registration change (replace, new-server add, Retry) under the per-name lock before its first host mutation,
+and deleted by its `persist`. Separate from `pending_replaces`, so it never overwrites a pending replace.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | |
+| `attach_by_default` | bool | the save's mark (a copy; `marks` and the pending replace are not changed by this write) |
+| `definition` | McpServerDefinition | the one being saved |
+| `previous` | McpServerDefinition | live definition (replace), the pending replace's `previous` (Retry), absent (new server) |
+| `retry` | bool | a Retry: a pending replace of the name exists |
+| `planned_created_secrets` | repeated string | `secret_values` names absent in the snapshot (the save would create them) |
+| `planned_overwritten_secrets` | repeated string | `secret_values` names present in the snapshot (the save would overwrite them) |
+
+**State transitions**
+
+```text
+(registration change, under the lock, before rm/add) ──► SAVING
+SAVING ──save persists──► (gone; the outcome is persisted in the same write)
+SAVING ──daemon start, name not listed──► (gone) replace: new PENDING, planned-created names = removal_failed;
+                                          Retry: its PENDING updated as a failed Retry; new server: names removed best effort
+SAVING ──daemon start, name listed──► (gone) replace: mark + previous kept; new server/Retry: definition + mark live,
+                                      Retry's PENDING dropped; rebind_pending set if definition vs previous is a client change
+SAVING ──daemon start, list fails──► SAVING (start-up recovery retries the list with backoff; never resolved by reconcile)
+```
+
+Invariants: S1 a lock holder that finds one refuses with `UNVERIFIED` (it can only be a leftover); S2 while it
+exists the name is kept by `reconcile`, refused by `Authorize`, skipped at launch while marked, and reported
+`save_in_progress` by `List`.
+
 ## McpGatewaySettings (existing, extended)
 
-`default_attach_mode` (1), `marks` (2), **`definitions` (3)**, **`pending_replaces` (4)**.
+`default_attach_mode` (1), `marks` (2), **`definitions` (3)**, **`pending_replaces` (4)**,
+**`saves_in_progress` (5)**.
 
 ## McpSkippedServer (new, on `Sandbox.mcp_skipped`)
 
