@@ -199,11 +199,11 @@ deadline (the parent then kills it), so the test is shown to fail on a broken gu
   The goroutine-detached save still returns to a live caller. `G/server.go`: `DaemonInfo.capabilities` adds
   `"mcp-edit"`. Make sure no interceptor or log line prints `SaveMcpServerRequest` (grep `G/` for request
   logging). Tests in `G/mcp_rpcs_test.go`, including: a client cancel mid-save still persists and emits.
-- [ ] T015 [P] `C/mcp.go`: wrappers `GetMcpServerDefinition`, `SaveMcpServer` (returns the outcome, or a
+- [X] T015 [P] `C/mcp.go`: wrappers `GetMcpServerDefinition`, `SaveMcpServer` (returns the outcome, or a
   typed `*SaveRefusal` decoded from the status detail), `CancelMcpPendingReplace`, `RemoveMcpServerSecrets`,
   and `AuthorizeMcpServer` gaining `scopes []string, noScope bool`. Tests in `C/mcp_test.go` against the fake
   server.
-- [ ] T016 [P] TUI capability gate: `UI/mcp.go` stores `hasEdit` from the daemon's `HasCapability("mcp-edit")`
+- [X] T016 [P] TUI capability gate: `UI/mcp.go` stores `hasEdit` from the daemon's `HasCapability("mcp-edit")`
   when the view opens; without it the view and form behave exactly as today. Test both paths.
 
 **Checkpoint**: an add through `SaveMcpServer` registers and records a definition; a mark-only save never
@@ -380,7 +380,7 @@ unchanged.
 
 ### TUI
 
-- [ ] T026 [US1] `UI/mcp_form.go` (new): move the form out of `UI/mcp.go` and make it the add/edit form.
+- [X] T026 [US1] `UI/mcp_form.go` (new): move the form out of `UI/mcp.go` and make it the add/edit form.
   `mcpFormVals` gains only comparable fields (`scopes`, `mode` add/edit/retry). Secret values
   (`secretVals map[string]string`), the opened definition (`opened`) and the view (`*pb.McpDefinitionView`)
   live in `mcpState` beside it (research R14). Add mode calls `GetMcpServerDefinition{for_add: true}` when the
@@ -389,7 +389,7 @@ unchanged.
   <host>` with the name not editable, and field descriptions carry the view's flags
   ([contracts/mcp-form-ui.md](./contracts/mcp-form-ui.md)). The client-side rules all go through `MR/`
   (remove the `authServerOK`/`maxClientID` copies). Tests in `UI/mcp_form_test.go`.
-- [ ] T027 [US1] `UI/mcp.go` keys: `e` on a registered server opens the form after `GetMcpServerDefinition`
+- [X] T027 [US1] `UI/mcp.go` keys: `e` on a registered server opens the form after `GetMcpServerDefinition`
   (`loading…` status; `GONE` ⇒ status and offer to add as new); hidden worker servers are never shown.
   Pending-replace rows render `<server> — not registered (replace failed <age> ago)`; `R` asks `h` held / `p`
   previous, then opens the form in retry mode (names removed and removal-failed secrets; the "old values are
@@ -403,7 +403,7 @@ unchanged.
   and `X` on a `saving…` row send their RPC and show the `BEING_REPLACED` message. Help bindings updated.
   Tests, including the `m` toggle on both row states and `e`/`R` on a `saving…` row (no RPC sent), and `e`
   on a stale row whose read reports `save_in_progress` (no form).
-- [ ] T028 [US1] `UI/mcp_form.go` save sequence: client rules → confirmations in the contract's order, each
+- [X] T028 [US1] `UI/mcp_form.go` save sequence: client rules → confirmations in the contract's order, each
   `y`-only through `confirm.go` with back-out reopening the form: dropped settings (FR-402), local execution
   for any resulting host-command definition (FR-407), authorization will be discarded (FR-404). Then
   `SaveMcpServer` with the fingerprint, `confirm_*` and `acknowledge_local_execution` set. Kind change clears
@@ -415,11 +415,11 @@ unchanged.
   other save lands, a re-save from the kept form is `STALE_CHANGED` when that save re-registered and goes through
   with the form's mark when it was switchboard-only), and for
   `UNAVAILABLE`.
-- [ ] T029 [US1] Outcome panel and follow-ups in `UI/mcp.go`: render `McpSaveOutcome` (state line, host
+- [X] T029 [US1] Outcome panel and follow-ups in `UI/mcp.go`: render `McpSaveOutcome` (state line, host
   messages verbatim, secret lists, FR-419 list with the skipped and exclusive notes), then the FR-405
   authorize offer after a successful replace of a remote server. On `STILL_REGISTERED`/`NOT_REGISTERED` the
   form stays open with the edits. Tests.
-- [ ] T030 [US1] In-place reload on refusal (FR-404): `reloadMcpForm(refusal)` re-reads the definition (for
+- [X] T030 [US1] In-place reload on refusal (FR-404): `reloadMcpForm(refusal)` re-reads the definition (for
   retry mode it re-reads the pending replace, and if that has ended, closes the form with how it ended). A
   field counts as edited when its value ≠ `opened` (via `MR.Equal`). Edited fields keep the developer's value
   and are flagged `changed on the host: was …, host now …` where the host also changed. Unedited fields take
@@ -427,11 +427,11 @@ unchanged.
   or URL replaced ⇒ client secret dropped; an orphaned placeholder or a client secret without a client ID ⇒
   dropped. The status names every dropped secret. The re-read becomes the new baseline and fingerprint.
   Table tests per rule (US1 #7).
-- [ ] T031 [US1] `UI/sandbox_mcp.go`: the overlay lists `mcp_skipped` entries (`skipped: being replaced`,
+- [X] T031 [US1] `UI/sandbox_mcp.go`: the overlay lists `mcp_skipped` entries (`skipped: being replaced`,
   `not attached at launch — a to attach`, exclusive: `missing from this sandbox's fixed set — relaunch to
   include it`). `a` on such an entry attaches it, and the sandbox list's third line appends `· mcp skipped:
   <n>`. Tests in `UI/sandbox_mcp_test.go`.
-- [ ] T032 [US1] `UI/formguard.go`: replace the `*m.mcpView.vals != m.mcpView.baseline` comparison with
+- [X] T032 [US1] `UI/formguard.go`: replace the `*m.mcpView.vals != m.mcpView.baseline` comparison with
   `mcpSnapshot()` / `equal()` (vals + `secretVals`, as `launchSnapshot` does) and a deep-copied baseline, so a
   non-empty masked field is dirty. While the form holds a pending replace (after a `NOT_REGISTERED` outcome, or
   in retry mode), the leave path (clean or dirty) opens the `y`-only Cancel confirmation of T027 and calls
@@ -478,7 +478,7 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
 
 ### TUI
 
-- [ ] T037 [US2] `UI/mcp_form.go` secrets group: `advanceMcpForm` tracks the focused field and group; when
+- [X] T037 [US2] `UI/mcp_form.go` secrets group: `advanceMcpForm` tracks the focused field and group; when
   focus leaves group 1 (not merely the headers field, so later fields stay reachable), the form is suspended,
   then rebuilt from the vals with `reopenForm(gMcp)` and `NextGroup` into the secrets group, keeping `secretVals`
   by secret name (research R14). Group 2 always starts with a `huh.NewNote`, so it is never empty (huh v1.0.0
@@ -487,7 +487,7 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
   it)`, `missing`, `must be re-entered (URL changed)`, `removal failed; will be removed unless re-entered`).
   When secret storage is unavailable, the note carries the reason and no inputs follow it. Placeholder rule errors
   name the placeholder (FR-408). Tests (US2 #1, #3, #7).
-- [ ] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): at the T037 group-leave suspension and
+- [X] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): at the T037 group-leave suspension and
   again on save, each credential header with literal text opens a `y`-only offer that applies `MR.Convert`, moves the
   literal into the new secret field, and keeps that field editable. Declining keeps the form open with the
   refusal. A header that still equals the view's redacted `LITERAL_ON_HOST` value is converted to the template
@@ -497,10 +497,10 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
   field blank; declining it reaches group 2. URL/argument credential warning (US2 #10) as a `y`-only confirm. A save that would re-register
   while a `LITERAL_ON_HOST` header is unconverted is refused; a mark- or secrets-only save is allowed and
   keeps the warning. Tests.
-- [ ] T039 [US2] Pre-save secret confirmations (FR-409, FR-411): missing secrets ("register anyway?"),
+- [X] T039 [US2] Pre-save secret confirmations (FR-409, FR-411): missing secrets ("register anyway?"),
   removal-failed blanks ("this save will remove …"), and blanks after a URL change ("header will not be sent
   until set") are combined into one `y`-only prompt. Tests.
-- [ ] T040 [US2] FR-413 offer after the outcome panel: name each `unused_secrets` entry and remove it
+- [X] T040 [US2] FR-413 offer after the outcome panel: name each `unused_secrets` entry and remove it
   behind a `y`-only confirm via `RemoveMcpServerSecrets`. The Secrets view (if open on that host) and the
   gateway view refresh from the events (FR-421). Tests.
 
@@ -530,12 +530,12 @@ secret is stored before the add, and authorize.
   add the client secret and identity record to `unused_secrets` with a public-client reason. `RemoveSecrets`
   clears `rebind_pending` when both are confirmed gone (research R9, round-18 resolution). When the client ID
   is cleared, add the same names (FR-413, US3 #5). Tests.
-- [ ] T043 [US3] `UI/mcp_form.go` client-secret field (FR-414): shown when a client ID is present, titled
+- [X] T043 [US3] `UI/mcp_form.go` client-secret field (FR-414): shown when a client ID is present, titled
   `mcp:<server>:client_secret`, with "Needed only for a confidential client." and its stored status, plus
   the re-bind pending text from the contract when the server is marked. Replace the old "store it under
   Secrets first" description. Pre-save FR-415 warning when the client changes with no secret entered while
   one is stored (US3 #4). Tests.
-- [ ] T044 [US3] Outcome panel identity text for each `Identity` value. For `NOT_CLEARED`/`UNCONFIRMED` it
+- [X] T044 [US3] Outcome panel identity text for each `Identity` value. For `NOT_CLEARED`/`UNCONFIRMED` it
   leads with "re-enter the client secret and save to retry the clear", then names
   `mcp:<server>:client_secret:identity` as removable in Secrets or the host CLI, and says the mark clears
   only on the next save that stores the client secret. The FR-413 offer uses the public-client wording for
@@ -558,7 +558,7 @@ link requests them.
   from `AuthorizeMcpServerRequest` (validated; both set ⇒ `INVALID_ARGUMENT`) and keeps today's argv when
   neither is set. `G/mcp_rpcs.go` passes them through. Argv tests (`--scope a --scope b`, `--no-scope`), and a
   test that the recorded definition is unchanged after a one-time authorize (SC-005).
-- [ ] T046 [US4] TUI: the Scopes field in the definition group (space-separated, `MR.ValidScopes` errors kept
+- [X] T046 [US4] TUI: the Scopes field in the definition group (space-separated, `MR.ValidScopes` errors kept
   in the form). `S` on a remote server opens a one-line prompt for one-time scopes with `ctrl+n` for *no
   scopes* and the "requested exactly as given; no refresh-token scope is added" note, then starts the
   existing authorization modal, whose verbatim runtime lines cover refused-scope output (FR-418). `A` is
@@ -570,18 +570,18 @@ link requests them.
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T047 [P] E2E: make `E2E/harness.go` `stubSbx`'s MCP state stateful: `mcp add` writes a per-name state
+- [X] T047 [P] E2E: make `E2E/harness.go` `stubSbx`'s MCP state stateful: `mcp add` writes a per-name state
   file (unless it fails), `mcp rm` deletes it, and `mcp ls` prints the table from that state (keeping the seeded
   `notion` row), so a failed replace leaves the name unlisted. Add `mcp inspect --json` from the same state, `secret ls/set/rm` state (set reads stdin), and an `mcp add` failure for URLs
   containing `refuse.invalid`. Add `E2E/mcp_e2e_test.go` tests: edit URL + header secret (US1/US2), and a
   failed replace → pending row → Retry previous → Cancel (FR-406/FR-426). Run `make e2e`.
-- [ ] T048 [P] FR-421: every save, edit, secret store/removal and cancel refreshes the gateway and Secrets
+- [X] T048 [P] FR-421: every save, edit, secret store/removal and cancel refreshes the gateway and Secrets
   views on another connected client (`G/` event test, plus a TUI test that the `mcp_gateway_changed` outcome
   updates a second open view).
 - [X] T049 [P] Update `specs/008-mcp-gateway-manager/contracts/sbx-mcp-cli.md` and `sbx-secret-cli.md` with
   the rows from [contracts/sbx-cli-delta.md](./contracts/sbx-cli-delta.md), all marked
   *documentation-derived*.
-- [ ] T050 Update the `CLAUDE.md` SPECKIT block to mark SWI-21 **implemented** (tasks done, T052 pending) and
+- [X] T050 Update the `CLAUDE.md` SPECKIT block to mark SWI-21 **implemented** (tasks done, T052 pending) and
   summarise the shipped design in the house style.
 - [ ] T051 Run `make fmt-check vet lint test cover env-check` (≥ 90% per module) and fix any gaps.
 - [ ] T052 Manual: quickstart Scenario 0 on a real host. Record each flag's outcome in
