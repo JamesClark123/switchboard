@@ -89,16 +89,21 @@ Steps, all under the per-name lock (R3):
 9. Rollback on failure (R7), pending replace on a replace's failure (R8).
 10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call; emit once.
 
-**Contexts**: the forward steps (1–7) share the `saveTimeout` budget. Rollback, the identity re-check and
-`persist` each run on a **fresh** bounded context derived from `context.WithoutCancel` (`cleanupTimeout`,
-2 min each), so an exhausted step budget never leaves the secrets this save stored on the host.
+**Contexts**: the forward steps (1–7) share the `saveTimeout` budget. Every cleanup call runs on its **own**
+fresh context derived from `context.WithoutCancel`: each rollback removal, each re-check list, the identity
+removal and its re-check, and `persist`. Each context has the CLI's own bound (`secret` mutate 60 s, list
+30 s), never one shared step budget. An exhausted forward budget or a slow removal therefore never makes the
+remaining cleanups fail.
 
-**Redacted and unverifiable headers (FR-403, FR-423)**: a request header whose name the stored view flagged
-`LITERAL_ON_HOST` (or `RESOLVED_UNCHECKABLE`) and whose value equals the view's redacted value counts as
-**unchanged** in `classify`, and is exempt from `CheckCredentialValue`. It is accepted only by a save that does
-not re-register, and is persisted redacted with its name in `literal_on_host`. Any save that would re-register
-while such a header is unconverted is refused with `INVALID_ARGUMENT` by the daemon (not only the TUI), so the
-host's credential is never replaced by `••••`.
+**Redacted headers (FR-403, FR-423)**: a request header whose name the view flagged `LITERAL_ON_HOST` and
+whose value equals the view's redacted value counts as **unchanged** in `classify`, and is exempt from
+`CheckCredentialValue`. It is accepted only by a save that does not re-register, and is persisted redacted with
+its name in `literal_on_host`. Any save that would re-register while such a header is unconverted is refused
+with `INVALID_ARGUMENT` by the daemon (not only the TUI), so the host's credential is never replaced by `••••`.
+This applies to `LITERAL_ON_HOST` **only**. A `RESOLVED_UNCHECKABLE` header (when *inspect returns resolved
+values*) is pre-filled with the record's `${…}` template, is never redacted, and is accepted on any save,
+including a re-registering one, which registers the template (FR-423). The TUI shows the "cannot be checked"
+warning before such a save.
 
 **Authorization warning**: `confirm_discard_authorization` is required for a replace unless the auth state is
 `UNAUTHORIZED` or `NOT_APPLICABLE` (host commands have no authorization).
@@ -151,7 +156,9 @@ deletes it.
 
 **Stale snapshots**: `reconcile` reads the per-name generations (R3) **before** running `sbx mcp ls`. When it
 applies the result, it skips every name that is locked now or whose generation changed since the list
-started. The check and the registry update happen in one `m.mu` section. A list taken before a replace's
+started. Generations live in the leaf state map (R12 *Lock order*), so `reconcile` reads them before the list and
+re-checks them **inside** the `UpdateMcpSettings` mutate func. It never holds `m.mu` across the registry
+write, and it calls `onReplaceEnded` (the sweep) only after the update has returned. A list taken before a replace's
 failed add therefore cannot end the new pending replace as *registered by another path*. A list taken before
 a new server's add cannot drop the definition just written.
 
@@ -256,7 +263,9 @@ check under the lock catches any race, and a read never blocks Authorize or anot
 `for_add` (add mode, or any name that is not registered) it runs only step 5 and returns only the secret
 status: every global-scope `mcp:<name>:*` name (`stored_secrets`) plus `secrets_available`/reason (from whether
 `ListGlobal` succeeded). The TUI derives each field's *set / missing* from `stored_secrets` as headers are
-typed, in add and edit mode alike. The same field is filled in edit mode. Otherwise the daemon:
+typed, in add and edit mode alike. The same field is filled in edit mode. When the name is not listed but
+the state map shows a save running, the read returns `save_in_progress = true` (with `stored_secrets`)
+instead of `GONE`, and the TUI says "being saved on another client, try again". Otherwise the daemon:
 
 1. reads `sbx mcp ls` (kind from TRANSPORT), `sbx mcp inspect <name> --json` (new argv) and
    `sbx mcp auth status <name> --json` (existing argv);
@@ -289,9 +298,17 @@ changes or clears entries and emits `sandbox_changed`. It is called for **every*
 `STILL_REGISTERED` ⇒ `true` (the server is still registered, and it was skipped only because of the
 replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pending).
 
+**Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending,
+generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
+save turns `replacing`, or a pending replace is created or ends; it is loaded from the settings record at
+start. `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
+inside a bbolt transaction. Rules: no registry write (bbolt `Update`) and no `onReplaceEnded` call happens
+while `m.mu` is held, and no registry read is opened inside another registry transaction.
+
 **Late launch race**: a launch resolves `BeingReplaced` before the replace ends but persists its
-`mcp_skipped` entry after the sweep. To close that gap, the launch writes the entry in a registry update that
-re-reads the replace state through a `ReplaceState(name)` query on the MCP manager. If the replace has ended,
+`mcp_skipped` entry after the sweep. To close that gap, the launch writes the entry in a registry update whose
+mutate func re-reads the replace state through `ReplaceState(name)`, which reads only the state map under
+`stateMu`. If the replace has ended,
 it writes the post-sweep state instead (`NOT_ATTACHED_AT_LAUNCH`, or no entry). `sandbox.Manager.AttachMcp`
 (behind the `AttachMcpServer` RPC) clears the entry. Exclusive-mode
 sandboxes get the "relaunch to include it" note in the TUI (flag `mcpLoadWorksInExclusive = false`).
@@ -314,11 +331,15 @@ input. So:
 
 - `advanceMcpForm` tracks the focused field key (`form.GetFocusedField().GetKey()`) before and after each
   update.
-- When focus leaves `headers` (or group 1), it **suspends** the form, the way the host-command warning's
-  `pending` modal does today. If a credential header holds a literal, it shows the conversion prompt.
+- When focus **leaves group 1** (the group index changes from 0 to 1), it **suspends** the form, the way the
+  host-command warning's `pending` modal does today. If a credential header holds a literal, it shows the
+  conversion prompt. Leaving the headers field within group 1 does nothing, so every field after it stays
+  reachable.
 - It then rebuilds the whole form from the vals with `reopenForm(gMcp)` and calls `NextGroup` to land in the
-  secrets group, so the secret fields always match the current headers.
-- Unavailable secret storage is shown as a `huh.NewNote` in place of the inputs.
+  secrets group, so the secret fields always match the current headers. Moving back to group 1 and leaving it
+  again repeats this.
+- Group 2 always begins with a `huh.NewNote` (the secret list summary, "no secrets needed", or the
+  unavailable-storage reason), so it is never empty (an empty group panics in huh v1.0.0 `Group.Init`).
 
 **Guard compatibility (SWI-9)**: the comparable form fields stay in `mcpFormVals`. Secret values, the opened
 definition and the view live beside it in `mcpState` (`secretVals map[string]string`, `opened`, `view`).

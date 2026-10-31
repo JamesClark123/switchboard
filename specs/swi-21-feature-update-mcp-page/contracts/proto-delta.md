@@ -90,6 +90,8 @@ message McpDefinitionView {
   // Every global-scope mcp:<name>:* secret name (never values); the form derives
   // set/missing for placeholders typed after it opened (FR-409, FR-411).
   repeated string stored_secrets = 15;
+  // The name is not listed because a save of it is running (instead of NOT_FOUND).
+  bool save_in_progress = 16;
 }
 
 message SaveMcpServerRequest {
@@ -177,14 +179,14 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Authorize while saving / pending | `FAILED_PRECONDITION` | `BEING_REPLACED` |
 | Add of a name with a pending replace | `FAILED_PRECONDITION` | `PENDING_EXISTS` |
 | Edit of a name no longer listed (not `for_add`) | `NOT_FOUND` | `GONE` |
-| Re-registering save with an unconverted `LITERAL_ON_HOST` / `RESOLVED_UNCHECKABLE` header | `INVALID_ARGUMENT` | message names the header, never its value |
+| Re-registering save with an unconverted `LITERAL_ON_HOST` header | `INVALID_ARGUMENT` | message names the header, never its value |
 | Local not acknowledged | `FAILED_PRECONDITION` | existing |
 | Host step failed | `OK` with `McpSaveOutcome` (state + `host_errors`) | the save ran; the outcome describes it |
 | Gateway/secrets unavailable | `FAILED_PRECONDITION` | existing FR-079 reason |
 
-A header in `SaveMcpServerRequest.definition` that the view flagged `LITERAL_ON_HOST` / `RESOLVED_UNCHECKABLE` and
-that still holds the view's redacted value counts as unchanged (research R2) and is accepted only on a save that does
-not re-register.
+A header in `SaveMcpServerRequest.definition` that the view flagged `LITERAL_ON_HOST` and that still holds the view's
+redacted value counts as unchanged (research R2) and is accepted only on a save that does not re-register. A
+`RESOLVED_UNCHECKABLE` header carries the record's template and is accepted on any save (FR-423).
 
 Error messages never quote a credential header's value (research R1).
 

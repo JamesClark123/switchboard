@@ -113,13 +113,13 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   acknowledgement; worker prefix), runs on `context.WithoutCancel(ctx)` bounded by `saveTimeout = 10 *
   time.Minute`, takes `lockName`, and runs these steps as named functions that later tasks fill in:
   `checkFingerprint`, `snapshot`, `classify`, `removeStep`, `storeStep`, `addStep`, `identityStep`,
-  `rollbackStep`, `persist`. The forward steps share the `saveTimeout` budget. `rollbackStep`, the identity
-  re-check and `persist` each run on a fresh context from `context.WithoutCancel` bounded by `cleanupTimeout = 2 *
-  time.Minute` (research R2). `persist` writes definition, mark and pending replace in one `UpdateMcpSettings`,
+  `rollbackStep`, `persist`. The forward steps share the `saveTimeout` budget. Each cleanup call (every rollback
+  removal, every re-check list, the identity removal and re-check, `persist`) runs on its **own** fresh context
+  from `context.WithoutCancel`, with that CLI call's own bound (research R2). `persist` writes definition, mark and pending replace in one `UpdateMcpSettings`,
   then emits one `mcp_gateway_changed` carrying the outcome and pending replaces, and one `secrets_changed`
   when any secret changed. In this task: a new-server add with no secrets and a switchboard-only mark change
   (FR-403: no `rm`/`add` in the argv log). A switchboard-only save of a server with no record creates no
-  definition (data-model D5). Test: a save whose forward budget expires still rolls back on the fresh context.
+  definition (data-model D5). Tests: a save whose forward budget expires still rolls back; one slow removal does not fail the next one.
 - [ ] T014 `G/mcp_rpcs.go`: handler for `SaveMcpServer`. It maps sentinel errors to codes per the contract
   table, attaches `McpSaveRefusal` as a status detail, and returns the outcome with `OK` when the save ran.
   The goroutine-detached save still returns to a live caller. `G/server.go`: `DaemonInfo.capabilities` adds
@@ -161,7 +161,8 @@ unchanged.
   normalised difference; a runtime-added `offline_access` is left out of the pre-fill; `NOT_RECOVERABLE` is
   named for fields with no source; `unsupported_settings` lists resource, SSRF override and image kinds. Set
   `has_record`, `attach_by_default`, `auth_state` and `pending_replace` (with
-  `pending_removal_failed_listed` / `_unknown` from `ListGlobal`). It takes **no** lock (research R11). With
+  `pending_removal_failed_listed` / `_unknown` from `ListGlobal`). It takes **no** lock (research R11). When the name is not listed but the state map shows a save running, it
+  returns `save_in_progress` (not `GONE`); the TUI says the server is being saved elsewhere. With
   `for_add` it returns only `stored_secrets` + `secrets_available`/reason for any name, registered or not. In
   edit mode it fills `stored_secrets` too. Tests cover each FR-402 rule and US1 #2, #8, #9.
 - [ ] T019 [US1] `M/definition.go` redaction (FR-423, US1 #9): every reported credential header runs through
@@ -181,11 +182,12 @@ unchanged.
   `runBounded`; failure or timeout ⇒ never re-checked, `add_started` = true. Refuse a replace without
   `confirm_discard_authorization` unless `auth_state` is `UNAUTHORIZED` or `NOT_APPLICABLE`, and an unsupported setting without
   `confirm_drop_unsupported` (FR-402). Edit of a vanished name ⇒ `GONE` with nothing removed (edge case).
-  Kind change is allowed (edge case). Redacted headers (research R2): a header flagged `LITERAL_ON_HOST` /
-  `RESOLVED_UNCHECKABLE` that still holds the redacted value is unchanged for `classify`, exempt from
+  Kind change is allowed (edge case). Redacted headers (research R2): a header flagged `LITERAL_ON_HOST` (only)
+  that still holds the redacted value is unchanged for `classify`, exempt from
   `CheckCredentialValue`, accepted only on a save that does not re-register (persisted redacted, name in
   `literal_on_host`), and refused `INVALID_ARGUMENT` on any re-registering save. Tests: a mark-only save with a
-  redacted header runs no `rm`/`add`; a URL change with one is refused; the argv log never holds `••••`.
+  redacted header runs no `rm`/`add`; a URL change with one is refused; the argv log never holds `••••`; a `RESOLVED_UNCHECKABLE` header's
+  template is accepted on a re-registering save.
   Failure-injection tests for each branch with the scripted fake `sbx`.
 - [ ] T022 [US1] `M/pending.go` (research R8): `holdPending` on a replace that ends `NOT_REGISTERED` (mark moved
   out of `marks`; `previous` = last live definition; revision+1), `Manager.CancelPending(ctx, name, rev)`
@@ -206,8 +208,11 @@ unchanged.
   to `NOT_ATTACHED_AT_LAUNCH` (registered) or clears them, emitting `sandbox_changed`. `sandbox.Manager.AttachMcp` (the `AttachMcpServer`
   RPC) clears a matching entry. Wire `onReplaceEnded` in `cmd/sxbd/main.go` and call it on **every** end:
   `REGISTERED` (any replace or retry) or `STILL_REGISTERED` ⇒ true; cancel or another path ⇒ false; nothing while a
-  pending replace is held. The launch writes its `mcp_skipped` entry in a registry update that re-reads
-  `Manager.ReplaceState(name)` and writes the post-sweep state when the replace already ended (research R12).
+  pending replace is held. Add the leaf state map (`stateMu`; `name → {replacing, pending, generation}`, loaded at start) in
+  `M/locks.go`. The launch writes its `mcp_skipped` entry in a registry update whose mutate func calls
+  `Manager.ReplaceState(name)`, which reads only that map, and writes the post-sweep state when the replace
+  already ended. No registry write and no `onReplaceEnded` call happens under `m.mu` (research R12 *Lock order*);
+  add a `-race` test that runs a launch, a reconcile and a pending end concurrently and checks it finishes.
   Only a `replacing` lock counts as being replaced; a mark- or secrets-only save does not skip the server. Update both callers (`G/sandbox_rpcs.go`, `G/orchestrator_rpcs.go`). Tests in
   `SB/manager_mcp_test.go` and `M/manager_test.go`, including the late-launch race and a plain replace that
   succeeds (entry → `NOT_ATTACHED_AT_LAUNCH`).
@@ -299,14 +304,16 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
 
 ### TUI
 
-- [ ] T037 [US2] `UI/mcp_form.go` secrets group: `advanceMcpForm` tracks the focused field key; when focus
-  leaves `headers` or group 1, the form is suspended, then rebuilt from the vals with `reopenForm(gMcp)` and
-  `NextGroup` into the secrets group, keeping `secretVals` by secret name (research R14). The headers field's `DescriptionFunc` lists the derived `mcp:<server>:<p>`
+- [ ] T037 [US2] `UI/mcp_form.go` secrets group: `advanceMcpForm` tracks the focused field and group; when
+  focus leaves group 1 (not merely the headers field, so later fields stay reachable), the form is suspended,
+  then rebuilt from the vals with `reopenForm(gMcp)` and `NextGroup` into the secrets group, keeping `secretVals`
+  by secret name (research R14). Group 2 always starts with a `huh.NewNote`, so it is never empty (huh v1.0.0
+  panics on an empty group). Test: a form with no placeholders and no client ID opens group 2 without panic. The headers field's `DescriptionFunc` lists the derived `mcp:<server>:<p>`
   names live. One `EchoModePassword` input per placeholder, with a status derived from `stored_secrets` and the view (`set (blank keeps
   it)`, `missing`, `must be re-entered (URL changed)`, `removal failed; will be removed unless re-entered`).
-  When secret storage is unavailable a `huh.NewNote` with the reason replaces the inputs. Placeholder rule errors
+  When secret storage is unavailable, the note carries the reason and no inputs follow it. Placeholder rule errors
   name the placeholder (FR-408). Tests (US2 #1, #3, #7).
-- [ ] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): at the T037 focus-leave suspension and
+- [ ] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): at the T037 group-leave suspension and
   again on save, each credential header with literal text opens a `y`-only offer that applies `MR.Convert`, moves the
   literal into the new secret field, and keeps that field editable. Declining keeps the form open with the
   refusal. URL/argument credential warning (US2 #10) as a `y`-only confirm. A save that would re-register

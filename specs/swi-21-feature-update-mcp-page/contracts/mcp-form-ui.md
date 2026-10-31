@@ -46,8 +46,8 @@ Group 2 — **Secrets** (rebuilt from group 1 each time it is entered; values ke
 
 ## Literal-credential conversion (FR-423)
 
-When focus leaves the headers field (tracked from the focused field key; the form is suspended, then rebuilt
-with `reopenForm`), and again on save, each credential header with literal text opens a `y`-only
+When focus leaves group 1 (tracked from the focused group; the form is suspended, then rebuilt with
+`reopenForm`), and again on save, each credential header with literal text opens a `y`-only
 prompt: `Authorization: Bearer sk-…` → `Authorization: Bearer ${authorization}` with the literal moved into
 that secret field. Derived names: header name lower-cased, `_`→`-`, suffixed `-2`, `-3`, … on a collision or
 reserved name. Declining leaves the form open with the refusal message.
