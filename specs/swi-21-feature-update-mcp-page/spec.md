@@ -380,7 +380,7 @@ runtime adds it to recorded defaults).
   the save failed or was refused before the identity-clear step, or the server is already marked
   and this save stores no client secret (FR-415 retries the clear only on a save that stores it;
   round-17 open item). *Left in place* takes precedence whenever this save completed a client change
-  under FR-415's no-new-secret branch, whether or not the server was already marked; a save that
+  under FR-415's no-new-secret branch, whether or not the server was already marked; such a save that
   fails or is refused before it completes (including a failed add or store, FR-406) reports *not
   touched* and sets no mark (FR-415 applies again on the retry). *Not touched* never means the
   binding is gone or the mark is cleared; the mark is reported in the resulting state, not in this
@@ -388,40 +388,39 @@ runtime adds it to recorded defaults).
   **replace**: remove the registration, then add the edited definition, always registering without
   authorizing. It keeps the attach-by-default mark and switchboard's definition across the remove
   and add (a list taken mid-replace MUST NOT drop them), and emits one gateway-changed event when it
-  finishes. The save MUST
-  be refused, with no change, when the server no longer matches what the form was opened with
-  (switchboard's stored definition and the runtime-reported fields, FR-402); the check runs under the
-  lock before any secret is stored. The fingerprint is computed by the daemon over the
+  finishes. The save MUST be refused, with no change, when the server no longer matches what the form
+  was opened with (switchboard's stored definition and the runtime-reported fields, FR-402); the check
+  runs under the lock before any secret is stored. The fingerprint is computed by the daemon over the
   **unredacted** runtime-reported fields as a keyed MAC (HMAC-SHA-256) under a random key the daemon
   generates at start, keeps in memory only and never sends to a client, so a client cannot use it to
   test guessed values of a redacted literal. It is returned with the definition read and echoed back
   by the form, so a host-side change to a redacted literal (FR-423) is still caught. The MAC covers
   the raw reported value of every header, including one that counts as *not reported* (FR-423). The
-  token also carries a random id of the key, so a daemon restart (new key) is told apart from a change:
-  a save from a form opened before the restart is refused as *stale (daemon restarted)*, not
+  token also carries a random id of the key, so a daemon restart (new key) is told apart from a
+  change: a save from a form opened before the restart is refused as *stale (daemon restarted)*, not
   *changed*. On either refusal the form reloads in place: it re-reads the definition, and the re-read
   definition becomes the form's baseline (for FR-402 flags, FR-409, FR-415 and the next fingerprint).
   A field counts as **edited** when its form value differs from the value the form opened with (the
-  same comparison as the FR-402 flags; a value typed back to the original is not edited).
-  A field the developer did not edit takes the re-read value, flagged *changed on the host* where it
-  differs from the one the form opened with. A field the developer edited keeps the developer's value;
-  where the host also changed it, it is flagged *changed on the host: was <opened>, host now
-  <re-read>* (redacted where FR-423 applies), and the save needs no further confirmation. Entered
-  secret values are kept, except that when the reload replaces the form's URL, every entered header
-  secret is dropped and marked *must be re-entered*, and when it replaces the form's client ID,
-  authorization server or URL, an entered client secret is dropped the same way, so a secret typed for
-  one endpoint or client is never stored for another (as FR-406 and FR-415). An entered value whose
-  placeholder is not in the form's headers after the reload, or an entered client secret when the
-  form's definition after the reload has no client ID, is dropped too, so no secret is stored that nothing references; the
-  refusal message names every dropped secret. A pending replace's **Retry** form (FR-406) reloads
-  differently: it re-reads the **pending replace**, not the server, and keeps FR-406's comparison
-  with the previous definition taken from it. If the
-  pending replace has ended (retried from another client, cancelled, or registered by another path),
-  the form does not reload: it closes and says how the pending replace ended, and the developer can
-  open an ordinary Edit. Changes made directly on the host with the runtime's CLI bypass the
-  lock and are caught only as far as this comparison can see them; that is accepted. Before anything is
-  sent, the form MUST warn that the server's authorization will be discarded unless its state is known
-  to be unauthorized, and MUST proceed only on confirmation.
+  same comparison as the FR-402 flags; a value typed back to the original is not edited). A field the
+  developer did not edit takes the re-read value, flagged *changed on the host* where it differs from
+  the one the form opened with. A field the developer edited keeps the developer's value; where the
+  host also changed it, it is flagged *changed on the host: was <opened>, host now <re-read>*
+  (redacted where FR-423 applies), and the save needs no further confirmation. Entered secret values
+  are kept, except that when the reload replaces the form's URL, every entered header secret is
+  dropped and marked *must be re-entered*, and when it replaces the form's client ID, authorization
+  server or URL, an entered client secret is dropped the same way, so a secret typed for one endpoint
+  or client is never stored for another (as FR-406 and FR-415). An entered value whose placeholder is
+  not in the form's headers after the reload, or an entered client secret when the form's definition
+  after the reload has no client ID, is dropped too, so no secret is stored that nothing references;
+  the refusal message names every dropped secret. A pending replace's **Retry** form (FR-406) reloads
+  differently: it re-reads the **pending replace**, not the server, and keeps FR-406's comparison with
+  the previous definition taken from it. If the pending replace has ended (retried from another
+  client, cancelled, or registered by another path), the form does not reload: it closes and says how
+  the pending replace ended, and the developer can open an ordinary Edit. Changes made directly on the
+  host with the runtime's CLI bypass the lock and are caught only as far as this comparison can see
+  them; that is accepted. Before anything is sent, the form MUST warn that the server's authorization
+  will be discarded unless its state is known to be unauthorized, and MUST proceed only on
+  confirmation.
 - **FR-405**: After a successful replace of a remote server, the TUI MUST offer to start authorization
   immediately, using the existing authorization flow (008 FR-075).
 - **FR-406**: If the replace fails, the host's message MUST be shown verbatim (008 FR-078), the form MUST
@@ -859,7 +858,7 @@ runtime adds it to recorded defaults).
   the `:identity` record by hand or saves other changes without re-entering the secret, so the form
   keeps showing the pending state until the secret is re-entered. The failure message says so. FR-404
   reports such a save without the secret as *not touched* (no clear attempted), or *left in place* if
-  it changes the client (FR-404 precedence), with the mark shown in the resulting state. Whether
+  it completes a client change (FR-404 precedence), with the mark shown in the resulting state. Whether
   every save of a marked server should retry the clear (and whether the mark should record its
   cause) is an open item for the plan phase; the spec adds no mechanism for it.
 - Known limitation (review round 18): a developer who switches a server to a public client follows
