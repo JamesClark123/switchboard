@@ -91,17 +91,20 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   operation touches the client secret/identity or removes the registration (then it fails with
   `ErrAuthInProgress` if `inflight[name]` is set, checked in the same `m.mu` hold as the take). In that same hold, before waiting, `lockName` refuses with
 `ErrBeingReplaced` (`BEING_REPLACED`, "a save of this server is still running; try again later") while the
-state map shows the name `saving` or `recording`. `nameLock` also carries a `refuse chan struct{}`: the holder
-closes it in the `stateMu` update that marks the name `saving` or `recording`, unlock replaces it **only if it
-was closed** (an unclosed one is kept, so waiters that queued under an earlier holder still select on the current
-channel), and a waiting
+state map shows the name `saving` or `recording`. `nameLock` also carries a `refuse chan struct{}` and a
+`refused bool`: the holder closes it through the flag (never twice) in the `stateMu` update that marks the name
+`saving` or `recording`; the `m.mu` hold whose state-map update clears `saving`/`recording` (the post-`persist`
+tail) swaps a closed channel for a fresh one and resets the flag, not unlock (an unclosed one is kept, so waiters
+that queued under an earlier holder still select on the current channel), and a waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
 return `BEING_REPLACED` without blocking once the in-progress record is written, and the waiter count drops to
 zero (so `Authorize` is refused only for the lock held); holder A unlocks normally with a `Save` and a `Remove`
 queued behind it, the `Save` takes the slot and becomes `saving`, and the `Remove` returns `BEING_REPLACED`
-without blocking. Add
+without blocking; a `Remove` arriving after A's tail clears `saving` but before A unlocks (held in
+`onReplaceEnded`) waits for the slot, is not refused, and takes the lock once A unlocks; closing the channel a
+second time in one hold is a no-op (no double-close panic). Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings
@@ -246,7 +249,7 @@ unchanged.
   per-name mutate func built once from the outcome, touching only `definitions[name]`, `marks[name]`,
   `pending_replaces[name]` and `saves_in_progress[name]`, re-applied to the record read in each attempt's
   transaction (never a stored snapshot). The retry path reuses the normal post-`persist` tail, run only after the
-  write lands: state-map update, `onReplaceEnded` where the normal path calls it, outcome event, unlock and
+  write lands: state-map update (with the `refuse` channel swap, T009), `onReplaceEnded` where the normal path calls it, outcome event, unlock and
   generation bump. It never hands the name to `recoverLoop`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
   refuse `UNVERIFIED` with no change (it can only be a leftover); `SetDefault` (`SetMcpServerDefault`) refuses
   while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`). `NewManager` makes **no**

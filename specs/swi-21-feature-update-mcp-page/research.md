@@ -136,11 +136,15 @@ what the developer whose own save returned `UNAVAILABLE` sees for that row, and 
 last until the settings store recovers. A taker that is **already waiting** when the name becomes `saving` or
 `recording` (it queued during the save's steps 1–4: host reads, the pending-replace pre-step, the snapshot and
 `classify`, which can take tens of seconds on a slow host) is refused the same way at that moment: each
-`nameLock` carries a `refuse` channel, which the holder closes in the same `stateMu` update that marks the name
-`saving` or `recording`. Unlock replaces the channel **only if it was closed**: a channel nobody closed stays, so
-every waiter, including one that queued under an earlier holder, selects on the channel the next holder closes.
-A closed one has no live waiters (each was refused when it closed, and a taker arriving after the close was
-refused by the state-map check above). `lockName` waits on `select { slot,
+`nameLock` carries a `refuse` channel and a `refused bool`, and the holder closes the channel (through the flag,
+so it is never closed twice) in the same `stateMu` update that marks the name `saving` or `recording`. The
+`m.mu` hold whose state-map update **clears** `saving`/`recording` (the post-`persist` tail's first step) also
+swaps a closed channel for a fresh one and resets the flag, so the swap happens there, not at unlock. A channel
+nobody closed stays, so every waiter, including one that queued under an earlier holder, selects on the channel
+the next holder closes. A closed channel therefore has no live waiters: each was refused when it closed, a taker
+arriving while the name is still `saving`/`recording` is refused by the state-map check above, and a taker
+arriving after the clear (while the tail's `onReplaceEnded` and outcome event still run, before unlock) captures
+the fresh channel and waits for the slot. `lockName` waits on `select { slot,
 ctx.Done(), refuse }` and returns `ErrBeingReplaced` (dropping its waiter count) when `refuse` closes. So no
 taker waits on a save that has written its record or entered the persist retry, whether it arrived before or
 after, and a queued `Save` (whose context is the detached `saveTimeout` one, not the client's) never sits on the
@@ -175,7 +179,8 @@ recorded value, and a `rebind_pending` from a failed identity clear is not recor
 the identity known limitation (spec *Assumptions*, review round 15): the runtime refuses to authorize the new
 client and the developer removes `mcp:<server>:client_secret:identity`, or saves again. Everything that follows a normal
 `persist` (the post-`persist` tail) runs **only after the write lands**, and the retry path reuses that same
-tail: the state-map update (`saving` cleared, `pending` set for a `NOT_REGISTERED` replace), `onReplaceEnded`
+tail: the state-map update (`saving` cleared, `pending` set for a `NOT_REGISTERED` replace, and a closed `refuse`
+channel swapped for a fresh one in the same hold), `onReplaceEnded`
 where the normal path calls it (R12), the `mcp_gateway_changed` with the outcome, then unlock and the generation
 bump. Returning `UNAVAILABLE` runs none of it, so the sweep, `Authorize` and `ResolveAttach` see the same state
 as the record. The recorded result is the one the save
