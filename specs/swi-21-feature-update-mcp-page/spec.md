@@ -379,7 +379,9 @@ runtime adds it to recorded defaults).
   re-bind pending*. *Not touched* says only that this save attempted no clear: no clear is needed,
   the save failed or was refused before the identity-clear step, or the server is already marked
   and this save stores no client secret (FR-415 retries the clear only on a save that stores it;
-  round-17 open item). It never means the binding is gone or the mark is cleared; the mark is
+  round-17 open item). *Left in place* takes precedence whenever this save completed a client change
+  under FR-415's no-new-secret branch, whether or not the server was already marked; a save that
+  fails or is refused before the add reports *not touched*. It never means the binding is gone or the mark is cleared; the mark is
   reported in the resulting state, not in this outcome. The TUI only renders it. A save that changes
   the registration is carried out as a **replace**: remove the registration, then add the edited
   definition, always registering without authorizing. It keeps the attach-by-default mark and
