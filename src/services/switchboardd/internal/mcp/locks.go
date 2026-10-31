@@ -55,12 +55,11 @@ type lockOpts struct {
 // when the holder becomes saving/recording, so queued takers are refused instead
 // of waiting.
 type nameLock struct {
-	slot      chan struct{}
-	waiters   int
-	held      bool
-	replacing bool
-	refuse    chan struct{}
-	refused   bool
+	slot    chan struct{}
+	waiters int
+	held    bool
+	refuse  chan struct{}
+	refused bool
 }
 
 // nameState is one name's leaf state (research R12), guarded by stateMu. It is
@@ -175,12 +174,15 @@ func (m *Manager) releaseFunc(name string, l *nameLock) func() {
 		if l.refused {
 			l.refuse, l.refused = make(chan struct{}), false
 		}
-		l.held, l.replacing = false, false
+		l.held = false
 		m.stateMu.Lock()
 		s := m.st(name)
 		s.lockers--
 		s.replacing = false
-		s.generation++
+		// From one daemon-wide clock, so a pruned and re-created entry never
+		// repeats a generation an older snapshot holds.
+		m.genClock++
+		s.generation = m.genClock
 		m.stateMu.Unlock()
 		<-l.slot
 		if l.waiters == 0 {
@@ -209,19 +211,20 @@ func (m *Manager) markRefusing(name string, l *nameLock, record bool) {
 }
 
 // clearRefusing is the post-persist tail's first step: saving/recording cleared
-// (and pending set as the outcome says) with a closed refuse channel swapped for
-// a fresh one in the same hold. An unclosed channel is kept so earlier waiters
-// still select on the channel the next holder closes.
-func (m *Manager) clearRefusing(name string, l *nameLock, pending *bool) {
+// with a closed refuse channel swapped for a fresh one in the same hold. upd
+// (may be nil) sets the rest of the outcome's state — pending, how the replace
+// ended, recovering — in the same stateMu hold, so a launch's ReplaceState never
+// sees the flags cleared with the previous end (R12). An unclosed channel is
+// kept so earlier waiters still select on the channel the next holder closes.
+func (m *Manager) clearRefusing(name string, l *nameLock, upd func(*nameState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stateMu.Lock()
 	s := m.st(name)
 	// The replace has ended: a launch from here on records the post-sweep state.
 	s.saving, s.recording, s.replacing = false, false, false
-	l.replacing = false
-	if pending != nil {
-		s.pending = *pending
+	if upd != nil {
+		upd(s)
 	}
 	m.stateMu.Unlock()
 	if l.refused {
@@ -230,13 +233,10 @@ func (m *Manager) clearRefusing(name string, l *nameLock, pending *bool) {
 }
 
 // setReplacing records that the held lock's save re-registers (classify).
-func (m *Manager) setReplacing(name string, l *nameLock) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	l.replacing = true
+func (m *Manager) setReplacing(name string) {
 	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.st(name).replacing = true
-	m.stateMu.Unlock()
 }
 
 // recheckInflight refuses AUTH_IN_PROGRESS when an authorization of name is in
@@ -261,33 +261,71 @@ func (m *Manager) stateSnapshot(name string) nameState {
 	return nameState{}
 }
 
-// setPending updates the pending flag (and the end of a replace) in the state map.
-func (m *Manager) setPending(name string, on bool) {
-	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
-	m.st(name).pending = on
+// end records how a replace ended (for a late launch, R12). Caller holds stateMu.
+func (s *nameState) end(registered bool) {
+	if registered {
+		s.lastEnd = endRegistered
+	} else {
+		s.lastEnd = endRemoved
+	}
 }
 
-// generations snapshots every name's generation (before a list, R4).
-func (m *Manager) generations() map[string]uint64 {
+// endPending clears the pending flag and records the replace as ended removed
+// in one stateMu hold (Cancel, or registered by another path).
+func (m *Manager) endPending(name string) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	out := make(map[string]uint64, len(m.state))
+	s := m.st(name)
+	s.pending = false
+	s.end(false)
+}
+
+// idle reports whether a state entry says nothing a missing entry would not:
+// unlocked, no flag set, and the default end (ReplaceState of a missing name
+// is EndedRegistered).
+func (s *nameState) idle() bool {
+	return s.lockers == 0 && !s.replacing && !s.pending && !s.saving && !s.recording && !s.recovering && s.lastEnd == endRegistered
+}
+
+// genSnapshot is reconcile's view of the state map before its list (R4): every
+// name's generation, plus the prune epoch.
+type genSnapshot struct {
+	gens  map[string]uint64
+	epoch uint64
+}
+
+// generations snapshots every name's generation (before a list, R4). It first
+// prunes idle entries, so the map does not grow with every name a client ever
+// sent; a prune bumps the epoch, and staleFor treats a name missing from the
+// map as changed whenever the epoch moved since the snapshot.
+func (m *Manager) generations() genSnapshot {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	for n, s := range m.state {
-		out[n] = s.generation
+		if s.idle() {
+			delete(m.state, n)
+			m.pruneEpoch++
+		}
+	}
+	out := genSnapshot{gens: make(map[string]uint64, len(m.state)), epoch: m.pruneEpoch}
+	for n, s := range m.state {
+		out.gens[n] = s.generation
 	}
 	return out
 }
 
 // staleFor reports whether reconcile must leave name alone: it is locked, has
-// an in-progress record, or its generation moved since gens was taken. Caller
-// holds stateMu (inside a registry mutate func).
-func (m *Manager) staleFor(name string, gens map[string]uint64) bool {
+// an in-progress record, or its generation moved since snap was taken. A name
+// with no entry is stale when it had one at the snapshot, or when an entry may
+// have come and gone since (the prune epoch moved). Caller holds stateMu
+// (inside a registry mutate func).
+func (m *Manager) staleFor(name string, snap genSnapshot) bool {
 	s := m.state[name]
 	if s == nil {
-		return false
+		_, had := snap.gens[name]
+		return had || m.pruneEpoch != snap.epoch
 	}
-	return s.lockers > 0 || s.saving || s.recording || s.recovering || s.generation != gens[name]
+	return s.lockers > 0 || s.saving || s.recording || s.recovering || s.generation != snap.gens[name]
 }
 
 // ReplaceStatus is what a launch's registry write needs to know (R12).
@@ -321,16 +359,10 @@ func (m *Manager) ReplaceState(name string) ReplaceStatus {
 	return EndedRegistered
 }
 
-// replaceEnded records how a replace ended and runs the hook. Never called
-// under m.mu or inside a registry transaction (R12 Lock order).
+// replaceEnded runs the end-of-replace hook. The caller has already recorded
+// the end in the state map, in the same stateMu hold that cleared the flags.
+// Never called under m.mu or inside a registry transaction (R12 Lock order).
 func (m *Manager) replaceEnded(name string, registered bool) {
-	m.stateMu.Lock()
-	if registered {
-		m.st(name).lastEnd = endRegistered
-	} else {
-		m.st(name).lastEnd = endRemoved
-	}
-	m.stateMu.Unlock()
 	if m.onReplaceEnded != nil {
 		m.onReplaceEnded(name, registered)
 	}

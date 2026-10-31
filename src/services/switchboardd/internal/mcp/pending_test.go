@@ -282,11 +282,12 @@ func TestStaleFor(t *testing.T) {
 	}
 }
 
-// generationsLocked is generations for a caller already holding stateMu.
-func (m *Manager) generationsLocked() map[string]uint64 {
-	out := map[string]uint64{}
+// generationsLocked is generations (without the prune) for a caller already
+// holding stateMu.
+func (m *Manager) generationsLocked() genSnapshot {
+	out := genSnapshot{gens: map[string]uint64{}, epoch: m.pruneEpoch}
 	for n, s := range m.state {
-		out[n] = s.generation
+		out.gens[n] = s.generation
 	}
 	return out
 }

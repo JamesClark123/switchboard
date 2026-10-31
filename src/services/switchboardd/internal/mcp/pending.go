@@ -71,7 +71,7 @@ func (m *Manager) CancelPending(ctx context.Context, name string, revision uint6
 	if err != nil {
 		return nil, err
 	}
-	m.setPending(name, false)
+	m.endPending(name)
 	m.replaceEnded(name, false)
 	if removed {
 		m.secrets.EmitChanged()
@@ -80,11 +80,12 @@ func (m *Manager) CancelPending(ctx context.Context, name string, revision uint6
 	return resp, nil
 }
 
-// recoverLoop resolves start-up leftovers (research R2 Recovery): each attempt
+// recoverLoop resolves leftover in-progress records (research R2 Recovery):
+// the start-up ones, or one a save handed over (recoverLater). Each attempt
 // runs one `mcp ls`, then resolves every queued name under its lock; a failed
 // list or write keeps names queued and retries with backoff.
-func (m *Manager) recoverLoop(ctx context.Context) {
-	queue := append([]string(nil), m.recoverQueue...)
+func (m *Manager) recoverLoop(ctx context.Context, names []string) {
+	queue := append([]string(nil), names...)
 	backoff := recoverBackoff
 	for len(queue) > 0 {
 		lctx, cancel := context.WithTimeout(ctx, time.Duration(listTimeout))
@@ -131,7 +132,7 @@ func (m *Manager) recoverName(ctx context.Context, name string, listed bool) err
 		return err
 	}
 	if settings.GetSavesInProgress()[name] == nil {
-		m.clearRecovering(name, settings.GetPendingReplaces()[name] != nil)
+		m.clearRecovering(name, settings.GetPendingReplaces()[name] != nil, false)
 		return nil
 	}
 	if testHookRecover != nil {
@@ -210,7 +211,7 @@ func (m *Manager) recoverName(ctx context.Context, name string, listed bool) err
 	if err != nil {
 		return err
 	}
-	m.clearRecovering(name, settings.GetPendingReplaces()[name] != nil)
+	m.clearRecovering(name, settings.GetPendingReplaces()[name] != nil, ended)
 	if ended {
 		m.replaceEnded(name, true)
 	}
@@ -229,12 +230,16 @@ func (m *Manager) recoverName(ctx context.Context, name string, listed bool) err
 	return nil
 }
 
-// clearRecovering updates the state map once a leftover is resolved.
-func (m *Manager) clearRecovering(name string, pending bool) {
+// clearRecovering updates the state map once a leftover is resolved; ended
+// records the replace as ended registered in the same hold (R12).
+func (m *Manager) clearRecovering(name string, pending, ended bool) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	s := m.st(name)
 	s.recovering, s.pending = false, pending
+	if ended {
+		s.end(true)
+	}
 }
 
 // appendNew appends the names not already in list.

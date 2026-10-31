@@ -10,6 +10,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -47,7 +48,7 @@ func mcpStatus(err error) error {
 	case errors.Is(err, mcp.ErrAuthInProgress):
 		return refusalStatus(&mcp.Refusal{Reason: pb.McpSaveRefusal_AUTH_IN_PROGRESS, Msg: err.Error()})
 	case errors.Is(err, mcp.ErrUnavailable):
-		return status.Error(codes.Unavailable, strings.TrimPrefix(err.Error(), mcp.ErrUnavailable.Error()+": "))
+		return notRecordedStatus(strings.TrimPrefix(err.Error(), mcp.ErrUnavailable.Error()+": "))
 	case errors.Is(err, mcp.ErrAlreadyRegistered):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, mcp.ErrConfirmRequired), errors.Is(err, mcp.ErrSecretsUnavailable):
@@ -65,6 +66,24 @@ func mcpStatus(err error) error {
 		return err
 	}
 	return status.Error(codes.Unknown, err.Error())
+}
+
+// Save-not-recorded detail (SWI-21 contract): the UNAVAILABLE a save returns
+// when it ran but its persist keeps failing carries an ErrorInfo with this
+// reason and domain, so a client tells it apart from a transport UNAVAILABLE
+// (where the save may never have reached the daemon).
+const (
+	McpSaveNotRecordedReason = "MCP_SAVE_NOT_RECORDED"
+	ErrorDomain              = "switchboard"
+)
+
+// notRecordedStatus is UNAVAILABLE with the save-not-recorded ErrorInfo.
+func notRecordedStatus(msg string) error {
+	st, err := status.New(codes.Unavailable, msg).WithDetails(&errdetails.ErrorInfo{Reason: McpSaveNotRecordedReason, Domain: ErrorDomain})
+	if err != nil {
+		return status.Error(codes.Unavailable, msg)
+	}
+	return st.Err()
 }
 
 // refusalStatus carries an McpSaveRefusal as a status detail (SWI-21 contract):

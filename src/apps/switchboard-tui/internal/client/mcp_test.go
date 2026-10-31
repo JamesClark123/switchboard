@@ -9,6 +9,7 @@ import (
 
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -86,6 +87,15 @@ func (s *mcpFakeServer) SaveMcpServer(_ context.Context, req *pb.SaveMcpServerRe
 	case "emptymsg":
 		st, _ := status.New(codes.FailedPrecondition, "status text").WithDetails(&pb.McpSaveRefusal{Reason: pb.McpSaveRefusal_UNVERIFIED})
 		return nil, st.Err()
+	case "notrecorded":
+		st, _ := status.New(codes.Unavailable, "the result could not be recorded yet").WithDetails(
+			&errdetails.ErrorInfo{Reason: client.SaveNotRecordedReason, Domain: client.SaveNotRecordedDomain})
+		return nil, st.Err()
+	case "otherinfo":
+		st, _ := status.New(codes.Unavailable, "other").WithDetails(&errdetails.ErrorInfo{Reason: "SOMETHING_ELSE", Domain: client.SaveNotRecordedDomain})
+		return nil, st.Err()
+	case "unreachable":
+		return nil, status.Error(codes.Unavailable, "connection refused")
 	}
 	return &pb.McpSaveOutcome{Name: req.GetName(), State: pb.McpSaveOutcome_REGISTERED}, nil
 }
@@ -216,6 +226,21 @@ func TestMcpEditWrappers(t *testing.T) {
 	}
 	if _, ok := client.AsSaveRefusal(nil); ok {
 		t.Error("nil is not a refusal")
+	}
+	// Only the daemon's own UNAVAILABLE carries the not-recorded ErrorInfo; a
+	// bare UNAVAILABLE is a transport failure (the save may never have run).
+	_, err = conn.SaveMcpServer(ctx, &pb.SaveMcpServerRequest{Name: "notrecorded"})
+	if !client.IsSaveNotRecorded(err) {
+		t.Errorf("not recorded = %v", err)
+	}
+	for _, name := range []string{"unreachable", "otherinfo", "stale"} {
+		_, err = conn.SaveMcpServer(ctx, &pb.SaveMcpServerRequest{Name: name})
+		if client.IsSaveNotRecorded(err) {
+			t.Errorf("%s is not the not-recorded case: %v", name, err)
+		}
+	}
+	if client.IsSaveNotRecorded(nil) {
+		t.Error("nil is not the not-recorded case")
 	}
 
 	if res, err := conn.CancelMcpPendingReplace(ctx, "linear", 3); err != nil || len(res.GetLeftOnHost()) != 1 || fake.cancelReq.GetRevision() != 3 {

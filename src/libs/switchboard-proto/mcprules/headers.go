@@ -3,8 +3,10 @@ package mcprules
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // ErrInvalid marks every rule violation; the daemon maps it to INVALID_ARGUMENT.
@@ -43,8 +45,9 @@ func quoteHeader(name, value string) string {
 }
 
 // NormalizeHeaders validates "Name: value" entries for `--header` (FR-103): a
-// token name, a colon, a non-empty single-line value. Blank entries are
-// dropped, and a name given twice is refused (the runtime takes each name once).
+// token name, a colon, a non-empty value without control characters (RFC 9110
+// field-value: a tab is allowed). Blank entries are dropped, and a name given
+// twice is refused (the runtime takes each name once).
 func NormalizeHeaders(in []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
@@ -60,12 +63,17 @@ func NormalizeHeaders(in []string) ([]string, error) {
 			// Without a colon the name cannot be told from a credential value,
 			// so nothing of the line is quoted.
 			return nil, invalid("a header line has no colon; each header must be \"Name: value\"")
-		case name == "" || value == "":
+		case name == "":
+			// The text after the colon may be a credential: quote nothing.
+			return nil, invalid("a header line has no name; each header must be \"Name: value\"")
+		case value == "":
 			return nil, invalid("header %s must be \"Name: value\"", quoteHeader(name, value))
 		case !headerNameRe.MatchString(name):
 			return nil, invalid("header name %q is not a valid HTTP field name", name)
 		case strings.ContainsAny(value, "\r\n"):
 			return nil, invalid("header %q must be a single line", name)
+		case strings.IndexFunc(value, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }) >= 0:
+			return nil, invalid("header %q holds a control character", name)
 		case seen[strings.ToLower(name)]:
 			return nil, invalid("header %q is given more than once", name)
 		}
@@ -73,6 +81,27 @@ func NormalizeHeaders(in []string) ([]string, error) {
 		out = append(out, name+": "+value)
 	}
 	return out, nil
+}
+
+// WellFormedHeader reports whether h is an HTTP field name, a colon and a value:
+// the shape every header switchboard records has. A runtime-reported entry that
+// is not (no colon, or a "name" that is not a token) may carry a credential in
+// any part, so it is never shown.
+func WellFormedHeader(h string) bool {
+	name, _, ok := strings.Cut(h, ":")
+	return ok && headerNameRe.MatchString(strings.TrimSpace(name))
+}
+
+// ValidURL checks a remote server's URL (FR-103): an absolute http or https URL
+// with a host, without spaces or control characters, so a URL the host CLI
+// would refuse never reaches a save that has already removed the server.
+func ValidURL(raw string) error {
+	u, err := url.Parse(raw)
+	if raw == "" || err != nil || strings.IndexFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 ||
+		!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+		return invalid("the URL must be an http:// or https:// URL with a host")
+	}
+	return nil
 }
 
 // SplitHeader returns a header's trimmed name and value.

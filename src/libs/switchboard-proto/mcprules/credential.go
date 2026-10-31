@@ -11,10 +11,22 @@ import (
 const RedactMarker = "••••"
 
 // credentialWords are the name segments that make a header a credential
-// header (FR-423); names are split on `-` and `_` and compared case-insensitively.
+// header (FR-423); names are split on `-`, `_` and `.` and compared
+// case-insensitively.
 var credentialWords = map[string]bool{
 	"key": true, "apikey": true, "token": true, "secret": true, "password": true,
-	"auth": true, "credential": true, "credentials": true,
+	"auth": true, "credential": true, "credentials": true, "authorization": true, "authentication": true,
+}
+
+// credentialSuffixes make a run-together segment a credential one when it ends
+// with them (`AccessToken`, `ClientSecret`, `DbPassword`).
+var credentialSuffixes = []string{"token", "secret", "password"}
+
+// keyPrefixes make a run-together `<prefix>key` segment a credential one
+// (`AccessKey`, `PrivateKey`), while `Monkey` and `Hotkey` are not.
+var keyPrefixes = map[string]bool{
+	"api": true, "access": true, "secret": true, "private": true, "auth": true, "client": true,
+	"session": true, "signing": true, "subscription": true,
 }
 
 // credentialNames are whole header names that are always credential headers.
@@ -33,19 +45,35 @@ var cookieNameRe = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+=`)
 var schemeLikeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*$`)
 
 func segments(name string) []string {
-	return strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' })
+	return strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+}
+
+// credentialSegment reports whether one lower-cased name segment is a
+// credential word (FR-423): a listed word, a run-together word ending in
+// `token`/`secret`/`password`, or a listed `<prefix>key`.
+func credentialSegment(s string) bool {
+	if credentialWords[s] {
+		return true
+	}
+	for _, suf := range credentialSuffixes {
+		if strings.HasSuffix(s, suf) {
+			return true
+		}
+	}
+	p, ok := strings.CutSuffix(s, "key")
+	return ok && keyPrefixes[p]
 }
 
 // IsCredentialHeader reports whether a header name is a credential header
 // (FR-423). Name segments, not substrings, match: `Keycloak-Realm` is not one,
-// `X-Api-Key` is.
+// `X-Api-Key`, `X-Authorization` and `X-AccessToken` are.
 func IsCredentialHeader(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	if credentialNames[n] {
 		return true
 	}
 	for _, s := range segments(n) {
-		if credentialWords[s] {
+		if credentialSegment(s) {
 			return true
 		}
 	}
@@ -139,24 +167,80 @@ func CheckCredentialHeaders(headers []string, skip map[string]bool) error {
 	return nil
 }
 
-// Convert turns a credential header's literal value into a placeholder (FR-423):
-// newValue keeps a listed scheme (or a single cookie's name) and holds
-// `${placeholder}`; secret is the literal that moves into the placeholder's
-// secret. The placeholder is derived from the header name (lower-cased, `_` →
-// `-`) and gets `-2`, `-3`, … when it is invalid, reserved or in used.
+// Convert turns a credential header's literal text into a placeholder (FR-423):
+// newValue keeps a listed scheme (or, in a Cookie header, the cookie names) and
+// the value's existing `${…}`s, and its first run of literal text becomes `${placeholder}`;
+// secret is that literal text, so a secret never holds `${…}` itself. A value
+// with more than one literal run is converted one run per call. The placeholder
+// is derived from the header name (lower-cased, `_` → `-`) and gets `-2`, `-3`,
+// … when it is invalid, reserved or in use. A value with no literal text comes
+// back unchanged with an empty secret.
 func Convert(name, value string, used map[string]bool) (newValue, placeholder, secret string) {
 	value = strings.TrimSpace(value)
-	prefix := ""
-	secret = value
+	head, rest := "", value
 	if s, r := splitScheme(value); s != "" && schemes[strings.ToLower(s)] && r != "" {
-		prefix, secret = s+" ", r
-	} else if strings.EqualFold(strings.TrimSpace(name), "cookie") {
-		if loc := cookieNameRe.FindStringIndex(value); loc != nil && !strings.ContainsAny(value, ";,") {
-			prefix, secret = value[:loc[1]], value[loc[1]:]
-		}
+		head, rest = s+" ", r
 	}
 	placeholder = derivePlaceholder(name, used)
-	return prefix + "${" + placeholder + "}", placeholder, secret
+	start, end := literalRun(rest, strings.EqualFold(strings.TrimSpace(name), "cookie"))
+	if start < 0 {
+		return value, placeholder, ""
+	}
+	return head + rest[:start] + "${" + placeholder + "}" + rest[end:], placeholder, rest[start:end]
+}
+
+// literalRun returns the bounds of the first run of literal text in v: text
+// that is neither a separator (space, `:`, `;`, `,`) nor a well-formed `${…}`,
+// up to the next well-formed `${…}`, trailing separators trimmed. In a cookie
+// header a leading `<cookie-name>=` is not literal. start is -1 when there is
+// none.
+func literalRun(v string, cookie bool) (start, end int) {
+	placeholderAt := func(i int) int {
+		if !strings.HasPrefix(v[i:], "${") {
+			return -1
+		}
+		e := strings.IndexByte(v[i:], '}')
+		if e < 0 || strings.ContainsAny(v[i+2:i+e], "{$") {
+			return -1
+		}
+		return i + e + 1
+	}
+	start = -1
+	for i := 0; i < len(v); {
+		if start < 0 {
+			if strings.IndexByte(" \t:;,", v[i]) >= 0 {
+				i++
+				continue
+			}
+			if e := placeholderAt(i); e >= 0 {
+				i = e
+				continue
+			}
+			if loc := cookieNameRe.FindStringIndex(v[i:]); cookie && loc != nil {
+				i += loc[1]
+				if e := placeholderAt(i); e >= 0 {
+					i = e
+					continue
+				}
+				if i == len(v) {
+					break
+				}
+			}
+			start = i
+		}
+		if placeholderAt(i) >= 0 {
+			break
+		}
+		i++
+		end = i
+	}
+	if start < 0 {
+		return -1, -1
+	}
+	for end > start && strings.IndexByte(" \t:;,", v[end-1]) >= 0 {
+		end--
+	}
+	return start, end
 }
 
 func derivePlaceholder(name string, used map[string]bool) string {
@@ -191,7 +275,12 @@ func Redact(value string) string {
 
 // RedactHeader returns the header with its value redacted when it is a
 // credential header that breaks the rule; ok reports whether it was redacted.
+// An entry that is not a field name and a colon is redacted whole: its "name"
+// may hold the credential.
 func RedactHeader(h string) (out string, redacted bool) {
+	if !WellFormedHeader(h) {
+		return RedactMarker, true
+	}
 	n, v := SplitHeader(h)
 	if CheckCredentialValue(n, v) == nil {
 		return h, false

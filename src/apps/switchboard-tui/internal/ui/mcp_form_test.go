@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -414,14 +415,35 @@ func TestMcpPlaceholderRulesNameThePlaceholder(t *testing.T) {
 	}
 }
 
-func TestMcpKindChangeClearsRemoteFields(t *testing.T) {
+func TestMcpKindChangeClearsAndRestoresRemoteFields(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
 	m := openEdit(t, editModel(t, d))
-	// Focus is on kind (the first field in edit mode); down selects "command".
+	// Focus is on kind (the first field in edit mode); down selects "command"
+	// (huh's Select sets the value as the highlight moves).
 	m = keyIn(m, tea.KeyMsg{Type: tea.KeyDown})
 	if m.mcpView.vals.kind != "command" || m.mcpView.vals.url != "" || m.mcpView.vals.headers != "" || m.mcpView.vals.scopes != "" ||
-		!strings.Contains(m.mcpView.status, "cleared") {
+		!strings.Contains(m.mcpView.status, "cleared") || !strings.Contains(m.mcpView.status, "restore") {
 		t.Errorf("vals %+v status %q", *m.mcpView.vals, m.mcpView.status)
+	}
+	// Moving back to remote restores every cleared field: passing over the
+	// option loses nothing, and the form is clean again.
+	m = keyIn(m, tea.KeyMsg{Type: tea.KeyUp})
+	v := m.mcpView
+	if v.vals.kind != "remote" || v.vals.url != "https://mcp.linear.app/mcp" || v.vals.headers != "Authorization: Bearer ${api-key}" ||
+		v.vals.scopes != "read" || !strings.Contains(v.status, "restored") || v.remoteStash != nil {
+		t.Errorf("restore: vals %+v status %q", *v.vals, v.status)
+	}
+	if m.guardDirty(gMcp) {
+		t.Error("down then up is no edit")
+	}
+	if f := v.form.GetFocusedField(); f == nil || f.GetKey() != "kind" {
+		t.Error("focus stays on kind across the rebuild")
+	}
+	// Remote values typed while "host command" was selected win over the stash.
+	m = keyIn(m, tea.KeyMsg{Type: tea.KeyDown})
+	m.mcpView.vals.url, m.mcpView.vals.kind = "https://typed/mcp", "remote"
+	if m.mcpView.switchMcpKind() || m.mcpView.vals.url != "https://typed/mcp" || m.mcpView.remoteStash != nil {
+		t.Errorf("typed remote values are kept: %+v", *m.mcpView.vals)
 	}
 }
 
@@ -645,9 +667,20 @@ func TestMcpBeingReplacedThenStaleReloads(t *testing.T) {
 	}
 }
 
+// notRecorded is the daemon's own "save ran, result not recorded yet" error:
+// UNAVAILABLE with the MCP_SAVE_NOT_RECORDED ErrorInfo.
+func notRecorded(t *testing.T, msg string) error {
+	t.Helper()
+	st, err := status.New(codes.Unavailable, msg).WithDetails(&errdetails.ErrorInfo{Reason: client.SaveNotRecordedReason, Domain: client.SaveNotRecordedDomain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.Err()
+}
+
 func TestMcpUnavailableClosesFormRowSaving(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
-		mcpSaveResults: []mcpSaveResult{{err: status.Error(codes.Unavailable, "the host was changed but the result could not be recorded yet; retrying")}}}
+		mcpSaveResults: []mcpSaveResult{{err: notRecorded(t, "the host was changed but the result could not be recorded yet; retrying")}}}
 	m := openEdit(t, editModel(t, d))
 	m.mcpView.vals.attach = true
 	m = keyIn(m, ctrlS())
@@ -734,7 +767,7 @@ func TestMcpEditGoneOffersAddAsNew(t *testing.T) {
 		mcpDefErr: &client.SaveRefusal{Reason: pb.McpSaveRefusal_GONE, Message: "linear is no longer registered", Code: codes.NotFound}}
 	m := editModel(t, d)
 	m = keyIn(m, press("e"))
-	if m.screen != screenConfirm || !strings.Contains(m.View(), "Add linear as new?") {
+	if m.screen != screenConfirm || !strings.Contains(m.View(), "Add linear as new?") || !strings.Contains(m.View(), "The add form opens with the name filled in.") {
 		t.Fatalf("GONE offers to add as new:\n%s", m.View())
 	}
 	m = accept(t, m)
@@ -793,7 +826,7 @@ func TestMcpNotRegisteredOutcomeKeepsFormAndLeaveCancels(t *testing.T) {
 		m = accept(t, m)
 	}
 	out := m.View()
-	for _, want := range []string{"not registered", "the add may still complete on the host", "sbx: add failed: 500", "rolled back: mcp:linear:api-key"} {
+	for _, want := range []string{"The save of linear did not complete", "not registered", "the add may still complete on the host", "sbx: add failed: 500", "rolled back: mcp:linear:api-key"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("outcome should show %q:\n%s", want, out)
 		}
@@ -1184,15 +1217,308 @@ func TestMcpAuthorizeOfferWithoutOutcomeRow(t *testing.T) {
 // A secret typed before the add form's name is set follows the name.
 func TestMcpAddRenameKeepsTypedSecrets(t *testing.T) {
 	v := &mcpState{}
-	*v.secretPtr("mcp::authorization") = "sk-123"
+	*v.secretPtr("mcp:<name>:authorization") = "sk-123"
 	*v.secretPtr("mcp:keep:x") = "other"
 	v.renameSecrets("", "notion")
-	if v.secretValue("mcp:notion:authorization") != "sk-123" || v.secretValue("mcp::authorization") != "" || v.secretValue("mcp:keep:x") != "other" {
+	if v.secretValue("mcp:notion:authorization") != "sk-123" || v.secretValue("mcp:<name>:authorization") != "" || v.secretValue("mcp:keep:x") != "other" {
 		t.Errorf("secrets = %v", v.secretVals)
 	}
 	*v.secretPtr("mcp:linear:authorization") = "typed"
 	v.renameSecrets("notion", "linear")
 	if v.secretValue("mcp:linear:authorization") != "typed" || v.secretVals["mcp:notion:authorization"] != nil {
 		t.Errorf("an already-typed value under the new name is kept, the old one dropped: %v", v.secretVals)
+	}
+}
+
+// A bare UNAVAILABLE is a transport failure (the save may never have run): the
+// form stays with its edits and typed secrets, and the row is not saving….
+func TestMcpBareUnavailableKeepsFormAndValues(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+		mcpSaveResults: []mcpSaveResult{{err: status.Error(codes.Unavailable, "connection refused")}}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.attach = true
+	*m.mcpView.secretPtr("mcp:linear:api-key") = "typed"
+	m = keyIn(m, ctrlS())
+	for m.screen == screenConfirm {
+		m = accept(t, m)
+	}
+	v := m.mcpView
+	if v.form == nil || v.status != "error: connection refused" || !v.vals.attach || v.secretValue("mcp:linear:api-key") != "typed" || v.saving {
+		t.Fatalf("form %v status %q", v.form != nil, v.status)
+	}
+	if v.localSaving["linear"] {
+		t.Error("a transport failure does not mark the row saving…")
+	}
+	m = keyIn(m, ctrlS())
+	if len(d.mcpSaves) != 2 {
+		t.Errorf("the form can save again; saves %d", len(d.mcpSaves))
+	}
+}
+
+// A definition read that lands after another form or modal opened is dropped.
+func TestMcpLateDefinitionReadDoesNotReplaceForm(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := editModel(t, d)
+	m, readCmd := update(m, press("e"))
+	if m.mcpView.loadingDef != "linear" {
+		t.Fatalf("loading: %q", m.mcpView.loadingDef)
+	}
+	m = keyIn(m, press("a"))
+	m.mcpView.vals.name = "fresh"
+	*m.mcpView.secretPtr("mcp:fresh:k") = "typed"
+	m = drainEdit(m, readCmd)
+	v := m.mcpView
+	if v.vals == nil || v.vals.mode != mcpModeAdd || v.vals.name != "fresh" || v.secretValue("mcp:fresh:k") != "typed" {
+		t.Fatalf("the add form was replaced: %+v", v.vals)
+	}
+	m = escDiscard(t, m)
+	m, readCmd = update(m, press("e"))
+	m.mcpView.outcome = &pb.McpSaveOutcome{Name: "other"}
+	m = drainEdit(m, readCmd)
+	if m.mcpView.form != nil || m.mcpView.loadingDef != "" || m.mcpView.outcome == nil {
+		t.Errorf("a read under a modal opens nothing: form %v", m.mcpView.form != nil)
+	}
+}
+
+// The reply of a save left with esc never touches a later form of the same
+// name: matched by the form's generation, and no panel opens over it.
+func TestMcpEscapedSaveReplyLeavesNewFormAlone(t *testing.T) {
+	cases := map[string]mcpSaveResult{
+		"registered":     {out: &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_REGISTERED}},
+		"not registered": {out: &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_NOT_REGISTERED, PendingReplace: pendingLinear()}},
+		"not recorded":   {err: notRecorded(t, "not recorded yet")},
+		"stale":          {err: refused(pb.McpSaveRefusal_STALE_CHANGED, "linear changed on the host")},
+	}
+	for name, res := range cases {
+		d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+			mcpSaveResults: []mcpSaveResult{res}}
+		m := openEdit(t, editModel(t, d))
+		m.mcpView.vals.attach = true
+		m, saveCmd := update(m, ctrlS())
+		if !m.mcpView.saving {
+			t.Fatalf("%s: the save should be in flight", name)
+		}
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+		m = keyIn(m, press("a"))
+		m.mcpView.vals.name, m.mcpView.vals.url = "linear", "https://typed/mcp"
+		*m.mcpView.secretPtr("mcp:linear:k") = "typed"
+		reads := len(d.mcpDefReads)
+		m = drainEdit(m, saveCmd)
+		v := m.mcpView
+		if v.vals == nil || v.vals.mode != mcpModeAdd || v.vals.url != "https://typed/mcp" || v.secretValue("mcp:linear:k") != "typed" {
+			t.Errorf("%s: the new form was touched: %+v", name, v.vals)
+			continue
+		}
+		if v.outcome != nil || v.retry != nil || v.holding != nil || len(d.mcpDefReads) != reads || m.screen != screenMcp {
+			t.Errorf("%s: outcome %v retry %v reads %d screen %v", name, v.outcome != nil, v.retry != nil, len(d.mcpDefReads)-reads, m.screen)
+		}
+		switch name {
+		case "registered":
+			if v.status != "saved linear in the background: registered" {
+				t.Errorf("status %q", v.status)
+			}
+		case "not registered":
+			if !strings.HasPrefix(v.status, "error: the background save of linear did not complete: not registered") {
+				t.Errorf("status %q", v.status)
+			}
+		}
+		// A late reload or refresh for the old form is dropped too.
+		mm, _ := m.applyMcpDef(mcpDefMsg{host: v.host, name: "linear", purpose: mcpDefReload, gen: v.formGen - 1, view: linearView()})
+		m = mm.(Model)
+		mm, _ = m.applyMcpDef(mcpDefMsg{host: v.host, name: "linear", purpose: mcpDefRefresh, gen: v.formGen - 1, view: linearView()})
+		m = mm.(Model)
+		if m.mcpView.view != nil || m.mcpView.vals.url != "https://typed/mcp" {
+			t.Errorf("%s: a stale reload/refresh reached the new form", name)
+		}
+	}
+}
+
+// Accepting a conversion on ctrl+s rebuilds the form, so a refused save does not
+// let the Headers widget write the literal back.
+func TestMcpConvertOnSaveDoesNotBringTheLiteralBack(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+		mcpSaveResults: []mcpSaveResult{{err: refused(pb.McpSaveRefusal_UNVERIFIED, "couldn't read the server from the host; try again")}}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Authorization: Bearer sk-live-9"
+	_ = m.reopenForm(gMcp) // the widget holds the literal, as if typed
+	m.focusMcpField("headers")
+	m = keyIn(m, ctrlS())
+	if !strings.Contains(m.View(), "Convert Authorization to a secret?") {
+		t.Fatalf("expected the offer:\n%s", m.View())
+	}
+	for m.screen == screenConfirm {
+		m = accept(t, m)
+	}
+	if len(d.mcpSaves) != 1 || m.mcpView.form == nil {
+		t.Fatalf("saves %d", len(d.mcpSaves))
+	}
+	// Any message reaching the Headers widget writes its value back.
+	m = keyIn(m, tea.KeyMsg{Type: tea.KeyRight})
+	if m.mcpView.vals.headers != "Authorization: Bearer ${authorization}" || m.mcpView.secretValue("mcp:linear:authorization") != "sk-live-9" {
+		t.Fatalf("headers %q", m.mcpView.vals.headers)
+	}
+	m = keyIn(m, ctrlS())
+	if strings.Contains(m.View(), "Convert Authorization") {
+		t.Error("the next save does not offer the conversion again")
+	}
+}
+
+// With a blank name every secret is keyed under the same placeholder server.
+func TestMcpBlankNameSecretsShareOneKey(t *testing.T) {
+	d := &fakeDaemon{}
+	m := editModel(t, d)
+	m = pressCmd(m, "a")
+	v := &m.mcpView
+	v.vals.url, v.vals.headers = "https://x/mcp", "Authorization: Bearer sk-1"
+	m = leaveGroup1(t, m)
+	if !strings.Contains(m.View(), "mcp:<name>:<placeholder>") {
+		t.Errorf("the offer names the placeholder server:\n%s", m.View())
+	}
+	m = accept(t, m)
+	fields := m.mcpView.secretFields()
+	if len(fields) != 1 || fields[0].name != "mcp:<name>:authorization" || m.mcpView.secretValue(fields[0].name) != "sk-1" {
+		t.Fatalf("fields %+v secrets %v", fields, m.mcpView.secretVals)
+	}
+	*m.mcpView.secretPtr("mcp:<name>:authorization") = "typed"
+	m.mcpView.renameSecrets("", "foo")
+	m.mcpView.vals.name = "foo"
+	if m.mcpView.secretValue("mcp:foo:authorization") != "typed" || m.mcpView.secretFields()[0].name != "mcp:foo:authorization" {
+		t.Errorf("setting the name moves the value: %v", m.mcpView.secretVals)
+	}
+}
+
+// pumpForm feeds a message to a huh form and its resulting messages back in.
+func pumpForm(f *huh.Form, msg tea.Msg) {
+	queue := []tea.Msg{msg}
+	for i := 0; i < 30 && len(queue) > 0; i++ {
+		next := queue[0]
+		queue = queue[1:]
+		_, cmd := f.Update(next)
+		queue = append(queue, runQuick(cmd)...)
+	}
+}
+
+// The Headers description lists the derived secret names as they are typed.
+func TestMcpHeadersSecretListFollowsTyping(t *testing.T) {
+	view := linearView()
+	view.Definition.Headers = nil
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": view}}
+	m := openEdit(t, editModel(t, d))
+	m.focusMcpField("headers")
+	f := m.mcpView.form
+	pumpForm(f, struct{}{})
+	if strings.Contains(f.View(), "mcp:linear:tok") {
+		t.Fatal("no placeholder yet")
+	}
+	// Only the last keystroke's description update can match the final hash.
+	var cmd tea.Cmd
+	for _, r := range "X-Key: ${tok}" {
+		_, cmd = f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	for _, msg := range runQuick(cmd) {
+		pumpForm(f, msg)
+	}
+	if m.mcpView.vals.headers != "X-Key: ${tok}" || !strings.Contains(f.View(), "Secrets: mcp:linear:tok") {
+		t.Errorf("headers %q; view:\n%s", m.mcpView.vals.headers, f.View())
+	}
+}
+
+// A STALE reload of a Retry form counts edits against the definition it was
+// filled from (held), and keeps comparing secrets against pending.previous.
+func TestMcpRetryStaleReloadFlagsNothingUnchanged(t *testing.T) {
+	p := pendingLinear()
+	view := &pb.McpDefinitionView{Name: "linear", SecretsAvailable: true, PendingReplace: p, Fingerprint: "fp-1"}
+	d := &fakeDaemon{mcpPendings: []*pb.McpPendingReplace{p}, mcpViews: map[string]*pb.McpDefinitionView{"linear": view},
+		mcpSaveResults: []mcpSaveResult{{err: refused(pb.McpSaveRefusal_STALE_CHANGED, "the pending replace changed")}}}
+	m := editModel(t, d)
+	m = keyIn(m, press("R"))
+	m = keyIn(m, press("h"))
+	*m.mcpView.secretPtr("mcp:linear:k") = "v"
+	m = keyIn(m, ctrlS())
+	for m.screen == screenConfirm {
+		m = accept(t, m)
+	}
+	v := m.mcpView
+	if v.form == nil || !strings.Contains(v.status, "reloaded") {
+		t.Fatalf("expected a reload; status %q", v.status)
+	}
+	if len(v.flags) != 0 || v.fieldFlags("url") != "" || strings.Contains(v.status, "dropped") || v.secretValue("mcp:linear:k") != "v" {
+		t.Errorf("nothing changed on the host: flags %v status %q", v.flags, v.status)
+	}
+	if v.vals.url != "https://new/mcp" || v.opened.GetUrl() != "https://old/mcp" || !v.urlChanged() {
+		t.Errorf("a retry compares against pending.previous: vals %q opened %q", v.vals.url, v.opened.GetUrl())
+	}
+}
+
+// No conversion is offered for a typed literal while secret storage is
+// unavailable: the secret field it would move into does not exist.
+func TestMcpNoConversionWithoutSecretStorage(t *testing.T) {
+	view := linearView()
+	view.SecretsAvailable, view.SecretsUnavailableReason = false, "keychain locked"
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": view}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Authorization: Bearer sk-live-1"
+	m = leaveGroup1(t, m)
+	v := m.mcpView
+	if m.screen == screenConfirm || !strings.Contains(v.status, "cannot be converted") || !strings.Contains(v.status, "keychain locked") ||
+		!v.focusInDefinition() || v.secretValue("mcp:linear:authorization") != "" {
+		t.Fatalf("screen %v status %q", m.screen, v.status)
+	}
+	m = keyIn(m, ctrlS())
+	if m.screen == screenConfirm || len(d.mcpSaves) != 0 || !strings.Contains(m.mcpView.status, "cannot be converted") {
+		t.Errorf("save: screen %v status %q", m.screen, m.mcpView.status)
+	}
+}
+
+// The authorize offer follows the saved server's auth state.
+func TestMcpAuthorizeOfferFollowsAuthState(t *testing.T) {
+	m := editModel(t, &fakeDaemon{})
+	for st, want := range map[pb.McpAuthState]bool{
+		pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED:   true,
+		pb.McpAuthState_MCP_AUTH_STATE_UNSPECIFIED:    true,
+		pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED:     false,
+		pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE: false,
+	} {
+		out := &pb.McpSaveOutcome{Name: "n", State: pb.McpSaveOutcome_REGISTERED,
+			Server: &pb.McpServer{Name: "n", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, AuthState: st}}
+		offered := false
+		for _, s := range m.mcpFollowups(out, true) {
+			offered = offered || strings.HasPrefix(s.title, "Authorize")
+		}
+		if offered != want {
+			t.Errorf("%v: offered = %v", st, offered)
+		}
+	}
+}
+
+// A pending row whose replace has ended elsewhere opens no dead form: the list
+// is re-read and the status says so.
+func TestMcpPendingRowWhoseReplaceEndedRelists(t *testing.T) {
+	p := pendingLinear()
+	d := &fakeDaemon{mcpPendings: []*pb.McpPendingReplace{p},
+		mcpDefErr: &client.SaveRefusal{Reason: pb.McpSaveRefusal_GONE, Message: "linear is no longer registered", Code: codes.NotFound}}
+	m := editModel(t, d)
+	if !strings.Contains(m.View(), "only the failed replaces below") {
+		t.Errorf("empty-list line with pending rows:\n%s", m.View())
+	}
+	d.mcpPendings = nil
+	m = keyIn(m, press("R"))
+	m = keyIn(m, press("h"))
+	if m.mcpView.form != nil || !strings.Contains(m.mcpView.status, "has ended") || strings.Contains(m.View(), "replace failed") {
+		t.Fatalf("GONE: form %v status %q\n%s", m.mcpView.form != nil, m.mcpView.status, m.View())
+	}
+	// Registered again by another path: the read succeeds with no pending.
+	d.mcpDefErr, d.mcpPendings = nil, []*pb.McpPendingReplace{p}
+	d.mcpViews = map[string]*pb.McpDefinitionView{"linear": linearView()}
+	m = keyIn(m, press("r"))
+	m = keyIn(m, press("X"))
+	if m.screen != screenMcp || !strings.Contains(m.mcpView.status, "has ended") {
+		t.Errorf("X: screen %v status %q", m.screen, m.mcpView.status)
+	}
+	m = keyIn(m, press("r"))
+	m = keyIn(m, press("R"))
+	m = keyIn(m, press("h"))
+	if m.mcpView.form != nil || !strings.Contains(m.mcpView.status, "has ended") {
+		t.Errorf("R: form %v status %q", m.mcpView.form != nil, m.mcpView.status)
 	}
 }

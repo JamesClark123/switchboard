@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -53,5 +54,39 @@ func TestMcpStatusMapping(t *testing.T) {
 	}
 	if st, _ := status.FromError(mcpStatus(fmt.Errorf("%w: retrying", mcp.ErrUnavailable))); st.Message() != "retrying" {
 		t.Errorf("unavailable message = %q", st.Message())
+	}
+}
+
+// notRecordedInfo returns the save-not-recorded ErrorInfo detail of err, if any.
+func notRecordedInfo(err error) *errdetails.ErrorInfo {
+	st, _ := status.FromError(err)
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetReason() == McpSaveNotRecordedReason {
+			return info
+		}
+	}
+	return nil
+}
+
+// The UNAVAILABLE of a save that ran but is not recorded yet carries an
+// ErrorInfo, so a client tells it from a transport UNAVAILABLE; nothing else
+// carries it.
+func TestMcpSaveNotRecordedErrorInfo(t *testing.T) {
+	err := mcpStatus(fmt.Errorf("%w: the host was changed but the result could not be recorded yet; retrying", mcp.ErrUnavailable))
+	st, _ := status.FromError(err)
+	info := notRecordedInfo(err)
+	if st.Code() != codes.Unavailable || st.Message() != "the host was changed but the result could not be recorded yet; retrying" ||
+		info == nil || info.GetReason() != "MCP_SAVE_NOT_RECORDED" || info.GetDomain() != "switchboard" {
+		t.Fatalf("status = %v, info = %v", st, info)
+	}
+	// It survives the wire encoding the client decodes.
+	back := status.FromProto(st.Proto()).Err()
+	if notRecordedInfo(back) == nil {
+		t.Error("detail lost through the status proto")
+	}
+	for _, other := range []error{status.Error(codes.Unavailable, "connection refused"), mcpStatus(mcp.ErrBeingReplaced), mcpStatus(errors.New("host said no"))} {
+		if notRecordedInfo(other) != nil {
+			t.Errorf("%v carries the not-recorded detail", other)
+		}
 	}
 }

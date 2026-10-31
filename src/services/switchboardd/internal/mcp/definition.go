@@ -73,11 +73,11 @@ func (m *Manager) readHost(ctx context.Context, name string, listOnly bool) *hos
 	}()
 	go func() {
 		defer wg.Done()
-		inspectOut, hr.inspectErr = m.cli.run(rctx, argvInspect(name)...)
+		inspectOut, hr.inspectErr = m.cli.runJSON(rctx, argvInspect(name)...)
 	}()
 	go func() {
 		defer wg.Done()
-		authOut, hr.authErr = m.cli.run(rctx, argvAuthStatus(name)...)
+		authOut, hr.authErr = m.cli.runJSON(rctx, argvAuthStatus(name)...)
 	}()
 	wg.Wait()
 	if hr.inspectErr == nil {
@@ -119,11 +119,13 @@ func (m *Manager) secretStatus(ctx context.Context, name string) (stored []strin
 // Definition is the edit form's pre-fill (SWI-21 FR-402, research R11): the
 // record merged with what the host reports, credential literals redacted, the
 // secret status and the fingerprint to echo back. It takes no lock. forAdd
-// returns only the secret status, for any name.
+// returns only the secret status. The name must be one a save accepts
+// (checkName): any other could never be saved, and a `:` in it would make the
+// `mcp:<name>:` secret prefix match another server's secrets.
 func (m *Manager) Definition(ctx context.Context, name string, forAdd bool) (*pb.McpDefinitionView, error) {
 	name = strings.TrimSpace(name)
-	if !SafeArg(name) {
-		return nil, ErrInvalidArgs
+	if err := checkName(name); err != nil {
+		return nil, err
 	}
 	settings, err := m.reg.GetMcpSettings()
 	if err != nil {
@@ -177,11 +179,19 @@ func (m *Manager) buildView(name string, settings *pb.McpGatewaySettings, hr *ho
 		def = proto.Clone(rec).(*pb.McpServerDefinition)
 	}
 	def.LiteralOnHost = nil
-	if k := kindOf(hr.row.transport); k != pb.McpServerKind_MCP_SERVER_KIND_UNSPECIFIED {
-		def.Kind = k
-	}
 	flag := func(field string, kind pb.McpFieldFlag_Kind, host, recorded string) {
 		v.Flags = append(v.Flags, &pb.McpFieldFlag{Field: field, Kind: kind, HostValue: host, RecordedValue: recorded})
+	}
+	if k := kindOf(hr.row.transport); k != pb.McpServerKind_MCP_SERVER_KIND_UNSPECIFIED {
+		if rec != nil && rec.GetKind() != pb.McpServerKind_MCP_SERVER_KIND_UNSPECIFIED && rec.GetKind() != k {
+			// The host re-registered the name as the other kind: none of the
+			// record's fields apply, so the view is built as for an unrecorded
+			// server (only what the host reports) and the change is flagged.
+			flag("kind", pb.McpFieldFlag_CHANGED_ON_HOST, kindName(k), kindName(rec.GetKind()))
+			def = &pb.McpServerDefinition{RebindPending: rec.GetRebindPending()}
+			rec = nil
+		}
+		def.Kind = k
 	}
 	if def.Kind == pb.McpServerKind_MCP_SERVER_KIND_REMOTE {
 		mergeString := func(field string, reported *string, dst *string, recorded string) {
@@ -200,7 +210,13 @@ func (m *Manager) buildView(name string, settings *pb.McpGatewaySettings, hr *ho
 		mergeString("oauth_authorization_server", hr.info.authServer, &def.OauthAuthorizationServer, rec.GetOauthAuthorizationServer())
 		switch {
 		case hr.scopesRep:
-			sc := mcprules.Normalize(&pb.McpServerDefinition{Scopes: hr.scopes}, rec).GetScopes()
+			// A runtime-added offline_access is told apart only against a record;
+			// with none, the host's scopes are kept as reported.
+			recorded := rec
+			if rec == nil {
+				recorded = &pb.McpServerDefinition{Scopes: hr.scopes}
+			}
+			sc := mcprules.Normalize(&pb.McpServerDefinition{Scopes: hr.scopes}, recorded).GetScopes()
 			if rec != nil && !mcprules.Equal(&pb.McpServerDefinition{Scopes: sc}, &pb.McpServerDefinition{Scopes: rec.GetScopes()}) {
 				flag("scopes", pb.McpFieldFlag_CHANGED_ON_HOST, strings.Join(sc, " "), strings.Join(rec.GetScopes(), " "))
 			}
@@ -211,7 +227,9 @@ func (m *Manager) buildView(name string, settings *pb.McpGatewaySettings, hr *ho
 		case rec == nil:
 			flag("scopes", pb.McpFieldFlag_NOT_RECOVERABLE, "", "")
 		}
-		mergeHeaders(def, rec, hr, flag)
+		if mergeHeaders(def, rec, hr, flag) {
+			v.UnsupportedSettings = append(v.UnsupportedSettings, "malformed header")
+		}
 	} else if rec.GetCommand() == nil {
 		flag("command", pb.McpFieldFlag_NOT_RECOVERABLE, "", "")
 	}
@@ -231,10 +249,20 @@ func (m *Manager) buildView(name string, settings *pb.McpGatewaySettings, hr *ho
 	return v
 }
 
+// kindName is a server kind as the edit form's flag shows it.
+func kindName(k pb.McpServerKind) string {
+	if k == pb.McpServerKind_MCP_SERVER_KIND_REMOTE {
+		return "remote"
+	}
+	return "host command"
+}
+
 // mergeHeaders applies FR-402 and the FR-423 redaction to the reported headers.
 // A reported credential literal is redacted and flagged LITERAL_ON_HOST; the
-// literal never reaches the view.
-func mergeHeaders(def, rec *pb.McpServerDefinition, hr *hostRead, flag func(string, pb.McpFieldFlag_Kind, string, string)) {
+// literal never reaches the view. A reported entry that is not a field name
+// and a colon is left out whole (its "name" may hold a credential) and reported
+// as malformed, which the view lists as an unsupported setting.
+func mergeHeaders(def, rec *pb.McpServerDefinition, hr *hostRead, flag func(string, pb.McpFieldFlag_Kind, string, string)) (malformed bool) {
 	type hv struct{ name, value string }
 	recBy := map[string]hv{}
 	var recOrder []string
@@ -251,11 +279,15 @@ func mergeHeaders(def, rec *pb.McpServerDefinition, hr *hostRead, flag func(stri
 			def.LiteralOnHost = append(def.LiteralOnHost, n)
 			flag("headers/"+n, pb.McpFieldFlag_LITERAL_ON_HOST, recBy[strings.ToLower(n)].value, "")
 		}
-		return
+		return false
 	}
 	var out []string
 	seen := map[string]bool{}
 	for _, h := range hr.info.headers {
+		if !mcprules.WellFormedHeader(h) {
+			malformed = true
+			continue
+		}
 		n, val := mcprules.SplitHeader(h)
 		key := strings.ToLower(n)
 		seen[key] = true
@@ -286,6 +318,7 @@ func mergeHeaders(def, rec *pb.McpServerDefinition, hr *hostRead, flag func(stri
 		}
 	}
 	def.Headers = out
+	return malformed
 }
 
 // fillSecretStatus sets each placeholder's and the client secret's status

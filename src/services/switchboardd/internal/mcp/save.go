@@ -15,9 +15,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// saveTimeout bounds a save's forward steps (one `mcp rm` + N stores + one `mcp
-// add`); cleanup calls run on their own contexts (research R2 Contexts).
-const saveTimeout = 10 * time.Minute
+// saveTimeout bounds a save's steps (one `mcp rm` + N stores + one `mcp add`);
+// its clock starts once the lock is taken, so time queued behind another
+// holder never eats it. lockWaitTimeout bounds that queueing on its own.
+// Cleanup calls run on their own contexts (research R2 Contexts). Variables so
+// tests shrink them.
+var (
+	saveTimeout     = 10 * time.Minute
+	lockWaitTimeout = 10 * time.Minute
+)
 
 // Persist retry timing (research R2 Failed persist); variables so tests shrink them.
 var (
@@ -68,6 +74,11 @@ type saveJob struct {
 	out        *pb.McpSaveOutcome
 	storedAny  bool
 	removedAny bool
+	preRemoved []string // removal-failed names retryPreStep removed
+	// hostUnknown: `mcp rm` failed and the re-list failed too, so whether the
+	// host still lists the server is unknown (recoverLater).
+	hostUnknown bool
+	emitted     bool // secrets_changed already sent (the persist-retry path)
 }
 
 // Save runs one MCP form save (SWI-21 FR-404, research R2) on a context
@@ -92,15 +103,18 @@ func (m *Manager) Save(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.M
 			done <- result{out, err}
 		}
 	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), saveTimeout)
+	dctx := context.WithoutCancel(ctx)
 	go func() {
-		defer cancel()
-		l, release, err := m.lockName(sctx, name, lockOpts{authSensitive: req.GetSecretValues()[mcprules.ClientSecretName(name)] != ""})
+		lctx, lcancel := context.WithTimeout(dctx, lockWaitTimeout)
+		l, release, err := m.lockName(lctx, name, lockOpts{authSensitive: req.GetSecretValues()[mcprules.ClientSecretName(name)] != ""})
+		lcancel()
 		if err != nil {
 			reply(nil, err)
 			return
 		}
 		defer release()
+		sctx, cancel := context.WithTimeout(dctx, saveTimeout)
+		defer cancel()
 		j := &saveJob{m: m, l: l, name: name, req: req, def: def}
 		j.run(sctx, reply)
 	}()
@@ -136,6 +150,14 @@ func checkSaveRequest(name string, req *pb.SaveMcpServerRequest) (*pb.McpServerD
 		// unrecorded server).
 		if def.Url == "" && (req.GetIsNew() || req.GetRetryOfRevision() != 0) {
 			return nil, errNoURL
+		}
+		// The URL rule (FR-103) applies to a save that registers; an edit that
+		// re-registers is checked in classify, so a mark-only save of a server
+		// registered by hand with an odd URL still goes through.
+		if req.GetIsNew() || req.GetRetryOfRevision() != 0 {
+			if err := mcprules.ValidURL(def.Url); err != nil {
+				return nil, ruleErr(err)
+			}
 		}
 		if def.Command != nil {
 			return nil, fmt.Errorf("%w: a remote server has no command", ErrInvalidArgs)
@@ -208,31 +230,93 @@ func (j *saveJob) run(ctx context.Context, reply func(*pb.McpSaveOutcome, error)
 		reply(nil, err)
 		return
 	}
+	// From here a refusal may follow host removals by retryPreStep.
+	refused := func(err error) { j.refusedAfterPreStep(err, reply) }
 	if err := j.retryPreStep(ctx); err != nil {
-		reply(nil, err)
+		refused(err)
 		return
 	}
 	if err := j.snapshotStep(ctx); err != nil {
-		reply(nil, err)
+		refused(err)
 		return
 	}
 	if err := j.classify(); err != nil {
-		reply(nil, err)
+		refused(err)
 		return
 	}
 	if err := j.markInProgress(); err != nil {
 		// No host change: a replace ends registered, so a launch that recorded
 		// the name skipped since classify is swept (a Retry's pending stands).
 		if j.replace {
-			j.m.clearRefusing(j.name, j.l, nil)
+			j.m.clearRefusing(j.name, j.l, func(s *nameState) { s.end(true) })
 			j.m.replaceEnded(j.name, true)
 		}
-		reply(nil, err)
+		refused(err)
 		return
 	}
 	j.hook("in-progress")
 	j.forward(ctx)
+	if j.hostUnknown {
+		j.recoverLater(reply)
+		return
+	}
 	j.persist(reply)
+}
+
+// refusedAfterPreStep replies a refusal. When retryPreStep had already removed
+// carried removal-failed secrets on the host, the pending replace stops listing
+// them as removal-failed (they move to removed_secrets) and secrets_changed and
+// mcp_gateway_changed tell every client, as a landed save would.
+func (j *saveJob) refusedAfterPreStep(err error, reply func(*pb.McpSaveOutcome, error)) {
+	if len(j.preRemoved) > 0 {
+		gone := map[string]bool{}
+		for _, n := range j.preRemoved {
+			gone[n] = true
+		}
+		settings, uerr := j.m.reg.UpdateMcpSettings(func(s *pb.McpGatewaySettings) error {
+			p := s.GetPendingReplaces()[j.name]
+			if p == nil {
+				return nil
+			}
+			var kept []string
+			for _, n := range p.RemovalFailedSecrets {
+				if !gone[n] {
+					kept = append(kept, n)
+				}
+			}
+			p.RemovalFailedSecrets = kept
+			p.RemovedSecrets = appendNew(p.RemovedSecrets, j.preRemoved...)
+			return nil
+		})
+		j.m.secrets.EmitChanged()
+		if uerr != nil {
+			log.Printf("mcp: %s: record the retry's removed secrets: %v", j.name, uerr)
+		} else {
+			j.m.emitOutcome(nil, settings)
+		}
+	}
+	reply(nil, err)
+}
+
+// recoverLater hands a replace whose `mcp rm` failed, and whose re-list failed
+// too, to recovery (research R2 Recovery): the host may or may not still list
+// the server, so neither STILL_REGISTERED nor a pending replace can be asserted.
+// The in-progress record stays (reconcile keeps the definition and mark while it
+// exists) and the name turns from saving to recovering in one hold; the
+// recovery resolves it from a fresh list once this save releases the lock. The
+// caller gets an UNVERIFIED refusal naming the host errors. Nothing was stored:
+// the stores come after the remove.
+func (j *saveJob) recoverLater(reply func(*pb.McpSaveOutcome, error)) {
+	m := j.m
+	m.clearRefusing(j.name, j.l, func(s *nameState) { s.recovering = true })
+	settings, err := m.reg.GetMcpSettings()
+	if err != nil {
+		settings = j.settings
+	}
+	m.emitOutcome(nil, settings)
+	go m.recoverLoop(m.daemonCtx, []string{j.name})
+	reply(nil, refuse(pb.McpSaveRefusal_UNVERIFIED, "couldn't confirm whether %s was removed from the host (%s); recovering the save, try again shortly",
+		j.name, strings.Join(j.out.HostErrors, "; ")))
 }
 
 func (j *saveJob) hook(step string) {
@@ -334,6 +418,7 @@ func (j *saveJob) retryPreStep(ctx context.Context) error {
 			return refuse(pb.McpSaveRefusal_PENDING_REMOVAL_FAILED, "secret %s is still stored on the host and could not be removed; re-enter it or try again", n)
 		}
 		j.removedAny = true
+		j.preRemoved = append(j.preRemoved, n)
 	}
 	return nil
 }
@@ -421,8 +506,13 @@ func (j *saveJob) classify() error {
 		j.replace = j.regChange
 	}
 	j.clientChanged = mcprules.ClientChanged(j.prev, j.def)
-	if j.regChange && j.def.Kind == pb.McpServerKind_MCP_SERVER_KIND_REMOTE && j.def.Url == "" {
-		return errNoURL
+	if j.regChange && j.def.Kind == pb.McpServerKind_MCP_SERVER_KIND_REMOTE {
+		if j.def.Url == "" {
+			return errNoURL
+		}
+		if err := mcprules.ValidURL(j.def.Url); err != nil {
+			return ruleErr(err)
+		}
 	}
 	if j.regChange && len(j.def.LiteralOnHost) > 0 {
 		return fmt.Errorf("%w: header %q holds a credential that is only on the host; convert it to a ${placeholder} and re-enter the secret before re-registering", ErrInvalidArgs, j.def.LiteralOnHost[0])
@@ -444,7 +534,7 @@ func (j *saveJob) classify() error {
 		}
 	}
 	if j.regChange {
-		j.m.setReplacing(j.name, j.l)
+		j.m.setReplacing(j.name)
 	}
 	return nil
 }
@@ -486,7 +576,10 @@ func (j *saveJob) markInProgress() error {
 // forward runs remove → stores → add → identity (research R2 steps 5–8) and
 // fills the outcome; failures roll back (step 9).
 func (j *saveJob) forward(ctx context.Context) {
-	j.out = &pb.McpSaveOutcome{Name: j.name, Identity: pb.McpSaveOutcome_NOT_TOUCHED, State: pb.McpSaveOutcome_UNCHANGED_REGISTRATION}
+	// rebind_pending starts as recorded: a save that stops before identityStep
+	// (a failed store) must not clear it.
+	j.out = &pb.McpSaveOutcome{Name: j.name, Identity: pb.McpSaveOutcome_NOT_TOUCHED, State: pb.McpSaveOutcome_UNCHANGED_REGISTRATION,
+		RebindPending: j.rec.GetRebindPending()}
 	if j.replace && !j.removeStep(ctx) {
 		return
 	}
@@ -510,7 +603,8 @@ func (j *saveJob) forward(ctx context.Context) {
 }
 
 // removeStep runs `mcp rm --force` (reaped before any re-check, R7); on failure
-// the name is re-listed: absent ⇒ continue, present ⇒ STILL_REGISTERED.
+// the name is re-listed: absent ⇒ continue, present ⇒ STILL_REGISTERED, the
+// re-list failed too ⇒ unknown (hostUnknown, handed to recovery).
 func (j *saveJob) removeStep(ctx context.Context) bool {
 	rctx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
 	_, err := j.m.cli.runBounded(rctx, argvRemove(j.name)...)
@@ -530,11 +624,13 @@ func (j *saveJob) removeStep(ctx context.Context) bool {
 			return true
 		}
 	}
-	j.out.State = pb.McpSaveOutcome_STILL_REGISTERED
 	j.out.HostErrors = append(j.out.HostErrors, err.Error())
 	if lerr != nil {
 		j.out.HostErrors = append(j.out.HostErrors, lerr.Error())
+		j.hostUnknown = true
+		return false
 	}
+	j.out.State = pb.McpSaveOutcome_STILL_REGISTERED
 	return false
 }
 
@@ -542,8 +638,11 @@ func (j *saveJob) removeStep(ctx context.Context) bool {
 // secret, each classified created or overwritten from the snapshot (FR-412).
 func (j *saveJob) storeStep(ctx context.Context) bool {
 	for _, n := range j.order {
-		if err := j.m.secrets.SetQuiet(ctx, n, j.req.GetSecretValues()[n]); err != nil {
-			j.out.HostErrors = append(j.out.HostErrors, err.Error())
+		v := j.req.GetSecretValues()[n]
+		if err := j.m.secrets.SetQuiet(ctx, n, v); err != nil {
+			// The host's output may echo the value; it is persisted in the
+			// pending replace and sent in events, so it is redacted here too.
+			j.out.HostErrors = append(j.out.HostErrors, strings.ReplaceAll(err.Error(), v, mcprules.RedactMarker))
 			return false
 		}
 		j.storedAny = true
@@ -558,16 +657,16 @@ func (j *saveJob) storeStep(ctx context.Context) bool {
 }
 
 // addStep registers the new definition; a failure or timeout is never
-// re-checked (the add may still complete on the host, R7).
+// re-checked (the add may still complete on the host, R7). An add whose process
+// never started (an expired budget) did not run, so add_started stays false.
 func (j *saveJob) addStep(ctx context.Context) bool {
 	actx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
 	defer cancel()
-	j.out.AddStarted = true
 	if _, err := j.m.cli.runBounded(actx, addArgv(j.name, j.def)...); err != nil {
+		j.out.AddStarted = !errors.Is(err, errNotStarted)
 		j.out.HostErrors = append(j.out.HostErrors, err.Error())
 		return false
 	}
-	j.out.AddStarted = false
 	return true
 }
 
@@ -769,6 +868,7 @@ func (j *saveJob) persist(reply func(*pb.McpSaveOutcome, error)) {
 		}
 		if j.storedAny || j.removedAny {
 			j.m.secrets.EmitChanged()
+			j.emitted = true
 		}
 		j.m.emitOutcome(nil, j.settings)
 		reply(nil, fmt.Errorf("%w: %s", ErrUnavailable, msg))
@@ -791,14 +891,20 @@ func (j *saveJob) persist(reply func(*pb.McpSaveOutcome, error)) {
 // generation bump follow in the deferred release.
 func (j *saveJob) tail(settings *pb.McpGatewaySettings, pendingNow bool, reply func(*pb.McpSaveOutcome, error)) {
 	m := j.m
-	m.clearRefusing(j.name, j.l, &pendingNow)
-	if (j.replace || j.retry) && (j.out.State == pb.McpSaveOutcome_REGISTERED || j.out.State == pb.McpSaveOutcome_STILL_REGISTERED) {
+	ended := (j.replace || j.retry) && (j.out.State == pb.McpSaveOutcome_REGISTERED || j.out.State == pb.McpSaveOutcome_STILL_REGISTERED)
+	m.clearRefusing(j.name, j.l, func(s *nameState) {
+		s.pending = pendingNow
+		if ended {
+			s.end(true)
+		}
+	})
+	if ended {
 		m.replaceEnded(j.name, true)
 	}
 	if j.out.State == pb.McpSaveOutcome_REGISTERED {
 		j.out.Server = m.serverRow(j.name, settings)
 	}
-	if j.storedAny || j.removedAny {
+	if (j.storedAny || j.removedAny) && !j.emitted {
 		m.secrets.EmitChanged()
 	}
 	m.emitOutcome(j.out, settings)

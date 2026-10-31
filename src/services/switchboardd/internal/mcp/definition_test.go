@@ -179,10 +179,7 @@ func TestReconcileDropsUnlockedAndKeepsLocked(t *testing.T) {
 	}
 	// A save that re-registers is being replaced at launch.
 	e.add("d", remote("https://d"), true, nil)
-	e.m.mu.Lock()
-	l := &nameLock{slot: make(chan struct{}, 1), refuse: make(chan struct{})}
-	e.m.mu.Unlock()
-	e.m.setReplacing("d", l)
+	e.m.setReplacing("d")
 	at, _ = e.m.ResolveAttach(context.Background())
 	if !has(at.BeingReplaced, "d") || has(at.Servers, "d") || e.m.ReplaceState("d") != BeingReplaced {
 		t.Errorf("replacing at launch = %+v", at)

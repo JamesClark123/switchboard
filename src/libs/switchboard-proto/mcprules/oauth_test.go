@@ -39,6 +39,12 @@ func TestCredentialLooking(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("got %q", got)
 	}
+	// Review: URL user info and positional NAME=value arguments.
+	got = CredentialLooking("https://user:pw@x/mcp", []string{"GITHUB_TOKEN=ghp_x", "https://y?token=1", "PLAIN=1"})
+	want = []string{"GITHUB_TOKEN", URLUserinfo}
+	if strings.Join(got, ",") != strings.Join(want, ",") || strings.Contains(strings.Join(got, ","), "ghp_x") {
+		t.Errorf("got %q", got)
+	}
 	if CredentialLooking("", nil) != nil {
 		t.Error("empty")
 	}

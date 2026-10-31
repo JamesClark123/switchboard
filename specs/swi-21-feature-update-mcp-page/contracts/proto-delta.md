@@ -74,7 +74,7 @@ message McpFieldFlag {
     LITERAL_ON_HOST = 3;
     RESOLVED_UNCHECKABLE = 4;           // inspect returns resolved values (FR-423 flag)
   }
-  string field = 1;                     // "url", "headers", "headers/<Name>", "client_id", "oauth_authorization_server", "scopes", "command"
+  string field = 1;                     // "url", "headers", "headers/<Name>", "client_id", "oauth_authorization_server", "scopes", "command", "kind"
   Kind kind = 2;
   string host_value = 3;                // redacted where FR-423 applies
   string recorded_value = 4;
@@ -195,7 +195,8 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Fingerprint re-read failed (`ls`/`inspect`/`auth status`) | `FAILED_PRECONDITION` | `UNVERIFIED` (retryable; the form is not reloaded) |
 | Leftover in-progress record not yet recovered (research R2), on `SaveMcpServer`, Cancel, `RemoveMcpServer`, `RemoveMcpServerSecrets`, `AddMcpServer` or `SetMcpServerDefault` | `FAILED_PRECONDITION` | `UNVERIFIED` ("recovering an interrupted save; try again") |
 | `SetMcpServerDefault`, `RemoveMcpServer`, `RemoveMcpServerSecrets`, Cancel, `SaveMcpServer` or `AddMcpServer` while a live save holds an in-progress record or retries its `persist` (`saving`/`recording`), including a caller already queued on the lock | `FAILED_PRECONDITION` | `BEING_REPLACED` ("a save of this server is still running; try again later") |
-| Runtime `persist` failed after 3 attempts (the daemon keeps retrying the same write) | `UNAVAILABLE` | registration change: "the host was changed but the result could not be recorded yet; retrying"; switchboard-only save: "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying" plus the stored secrets (no refusal detail) |
+| Runtime `persist` failed after 3 attempts (the daemon keeps retrying the same write) | `UNAVAILABLE` | `google.rpc.ErrorInfo{reason: "MCP_SAVE_NOT_RECORDED", domain: "switchboard"}` (no `McpSaveRefusal`); registration change: "the host was changed but the result could not be recorded yet; retrying"; switchboard-only save: "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying" plus the stored secrets. A client tells this from a transport `UNAVAILABLE` (where the save may never have reached the daemon) only by the `ErrorInfo` |
+| Replace whose `mcp rm` failed and whose re-list failed too (research R7) | `FAILED_PRECONDITION` | `UNVERIFIED` (names the host errors; the in-progress record stays and recovery resolves it) |
 | Empty `secret_values` entry, or one containing `••••` | `INVALID_ARGUMENT` | message names the secret, never the value |
 | Retry of an ended pending replace | `FAILED_PRECONDITION` | `PENDING_ENDED` |
 | Retry pre-step removal still listed | `FAILED_PRECONDITION` | `PENDING_REMOVAL_FAILED` |

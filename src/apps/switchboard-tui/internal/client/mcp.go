@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -158,6 +159,30 @@ func AsSaveRefusal(err error) (*SaveRefusal, bool) {
 		}
 	}
 	return nil, false
+}
+
+// The ErrorInfo the daemon attaches to its own UNAVAILABLE "the save ran, its
+// result is not recorded yet" error, so it is told apart from a transport
+// failure, which gRPC also reports as UNAVAILABLE.
+const (
+	SaveNotRecordedReason = "MCP_SAVE_NOT_RECORDED"
+	SaveNotRecordedDomain = "switchboard"
+)
+
+// IsSaveNotRecorded reports the daemon's "save ran, not recorded yet" error:
+// UNAVAILABLE carrying that ErrorInfo. A bare UNAVAILABLE (daemon unreachable,
+// connection dropped) is false: the save may never have run.
+func IsSaveNotRecorded(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unavailable {
+		return false
+	}
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetReason() == SaveNotRecordedReason && info.GetDomain() == SaveNotRecordedDomain {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpErr turns a refusal status into a *SaveRefusal, leaving other errors as

@@ -10,6 +10,9 @@ func TestIsCredentialHeader(t *testing.T) {
 		"Authorization": true, "proxy-authorization": true, "Cookie": true, "X-Api-Key": true,
 		"X_Auth_Token": true, "X-Client-Secret": true, "x-credentials": true, "ApiKey": true,
 		"Keycloak-Realm": false, "X-Org": false, "X-Auth-Mode": true, "Monkey": false,
+		// Review: run-together and dotted names.
+		"X-Authorization": true, "Authentication": true, "X-AccessToken": true, "AuthToken": true,
+		"X-Api.Key": true, "X-AccessKey": true, "X-ClientSecret": true, "X-Hotkey": false, "X-Tokenizer": false,
 	} {
 		if got := IsCredentialHeader(name); got != want {
 			t.Errorf("%s: %v, want %v", name, got, want)
@@ -76,6 +79,12 @@ func TestConvert(t *testing.T) {
 		{"Cookie", "session=abc", nil, "session=${cookie}", "cookie", "abc"},
 		{"Client_Secret", "v", nil, "${client-secret}", "client-secret", "v"},
 		{"Authorization", "Custom abc", nil, "${authorization}", "authorization", "Custom abc"},
+		// Review: existing placeholders stay in the value, never in the secret.
+		{"Authorization", "Bearer ${x} tail", nil, "Bearer ${x} ${authorization}", "authorization", "tail"},
+		{"Authorization", "Custom ${k}", nil, "${authorization} ${k}", "authorization", "Custom"},
+		{"Cookie", "a=${a}; b=lit", nil, "a=${a}; b=${cookie}", "cookie", "lit"},
+		{"Cookie", "session=abc; csrf=def", nil, "session=${cookie}", "cookie", "abc; csrf=def"},
+		{"Authorization", "Bearer abc ${x", nil, "Bearer ${authorization}", "authorization", "abc ${x"},
 	} {
 		v, p, s := Convert(tc.name, tc.value, tc.used)
 		if v != tc.wantValue || p != tc.wantP || s != tc.s {
@@ -84,6 +93,18 @@ func TestConvert(t *testing.T) {
 		if err := CheckCredentialValue(tc.name, v); err != nil {
 			t.Errorf("converted %q refused: %v", v, err)
 		}
+	}
+	// Two literal runs convert one per call; no secret holds ${…}.
+	v, _, sec := Convert("Authorization", "lit1 ${x} lit2", nil)
+	if v != "${authorization} ${x} lit2" || sec != "lit1" {
+		t.Errorf("first run: %q %q", v, sec)
+	}
+	v, _, sec = Convert("Authorization", v, map[string]bool{"authorization": true, "x": true})
+	if v != "${authorization} ${x} ${authorization-2}" || sec != "lit2" || CheckCredentialValue("Authorization", v) != nil {
+		t.Errorf("second run: %q %q", v, sec)
+	}
+	if v, _, sec := Convert("Authorization", "Bearer ${k}", nil); v != "Bearer ${k}" || sec != "" {
+		t.Errorf("no literal: %q %q", v, sec)
 	}
 	if _, p, _ := Convert("!!", "x", nil); p != "secret" {
 		t.Errorf("fallback placeholder %q", p)
@@ -99,6 +120,12 @@ func TestRedact(t *testing.T) {
 	}
 	if h, ok := RedactHeader("X-Org: abc"); ok || h != "X-Org: abc" {
 		t.Errorf("RedactHeader non-credential: %q %v", h, ok)
+	}
+	// Review: an entry that is not "token-name: value" is redacted whole.
+	for _, h := range []string{"Authorization=Bearer sk-live-SECRET", "Bad Name: sk-live-SECRET"} {
+		if out, ok := RedactHeader(h); !ok || out != RedactMarker {
+			t.Errorf("RedactHeader(%q) = %q %v", h, out, ok)
+		}
 	}
 }
 

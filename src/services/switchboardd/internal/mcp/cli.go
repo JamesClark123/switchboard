@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -148,21 +150,44 @@ func (c *CLI) run(ctx context.Context, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// runJSON runs a `--json` read (`mcp inspect`, `mcp auth status`): only stdout
+// is returned for parsing, so a notice or warning the CLI prints on stderr never
+// breaks the JSON. On failure the error carries the tail of both.
+func (c *CLI) runJSON(ctx context.Context, args ...string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		both := append(append([]byte(nil), stdout.Bytes()...), stderr.Bytes()...)
+		return stdout.String(), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(both))
+	}
+	return stdout.String(), nil
+}
+
+// errNotStarted marks a runBounded failure where the process never started
+// (an expired context, a missing binary, an argv the OS refuses): the command
+// did not run on the host.
+var errNotStarted = errors.New("not started")
+
 // runBounded runs a save's `mcp rm` / `mcp add` (SWI-21 research R7): the child
 // gets its own process group, which is killed on the context deadline, and the
 // call returns only after the child has exited, so "the process has exited"
 // holds before any re-check. The combined output is returned; the error never
-// carries stdin (there is none).
+// carries stdin (there is none). A failure to start wraps errNotStarted.
 func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	setPgid(cmd)
 	cmd.Cancel = func() error { killPgid(cmd); return nil }
 	cmd.WaitDelay = 2e9 // 2s: bound a lingering pipe read after the group is killed
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out))
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("%s %s: %w (%w)", c.Bin, strings.Join(args, " "), err, errNotStarted)
 	}
-	return string(out), nil
+	if err := cmd.Wait(); err != nil {
+		return out.String(), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out.Bytes()))
+	}
+	return out.String(), nil
 }
 
 // runStreaming executes the CLI in its own process group, delivering each output

@@ -97,8 +97,10 @@ type Manager struct {
 
 	// stateMu is a leaf: nothing is acquired while it is held; it may be taken
 	// under mu or inside a registry transaction (research R12 Lock order).
-	stateMu sync.Mutex
-	state   map[string]*nameState
+	stateMu    sync.Mutex
+	state      map[string]*nameState
+	pruneEpoch uint64 // bumped by every prune of an idle state entry
+	genClock   uint64 // the last generation handed out (releaseFunc)
 
 	recoverQueue []string // start-up leftovers (research R2 Recovery)
 }
@@ -149,7 +151,7 @@ func NewManager(cli *CLI, reg settingsStore, hostID string, emit func(*pb.Event)
 		sort.Strings(m.recoverQueue)
 	}
 	if len(m.recoverQueue) > 0 {
-		go m.recoverLoop(m.daemonCtx)
+		go m.recoverLoop(m.daemonCtx, m.recoverQueue)
 	}
 	return m
 }
@@ -238,7 +240,7 @@ func (m *Manager) listRows(ctx context.Context) ([]listRow, error) {
 // a name that is locked, has an in-progress record, or whose generation moved
 // is left alone (research R4). It never holds m.mu, and it calls the replace
 // hook only after the registry write returns.
-func (m *Manager) reconcile(rows []listRow, gens map[string]uint64) (*pb.McpGatewaySettings, []string, error) {
+func (m *Manager) reconcile(rows []listRow, gens genSnapshot) (*pb.McpGatewaySettings, []string, error) {
 	present := map[string]bool{}
 	for _, r := range rows {
 		present[r.name] = true
@@ -295,7 +297,7 @@ func (m *Manager) reconcile(rows []listRow, gens map[string]uint64) (*pb.McpGate
 	}
 	sort.Strings(dropped)
 	for _, p := range ended {
-		m.setPending(p.GetName(), false)
+		m.endPending(p.GetName())
 		log.Printf("mcp: %s: pending replace ended: registered by another path", p.GetName())
 		m.replaceEnded(p.GetName(), false)
 		m.emitOutcome(&pb.McpSaveOutcome{
@@ -348,7 +350,7 @@ func (m *Manager) decorate(ctx context.Context, rows []listRow, settings *pb.Mcp
 			// The dedicated query decides; the STATUS column ("needs auth") is the
 			// fallback when it fails or says nothing recognisable.
 			st := pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN
-			if res, err := m.cli.run(sctx, argvAuthStatus(r.name)...); err == nil {
+			if res, err := m.cli.runJSON(sctx, argvAuthStatus(r.name)...); err == nil {
 				st = parseAuthStatus(res, r.name)
 			}
 			if st == pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN {
@@ -384,6 +386,12 @@ func (m *Manager) Add(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.Mcp
 		}
 		headers, err := mcprules.NormalizeHeaders(req.GetHeaders())
 		if err != nil {
+			return nil, ruleErr(err)
+		}
+		// FR-408 holds for old clients too (FR-422 relaxes only the
+		// credential-header rule): ${client_secret} would send the OAuth client
+		// secret to the resource server.
+		if err := mcprules.CheckPlaceholders(headers); err != nil {
 			return nil, ruleErr(err)
 		}
 		clientID, authServer := strings.TrimSpace(req.GetClientId()), strings.TrimSpace(req.GetOauthAuthorizationServer())
@@ -489,6 +497,13 @@ func checkCommand(c *pb.AddMcpServerRequest_LocalCommand) error {
 		// The documented form joins args with commas and documents no escaping.
 		if strings.Contains(a, ",") {
 			return fmt.Errorf("%w: argument %q contains a comma, which the host CLI cannot carry", ErrInvalidArgs, a)
+		}
+	}
+	// A NUL makes the exec fail before `sbx` starts (after a replace's `mcp rm`
+	// has run), and other control characters would reach every client.
+	for _, f := range append([]string{c.GetCommand(), c.GetDir()}, c.GetArgs()...) {
+		if strings.IndexFunc(f, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%w: the command, its arguments and its directory must not hold control characters", ErrInvalidArgs)
 		}
 	}
 	return nil

@@ -12,7 +12,6 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -258,6 +257,21 @@ func (v mcpState) mcpServerName() string {
 	return strings.TrimSpace(v.vals.name)
 }
 
+// mcpNamePlaceholder stands in for the server name in secret names while the
+// add form's Name is blank, so fields, conversions and renames agree on one key.
+const mcpNamePlaceholder = "<name>"
+
+// secretServerName is the server part of a secret name for a form name.
+func secretServerName(name string) string {
+	if name = strings.TrimSpace(name); name != "" {
+		return name
+	}
+	return mcpNamePlaceholder
+}
+
+// secretServer is the server part of the open form's secret names.
+func (v mcpState) secretServer() string { return secretServerName(v.mcpServerName()) }
+
 // mcpSecretField is one masked input of the secrets group.
 type mcpSecretField struct {
 	name   string // full secret name
@@ -271,10 +285,7 @@ func (v mcpState) secretFields() []mcpSecretField {
 	if v.vals == nil || v.vals.kind == "command" {
 		return nil
 	}
-	server := v.mcpServerName()
-	if server == "" {
-		server = "<name>"
-	}
+	server := v.secretServer()
 	var out []mcpSecretField
 	for _, p := range mcprules.Placeholders(headerLines(v.vals.headers)) {
 		if mcprules.ValidPlaceholder(p) == nil {
@@ -521,11 +532,15 @@ func (m Model) mcpEditForm(spec *formSpec, vals *mcpFormVals) *huh.Form {
 		}
 		return d + v.fieldFlags("headers")
 	}
+	// huh re-runs a DescriptionFunc when the hash of its bindings changes, and
+	// hashstructure skips unexported fields: bind exported pointers to what the
+	// list depends on, so it follows typing (the vals struct would hash constant).
+	headersDeps := &struct{ Name, Kind, Headers *string }{&vals.name, &vals.kind, &vals.headers}
 	def = append(def,
 		huh.NewSelect[string]().Key("kind").Title("Kind").
 			Options(huh.NewOption("Remote endpoint (URL)", "remote"), huh.NewOption("Host command (runs on the daemon's host)", "command")).Value(&vals.kind),
 		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp"+v.fieldFlags("url")).Value(&vals.url),
-		spec.text(&vals.headers, "Headers (remote only)").Key("headers").Lines(3).DescriptionFunc(headersDesc, vals),
+		spec.text(&vals.headers, "Headers (remote only)").Key("headers").Lines(3).DescriptionFunc(headersDesc, headersDeps),
 		huh.NewInput().Key("client_id").Title("OAuth client ID (remote only)").
 			Description("For servers without Dynamic Client Registration (e.g. Slack): the client ID you registered with the provider. Its client secret, if any, is entered in the next step."+v.fieldFlags("client_id")).Value(&vals.clientID),
 		huh.NewInput().Key("auth_server").Title("OAuth authorization server (remote only)").
@@ -593,6 +608,10 @@ func (m Model) mcpSecretsNote() string {
 func (m Model) openMcpAdd(vals mcpFormVals) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	m.resetMcpForm()
+	v.formGen++
+	// A definition read still in flight (e, R, X) is superseded: its reply
+	// must not replace this form (it is dropped while a form is open anyway).
+	v.loadingDef = ""
 	vals.mode = mcpModeAdd
 	if vals.kind == "" {
 		vals.kind = "remote"
@@ -611,13 +630,15 @@ func (m Model) openMcpAdd(vals mcpFormVals) (tea.Model, tea.Cmd) {
 
 // openMcpFromView opens the edit (or retry) form from a definition read;
 // opened is what FR-409/FR-415 compare with (the previous definition for a
-// Retry), and setup sets the mode's extra state before the form is built.
+// Retry), vals what a reload counts edits against, and setup sets the mode's
+// extra state before the form is built.
 func (m Model) openMcpFromView(view *pb.McpDefinitionView, vals mcpFormVals, opened *pb.McpServerDefinition, setup func(v *mcpState)) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	m.resetMcpForm()
+	v.formGen++
 	v.view = view
 	v.fingerprint = view.GetFingerprint()
-	v.opened, v.openedAttach = opened, vals.attach
+	v.opened, v.filled = opened, vals
 	v.vals = &vals
 	if setup != nil {
 		setup(v)
@@ -637,7 +658,7 @@ func (m *Model) resetMcpForm() {
 	v.secretVals, v.opened, v.view, v.fingerprint = nil, nil, nil, ""
 	v.retry, v.holding, v.flags, v.reenter = nil, nil, nil, nil
 	v.declinedHost, v.formNote, v.saving, v.statusFor, v.retryPrevious = nil, "", false, "", false
-	v.baseline = mcpSnapshot{}
+	v.baseline, v.filled, v.remoteStash = mcpSnapshot{}, mcpFormVals{}, nil
 }
 
 // mcpForAddCmd reads the secret status for the name typed in add mode (R11).
@@ -647,12 +668,12 @@ func (m Model) mcpForAddCmd() tea.Cmd {
 	if !v.hasEdit || v.vals == nil || v.vals.mode != mcpModeAdd || !mcpNameRe.MatchString(name) {
 		return nil
 	}
-	d, host := v.daemon, v.host
+	d, host, gen := v.daemon, v.host, v.formGen
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		view, err := d.GetMcpServerDefinition(ctx, name, true)
-		return mcpDefMsg{host: host, name: name, purpose: mcpDefForAdd, view: view, err: err}
+		return mcpDefMsg{host: host, name: name, purpose: mcpDefForAdd, view: view, err: err, gen: gen}
 	}
 }
 
@@ -689,21 +710,43 @@ func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.renameSecrets(prevName, name)
 		cmds = append(cmds, m.mcpForAddCmd())
 	}
-	if prevKind != "command" && v.vals.kind == "command" {
-		vals := v.vals
-		if vals.url != "" || vals.headers != "" || vals.clientID != "" || vals.authServer != "" || vals.scopes != "" {
-			vals.url, vals.headers, vals.clientID, vals.authServer, vals.scopes = "", "", "", "", ""
-			v.status = "host command: cleared the URL, headers, OAuth client and scopes (remote only)"
-			cmds = append(cmds, m.reopenForm(gMcp))
-			m.focusMcpField("kind")
-			return m, tea.Batch(cmds...)
-		}
+	if v.vals.kind != prevKind && v.switchMcpKind() {
+		cmds = append(cmds, m.reopenForm(gMcp))
+		m.focusMcpField("kind")
+		return m, tea.Batch(cmds...)
 	}
 	if before && !v.focusInDefinition() {
 		mm, c := m.leaveMcpDefinition()
 		return mm, tea.Batch(append(cmds, c)...)
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// switchMcpKind applies a Kind change: to "host command" it stashes and clears
+// the remote-only fields; back to remote it restores them, unless the developer
+// has typed remote values since. It reports whether the vals changed (the form
+// must then be rebuilt so its widgets show them).
+func (v *mcpState) switchMcpKind() bool {
+	vals := v.vals
+	remoteEmpty := vals.url == "" && vals.headers == "" && vals.clientID == "" && vals.authServer == "" && vals.scopes == ""
+	switch {
+	case vals.kind == "command" && !remoteEmpty:
+		stash := *vals
+		v.remoteStash = &stash
+		vals.url, vals.headers, vals.clientID, vals.authServer, vals.scopes = "", "", "", "", ""
+		v.status = "host command: cleared the URL, headers, OAuth client and scopes (remote only); switch back to remote to restore them"
+		return true
+	case vals.kind != "command" && v.remoteStash != nil:
+		st := v.remoteStash
+		v.remoteStash = nil
+		if !remoteEmpty {
+			return false
+		}
+		vals.url, vals.headers, vals.clientID, vals.authServer, vals.scopes = st.url, st.headers, st.clientID, st.authServer, st.scopes
+		v.status = "remote endpoint: restored the URL, headers, OAuth client and scopes"
+		return true
+	}
+	return false
 }
 
 // focusMcpField moves the rebuilt form's focus to key within group 1.
@@ -760,7 +803,7 @@ func (m *Model) convertMcpHeader(c mcpConversion) string {
 	newVal, placeholder, secret := mcprules.Convert(n, val, used)
 	lines[c.line] = n + ": " + newVal
 	v.vals.headers = strings.Join(lines, "\n")
-	name := mcprules.SecretName(v.mcpServerName(), placeholder)
+	name := mcprules.SecretName(v.secretServer(), placeholder)
 	if c.onHost {
 		if v.reenter == nil {
 			v.reenter = map[string]string{}
@@ -785,7 +828,7 @@ func (m Model) mcpConversionConfirm(c mcpConversion) confirmState {
 	} else {
 		body = append(body,
 			"Converting rewrites it to a ${placeholder} and moves the typed value",
-			"into a masked secret field (mcp:"+v.mcpServerName()+":<placeholder>).")
+			"into a masked secret field ("+mcprules.SecretName(v.secretServer(), "<placeholder>")+").")
 	}
 	return confirmState{
 		title:       "Convert " + c.header + " to a secret?",
@@ -827,6 +870,15 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 		return done(m)
 	}
 	c := convs[0]
+	if ok, reason := m.mcpView.secretsAvailable(); !ok && !c.onHost {
+		// A typed literal would move into a secret field that does not exist,
+		// and every save storing it would be refused: no offer, the refusal.
+		m.mcpView.status = "error: " + c.header + " holds a literal credential and cannot be converted: secret storage is unavailable on this host (" +
+			reason + "); remove the header, or write a ${placeholder} by hand and store its value once storage is back"
+		cmd := m.reopenForm(gMcp)
+		m.focusMcpField("headers")
+		return cmd
+	}
 	st := m.mcpConversionConfirm(c)
 	st.yOnly, st.returnTo = true, screenMcp
 	st.next = func(m *Model) tea.Cmd {
@@ -1014,7 +1066,17 @@ func (m Model) applyMcpEditForm() (tea.Model, tea.Cmd) {
 			typed = append(typed, c)
 		}
 	}
-	return m, m.mcpOfferConversions(typed, func(m *Model) tea.Cmd { return m.continueMcpSave() })
+	return m, m.mcpOfferConversions(typed, func(m *Model) tea.Cmd {
+		if len(typed) == 0 {
+			return m.continueMcpSave()
+		}
+		// Every offer was accepted and rewrote vals.headers: rebuild the form,
+		// or the Headers widget still holds the literal and writes it back on
+		// the next message if the save is refused or fails.
+		reopen := m.reopenForm(gMcp)
+		m.focusMcpField("headers")
+		return tea.Batch(reopen, m.continueMcpSave())
+	})
 }
 
 // continueMcpSave runs the checks that follow the conversions and opens the
@@ -1187,22 +1249,28 @@ func (m *Model) sendMcpSave(req *pb.SaveMcpServerRequest) tea.Cmd {
 	v := &m.mcpView
 	v.saving = true
 	v.status = "saving " + req.GetName() + "…"
-	d, host := v.daemon, v.host
+	d, host, gen := v.daemon, v.host, v.formGen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), mcpSaveTimeout)
 		defer cancel()
 		out, err := d.SaveMcpServer(ctx, req)
 		remote := req.GetDefinition().GetKind() == pb.McpServerKind_MCP_SERVER_KIND_REMOTE
-		return mcpSaveMsg{host: host, name: req.GetName(), remote: remote, outcome: out, err: err}
+		return mcpSaveMsg{host: host, name: req.GetName(), gen: gen, remote: remote, outcome: out, err: err}
 	}
 }
 
 // mcpSaveMsg is a save's reply.
 type mcpSaveMsg struct {
 	host, name string
-	remote     bool // the saved definition's kind, for the authorize offer
+	gen        uint64 // the form that sent it (mcpState.formGen)
+	remote     bool   // the saved definition's kind, for the authorize offer
 	outcome    *pb.McpSaveOutcome
 	err        error
+}
+
+// mcpFormIs reports whether the open form is the one gen and name identify.
+func (v mcpState) mcpFormIs(gen uint64, name string) bool {
+	return v.vals != nil && v.formGen == gen && v.mcpServerName() == name
 }
 
 // applyMcpSave handles a save's reply (contracts/mcp-form-ui.md).
@@ -1211,7 +1279,9 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 	if v.host != msg.host {
 		return m, nil
 	}
-	formOpen := v.vals != nil && v.mcpServerName() == msg.name
+	// Matched by the form's generation, not its name: after esc mid-save the
+	// developer may have opened another form, even of the same name.
+	formOpen := v.mcpFormIs(msg.gen, msg.name)
 	if formOpen {
 		v.saving = false
 	}
@@ -1221,9 +1291,11 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 			return m.applyMcpRefusal(msg.name, ref, formOpen)
 		}
 		text := status.Convert(msg.err).Message()
-		if status.Code(msg.err) == codes.Unavailable {
+		if client.IsSaveNotRecorded(msg.err) {
 			// The save ran; its result is not recorded yet. Saving again is
-			// pointless: close, and the row shows saving… until it lands.
+			// pointless: close, and the row shows saving… until it lands. A
+			// bare UNAVAILABLE (daemon unreachable) is a plain error below:
+			// the save may never have run, so the form stays with its values.
 			if formOpen {
 				m.resetMcpForm()
 			}
@@ -1241,6 +1313,16 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 		return m, relist
 	}
 	out := msg.outcome
+	if !formOpen && v.vals != nil {
+		// A save left mid-flight (esc) landed while another form is open: no
+		// panel over that form (its "any key closes" would take the next
+		// keystroke), and no follow-up offers; the row shows the result.
+		v.status = "saved " + msg.name + " in the background: " + mcpOutcomeState(out)
+		if mcpOutcomeFailed(out) {
+			v.status = "error: the background save of " + msg.name + " did not complete: " + mcpOutcomeState(out)
+		}
+		return m, relist
+	}
 	followups := m.mcpFollowups(out, msg.remote)
 	switch out.GetState() {
 	case pb.McpSaveOutcome_STILL_REGISTERED, pb.McpSaveOutcome_NOT_REGISTERED:
@@ -1304,10 +1386,14 @@ func (m Model) applyMcpRefusal(name string, ref *client.SaveRefusal, formOpen bo
 // opens the add form with vals (FR-401 edge case "edit of a server that
 // disappeared").
 func (m *Model) offerMcpAddAsNew(name string, vals mcpFormVals, fromForm bool) tea.Cmd {
+	notice := "The add form opens with the name filled in."
+	if fromForm {
+		notice = "The form keeps its values."
+	}
 	st := confirmState{
 		title:       "Add " + name + " as new?",
 		body:        []string{selectedStyle.Render(name) + " is no longer registered on " + selectedStyle.Render(m.mcpView.hostName) + ".", "Nothing was removed. Add it again as a new server?"},
-		notice:      "The form keeps its values.",
+		notice:      notice,
 		acceptLabel: "add as new", cancelLabel: "back",
 		yOnly: true, returnTo: screenMcp,
 	}
@@ -1329,23 +1415,23 @@ func (m *Model) offerMcpAddAsNew(name string, vals mcpFormVals, fromForm bool) t
 // mcpRefreshViewCmd re-reads the definition view only (statuses, fingerprint,
 // pending replace) after a failed replace, keeping the form's values.
 func (m Model) mcpRefreshViewCmd(name string) tea.Cmd {
-	d, host := m.mcpView.daemon, m.mcpView.host
+	d, host, gen := m.mcpView.daemon, m.mcpView.host, m.mcpView.formGen
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		view, err := d.GetMcpServerDefinition(ctx, name, false)
-		return mcpDefMsg{host: host, name: name, purpose: mcpDefRefresh, view: view, err: err}
+		return mcpDefMsg{host: host, name: name, purpose: mcpDefRefresh, view: view, err: err, gen: gen}
 	}
 }
 
 // reloadMcpCmd re-reads the definition for an in-place reload (FR-404, T030).
 func (m Model) reloadMcpCmd(name, why string) tea.Cmd {
-	d, host := m.mcpView.daemon, m.mcpView.host
+	d, host, gen := m.mcpView.daemon, m.mcpView.host, m.mcpView.formGen
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
 		view, err := d.GetMcpServerDefinition(ctx, name, false)
-		return mcpDefMsg{host: host, name: name, purpose: mcpDefReload, view: view, err: err, why: why}
+		return mcpDefMsg{host: host, name: name, purpose: mcpDefReload, view: view, err: err, why: why, gen: gen}
 	}
 }
 
@@ -1354,7 +1440,7 @@ func (m Model) reloadMcpCmd(name, why string) tea.Cmd {
 // says so.
 func (m Model) reloadMcpForm(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
-	if v.vals == nil || v.mcpServerName() != msg.name {
+	if !v.mcpFormIs(msg.gen, msg.name) {
 		return m, nil
 	}
 	if msg.err != nil {
@@ -1378,13 +1464,17 @@ func (m Model) reloadMcpForm(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 		attach = p.GetAttachByDefault()
 		v.retry, v.holding = p, p
 	}
-	openedVals := mcpValsFromDef(v.opened, msg.name, v.openedAttach, v.vals.mode)
+	// Edits count against what the form was filled from: for a Retry that is
+	// the held (or previous) definition, not opened (pending.previous), or
+	// every field where the two differ would read as edited and host-changed.
+	filled := v.filled
+	filled.mode = v.vals.mode
 	rereadVals := mcpValsFromDef(reread, msg.name, attach, v.vals.mode)
 	secrets := map[string]string{}
 	for n, p := range v.secretVals {
 		secrets[n] = *p
 	}
-	r := mergeMcpReload(*v.vals, openedVals, rereadVals, msg.name, secrets)
+	r := mergeMcpReload(*v.vals, filled, rereadVals, msg.name, secrets)
 	*v.vals = r.vals
 	v.flags = r.flags
 	for _, n := range r.dropped {
@@ -1396,7 +1486,12 @@ func (m Model) reloadMcpForm(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 			v.reenter[n] = mcpStatusReenterURL
 		}
 	}
-	v.view, v.fingerprint, v.opened, v.openedAttach = view, view.GetFingerprint(), reread, attach
+	v.view, v.fingerprint, v.filled = view, view.GetFingerprint(), rereadVals
+	if v.retry != nil {
+		v.opened = v.retry.GetPrevious() // a retry compares against pending.previous
+	} else {
+		v.opened = reread
+	}
 	v.status = msg.why + " — the form was reloaded"
 	if len(r.dropped) > 0 {
 		v.status += "; dropped (enter again): " + strings.Join(r.dropped, ", ")
@@ -1407,9 +1502,10 @@ func (m Model) reloadMcpForm(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 }
 
 // renameSecrets moves typed secret values to the new server name in add mode,
-// so a value typed (or converted) before the name was set or changed is kept.
+// so a value typed (or converted) before the name was set or changed is kept;
+// a blank name is the placeholder name the fields use.
 func (v *mcpState) renameSecrets(from, to string) {
-	oldPrefix, newPrefix := mcprules.SecretPrefix(from), mcprules.SecretPrefix(to)
+	oldPrefix, newPrefix := mcprules.SecretPrefix(secretServerName(from)), mcprules.SecretPrefix(secretServerName(to))
 	for name, p := range v.secretVals {
 		rest, ok := strings.CutPrefix(name, oldPrefix)
 		if !ok || p == nil || *p == "" {

@@ -76,13 +76,17 @@ type mcpState struct {
 	spec     *formSpec
 	baseline mcpSnapshot
 	// SWI-21 form state beside the comparable vals (research R14): the entered
-	// secret values by full name, the definition read and the definition (and
-	// mark) the form opened with, the fingerprint to echo, the pending replace
-	// a Retry form works on (retry) or a failed replace left (holding).
-	secretVals    map[string]*string
-	view          *pb.McpDefinitionView
-	opened        *pb.McpServerDefinition
-	openedAttach  bool
+	// secret values by full name, the definition read and the definition the
+	// form opened with, the fingerprint to echo, the pending replace a Retry
+	// form works on (retry) or a failed replace left (holding).
+	secretVals map[string]*string
+	view       *pb.McpDefinitionView
+	opened     *pb.McpServerDefinition
+	// filled is the vals the form was pre-filled from (or last reloaded to):
+	// what an FR-404 reload counts edits against. It differs from opened in a
+	// Retry form, which is filled from the held or previous definition while
+	// opened stays pending.previous.
+	filled        mcpFormVals
 	fingerprint   string
 	retry         *pb.McpPendingReplace
 	retryPrevious bool
@@ -93,6 +97,14 @@ type mcpState struct {
 	formNote      string
 	statusFor     string // the name the add-mode secret status was read for
 	saving        bool   // a SaveMcpServer call is in flight
+	// remoteStash holds the remote-only fields a switch to "host command"
+	// cleared, restored on a switch back (huh's Select sets the value as the
+	// highlight moves, so passing over the option must not lose them).
+	remoteStash *mcpFormVals
+	// formGen identifies the open form: it grows each time a form opens and
+	// is never reset, so a reply carrying it (save, reload, refresh) is matched
+	// to the form that sent it, not to a later form of the same name.
+	formGen uint64
 	// pending is a host-command registration awaiting the outside-isolation
 	// acknowledgement (FR-076, feature 008 form only); shown as a modal until
 	// confirmed or dismissed.
@@ -177,6 +189,7 @@ type mcpDefMsg struct {
 	why        string                // the refusal that triggered a reload
 	pending    *pb.McpPendingReplace // the row's pending replace (R, X)
 	previous   bool                  // R: retry the previous definition
+	gen        uint64                // the form that asked (add status, reload, refresh)
 }
 
 // mcpDoneMsg is the outcome of a register/remove/mark/mode operation.
@@ -579,14 +592,14 @@ func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.purpose {
 	case mcpDefForAdd:
-		if v.vals != nil && v.vals.mode == mcpModeAdd && v.mcpServerName() == msg.name && msg.err == nil {
+		if v.mcpFormIs(msg.gen, msg.name) && v.vals.mode == mcpModeAdd && msg.err == nil {
 			v.view, v.statusFor = msg.view, msg.name
 		}
 		return m, nil
 	case mcpDefReload:
 		return m.reloadMcpForm(msg)
 	case mcpDefRefresh:
-		if v.vals != nil && v.mcpServerName() == msg.name && msg.err == nil {
+		if v.mcpFormIs(msg.gen, msg.name) && msg.err == nil {
 			v.view, v.fingerprint = msg.view, msg.view.GetFingerprint()
 			if p := msg.view.GetPendingReplace(); p != nil {
 				v.retry, v.holding = p, p
@@ -598,10 +611,20 @@ func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 		return m, nil // the view moved on
 	}
 	v.loadingDef = ""
+	if v.vals != nil || v.mcpModalOpen() {
+		// A form or modal opened while the read was in flight (a, an outcome
+		// panel, R's chooser): the late reply must not replace it.
+		return m, nil
+	}
 	view := msg.view
 	if msg.err != nil {
 		ref, ok := client.AsSaveRefusal(msg.err)
 		switch {
+		case msg.pending != nil && ok && ref.Reason == pb.McpSaveRefusal_GONE:
+			// Neither listed nor pending: the replace ended elsewhere (retried,
+			// cancelled or registered by another path). No dead Retry form.
+			v.status = mcpPendingEndedMsg(msg.name)
+			return m, m.mcpLoadCmd(v.daemon, v.host)
 		case msg.pending != nil && (status.Code(msg.err) == codes.NotFound):
 			// A pending replace's name is not listed; fall back to what the row
 			// carries (secret statuses unknown).
@@ -634,7 +657,9 @@ func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	case mcpDefRetry:
 		p := view.GetPendingReplace()
 		if p == nil {
-			p = msg.pending
+			// The server is registered again: its replace ended.
+			v.status = mcpPendingEndedMsg(msg.name)
+			return m, m.mcpLoadCmd(v.daemon, v.host)
 		}
 		def := p.GetDefinition()
 		note := "retrying the failed replace with the held definition"
@@ -649,11 +674,17 @@ func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	case mcpDefCancel:
 		p := view.GetPendingReplace()
 		if p == nil {
-			p = msg.pending
+			v.status = mcpPendingEndedMsg(msg.name)
+			return m, m.mcpLoadCmd(v.daemon, v.host)
 		}
 		return m, m.mcpCancelConfirm(p, view, false)
 	}
 	return m, nil
+}
+
+// mcpPendingEndedMsg says a pending replace a row showed has ended.
+func mcpPendingEndedMsg(name string) string {
+	return "the pending replace of " + name + " has ended (retried, cancelled or registered by another path); the list was refreshed"
 }
 
 // mcpCancelConfirm is the y-only Cancel of a pending replace (FR-406, FR-426):
@@ -753,7 +784,12 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome, savedRemote bool) []confirmS
 	if out.GetServer() == nil {
 		remote = savedRemote
 	}
-	if out.GetState() == pb.McpSaveOutcome_REGISTERED && remote {
+	// Only a server that needs authorization is offered it: a header-token
+	// server (no auth) or one already authorized is not. An unknown state (no
+	// row, or the runtime did not say) still offers, as before.
+	auth := out.GetServer().GetAuthState()
+	needsAuth := auth != pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED && auth != pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE
+	if out.GetState() == pb.McpSaveOutcome_REGISTERED && remote && needsAuth {
 		st := confirmState{
 			title:  "Authorize " + name + " now?",
 			body:   []string{selectedStyle.Render(name) + " was registered without authorization."},
@@ -817,26 +853,35 @@ func (m Model) mcpRemoveSecretsCmd(name string, secrets []string) tea.Cmd {
 	}
 }
 
+// mcpOutcomeState is a save outcome's state line.
+func mcpOutcomeState(out *pb.McpSaveOutcome) string {
+	switch out.GetState() {
+	case pb.McpSaveOutcome_UNCHANGED_REGISTRATION:
+		return "registration unchanged"
+	case pb.McpSaveOutcome_STILL_REGISTERED:
+		return "still registered, authorization may be lost"
+	case pb.McpSaveOutcome_NOT_REGISTERED:
+		if out.GetAddStarted() {
+			return "not registered — the add may still complete on the host"
+		}
+		return "not registered"
+	}
+	return "registered"
+}
+
+// mcpOutcomeFailed reports a save whose replace did not complete (FR-406).
+func mcpOutcomeFailed(out *pb.McpSaveOutcome) bool {
+	return out.GetState() == pb.McpSaveOutcome_STILL_REGISTERED || out.GetState() == pb.McpSaveOutcome_NOT_REGISTERED
+}
+
 // mcpOutcomeLines renders a save's outcome (T029, T044).
 func (m Model) mcpOutcomeLines(out *pb.McpSaveOutcome) []string {
 	name := out.GetName()
-	state := "registered"
-	switch out.GetState() {
-	case pb.McpSaveOutcome_UNCHANGED_REGISTRATION:
-		state = "registration unchanged"
-	case pb.McpSaveOutcome_STILL_REGISTERED:
-		state = "still registered, authorization may be lost"
-	case pb.McpSaveOutcome_NOT_REGISTERED:
-		state = "not registered"
-		if out.GetAddStarted() {
-			state += " — the add may still complete on the host"
-		}
+	style, title := statusOKStyle, "Saved "+name
+	if mcpOutcomeFailed(out) {
+		style, title = statusErrStyle, "The save of "+name+" did not complete"
 	}
-	style := statusOKStyle
-	if out.GetState() == pb.McpSaveOutcome_STILL_REGISTERED || out.GetState() == pb.McpSaveOutcome_NOT_REGISTERED {
-		style = statusErrStyle
-	}
-	lines := []string{sectionStyle.Render("Saved " + name), "", style.Render(state)}
+	lines := []string{sectionStyle.Render(title), "", style.Render(mcpOutcomeState(out))}
 	for _, e := range out.GetHostErrors() {
 		lines = append(lines, statusErrStyle.Render(sanitizeLine(e, 0)))
 	}
@@ -1209,6 +1254,8 @@ func (m Model) viewMcp() string {
 	rows := []string{title, mode, ""}
 	if v.loading {
 		rows = append(rows, m.spinner.View()+dimStyle.Render(" reading the host's registrations…"))
+	} else if len(v.servers) == 0 && len(v.pendings) > 0 {
+		rows = append(rows, dimStyle.Render("(no MCP servers registered on this host — only the failed replaces below; press a to register one)"))
 	} else if len(v.servers) == 0 {
 		rows = append(rows, dimStyle.Render("(no MCP servers registered on this host — press a to register one)"))
 	}

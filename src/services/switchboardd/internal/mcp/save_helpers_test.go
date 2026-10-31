@@ -18,7 +18,9 @@ import (
 // `mcp add` writes <name>.srv (unless add.fail exists), `mcp rm` deletes it
 // (unless rm.fail exists), `mcp ls` prints the table from the state, `mcp
 // inspect` prints <name>.inspect (or {}), and `mcp auth status` prints
-// <name>.auth (or unauthorized). <step>.hang makes a step sleep.
+// <name>.auth (or unauthorized). <step>.hang makes a step sleep; notice makes
+// the JSON reads print an update notice on stderr; rm.fail.breakls makes a
+// failing rm break later lists.
 const statefulScript = `#!/usr/bin/env bash
 echo "$*" >> "$LOG"
 S="$STATE"
@@ -35,14 +37,16 @@ case "$1 $2" in
   case "$*" in *--url*) t="remote http" ;; *) t="stdio" ;; esac
   echo "$t" > "$S/$3.srv"; echo "MCP server \"$3\" added." ;;
 "mcp rm")
-  [ -e "$S/rm.fail" ] && { echo "rm refused by host" >&2; [ -e "$S/rm.fail.removes" ] && rm -f "$S/$3.srv"; exit 1; }
+  [ -e "$S/rm.fail" ] && { echo "rm refused by host" >&2; [ -e "$S/rm.fail.removes" ] && rm -f "$S/$3.srv"; [ -e "$S/rm.fail.breakls" ] && touch "$S/ls.fail"; exit 1; }
   [ -e "$S/$3.srv" ] || { echo "MCP server \"$3\" is not registered" >&2; exit 1; }
   rm -f "$S/$3.srv"; echo "MCP server \"$3\" removed." ;;
 "mcp inspect")
   [ -e "$S/inspect.fail" ] && { echo "inspect broke" >&2; exit 1; }
+  [ -e "$S/notice" ] && echo "a newer sbx is available" >&2
   if [ -e "$S/$3.inspect" ]; then cat "$S/$3.inspect"; else echo '{}'; fi ;;
 "mcp auth")
   if [ "$3" = "status" ]; then
+    [ -e "$S/notice" ] && echo "a newer sbx is available" >&2
     if [ -e "$S/$4.auth" ]; then cat "$S/$4.auth"; else echo "[{\"server_name\":\"$4\",\"status\":\"unauthorized\"}]"; fi
   else
     [ -e "$S/auth.hang" ] && sleep 30
@@ -87,7 +91,8 @@ func (f *fakeSecrets) SetQuiet(_ context.Context, name, value string) error {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "set "+name)
 	if f.failSet[name] {
-		return errors.New("sbx secret set " + name + ": store refused")
+		// Echoes the value, as a CLI might: the save must redact it.
+		return errors.New("sbx secret set " + name + ": store refused: " + value)
 	}
 	f.vals[name] = value
 	return nil

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
 )
 
 // ErrInvalidArgs rejects a request before any CLI call.
@@ -142,7 +143,7 @@ func (m *Manager) ListGlobal(ctx context.Context) (map[string]bool, error) {
 }
 
 // SetQuiet stores a global service secret without emitting. The value goes to
-// stdin only; an error never carries it.
+// stdin only; an error never carries it (even when the CLI echoes it).
 func (m *Manager) SetQuiet(ctx context.Context, name, value string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("%w: secret name %q is not valid", ErrInvalidArgs, name)
@@ -152,9 +153,23 @@ func (m *Manager) SetQuiet(ctx context.Context, name, value string) error {
 	}
 	mctx, cancel := context.WithTimeout(ctx, mutateTimeout)
 	defer cancel()
-	_, err := m.cli.run(mctx, value+"\n", argvSet(name, "")...)
-	return err
+	if _, err := m.cli.run(mctx, value+"\n", argvSet(name, "")...); err != nil {
+		// The error carries the CLI's output tail, which could echo the value
+		// back; the MCP save persists and broadcasts it, so it is redacted.
+		return &redactedError{msg: strings.ReplaceAll(err.Error(), value, mcprules.RedactMarker), err: err}
+	}
+	return nil
 }
+
+// redactedError is an error whose message had a secret value replaced; it
+// still unwraps to the original for errors.Is.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
 
 // RemoveQuiet removes a global service secret without emitting and returns the
 // CLI output, so the caller can re-check a failure against ListGlobal.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -240,7 +241,7 @@ func contains(list []string, s string) bool {
 }
 
 func TestQuietOpsAndListGlobal(t *testing.T) {
-	e := newEnv(t, `  set) cat > STDIN_FILE; [ "$3" = "mcp:s:bad" ] && { echo "denied" >&2; exit 1; }; echo ok ;;
+	e := newEnv(t, `  set) cat > STDIN_FILE; [ "$3" = "mcp:s:bad" ] && { echo "denied" >&2; exit 1; }; [ "$3" = "mcp:s:echo" ] && { echo "bad value: $(cat STDIN_FILE)" >&2; exit 1; }; echo ok ;;
   rm) [ "$3" = "mcp:s:gone" ] && { echo "secret not found" >&2; exit 1; }; echo removed ;;
   ls) printf '`+strings.ReplaceAll(docsTable, "\n", `\n`)+`' ;;`)
 	ctx := context.Background()
@@ -257,6 +258,12 @@ func TestQuietOpsAndListGlobal(t *testing.T) {
 	err = e.m.SetQuiet(ctx, "mcp:s:bad", "v-quiet-2")
 	if err == nil || strings.Contains(err.Error(), "v-quiet-2") || !strings.Contains(err.Error(), "denied") {
 		t.Errorf("SetQuiet failure = %v (verbatim, never the value)", err)
+	}
+	// A CLI that echoes the value back: the error carries the marker instead.
+	err = e.m.SetQuiet(ctx, "mcp:s:echo", "v-quiet-3")
+	var exitErr *exec.ExitError
+	if err == nil || strings.Contains(err.Error(), "v-quiet-3") || !strings.Contains(err.Error(), "bad value: ••••") || !errors.As(err, &exitErr) {
+		t.Errorf("echoed SetQuiet failure = %v", err)
 	}
 	for _, bad := range []string{"", "a\nb"} {
 		if err := e.m.SetQuiet(ctx, "mcp:s:k", bad); !errors.Is(err, ErrInvalidArgs) {
