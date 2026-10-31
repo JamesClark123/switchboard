@@ -4,15 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	neturl "net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +20,9 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // The MCP gateway view (feature 008, US1/US2) manages ONE daemon's registrations
@@ -56,25 +57,64 @@ type mcpState struct {
 	status      string
 	notes       []string // runtime notes from the last removal (credential material left behind)
 
-	// add form; spec registers its Text field and baseline is vals as the form
-	// opened (SWI-9)
+	// hasEdit: the daemon advertised "mcp-edit" when the view opened (SWI-21,
+	// R15). Without it the view and form behave exactly as in feature 008.
+	hasEdit bool
+	// pendings are the pending replaces the list carries (FR-426), shown as rows
+	// after the servers.
+	pendings []*pb.McpPendingReplace
+	// localSaving names this client's own saves that ended UNAVAILABLE: the
+	// row shows saving… until the next list says otherwise.
+	localSaving map[string]bool
+	loadingDef  string // the name whose definition read is in flight (e, R, X)
+
+	// the add/edit form (mcp_form.go); spec registers its Text field and
+	// baseline is the snapshot as the form opened (SWI-9)
 	form     *huh.Form
 	vals     *mcpFormVals
 	spec     *formSpec
-	baseline mcpFormVals
+	baseline mcpSnapshot
+	// SWI-21 form state beside the comparable vals (research R14): the entered
+	// secret values by full name, the definition read and the definition (and
+	// mark) the form opened with, the fingerprint to echo, the pending replace
+	// a Retry form works on (retry) or a failed replace left (holding).
+	secretVals    map[string]*string
+	view          *pb.McpDefinitionView
+	opened        *pb.McpServerDefinition
+	openedAttach  bool
+	fingerprint   string
+	retry         *pb.McpPendingReplace
+	retryPrevious bool
+	holding       *pb.McpPendingReplace
+	flags         map[string]string // reload flags per field key (FR-404)
+	reenter       map[string]string // secret name -> forced status
+	declinedHost  map[string]bool   // on-host literal headers whose conversion was declined
+	formNote      string
+	statusFor     string // the name the add-mode secret status was read for
+	saving        bool   // a SaveMcpServer call is in flight
 	// pending is a host-command registration awaiting the outside-isolation
-	// acknowledgement (FR-076); shown as a modal until confirmed or dismissed.
+	// acknowledgement (FR-076, feature 008 form only); shown as a modal until
+	// confirmed or dismissed.
 	pending *pb.AddMcpServerRequest
+
+	// outcome is the save's outcome panel (any key closes it); followups are
+	// the FR-413 removal and FR-405 authorize offers that open after it.
+	outcome   *pb.McpSaveOutcome
+	followups []confirmState
+	// choose is the pending replace whose Retry asks held / previous (R).
+	choose *pb.McpPendingReplace
+	// scopes is the one-time scope prompt of Authorize with scopes… (S).
+	scopes *mcpScopePrompt
 
 	// auth is the in-flight authorization wait, shown as a modal (FR-075).
 	auth *mcpAuthWait
 }
 
-type mcpFormVals struct {
-	name, kind, url, command, args, dir string
-	headers                             string // one "Name: value" per line (remote only, FR-103)
-	clientID, authServer                string // pre-registered OAuth client (remote only, FR-105)
-	attach                              bool
+// mcpScopePrompt is the one-line prompt for one-time scopes (FR-418).
+type mcpScopePrompt struct {
+	name  string
+	input textinput.Model
+	err   string
 }
 
 type mcpAuthWait struct {
@@ -111,7 +151,31 @@ type mcpLoadedMsg struct {
 	host     string
 	servers  []*pb.McpServer
 	settings *pb.McpGatewaySettings
+	pendings []*pb.McpPendingReplace
 	err      error
+}
+
+// mcpDefPurpose says what a definition read is for.
+type mcpDefPurpose int
+
+const (
+	mcpDefForAdd  mcpDefPurpose = iota // add mode's secret status (for_add)
+	mcpDefEdit                         // e: open the edit form
+	mcpDefRetry                        // R: open the Retry form
+	mcpDefCancel                       // X: the Cancel confirmation's secret list
+	mcpDefReload                       // FR-404 in-place reload after a STALE refusal
+	mcpDefRefresh                      // the view only, after a failed replace
+)
+
+// mcpDefMsg is a GetMcpServerDefinition reply.
+type mcpDefMsg struct {
+	host, name string
+	purpose    mcpDefPurpose
+	view       *pb.McpDefinitionView
+	err        error
+	why        string                // the refusal that triggered a reload
+	pending    *pb.McpPendingReplace // the row's pending replace (R, X)
+	previous   bool                  // R: retry the previous definition
 }
 
 // mcpDoneMsg is the outcome of a register/remove/mark/mode operation.
@@ -137,7 +201,8 @@ type mcpAuthEndMsg struct {
 
 // enterMcp opens the gateway view for a connected daemon row and loads its list.
 func (m Model) enterMcp(row daemonRow) (tea.Model, tea.Cmd) {
-	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, canSSH: row.kind == "ssh" && row.target != "", daemon: row.daemon, remote: row.kind != "local", loading: true}
+	m.mcpView = mcpState{host: row.id, hostName: row.name, target: row.target, sshOpts: row.sshOptions, canSSH: row.kind == "ssh" && row.target != "", daemon: row.daemon, remote: row.kind != "local", loading: true,
+		hasEdit: row.daemon.HasCapability("mcp-edit")}
 	if ok, reason := row.daemon.McpGateway(); !ok {
 		m.mcpView.loading = false
 		m.mcpView.unavailable = reason
@@ -155,8 +220,11 @@ func (m Model) mcpLoadCmd(d Daemon, host string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
-		servers, settings, err := d.ListMcpServers(ctx)
-		return mcpLoadedMsg{host: host, servers: servers, settings: settings, err: err}
+		resp, err := d.ListMcpGateway(ctx)
+		if err != nil {
+			return mcpLoadedMsg{host: host, err: err}
+		}
+		return mcpLoadedMsg{host: host, servers: resp.GetServers(), settings: resp.GetSettings(), pendings: resp.GetPendingReplaces()}
 	}
 }
 
@@ -174,14 +242,20 @@ func (m Model) applyMcpLoaded(msg mcpLoadedMsg) (tea.Model, tea.Cmd) {
 	m.mcpView.unavailable = ""
 	m.mcpView.servers = msg.servers
 	m.mcpView.settings = msg.settings
-	if n := len(msg.servers); m.mcpView.cursor >= n {
+	m.mcpView.pendings = nil
+	if m.mcpView.hasEdit {
+		m.mcpView.pendings = msg.pendings
+	}
+	if n := m.mcpView.rowCount(); m.mcpView.cursor >= n {
 		m.mcpView.cursor = max(n-1, 0)
 	}
 	return m, nil
 }
 
 func (m Model) applyMcpDone(msg mcpDoneMsg) (tea.Model, tea.Cmd) {
-	if m.screen != screenMcp || m.mcpView.host != msg.host {
+	// A follow-up confirm over the view (SWI-21) still lets the result land.
+	onView := m.screen == screenMcp || m.screen == screenConfirm && m.confirm.returnTo == screenMcp
+	if !onView || m.mcpView.host != msg.host {
 		return m, nil
 	}
 	if msg.err != nil {
@@ -197,21 +271,40 @@ func (m Model) applyMcpDone(msg mcpDoneMsg) (tea.Model, tea.Cmd) {
 // --- keys ---
 
 func (m Model) mcpHelp() helpBindings {
+	v := m.mcpView
 	switch {
-	case m.mcpView.auth != nil:
+	case v.auth != nil:
 		return helpBindings{hkey("esc", "cancel wait")}
-	case m.mcpView.pending != nil:
+	case v.outcome != nil:
+		return helpBindings{hkey("any key", "close")}
+	case v.choose != nil:
+		return helpBindings{hkey("h", "held definition"), hkey("p", "previous definition"), hkey("esc", "back")}
+	case v.scopes != nil:
+		return helpBindings{hkey("enter", "authorize"), hkey("ctrl+n", "no scopes"), hkey("esc", "back")}
+	case v.pending != nil:
 		return helpBindings{hkey("y", "register anyway"), hkey("esc", "back to form")}
-	case m.mcpView.form != nil:
-		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "register"), hkey("esc", "cancel")}
-	case m.mcpView.unavailable != "":
+	case v.form != nil:
+		return helpBindings{hkey("tab", "next"), hkey("ctrl+s", "save"), hkey("esc", "cancel")}
+	case v.unavailable != "":
 		return helpBindings{hkey("r", "retry"), hkey("esc", "back")}
 	}
+	if !v.hasEdit {
+		return helpBindings{
+			hkey("a", "register"), hkey("d", "remove"), hkey("A", "authorize"),
+			hkey("space", "attach by default"), hkey("m", "attach mode"), hkey("r", "reload"), hkey("esc", "back"),
+		}
+	}
+	if _, ok := m.highlightedPending(); ok {
+		return helpBindings{hkey("R", "retry"), hkey("X", "cancel replace"), hkey("a", "register"), hkey("r", "reload"), hkey("esc", "back")}
+	}
 	return helpBindings{
-		hkey("a", "register"), hkey("d", "remove"), hkey("A", "authorize"),
+		hkey("a", "register"), hkey("e", "edit"), hkey("d", "remove"), hkey("A", "authorize"), hkey("S", "authorize with scopes…"),
 		hkey("space", "attach by default"), hkey("m", "attach mode"), hkey("r", "reload"), hkey("esc", "back"),
 	}
 }
+
+// rowCount is the gateway rows: the servers, then the pending replaces.
+func (v mcpState) rowCount() int { return len(v.servers) + len(v.pendings) }
 
 func (m Model) highlightedMcp() (*pb.McpServer, bool) {
 	v := m.mcpView
@@ -219,6 +312,34 @@ func (m Model) highlightedMcp() (*pb.McpServer, bool) {
 		return nil, false
 	}
 	return v.servers[v.cursor], true
+}
+
+// highlightedPending is the pending-replace row under the cursor (FR-426).
+func (m Model) highlightedPending() (*pb.McpPendingReplace, bool) {
+	v := m.mcpView
+	i := v.cursor - len(v.servers)
+	if i < 0 || i >= len(v.pendings) {
+		return nil, false
+	}
+	return v.pendings[i], true
+}
+
+// Row-state refusals (contracts/mcp-form-ui.md): neutral on purpose, as the
+// running save may be this developer's own after UNAVAILABLE.
+const (
+	mcpSavingMsg     = "a save of this server is still running; try again later"
+	mcpRecoveringMsg = "recovering interrupted save; try again shortly"
+)
+
+// mcpRowBusy is the refusal for a saving… or recovering row, or "".
+func (v mcpState) mcpRowBusy(name string, srv *pb.McpServer) string {
+	switch {
+	case srv.GetRecovering():
+		return mcpRecoveringMsg
+	case srv.GetSaveInProgress() || v.localSaving[name]:
+		return mcpSavingMsg
+	}
+	return ""
 }
 
 func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -258,6 +379,25 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case v.outcome != nil:
+		// Any key closes the panel; the follow-up offers open after it.
+		v.outcome = nil
+		steps := v.followups
+		v.followups = nil
+		return m, m.mcpFollowChain(steps)
+	case v.choose != nil:
+		p := v.choose
+		switch msg.String() {
+		case "h", "p":
+			v.choose = nil
+			v.loadingDef, v.status = p.GetName(), "loading "+p.GetName()+"…"
+			return m, m.mcpDefCmd(p.GetName(), mcpDefRetry, p, msg.String() == "p")
+		case "esc", "q", "n":
+			v.choose = nil
+		}
+		return m, nil
+	case v.scopes != nil:
+		return m.updateMcpScopes(msg)
 	case v.pending != nil:
 		switch msg.String() {
 		case "y", "Y":
@@ -273,6 +413,16 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case v.form != nil:
+		if v.saving {
+			// The save is in flight: edits and ctrl+s wait for the reply; esc and
+			// ctrl+c leave at once, the save going on (the daemon finishes it).
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				m.resetMcpForm()
+				v.status = "saving… (in the background; the result will show here)"
+			}
+			return m, nil
+		}
 		return m.formKey(gMcp, msg)
 	}
 	switch msg.String() {
@@ -292,17 +442,33 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.cursor--
 		}
 	case "down", "j":
-		if v.cursor < len(v.servers)-1 {
+		if v.cursor < v.rowCount()-1 {
 			v.cursor++
 		}
 	case "a":
-		v.vals = &mcpFormVals{kind: "remote"}
-		cmd := m.buildMcpForm()
-		if notice := normalizeNotice(v.spec.normalize()); notice != "" {
-			v.status = notice
+		return m.openMcpAdd(mcpFormVals{kind: "remote"})
+	case "e":
+		if srv, ok := m.highlightedMcp(); ok && v.hasEdit {
+			if busy := v.mcpRowBusy(srv.GetName(), srv); busy != "" {
+				v.status = busy // refused locally: no definition read (R11)
+				return m, nil
+			}
+			v.loadingDef, v.status = srv.GetName(), "loading "+srv.GetName()+"…"
+			return m, m.mcpDefCmd(srv.GetName(), mcpDefEdit, nil, false)
 		}
-		v.baseline = *v.vals
-		return m, cmd
+	case "R":
+		if p, ok := m.highlightedPending(); ok {
+			if v.localSaving[p.GetName()] {
+				v.status = mcpSavingMsg
+				return m, nil
+			}
+			v.choose = p
+		}
+	case "X":
+		if p, ok := m.highlightedPending(); ok {
+			v.loadingDef, v.status = p.GetName(), "loading "+p.GetName()+"…"
+			return m, m.mcpDefCmd(p.GetName(), mcpDefCancel, p, false)
+		}
 	case "d":
 		if srv, ok := m.highlightedMcp(); ok {
 			return m.enterConfirm(confirmState{
@@ -318,16 +484,39 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				onConfirm: m.mcpRemoveCmd(v.daemon, v.host, srv.GetName()),
 			})
 		}
-	case "A":
-		if srv, ok := m.highlightedMcp(); ok {
-			if srv.GetKind() == pb.McpServerKind_MCP_SERVER_KIND_LOCAL {
-				v.status = srv.GetName() + " runs on the host; it has no authorization step"
-				return m, nil
-			}
-			return m.startMcpAuth(srv.GetName())
+	case "A", "S":
+		if p, ok := m.highlightedPending(); ok {
+			v.status = p.GetName() + " is not registered (its replace failed): Retry (R) or Cancel (X) it first"
+			return m, nil
 		}
+		srv, ok := m.highlightedMcp()
+		if !ok || (msg.String() == "S" && !v.hasEdit) {
+			return m, nil
+		}
+		if srv.GetKind() == pb.McpServerKind_MCP_SERVER_KIND_LOCAL {
+			v.status = srv.GetName() + " runs on the host; it has no authorization step"
+			return m, nil
+		}
+		if busy := v.mcpRowBusy(srv.GetName(), srv); busy != "" && v.hasEdit {
+			v.status = busy
+			return m, nil
+		}
+		if msg.String() == "S" {
+			in := textinput.New()
+			in.Placeholder = "read write"
+			in.CharLimit = 4096
+			in.Width = 50
+			in.Focus()
+			v.scopes = &mcpScopePrompt{name: srv.GetName(), input: in}
+			return m, nil
+		}
+		return m.startMcpAuth(srv.GetName(), nil, false)
 	case " ":
 		if srv, ok := m.highlightedMcp(); ok {
+			if busy := v.mcpRowBusy(srv.GetName(), srv); busy != "" && v.hasEdit {
+				v.status = busy // never sends SetMcpServerDefault (FR-425)
+				return m, nil
+			}
 			return m, m.mcpSetDefaultCmd(v.daemon, v.host, srv.GetName(), !srv.GetAttachByDefault())
 		}
 	case "m":
@@ -340,154 +529,361 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// --- the add form ---
-
-// buildMcpForm builds the add form from the open vals with a fresh registry; it
-// never fills the vals, so reopenForm keeps what the user typed. The baseline is
-// only taken when the form first opens.
-func (m *Model) buildMcpForm() tea.Cmd {
+// updateMcpScopes drives the one-time scope prompt (FR-418).
+func (m Model) updateMcpScopes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
-	v.spec = newFormSpec()
-	v.form = m.mcpForm(v.spec, v.vals)
-	return v.form.Init()
-}
-
-func (m Model) mcpForm(spec *formSpec, v *mcpFormVals) *huh.Form {
-	return huh.NewForm(huh.NewGroup(
-		huh.NewInput().Key("name").Title("Name").
-			Description("Letters, digits, dots, hyphens, underscores. Unique on this host.").Value(&v.name),
-		huh.NewSelect[string]().Key("kind").Title("Kind").
-			Options(huh.NewOption("Remote endpoint (URL)", "remote"), huh.NewOption("Host command (runs on the daemon's host)", "command")).Value(&v.kind),
-		huh.NewInput().Key("url").Title("URL").Description("Remote endpoint, e.g. https://mcp.notion.com/mcp").Value(&v.url),
-		spec.text(&v.headers, "Headers (remote only)").Key("headers").Lines(3).
-			Description("One per line, Name: value. For credentials use a ${placeholder} and store its value as the secret mcp:<name>:<placeholder> (daemon screen › Secrets). Tool-name collisions between servers (e.g. list_issues in both GitHub and Linear) are avoided with the server's own tool-filter headers, e.g. GitHub X-MCP-Toolsets / X-MCP-Tools."),
-		huh.NewInput().Key("client_id").Title("OAuth client ID (remote only)").
-			Description("For servers without Dynamic Client Registration (e.g. Slack): the client ID you registered with the provider. A confidential client also needs its secret stored as mcp:<name>:client_secret (daemon screen › Secrets) before adding — without it, authorization is skipped.").Value(&v.clientID),
-		huh.NewInput().Key("auth_server").Title("OAuth authorization server (remote only)").
-			Description("Only if the server publishes no OAuth metadata: an https URL (http only to localhost) or an absolute path on the daemon's host to RFC 8414 metadata.").Value(&v.authServer),
-		huh.NewInput().Key("command").Title("Command").Description("Host command, e.g. npx").Value(&v.command),
-		huh.NewInput().Key("args").Title("Arguments").Description("Comma-separated, e.g. @playwright/mcp@latest").Value(&v.args),
-		huh.NewInput().Key("dir").Title("Working directory").Description("Optional, host command only.").Value(&v.dir),
-		huh.NewConfirm().Key("attach").Title("Attach to every sandbox").
-			Description("On = every sandbox launched on this daemon gets this server (FR-080).").Value(&v.attach),
-	)).WithTheme(huhTheme()).WithShowHelp(true).WithShowErrors(false).
-		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
-}
-
-func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	v := &m.mcpView
-	if v.form == nil {
+	sp := v.scopes
+	switch msg.String() {
+	case "esc":
+		v.scopes = nil
 		return m, nil
+	case "ctrl+n":
+		v.scopes = nil
+		return m.startMcpAuth(sp.name, nil, true)
+	case "enter":
+		scopes := mcprules.ParseScopes(sp.input.Value())
+		if len(scopes) == 0 {
+			sp.err = "enter at least one scope, or ctrl+n for no scopes"
+			return m, nil
+		}
+		if err := mcprules.ValidScopes(scopes); err != nil {
+			sp.err = strings.TrimPrefix(ruleMsg(err), "error: ")
+			return m, nil
+		}
+		v.scopes = nil
+		return m.startMcpAuth(sp.name, scopes, false)
 	}
-	f, cmd := v.form.Update(msg)
-	if ff, ok := f.(*huh.Form); ok {
-		v.form = ff
-	}
-	switch v.form.State {
-	case huh.StateCompleted:
-		return reviveCompleted(gMcp)(m.applyMcpForm())
-	}
+	var cmd tea.Cmd
+	sp.input, cmd = sp.input.Update(msg)
+	sp.err = ""
 	return m, cmd
 }
 
-// applyMcpForm validates the form and sends the registration — or, for a host
-// command, parks it behind the outside-isolation warning first (FR-076).
-func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
-	v := &m.mcpView
-	vals := v.vals
-	if v.form == nil || vals == nil {
-		return m, nil
+// mcpDefCmd reads a server's definition for the edit, Retry or Cancel flow.
+func (m Model) mcpDefCmd(name string, purpose mcpDefPurpose, p *pb.McpPendingReplace, previous bool) tea.Cmd {
+	d, host := m.mcpView.daemon, m.mcpView.host
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		view, err := d.GetMcpServerDefinition(ctx, name, false)
+		return mcpDefMsg{host: host, name: name, purpose: purpose, view: view, err: err, pending: p, previous: previous}
 	}
-	name := strings.TrimSpace(vals.name)
-	if !mcpNameRe.MatchString(name) {
-		v.status = "name must use letters, digits, dots, hyphens or underscores"
-		return m, nil
-	}
-	req := &pb.AddMcpServerRequest{Name: name, AttachByDefault: vals.attach}
-	switch vals.kind {
-	case "command":
-		cmd := strings.TrimSpace(vals.command)
-		if cmd == "" {
-			v.status = "a host command is required"
-			return m, nil
-		}
-		if strings.TrimSpace(vals.headers) != "" {
-			v.status = "headers apply to remote endpoints only"
-			return m, nil
-		}
-		if strings.TrimSpace(vals.clientID) != "" || strings.TrimSpace(vals.authServer) != "" {
-			v.status = "OAuth client settings apply to remote endpoints only"
-			return m, nil
-		}
-		var args []string
-		for _, a := range strings.Split(vals.args, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				args = append(args, a)
-			}
-		}
-		req.Definition = &pb.AddMcpServerRequest_Command{Command: &pb.AddMcpServerRequest_LocalCommand{Command: cmd, Args: args, Dir: strings.TrimSpace(vals.dir)}}
-		// The warning modal takes it from here; vals and the baseline stay so
-		// backing out reopens the form as it was (FR-012a).
-		v.form = nil
-		v.pending = req
-		return m, nil
-	default:
-		url := strings.TrimSpace(vals.url)
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			v.status = "a remote endpoint URL (http:// or https://) is required"
-			return m, nil
-		}
-		for _, line := range strings.Split(vals.headers, "\n") {
-			if line = strings.TrimSpace(line); line == "" {
-				continue
-			}
-			name, value, ok := strings.Cut(line, ":")
-			if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
-				v.status = "header " + strconv.Quote(line) + " must be Name: value"
-				return m, nil
-			}
-			req.Headers = append(req.Headers, strings.TrimSpace(name)+": "+strings.TrimSpace(value))
-		}
-		// The daemon's rules (mcp.normalizeOAuthClient), so a refusal never
-		// costs the form.
-		req.ClientId = strings.TrimSpace(vals.clientID)
-		if id := req.ClientId; utf8.RuneCountInString(id) > maxClientID || !utf8.ValidString(id) || strings.HasPrefix(id, "-") ||
-			strings.ContainsFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
-			v.status = fmt.Sprintf("the OAuth client ID must be a single token of at most %d characters", maxClientID)
-			return m, nil
-		}
-		req.OauthAuthorizationServer = strings.TrimSpace(vals.authServer)
-		if as := req.OauthAuthorizationServer; as != "" && (!authServerOK(as) || strings.ContainsFunc(as, unicode.IsControl)) {
-			v.status = "the OAuth authorization server must be an https URL (http only to localhost or a loopback IP) or an absolute path"
-			return m, nil
-		}
-		req.Definition = &pb.AddMcpServerRequest_Url{Url: url}
-	}
-	v.form, v.vals = nil, nil
-	return m, m.mcpAddCmd(v.daemon, v.host, req)
 }
 
-// maxClientID is the daemon's bound on a pre-registered OAuth client ID (FR-105).
-const maxClientID = 256
+// applyMcpDef handles a definition read.
+func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
+	v := &m.mcpView
+	if v.host != msg.host {
+		return m, nil
+	}
+	switch msg.purpose {
+	case mcpDefForAdd:
+		if v.vals != nil && v.vals.mode == mcpModeAdd && v.mcpServerName() == msg.name && msg.err == nil {
+			v.view, v.statusFor = msg.view, msg.name
+		}
+		return m, nil
+	case mcpDefReload:
+		return m.reloadMcpForm(msg)
+	case mcpDefRefresh:
+		if v.vals != nil && v.mcpServerName() == msg.name && msg.err == nil {
+			v.view, v.fingerprint = msg.view, msg.view.GetFingerprint()
+			if p := msg.view.GetPendingReplace(); p != nil {
+				v.retry, v.holding = p, p
+			}
+		}
+		return m, nil
+	}
+	if m.screen != screenMcp || v.loadingDef != msg.name {
+		return m, nil // the view moved on
+	}
+	v.loadingDef = ""
+	view := msg.view
+	if msg.err != nil {
+		ref, ok := client.AsSaveRefusal(msg.err)
+		switch {
+		case msg.pending != nil && (status.Code(msg.err) == codes.NotFound):
+			// A pending replace's name is not listed; fall back to what the row
+			// carries (secret statuses unknown).
+			view = &pb.McpDefinitionView{Name: msg.name, PendingReplace: msg.pending, SecretsAvailable: true,
+				PendingRemovalFailedListUnknown: true}
+		case ok && ref.Reason == pb.McpSaveRefusal_GONE:
+			v.status = ref.Message
+			return m, m.offerMcpAddAsNew(msg.name, mcpFormVals{name: msg.name, kind: "remote"}, false)
+		default:
+			v.status = "error: " + status.Convert(msg.err).Message()
+			return m, nil
+		}
+	}
+	switch {
+	case view.GetRecovering():
+		v.status = mcpRecoveringMsg
+		return m, nil
+	case view.GetSaveInProgress() && msg.purpose != mcpDefCancel:
+		// The row was stale: a save started since. The read takes no lock, so
+		// its definition may be changing; do not pre-fill from it (R11).
+		v.status = mcpSavingMsg
+		return m, m.mcpLoadCmd(v.daemon, v.host)
+	}
+	v.status = ""
+	switch msg.purpose {
+	case mcpDefEdit:
+		vals := fillMcpVals(view)
+		vals.name = msg.name
+		return m.openMcpFromView(view, vals, view.GetDefinition(), nil)
+	case mcpDefRetry:
+		p := view.GetPendingReplace()
+		if p == nil {
+			p = msg.pending
+		}
+		def := p.GetDefinition()
+		note := "retrying the failed replace with the held definition"
+		if msg.previous {
+			def = p.GetPrevious()
+			note = "restoring the previous definition; the removed secrets' old values are gone and must be entered again"
+		}
+		vals := mcpValsFromDef(def, msg.name, p.GetAttachByDefault(), mcpModeRetry)
+		return m.openMcpFromView(view, vals, p.GetPrevious(), func(v *mcpState) {
+			v.retry, v.holding, v.retryPrevious, v.formNote = p, p, msg.previous, note
+		})
+	case mcpDefCancel:
+		p := view.GetPendingReplace()
+		if p == nil {
+			p = msg.pending
+		}
+		return m, m.mcpCancelConfirm(p, view, false)
+	}
+	return m, nil
+}
 
-// authServerOK mirrors the daemon's rule for the authorization server: an
-// absolute path, an https URL, or an http URL to a loopback IP or exactly
-// localhost, since the metadata names where the client secret is sent. Not
-// dial.IsLoopbackHost: *.localhost is refused, as `sbx` resolves this host.
-func authServerOK(s string) bool {
-	if strings.HasPrefix(s, "/") {
-		return true
+// mcpCancelConfirm is the y-only Cancel of a pending replace (FR-406, FR-426):
+// from its gateway row (X) or when leaving a form that holds it.
+func (m *Model) mcpCancelConfirm(p *pb.McpPendingReplace, view *pb.McpDefinitionView, fromForm bool) tea.Cmd {
+	v := &m.mcpView
+	name := p.GetName()
+	body := []string{
+		selectedStyle.Render(name) + " is not registered on " + selectedStyle.Render(v.hostName) + ".",
+		"Cancelling drops its attach-by-default mark and switchboard's record of it.",
 	}
-	u, err := neturl.Parse(s)
-	if err != nil || u.Host == "" {
-		return false
+	switch {
+	case view.GetPendingRemovalFailedListUnknown() && len(p.GetRemovalFailedSecrets()) > 0:
+		body = append(body, "May be left on the host: "+strings.Join(p.GetRemovalFailedSecrets(), ", "))
+	case len(view.GetPendingRemovalFailedListed()) > 0:
+		body = append(body, "It will remove: "+strings.Join(view.GetPendingRemovalFailedListed(), ", "))
 	}
-	if u.Scheme == "https" {
-		return true
+	st := confirmState{
+		title: "Cancel the replace of " + name + "?", body: body,
+		warning: "The server stays unregistered.", acceptLabel: "cancel replace", cancelLabel: "keep",
+		yOnly: true, returnTo: screenMcp,
+		onConfirm: m.mcpCancelCmd(name, p.GetRevision()),
 	}
-	h := u.Hostname()
-	ip := net.ParseIP(h)
-	return u.Scheme == "http" && (strings.EqualFold(h, "localhost") || ip != nil && ip.IsLoopback())
+	if fromForm {
+		st.next = func(m *Model) tea.Cmd { m.resetMcpForm(); return nil }
+		st.onCancel = func(m *Model) tea.Cmd { return m.reviveMcpForm() }
+	}
+	m.confirm = st
+	m.screen = screenConfirm
+	return nil
+}
+
+func (m Model) mcpCancelCmd(name string, revision uint64) tea.Cmd {
+	d, host := m.mcpView.daemon, m.mcpView.host
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpOpTimeout)
+		defer cancel()
+		resp, err := d.CancelMcpPendingReplace(ctx, name, revision)
+		if err != nil {
+			return mcpDoneMsg{host: host, err: err}
+		}
+		s := "cancelled the replace of " + name + "; it is not registered"
+		if l := resp.GetLeftOnHost(); len(l) > 0 {
+			s += " — left on the host (remove in Secrets): " + strings.Join(l, ", ")
+		}
+		if u := resp.GetUnconfirmed(); len(u) > 0 {
+			s += " — may be left on the host: " + strings.Join(u, ", ")
+		}
+		return mcpDoneMsg{host: host, status: s}
+	}
+}
+
+// mcpLeavePending reports whether leaving the open form must go through the
+// Cancel confirmation: it holds a pending replace (FR-406, T032).
+func (m Model) mcpLeavePending() (tea.Model, tea.Cmd, bool) {
+	v := &m.mcpView
+	p := v.pendingHeld()
+	if p == nil || v.vals == nil {
+		return m, nil, false
+	}
+	view := v.view
+	if view == nil {
+		view = &pb.McpDefinitionView{PendingRemovalFailedListUnknown: true}
+	}
+	cmd := m.mcpCancelConfirm(p, view, true)
+	return m, cmd, true
+}
+
+// --- outcome panel and follow-ups (FR-405, FR-413, FR-419) ---
+
+// mcpFollowups are the offers after the outcome panel, in order: FR-413
+// removal of unused secrets, then FR-405 authorize after a registration.
+func (m Model) mcpFollowups(out *pb.McpSaveOutcome) []confirmState {
+	name := out.GetName()
+	var steps []confirmState
+	if unused := out.GetUnusedSecrets(); len(unused) > 0 {
+		body := []string{"No longer used by " + selectedStyle.Render(name) + ":"}
+		for _, s := range unused {
+			body = append(body, "  "+s)
+		}
+		cs, id := mcprules.ClientSecretName(name), mcprules.IdentityName(name)
+		if slices.Contains(unused, cs) || slices.Contains(unused, id) {
+			body = append(body, "The client ID was cleared (or the client is public): the client secret and",
+				"its binding record are no longer needed.")
+		}
+		body = append(body, "Remove them from the host? Nothing is removed unless you say so.")
+		steps = append(steps, confirmState{
+			title: "Remove unused secrets?", body: body,
+			warning: "Removed secrets cannot be restored.", acceptLabel: "remove", cancelLabel: "keep",
+			onConfirm: m.mcpRemoveSecretsCmd(name, unused),
+		})
+	}
+	if out.GetState() == pb.McpSaveOutcome_REGISTERED && out.GetServer().GetKind() != pb.McpServerKind_MCP_SERVER_KIND_LOCAL &&
+		(out.GetReplaced() || out.GetServer() != nil) {
+		st := confirmState{
+			title:  "Authorize " + name + " now?",
+			body:   []string{selectedStyle.Render(name) + " was registered without authorization."},
+			notice: "You can also authorize it later with A.", acceptLabel: "authorize", cancelLabel: "later",
+		}
+		st.next = func(m *Model) tea.Cmd {
+			mm, cmd := m.startMcpAuth(name, nil, false)
+			*m = mm.(Model)
+			return cmd
+		}
+		steps = append(steps, st)
+	}
+	return steps
+}
+
+// mcpFollowChain opens the follow-up offers one after another; declining one
+// moves on to the next.
+func (m *Model) mcpFollowChain(steps []confirmState) tea.Cmd {
+	if len(steps) == 0 {
+		return nil
+	}
+	st, rest := steps[0], steps[1:]
+	st.yOnly, st.returnTo = true, screenMcp
+	own := st.next
+	st.next = func(m *Model) tea.Cmd {
+		var cmd tea.Cmd
+		if own != nil {
+			cmd = own(m)
+		}
+		if m.mcpView.auth != nil {
+			return cmd // the authorization modal is up; nothing follows it
+		}
+		return tea.Batch(cmd, m.mcpFollowChain(rest))
+	}
+	st.onCancel = func(m *Model) tea.Cmd { return m.mcpFollowChain(rest) }
+	m.confirm = st
+	m.screen = screenConfirm
+	return nil
+}
+
+func (m Model) mcpRemoveSecretsCmd(name string, secrets []string) tea.Cmd {
+	d, host := m.mcpView.daemon, m.mcpView.host
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), mcpOpTimeout)
+		defer cancel()
+		resp, err := d.RemoveMcpServerSecrets(ctx, name, secrets)
+		if err != nil {
+			return mcpDoneMsg{host: host, err: err}
+		}
+		s := "removed " + strings.Join(resp.GetRemoved(), ", ")
+		if len(resp.GetRemoved()) == 0 {
+			s = "removed nothing"
+		}
+		if f := resp.GetFailed(); len(f) > 0 {
+			s = "error: " + s + "; could not remove " + strings.Join(f, ", ")
+		}
+		if resp.GetRebindPending() {
+			s += " — " + name + " is still marked client re-bind pending"
+		}
+		return mcpDoneMsg{host: host, status: s, notes: resp.GetHostErrors()}
+	}
+}
+
+// mcpOutcomeLines renders a save's outcome (T029, T044).
+func (m Model) mcpOutcomeLines(out *pb.McpSaveOutcome) []string {
+	name := out.GetName()
+	state := "registered"
+	switch out.GetState() {
+	case pb.McpSaveOutcome_UNCHANGED_REGISTRATION:
+		state = "registration unchanged"
+	case pb.McpSaveOutcome_STILL_REGISTERED:
+		state = "still registered, authorization may be lost"
+	case pb.McpSaveOutcome_NOT_REGISTERED:
+		state = "not registered"
+		if out.GetAddStarted() {
+			state += " — the add may still complete on the host"
+		}
+	}
+	style := statusOKStyle
+	if out.GetState() == pb.McpSaveOutcome_STILL_REGISTERED || out.GetState() == pb.McpSaveOutcome_NOT_REGISTERED {
+		style = statusErrStyle
+	}
+	lines := []string{sectionStyle.Render("Saved " + name), "", style.Render(state)}
+	for _, e := range out.GetHostErrors() {
+		lines = append(lines, statusErrStyle.Render(sanitizeLine(e, 0)))
+	}
+	list := func(label string, names []string) {
+		if len(names) > 0 {
+			lines = append(lines, label+strings.Join(names, ", "))
+		}
+	}
+	list("secrets created: ", out.GetCreated())
+	list("secrets overwritten: ", out.GetOverwritten())
+	list("secrets rolled back: ", out.GetRolledBack())
+	list("rollback failed (remove in Secrets): ", out.GetRollbackFailed())
+	if t := mcpIdentityText(name, out.GetIdentity()); t != "" {
+		lines = append(lines, "", t)
+	}
+	if p := out.GetPendingReplace(); p != nil {
+		lines = append(lines, "", "The replace is pending: save again to retry, or leave the form to cancel it.")
+	}
+	if len(out.GetAttachedSandboxes()) > 0 {
+		lines = append(lines, "")
+	}
+	for _, sb := range out.GetAttachedSandboxes() {
+		sbName := sb.GetDisplayName()
+		if sbName == "" {
+			sbName = short(sb.GetSandboxId())
+		}
+		switch {
+		case sb.GetSkippedAtLaunch() && sb.GetExclusive():
+			lines = append(lines, sbName+": missing from this sandbox's fixed set — relaunch to include it")
+		case sb.GetSkippedAtLaunch():
+			lines = append(lines, sbName+": not attached at launch — attach it from its MCP overlay (a)")
+		default:
+			lines = append(lines, sbName+" picks up the new definition after a restart or a re-attach from its MCP overlay")
+		}
+	}
+	return append(lines, "", helpStyle.Render("any key closes"))
+}
+
+// mcpIdentityText words the identity-binding outcome (FR-415, T044).
+func mcpIdentityText(name string, id pb.McpSaveOutcome_Identity) string {
+	cs, rec := mcprules.ClientSecretName(name), mcprules.IdentityName(name)
+	retry := "Re-enter the client secret and save to retry the clear, or remove " + rec +
+		" in Secrets or the host CLI; the re-bind pending mark clears only on the next save that stores the client secret."
+	switch id {
+	case pb.McpSaveOutcome_LEFT_IN_PLACE:
+		return "The old client binding was left in place: " + name + " is marked client re-bind pending. Enter the new client's secret and save to clear it (for a public client, remove " + cs + " and " + rec + " in Secrets or the host CLI)."
+	case pb.McpSaveOutcome_CLEARED:
+		return "Cleared the old client binding (" + rec + "): the next authorization binds the new client."
+	case pb.McpSaveOutcome_NOT_CLEARED:
+		return "The old client binding was not cleared. " + retry
+	case pb.McpSaveOutcome_UNCONFIRMED:
+		return "Could not confirm the old client binding was cleared (it may still be in place). " + retry
+	}
+	return ""
 }
 
 // --- operations ---
@@ -547,7 +943,7 @@ func (m Model) mcpSetModeCmd(d Daemon, host string, mode pb.McpAttachMode) tea.C
 
 // --- authorization wait ---
 
-func (m Model) startMcpAuth(name string) (tea.Model, tea.Cmd) {
+func (m Model) startMcpAuth(name string, scopes []string, noScope bool) (tea.Model, tea.Cmd) {
 	v := &m.mcpView
 	ctx, cancel := context.WithTimeout(context.Background(), mcpAuthTimeout)
 	ch := make(chan tea.Msg, 32)
@@ -556,7 +952,7 @@ func (m Model) startMcpAuth(name string) (tea.Model, tea.Cmd) {
 	d, host := v.daemon, v.host
 	go func() {
 		defer cancel()
-		state, err := d.AuthorizeMcpServer(ctx, name, func(u client.McpAuthUpdate) {
+		state, err := d.AuthorizeMcpServer(ctx, name, scopes, noScope, func(u client.McpAuthUpdate) {
 			ch <- mcpAuthMsg{host: host, name: name, update: u}
 		})
 		ch <- mcpAuthEndMsg{host: host, name: name, state: state, err: err}
@@ -828,14 +1224,61 @@ func (m Model) viewMcp() string {
 		if tail == "" {
 			tail = srv.GetDetail()
 		}
-		rows = append(rows, fmt.Sprintf("%s%s %s  %s  %s  %s", cursor, mark, pad(srv.GetName(), 18),
-			dimStyle.Render(pad(kind, 12)), mcpAuthLabel(srv.GetAuthState()), dimStyle.Render(truncate(tail, 48))))
+		row := fmt.Sprintf("%s%s %s  %s  %s  %s", cursor, mark, pad(srv.GetName(), 18),
+			dimStyle.Render(pad(kind, 12)), mcpAuthLabel(srv.GetAuthState()), dimStyle.Render(truncate(tail, 48)))
+		if st := v.mcpRowState(srv); st != "" {
+			row += "  " + selectedStyle.Render(st)
+		}
+		rows = append(rows, row)
+	}
+	for i, p := range v.pendings {
+		cursor := "  "
+		if len(v.servers)+i == v.cursor {
+			cursor = cursorBarStyle.Render("> ")
+		}
+		rows = append(rows, cursor+"    "+statusErrStyle.Render(p.GetName()+" — not registered (replace failed "+mcpAge(p)+" ago)")+
+			dimStyle.Render("  R retry · X cancel"))
 	}
 	rows = append(rows, "", dimStyle.Render("[x] = attached to every new sandbox on this daemon"))
 	for _, n := range v.notes {
 		rows = append(rows, dimStyle.Render("note: "+n))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...) + m.mcpStatusLine()
+}
+
+// mcpRowState is a registered server's status column (SWI-21).
+func (v mcpState) mcpRowState(srv *pb.McpServer) string {
+	switch {
+	case srv.GetRecovering():
+		return "recovering interrupted save"
+	case srv.GetSaveInProgress() || v.localSaving[srv.GetName()]:
+		return "saving…"
+	case srv.GetRebindPending():
+		return "rebind pending"
+	}
+	return ""
+}
+
+// mcpAge is how long ago a pending replace failed, coarsely.
+func mcpAge(p *pb.McpPendingReplace) string {
+	if p.GetFailedAt() == nil {
+		return "a while"
+	}
+	d := time.Since(p.GetFailedAt().AsTime())
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(int(d.Seconds()), 0))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// mcpModalOpen reports a modal layer over the gateway view.
+func (v mcpState) mcpModalOpen() bool {
+	return v.auth != nil || v.pending != nil || v.outcome != nil || v.choose != nil || v.scopes != nil
 }
 
 func (m Model) mcpStatusLine() string {
@@ -916,6 +1359,32 @@ func (m Model) mcpModal() string {
 			lines = append(lines, dimStyle.Render(fmt.Sprintf("callback relayed from localhost:%d to the host · p paste the address instead", w.callbackPort)))
 		}
 		lines = append(lines, "", dimStyle.Render(fmt.Sprintf("time remaining %s · esc cancels (the registration is kept)", remaining)))
+		inner = lipgloss.JoinVertical(lipgloss.Left, lines...)
+	case v.outcome != nil:
+		inner = lipgloss.JoinVertical(lipgloss.Left, m.mcpOutcomeLines(v.outcome)...)
+	case v.choose != nil:
+		p := v.choose
+		lines := []string{sectionStyle.Render("Retry " + p.GetName()), "",
+			"The replace failed " + mcpAge(p) + " ago: " + sanitizeLine(p.GetError(), 0), "",
+			"h  the held definition (the one that failed)",
+			"p  the previous definition (the last one that was live)"}
+		if r := p.GetRemovedSecrets(); len(r) > 0 {
+			lines = append(lines, "", "Removed by the failed save (enter them again): "+strings.Join(r, ", "))
+		}
+		if r := p.GetRemovalFailedSecrets(); len(r) > 0 {
+			lines = append(lines, "Removal failed (removed unless re-entered): "+strings.Join(r, ", "))
+		}
+		lines = append(lines, "", helpStyle.Render("h held · p previous · esc back"))
+		inner = lipgloss.JoinVertical(lipgloss.Left, lines...)
+	case v.scopes != nil:
+		sp := v.scopes
+		lines := []string{sectionStyle.Render("Authorize " + sp.name + " with scopes…"), "",
+			"Space-separated scopes for this authorization only; the recorded defaults are unchanged.",
+			dimStyle.Render("Requested exactly as given; no refresh-token scope is added."), "", sp.input.View()}
+		if sp.err != "" {
+			lines = append(lines, statusErrStyle.Render(sp.err))
+		}
+		lines = append(lines, "", helpStyle.Render("enter authorize · ctrl+n no scopes · esc back"))
 		inner = lipgloss.JoinVertical(lipgloss.Left, lines...)
 	case v.pending != nil:
 		req := v.pending
