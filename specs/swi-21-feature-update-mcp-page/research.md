@@ -68,8 +68,15 @@ for a few hundred lines of code); keeping two copies with a shared fixture (stil
 ### R2 — The save is one daemon RPC that outlives its caller (FR-404)
 
 **Decision**: New unary RPC `SaveMcpServer`. The handler validates the request, then runs
-`Manager.Save` on a context derived with `context.WithoutCancel(ctx)` bounded by `saveTimeout` (a package
-constant, 10 min: one `mcp rm` + N stores + one `mcp add` + rollbacks, each with its own existing bound).
+`Manager.Save` on a context derived with `context.WithoutCancel(ctx)` bounded by `saveTimeout` (10 min: one
+`mcp rm` + N stores + one `mcp add` + rollbacks, each with its own existing bound). The `saveTimeout` clock
+starts once the per-name lock is taken; the wait for the lock is bounded separately (`lockWaitTimeout`, also
+10 min), so time queued behind another holder never shortens the save's own budget. The TUI's save deadline
+(`mcpSaveTimeout`, 21 min) covers both bounds plus the persist retries. A rollback or re-list on a slow host
+runs on its own contexts and can outlast it, so when that deadline fires the TUI closes the form, never
+treating it as a failure the developer could save over. It does not mark the row saving… itself (the call may
+never have reached the daemon, e.g. over a half-open SSH tunnel, and nothing would clear the mark): the re-list
+shows the daemon's own `save_in_progress` (review round 4).
 If the client goes away the gRPC handler returns, but the goroutine finishes, persists the outcome and emits
 `mcp_gateway_changed` (with the outcome) and `secrets_changed`. The response returns the same
 `McpSaveOutcome`.
@@ -184,7 +191,7 @@ arriving after the clear (while the tail's `onReplaceEnded` and outcome event st
 the fresh channel and waits for the slot. `lockName` waits on `select { slot,
 ctx.Done(), refuse }` and returns `ErrBeingReplaced` (dropping its waiter count) when `refuse` closes. So no
 taker waits on a save that has written its record or entered the persist retry, whether it arrived before or
-after, and a queued `Save` (whose context is the detached `saveTimeout` one, not the client's) never sits on the
+after, and a queued `Save` (whose wait is the detached `lockWaitTimeout` one, not the client's) never sits on the
 lock for its full 10 minutes keeping `Authorize` refused. `SetMcpServerDefault` (the
 existing mark RPC) takes no lock. As a fast path it reads the state map, first, before today's `listRows` (one
 `sbx mcp ls`), so a toggle on a `saving`/`recovering` row costs no host call and a `recovering` row whose `ls` is
@@ -284,6 +291,15 @@ the lock, because every name was queued before the first list and every other op
   doubling to 5 min) until it succeeds. `reconcile` never resolves in-progress records. Until then the names
   stay protected as above: kept by `reconcile`, refused by `Authorize`, by `SetMcpServerDefault` and by every
   lock holder, and skipped at launch while marked.
+
+A save whose `mcp rm` failed and whose re-list failed too hands its name to the same routine (`recoverLater`),
+but it knows more than a crash leaves behind: nothing was stored and `mcp add` never ran. Before the hand-off
+it marks the record `remove_only` (with its host errors in `remove_error`) and clears the `planned_*` lists.
+Recovery then records only whether the remove landed. If the name is **not listed**, it records a pending
+replace with `add_started` false, no removal-failed secrets and an error saying the `rm` failed, the host could
+not be re-read and the server turned out to be removed. If it is **listed**, the record (and its
+`rebind_pending`) is left as it was and the replace ends registered. If that write fails, the crash rules above
+apply.
 
 Every recovery logs `mcp: <name>: recovered interrupted save (<result>)`, clears `recovering` in the state map
 and emits one `mcp_gateway_changed`. The routine stops with the daemon; anything still queued is found again at
@@ -425,11 +441,16 @@ its own process group (as `runStreaming` already does); on the context deadline 
 `Wait` is awaited before the step returns, so "the process has exited" holds before any re-check.
 
 - Failed **remove** → re-list under the lock: name absent ⇒ success, continue; present ⇒ outcome
-  `STILL_REGISTERED`, nothing stored yet, nothing rolled back.
+  `STILL_REGISTERED`, nothing stored yet, nothing rolled back. If the re-list fails too, whether the host
+  still lists the server is unknown, so neither outcome is asserted: the in-progress record stays (reconcile
+  keeps the definition and mark while it exists), the name turns from `saving` to `recovering` in one hold, and
+  the start-up recovery routine (R2 Recovery) resolves it from a fresh list once the save releases the lock.
+  The caller gets `FAILED_PRECONDITION` `UNVERIFIED` naming the host errors.
 - Failed **store** or failed/timed-out **add** → never re-checked. Roll back: remove every secret this save
   created **and** (for a replace or a new server's add) overwrote; for a switchboard-only save, created only,
   overwritten named as changed. A rollback removal that fails is re-checked against a fresh global list:
-  absent ⇒ removed. Outcome `NOT_REGISTERED`, with `add_started` set only if the add ran.
+  absent ⇒ removed. Outcome `NOT_REGISTERED`, with `add_started` set only if the add process started (an
+  add that failed to start, e.g. on an expired budget, never ran on the host).
 
 ### R8 — Pending replace lifecycle (FR-406, FR-426)
 
@@ -440,7 +461,10 @@ pending replace (so launch never applies it, FR-425); the previous definition is
 
 - **Retry**: an ordinary `SaveMcpServer` with `retry_of_revision` set. Its definition check compares the
   revision. Pre-step: each carried `removal_failed` name the request leaves blank is removed first (failed →
-  re-check list; still listed or unreadable ⇒ refuse with no change, `PENDING_REMOVAL_FAILED`). Then it runs
+  re-check list; still listed or unreadable ⇒ refuse with no change, `PENDING_REMOVAL_FAILED`). A Retry
+  refused after the pre-step removed names (by the pre-step itself or a later check) still moves those names
+  from `removal_failed_secrets` to `removed_secrets` (same revision) and emits `secrets_changed` and
+  `mcp_gateway_changed`. Then it runs
   as a new-server save (no remove; the name is not registered) compared with `previous` for FR-409/FR-415.
   Success ⇒ pending dropped, mark and definition live, skipped sandbox entries become *not attached at
   launch* (R12). Failure ⇒ the pending replace is updated (definition = retried one, names = this attempt's).
@@ -623,7 +647,8 @@ The two groups are:
    client-secret field when a client ID is present. Values entered are kept by secret name across rebuilds.
 
 Pre-save checks (all client-side, then confirmations in this order, each `y`-only through `confirm.go`):
-literal-credential conversion offer (on leaving group 1, and again on save); URL/argument
+literal-credential conversion offer (on leaving group 1, and again on save; a credential header with nothing to
+convert — empty or separators only — is refused on leaving group 1 instead, focus back on the headers); URL/argument
 credential warning; FR-402 dropped settings; host-command local-execution warning (FR-407); authorization
 will be discarded (unless `UNAUTHORIZED`); FR-411 missing secrets / FR-409 removal-failed / FR-409 URL
 change must re-enter; FR-415 left-in-place warning. Then `SaveMcpServer`.

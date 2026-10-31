@@ -8,6 +8,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/orchestrator"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -286,9 +287,15 @@ func (s *Server) LaunchReasoning(ctx context.Context, req orchestrator.Reasoning
 		if att, err := s.mcp.ResolveAttach(ctx); err != nil {
 			onLog("mcp: could not resolve attach-by-default servers (launching without): " + err.Error())
 		} else {
-			mcpAttach = &sandbox.McpAttach{Mode: att.Mode, Servers: att.Servers, Skipped: att.Skipped}
+			mcpAttach = &sandbox.McpAttach{Mode: att.Mode, Servers: att.Servers, Skipped: att.Skipped,
+				BeingReplaced: att.BeingReplaced, ReplaceState: s.mcp.ReplaceState}
+			// A setup server being replaced is skipped like a marked one (FR-425).
 			for _, name := range setup.GetMcpServers() {
-				if !slices.Contains(mcpAttach.Servers, name) {
+				switch {
+				case slices.Contains(mcpAttach.Servers, name), slices.Contains(mcpAttach.BeingReplaced, name):
+				case s.mcp.ReplaceState(name) == mcp.BeingReplaced:
+					mcpAttach.BeingReplaced = append(mcpAttach.BeingReplaced, name)
+				default:
 					mcpAttach.Servers = append(mcpAttach.Servers, name)
 				}
 			}

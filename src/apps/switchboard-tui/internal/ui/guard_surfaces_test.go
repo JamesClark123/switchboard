@@ -225,7 +225,7 @@ func rebaseline(m *Model, g guardSurface) {
 	case gConfig:
 		m.editor.baseline = m.editor.vals.snapshot()
 	case gMcp:
-		m.mcpView.baseline = *m.mcpView.vals
+		m.mcpView.baseline = m.mcpView.mcpSnapshot()
 	case gSecrets:
 		m.secretsView.baseline = *m.secretsView.vals
 	case gOrchAdmin:

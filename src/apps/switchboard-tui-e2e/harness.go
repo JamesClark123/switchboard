@@ -104,21 +104,41 @@ case "$1" in
       exec "` + dir + `/fakeclaude" "e2e-$ref" "$wd" "` + dir + `/agent-$ref.in"
     elif [ -f "` + dir + `/sbx-state/$2" ]; then echo running > "` + dir + `/sbx-state/$2"; fi ;;
   mcp)
-    # feature 008: one registered remote server; add/rm/load/auth succeed.
+    # feature 008 + SWI-21 (T047): registrations live in <dir>/mcp-state/<name>
+    # (line 1 transport, line 2 URL), seeded with notion. add writes the file
+    # (and fails for a URL containing refuse.invalid), rm deletes it, ls prints
+    # the table from it, so a failed replace leaves the name unlisted.
+    M="` + dir + `/mcp-state"
     case "$2 $3" in
-      "ls ") printf 'NAME     TRANSPORT     STATUS       GATEWAY                 DETAIL\nnotion   remote http   needs auth   LOCAL, managed by you   sbx mcp auth notion\n' ;;
-      "auth status") echo '[{"server_name":"notion","status":"unauthorized"}]' ;;
+      "ls ")
+        printf '%-16s%-16s%-14s%-26s%s\n' NAME TRANSPORT STATUS GATEWAY DETAIL
+        for f in "$M"/*; do [ -f "$f" ] || continue; n=$(basename "$f")
+          printf '%-16s%-16s%-14s%-26s%s\n' "$n" "$(sed -n 1p "$f")" "needs auth" "LOCAL, managed by you" "sbx mcp auth $n"; done ;;
+      "auth status") echo "[{\"server_name\":\"$4\",\"status\":\"unauthorized\"}]" ;;
+      "inspect "*) if [ -f "$M/$3" ]; then printf '{"url":"%s"}\n' "$(sed -n 2p "$M/$3")"; else echo "error: MCP server \"$3\" is not registered" >&2; exit 1; fi ;;
       "load "*) echo "MCP server \"$3\" loaded into sandbox \"$5\" (live)" ;;   # real success line (2026-10-12)
-      "rm "*) case "$*" in *--force*) printf 'No local OAuth token found for MCP server "%s"\nMCP server "%s" removed\n' "$3" "$3" ;;
+      "add "*)
+        url=""; prev=""
+        for a in "$@"; do [ "$prev" = "--url" ] && url=$a; prev=$a; done
+        case "$url" in *refuse.invalid*) echo "error: add MCP server \"$3\": dial $url: no such host" >&2; exit 1 ;; esac
+        if [ -n "$url" ]; then printf 'remote http\n%s\n' "$url" > "$M/$3"; else printf 'stdio\n\n' > "$M/$3"; fi
+        echo "MCP server \"$3\" added." ;;
+      "rm "*) case "$*" in *--force*) rm -f "$M/$3"; printf 'No local OAuth token found for MCP server "%s"\nMCP server "%s" removed\n' "$3" "$3" ;;
                           *) printf 'Remove MCP server "%s" and its OAuth credential? (y/N): ' "$3"; exit 1 ;; esac ;;
       *) exit 0 ;;
     esac ;;
   secret)
-    # feature 008 (FR-104): the documented secret-store table; set reads the value from stdin.
+    # feature 008 (FR-104) + SWI-21: global service secrets live in
+    # <dir>/secret-state/<name>, seeded with github; set reads the value from
+    # stdin (also kept in secret.stdin for the value assertions).
+    S="` + dir + `/secret-state"
     case "$2" in
-      ls) printf 'SCOPE      TYPE      NAME        SECRET\n(global)   service   github      gho_GCaw4o****...****43qy\n' ;;
-      set) cat > "$(dirname "$0")/secret.stdin"; echo "Secret stored." ;;
-      rm) echo "removed" ;;
+      ls)
+        printf '%-11s%-10s%-34s%s\n' SCOPE TYPE NAME SECRET
+        for f in "$S"/*; do [ -f "$f" ] || continue
+          printf '%-11s%-10s%-34s%s\n' "(global)" service "$(basename "$f")" "****"; done ;;
+      set) cat > "$(dirname "$0")/secret.stdin"; cp "$(dirname "$0")/secret.stdin" "$S/$3"; echo "Secret stored." ;;
+      rm) if [ -f "$S/$3" ]; then rm -f "$S/$3"; echo "removed"; else echo "error: secret \"$3\" not found" >&2; exit 1; fi ;;
       *) exit 0 ;;
     esac ;;
   kit)
@@ -132,6 +152,17 @@ esac
 `
 	if err := os.WriteFile(filepath.Join(dir, "sbx"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"mcp-state/notion":    "remote http\nhttps://mcp.notion.com/mcp\n",
+		"secret-state/github": "gho_seeded\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return dir
 }

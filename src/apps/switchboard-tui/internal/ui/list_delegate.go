@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -81,6 +82,11 @@ func thirdLine(sb *pb.Sandbox) string {
 			mode = " (exclusive)"
 		}
 		parts = append(parts, "mcp: "+strings.Join(names, ", ")+mode)
+	}
+	// SWI-21 (FR-425): marked servers the launch skipped (being replaced, or not
+	// attached at launch); the MCP overlay (M) lists them.
+	if n := len(sb.GetMcpSkipped()); n > 0 {
+		parts = append(parts, "mcp skipped: "+strconv.Itoa(n))
 	}
 	if c := sb.GetController(); c != nil {
 		name := c.GetName()

@@ -10,6 +10,7 @@ import (
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -38,9 +39,22 @@ func (s *Server) requireMcp() error {
 // mcpStatus maps the manager's sentinel errors to gRPC codes; anything else is
 // the host's own diagnostic, passed through verbatim.
 func mcpStatus(err error) error {
+	var ref *mcp.Refusal
 	switch {
 	case err == nil:
 		return nil
+	case errors.As(err, &ref):
+		return refusalStatus(ref)
+	case errors.Is(err, mcp.ErrAuthInProgress):
+		return refusalStatus(&mcp.Refusal{Reason: pb.McpSaveRefusal_AUTH_IN_PROGRESS, Msg: err.Error()})
+	case errors.Is(err, mcp.ErrUnavailable):
+		return notRecordedStatus(strings.TrimPrefix(err.Error(), mcp.ErrUnavailable.Error()+": "))
+	case errors.Is(err, mcp.ErrAlreadyRegistered):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, mcp.ErrConfirmRequired), errors.Is(err, mcp.ErrSecretsUnavailable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return status.FromContextError(err).Err()
 	case errors.Is(err, mcp.ErrNotRegistered):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, mcp.ErrInvalidArgs):
@@ -54,15 +68,85 @@ func mcpStatus(err error) error {
 	return status.Error(codes.Unknown, err.Error())
 }
 
+// Save-not-recorded detail (SWI-21 contract): the UNAVAILABLE a save returns
+// when it ran but its persist keeps failing carries an ErrorInfo with this
+// reason and domain, so a client tells it apart from a transport UNAVAILABLE
+// (where the save may never have reached the daemon).
+const (
+	McpSaveNotRecordedReason = "MCP_SAVE_NOT_RECORDED"
+	ErrorDomain              = "switchboard"
+)
+
+// notRecordedStatus is UNAVAILABLE with the save-not-recorded ErrorInfo.
+func notRecordedStatus(msg string) error {
+	st, err := status.New(codes.Unavailable, msg).WithDetails(&errdetails.ErrorInfo{Reason: McpSaveNotRecordedReason, Domain: ErrorDomain})
+	if err != nil {
+		return status.Error(codes.Unavailable, msg)
+	}
+	return st.Err()
+}
+
+// refusalStatus carries an McpSaveRefusal as a status detail (SWI-21 contract):
+// FAILED_PRECONDITION, or NOT_FOUND for GONE.
+func refusalStatus(r *mcp.Refusal) error {
+	code := codes.FailedPrecondition
+	if r.Reason == pb.McpSaveRefusal_GONE {
+		code = codes.NotFound
+	}
+	st, err := status.New(code, r.Msg).WithDetails(&pb.McpSaveRefusal{Reason: r.Reason, Message: r.Msg})
+	if err != nil {
+		return status.Error(code, r.Msg)
+	}
+	return st.Err()
+}
+
 func (s *Server) ListMcpServers(ctx context.Context, _ *pb.ListMcpServersRequest) (*pb.ListMcpServersResponse, error) {
 	if err := s.requireMcp(); err != nil {
 		return nil, err
 	}
-	servers, settings, err := s.mcp.List(ctx)
+	servers, settings, pending, err := s.mcp.ListAll(ctx)
 	if err != nil {
 		return nil, mcpStatus(err)
 	}
-	return &pb.ListMcpServersResponse{Servers: servers, Settings: settings}, nil
+	return &pb.ListMcpServersResponse{Servers: servers, Settings: settings, PendingReplaces: pending}, nil
+}
+
+// GetMcpServerDefinition is the edit form's pre-fill (SWI-21 FR-402).
+func (s *Server) GetMcpServerDefinition(ctx context.Context, req *pb.GetMcpServerDefinitionRequest) (*pb.McpDefinitionView, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	out, err := s.mcp.Definition(ctx, req.GetName(), req.GetForAdd())
+	return out, mcpStatus(err)
+}
+
+// SaveMcpServer runs one MCP form save (SWI-21 FR-404). The manager detaches it
+// from the caller, so a client that goes away still has its save persisted and
+// announced. The request (it carries secret values) is never logged.
+func (s *Server) SaveMcpServer(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.McpSaveOutcome, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	out, err := s.mcp.Save(ctx, req)
+	return out, mcpStatus(err)
+}
+
+// CancelMcpPendingReplace drops a pending replace (FR-406, FR-426).
+func (s *Server) CancelMcpPendingReplace(ctx context.Context, req *pb.CancelMcpPendingReplaceRequest) (*pb.CancelMcpPendingReplaceResponse, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	out, err := s.mcp.CancelPending(ctx, req.GetName(), req.GetRevision())
+	return out, mcpStatus(err)
+}
+
+// RemoveMcpServerSecrets removes secrets a save stopped using (FR-413).
+func (s *Server) RemoveMcpServerSecrets(ctx context.Context, req *pb.RemoveMcpServerSecretsRequest) (*pb.RemoveMcpServerSecretsResponse, error) {
+	if err := s.requireMcp(); err != nil {
+		return nil, err
+	}
+	out, err := s.mcp.RemoveSecrets(ctx, req.GetName(), req.GetSecrets())
+	return out, mcpStatus(err)
 }
 
 func (s *Server) AddMcpServer(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error) {
@@ -90,7 +174,7 @@ func (s *Server) AuthorizeMcpServer(req *pb.AuthorizeMcpServerRequest, stream pb
 	if err := s.requireMcp(); err != nil {
 		return err
 	}
-	err := s.mcp.Authorize(stream.Context(), req.GetName(), func(f *pb.McpAuthProgress) {
+	err := s.mcp.Authorize(stream.Context(), req.GetName(), req.GetScopes(), req.GetNoScope(), func(f *pb.McpAuthProgress) {
 		_ = stream.Send(f)
 	})
 	return mcpStatus(err)
@@ -209,3 +293,8 @@ func attachMcpStatus(err error) error {
 	}
 	return status.Error(codes.Unknown, err.Error())
 }
+
+// CapabilityMcpEdit is advertised in DaemonInfo.capabilities when the daemon
+// serves the SWI-21 MCP edit RPCs; the TUI gates Edit, secrets, scopes and
+// pending rows on it (research R15).
+const CapabilityMcpEdit = "mcp-edit"

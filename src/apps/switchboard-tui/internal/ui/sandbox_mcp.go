@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,10 +31,11 @@ type sandboxMcpState struct {
 	sandbox    string // display name
 	host       string // owning host id — every RPC targets THIS host
 	mode       pb.McpAttachMode
-	attached   []string        // the record as last seen
-	registered []*pb.McpServer // the daemon's gateway list, nil until loaded
-	gatewayErr string          // why the gateway cannot be managed on the host
-	listErr    string          // the last list failure, shown inline
+	attached   []string               // the record as last seen
+	skipped    []*pb.McpSkippedServer // SWI-21 FR-425: marked servers the launch skipped, not attached
+	registered []*pb.McpServer        // the daemon's gateway list, nil until loaded
+	gatewayErr string                 // why the gateway cannot be managed on the host
+	listErr    string                 // the last list failure, shown inline
 	loading    bool
 	cursor     int
 	picking    bool // the add sub-mode (pick a registered server)
@@ -129,6 +131,7 @@ func (m Model) enterSandboxMcp(sb *pb.Sandbox, host string) (tea.Model, tea.Cmd)
 		host:      host,
 		mode:      sb.GetMcpAttachMode(),
 		attached:  append([]string(nil), sb.GetMcpServers()...),
+		skipped:   unattachedSkips(sb),
 	}
 	if op, ok := m.sandboxMcpOps[sb.GetId()]; ok {
 		v.busy, v.busyKind = op.name, op.kind // a call started before the overlay was closed
@@ -205,10 +208,47 @@ func (m *Model) syncSandboxMcpOverlay(sb *pb.Sandbox) {
 		return
 	}
 	m.sandboxMcpView.attached = append([]string(nil), sb.GetMcpServers()...)
+	m.sandboxMcpView.skipped = unattachedSkips(sb)
 	m.sandboxMcpView.mode = sb.GetMcpAttachMode()
-	if n := len(m.sandboxMcpView.attached); m.sandboxMcpView.cursor >= n {
+	if n := m.sandboxMcpView.rowCount(); m.sandboxMcpView.cursor >= n {
 		m.sandboxMcpView.cursor = max(n-1, 0)
 	}
+}
+
+// unattachedSkips are a sandbox's skipped-server entries (FR-425) not already
+// on its attached list.
+func unattachedSkips(sb *pb.Sandbox) []*pb.McpSkippedServer {
+	var out []*pb.McpSkippedServer
+	for _, s := range sb.GetMcpSkipped() {
+		if !slices.Contains(sb.GetMcpServers(), s.GetName()) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// rowCount is the overlay's rows: the attached servers, then the skipped ones.
+func (v sandboxMcpState) rowCount() int { return len(v.attached) + len(v.skipped) }
+
+// highlightedSkip is the skipped entry under the cursor.
+func (v sandboxMcpState) highlightedSkip() (*pb.McpSkippedServer, bool) {
+	i := v.cursor - len(v.attached)
+	if i < 0 || i >= len(v.skipped) {
+		return nil, false
+	}
+	return v.skipped[i], true
+}
+
+// skipNote words a skipped entry: being replaced, or not attached at launch
+// (in exclusive mode the server is missing from the fixed set instead).
+func (v sandboxMcpState) skipNote(s *pb.McpSkippedServer) string {
+	switch {
+	case s.GetState() == pb.McpSkipState_MCP_SKIP_STATE_SKIPPED_BEING_REPLACED:
+		return "skipped: being replaced"
+	case v.mode == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE:
+		return "missing from this sandbox's fixed set — relaunch to include it"
+	}
+	return "not attached at launch — a to attach"
 }
 
 // mcpCandidates are the daemon's registered servers not yet on the record.
@@ -278,7 +318,7 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.cursor--
 		}
 	case "down", "j":
-		if v.cursor < len(v.attached)-1 {
+		if v.cursor < v.rowCount()-1 {
 			v.cursor++
 		}
 	case "r":
@@ -312,6 +352,17 @@ func (m Model) updateSandboxMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "a":
+		if s, ok := v.highlightedSkip(); ok && v.gatewayErr == "" && v.busy == "" {
+			// A skipped entry attaches directly (FR-425); attaching clears it.
+			if v.mode == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
+				v.status = s.GetName() + " is " + v.skipNote(s)
+				return m, nil
+			}
+			v.busy, v.busyKind = s.GetName(), "attach"
+			m.setMcpOp(v.sandboxID, sandboxMcpOp{kind: "attach", name: s.GetName()})
+			v.status = "attaching " + s.GetName() + "…"
+			return m, m.attachMcpCmd(v.host, v.sandboxID, s.GetName())
+		}
 		switch {
 		case v.gatewayErr != "":
 			v.status = "cannot attach: " + v.gatewayErr
@@ -471,6 +522,13 @@ func (m Model) sandboxMcpModal() string {
 			row += "  " + dimStyle.Render("…")
 		}
 		rows = append(rows, row)
+	}
+	for i, s := range v.skipped {
+		cursor := "  "
+		if len(v.attached)+i == v.cursor && !v.picking {
+			cursor = cursorBarStyle.Render("> ")
+		}
+		rows = append(rows, cursor+pad(s.GetName(), 18)+"  "+statusErrStyle.Render(v.skipNote(s)))
 	}
 	if len(rows) == 0 {
 		rows = append(rows, dimStyle.Render("(none attached — press a to attach a registered server)"))

@@ -72,6 +72,10 @@ const (
 	Switchboard_SetMcpAttachMode_FullMethodName         = "/switchboard.v1.Switchboard/SetMcpAttachMode"
 	Switchboard_AttachMcpServer_FullMethodName          = "/switchboard.v1.Switchboard/AttachMcpServer"
 	Switchboard_DetachMcpServer_FullMethodName          = "/switchboard.v1.Switchboard/DetachMcpServer"
+	Switchboard_GetMcpServerDefinition_FullMethodName   = "/switchboard.v1.Switchboard/GetMcpServerDefinition"
+	Switchboard_SaveMcpServer_FullMethodName            = "/switchboard.v1.Switchboard/SaveMcpServer"
+	Switchboard_CancelMcpPendingReplace_FullMethodName  = "/switchboard.v1.Switchboard/CancelMcpPendingReplace"
+	Switchboard_RemoveMcpServerSecrets_FullMethodName   = "/switchboard.v1.Switchboard/RemoveMcpServerSecrets"
 	Switchboard_ListSecrets_FullMethodName              = "/switchboard.v1.Switchboard/ListSecrets"
 	Switchboard_SetSecret_FullMethodName                = "/switchboard.v1.Switchboard/SetSecret"
 	Switchboard_RemoveSecret_FullMethodName             = "/switchboard.v1.Switchboard/RemoveSecret"
@@ -296,6 +300,16 @@ type SwitchboardClient interface {
 	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(ctx context.Context, in *AttachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
 	DetachMcpServer(ctx context.Context, in *DetachMcpServerRequest, opts ...grpc.CallOption) (*Sandbox, error)
+	// SWI-21 (FR-402): the edit form's pre-fill — switchboard's record merged with what
+	// the runtime reports, credential literals redacted, plus the fingerprint to echo back.
+	GetMcpServerDefinition(ctx context.Context, in *GetMcpServerDefinitionRequest, opts ...grpc.CallOption) (*McpDefinitionView, error)
+	// SWI-21 (FR-404): every save from the MCP form (add, edit, secrets-only, Retry).
+	// Runs to completion on the daemon even if the caller goes away.
+	SaveMcpServer(ctx context.Context, in *SaveMcpServerRequest, opts ...grpc.CallOption) (*McpSaveOutcome, error)
+	// SWI-21 (FR-406, FR-426): drop a pending replace.
+	CancelMcpPendingReplace(ctx context.Context, in *CancelMcpPendingReplaceRequest, opts ...grpc.CallOption) (*CancelMcpPendingReplaceResponse, error)
+	// SWI-21 (FR-413): remove secrets a save stopped using, under the per-name lock.
+	RemoveMcpServerSecrets(ctx context.Context, in *RemoveMcpServerSecretsRequest, opts ...grpc.CallOption) (*RemoveMcpServerSecretsResponse, error)
 	// ---------- Secrets (feature 008, FR-104) ----------
 	// The host runtime's secret store (`sbx secret`), managed per daemon like the
 	// gateway. Values travel only inside SetSecretRequest over the daemon
@@ -895,6 +909,46 @@ func (c *switchboardClient) DetachMcpServer(ctx context.Context, in *DetachMcpSe
 	return out, nil
 }
 
+func (c *switchboardClient) GetMcpServerDefinition(ctx context.Context, in *GetMcpServerDefinitionRequest, opts ...grpc.CallOption) (*McpDefinitionView, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(McpDefinitionView)
+	err := c.cc.Invoke(ctx, Switchboard_GetMcpServerDefinition_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) SaveMcpServer(ctx context.Context, in *SaveMcpServerRequest, opts ...grpc.CallOption) (*McpSaveOutcome, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(McpSaveOutcome)
+	err := c.cc.Invoke(ctx, Switchboard_SaveMcpServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) CancelMcpPendingReplace(ctx context.Context, in *CancelMcpPendingReplaceRequest, opts ...grpc.CallOption) (*CancelMcpPendingReplaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelMcpPendingReplaceResponse)
+	err := c.cc.Invoke(ctx, Switchboard_CancelMcpPendingReplace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *switchboardClient) RemoveMcpServerSecrets(ctx context.Context, in *RemoveMcpServerSecretsRequest, opts ...grpc.CallOption) (*RemoveMcpServerSecretsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveMcpServerSecretsResponse)
+	err := c.cc.Invoke(ctx, Switchboard_RemoveMcpServerSecrets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) ListSecrets(ctx context.Context, in *ListSecretsRequest, opts ...grpc.CallOption) (*ListSecretsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSecretsResponse)
@@ -1453,6 +1507,16 @@ type SwitchboardServer interface {
 	// not loaded (or no longer registered, logged) is still dropped from the record. The registration on the host is untouched.
 	AttachMcpServer(context.Context, *AttachMcpServerRequest) (*Sandbox, error)
 	DetachMcpServer(context.Context, *DetachMcpServerRequest) (*Sandbox, error)
+	// SWI-21 (FR-402): the edit form's pre-fill — switchboard's record merged with what
+	// the runtime reports, credential literals redacted, plus the fingerprint to echo back.
+	GetMcpServerDefinition(context.Context, *GetMcpServerDefinitionRequest) (*McpDefinitionView, error)
+	// SWI-21 (FR-404): every save from the MCP form (add, edit, secrets-only, Retry).
+	// Runs to completion on the daemon even if the caller goes away.
+	SaveMcpServer(context.Context, *SaveMcpServerRequest) (*McpSaveOutcome, error)
+	// SWI-21 (FR-406, FR-426): drop a pending replace.
+	CancelMcpPendingReplace(context.Context, *CancelMcpPendingReplaceRequest) (*CancelMcpPendingReplaceResponse, error)
+	// SWI-21 (FR-413): remove secrets a save stopped using, under the per-name lock.
+	RemoveMcpServerSecrets(context.Context, *RemoveMcpServerSecretsRequest) (*RemoveMcpServerSecretsResponse, error)
 	// ---------- Secrets (feature 008, FR-104) ----------
 	// The host runtime's secret store (`sbx secret`), managed per daemon like the
 	// gateway. Values travel only inside SetSecretRequest over the daemon
@@ -1707,6 +1771,18 @@ func (UnimplementedSwitchboardServer) AttachMcpServer(context.Context, *AttachMc
 }
 func (UnimplementedSwitchboardServer) DetachMcpServer(context.Context, *DetachMcpServerRequest) (*Sandbox, error) {
 	return nil, status.Error(codes.Unimplemented, "method DetachMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) GetMcpServerDefinition(context.Context, *GetMcpServerDefinitionRequest) (*McpDefinitionView, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMcpServerDefinition not implemented")
+}
+func (UnimplementedSwitchboardServer) SaveMcpServer(context.Context, *SaveMcpServerRequest) (*McpSaveOutcome, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveMcpServer not implemented")
+}
+func (UnimplementedSwitchboardServer) CancelMcpPendingReplace(context.Context, *CancelMcpPendingReplaceRequest) (*CancelMcpPendingReplaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelMcpPendingReplace not implemented")
+}
+func (UnimplementedSwitchboardServer) RemoveMcpServerSecrets(context.Context, *RemoveMcpServerSecretsRequest) (*RemoveMcpServerSecretsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveMcpServerSecrets not implemented")
 }
 func (UnimplementedSwitchboardServer) ListSecrets(context.Context, *ListSecretsRequest) (*ListSecretsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSecrets not implemented")
@@ -2439,6 +2515,78 @@ func _Switchboard_DetachMcpServer_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SwitchboardServer).DetachMcpServer(ctx, req.(*DetachMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_GetMcpServerDefinition_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMcpServerDefinitionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).GetMcpServerDefinition(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_GetMcpServerDefinition_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).GetMcpServerDefinition(ctx, req.(*GetMcpServerDefinitionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_SaveMcpServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveMcpServerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SaveMcpServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SaveMcpServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SaveMcpServer(ctx, req.(*SaveMcpServerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_CancelMcpPendingReplace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelMcpPendingReplaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).CancelMcpPendingReplace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_CancelMcpPendingReplace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).CancelMcpPendingReplace(ctx, req.(*CancelMcpPendingReplaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Switchboard_RemoveMcpServerSecrets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveMcpServerSecretsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).RemoveMcpServerSecrets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_RemoveMcpServerSecrets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).RemoveMcpServerSecrets(ctx, req.(*RemoveMcpServerSecretsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3191,6 +3339,22 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DetachMcpServer",
 			Handler:    _Switchboard_DetachMcpServer_Handler,
+		},
+		{
+			MethodName: "GetMcpServerDefinition",
+			Handler:    _Switchboard_GetMcpServerDefinition_Handler,
+		},
+		{
+			MethodName: "SaveMcpServer",
+			Handler:    _Switchboard_SaveMcpServer_Handler,
+		},
+		{
+			MethodName: "CancelMcpPendingReplace",
+			Handler:    _Switchboard_CancelMcpPendingReplace_Handler,
+		},
+		{
+			MethodName: "RemoveMcpServerSecrets",
+			Handler:    _Switchboard_RemoveMcpServerSecrets_Handler,
 		},
 		{
 			MethodName: "ListSecrets",

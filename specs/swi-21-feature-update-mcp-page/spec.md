@@ -353,8 +353,12 @@ runtime adds it to recorded defaults).
   form: scopes sorted and de-duplicated, ignoring an `offline_access` the runtime added to recorded
   defaults; headers by case-insensitive name with the value trimmed around `:`. A difference only in
   presentation is not a change. A runtime-added `offline_access` (one not in switchboard's record) MUST
-  also be left out of the pre-filled scopes, so a later save never records it as a default. Fields the runtime does not report come from switchboard's
-  record. For a server switchboard has no record of, only the runtime's fields are available. Any field
+  also be left out of the pre-filled scopes, so a later save never records it as a default; with no
+  record to tell a runtime-added `offline_access` apart, the reported scopes are pre-filled as reported. Fields the runtime does not report come from switchboard's
+  record. For a server switchboard has no record of, only the runtime's fields are available. When the
+  host lists the server as the other kind than the record (remote vs host command), none of the record's
+  fields apply: the form is pre-filled as for an unrecorded server and the kind is flagged *changed on the
+  host* (field `kind`). Any field
   that cannot be recovered MUST be left empty and named in the form, so that saving does not silently
   drop it. Host-side changes to fields the runtime does not report cannot be seen; that is accepted. If
   the runtime reports a setting or kind the form cannot express (for example, a resource override, an
@@ -616,8 +620,14 @@ runtime adds it to recorded defaults).
   from the sandbox's MCP overlay. Switchboard MUST NOT stop, unload or reload any sandbox as part of an
   edit, and the sandboxes' attached-server records MUST be unchanged.
 - **FR-420**: Every validation rule the daemon applies to a definition (headers, including FR-423's
-  credential-header rule, placeholder names, client ID, authorization server, scopes) MUST also be applied by the TUI before any
-  request is sent, so the form stays open on an invalid value.
+  credential-header rule, placeholder names, client ID, authorization server, scopes, the URL) MUST also be applied by the TUI before any
+  request is sent, so the form stays open on an invalid value. A header value MUST NOT hold a control
+  character (RFC 9110 field-value; a tab is allowed), and a host command, its arguments and its directory
+  MUST NOT hold one either (a tab is allowed there too). A save that registers a remote server MUST carry an
+  absolute `http://` or `https://` URL with a host and no spaces or control characters (`mcprules.ValidURL`),
+  so a value the host CLI would refuse never reaches a replace that has already removed the server; a save
+  that does not re-register keeps whatever URL the host reports, and a Retry that restores the pending
+  replace's previous URL is not held to the rule (the host accepted it once).
 - **FR-421**: Every completed save, edit, secret store or secret removal MUST refresh the gateway view
   and the Secrets view, and MUST reach other connected clients through the existing
   `mcp_gateway_changed` and `secrets_changed` events.
@@ -636,20 +646,27 @@ runtime adds it to recorded defaults).
   authorize) are additive to the existing daemon contract; older clients keep working unchanged. This
   feature adds **no** `NotificationKind`.
 - **FR-423**: A header is a **credential header** when its name is `Authorization`,
-  `Proxy-Authorization` or `Cookie`, or when any of its name segments (the name split on `-` and `_`,
-  case-insensitive) is `key`, `apikey`, `token`, `secret`, `password`, `auth` or `credential(s)`. Name
-  segments, not substrings, are matched, so `Keycloak-Realm` is not a credential header while
-  `X-Api-Key` is. A credential header's value MUST consist only of `${placeholder}`s, optionally led by
+  `Proxy-Authorization` or `Cookie`, or when any of its name segments (the name split on `-`, `_` and `.`,
+  case-insensitive) is `key`, `apikey`, `token`, `secret`, `password`, `auth`, `credential(s)`,
+  `authorization` or `authentication`, ends with `token`, `secret` or `password` (a run-together word such
+  as `AccessToken`, `AuthToken`, `ClientSecret`), or is one of `api`, `access`, `secret`, `private`, `auth`,
+  `client`, `session`, `signing` or `subscription` followed by `key` (`AccessKey`). Name segments, not
+  substrings, are matched, so `Keycloak-Realm`, `Monkey` and `X-Tokenizer` are not credential headers while
+  `X-Api-Key`, `X-Api.Key`, `X-Authorization` and `X-AccessToken` are. A credential header's value MUST consist only of `${placeholder}`s, optionally led by
   one auth-scheme token from a fixed list (`Bearer`, `Basic`, `Token`, `Bot`, `ApiKey`, `Key`, `SSWS`,
   `DPoP`, `Splunk`, `GenieKey`; case-insensitive) and joined by literal separators (space, `:`, `;`,
   `,`). In a `Cookie` header each placeholder MAY also be led by a cookie name and `=`
-  (`<cookie-name>=${…}`, the name an RFC 6265 token), since a cookie name is not a secret. Any other
+  (`<cookie-name>=${…}`, the name an RFC 6265 token), since a cookie name is not a secret, and a cookie with
+  an empty value (`<cookie-name>=` then `;` or the end) holds no literal text, so it is accepted and never
+  offered for conversion. Any other
   literal text is refused by the TUI and the daemon (FR-420), with a message saying which part is
   literal and why; for an unlisted scheme the message says the scheme then has to go inside the secret.
   The list is not open-ended on purpose, so `sk-live-abc ${x}` stays refused. When such a value is
-  typed, the form MUST offer to convert it in one step: the value is replaced by the scheme token (if
-  any) and a `${placeholder}`, and the rest of the typed value moves into that placeholder's masked
-  secret field. The derived placeholder name is the header name lower-cased with `_` mapped to `-`, MUST
+  typed, the form MUST offer to convert it in one step: the value keeps the scheme token (if any), any
+  cookie names and any `${…}` it already holds, its first run of literal text is replaced by a
+  `${placeholder}`, and that literal text moves into the placeholder's masked secret field, so a secret
+  never holds `${…}` (a value with several literal runs converts one run per step; in a Cookie header each
+  cookie's value is its own run, so every cookie name stays in the header, and each offer names its cookie). The derived placeholder name is the header name lower-cased with `_` and any other character a placeholder may not hold mapped to `-`, runs of `-` collapsed and edge `-` trimmed (for a cookie's value, `cookie-<cookie name>`, so `__Host-sid` gives `cookie-host-sid`), MUST
   satisfy FR-408, MUST NOT be `client_secret`, and MUST NOT collide with a placeholder already used by
   another header; on collision or an invalid name the form appends `-2`, `-3`, … and the field stays
   editable, so two credentials are never merged into one secret. There is no *not a credential*
@@ -659,7 +676,10 @@ runtime adds it to recorded defaults).
   the form opens. Runtime-reported headers (FR-402) go through the same rule **in the daemon, before
   the definition read returns them**: a credential header whose value holds literal text (for example
   one added by hand on the host) is returned redacted (scheme token kept, the rest replaced by `••••`)
-  and flagged *literal credential on host*; the literal value is never sent to a client. A header that
+  and flagged *literal credential on host*; the literal value is never sent to a client. A reported
+  entry that is not an HTTP field name followed by a colon (for example `Authorization=Bearer …`) may
+  hold a credential in any part, so it is left out of the read entirely and listed as an unsupported
+  setting (*malformed header*), which a replace must confirm dropping. A header that
   switchboard's record holds as a `${…}` template but that the runtime reports with no placeholder is
   handled by one behaviour flag pinned in the host CLI contract (FR-422), *inspect returns templates*
   or *inspect returns resolved values*. With **templates** (the default until a real host confirms
@@ -678,8 +698,9 @@ runtime adds it to recorded defaults).
   header in switchboard's record only in redacted, flagged form. The stored definition and the
   definition read for the edit form therefore never hold a credential header's literal value. **URL query parameters and host-command arguments** are not covered by this
   rule, because the runtime offers no `${…}` substitution for host-command arguments and a URL cannot
-  hold a header. When the URL has a query parameter, or the arguments a flag, whose name segment is one
-  of the credential words above or `sig`/`signature`, the form MUST warn before saving that the value
+  hold a header. When the URL has a query parameter, or the arguments a flag or a positional
+  `NAME=value` assignment, whose name segment matches the credential words above or is `sig`/`signature`,
+  or the URL carries user info (`https://user:token@host/…`), the form MUST warn before saving that the value
   is stored in plain text in switchboard's record and served to every connected client, and point to
   placeholder headers (remote) or environment-based secrets (host command). It does not refuse.
 - **FR-424**: While an authorization of a server name is in progress, the daemon MUST refuse, with no
