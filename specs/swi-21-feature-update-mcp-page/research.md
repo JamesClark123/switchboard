@@ -102,7 +102,9 @@ its name in `literal_on_host`. Any save that would re-register while such a head
 with `INVALID_ARGUMENT` by the daemon (not only the TUI), so the host's credential is never replaced by `••••`.
 This applies to `LITERAL_ON_HOST` **only**. A `RESOLVED_UNCHECKABLE` header (when *inspect returns resolved
 values*) is pre-filled with the record's `${…}` template, is never redacted, and is accepted on any save,
-including a re-registering one, which registers the template (FR-423). The TUI shows the "cannot be checked"
+including a re-registering one, which registers the template (FR-423). In `classify` (and the R6 comparison) it
+counts as *not reported*: it is compared with the record's template, never with the host's resolved value, so it
+triggers a re-registration only when the developer edits it (FR-403). The TUI shows the "cannot be checked"
 warning before such a save.
 
 **Authorization warning**: `confirm_discard_authorization` is required for a replace unless the auth state is

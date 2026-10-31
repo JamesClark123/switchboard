@@ -187,7 +187,8 @@ unchanged.
   `CheckCredentialValue`, accepted only on a save that does not re-register (persisted redacted, name in
   `literal_on_host`), and refused `INVALID_ARGUMENT` on any re-registering save. Tests: a mark-only save with a
   redacted header runs no `rm`/`add`; a URL change with one is refused; the argv log never holds `••••`; a `RESOLVED_UNCHECKABLE` header's
-  template is accepted on a re-registering save.
+  template is accepted on a re-registering save, and is compared with the record's template in `classify`: with
+  `inspectReturnsTemplates = false`, a mark-only save of a server with a resolved header runs no `rm`/`add`.
   Failure-injection tests for each branch with the scripted fake `sbx`.
 - [ ] T022 [US1] `M/pending.go` (research R8): `holdPending` on a replace that ends `NOT_REGISTERED` (mark moved
   out of `marks`; `previous` = last live definition; revision+1), `Manager.CancelPending(ctx, name, rev)`
