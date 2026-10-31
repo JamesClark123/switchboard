@@ -765,3 +765,32 @@ func hasFlag(v *pb.McpDefinitionView, field string, kind pb.McpFieldFlag_Kind) b
 	}
 	return false
 }
+
+// T045 / SC-005: one-time scopes go to `mcp auth` only; the recorded
+// definition and its default scopes are unchanged.
+func TestAuthorizeOneTimeScopesLeaveTheRecord(t *testing.T) {
+	e := newSaveEnv(t)
+	d := remote("https://x/mcp")
+	d.Scopes = []string{"read"}
+	e.add("gh", d, false, nil)
+	ctx := context.Background()
+	if err := e.m.Authorize(ctx, "gh", []string{"a"}, true, nil); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("both = %v", err)
+	}
+	if err := e.m.Authorize(ctx, "gh", []string{"a b"}, false, nil); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("bad scope = %v", err)
+	}
+	e.clearLog()
+	if err := e.m.Authorize(ctx, "gh", []string{"admin"}, false, func(*pb.McpAuthProgress) {}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.Authorize(ctx, "gh", nil, true, func(*pb.McpAuthProgress) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !has(e.argv(), "mcp auth gh --scope admin") || !has(e.argv(), "mcp auth gh --no-scope") {
+		t.Errorf("argv = %v", e.argv())
+	}
+	if got := e.settings().GetDefinitions()["gh"].GetScopes(); strings.Join(got, ",") != "read" {
+		t.Errorf("recorded scopes = %v", got)
+	}
+}
