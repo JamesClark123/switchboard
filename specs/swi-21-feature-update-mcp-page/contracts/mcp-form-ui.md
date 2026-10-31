@@ -76,8 +76,12 @@ was (no reload) and re-lists the servers, so a leftover's row shows `recovering 
 
 A save refused `BEING_REPLACED` (the form was opened just before another client's save of the server started)
 keeps the form and every value as they were (no reload), shows the message on the status line and re-lists, so
-the row shows `saving…`. A later save from the same form is usually refused `STALE_CHANGED` once the other save
-lands, and then reloads in place by the FR-404 rules (edited fields keep the developer's values).
+the row shows `saving…`. A later save from the same form is refused `STALE_CHANGED` and reloads in place by the
+FR-404 rules (edited fields keep the developer's values) **only when the other save re-registered the server**.
+When the other save was switchboard-only (mark and/or secrets, `recording`), the fingerprint (R5) still matches,
+so the later save goes through with the form's mark, which may revert the other save's mark change without a
+warning. That is the same last-writer-wins on the mark as two saves in sequence (FR-404 covers the definition,
+not the mark); fingerprinting the mark is a deliberate scope cut.
 
 A save that fails `UNAVAILABLE` (the save ran, but the daemon has not recorded the result yet and keeps
 retrying the write; the message says whether the host was changed) closes the form, because saving again is pointless, and shows the message as a status line.

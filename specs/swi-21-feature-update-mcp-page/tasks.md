@@ -92,12 +92,16 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   `ErrAuthInProgress` if `inflight[name]` is set, checked in the same `m.mu` hold as the take). In that same hold, before waiting, `lockName` refuses with
 `ErrBeingReplaced` (`BEING_REPLACED`, "a save of this server is still running; try again later") while the
 state map shows the name `saving` or `recording`. `nameLock` also carries a `refuse chan struct{}`: the holder
-closes it in the `stateMu` update that marks the name `saving` or `recording`, unlock replaces it, and a waiting
+closes it in the `stateMu` update that marks the name `saving` or `recording`, unlock replaces it **only if it
+was closed** (an unclosed one is kept, so waiters that queued under an earlier holder still select on the current
+channel), and a waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
 return `BEING_REPLACED` without blocking once the in-progress record is written, and the waiter count drops to
-zero (so `Authorize` is refused only for the lock held). Add
+zero (so `Authorize` is refused only for the lock held); holder A unlocks normally with a `Save` and a `Remove`
+queued behind it, the `Save` takes the slot and becomes `saving`, and the `Remove` returns `BEING_REPLACED`
+without blocking. Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings
@@ -235,7 +239,7 @@ unchanged.
   and one `mcp_gateway_changed` without an outcome, then keeps the lock and re-runs the **same** write every 30 s on
   the daemon context until it lands or the daemon stops (then the record is a start-up leftover). This applies to
   every save: a switchboard-only save (no in-progress record) sets the state map's `recording` flag and closes
-  the lock's `refuse` channel before returning, with the "the save ran but its result (mark, re-bind state)
+  the lock's `refuse` channel before it emits the `UNAVAILABLE` events (and so before returning), with the "the save ran but its result (mark, re-bind state)
   could not be recorded yet; retrying" message naming the stored secrets (a registration change keeps "the host
   was changed …"); its tail clears `recording`, and a daemon stop loses only its mark and `rebind_pending`
   (research R2 *Failed `persist`*). The write is a
@@ -279,8 +283,8 @@ unchanged.
   `onReplaceEnded` is called once, after it. A switchboard-only save (mark change plus a secret, and one with a
   failed identity clear) whose `persist` fails 3 times ⇒ `UNAVAILABLE` with the "the save ran but its result …"
   message (never "the host was changed") naming the stored secret, the state map shows `recording` (not
-  `saving`, no in-progress record, `ResolveAttach` does not skip the server), `List` reports
-  `save_in_progress`, a `RemoveMcpServer` already queued on the lock and a new one both return
+  `saving`, no in-progress record, `ResolveAttach` does not skip the server), a `List` triggered by its
+  `mcp_gateway_changed` already reports `save_in_progress`, a `RemoveMcpServer` already queued on the lock and a new one both return
   `BEING_REPLACED` without blocking, `SetMcpServerDefault` is refused `BEING_REPLACED`, and once the registry
   accepts writes the mark and `rebind_pending` are recorded and `recording` clears. The recovered error
   (start-up leftover) names `planned_overwritten_secrets`.
@@ -341,7 +345,9 @@ unchanged.
   keep the form and its values (no reload) and re-list; `UNAVAILABLE` closes the form with the message, and the row shows `saving…` until the next
   `mcp_gateway_changed`, with no outcome panel or follow-up offers for that save when its result lands
   later (contracts/mcp-form-ui.md). Tests for each confirm and its back-out, for `UNVERIFIED`
-  with each of its two messages, for `BEING_REPLACED` (form and typed secrets kept, view re-listed), and for
+  with each of its two messages, for `BEING_REPLACED` (form and typed secrets kept, view re-listed; after the
+  other save lands, a re-save from the kept form is `STALE_CHANGED` when that save re-registered and goes through
+  with the form's mark when it was switchboard-only), and for
   `UNAVAILABLE`.
 - [ ] T029 [US1] Outcome panel and follow-ups in `UI/mcp.go`: render `McpSaveOutcome` (state line, host
   messages verbatim, secret lists, FR-419 list with the skipped and exclusive notes), then the FR-405

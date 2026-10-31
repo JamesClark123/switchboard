@@ -137,7 +137,10 @@ last until the settings store recovers. A taker that is **already waiting** when
 `recording` (it queued during the save's steps 1–4: host reads, the pending-replace pre-step, the snapshot and
 `classify`, which can take tens of seconds on a slow host) is refused the same way at that moment: each
 `nameLock` carries a `refuse` channel, which the holder closes in the same `stateMu` update that marks the name
-`saving` or `recording`, and a new channel replaces it on unlock. `lockName` waits on `select { slot,
+`saving` or `recording`. Unlock replaces the channel **only if it was closed**: a channel nobody closed stays, so
+every waiter, including one that queued under an earlier holder, selects on the channel the next holder closes.
+A closed one has no live waiters (each was refused when it closed, and a taker arriving after the close was
+refused by the state-map check above). `lockName` waits on `select { slot,
 ctx.Done(), refuse }` and returns `ErrBeingReplaced` (dropping its waiter count) when `refuse` closes. So no
 taker waits on a save that has written its record or entered the persist retry, whether it arrived before or
 after, and a queued `Save` (whose context is the detached `saveTimeout` one, not the client's) never sits on the
@@ -163,7 +166,8 @@ instead of waiting (above), so nothing queues on the lock however long this last
 save: a registration change says "the host was changed but the result could not be recorded yet; retrying". A
 **switchboard-only save** (FR-403: mark and/or secrets, possibly with an FR-415 identity clear) never wrote an
 in-progress record, so before returning it sets the state map's `recording` flag (closing the lock's `refuse`
-channel), and says "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying",
+channel) **before** it emits the `UNAVAILABLE`-path events above, the same order as `saving` (step 4a) for a
+registration change, so a client that re-lists on that `mcp_gateway_changed` already sees `save_in_progress`; it says "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying",
 naming the secrets it stored. It runs the same keep-the-lock retry of the same per-name mutate func, and its
 post-`persist` tail clears `recording`. `List` reports the name `save_in_progress` meanwhile, so the TUI shows
 `saving…`. If the daemon stops first, there is no record to recover: the stored secrets stand, the mark keeps its
