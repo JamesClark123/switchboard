@@ -550,14 +550,18 @@ runtime adds it to recorded defaults).
   definition MUST be marked **client re-bind pending**, and the form MUST warn before saving that the
   runtime will refuse to authorize until the new client's secret is entered. A later save that stores a
   client secret for a server marked *re-bind pending*, including a secrets-only save (FR-403), MUST then
-  clear the binding and the mark. For a server switchboard has no definition of (so no *re-bind
+  clear the binding and the mark; a failed clear that the re-check below does not count as success
+  keeps the mark. For a server switchboard has no definition of (so no *re-bind
   pending* flag can be known), a save that stores a client secret MUST clear the binding as well.
   The edit form MUST show the pending state next to the client-secret
-  field. A failed clear of the binding is re-checked against the host's secret list under the same
-  lock and counts as success if the identity record is not listed (a binding that never existed, or
-  was already removed, is already cleared, so the daemon does not rely on recognising the runtime's
-  *not found* answer). Any other failure MUST be shown verbatim, without rolling back the
-  registration.
+  field. A failed clear of the binding is re-checked with a fresh read of the host's secret list
+  (not FR-404's snapshot) under the same lock and counts as success only if the list is read and the
+  identity record is not in it (a binding that never existed, or was already removed, is already
+  cleared, so the daemon does not rely on recognising the runtime's *not found* answer). If the record
+  is still listed or the list cannot be read, the failure MUST be shown verbatim, naming
+  `mcp:<server>:client_secret:identity` as the record to remove in the Secrets view or the host CLI,
+  without rolling back the registration, and the server MUST be marked (or stay) *client re-bind
+  pending*.
 
 ### Scopes
 
@@ -596,7 +600,8 @@ runtime adds it to recorded defaults).
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
   `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
-  headers (FR-402), whether a killed `mcp add` / `mcp rm` can still complete on the host (FR-406),
+  headers (FR-402), whether the secret list shows the `:identity` record (FR-415, the round-15
+  known limitation), whether a killed `mcp add` / `mcp rm` can still complete on the host (FR-406),
   whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
   secret removal, the pending-replace state carried by the server list and the gateway-changed event
@@ -727,7 +732,8 @@ runtime adds it to recorded defaults).
   reads (`mcp:<server>:<placeholder>` / `mcp:<server>:client_secret`). There is no path where the
   developer types a secret name by hand.
 - **SC-004**: After a client ID change saved with the new client's secret, the next authorization
-  succeeds without the developer running any host command (the identity binding is handled), and the
+  succeeds without the developer running any host command (the identity binding is handled; a failed
+  clear the secret list cannot see is the round-15 known limitation), and the
   previous client's secret is never sent for the new client. After a failed or timed-out add of a
   replace, no client secret or header secret that the failed save stored is used by a retry (created
   and overwritten ones are removed, and one whose removal failed is removed by the retry unless
@@ -816,7 +822,7 @@ runtime adds it to recorded defaults).
   the cost of a named leftover, which arises only when the removal fails on Cancel (or cannot be
   confirmed) and stays on the host until the developer removes it.
 - Known limitation (review round 15): a failed clear of the identity binding counts as done when
-  the secret list does not show the `:identity` record (FR-415). If a real host shows the list never
-  shows that record, a genuine failed clear is not reported; the runtime then refuses to authorize
+  the secret list does not show the `:identity` record (FR-415). If the real-host run finds that the
+  list never shows that record, a genuine failed clear is not reported; the runtime then refuses to authorize
   the new client, and the developer removes `mcp:<server>:client_secret:identity` in the Secrets
   view or the host CLI. The real-host run (FR-422, *Assumptions*) checks whether the list shows it.
