@@ -275,6 +275,28 @@ func TestMcpURLEditConfirmsAndBacksOut(t *testing.T) {
 	}
 }
 
+// A save's relist that lands while its FR-405 authorize offer is open is
+// applied, not dropped: otherwise the view keeps the pre-save rows (a Retry's
+// pending row stays and e does nothing).
+func TestMcpRelistBehindFollowupConfirmIsApplied(t *testing.T) {
+	out := &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_REGISTERED,
+		Server: &pb.McpServer{Name: "linear", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, AuthState: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}}
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+		mcpSaveResults: []mcpSaveResult{{out: out}}}
+	m := openEdit(t, editModel(t, d))
+	m = keyIn(m, ctrlS())
+	m = keyIn(m, press("x"))
+	if m.screen != screenConfirm || !strings.Contains(m.View(), "Authorize linear now?") {
+		t.Fatalf("expected the authorize offer:\n%s", m.View())
+	}
+	fresh := []*pb.McpServer{{Name: "notion", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE}}
+	m, _ = update(m, mcpLoadedMsg{host: m.mcpView.host, servers: fresh})
+	m = keyIn(m, press("n"))
+	if m.screen != screenMcp || len(m.mcpView.servers) != 1 || m.mcpView.servers[0].GetName() != "notion" {
+		t.Fatalf("the relist behind the offer was dropped: screen %v servers %v", m.screen, m.mcpView.servers)
+	}
+}
+
 func TestMcpAddHostCommandAcknowledges(t *testing.T) {
 	d := &fakeDaemon{}
 	m := editModel(t, d)

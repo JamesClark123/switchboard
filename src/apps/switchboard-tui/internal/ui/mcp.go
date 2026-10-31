@@ -249,7 +249,10 @@ func (m Model) mcpLoadCmd(d Daemon, host string) tea.Cmd {
 }
 
 func (m Model) applyMcpLoaded(msg mcpLoadedMsg) (tea.Model, tea.Cmd) {
-	if m.screen != screenMcp || m.mcpView.host != msg.host {
+	// A follow-up confirm over the view (FR-405/FR-413 after a save) still
+	// takes the list: a save's relist landing behind it must not be lost.
+	onView := m.screen == screenMcp || m.screen == screenConfirm && m.confirm.returnTo == screenMcp
+	if !onView || m.mcpView.host != msg.host {
 		return m, nil
 	}
 	m.mcpView.loading = false
