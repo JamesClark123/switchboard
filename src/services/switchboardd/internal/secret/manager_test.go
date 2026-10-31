@@ -238,3 +238,51 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestQuietOpsAndListGlobal(t *testing.T) {
+	e := newEnv(t, `  set) cat > STDIN_FILE; [ "$3" = "mcp:s:bad" ] && { echo "denied" >&2; exit 1; }; echo ok ;;
+  rm) [ "$3" = "mcp:s:gone" ] && { echo "secret not found" >&2; exit 1; }; echo removed ;;
+  ls) printf '`+strings.ReplaceAll(docsTable, "\n", `\n`)+`' ;;`)
+	ctx := context.Background()
+	names, err := e.m.ListGlobal(ctx)
+	if err != nil || !names["github"] || names["anthropic"] || names["ghcr.io"] {
+		t.Fatalf("ListGlobal = %v, %v (global service secrets only)", names, err)
+	}
+	if err := e.m.SetQuiet(ctx, "mcp:s:k", "v-quiet-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(e.stdin); string(got) != "v-quiet-1\n" {
+		t.Errorf("stdin = %q", got)
+	}
+	err = e.m.SetQuiet(ctx, "mcp:s:bad", "v-quiet-2")
+	if err == nil || strings.Contains(err.Error(), "v-quiet-2") || !strings.Contains(err.Error(), "denied") {
+		t.Errorf("SetQuiet failure = %v (verbatim, never the value)", err)
+	}
+	for _, bad := range []string{"", "a\nb"} {
+		if err := e.m.SetQuiet(ctx, "mcp:s:k", bad); !errors.Is(err, ErrInvalidArgs) {
+			t.Errorf("SetQuiet(%q) = %v", bad, err)
+		}
+	}
+	if err := e.m.SetQuiet(ctx, "bad name", "x"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("bad name = %v", err)
+	}
+	if out, err := e.m.RemoveQuiet(ctx, "mcp:s:k"); err != nil || !strings.Contains(out, "removed") {
+		t.Errorf("RemoveQuiet = %q, %v", out, err)
+	}
+	if out, err := e.m.RemoveQuiet(ctx, "mcp:s:gone"); err == nil || !LooksNotFound(out) {
+		t.Errorf("RemoveQuiet failure = %q, %v", out, err)
+	}
+	if _, err := e.m.RemoveQuiet(ctx, "bad name"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("bad name = %v", err)
+	}
+	if !contains(e.calls(t), "secret rm mcp:s:k -f") || !contains(e.calls(t), "secret set mcp:s:k --force") {
+		t.Errorf("argv = %v", e.calls(t))
+	}
+	if e.events != 0 {
+		t.Errorf("quiet ops emitted %d events", e.events)
+	}
+	e.m.EmitChanged()
+	if e.events != 1 {
+		t.Errorf("EmitChanged: events = %d", e.events)
+	}
+}

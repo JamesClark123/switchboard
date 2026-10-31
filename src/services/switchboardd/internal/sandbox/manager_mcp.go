@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -117,6 +119,8 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 		if !slices.Contains(s.GetMcpServers(), name) {
 			s.McpServers = append(s.McpServers, name)
 		}
+		// An attach settles a skipped-at-launch entry (SWI-21 FR-425).
+		s.McpSkipped = slices.DeleteFunc(s.McpSkipped, func(e *pb.McpSkippedServer) bool { return e.GetName() == name })
 		if s.GetMcpAttachMode() == pb.McpAttachMode_MCP_ATTACH_MODE_UNSPECIFIED {
 			s.McpAttachMode = pb.McpAttachMode_MCP_ATTACH_MODE_ADDITIVE
 		}
@@ -261,4 +265,74 @@ func attachableState(st pb.SandboxState) error {
 	}
 	label := strings.ToLower(strings.TrimPrefix(st.String(), "SANDBOX_STATE_"))
 	return fmt.Errorf("%w: the sandbox is %s (MCP servers can be attached only while running or stopped)", ErrIneligibleState, label)
+}
+
+// --- SWI-21 (FR-425, research R12): servers skipped while being replaced ---
+
+// skippedEntries is the launch's Sandbox.mcp_skipped, computed inside the
+// record write: ReplaceState reads only the MCP manager's leaf state map, so a
+// replace that ended before this write records its post-sweep state (the late
+// launch race).
+func skippedEntries(att *McpAttach) []*pb.McpSkippedServer {
+	if att == nil {
+		return nil
+	}
+	var out []*pb.McpSkippedServer
+	for _, name := range att.BeingReplaced {
+		st := mcp.BeingReplaced
+		if att.ReplaceState != nil {
+			st = att.ReplaceState(name)
+		}
+		switch st {
+		case mcp.BeingReplaced:
+			out = append(out, &pb.McpSkippedServer{Name: name, State: pb.McpSkipState_MCP_SKIP_STATE_SKIPPED_BEING_REPLACED})
+		case mcp.EndedRegistered:
+			out = append(out, &pb.McpSkippedServer{Name: name, State: pb.McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH})
+		}
+	}
+	return out
+}
+
+// errNoSweep aborts a sweep write that would change nothing.
+var errNoSweep = errors.New("no skipped entry")
+
+// SweepMcpSkipped is the MCP manager's onReplaceEnded hook: a replace of name
+// ended, so every SKIPPED_BEING_REPLACED entry becomes NOT_ATTACHED_AT_LAUNCH
+// (registered) or is cleared (cancelled / registered by another path), and the
+// change is emitted. Each sandbox is re-read in its own write transaction, so a
+// launch that committed its entry first is always seen.
+func (m *Manager) SweepMcpSkipped(name string, registered bool) {
+	all, err := m.store.List()
+	if err != nil {
+		log.Printf("[warn] mcp sweep %s: %v", name, err)
+		return
+	}
+	for _, sb := range all {
+		out, err := m.store.Update(sb.GetId(), func(s *pb.Sandbox) error {
+			changed := false
+			kept := s.McpSkipped[:0]
+			for _, e := range s.McpSkipped {
+				if e.GetName() != name {
+					kept = append(kept, e)
+					continue
+				}
+				changed = true
+				if registered {
+					e.State = pb.McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH
+					kept = append(kept, e)
+				}
+			}
+			if !changed {
+				return errNoSweep
+			}
+			s.McpSkipped = kept
+			s.UpdatedAt = timestamppb.Now()
+			return nil
+		})
+		if err == nil {
+			m.emit(out)
+		} else if !errors.Is(err, errNoSweep) && !errors.Is(err, registry.ErrNotFound) {
+			log.Printf("[warn] mcp sweep %s on %s: %v", name, sb.GetId(), err)
+		}
+	}
 }

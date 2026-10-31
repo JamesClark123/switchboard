@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -250,4 +251,156 @@ func callbackTarget(raw string, port uint32) (string, error) {
 	u.Scheme = "http"
 	u.Host = net.JoinHostPort("localhost", strconv.Itoa(int(port)))
 	return u.String(), nil
+}
+
+// --- SWI-21: inspect + auth-status scopes (research R11) ---
+
+// inspectInfo is what `sbx mcp inspect <name> --json` positively reported. A
+// nil pointer / unset flag is *not reported* (FR-402). The schema is
+// undocumented, so every key is optional.
+type inspectInfo struct {
+	headers         []string // "Name: value" as reported (raw, never sent to clients)
+	headersReported bool
+	url, clientID   *string
+	authServer      *string
+	resource        string
+	image           string
+	kind            string
+	skipSSRF        bool
+}
+
+// parseInspect reads the inspect JSON tolerantly: an object, or an array whose
+// entry for name (or only entry) is one. Unknown or invalid JSON reports nothing.
+func parseInspect(out, name string) inspectInfo {
+	var info inspectInfo
+	raw := pickObject(out, name)
+	if raw == nil {
+		return info
+	}
+	str := func(keys ...string) *string {
+		for _, k := range keys {
+			if s, ok := raw[k].(string); ok {
+				return &s
+			}
+		}
+		return nil
+	}
+	info.url = str("url", "URL")
+	info.clientID = str("client_id", "clientId")
+	info.authServer = str("oauth_authorization_server", "oauthAuthorizationServer", "authorization_server")
+	if s := str("resource"); s != nil {
+		info.resource = *s
+	}
+	if s := str("image"); s != nil {
+		info.image = *s
+	}
+	if s := str("type", "kind"); s != nil {
+		info.kind = *s
+	}
+	if b, ok := raw["skip_ssrf_check"].(bool); ok {
+		info.skipSSRF = b
+	}
+	if h, ok := raw["headers"]; ok {
+		info.headers, info.headersReported = parseInspectHeaders(h)
+		if len(info.headers) == 0 && !inspectReportsHeaders {
+			info.headersReported = false
+		}
+	}
+	return info
+}
+
+// pickObject decodes out as an object, or picks name's entry (or the only one)
+// from an array of objects.
+func pickObject(out, name string) map[string]any {
+	trimmed := strings.TrimSpace(out)
+	var obj map[string]any
+	if json.Unmarshal([]byte(trimmed), &obj) == nil {
+		return obj
+	}
+	var list []map[string]any
+	if json.Unmarshal([]byte(trimmed), &list) != nil {
+		return nil
+	}
+	for _, e := range list {
+		for _, k := range []string{"server_name", "name"} {
+			if s, _ := e[k].(string); s == name {
+				return e
+			}
+		}
+	}
+	if len(list) == 1 {
+		return list[0]
+	}
+	return nil
+}
+
+// parseInspectHeaders accepts a list of "Name: value" strings, a list of
+// {name,value} objects, or a name → value object.
+func parseInspectHeaders(v any) ([]string, bool) {
+	var out []string
+	switch h := v.(type) {
+	case []any:
+		for _, e := range h {
+			switch x := e.(type) {
+			case string:
+				out = append(out, x)
+			case map[string]any:
+				n, _ := x["name"].(string)
+				val, _ := x["value"].(string)
+				if n == "" {
+					return nil, false
+				}
+				out = append(out, n+": "+val)
+			default:
+				return nil, false
+			}
+		}
+	case map[string]any:
+		for n, e := range h {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, n+": "+s)
+		}
+		sort.Strings(out)
+	default:
+		return nil, false
+	}
+	return out, true
+}
+
+// parseAuthStatusScopes reads the recorded default scopes from `sbx mcp auth
+// status <name> --json` when present (`default_scopes`, `recorded_scopes` or
+// `scopes.default`). The 2026-10-10 real host printed only server_name +
+// status, which reports nothing.
+func parseAuthStatusScopes(out, name string) ([]string, bool) {
+	raw := pickObject(out, name)
+	if raw == nil {
+		return nil, false
+	}
+	list := func(v any) ([]string, bool) {
+		a, ok := v.([]any)
+		if !ok {
+			return nil, false
+		}
+		var s []string
+		for _, e := range a {
+			if str, ok := e.(string); ok {
+				s = append(s, str)
+			}
+		}
+		return s, true
+	}
+	for _, k := range []string{"default_scopes", "recorded_scopes"} {
+		if s, ok := list(raw[k]); ok {
+			return s, len(s) > 0 || authStatusReportsScopes
+		}
+	}
+	if sc, ok := raw["scopes"].(map[string]any); ok {
+		if s, ok := list(sc["default"]); ok {
+			return s, len(s) > 0 || authStatusReportsScopes
+		}
+	}
+	return nil, false
 }

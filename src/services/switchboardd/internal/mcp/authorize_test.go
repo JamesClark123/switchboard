@@ -84,7 +84,7 @@ func TestAuthorizeStreamsURLThenCancelKillsTheGroup(t *testing.T) {
 	fr := newFrames()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- m.Authorize(ctx, "x", fr.on) }()
+	go func() { done <- m.Authorize(ctx, "x", nil, false, fr.on) }()
 	select {
 	case u := <-fr.url:
 		if u != "https://example.test/auth?s=1" {
@@ -94,7 +94,7 @@ func TestAuthorizeStreamsURLThenCancelKillsTheGroup(t *testing.T) {
 		t.Fatal("no URL frame within 5s")
 	}
 	// A second wait for the same name is refused while this one runs.
-	if err := m.Authorize(ctx, "x", nil); !errors.Is(err, ErrAuthInProgress) {
+	if err := m.Authorize(ctx, "x", nil, false, nil); !errors.Is(err, ErrAuthInProgress) {
 		t.Errorf("concurrent authorize err = %v, want ErrAuthInProgress", err)
 	}
 	cancel()
@@ -124,7 +124,7 @@ func TestAuthorizeStreamsURLThenCancelKillsTheGroup(t *testing.T) {
 	// The name is free again (an already-cancelled context keeps this instant).
 	gone, cancelGone := context.WithCancel(context.Background())
 	cancelGone()
-	if err := m.Authorize(gone, "x", nil); errors.Is(err, ErrAuthInProgress) {
+	if err := m.Authorize(gone, "x", nil, false, nil); errors.Is(err, ErrAuthInProgress) {
 		t.Error("in-flight guard should release after the wait ends")
 	}
 }
@@ -132,7 +132,7 @@ func TestAuthorizeStreamsURLThenCancelKillsTheGroup(t *testing.T) {
 func TestAuthorizeSuccessAndFailure(t *testing.T) {
 	m, _, events := authStub(t, "echo 'MCP server \"x\" authorized'; exit 0")
 	fr := newFrames()
-	if err := m.Authorize(context.Background(), "x", fr.on); err != nil {
+	if err := m.Authorize(context.Background(), "x", nil, false, fr.on); err != nil {
 		t.Fatal(err)
 	}
 	if fr.done == nil || *fr.done != pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED || len(fr.errs) != 0 {
@@ -144,7 +144,7 @@ func TestAuthorizeSuccessAndFailure(t *testing.T) {
 
 	m2, _, events2 := authStub(t, "echo 'authorization denied by provider' >&2; exit 2")
 	fr2 := newFrames()
-	if err := m2.Authorize(context.Background(), "x", fr2.on); err != nil {
+	if err := m2.Authorize(context.Background(), "x", nil, false, fr2.on); err != nil {
 		t.Fatalf("a non-zero exit is reported in frames, not returned: %v", err)
 	}
 	if fr2.done == nil || *fr2.done != pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED {
@@ -168,7 +168,7 @@ func TestAuthorizeTimeoutKillsAndReportsUnauthorized(t *testing.T) {
 	m, pidfile, _ := authStub(t, "sleep 30")
 	fr := newFrames()
 	start := time.Now()
-	if err := m.Authorize(context.Background(), "x", fr.on); err != nil {
+	if err := m.Authorize(context.Background(), "x", nil, false, fr.on); err != nil {
 		t.Fatalf("timeout should not be returned as an error: %v", err)
 	}
 	if time.Since(start) > 5*time.Second {
@@ -187,7 +187,7 @@ func TestAuthorizeStartFailureIsReturned(t *testing.T) {
 	}
 	defer func() { _ = reg.Close() }()
 	m := NewManager(&CLI{Bin: filepath.Join(t.TempDir(), "missing")}, reg, "h", nil)
-	if err := m.Authorize(context.Background(), "x", nil); err == nil {
+	if err := m.Authorize(context.Background(), "x", nil, false, nil); err == nil {
 		t.Error("a CLI that cannot start must be reported as an error")
 	}
 }

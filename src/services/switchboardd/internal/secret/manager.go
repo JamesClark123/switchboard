@@ -119,3 +119,53 @@ func (m *Manager) emitChanged() {
 	}
 	m.emit(&pb.Event{Event: &pb.Event_SecretsChanged_{SecretsChanged: &pb.Event_SecretsChanged{HostId: m.hostID}}})
 }
+
+// --- SWI-21: the MCP form's save (FR-409, FR-410, FR-421) ---
+//
+// The MCP manager stores and removes a server's secrets inside one save and
+// emits secrets_changed once at the end, so these variants skip emitChanged.
+
+// ListGlobal returns the names stored in the global scope only (FR-409): a
+// sandbox-scoped secret of the same name does not count.
+func (m *Manager) ListGlobal(ctx context.Context) (map[string]bool, error) {
+	all, err := m.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, s := range all {
+		if s.GetScope() == "global" && s.GetType() == "service" {
+			out[s.GetName()] = true
+		}
+	}
+	return out, nil
+}
+
+// SetQuiet stores a global service secret without emitting. The value goes to
+// stdin only; an error never carries it.
+func (m *Manager) SetQuiet(ctx context.Context, name, value string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("%w: secret name %q is not valid", ErrInvalidArgs, name)
+	}
+	if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("%w: the value of %s must be a single non-empty line", ErrInvalidArgs, name)
+	}
+	mctx, cancel := context.WithTimeout(ctx, mutateTimeout)
+	defer cancel()
+	_, err := m.cli.run(mctx, value+"\n", argvSet(name, "")...)
+	return err
+}
+
+// RemoveQuiet removes a global service secret without emitting and returns the
+// CLI output, so the caller can re-check a failure against ListGlobal.
+func (m *Manager) RemoveQuiet(ctx context.Context, name string) (string, error) {
+	if !nameRe.MatchString(name) {
+		return "", fmt.Errorf("%w: secret name %q is not valid", ErrInvalidArgs, name)
+	}
+	mctx, cancel := context.WithTimeout(ctx, mutateTimeout)
+	defer cancel()
+	return m.cli.run(mctx, "", argvRemove(name, "", "")...)
+}
+
+// EmitChanged emits one secrets_changed (after a save's quiet mutations).
+func (m *Manager) EmitChanged() { m.emitChanged() }

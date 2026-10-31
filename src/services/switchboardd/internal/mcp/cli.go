@@ -40,13 +40,29 @@ func argvAuthStatus(name string) []string { return []string{"mcp", "auth", "stat
 // argvRemove always passes --force: a real host (2026-10-10) prompts
 // `Remove MCP server "<name>" and its OAuth credential? (y/N)` and the daemon
 // runs it with no terminal, so an unflagged rm would abort or hang.
-func argvRemove(name string) []string    { return []string{"mcp", "rm", name, "--force"} }
-func argvAuthorize(name string) []string { return []string{"mcp", "auth", name} }
+func argvRemove(name string) []string { return []string{"mcp", "rm", name, "--force"} }
+
+// argvAuthorize is `sbx mcp auth <name>`, with one-time scopes (`--scope` each,
+// requested exactly as given) or `--no-scope`, never both (SWI-21 FR-418).
+func argvAuthorize(name string, scopes []string, noScope bool) []string {
+	a := []string{"mcp", "auth", name}
+	if noScope {
+		return append(a, "--no-scope")
+	}
+	for _, s := range scopes {
+		a = append(a, "--scope", s)
+	}
+	return a
+}
+
+// argvInspect reads one server's details (SWI-21 research R11). The JSON schema
+// is undocumented; parseInspect reads it tolerantly.
+func argvInspect(name string) []string { return []string{"mcp", "inspect", name, "--json"} }
 
 // argvVersion is `sbx version` (confirmed on a real host: it prints
 // "sbx version: v0.47.0 <commit>"); there is no --version flag.
 func argvVersion() []string { return []string{"version"} }
-func argvAddRemote(name, url string, headers []string, clientID, authServer string) []string {
+func argvAddRemote(name, url string, headers []string, clientID, authServer string, scopes []string) []string {
 	// Always --skip-auth: authorization is the separate Authorize step (R2).
 	// Each custom header is one documented `--header 'Name: value'` flag
 	// (FR-103); credential headers carry a `${placeholder}` the gateway fills
@@ -64,6 +80,10 @@ func argvAddRemote(name, url string, headers []string, clientID, authServer stri
 	}
 	if authServer != "" {
 		a = append(a, "--oauth-authorization-server", authServer)
+	}
+	// Default OAuth scopes, one `--scope` each (SWI-21 FR-416).
+	for _, s := range scopes {
+		a = append(a, "--scope", s)
 	}
 	return append(a, "--skip-auth")
 }
@@ -99,7 +119,7 @@ func argvUnload(name, sandbox string) []string {
 func (c *CLI) AddRemote(ctx context.Context, name, url string) (string, error) {
 	mctx, cancel := context.WithTimeout(ctx, time.Duration(mutateTimeout))
 	defer cancel()
-	return c.run(mctx, argvAddRemote(name, url, nil, "", "")...)
+	return c.run(mctx, argvAddRemote(name, url, nil, "", "", nil)...)
 }
 
 // Load attaches a registered server to a sandbox live:
@@ -122,6 +142,23 @@ func (c *CLI) Remove(ctx context.Context, name string) (string, error) {
 // status, and the client shows the error verbatim (FR-078).
 func (c *CLI) run(ctx context.Context, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, c.Bin, args...).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out))
+	}
+	return string(out), nil
+}
+
+// runBounded runs a save's `mcp rm` / `mcp add` (SWI-21 research R7): the child
+// gets its own process group, which is killed on the context deadline, and the
+// call returns only after the child has exited, so "the process has exited"
+// holds before any re-check. The combined output is returned; the error never
+// carries stdin (there is none).
+func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	setPgid(cmd)
+	cmd.Cancel = func() error { killPgid(cmd); return nil }
+	cmd.WaitDelay = 2e9 // 2s: bound a lingering pipe read after the group is killed
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out))
 	}
