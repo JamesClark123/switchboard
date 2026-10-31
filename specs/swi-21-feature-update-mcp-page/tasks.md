@@ -130,8 +130,12 @@ exit, driven by cancelling the daemon context during the `persist` retry so the 
 still `saving`; no simulated panic) leaves a fresh channel with `refused` false, a new taker is
 still refused `BEING_REPLACED` by the state-map check while the flag stands, and a later close of the new channel
 does not panic; a panic-path test uses the re-exec pattern (`TestSavePanicCrashes` re-runs the test binary with
-`exec.Command(os.Args[0], "-test.run=TestSavePanicCrashes")` and an env flag; in the child a test hook inside the
-`persist` mutate func calls `m.stateMu.Lock()` and panics with no deferred unlock, and a second child's hook calls
+`exec.Command(os.Args[0], "-test.run=TestSavePanicCrashes", "-test.timeout=1m")` and an env flag; both children
+get the non-zero `-test.timeout` so the runtime always has a live timer and a blocked child hangs instead of exiting
+at once with `all goroutines are asleep - deadlock!`; in the child a test hook inside the `persist` mutate func,
+called first in that func before anything that takes `stateMu` (the lock is not reentrant, so a hook placed after a
+`ReplaceState`-style call would self-deadlock before it panics), calls `m.stateMu.Lock()` and panics with no deferred
+unlock, and a second child's hook calls
 `m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock on a malformed record, so the lock
 is still held when the release runs whatever unlock style production code uses): the parent checks each child
 exits non-zero with `panic:` in stderr within 5 s instead of hanging, so wrapping the release, moving the
