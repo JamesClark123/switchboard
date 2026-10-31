@@ -39,11 +39,15 @@ Group 2 — **Secrets** (rebuilt from group 1 each time it is entered; values ke
   for a confidential client." + status; when the server is marked `rebind pending`: "The old client binding
   may still be in place. Saving with the client secret entered clears it and the mark (for a public client,
   remove the stored secret and its binding record instead)."
-- If secret storage is unavailable: fields disabled with the reason; a save needing a new secret is refused.
+- If secret storage is unavailable: a note with the reason replaces the inputs (huh has no disabled input); a
+  save needing a new secret is refused.
+- Statuses come from `stored_secrets` (also read in add mode with `for_add`), so a placeholder typed after the
+  form opened still shows *set* or *missing*.
 
 ## Literal-credential conversion (FR-423)
 
-On leaving the headers field (and on save) each credential header with literal text opens a `y`-only
+When focus leaves the headers field (tracked from the focused field key; the form is suspended, then rebuilt
+with `reopenForm`), and again on save, each credential header with literal text opens a `y`-only
 prompt: `Authorization: Bearer sk-…` → `Authorization: Bearer ${authorization}` with the literal moved into
 that secret field. Derived names: header name lower-cased, `_`→`-`, suffixed `-2`, `-3`, … on a collision or
 reserved name. Declining leaves the form open with the refusal message.
@@ -62,7 +66,9 @@ text, FR-419 sandbox list (`<sandbox> picks up the new definition after a restar
 overlay`; skipped-at-launch and exclusive-mode notes). Then, in order: FR-413 removal offer (`y`-only, names
 each secret), FR-405 authorize offer (`y` starts the existing authorization modal).
 
-On a failure the form stays open with the edits. On a refusal (`STALE_*`) the form reloads in place and the
+On a failure the form stays open with the edits. Leaving a form that holds a pending replace (after a
+`NOT_REGISTERED` outcome, or in retry mode) opens the same `y`-only Cancel confirmation as `X`; accepting calls
+`CancelMcpPendingReplace`, declining keeps the form. On a refusal (`STALE_*`) the form reloads in place and the
 status line names every dropped secret.
 
 ## Sandbox list / MCP overlay (FR-425)

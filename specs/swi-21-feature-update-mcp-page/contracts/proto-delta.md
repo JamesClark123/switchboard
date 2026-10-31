@@ -46,7 +46,9 @@ message McpPendingReplace {
   uint64 revision = 10;
 }
 
-message GetMcpServerDefinitionRequest { string name = 1; }
+// for_add: only the secret status (stored_secrets, secrets_available) for a name that
+// need not be registered (add mode, R11).
+message GetMcpServerDefinitionRequest { string name = 1; bool for_add = 2; }
 
 message McpFieldFlag {
   enum Kind {
@@ -85,6 +87,9 @@ message McpDefinitionView {
   // unknown when the list cannot be read.
   repeated string pending_removal_failed_listed = 13;
   bool pending_removal_failed_list_unknown = 14;
+  // Every global-scope mcp:<name>:* secret name (never values); the form derives
+  // set/missing for placeholders typed after it opened (FR-409, FR-411).
+  repeated string stored_secrets = 15;
 }
 
 message SaveMcpServerRequest {
@@ -171,10 +176,17 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Auth in progress (FR-424) | `FAILED_PRECONDITION` | `AUTH_IN_PROGRESS` |
 | Authorize while saving / pending | `FAILED_PRECONDITION` | `BEING_REPLACED` |
 | Add of a name with a pending replace | `FAILED_PRECONDITION` | `PENDING_EXISTS` |
-| Edit of a name no longer listed | `NOT_FOUND` | `GONE` |
+| Edit of a name no longer listed (not `for_add`) | `NOT_FOUND` | `GONE` |
+| Re-registering save with an unconverted `LITERAL_ON_HOST` / `RESOLVED_UNCHECKABLE` header | `INVALID_ARGUMENT` | message names the header, never its value |
 | Local not acknowledged | `FAILED_PRECONDITION` | existing |
 | Host step failed | `OK` with `McpSaveOutcome` (state + `host_errors`) | the save ran; the outcome describes it |
 | Gateway/secrets unavailable | `FAILED_PRECONDITION` | existing FR-079 reason |
+
+A header in `SaveMcpServerRequest.definition` that the view flagged `LITERAL_ON_HOST` / `RESOLVED_UNCHECKABLE` and
+that still holds the view's redacted value counts as unchanged (research R2) and is accepted only on a save that does
+not re-register.
+
+Error messages never quote a credential header's value (research R1).
 
 Secret values: `SaveMcpServerRequest.secret_values` is excluded from every log line; the gRPC logging
 interceptor (if any) must not print the request; tests assert no value reaches argv, logs or errors.

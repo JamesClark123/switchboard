@@ -51,8 +51,16 @@ server (moved from both `authServerOK` copies), and the URL/argument credential 
 the TUI both call it; the TUI copies are deleted.
 
 **Rationale**: FR-420 requires byte-identical rules on both sides. Both modules already depend on
-`switchboard-proto`, whose `types.go` already holds shared domain helpers, and `mcprules` imports only the
-standard library, so the `libs` direction rule holds. A shared table of test cases cannot drift.
+`switchboard-proto`, whose `types.go` already holds shared domain helpers. `mcprules` imports only the
+standard library and the same module's `gen` package, so the `libs` direction rule holds. A shared table of
+test cases cannot drift. Every rule that the real-host run may relax (the scope comma, FR-417) is a
+**constant in `mcprules`**, never a daemon-side runtime flag, so the TUI and daemon binaries always agree.
+
+**Error text never carries a credential (SC-007)**: a refused credential header is named by its header name
+and the position of the literal ("text after the scheme", "text before `${…}`"), never by its value. Every
+`mcprules` error that would quote a header value quotes `Redact(value)` for a credential header, including
+the messages moved from `normalizeHeaders` (which quote the whole header with `%q` today). The daemon's
+`--debug` interceptor (`grpc/logging.go`) logs these errors, so this is the only safe form.
 
 **Alternatives**: a new `src/libs/switchboard-mcprules` module (one more `go.work` entry and `replace` lines
 for a few hundred lines of code); keeping two copies with a shared fixture (still two implementations).
@@ -81,6 +89,24 @@ Steps, all under the per-name lock (R3):
 9. Rollback on failure (R7), pending replace on a replace's failure (R8).
 10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call; emit once.
 
+**Contexts**: the forward steps (1–7) share the `saveTimeout` budget. Rollback, the identity re-check and
+`persist` each run on a **fresh** bounded context derived from `context.WithoutCancel` (`cleanupTimeout`,
+2 min each), so an exhausted step budget never leaves the secrets this save stored on the host.
+
+**Redacted and unverifiable headers (FR-403, FR-423)**: a request header whose name the stored view flagged
+`LITERAL_ON_HOST` (or `RESOLVED_UNCHECKABLE`) and whose value equals the view's redacted value counts as
+**unchanged** in `classify`, and is exempt from `CheckCredentialValue`. It is accepted only by a save that does
+not re-register, and is persisted redacted with its name in `literal_on_host`. Any save that would re-register
+while such a header is unconverted is refused with `INVALID_ARGUMENT` by the daemon (not only the TUI), so the
+host's credential is never replaced by `••••`.
+
+**Authorization warning**: `confirm_discard_authorization` is required for a replace unless the auth state is
+`UNAUTHORIZED` or `NOT_APPLICABLE` (host commands have no authorization).
+
+**First save of an unrecorded server**: a switchboard-only save (mark and/or secrets) of a server switchboard
+has no record of does **not** create a definition, so FR-402 keeps naming its unrecoverable fields. Only a
+save that registers creates the record.
+
 **Rationale**: the spec makes the save one daemon operation with a fixed order; the existing `Add` already
 re-lists before marking for the same reason. `context.WithoutCancel` is the standard way to finish work
 after the caller leaves; the existing auth wait is deliberately the opposite (killable), so it is not reused.
@@ -104,6 +130,13 @@ directions happens inside one `m.mu` critical section, so neither can slip in be
 
 A save that only stores header secrets and does not re-register skips the in-flight check (FR-424 allows it).
 
+The lock records its **purpose** (`replacing bool`, set when `classify` decides the save re-registers, under
+`m.mu`). Only a replacing lock counts as "being replaced" for launch (R12). Authorize is refused while any
+save holds or waits for the lock (FR-424). Each name also has a **generation** counter, bumped under `m.mu`
+whenever its lock is released, which `reconcile` uses to ignore stale list snapshots (R4).
+
+The definition read (R11) **does not take the lock**.
+
 **Rationale**: reuses the existing mutex; no new lock ordering. Waiting on the semaphore never holds `m.mu`.
 
 ### R4 — Switchboard's definition record lives beside the marks (FR-402, Key Entities)
@@ -116,8 +149,14 @@ detects *registered by another path* (R8). Definitions hold credential headers o
 redacted+flagged values (R11). `AddMcpServer` (old clients) and `SaveMcpServer` both write it; `Remove`
 deletes it.
 
+**Stale snapshots**: `reconcile` reads the per-name generations (R3) **before** running `sbx mcp ls`. When it
+applies the result, it skips every name that is locked now or whose generation changed since the list
+started. The check and the registry update happen in one `m.mu` section. A list taken before a replace's
+failed add therefore cannot end the new pending replace as *registered by another path*. A list taken before
+a new server's add cannot drop the definition just written.
+
 **Rationale**: the spec says "per daemon, beside the existing attach marks"; a single record keeps the
-"a list taken mid-replace MUST NOT drop them" rule trivial (the lock check is in `reconcile`).
+"a list taken mid-replace MUST NOT drop them" rule simple (lock and generation checks in `reconcile`).
 
 ### R5 — Fingerprint: HMAC-SHA-256 under a per-start key (FR-404)
 
@@ -207,13 +246,17 @@ silently".
 and before `--skip-auth`. `argvAuthorize(name, scopes, noScope)` appends `--scope` per one-time scope, or
 `--no-scope`. `AuthorizeMcpServerRequest` gains `scopes` and `no_scope`; with neither, today's argv. The
 authorize stream already forwards every runtime line verbatim, which covers refused-scope output. Rules:
-`mcprules.ValidScopes` (printable ASCII 0x21–0x7E except `"` and `\`, no `,`, no leading `-`, ≤ 256 chars,
-≤ 32, no duplicates). `--no-scope` on add is not used.
+`mcprules.ValidScopes` (printable ASCII 0x21–0x7E except `"` and `\`, no `,` unless the constant
+`ScopeCommaAllowed`, no leading `-`, ≤ 256 chars, ≤ 32, no duplicates). `--no-scope` on add is not used.
 
 ### R11 — Reading the host's definition: inspect + auth status (FR-402, FR-423)
 
-**Decision**: new RPC `GetMcpServerDefinition{name}`. Under the per-name lock (short hold; it does not wait
-behind a save, it returns `UNAVAILABLE`-style "being saved, try again" instead) the daemon:
+**Decision**: new RPC `GetMcpServerDefinition{name, for_add}`. It takes **no** lock: the save's fingerprint
+check under the lock catches any race, and a read never blocks Authorize or another client's Edit. With
+`for_add` (add mode, or any name that is not registered) it runs only step 5 and returns only the secret
+status: every global-scope `mcp:<name>:*` name (`stored_secrets`) plus `secrets_available`/reason (from whether
+`ListGlobal` succeeded). The TUI derives each field's *set / missing* from `stored_secrets` as headers are
+typed, in add and edit mode alike. The same field is filled in edit mode. Otherwise the daemon:
 
 1. reads `sbx mcp ls` (kind from TRANSPORT), `sbx mcp inspect <name> --json` (new argv) and
    `sbx mcp auth status <name> --json` (existing argv);
@@ -235,13 +278,22 @@ behind a save, it returns `UNAVAILABLE`-style "being saved, try again" instead) 
 
 ### R12 — Launch skip and per-sandbox record (FR-425)
 
-**Decision**: `ResolveAttach` returns `BeingReplaced []string` (marked names that are locked by a running
-replace, plus names held in pending replaces whose held mark is on). `sandbox.McpAttach` carries it, the
+**Decision**: `ResolveAttach` returns `BeingReplaced []string` (marked names whose lock is `replacing`, plus
+names held in pending replaces whose held mark is on). `sandbox.McpAttach` carries it, the
 launch log reports `mcp: <name> skipped: being replaced`, and the sandbox record gets
 `repeated McpSkippedServer mcp_skipped = 25` (`{name, state}` with `McpSkipState`
 `SKIPPED_BEING_REPLACED` / `NOT_ATTACHED_AT_LAUNCH`). When a pending replace or a running replace ends, the
 manager calls `onReplaceEnded(name, registered bool)`, wired in `main.go` to a sandbox-registry sweep that
-changes or clears entries and emits `sandbox_changed`. `AttachMcpServer` clears the entry. Exclusive-mode
+changes or clears entries and emits `sandbox_changed`. It is called for **every** end:
+`REGISTERED` (any replace or retry) ⇒ `registered=true`; cancel or another path ⇒ `false`;
+`STILL_REGISTERED` ⇒ `true` (the server is still registered, and it was skipped only because of the
+replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pending).
+
+**Late launch race**: a launch resolves `BeingReplaced` before the replace ends but persists its
+`mcp_skipped` entry after the sweep. To close that gap, the launch writes the entry in a registry update that
+re-reads the replace state through a `ReplaceState(name)` query on the MCP manager. If the replace has ended,
+it writes the post-sweep state instead (`NOT_ATTACHED_AT_LAUNCH`, or no entry). `sandbox.Manager.AttachMcp`
+(behind the `AttachMcpServer` RPC) clears the entry. Exclusive-mode
 sandboxes get the "relaunch to include it" note in the TUI (flag `mcpLoadWorksInExclusive = false`).
 
 ### R13 — FR-413 removal as a daemon operation (FR-413, FR-424)
@@ -255,7 +307,30 @@ the client secret and the identity record are confirmed gone (R9).
 ### R14 — TUI form shape (FR-401, FR-408, FR-414, US1–US4)
 
 **Decision**: the add form becomes the add/edit form in a new file `ui/mcp_form.go`; `mcp.go` keeps the
-list, keys and auth modal. The form has two `huh` groups:
+list, keys and auth modal. The form has two `huh` groups.
+
+**huh v1.0.0 mechanism**: huh cannot add fields to a built group, has no blur hook, and has no disabled
+input. So:
+
+- `advanceMcpForm` tracks the focused field key (`form.GetFocusedField().GetKey()`) before and after each
+  update.
+- When focus leaves `headers` (or group 1), it **suspends** the form, the way the host-command warning's
+  `pending` modal does today. If a credential header holds a literal, it shows the conversion prompt.
+- It then rebuilds the whole form from the vals with `reopenForm(gMcp)` and calls `NextGroup` to land in the
+  secrets group, so the secret fields always match the current headers.
+- Unavailable secret storage is shown as a `huh.NewNote` in place of the inputs.
+
+**Guard compatibility (SWI-9)**: the comparable form fields stay in `mcpFormVals`. Secret values, the opened
+definition and the view live beside it in `mcpState` (`secretVals map[string]string`, `opened`, `view`).
+`formguard.go` compares through `mcpSnapshot()`/`equal()` (as `launchSnapshot` does) and deep-copies the
+baseline, so a non-empty secret field counts as an edit.
+
+**Leaving a failed-replace or Retry form (FR-406)**: while the form shows a `NOT_REGISTERED` outcome with a
+pending replace, or is in retry mode, the guard's discard path opens the same `y`-only Cancel confirmation
+as `X` and calls `CancelMcpPendingReplace`. Declining keeps the form. *Cancel* in the SWI-9 dialog keeps the
+form too. Leaving with **no** edits after a failure is still a discard and still asks.
+
+The two groups are:
 
 1. **Definition**: name (read-only in edit: shown as the group description, not a field), kind, URL,
    headers (multi-line, `formSpec.text`), client ID, authorization server, scopes (one line,
@@ -291,6 +366,7 @@ remain. Older clients keep working because every change is additive (FR-422).
 ### R16 — Real-host reconciliation flags (FR-422)
 
 Package constants in `internal/mcp/hostflags.go`, each pinned by a test and listed in the CLI contract:
-`inspectReportsHeaders`, `authStatusReportsScopes`, `inspectReturnsTemplates`, `scopeCommaLiteral`,
-`secretListShowsIdentity`, `killedAddMayComplete`, `mcpLoadWorksInExclusive`. Quickstart Scenario 0 runs
-each one.
+`inspectReportsHeaders`, `authStatusReportsScopes`, `inspectReturnsTemplates`, `secretListShowsIdentity`,
+`killedAddMayComplete`, `mcpLoadWorksInExclusive`. The scope-comma rule is the constant
+`mcprules.ScopeCommaAllowed` (R1), not a daemon flag, because both binaries apply it. Quickstart Scenario 0
+runs each one.

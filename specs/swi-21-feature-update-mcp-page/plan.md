@@ -90,7 +90,7 @@ Constitution Check + Complexity Tracking**. SWI-21 stays inside that deviation a
 | VI Multi-Level Testing | ✅ Rule tables, argv-asserting daemon tests, failure-injection tests for every FR-406 branch, a leak test for secret values, TUI model tests, and e2e for US1/US2 and the pending replace; ≥ 90% coverage per module. |
 | VII Containerized Deployment | ✅ N/A: daemon and client binaries (001 carve-out). |
 | VIII Env Discipline | ✅ No env vars added. |
-| Repository Structure | ✅ `libs` import nothing from other categories (`mcprules` uses only the standard library). Changes stay in `src/services/switchboardd`, `src/apps/switchboard-tui`, `src/apps/switchboard-tui-e2e`, `src/libs/switchboard-proto`, and docs. |
+| Repository Structure | ✅ `libs` import nothing from other categories (`mcprules` uses only the standard library and the same module's `gen`). Changes stay in `src/services/switchboardd`, `src/apps/switchboard-tui`, `src/apps/switchboard-tui-e2e`, `src/libs/switchboard-proto`, and docs. |
 
 **Result**: PASS. **Re-checked after Phase 1 design: still PASS.**
 

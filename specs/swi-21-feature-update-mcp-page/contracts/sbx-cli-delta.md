@@ -23,10 +23,12 @@ argv-asserting test.
 | `inspectReportsHeaders` | false | an empty header section from inspect is *not reported* | register a server with no headers; inspect it |
 | `authStatusReportsScopes` | false | an empty scope list from auth status is *not reported* | register with and without `--scope`; read auth status |
 | `inspectReturnsTemplates` | true | inspect shows `${…}` templates, not resolved values (FR-423) | register `Authorization: Bearer ${k}` with `k` set; inspect |
-| `scopeCommaLiteral` | false | `,` refused in scopes (FR-417) | add `--scope 'a,b'`; read auth status / consent URL |
 | `secretListShowsIdentity` | false | the `:identity` record is visible to the re-check (FR-415) | authorize a pre-registered client; `sbx secret ls` |
 | `killedAddMayComplete` | true | a failed add leaves the host state unknown (FR-406) | kill `sbx mcp add` mid-run; list |
 | `mcpLoadWorksInExclusive` | false | FR-425 exclusive-mode note | `mcp load` into a `--static-mcp` sandbox |
+
+The scope comma rule (FR-417) is the constant `mcprules.ScopeCommaAllowed` (default false), shared by both
+binaries. Scenario 0 checks it: add `--scope 'a,b'`, then read auth status or the consent URL.
 
 Also recorded by Scenario 0: whether inspect reports URL, client ID and authorization server (Assumptions),
 and the placeholder grammar.

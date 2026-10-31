@@ -26,6 +26,8 @@ What switchboard last registered (or saved) for a name. Key: server name in
 - D2: dropped by `reconcile` when the host no longer lists the name, unless the name is locked by a save or
   has a pending replace (FR-404).
 - D3: written in the same `UpdateMcpSettings` call as the mark it belongs with.
+- D5: created only by a save that registers. A mark- or secrets-only save of a server with no record does not
+  create one (FR-402 keeps naming its unrecoverable fields).
 - D4: removed by `Remove`, by Cancel of a pending replace, and when a pending replace ends *registered by
   another path*.
 
@@ -95,7 +97,9 @@ replace is cancelled or the name is registered by another path. Persisted with t
 
 `definition` (merged, redacted), per-field `McpFieldFlag` list (`{field, kind: CHANGED_ON_HOST |
 NOT_RECOVERABLE | LITERAL_ON_HOST | RESOLVED_UNCHECKABLE, host_value (redacted)}`), `unsupported_settings`,
-`secrets` (`{name, status: SET | MISSING | REMOVAL_FAILED, removal_failed_listed: LISTED | UNKNOWN}`),
+`secrets` (`{name, status: SET | MISSING | REMOVAL_FAILED}`), `stored_secrets` (every global `mcp:<name>:*` name,
+also returned `for_add`), `pending_removal_failed_listed` + `pending_removal_failed_list_unknown` (for the Cancel
+confirmation),
 `auth_state`, `has_record` (switchboard has a definition), `pending_replace`, `fingerprint`,
 `secrets_available` (+ reason).
 

@@ -32,23 +32,24 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   `make proto` and commit the regenerated `src/libs/switchboard-proto/gen/`. Re-check the field maxima first
   (`Sandbox` 24, `AddMcpServerRequest` 8, `McpServer` 8, `McpGatewaySettings` 2, `Event.McpGatewayChanged` 1);
   if another branch claimed a number, take the next free one and update the contract.
-- [ ] T002 [P] Create package `MR/` (`doc.go`, standard library only, research R1) with `headers.go`:
-  `NormalizeHeaders` (moved verbatim in behaviour from `M/manager.go` `normalizeHeaders`; error messages kept),
+- [ ] T002 [P] Create package `MR/` (`doc.go`; imports only the standard library and the same module's `gen`, research R1) with `headers.go`:
+  `NormalizeHeaders` (moved in behaviour from `M/manager.go` `normalizeHeaders`; its messages keep their wording but
+  quote `Redact(value)` instead of the raw header for a credential header, SC-007),
   `Placeholders(headers) []string` (distinct `${name}` in order), `ValidPlaceholder` (`^[A-Za-z0-9][A-Za-z0-9._-]*$`,
   ≤ 128, refuses `client_secret` with the collision message, FR-408), `SecretName(server, placeholder)`, and
   `ClientSecretName` / `IdentityName`. Table tests in `MR/headers_test.go`.
 - [ ] T003 [P] `MR/credential.go`: `IsCredentialHeader(name)` (FR-423 names and name segments split on `-`/`_`,
   case-insensitive; `Keycloak-Realm` false, `X-Api-Key` true), `CheckCredentialValue(name, value) error`
   (placeholders only, optional leading scheme from the fixed list, separators space `:` `;` `,`; `Cookie`
-  allows `<token>=${…}`; the message names the literal part and, for an unlisted scheme, says the scheme goes
-  inside the secret), `Convert(name, value, used map[string]bool) (newValue, placeholder, secret string)`
+  allows `<token>=${…}`; the message names the header and the literal's **position** ("text after the
+  scheme"), never its value, and for an unlisted scheme says the scheme goes inside the secret), `Convert(name, value, used map[string]bool) (newValue, placeholder, secret string)`
   (derived name lower-cased, `_`→`-`, `-2`, `-3`, … on a collision or invalid/reserved name), and
   `Redact(value) string` (scheme kept + `••••`). Table tests for every spec example (`ApiKey ${k}`,
   `Cookie: session=${session}` accepted; `Bearer sk-live-abc ${x}`, `session=abc; csrf=${t}`,
   `X-Auth-Mode: oauth` refused).
 - [ ] T004 [P] `MR/scopes.go`: `ValidScopes([]string) error` (FR-417: printable ASCII without space, `"`, `\`
-  or `,`; no leading `-`; ≤ 256 characters; ≤ 32; no duplicates; the comma refusal is controlled by a
-  `CommaAllowed` package variable, default false) and `ParseScopes(line string) []string` (space-separated).
+  or `,`; no leading `-`; ≤ 256 characters; ≤ 32; no duplicates; the comma refusal is controlled by the
+  package **constant** `ScopeCommaAllowed = false`, shared by both binaries; Scenario 0 decides it) and `ParseScopes(line string) []string` (space-separated).
   `MR/oauth.go`: `ValidClientID` and `AuthServerOK` (moved from `M/manager.go` and `UI/mcp.go`, same rules
   and messages). `MR/warn.go`: `CredentialLooking(url string, args []string) []string` (query parameter or
   `--flag` names whose segment is a credential word or `sig`/`signature`). Table tests for each.
@@ -71,7 +72,7 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   `ValidClientID` and `AuthServerOK`, and also applies `CheckCredentialValue` to every header (FR-420,
   FR-423; the runtime enforces the same rule, F5). Delete the moved helpers. Existing tests in
   `M/manager_test.go` keep passing unchanged (only error text moves).
-- [ ] T007 [P] `M/hostflags.go`: the seven behaviour flags from
+- [ ] T007 [P] `M/hostflags.go`: the six behaviour flags from
   [contracts/sbx-cli-delta.md](./contracts/sbx-cli-delta.md) as package variables, so tests can flip them,
   each with a doc comment naming its Scenario 0 check. `M/hostflags_test.go` pins the defaults.
 - [ ] T008 [P] `M/cli.go` argv: `argvAddRemote` takes `scopes` and appends one `--scope` each after the
@@ -85,15 +86,19 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   client secret/identity or removes the registration (then it fails with `ErrAuthInProgress` if
   `inflight[name]` is set, checked in the same `m.mu` hold as the take). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or a pending replace exists, checked in the same
-  `m.mu` hold that records `inflight`. Race tests with `-race`: authorize vs. save in both orders; a
+  `m.mu` hold that records `inflight`. The lock records `replacing` (set under `m.mu` once `classify` decides the
+  save re-registers), and each name has a `generation` bumped under `m.mu` on every release (research R3). Race tests with `-race`: authorize vs. save in both orders; a
   header-only save is allowed during an authorization.
 - [ ] T010 Record definitions (research R4): `M/manager.go` `Add` writes `definitions[name]` together with
   the mark in one `UpdateMcpSettings` (after the re-list, as the mark is today), under `lockName`. `Remove`
-  takes the lock and drops the definition with the mark. `reconcile` keeps a definition (and mark) whose name
-  is locked or has a pending replace, and otherwise drops it like a stale mark. `List` returns `settings` with
+  takes the lock and drops the definition with the mark. `reconcile` reads the generations before `sbx mcp ls`, and
+  in one `m.mu` section with the registry update skips every name that is locked or whose generation changed
+  (research R4). It keeps a definition (and mark) whose name has a pending replace, and otherwise drops it
+  like a stale mark. `List` returns `settings` with
   `definitions`/`pending_replaces` cleared and fills `ListMcpServersResponse.pending_replaces`. `decorate`
   sets `McpServer.rebind_pending` from the definition. Tests: a list taken while a name is locked keeps its
-  mark and definition; stale definitions drop.
+  mark and definition; a list taken **before** a lock that is released by the time it applies (stale snapshot)
+  changes nothing for that name; stale definitions drop.
 - [ ] T011 [P] `S/manager.go`: `ListGlobal(ctx) (map[string]bool, error)` (names in the global scope only,
   FR-409), and `Remove` returns the CLI output so callers can re-check. Add `S/` methods
   `SetQuiet`/`RemoveQuiet` that skip `emitChanged`, so a save emits `secrets_changed` once at the end
@@ -108,10 +113,13 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   acknowledgement; worker prefix), runs on `context.WithoutCancel(ctx)` bounded by `saveTimeout = 10 *
   time.Minute`, takes `lockName`, and runs these steps as named functions that later tasks fill in:
   `checkFingerprint`, `snapshot`, `classify`, `removeStep`, `storeStep`, `addStep`, `identityStep`,
-  `rollbackStep`, `persist`. `persist` writes definition, mark and pending replace in one `UpdateMcpSettings`,
+  `rollbackStep`, `persist`. The forward steps share the `saveTimeout` budget. `rollbackStep`, the identity
+  re-check and `persist` each run on a fresh context from `context.WithoutCancel` bounded by `cleanupTimeout = 2 *
+  time.Minute` (research R2). `persist` writes definition, mark and pending replace in one `UpdateMcpSettings`,
   then emits one `mcp_gateway_changed` carrying the outcome and pending replaces, and one `secrets_changed`
   when any secret changed. In this task: a new-server add with no secrets and a switchboard-only mark change
-  (FR-403: no `rm`/`add` in the argv log).
+  (FR-403: no `rm`/`add` in the argv log). A switchboard-only save of a server with no record creates no
+  definition (data-model D5). Test: a save whose forward budget expires still rolls back on the fresh context.
 - [ ] T014 `G/mcp_rpcs.go`: handler for `SaveMcpServer`. It maps sentinel errors to codes per the contract
   table, attaches `McpSaveRefusal` as a status detail, and returns the outcome with `OK` when the save ran.
   The goroutine-detached save still returns to a live caller. `G/server.go`: `DaemonInfo.capabilities` adds
@@ -153,8 +161,9 @@ unchanged.
   normalised difference; a runtime-added `offline_access` is left out of the pre-fill; `NOT_RECOVERABLE` is
   named for fields with no source; `unsupported_settings` lists resource, SSRF override and image kinds. Set
   `has_record`, `attach_by_default`, `auth_state` and `pending_replace` (with
-  `pending_removal_failed_listed` / `_unknown` from `ListGlobal`). It returns `UNAVAILABLE` "being saved, try
-  again" when the name is locked, and never waits. Tests cover each FR-402 rule and US1 #2, #8, #9.
+  `pending_removal_failed_listed` / `_unknown` from `ListGlobal`). It takes **no** lock (research R11). With
+  `for_add` it returns only `stored_secrets` + `secrets_available`/reason for any name, registered or not. In
+  edit mode it fills `stored_secrets` too. Tests cover each FR-402 rule and US1 #2, #8, #9.
 - [ ] T019 [US1] `M/definition.go` redaction (FR-423, US1 #9): every reported credential header runs through
   `CheckCredentialValue` before it is placed in the view. A literal is replaced with `Redact` and flagged
   `LITERAL_ON_HOST`. A record template reported without a placeholder follows `inspectReturnsTemplates`:
@@ -170,9 +179,14 @@ unchanged.
   `mcprules.RegistrationChanged`. `removeStep` runs `rm --force` via `runBounded`; on failure it re-lists
   under the lock: absent ⇒ continue; present ⇒ outcome `STILL_REGISTERED`, stop. `addStep` runs the add via
   `runBounded`; failure or timeout ⇒ never re-checked, `add_started` = true. Refuse a replace without
-  `confirm_discard_authorization` unless `auth_state` is `UNAUTHORIZED`, and an unsupported setting without
+  `confirm_discard_authorization` unless `auth_state` is `UNAUTHORIZED` or `NOT_APPLICABLE`, and an unsupported setting without
   `confirm_drop_unsupported` (FR-402). Edit of a vanished name ⇒ `GONE` with nothing removed (edge case).
-  Kind change is allowed (edge case). Failure-injection tests for each branch with the scripted fake `sbx`.
+  Kind change is allowed (edge case). Redacted headers (research R2): a header flagged `LITERAL_ON_HOST` /
+  `RESOLVED_UNCHECKABLE` that still holds the redacted value is unchanged for `classify`, exempt from
+  `CheckCredentialValue`, accepted only on a save that does not re-register (persisted redacted, name in
+  `literal_on_host`), and refused `INVALID_ARGUMENT` on any re-registering save. Tests: a mark-only save with a
+  redacted header runs no `rm`/`add`; a URL change with one is refused; the argv log never holds `••••`.
+  Failure-injection tests for each branch with the scripted fake `sbx`.
 - [ ] T022 [US1] `M/pending.go` (research R8): `holdPending` on a replace that ends `NOT_REGISTERED` (mark moved
   out of `marks`; `previous` = last live definition; revision+1), `Manager.CancelPending(ctx, name, rev)`
   (best-effort removal of `removal_failed` names with a re-check, then drop pending, mark and definition;
@@ -189,10 +203,14 @@ unchanged.
   locked by a replace, plus pending names whose held mark is on). `SB/manager.go` `McpAttach` carries it;
   `applyMcp` logs `mcp: <name> skipped: being replaced` and records `Sandbox.mcp_skipped`
   (`SKIPPED_BEING_REPLACED`). New `SB/manager_mcp.go` `SweepMcpSkipped(name, registered bool)` changes entries
-  to `NOT_ATTACHED_AT_LAUNCH` (registered) or clears them, emitting `sandbox_changed`. `AttachMcpServer`
-  clears a matching entry. Wire `onReplaceEnded` in `cmd/sxbd/main.go` (retry success ⇒ true; cancel or
-  another path ⇒ false). Update both callers (`G/sandbox_rpcs.go`, `G/orchestrator_rpcs.go`). Tests in
-  `SB/manager_mcp_test.go` and `M/manager_test.go`.
+  to `NOT_ATTACHED_AT_LAUNCH` (registered) or clears them, emitting `sandbox_changed`. `sandbox.Manager.AttachMcp` (the `AttachMcpServer`
+  RPC) clears a matching entry. Wire `onReplaceEnded` in `cmd/sxbd/main.go` and call it on **every** end:
+  `REGISTERED` (any replace or retry) or `STILL_REGISTERED` ⇒ true; cancel or another path ⇒ false; nothing while a
+  pending replace is held. The launch writes its `mcp_skipped` entry in a registry update that re-reads
+  `Manager.ReplaceState(name)` and writes the post-sweep state when the replace already ended (research R12).
+  Only a `replacing` lock counts as being replaced; a mark- or secrets-only save does not skip the server. Update both callers (`G/sandbox_rpcs.go`, `G/orchestrator_rpcs.go`). Tests in
+  `SB/manager_mcp_test.go` and `M/manager_test.go`, including the late-launch race and a plain replace that
+  succeeds (entry → `NOT_ATTACHED_AT_LAUNCH`).
 - [ ] T025 [US1] FR-419 data: the save outcome's `attached_sandboxes` lists this daemon's sandboxes whose
   `mcp_servers` contain the name, plus FR-425 skipped ones (`skipped_at_launch`), with `exclusive` from
   `mcp_attach_mode`. Read through a `Sandboxes` lister interface given to the manager in `cmd/sxbd/main.go`.
@@ -201,8 +219,10 @@ unchanged.
 ### TUI
 
 - [ ] T026 [US1] `UI/mcp_form.go` (new): move the form out of `UI/mcp.go` and make it the add/edit form.
-  `mcpFormVals` gains `scopes`, `mode` (add/edit/retry), `opened` (baseline definition), `view`
-  (`*pb.McpDefinitionView`) and `secrets map[string]string`. Builders are split into `fillMcpVals(view)` +
+  `mcpFormVals` gains only comparable fields (`scopes`, `mode` add/edit/retry). Secret values
+  (`secretVals map[string]string`), the opened definition (`opened`) and the view (`*pb.McpDefinitionView`)
+  live in `mcpState` beside it (research R14). Add mode calls `GetMcpServerDefinition{for_add: true}` when the
+  form opens and whenever the name changes. Builders are split into `fillMcpVals(view)` +
   `buildMcpForm(spec, vals)` (SWI-9 pattern) so `reopenForm` keeps edits. Edit mode shows `Edit <server> @
   <host>` with the name not editable, and field descriptions carry the view's flags
   ([contracts/mcp-form-ui.md](./contracts/mcp-form-ui.md)). The client-side rules all go through `MR/`
@@ -235,8 +255,11 @@ unchanged.
   `not attached at launch — a to attach`, exclusive: `missing from this sandbox's fixed set — relaunch to
   include it`). `a` on such an entry attaches it, and the sandbox list's third line appends `· mcp skipped:
   <n>`. Tests in `UI/sandbox_mcp_test.go`.
-- [ ] T032 [US1] `UI/formguard.go`: the edit form uses the `gMcp` surface with `opened` as the baseline;
-  non-empty masked fields count as dirty. Test in `UI/formguard_test.go`.
+- [ ] T032 [US1] `UI/formguard.go`: replace the `*m.mcpView.vals != m.mcpView.baseline` comparison with
+  `mcpSnapshot()` / `equal()` (vals + `secretVals`, as `launchSnapshot` does) and a deep-copied baseline, so a
+  non-empty masked field is dirty. While the form holds a pending replace (after a `NOT_REGISTERED` outcome, or
+  in retry mode), the leave path (clean or dirty) opens the `y`-only Cancel confirmation of T027 and calls
+  `CancelMcpPendingReplace`; declining keeps the form (FR-406, US1 #5). Tests in `UI/formguard_test.go`.
 
 **Checkpoint**: US1 independently testable (Scenario 1, Scenario 5, Scenario 6.1/6.3).
 
@@ -270,19 +293,21 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
   `G/mcp_rpcs.go` handler. The save outcome's `unused_secrets` names stored secrets whose placeholder the
   edit removed. Tests.
 - [ ] T036 [US2] SC-007 leak test in `M/save_test.go`: run every save path (success, each failure, rollback,
-  retry, cancel) with distinctive secret values, and assert that none appears in the fake `sbx` argv log, any
+  retry, cancel) with distinctive secret values and a typed literal credential header that is refused, and assert that none
+  appears in the fake `sbx` argv log, any
   error string, the outcome, the emitted events, the registry bytes, or captured `log` output.
 
 ### TUI
 
-- [ ] T037 [US2] `UI/mcp_form.go` secrets group: rebuilt from the definition group each time it is entered,
-  keeping values by secret name. The headers field's `DescriptionFunc` lists the derived `mcp:<server>:<p>`
-  names live. One `EchoModePassword` input per placeholder, with a status from the view (`set (blank keeps
+- [ ] T037 [US2] `UI/mcp_form.go` secrets group: `advanceMcpForm` tracks the focused field key; when focus
+  leaves `headers` or group 1, the form is suspended, then rebuilt from the vals with `reopenForm(gMcp)` and
+  `NextGroup` into the secrets group, keeping `secretVals` by secret name (research R14). The headers field's `DescriptionFunc` lists the derived `mcp:<server>:<p>`
+  names live. One `EchoModePassword` input per placeholder, with a status derived from `stored_secrets` and the view (`set (blank keeps
   it)`, `missing`, `must be re-entered (URL changed)`, `removal failed; will be removed unless re-entered`).
-  When secret storage is unavailable the fields are disabled and show the reason. Placeholder rule errors
+  When secret storage is unavailable a `huh.NewNote` with the reason replaces the inputs. Placeholder rule errors
   name the placeholder (FR-408). Tests (US2 #1, #3, #7).
-- [ ] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): on leaving the headers field and again on
-  save, each credential header with literal text opens a `y`-only offer that applies `MR.Convert`, moves the
+- [ ] T038 [US2] Literal-credential conversion (FR-423, US2 #8, #9): at the T037 focus-leave suspension and
+  again on save, each credential header with literal text opens a `y`-only offer that applies `MR.Convert`, moves the
   literal into the new secret field, and keeps that field editable. Declining keeps the form open with the
   refusal. URL/argument credential warning (US2 #10) as a `y`-only confirm. A save that would re-register
   while a `LITERAL_ON_HOST` header is unconverted is refused; a mark- or secrets-only save is allowed and
@@ -359,8 +384,9 @@ link requests them.
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T047 [P] E2E: extend `E2E/harness.go` `stubSbx` with `mcp inspect --json` (from a per-name state file
-  written on `mcp add`), `secret ls/set/rm` state (set reads stdin), and an `mcp add` failure for URLs
+- [ ] T047 [P] E2E: make `E2E/harness.go` `stubSbx`'s MCP state stateful: `mcp add` writes a per-name state
+  file (unless it fails), `mcp rm` deletes it, and `mcp ls` prints the table from that state (keeping the seeded
+  `notion` row), so a failed replace leaves the name unlisted. Add `mcp inspect --json` from the same state, `secret ls/set/rm` state (set reads stdin), and an `mcp add` failure for URLs
   containing `refuse.invalid`. Add `E2E/mcp_e2e_test.go` tests: edit URL + header secret (US1/US2), and a
   failed replace → pending row → Retry previous → Cancel (FR-406/FR-426). Run `make e2e`.
 - [ ] T048 [P] FR-421: every save, edit, secret store/removal and cancel refreshes the gateway and Secrets
