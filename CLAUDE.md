@@ -148,8 +148,11 @@ A package that reads any env var MUST:
 
 <!-- SPECKIT START -->
 Active feature: `specs/swi-21-feature-update-mcp-page/plan.md` (MCP Page Quality of Life — Edit, In-Page Secrets,
-Scopes, SWI-21; **planned, implementation pending**: `mcprules`, `mcp/save.go`, `mcp/definition.go`, `ui/mcp_form.go`
-do not exist yet). Ticket item 5 (fixed OAuth callback port) is deferred to SWI-22. Shared definition rules live in a new
+Scopes, SWI-21; **implemented** — T001–T051 done, T052 manual real-host Scenario 0 pending, so every `sbx` row and
+`mcp/hostflags.go` flag is still documentation-derived. As built: a failed save-time host re-read refuses `UNVERIFIED`
+only when the fingerprint differs (a host whose inspect always fails can still save); a Retry skips the fingerprint
+and relies on the pending revision; a new-server save of a listed name is `ALREADY_EXISTS`; an edit may leave a URL
+the host does not report empty unless the save re-registers). Ticket item 5 (fixed OAuth callback port) is deferred to SWI-22. Shared definition rules live in a new
 pure package **`src/libs/switchboard-proto/mcprules`** used by daemon and TUI (FR-420: headers, `${placeholder}` rule +
 reserved `client_secret`, credential-header rule + one-step conversion + `Redact`, scopes, client ID, authorization
 server). Every MCP form save is one RPC **`SaveMcpServer`**, run on `context.WithoutCancel` under a per-name lock
