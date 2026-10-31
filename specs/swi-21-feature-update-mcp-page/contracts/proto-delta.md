@@ -1,7 +1,9 @@
 # Proto delta: SWI-21 (additive to `src/libs/switchboard-proto/proto/switchboard.proto`)
 
 Every change is additive. Older clients keep working: they never send the new fields, and the old RPCs keep
-their behaviour (FR-422). No `NotificationKind` is added.
+their behaviour (FR-422). No `NotificationKind` is added. `AddMcpServer` in particular keeps today's header
+validation: the broader `mcprules.CheckCredentialValue` rule applies only on `SaveMcpServer` (research R2).
+The definition `AddMcpServer` records holds any literal it flags redacted, with the name in `literal_on_host`.
 
 ## RPCs (service `Switchboard`, in the MCP gateway block)
 
@@ -44,6 +46,10 @@ message McpPendingReplace {
   string error = 8;
   google.protobuf.Timestamp failed_at = 9;
   uint64 revision = 10;
+  // Crash safety (research R2): a save wrote this before its first host mutation and has not
+  // persisted yet. Leftovers are resolved at daemon start; never shown as a normal pending row.
+  bool in_progress = 11;
+  repeated string planned_created_secrets = 12; // names the save would create (absent in its snapshot)
 }
 
 // for_add: only the secret status (stored_secrets, secrets_available) for a name that
@@ -144,7 +150,7 @@ enum McpSkipState { MCP_SKIP_STATE_UNSPECIFIED = 0; MCP_SKIP_STATE_SKIPPED_BEING
 message McpSkippedServer { string name = 1; McpSkipState state = 2; }
 
 message McpSaveRefusal {                // carried as a status detail on FAILED_PRECONDITION
-  enum Reason { REASON_UNSPECIFIED = 0; STALE_CHANGED = 1; STALE_RESTARTED = 2; PENDING_ENDED = 3; PENDING_REMOVAL_FAILED = 4; AUTH_IN_PROGRESS = 5; BEING_REPLACED = 6; PENDING_EXISTS = 7; GONE = 8; }
+  enum Reason { REASON_UNSPECIFIED = 0; STALE_CHANGED = 1; STALE_RESTARTED = 2; PENDING_ENDED = 3; PENDING_REMOVAL_FAILED = 4; AUTH_IN_PROGRESS = 5; BEING_REPLACED = 6; PENDING_EXISTS = 7; GONE = 8; UNVERIFIED = 9; }
   Reason reason = 1;
   string message = 2;
 }
@@ -173,6 +179,8 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 |-----------|------|--------|
 | Rule violation (FR-408/417/420/423) | `INVALID_ARGUMENT` | message names the field/placeholder |
 | Fingerprint differs | `FAILED_PRECONDITION` | `McpSaveRefusal{STALE_CHANGED \| STALE_RESTARTED}` |
+| Fingerprint re-read failed (`ls`/`inspect`/`auth status`) | `FAILED_PRECONDITION` | `UNVERIFIED` (retryable; the form is not reloaded) |
+| Empty `secret_values` entry, or one containing `••••` | `INVALID_ARGUMENT` | message names the secret, never the value |
 | Retry of an ended pending replace | `FAILED_PRECONDITION` | `PENDING_ENDED` |
 | Retry pre-step removal still listed | `FAILED_PRECONDITION` | `PENDING_REMOVAL_FAILED` |
 | Auth in progress (FR-424) | `FAILED_PRECONDITION` | `AUTH_IN_PROGRESS` |

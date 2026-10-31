@@ -52,6 +52,15 @@ prompt: `Authorization: Bearer sk-…` → `Authorization: Bearer ${authorizatio
 that secret field. Derived names: header name lower-cased, `_`→`-`, suffixed `-2`, `-3`, … on a collision or
 reserved name. Declining leaves the form open with the refusal message.
 
+A header that still equals the view's redacted `LITERAL_ON_HOST` value (`Bearer ••••`) is converted to the
+template **without** moving the redacted text: the new secret field stays blank and `missing`, with the status
+`re-enter the credential (held on the host)`. Declining for such a header continues into group 2 with the
+`literal credential on host` warning, so a secrets-only or mark-only save is still possible. Only a save that
+would re-register is blocked.
+
+A save refused `UNVERIFIED` shows "couldn't read the server from the host; try again" and keeps the form as it
+was (no reload).
+
 ## Save sequence
 
 Client-side rules (`mcprules`) → confirmations (each `y`-only, back-out returns to the form with every

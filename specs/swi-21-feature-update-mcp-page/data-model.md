@@ -24,7 +24,7 @@ What switchboard last registered (or saved) for a name. Key: server name in
 
 - D1: never holds a secret value or a credential-header literal (SC-007).
 - D2: dropped by `reconcile` when the host no longer lists the name, unless the name is locked by a save or
-  has a pending replace (FR-404).
+  has a pending replace, including an `in_progress` one (FR-404, research R2 *Crash safety*).
 - D3: written in the same `UpdateMcpSettings` call as the mark it belongs with.
 - D5: created only by a save that registers. A mark- or secrets-only save of a server with no record does not
   create one (FR-402 keeps naming its unrecoverable fields).
@@ -47,10 +47,17 @@ Key: server name in `McpGatewaySettings.pending_replaces`.
 | `error` | string | host message, verbatim |
 | `failed_at` | Timestamp | for `replace failed <age> ago` |
 | `revision` | uint64 | +1 on each update; part of the Retry fingerprint |
+| `in_progress` | bool | provisional record written before a registration change's first host mutation (research R2) |
+| `planned_created_secrets` | repeated string | names the in-progress save would create; moved to `removal_failed_secrets` on recovery |
 
 **State transitions**
 
 ```text
+(registration change, before rm/add) ──► IN_PROGRESS
+IN_PROGRESS ──save persists──► (gone, or PENDING if the replace failed)
+IN_PROGRESS ──daemon start, name not listed──► PENDING (error "daemon stopped during the save"; new server: gone)
+IN_PROGRESS ──daemon start, name listed──► (gone; mark restored; definition = previous, or the new one for a new server)
+IN_PROGRESS ──daemon start, list fails──► IN_PROGRESS (retried on the next reconcile)
 (replace fails after remove) ──► PENDING
 PENDING ──retry ok──► (gone; definition+mark live; skipped entries → NOT_ATTACHED_AT_LAUNCH)
 PENDING ──retry fails──► PENDING (definition, names, error, failed_at, revision updated; previous kept)

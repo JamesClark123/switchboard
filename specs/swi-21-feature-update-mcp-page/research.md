@@ -77,17 +77,60 @@ If the client goes away the gRPC handler returns, but the goroutine finishes, pe
 Steps, all under the per-name lock (R3):
 
 1. Definition check: recompute the fingerprint (R5) and compare with the request's; mismatch →
-   `FAILED_PRECONDITION` with `McpSaveRefusal{STALE_CHANGED | STALE_RESTARTED | PENDING_ENDED}`.
+   `FAILED_PRECONDITION` with `McpSaveRefusal{STALE_CHANGED | STALE_RESTARTED | PENDING_ENDED}`. If a
+   re-read (`ls`, `inspect` or `auth status`) **fails**, the save is refused with `UNVERIFIED` ("couldn't read
+   the server from the host; try again"), never `STALE_CHANGED`. The TUI keeps the form as it was, with no
+   reload. A failed read is not a change on the host, and treating it as one would cause a refuse/reload loop on
+   a flaky host.
 2. Pending-replace pre-step (R8): remove carried *removal failed* names that the retry leaves blank.
 3. Secret-list snapshot (`secret.Manager.List`, global scope only).
 4. Classify: *switchboard-only* (mark and/or secrets) or *registration change* (any definition field,
-   compared in normalised form, R6).
+   compared in normalised form, R6). Right after `classify` (and `ClientChanged`), the save re-checks
+   `inflight[name]` under `m.mu` when the save removes the registration or touches `client_secret`/`:identity`,
+   and refuses `AUTH_IN_PROGRESS` with no change (FR-424, R3).
+4a. Registration change: write the **in-progress record** (crash safety, below) before any host mutation.
 5. Registration change: `sbx mcp rm --force` (existing argv) → on failure, wait for exit, re-list (R7).
 6. Stores (`secret.Manager.Set`, global, stdin) in placeholder order, then the client secret.
 7. `sbx mcp add … --skip-auth` with the new definition (scopes added, R10).
 8. Identity clear (R9).
 9. Rollback on failure (R7), pending replace on a replace's failure (R8).
-10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call; emit once.
+10. Persist definition + mark (+ pending replace) in **one** `UpdateMcpSettings` call, which also clears the
+    in-progress record; emit once.
+
+**Crash safety (SC-006, FR-406)**: the save runs on `context.WithoutCancel`, but the daemon can still exit
+partway through: SIGTERM, an update through `switchboard-update`, an OOM or a panic. Without a durable record,
+an exit after `rm` and before `persist` would leave the record holding the definition and mark while the host
+no longer lists the name. The next `reconcile` would then drop both (D2), and the server would disappear
+silently. So, before step 5 of any registration change (a replace, a new-server add, or a Retry), the save
+writes a provisional `McpPendingReplace` with `in_progress = true` in one `UpdateMcpSettings` call. It holds the
+new `definition`, `previous` (the live definition, absent for a new server), the held mark, and
+`planned_created_secrets`: the `secret_values` names that the step-3 snapshot shows absent. For a replace,
+that write also moves the mark out of `marks`, as a real pending replace does. Step 10 clears the record, or
+turns it into the real pending replace. An in-progress record counts as a pending replace for `reconcile` (D2)
+and for the state map (R12), so a list cannot drop the name while the save runs.
+
+**Recovery** at `NewManager`, before the first `reconcile`: each leftover in-progress record is resolved
+against one `sbx mcp ls`:
+
+- **Name not listed** (the exit came after `rm` and before the add finished) ⇒ it becomes a normal pending
+  replace with `in_progress = false` and error `daemon stopped during the save`. Its
+  `planned_created_secrets` are added to `removal_failed_secrets`, so Retry removes the ones it leaves blank and
+  Cancel removes them best effort. Both run the usual re-check, so an absent name is simply confirmed gone.
+  Retry and Cancel then work as usual. For a new server, there is no previous registration to restore, so the
+  record is dropped and the planned-created names are removed best effort, with a re-check and a log line.
+- **Name listed** (the exit came before `rm`, or after the add) ⇒ the record is dropped, the mark goes back into
+  `marks`, and the definition is set to `previous` for a replace, or to `definition` for a new server. Which
+  registration the host holds is not known. The next Edit's definition read merges with `inspect`, so any
+  difference shows as `changed on the host`. Secrets are left in place, because the registration may use them.
+- **List fails** ⇒ the record stays in progress, and recovery runs again on the next `reconcile`. The name is
+  never dropped while the record exists.
+
+Every recovery logs `mcp: <name>: recovered interrupted save (<result>)` and emits one `mcp_gateway_changed`.
+Secrets the save **overwrote** cannot be restored after a crash, because the old value is gone. The recovered
+pending replace's error names them. Shutdown does not wait for in-flight saves: recovery covers every exit
+point the same way, including a crash, which a shutdown wait could not. A switchboard-only save writes no
+in-progress record. It makes no host-registration change, so an exit before `persist` loses only that save's
+mark change, and the stored secrets stay listed under their names.
 
 **Contexts**: the forward steps (1–7) share the `saveTimeout` budget. Every cleanup call runs on its **own**
 fresh context derived from `context.WithoutCancel`: each rollback removal, each re-check list, the identity
@@ -122,18 +165,42 @@ after the caller leaves; the existing auth wait is deliberately the opposite (ki
 spec needs no progress; a stream ties completion to the connection unless detached anyway.
 
 `AddMcpServer` stays for older clients and keeps its behaviour, but now also records a definition (R4) and
-takes the per-name lock. The new TUI uses only `SaveMcpServer` for form saves.
+takes the per-name lock. The new TUI uses only `SaveMcpServer` for form saves. `AddMcpServer` keeps today's
+validation (FR-422 / proto delta *old RPCs keep their behaviour*). It does **not** apply the broader
+`mcprules.CheckCredentialValue` rule, which would newly refuse `X-Api-Key: abc` or `X-Auth-Mode: oauth` from an
+older TUI that has no conversion UI to recover. The runtime still enforces its own `Authorization` rule (F5).
+To keep D1, the definition `Add` records holds any header that rule flags as a literal **redacted**, with its
+name in `literal_on_host`, exactly as a definition read would (R11). The new rule applies only on
+`SaveMcpServer`.
+
+**Secret values (FR-410, FR-423)**: the daemon refuses with `INVALID_ARGUMENT` (naming the secret, never the
+value) any `secret_values` entry that is **empty**, or that **contains the redaction marker** `••••`
+(`mcprules.RedactMarker`). The TUI leaves blank fields out ("blank keeps it"). An empty value from a client
+bug, an older build or a direct gRPC caller would otherwise overwrite a working secret with an empty one. A
+value holding the marker can only be a redacted view value copied into a secret.
 
 ### R3 — Per-name lock and the authorization exclusion in one critical section (FR-404, FR-424)
 
 **Decision**: `Manager.mu` (already guarding `inflight`) also guards `busy map[string]*nameLock`, where
 `nameLock` is a 1-slot channel semaphore plus a waiter count. `lockName(ctx, name)` takes it (waiting is
-allowed for saves, adds, removes and FR-413 removals; serialised, FR-404). Before taking it a caller that
-touches `client_secret`/`:identity` or removes the registration checks `inflight[name]` under `m.mu` and
-fails with `ErrAuthInProgress` (FR-424 refusals). `Authorize` checks, under the same `m.mu` hold, that no
-lock is held or waited for **and** that no pending replace exists (read from the settings record) before it
-records `inflight[name]`; otherwise `ErrBeingReplaced` (`FAILED_PRECONDITION`). The check-and-take for both
-directions happens inside one `m.mu` critical section, so neither can slip in between.
+allowed for saves, adds, removes and FR-413 removals; serialised, FR-404). Before taking it a caller whose
+**request alone** shows it touches `client_secret`/`:identity` or removes the registration (`Remove`, an
+FR-413 removal of those names, a request carrying `mcp:<s>:client_secret`) checks `inflight[name]` under `m.mu`
+and fails with `ErrAuthInProgress` (FR-424 refusals). `Authorize` checks, under the same `m.mu` hold, that no
+lock is held or waited for **and** that no pending replace (or in-progress record, R2) exists, before it
+records `inflight[name]`; otherwise `ErrBeingReplaced` (`FAILED_PRECONDITION`). It reads the pending state from
+the R12 state map (`stateMu`, a leaf), **never** from the settings record, so `m.mu` is never held across a
+registry read, and "pending" has one in-memory source of truth. The check-and-take for both directions
+happens inside one `m.mu` critical section, so neither can slip in between.
+
+**Re-check after `classify`**: for `SaveMcpServer`, whether the save removes the registration (a replace) or
+leads to an identity clear (an FR-415 client change) is known only after `classify`, which needs the record and
+the fresh host reads taken under the lock. So the save re-checks `inflight[name]` under `m.mu` right after
+`classify` and `ClientChanged`, and refuses `AUTH_IN_PROGRESS` with no change. Nothing has been stored or removed
+at that point, because the snapshot only reads. This is race-free: `Authorize` cannot record `inflight` while the
+lock is held, so the value seen at `classify` equals the value seen at take time. It catches an authorization
+that started before the save took the lock. Without it, a URL-only edit would run `mcp rm` under a live
+`sbx mcp auth`.
 
 A save that only stores header secrets and does not re-register skips the in-flight check (FR-424 allows it).
 
@@ -226,13 +293,17 @@ replace includes the current global-list status of each `removal_failed` name (`
 ### R9 — Identity binding clear and the *client re-bind pending* mark (FR-415)
 
 **Decision**: a client change is a change of client ID, authorization server, or URL while a client ID is
-set (old or new definition). After a successful add:
+set (old or new definition). After a successful add, **or** after a switchboard-only (secrets-only) save that
+stores the client secret for a marked or unrecorded server (FR-415):
 
 - client change **and** a client secret stored in this save, **or** the server is marked
   `rebind_pending` and this save stores a client secret, **or** switchboard had no definition and this save
   stores a client secret ⇒ `secret.Remove("mcp:<s>:client_secret:identity")`. On error, fresh list: absent ⇒
   `CLEARED`; listed ⇒ `NOT_CLEARED`; list unreadable ⇒ `UNCONFIRMED`. Not cleared/unconfirmed ⇒ mark stays/set.
-  Cleared ⇒ mark cleared.
+  Cleared ⇒ mark cleared. When the re-check confirms the record **absent**, the removal's output is **left out
+  of `host_errors`**. On a brand-new add the `:identity` record does not exist yet, so `secret rm -f` probably
+  exits non-zero, and that expected failure must not show as a runtime error under `registered`. The output is
+  kept (verbatim) for `NOT_CLEARED` / `UNCONFIRMED`.
 - client change, no client secret stored ⇒ `LEFT_IN_PLACE`, mark set.
 - otherwise ⇒ `NOT_TOUCHED`.
 
@@ -284,8 +355,11 @@ instead of `GONE`, and the TUI says "being saved on another client, try again". 
    `inspectReturnsTemplates = true` decides the template-vs-resolved case;
 5. adds secret status for each placeholder and for `client_secret` from the global list (`SET`, `MISSING`,
    `REMOVAL_FAILED` while a pending replace holds it and it is listed);
-6. lists this daemon's sandboxes whose `mcp_servers` contain the name (for FR-419, shown after a save);
-7. returns the fingerprint (R5).
+6. returns the fingerprint (R5).
+
+The definition read does **not** scan sandboxes. The FR-419 list of this daemon's sandboxes whose
+`mcp_servers` contain the name belongs to the **save outcome** (`McpSaveOutcome.attached_sandboxes`, T025). It
+is computed once, after a save, not on every Edit open.
 
 ### R12 — Launch skip and per-sandbox record (FR-425)
 
@@ -302,8 +376,9 @@ replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pendin
 
 **Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending,
 generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
-save turns `replacing`, or a pending replace is created or ends; it is loaded from the settings record at
-start. `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
+save turns `replacing`, or a pending replace (or in-progress record, R2) is created or ends; it is loaded from
+the settings record at start, after crash recovery (R2). It is the only source `Authorize`, `reconcile` and
+`ReplaceState` read for "pending". `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
 inside a bbolt transaction. Rules: no registry write (bbolt `Update`) and no `onReplaceEnded` call happens
 while `m.mu` is held, and no registry read is opened inside another registry transaction.
 
@@ -337,6 +412,14 @@ input. So:
   host-command warning's `pending` modal does today. If a credential header holds a literal, it shows the
   conversion prompt. Leaving the headers field within group 1 does nothing, so every field after it stays
   reachable.
+- **`LITERAL_ON_HOST` headers** (FR-423): a header that still equals the view's redacted value (`Bearer ••••`)
+  holds no real literal, because its value is not available. Converting it rewrites the header to the
+  template (`Bearer ${authorization}`) but **never** moves the redacted text into the secret field. The new
+  field starts blank and `missing`, with the status `re-enter the credential (held on the host)`, as the spec
+  requires ("the conversion needs the secret re-entered"). Declining the offer for such a header **continues
+  into group 2** with the `literal credential on host` warning, so a secrets-only or mark-only save stays
+  reachable. Only a save that would re-register is blocked (by the TUI and by the daemon, R2). Declining for a
+  header with real typed literal text keeps the form open with the refusal, as before.
 - It then rebuilds the whole form from the vals with `reopenForm(gMcp)` and calls `NextGroup` to land in the
   secrets group, so the secret fields always match the current headers. Moving back to group 1 and leaving it
   again repeats this.
@@ -366,7 +449,7 @@ The two groups are:
    client-secret field when a client ID is present. Values entered are kept by secret name across rebuilds.
 
 Pre-save checks (all client-side, then confirmations in this order, each `y`-only through `confirm.go`):
-literal-credential conversion offer (on leaving the headers field, and again on save); URL/argument
+literal-credential conversion offer (on leaving group 1, and again on save); URL/argument
 credential warning; FR-402 dropped settings; host-command local-execution warning (FR-407); authorization
 will be discarded (unless `UNAUTHORIZED`); FR-411 missing secrets / FR-409 removal-failed / FR-409 URL
 change must re-enter; FR-415 left-in-place warning. Then `SaveMcpServer`.

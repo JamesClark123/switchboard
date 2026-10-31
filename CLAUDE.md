@@ -154,7 +154,8 @@ pure package **`src/libs/switchboard-proto/mcprules`** used by daemon and TUI (F
 reserved `client_secret`, credential-header rule + one-step conversion + `Redact`, scopes, client ID, authorization
 server). Every MCP form save is one RPC **`SaveMcpServer`**, run on `context.WithoutCancel` under a per-name lock
 (`mcp/locks.go`, checked with the auth `inflight` record in one `Manager.mu` section, FR-424): fingerprint (HMAC-SHA-256
-under a per-start key; `STALE_CHANGED`/`STALE_RESTARTED`) → secret snapshot → `rm` (re-listed on failure) → stores
+under a per-start key; `STALE_CHANGED`/`STALE_RESTARTED`; a failed re-read is `UNVERIFIED`) → secret snapshot →
+classify (re-checks `inflight`) → crash-safety *in-progress* pending record (resolved at daemon start) → `rm` (re-listed on failure) → stores
 (stdin) → `add` (never re-checked on failure; rollback) → identity clear of `mcp:<s>:client_secret:identity` (re-checked;
 *client re-bind pending* mark) → one persist + one event. Definitions and **pending replaces** (Retry held/previous,
 Cancel, ended by *registered by another path*) live in `McpGatewaySettings.definitions`/`pending_replaces` (3–4).
