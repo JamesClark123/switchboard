@@ -132,11 +132,14 @@ A save left with esc while running ("saving… in the background") is matched to
 generation, never by name alone, so its reply never touches a later form, even of the same name. If it lands
 while another form is open, no outcome panel or follow-up opens over that form: the status line reads `saved
 <server> in the background: <state>` (or an `error:` line when the replace did not complete), followed by
-`; no longer used: <names>` when the save left secrets unused, and the view re-lists. Its follow-ups (the
+`; no longer used: <names> (offered for removal once the list is idle)` when the save left secrets unused, and
+the view re-lists. Its follow-ups (the
 FR-413 removal and FR-405 authorize offers) are kept and open once the list is idle again (no form, panel or
 modal open, no credential prompt up). A key on the idle list holds them back for 400 ms, and every further key
 restarts the pause, so a quick second key (a double esc to leave the screen) lands on the list rather than
-answering the offer; leaving the screen drops them (the unused secrets stay removable from the Secrets view).
+answering the offer. Leaving the screen first drops them, and the status line says so: `skipped the follow-ups
+of a background save: unused secrets <names> stay removable from the Secrets view; press A on <server> to
+authorize it` (each part only for the offer it replaces).
 
 On a failure the form stays open with the edits. Leaving a form that holds a pending replace (after a
 `NOT_REGISTERED` outcome, or in retry mode) opens the same `y`-only Cancel confirmation as `X`; accepting calls

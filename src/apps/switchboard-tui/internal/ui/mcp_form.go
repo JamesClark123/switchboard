@@ -792,7 +792,8 @@ func (v mcpState) mcpConversions() []mcpConversion {
 
 // convertMcpHeader applies mcprules.Convert to one header: the value becomes the
 // scheme plus a ${placeholder}, and a typed literal moves into that secret's
-// field (an on-host literal does not: its field stays blank, R14).
+// field (an on-host literal does not: its field stays blank, R14). It returns
+// "" and changes nothing when Convert finds no literal to move.
 func (m *Model) convertMcpHeader(c mcpConversion) string {
 	v := &m.mcpView
 	lines := headerLines(v.vals.headers)
@@ -805,6 +806,9 @@ func (m *Model) convertMcpHeader(c mcpConversion) string {
 	}
 	n, val := mcprules.SplitHeader(lines[c.line])
 	newVal, placeholder, secret := mcprules.Convert(n, val, used)
+	if newVal == val {
+		return ""
+	}
 	lines[c.line] = n + ": " + newVal
 	v.vals.headers = strings.Join(lines, "\n")
 	name := mcprules.SecretName(v.secretServer(), placeholder)
@@ -893,6 +897,14 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 	st.yOnly, st.returnTo = true, screenMcp
 	st.next = func(m *Model) tea.Cmd {
 		name := m.convertMcpHeader(c)
+		if name == "" {
+			// The rule refuses the header but Convert finds nothing to move:
+			// offering it again would loop, so stop with the refusal.
+			m.mcpView.status = "error: " + c.header + " holds literal text that cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)"
+			cmd := m.reopenForm(gMcp)
+			m.focusMcpField("headers")
+			return cmd
+		}
 		m.mcpView.status = "converted " + c.header + " to " + name
 		return m.mcpOfferConversions(m.mcpView.mcpConversions(), done)
 	}
@@ -1313,7 +1325,7 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 			if formOpen {
 				m.resetMcpForm()
 			}
-			v.status = "no reply to the save of " + msg.name + " within " + mcpSaveTimeout.String() +
+			v.status = "no reply to the save of " + msg.name + " within " + strconv.Itoa(int(mcpSaveTimeout.Minutes())) + " min" +
 				"; it may still be running on the daemon (the list shows its state)"
 			return m, relist
 		}
@@ -1349,10 +1361,19 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 		if mcpOutcomeFailed(out) {
 			v.status = "error: the background save of " + msg.name + " did not complete: " + mcpOutcomeState(out)
 		}
-		if unused := out.GetUnusedSecrets(); len(unused) > 0 {
-			v.status += "; no longer used: " + strings.Join(unused, ", ") + " (offered for removal when this form closes)"
+		unused := out.GetUnusedSecrets()
+		if len(unused) > 0 {
+			v.status += "; no longer used: " + strings.Join(unused, ", ") + " (offered for removal once the list is idle)"
 		}
-		v.deferred = append(v.deferred, m.mcpFollowups(out, msg.remote)...)
+		steps := m.mcpFollowups(out, msg.remote)
+		if len(unused) > 0 {
+			v.deferredSkip = append(v.deferredSkip, "unused secrets "+strings.Join(unused, ", ")+" stay removable from the Secrets view")
+		}
+		if len(steps) > 0 && len(unused) == 0 || len(steps) > 1 {
+			// The FR-405 authorize offer always follows the removal offer.
+			v.deferredSkip = append(v.deferredSkip, "press A on "+msg.name+" to authorize it")
+		}
+		v.deferred = append(v.deferred, steps...)
 		return m, relist
 	}
 	followups := m.mcpFollowups(out, msg.remote)

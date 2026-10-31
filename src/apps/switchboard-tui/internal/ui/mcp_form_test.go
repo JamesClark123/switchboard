@@ -509,6 +509,47 @@ func TestMcpCookieConversionSkipsAnEmptyCookie(t *testing.T) {
 	}
 }
 
+// Review round 5: a cookie of blanks then ${…} does not hide the literal
+// cookie after it; the offer used to loop and add an empty secret.
+func TestMcpCookieConversionAfterBlankPlaceholderCookie(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Cookie: a= ${x}; session=abc"
+	m = leaveGroup1(t, m)
+	if !strings.Contains(m.View(), "Convert the session cookie to a secret?") {
+		t.Fatalf("expected the session offer:\n%s", m.View())
+	}
+	m = accept(t, m)
+	if m.screen == screenConfirm {
+		t.Fatalf("the offer came back:\n%s", m.View())
+	}
+	v := m.mcpView
+	if v.vals.headers != "Cookie: a= ${x}; session=${cookie-session}" || v.secretValue("mcp:linear:cookie-session") != "abc" {
+		t.Errorf("headers %q secrets %v", v.vals.headers, v.secretVals)
+	}
+	if _, ok := v.secretVals["mcp:linear:cookie"]; ok {
+		t.Errorf("an empty cookie secret was added: %v", v.secretVals)
+	}
+}
+
+// Review round 5: a conversion that changes nothing stops the chain with the
+// refusal instead of offering the same header again.
+func TestMcpConversionThatFindsNothingStops(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Authorization: Bearer ${k}"
+	done, before := false, len(m.mcpView.secretVals)
+	m.mcpOfferConversions([]mcpConversion{{header: "Authorization", line: 0}}, func(*Model) tea.Cmd { done = true; return nil })
+	m = accept(t, m)
+	v := m.mcpView
+	if done || m.screen == screenConfirm || !strings.Contains(v.status, "cannot be converted") {
+		t.Fatalf("done %v screen %v status %q", done, m.screen, v.status)
+	}
+	if v.vals.headers != "Authorization: Bearer ${k}" || len(v.secretVals) != before {
+		t.Errorf("headers %q secrets %v", v.vals.headers, v.secretVals)
+	}
+}
+
 func TestMcpLiteralConversionOnLeave(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
 	m := openEdit(t, editModel(t, d))
@@ -1428,6 +1469,35 @@ func TestMcpBackgroundSaveFollowupsWaitForTheForm(t *testing.T) {
 	m = accept(t, m)
 	if len(d.mcpRmSecrets) != 1 || d.mcpRmSecrets[0][0] != "linear" || m.mcpView.deferred != nil {
 		t.Errorf("removal = %v, deferred %v", d.mcpRmSecrets, m.mcpView.deferred)
+	}
+}
+
+// Review round 5: leaving the screen before a background save's follow-ups
+// open drops them, and the status says what was skipped, the FR-405 authorize
+// offer included.
+func TestMcpBackgroundSaveFollowupsSkippedOnLeave(t *testing.T) {
+	out := &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_REGISTERED, UnusedSecrets: []string{"mcp:linear:k"},
+		Server: &pb.McpServer{Name: "linear", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, AuthState: pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED}}
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+		mcpSaveResults: []mcpSaveResult{{out: out}}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.attach = true
+	m, saveCmd := update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = keyIn(m, press("a"))
+	m = drainEdit(m, saveCmd)
+	if !strings.Contains(m.mcpView.status, "(offered for removal once the list is idle)") || len(m.mcpView.deferred) != 2 {
+		t.Fatalf("status %q deferred %d", m.mcpView.status, len(m.mcpView.deferred))
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc}) // the add form closes
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc}) // a quick second esc leaves
+	if m.screen != screenDaemons || m.mcpView.deferred != nil {
+		t.Fatalf("screen %v deferred %d", m.screen, len(m.mcpView.deferred))
+	}
+	for _, want := range []string{"skipped the follow-ups", "mcp:linear:k", "Secrets view", "press A on linear to authorize"} {
+		if !strings.Contains(m.status, want) {
+			t.Errorf("status %q lacks %q", m.status, want)
+		}
 	}
 }
 

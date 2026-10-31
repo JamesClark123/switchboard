@@ -124,6 +124,9 @@ type mcpState struct {
 	// deferred are the follow-ups of a background save (esc mid-save) that
 	// landed while another form was open; they open once the list is idle.
 	deferred []confirmState
+	// deferredSkip names what deferred offers, per save, for the status that
+	// says they were skipped when the screen is left before they open.
+	deferredSkip []string
 	// followAfter holds deferred back until mcpFollowupDelay after the last
 	// key on the idle list.
 	followAfter time.Time
@@ -833,9 +836,15 @@ var mcpFollowupDelay = 400 * time.Millisecond
 // (Update calls it after every message). A key on the idle list holds the offer
 // back for mcpFollowupDelay and asks to be woken after it
 // (mcpFollowupsReadyMsg); every later key restarts the wait, so the offer opens
-// only once the developer has paused, on the first message after it.
+// only once the developer has paused, on the first message after it. Leaving
+// the screen first drops them, and the status line says what was skipped.
 func (m Model) openDeferredMcpFollowups(msg tea.Msg) (Model, tea.Cmd) {
 	v := &m.mcpView
+	if len(v.deferred) > 0 && m.screen != screenMcp && m.screen != screenConfirm {
+		m.status = "skipped the follow-ups of a background save: " + strings.Join(v.deferredSkip, "; ")
+		v.deferred, v.deferredSkip = nil, nil
+		return m, nil
+	}
 	if len(v.deferred) == 0 || m.screen != screenMcp || v.vals != nil || v.mcpModalOpen() || m.credentialPromptUp() {
 		return m, nil
 	}
@@ -847,7 +856,7 @@ func (m Model) openDeferredMcpFollowups(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	steps := v.deferred
-	v.deferred = nil
+	v.deferred, v.deferredSkip = nil, nil
 	return m, m.mcpFollowChain(steps)
 }
 

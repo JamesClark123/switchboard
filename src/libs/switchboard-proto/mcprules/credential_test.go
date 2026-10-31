@@ -98,6 +98,12 @@ func TestConvert(t *testing.T) {
 		{"Cookie", "__Host-sid=abc", nil, "__Host-sid=${cookie-host-sid}", "cookie-host-sid", "abc"},
 		{"Cookie", "a._b=abc", nil, "a._b=${cookie-a.-b}", "cookie-a.-b", "abc"},
 		{"X--Key_", "abc", nil, "${x-key}", "x-key", "abc"},
+		// Review round 5: a cookie value of blanks then `${…}`, or of
+		// separators only (literal text to CheckCredentialValue), does not hide a later
+		// literal cookie or leave a refused value Convert cannot change.
+		{"Cookie", "a= ${x}; b=lit", nil, "a= ${x}; b=${cookie-b}", "cookie-b", "lit"},
+		{"Cookie", "a=\t${x}; session=abc", nil, "a=\t${x}; session=${cookie-session}", "cookie-session", "abc"},
+		{"Cookie", "a= ,; b=${b}", nil, "a= ${cookie-a}; b=${b}", "cookie-a", ","},
 	} {
 		v, p, s := Convert(tc.name, tc.value, tc.used)
 		if v != tc.wantValue || p != tc.wantP || s != tc.s {
@@ -172,6 +178,42 @@ func TestRedact(t *testing.T) {
 	for _, h := range []string{"Authorization=Bearer sk-live-SECRET", "Bad Name: sk-live-SECRET"} {
 		if out, ok := RedactHeader(h); !ok || out != RedactMarker {
 			t.Errorf("RedactHeader(%q) = %q %v", h, out, ok)
+		}
+	}
+}
+
+// Review round 5: every value CheckCredentialValue refuses for literal text
+// reaches a passing value by repeated Convert, and no step returns an empty
+// secret (a mismatch would loop the TUI's conversion offer).
+func TestConvertReachesCheck(t *testing.T) {
+	for _, c := range [][2]string{
+		{"Authorization", "Bearer sk-live-abc ${x}"},
+		{"Cookie", "session=abc; csrf=${t}"},
+		{"X-Auth-Mode", "oauth"},
+		{"Authorization", "Bearer sk-live-abc"},
+		{"Authorization", "Custom ${k}"},
+		{"Authorization", "${k} trailing"},
+		{"Authorization", "Bearer ••••"},
+		{"X-Api-Key", "abc"},
+		{"Cookie", "session=abc; csrf=def"},
+		{"Cookie", "a= ${x}; b=lit"},
+		{"Cookie", "a=\t${x}; b=lit"},
+		{"Cookie", "a=,; b=lit"},
+		{"Cookie", "theme= ; a=${a}; b=lit; c=; d=lit2"},
+		{"Authorization", "lit1 ${x} lit2"},
+	} {
+		v, used := c[1], map[string]bool{}
+		for step := 0; CheckCredentialValue(c[0], v) != nil; step++ {
+			if step == 8 {
+				t.Errorf("%s %q: still refused after %d converts: %q", c[0], c[1], step, v)
+				break
+			}
+			nv, p, sec := Convert(c[0], v, used)
+			if sec == "" || nv == v {
+				t.Errorf("%s %q: Convert of refused %q returned no secret", c[0], c[1], v)
+				break
+			}
+			v, used[p] = nv, true
 		}
 	}
 }

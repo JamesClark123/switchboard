@@ -238,6 +238,18 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 		}
 		return i + e + 1
 	}
+	// trimEnd drops trailing separators, except from a cookie's whole value:
+	// CheckCredentialValue counts `<cookie-name>=,` as literal text, so a
+	// value of separators only is still the run to convert.
+	trimEnd := func(start, end int) int {
+		if cookieName != "" && strings.Trim(v[start:end], " \t:;,") == "" {
+			return end
+		}
+		for end > start && strings.IndexByte(" \t:;,", v[end-1]) >= 0 {
+			end--
+		}
+		return end
+	}
 	start = -1
 	for i := 0; i < len(v); {
 		if start < 0 {
@@ -252,12 +264,12 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 			if loc := cookieNameRe.FindStringIndex(v[i:]); cookie && loc != nil {
 				cookieName = v[i : i+loc[1]-1]
 				i += loc[1]
+				for i < len(v) && (v[i] == ' ' || v[i] == '\t') {
+					i++
+				}
 				if e := placeholderAt(i); e >= 0 {
 					i, cookieName = e, ""
 					continue
-				}
-				for i < len(v) && (v[i] == ' ' || v[i] == '\t') {
-					i++
 				}
 				if i == len(v) || v[i] == ';' {
 					// An empty value: the `;` is skipped as a separator next.
@@ -268,7 +280,12 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 			start, end = i, i
 		}
 		if placeholderAt(i) >= 0 || cookie && v[i] == ';' {
-			break
+			if end = trimEnd(start, end); end > start {
+				return start, end, cookieName
+			}
+			// Only separators: no literal here, so keep scanning.
+			start, cookieName = -1, ""
+			continue
 		}
 		i++
 		end = i
@@ -276,10 +293,7 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 	if start < 0 {
 		return -1, -1, ""
 	}
-	for end > start && strings.IndexByte(" \t:;,", v[end-1]) >= 0 {
-		end--
-	}
-	if end <= start {
+	if end = trimEnd(start, end); end <= start {
 		return -1, -1, ""
 	}
 	return start, end, cookieName
