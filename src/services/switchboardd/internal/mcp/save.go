@@ -112,6 +112,8 @@ func (m *Manager) Save(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.M
 	}
 }
 
+var errNoURL = fmt.Errorf("%w: a remote server needs a URL", ErrInvalidArgs)
+
 // checkSaveRequest applies every FR-420 rule that needs no host read and
 // returns the cleaned definition.
 func checkSaveRequest(name string, req *pb.SaveMcpServerRequest) (*pb.McpServerDefinition, error) {
@@ -129,8 +131,11 @@ func checkSaveRequest(name string, req *pb.SaveMcpServerRequest) (*pb.McpServerD
 	switch def.Kind {
 	case pb.McpServerKind_MCP_SERVER_KIND_REMOTE:
 		def.Url = strings.TrimSpace(def.Url)
-		if def.Url == "" {
-			return nil, fmt.Errorf("%w: a remote server needs a URL", ErrInvalidArgs)
+		// An edit may leave a URL the host did not report empty; classify refuses
+		// it only when the save registers (research R2 First save of an
+		// unrecorded server).
+		if def.Url == "" && (req.GetIsNew() || req.GetRetryOfRevision() != 0) {
+			return nil, errNoURL
 		}
 		if def.Command != nil {
 			return nil, fmt.Errorf("%w: a remote server has no command", ErrInvalidArgs)
@@ -400,6 +405,9 @@ func (j *saveJob) classify() error {
 		j.replace = j.regChange
 	}
 	j.clientChanged = mcprules.ClientChanged(j.prev, j.def)
+	if j.regChange && j.def.Kind == pb.McpServerKind_MCP_SERVER_KIND_REMOTE && j.def.Url == "" {
+		return errNoURL
+	}
 	if j.regChange && len(j.def.LiteralOnHost) > 0 {
 		return fmt.Errorf("%w: header %q holds a credential that is only on the host; convert it to a ${placeholder} and re-enter the secret before re-registering", ErrInvalidArgs, j.def.LiteralOnHost[0])
 	}
