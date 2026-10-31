@@ -92,10 +92,15 @@ Paths are relative to the repository root. `M/` = `src/services/switchboardd/int
   `ErrAuthInProgress` if `inflight[name]` is set, checked in the same `m.mu` hold as the take). In that same hold, before waiting, `lockName` refuses with
 `ErrBeingReplaced` (`BEING_REPLACED`, "a save of this server is still running; try again later") while the
 state map shows the name `saving` or `recording`. `nameLock` also carries a `refuse chan struct{}` and a
-`refused bool`: the holder closes it through the flag (never twice) in the `stateMu` update that marks the name
-`saving` or `recording`; the `m.mu` hold whose state-map update clears `saving`/`recording` (the post-`persist`
-tail) swaps a closed channel for a fresh one and resets the flag, not unlock (an unclosed one is kept, so waiters
-that queued under an earlier holder still select on the current channel), and a waiting
+`refused bool`, guarded by `m.mu` like `busy`: the close and the swap both happen under `m.mu` with `stateMu`
+nested for the state-map update (never from `stateMu` alone or inside a bbolt transaction). The holder closes it
+through the flag (never twice) in the `m.mu` hold that marks the name `saving` or `recording`; for `saving` that
+hold runs **after** the in-progress write lands, never inside its mutate func, so a failed write leaves no stale
+`saving` or closed channel (a taker queued in between is refused at the close). The `m.mu` hold whose state-map
+update clears `saving`/`recording` (the post-`persist` tail) swaps a closed channel for a fresh one and resets
+the flag (an unclosed one is kept, so waiters that queued under an earlier holder still select on the current
+channel); as a backstop for an early-exit path that skips the tail, unlock also swaps it if `refused` is still
+set, in its `m.mu` hold before freeing the slot. A waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
@@ -104,7 +109,8 @@ zero (so `Authorize` is refused only for the lock held); holder A unlocks normal
 queued behind it, the `Save` takes the slot and becomes `saving`, and the `Remove` returns `BEING_REPLACED`
 without blocking; a `Remove` arriving after A's tail clears `saving` but before A unlocks (held in
 `onReplaceEnded`) waits for the slot, is not refused, and takes the lock once A unlocks; closing the channel a
-second time in one hold is a no-op (no double-close panic). Add
+second time in one hold is a no-op (no double-close panic); an unlock with `refused` still set (an early exit
+that skipped the tail) swaps the channel, and the next taker waits for the slot instead of being refused. Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings
@@ -274,7 +280,9 @@ unchanged.
   definition are untouched. A leftover plus a blocking `ls` stub ⇒ `NewManager` returns at once, and `List`
   reports the name `recovering`. A list failure keeps the record; a `Save`, an old-client `AddMcpServer` and a
   `SetMcpServerDefault` of that name are refused `UNVERIFIED`; the retry loop resolves it once the list
-  succeeds. `persist` fails once ⇒ the retry succeeds and the outcome is normal; a registration change whose `persist` fails 3 times ⇒
+  succeeds. An in-progress write that fails ⇒ the save stops with no host change, the name is not `saving`
+  (`List` shows no `save_in_progress`), and the next `Remove` takes the lock instead of returning
+  `BEING_REPLACED`. `persist` fails once ⇒ the retry succeeds and the outcome is normal; a registration change whose `persist` fails 3 times ⇒
   `UNAVAILABLE` with both events, the name reports `save_in_progress`, `SetMcpServerDefault` is refused
   `BEING_REPLACED`, a `RemoveMcpServer`, a second `Save` and an `AddMcpServer` of the name return
   `BEING_REPLACED` at once (they do not block), and once the registry accepts writes the save's own outcome is recorded with no restart:

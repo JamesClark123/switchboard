@@ -88,7 +88,10 @@ Steps, all under the per-name lock (R3):
    compared in normalised form, R6). Right after `classify` (and `ClientChanged`), the save re-checks
    `inflight[name]` under `m.mu` when the save removes the registration or touches `client_secret`/`:identity`,
    and refuses `AUTH_IN_PROGRESS` with no change (FR-424, R3).
-4a. Registration change: write the **in-progress record** (crash safety, below) before any host mutation.
+4a. Registration change: write the **in-progress record** (crash safety, below) before any host mutation. Once
+    that write has landed, one `m.mu` hold (with `stateMu` nested) marks the name `saving` and closes the lock's
+    `refuse` channel (*Leftover records*). Neither happens inside the write's mutate func, so a write that fails
+    marks nothing, and the save stops with no host change.
 5. Registration change: `sbx mcp rm --force` (existing argv) → on failure, wait for exit, re-list (R7).
 6. Stores (`secret.Manager.Set`, global, stdin) in placeholder order, then the client secret.
 7. `sbx mcp add … --skip-auth` with the new definition (scopes added, R10).
@@ -136,10 +139,20 @@ what the developer whose own save returned `UNAVAILABLE` sees for that row, and 
 last until the settings store recovers. A taker that is **already waiting** when the name becomes `saving` or
 `recording` (it queued during the save's steps 1–4: host reads, the pending-replace pre-step, the snapshot and
 `classify`, which can take tens of seconds on a slow host) is refused the same way at that moment: each
-`nameLock` carries a `refuse` channel and a `refused bool`, and the holder closes the channel (through the flag,
-so it is never closed twice) in the same `stateMu` update that marks the name `saving` or `recording`. The
+`nameLock` carries a `refuse` channel and a `refused bool`. Like the rest of `nameLock` they are guarded by
+`m.mu` (the guard of `busy`): both the close and the swap below happen **under `m.mu`, with `stateMu` nested**
+for the state-map update, which the lock order allows (`stateMu` is a leaf, R12). Neither ever happens from
+`stateMu` alone or inside a bbolt transaction. The holder closes the channel (through the flag, so it is never
+closed twice) in the same `m.mu` hold whose state-map update marks the name `saving` or `recording`. For
+`saving`, that hold comes **after** the in-progress write (step 4a) has landed, never inside its mutate func. So
+a write that fails to commit leaves no stale `saving` and no closed channel: the save stops with no host change
+and unlocks as usual. A taker that queues between the write and that hold is refused when the channel closes,
+so nothing is lost. For `recording`, it is the hold after the third failed `persist` (*Failed `persist`*). The
 `m.mu` hold whose state-map update **clears** `saving`/`recording` (the post-`persist` tail's first step) also
-swaps a closed channel for a fresh one and resets the flag, so the swap happens there, not at unlock. A channel
+swaps a closed channel for a fresh one and resets the flag, so on the normal path the swap happens there, not at
+unlock. As a backstop for any early-exit path that skips the tail, unlock also swaps the channel if `refused` is
+still set, in its own `m.mu` hold before it frees the slot; on the normal path it finds `refused` false and keeps
+the channel. A channel
 nobody closed stays, so every waiter, including one that queued under an earlier holder, selects on the channel
 the next holder closes. A closed channel therefore has no live waiters: each was refused when it closed, a taker
 arriving while the name is still `saving`/`recording` is refused by the state-map check above, and a taker
@@ -170,7 +183,7 @@ instead of waiting (above), so nothing queues on the lock however long this last
 save: a registration change says "the host was changed but the result could not be recorded yet; retrying". A
 **switchboard-only save** (FR-403: mark and/or secrets, possibly with an FR-415 identity clear) never wrote an
 in-progress record, so before returning it sets the state map's `recording` flag (closing the lock's `refuse`
-channel) **before** it emits the `UNAVAILABLE`-path events above, the same order as `saving` (step 4a) for a
+channel in the same `m.mu` hold) **before** it emits the `UNAVAILABLE`-path events above, the same order as `saving` (step 4a) for a
 registration change, so a client that re-lists on that `mcp_gateway_changed` already sees `save_in_progress`; it says "the save ran but its result (mark, re-bind state) could not be recorded yet; retrying",
 naming the secrets it stored. It runs the same keep-the-lock retry of the same per-name mutate func, and its
 post-`persist` tail clears `recording`. `List` reports the name `save_in_progress` meanwhile, so the TUI shows
