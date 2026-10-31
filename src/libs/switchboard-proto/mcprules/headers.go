@@ -56,7 +56,11 @@ func NormalizeHeaders(in []string) ([]string, error) {
 		name, value, ok := strings.Cut(h, ":")
 		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
 		switch {
-		case !ok || name == "" || value == "":
+		case !ok:
+			// Without a colon the name cannot be told from a credential value,
+			// so nothing of the line is quoted.
+			return nil, invalid("a header line has no colon; each header must be \"Name: value\"")
+		case name == "" || value == "":
 			return nil, invalid("header %s must be \"Name: value\"", quoteHeader(name, value))
 		case !headerNameRe.MatchString(name):
 			return nil, invalid("header name %q is not a valid HTTP field name", name)

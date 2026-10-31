@@ -68,10 +68,11 @@ func Normalize(def, recorded *pb.McpServerDefinition) *pb.McpServerDefinition {
 	return out
 }
 
-// Equal compares two definitions in normalised form; each side keeps an
-// offline_access the other records.
+// Equal compares two definitions in normalised form. Each side keeps its own
+// offline_access, so adding or removing it is a change; a runtime-added one is
+// dropped before the comparison by Normalize(hostScopes, recorded).
 func Equal(a, b *pb.McpServerDefinition) bool {
-	return proto.Equal(Normalize(a, b), Normalize(b, a))
+	return proto.Equal(Normalize(a, a), Normalize(b, b))
 }
 
 // RegistrationChanged reports whether new differs from old in any definition

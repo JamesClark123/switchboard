@@ -12,12 +12,12 @@ func def(url string, headers []string, scopes []string, client string) *pb.McpSe
 
 func TestNormalizeEqual(t *testing.T) {
 	a := def(" https://x ", []string{"X-B: 2", "x-a :1"}, []string{"write", "read", "read"}, "")
-	b := def("https://x", []string{"X-A: 1", "X-B: 2"}, []string{"read", "write", OfflineAccess}, "")
+	b := def("https://x", []string{"X-A: 1", "X-B: 2"}, []string{"read", "write"}, "")
 	if !Equal(a, b) {
 		t.Fatalf("not equal: %v vs %v", Normalize(a, b), Normalize(b, a))
 	}
 	rec := def("https://x", nil, []string{OfflineAccess}, "")
-	if n := Normalize(b, rec); len(n.Scopes) != 3 {
+	if n := Normalize(def("", nil, []string{"read", OfflineAccess}, ""), rec); len(n.Scopes) != 2 {
 		t.Errorf("recorded offline_access dropped: %v", n.Scopes)
 	}
 	if Equal(a, def("https://x", []string{"X-A: 1", "X-B: 3"}, nil, "")) {
@@ -66,5 +66,16 @@ func TestRegistrationAndClientChanged(t *testing.T) {
 	as.OauthAuthorizationServer = "https://idp"
 	if !ClientChanged(old, as) || ClientChanged(nil, old) {
 		t.Error("auth server")
+	}
+}
+
+func TestEqualCountsAnEditedOfflineAccess(t *testing.T) {
+	rec := &pb.McpServerDefinition{Scopes: []string{"read"}}
+	edited := &pb.McpServerDefinition{Scopes: []string{"read", OfflineAccess}}
+	if Equal(rec, edited) || !RegistrationChanged(rec, edited) || !RegistrationChanged(edited, rec) {
+		t.Error("adding or removing offline_access is a registration change")
+	}
+	if !Equal(edited, &pb.McpServerDefinition{Scopes: []string{OfflineAccess, "read", "read"}}) {
+		t.Error("order and duplicates are not a change")
 	}
 }

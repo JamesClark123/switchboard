@@ -101,3 +101,15 @@ func TestRedact(t *testing.T) {
 		t.Errorf("RedactHeader non-credential: %q %v", h, ok)
 	}
 }
+
+func TestReviewRegressions(t *testing.T) {
+	if _, err := NormalizeHeaders([]string{"Authorization Bearer sk_live_abc123"}); err == nil || strings.Contains(err.Error(), "sk_live") {
+		t.Errorf("no-colon header = %v", err)
+	}
+	if err := CheckCredentialValue("Authorization", "Bearer ${sk_live{abc}"); err == nil || strings.Contains(err.Error(), "sk_live") {
+		t.Errorf("brace inside a placeholder = %v", err)
+	}
+	if err := CheckCredentialValue("Authorization", "Bearer ${k}"); err != nil {
+		t.Errorf("plain placeholder = %v", err)
+	}
+}

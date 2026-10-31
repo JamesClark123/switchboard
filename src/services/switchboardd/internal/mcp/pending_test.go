@@ -72,7 +72,15 @@ func TestStartupRecoveryResolvesEveryLeftover(t *testing.T) {
 	e.rm("ls.fail")
 	close(gate)
 	waitFor(t, "recovery", func() bool { return len(e.settings().GetSavesInProgress()) == 0 })
-	waitFor(t, "recovering cleared", func() bool { return !e.m.stateSnapshot("ln").recovering })
+	// Each name's state update and secret removal follow its record write.
+	waitFor(t, "recovering cleared", func() bool {
+		for _, n := range []string{"ln", "lr", "nr", "nw"} {
+			if e.m.stateSnapshot(n).recovering {
+				return false
+			}
+		}
+		return !e.sec.has("mcp:nw:a") && len(e.endedHooks()) > 0
+	})
 
 	s := e.settings()
 	if e.sec.has("mcp:nw:a") || s.GetDefinitions()["nw"] != nil {
@@ -129,7 +137,9 @@ func TestStartupRecoveryOfARetry(t *testing.T) {
 	if s.GetPendingReplaces()["rl"] != nil || !s.GetMarks()["rl"] || s.GetDefinitions()["rl"].GetUrl() != "https://r/mcp" {
 		t.Errorf("retry listed = %v", s)
 	}
-	waitFor(t, "state", func() bool { return !e.m.stateSnapshot("rl").pending && e.m.stateSnapshot("rn").pending })
+	waitFor(t, "state", func() bool {
+		return !e.m.stateSnapshot("rl").pending && e.m.stateSnapshot("rn").pending && len(e.endedHooks()) > 0
+	})
 	if !has(e.endedHooks(), "rl:registered") {
 		t.Errorf("hooks = %v", e.endedHooks())
 	}

@@ -905,7 +905,7 @@ func (m *Manager) SetMode(_ context.Context, mode pb.McpAttachMode) (*pb.McpGate
 		return nil, err
 	}
 	m.emitChanged()
-	return normalize(settings), nil
+	return clientSettings(normalize(settings)), nil
 }
 
 // toggleRefusal is SetDefault's state-map fast path.

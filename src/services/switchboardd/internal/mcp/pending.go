@@ -55,12 +55,11 @@ func (m *Manager) CancelPending(ctx context.Context, name string, revision uint6
 			continue
 		}
 		removed = true
-		if ok, msg := m.removeCheckedOut(n); !ok {
-			if strings.Contains(msg, "; ") {
-				resp.Unconfirmed = append(resp.Unconfirmed, n)
-			} else {
-				resp.LeftOnHost = append(resp.LeftOnHost, n)
-			}
+		switch res, _ := m.removeCheckedOut(n); res {
+		case removeUnknown:
+			resp.Unconfirmed = append(resp.Unconfirmed, n)
+		case removeListed:
+			resp.LeftOnHost = append(resp.LeftOnHost, n)
 		}
 	}
 	settings, err = m.reg.UpdateMcpSettings(func(s *pb.McpGatewaySettings) error {

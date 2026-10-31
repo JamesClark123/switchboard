@@ -239,3 +239,12 @@ func TestSavePanicCrashes(t *testing.T) {
 		}
 	}
 }
+
+func TestSetModeReturnsClientSettingsOnly(t *testing.T) {
+	e := newSaveEnv(t)
+	e.add("gh", remote("https://x"), true, nil)
+	s, err := e.m.SetMode(context.Background(), pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE)
+	if err != nil || s.GetDefinitions() != nil || s.GetPendingReplaces() != nil || s.GetSavesInProgress() != nil || !s.GetMarks()["gh"] {
+		t.Errorf("settings = %v, %v", s, err)
+	}
+}

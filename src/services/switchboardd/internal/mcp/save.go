@@ -221,6 +221,12 @@ func (j *saveJob) run(ctx context.Context, reply func(*pb.McpSaveOutcome, error)
 		return
 	}
 	if err := j.markInProgress(); err != nil {
+		// No host change: a replace ends registered, so a launch that recorded
+		// the name skipped since classify is swept (a Retry's pending stands).
+		if j.replace {
+			j.m.clearRefusing(j.name, j.l, nil)
+			j.m.replaceEnded(j.name, true)
+		}
 		reply(nil, err)
 		return
 	}
@@ -258,7 +264,7 @@ func (j *saveJob) check(ctx context.Context) error {
 	if j.isNew && j.pending != nil {
 		return refuse(pb.McpSaveRefusal_PENDING_EXISTS, "%s has a pending replace; retry or cancel it", j.name)
 	}
-	hr := m.readHost(ctx, j.name)
+	hr := m.readHost(ctx, j.name, j.isNew)
 	switch {
 	case j.isNew:
 		if hr.lsErr != nil {
@@ -335,29 +341,39 @@ func (j *saveJob) retryPreStep(ctx context.Context) error {
 // removeChecked removes one secret on its own context; a failure is re-checked
 // against a fresh global list. It reports whether the secret is confirmed gone.
 func (m *Manager) removeChecked(name string) bool {
-	ok, _ := m.removeCheckedOut(name)
-	return ok
+	res, _ := m.removeCheckedOut(name)
+	return res == removeGone
 }
 
-// removeCheckedOut is removeChecked plus the removal's error text (empty when
-// the secret is confirmed gone).
-func (m *Manager) removeCheckedOut(name string) (bool, string) {
+// removeResult is what a removal and its re-check established.
+type removeResult int
+
+const (
+	removeGone    removeResult = iota // removed, or confirmed absent by the re-list
+	removeListed                      // the removal failed and the re-list still shows it
+	removeUnknown                     // the removal failed and the re-list failed too
+)
+
+// removeCheckedOut removes a global secret and, on failure, re-lists to tell a
+// secret that is gone anyway from one still stored. errs holds the removal's
+// (and the re-list's) error text, never a value.
+func (m *Manager) removeCheckedOut(name string) (removeResult, []string) {
 	rctx, cancel := context.WithTimeout(context.Background(), mutateTimeout)
 	_, err := m.secrets.RemoveQuiet(rctx, name)
 	cancel()
 	if err == nil {
-		return true, ""
+		return removeGone, nil
 	}
 	lctx, cancel := context.WithTimeout(context.Background(), time.Duration(listTimeout))
 	defer cancel()
 	global, lerr := m.secrets.ListGlobal(lctx)
-	if lerr != nil {
-		return false, err.Error() + "; " + lerr.Error()
+	switch {
+	case lerr != nil:
+		return removeUnknown, []string{err.Error(), lerr.Error()}
+	case global[name]:
+		return removeListed, []string{err.Error()}
 	}
-	if !global[name] {
-		return true, ""
-	}
-	return false, err.Error()
+	return removeGone, nil
 }
 
 // snapshotStep reads the global secret list once, under the lock (FR-410).
@@ -574,7 +590,7 @@ func (j *saveJob) failed() {
 	}
 	for _, n := range remove {
 		j.removedAny = true
-		if ok, _ := j.m.removeCheckedOut(n); ok {
+		if j.m.removeChecked(n) {
 			j.out.RolledBack = append(j.out.RolledBack, n)
 		} else {
 			j.out.RollbackFailed = append(j.out.RollbackFailed, n)
@@ -592,29 +608,18 @@ func (j *saveJob) identityStep() {
 	clear := j.storesClient && (j.clientChanged || j.rec.GetRebindPending() || j.rec == nil)
 	switch {
 	case clear:
-		id := mcprules.IdentityName(j.name)
 		j.removedAny = true
-		rctx, cancel := context.WithTimeout(context.Background(), mutateTimeout)
-		_, err := j.m.secrets.RemoveQuiet(rctx, id)
-		cancel()
-		if err == nil {
+		// A confirmed-absent record (a first add has none yet) is CLEARED with
+		// its expected failure left out of host_errors.
+		res, errs := j.m.removeCheckedOut(mcprules.IdentityName(j.name))
+		j.out.HostErrors = append(j.out.HostErrors, errs...)
+		switch res {
+		case removeGone:
 			j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_CLEARED, false
-			return
-		}
-		lctx, cancel := context.WithTimeout(context.Background(), time.Duration(listTimeout))
-		global, lerr := j.m.secrets.ListGlobal(lctx)
-		cancel()
-		switch {
-		case lerr != nil:
-			j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_UNCONFIRMED, true
-			j.out.HostErrors = append(j.out.HostErrors, err.Error(), lerr.Error())
-		case global[id]:
+		case removeListed:
 			j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_NOT_CLEARED, true
-			j.out.HostErrors = append(j.out.HostErrors, err.Error())
 		default:
-			// Confirmed absent: a first add has no :identity record yet, so the
-			// expected failure is left out of host_errors.
-			j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_CLEARED, false
+			j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_UNCONFIRMED, true
 		}
 	case j.clientChanged:
 		j.out.Identity, j.out.RebindPending = pb.McpSaveOutcome_LEFT_IN_PLACE, true
@@ -854,13 +859,13 @@ func (m *Manager) RemoveSecrets(ctx context.Context, name string, names []string
 	resp := &pb.RemoveMcpServerSecretsResponse{}
 	gone := map[string]bool{}
 	for _, n := range names {
-		ok, msg := m.removeCheckedOut(n)
-		if ok {
+		res, errs := m.removeCheckedOut(n)
+		if res == removeGone {
 			gone[n] = true
 			resp.Removed = append(resp.Removed, n)
 		} else {
 			resp.Failed = append(resp.Failed, n)
-			resp.HostErrors = append(resp.HostErrors, msg)
+			resp.HostErrors = append(resp.HostErrors, strings.Join(errs, "; "))
 		}
 	}
 	settings, err := m.reg.UpdateMcpSettings(func(s *pb.McpGatewaySettings) error {

@@ -45,14 +45,15 @@ func (h *hostRead) failed() bool {
 	return h.lsErr != nil || h.row != nil && (h.inspectErr != nil || h.remote() && h.authErr != nil)
 }
 
-// readHost runs the three reads in parallel under the list bound.
-func (m *Manager) readHost(ctx context.Context, name string) *hostRead {
+// readHost runs the three reads in parallel under the list bound; listOnly
+// (an add, which needs only the ls row) skips inspect and auth status.
+func (m *Manager) readHost(ctx context.Context, name string, listOnly bool) *hostRead {
 	rctx, cancel := context.WithTimeout(ctx, time.Duration(listTimeout))
 	defer cancel()
 	hr := &hostRead{auth: pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN}
 	var inspectOut, authOut string
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		rows, err := m.listRows(rctx)
@@ -63,6 +64,11 @@ func (m *Manager) readHost(ctx context.Context, name string) *hostRead {
 			}
 		}
 	}()
+	if listOnly {
+		wg.Wait()
+		return hr
+	}
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		inspectOut, hr.inspectErr = m.cli.run(rctx, argvInspect(name)...)
@@ -130,7 +136,7 @@ func (m *Manager) Definition(ctx context.Context, name string, forAdd bool) (*pb
 	if forAdd {
 		return base, nil
 	}
-	hr := m.readHost(ctx, name)
+	hr := m.readHost(ctx, name, false)
 	if hr.lsErr != nil {
 		return nil, hr.lsErr
 	}

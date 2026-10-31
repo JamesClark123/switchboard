@@ -27,8 +27,8 @@ func TestSaveNewServerStoresSecretsBeforeTheAddAndRecords(t *testing.T) {
 	if !has(argv, "mcp add gh --url https://x/mcp --header Authorization: Bearer ${api-key} --header X-Org: acme --scope read --scope write --skip-auth") {
 		t.Errorf("argv = %v", argv)
 	}
-	if hasPrefix(argv, "mcp rm") {
-		t.Error("a new server is never removed first")
+	if len(argv) < 2 || argv[0] != "mcp ls" || !strings.HasPrefix(argv[1], "mcp add gh") {
+		t.Errorf("a new server is only listed before the add: %v", argv)
 	}
 	if !e.sec.has("mcp:gh:api-key") || e.sec.callLog()[1] != "set mcp:gh:api-key" {
 		t.Errorf("secret calls = %v", e.sec.callLog())
@@ -792,5 +792,21 @@ func TestAuthorizeOneTimeScopesLeaveTheRecord(t *testing.T) {
 	}
 	if got := e.settings().GetDefinitions()["gh"].GetScopes(); strings.Join(got, ",") != "read" {
 		t.Errorf("recorded scopes = %v", got)
+	}
+}
+
+// A replace whose in-progress write fails changed nothing on the host: the
+// replace ends registered, so launch skips recorded since classify are swept.
+func TestSaveInProgressWriteFailureEndsTheReplace(t *testing.T) {
+	e := newSaveEnv(t)
+	e.add("gh", remote("https://x/mcp"), true, nil)
+	v := e.open("gh")
+	e.store.setFail(1)
+	e.clearLog()
+	if _, err := e.edit(v, remote("https://y/mcp"), true, nil); err == nil {
+		t.Fatal("the save succeeded with a failed in-progress write")
+	}
+	if hasPrefix(e.argv(), "mcp rm") || e.m.ReplaceState("gh") != EndedRegistered || !has(e.endedHooks(), "gh:registered") {
+		t.Errorf("argv %v state %v hooks %v", e.argv(), e.m.ReplaceState("gh"), e.endedHooks())
 	}
 }

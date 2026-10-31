@@ -96,6 +96,11 @@ func CheckCredentialValue(name, value string) error {
 			if end < 0 {
 				return invalid("header %q: %s has an unterminated ${…}", name, pos)
 			}
+			// Placeholders() matches only ${…} without braces inside, so
+			// anything else would pass here and be sent as literal text.
+			if strings.ContainsAny(rest[2:end], "{$") {
+				return invalid("header %q: %s has a ${…} with a brace or $ inside", name, pos)
+			}
 			found = true
 			rest = rest[end+1:]
 			pos = "the text after ${…}"
