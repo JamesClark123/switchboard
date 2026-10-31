@@ -661,6 +661,7 @@ func (m *Model) resetMcpForm() {
 	v.secretVals, v.opened, v.view, v.fingerprint = nil, nil, nil, ""
 	v.retry, v.holding, v.flags, v.reenter = nil, nil, nil, nil
 	v.declinedHost, v.formNote, v.saving, v.statusFor, v.retryPrevious = nil, "", false, "", false
+	v.leaveRefusal = ""
 	v.baseline, v.filled, v.remoteStash = mcpSnapshot{}, mcpFormVals{}, nil
 }
 
@@ -882,13 +883,48 @@ func (m *Model) mcpChain(steps []confirmState, done, back func(m *Model) tea.Cmd
 func (m Model) leaveMcpDefinition() (tea.Model, tea.Cmd) {
 	return m, m.mcpOfferConversions(m.mcpView.mcpConversions(), func(m *Model) tea.Cmd {
 		if err := m.mcpView.mcpCredentialRefusal(); err != nil {
-			m.mcpView.status = ruleMsg(err)
-			cmd := m.reopenForm(gMcp)
-			m.focusMcpField("headers")
-			return cmd
+			return m.refuseMcpLeave(ruleMsg(err))
 		}
+		// A refusal from an earlier leave no longer holds: clear it (a status
+		// set since, such as "converted X to Y", stays), keeping the warning
+		// for any on-host literal still declined.
+		v := &m.mcpView
+		if v.leaveRefusal != "" && v.status == v.leaveRefusal {
+			v.status = v.declinedHostWarning()
+		}
+		v.leaveRefusal = ""
 		return m.enterMcpSecrets()
 	})
+}
+
+// refuseMcpLeave returns to the form at the headers with a refusal, keeping
+// the warning for any declined on-host literal (it shows only once otherwise).
+func (m *Model) refuseMcpLeave(msg string) tea.Cmd {
+	v := &m.mcpView
+	if w := v.declinedHostWarning(); w != "" {
+		msg += "; " + w
+	}
+	v.status, v.leaveRefusal = msg, msg
+	cmd := m.reopenForm(gMcp)
+	m.focusMcpField("headers")
+	return cmd
+}
+
+// declinedHostWarning words the declined on-host literals the headers still
+// hold, or "" when there are none.
+func (v mcpState) declinedHostWarning() string {
+	if v.vals == nil || v.vals.kind == "command" || len(v.declinedHost) == 0 {
+		return ""
+	}
+	host := v.literalOnHost()
+	var out []string
+	for _, h := range headerLines(v.vals.headers) {
+		n, val := mcprules.SplitHeader(h)
+		if r := host[strings.ToLower(n)]; r != "" && r == val && v.declinedHost[strings.ToLower(n)] {
+			out = append(out, n+": literal credential on host — a save that re-registers is refused until it is converted")
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // mcpCredentialRefusal applies the credential header rule to the typed
@@ -922,11 +958,8 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 	if ok, reason := m.mcpView.secretsAvailable(); !ok && !c.onHost {
 		// A typed literal would move into a secret field that does not exist,
 		// and every save storing it would be refused: no offer, the refusal.
-		m.mcpView.status = "error: " + c.header + " holds a literal credential and cannot be converted: secret storage is unavailable on this host (" +
-			reason + "); remove the header, or write a ${placeholder} by hand and store its value once storage is back"
-		cmd := m.reopenForm(gMcp)
-		m.focusMcpField("headers")
-		return cmd
+		return m.refuseMcpLeave("error: " + c.header + " holds a literal credential and cannot be converted: secret storage is unavailable on this host (" +
+			reason + "); remove the header, or write a ${placeholder} by hand and store its value once storage is back")
 	}
 	st := m.mcpConversionConfirm(c)
 	st.yOnly, st.returnTo = true, screenMcp
@@ -941,10 +974,7 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 					why = ruleText(err)
 				}
 			}
-			m.mcpView.status = "error: " + why + " — it cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)"
-			cmd := m.reopenForm(gMcp)
-			m.focusMcpField("headers")
-			return cmd
+			return m.refuseMcpLeave("error: " + why + " — it cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)")
 		}
 		m.mcpView.status = "converted " + c.header + " to " + name
 		return m.mcpOfferConversions(m.mcpView.mcpConversions(), done)
@@ -959,10 +989,7 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 			v.status = c.header + ": literal credential on host — a save that re-registers is refused until it is converted"
 			return m.mcpOfferConversions(m.mcpView.mcpConversions(), done)
 		}
-		v.status = "error: " + c.header + " holds a literal credential; convert it to a ${placeholder} (saving it as typed is refused)"
-		cmd := m.reopenForm(gMcp)
-		m.focusMcpField("headers")
-		return cmd
+		return m.refuseMcpLeave("error: " + c.header + " holds a literal credential; convert it to a ${placeholder} (saving it as typed is refused)")
 	}
 	m.confirm = st
 	m.screen = screenConfirm

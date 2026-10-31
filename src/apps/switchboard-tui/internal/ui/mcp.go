@@ -101,6 +101,7 @@ type mcpState struct {
 	flags         map[string]string // reload flags per field key (FR-404)
 	reenter       map[string]string // secret name -> forced status
 	declinedHost  map[string]bool   // on-host literal headers whose conversion was declined
+	leaveRefusal  string            // the status a refused leave of group 1 set, cleared by the next leave
 	formNote      string
 	statusFor     string // the name the add-mode secret status was read for
 	saving        bool   // a SaveMcpServer call is in flight

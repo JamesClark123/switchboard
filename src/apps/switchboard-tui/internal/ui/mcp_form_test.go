@@ -573,6 +573,12 @@ func TestMcpNoConversionOfferForEmptyCredential(t *testing.T) {
 		if strings.Contains(m.mcpView.status, "invalid argument") {
 			t.Errorf("%q: status keeps the rule prefix: %q", h, m.mcpView.status)
 		}
+		// Fixing the header and tabbing out clears the refusal.
+		m.mcpView.vals.headers = name + ": ${k}"
+		m = leaveGroup1(t, m)
+		if m.screen != screenMcp || m.mcpView.focusInDefinition() || strings.Contains(m.mcpView.status, "error:") {
+			t.Errorf("%q: fix+leave: screen %v focus-in-def %v status %q", h, m.screen, m.mcpView.focusInDefinition(), m.mcpView.status)
+		}
 	}
 }
 
@@ -672,6 +678,33 @@ func TestMcpLiteralOnHostDeclineAllowsMarkOnlySave(t *testing.T) {
 	}
 	if len(d.mcpSaves) != 1 || d.mcpSaves[0].GetDefinition().GetHeaders()[0] != "Authorization: Bearer ••••" {
 		t.Errorf("saves = %+v", d.mcpSaves)
+	}
+}
+
+func TestMcpLiteralOnHostDeclineWarningSurvivesRefusal(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": literalOnHostView()}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Authorization: Bearer ••••\nX-Api-Key: ,"
+	m = leaveGroup1(t, m)
+	m = keyIn(m, press("n"))
+	// The empty header is refused, and the decline warning stays with it.
+	if !m.mcpView.focusInDefinition() || !strings.Contains(m.mcpView.status, `error: header "X-Api-Key"`) ||
+		!strings.Contains(m.mcpView.status, "Authorization: literal credential on host") {
+		t.Fatalf("decline+refusal: focus-in-def %v status %q", m.mcpView.focusInDefinition(), m.mcpView.status)
+	}
+	// Fixing the header and tabbing out drops the refusal but keeps the warning.
+	m.mcpView.vals.headers = "Authorization: Bearer ••••\nX-Api-Key: ${k}"
+	m = leaveGroup1(t, m)
+	if m.screen != screenMcp || m.mcpView.focusInDefinition() || strings.Contains(m.mcpView.status, "error:") ||
+		!strings.Contains(m.mcpView.status, "Authorization: literal credential on host") {
+		t.Fatalf("fix+leave: screen %v focus-in-def %v status %q", m.screen, m.mcpView.focusInDefinition(), m.mcpView.status)
+	}
+	// A refusal not set by leaving (here "converted X to Y") is kept.
+	m.mcpView.status = "converted X to Y"
+	m.mcpView.leaveRefusal = "error: stale"
+	m = leaveGroup1(t, m)
+	if m.mcpView.status != "converted X to Y" {
+		t.Errorf("a later status is kept: %q", m.mcpView.status)
 	}
 }
 
