@@ -1579,6 +1579,55 @@ func (StepResolution) EnumDescriptor() ([]byte, []int) {
 	return file_switchboard_proto_rawDescGZIP(), []int{26}
 }
 
+type McpSkipState int32
+
+const (
+	McpSkipState_MCP_SKIP_STATE_UNSPECIFIED            McpSkipState = 0
+	McpSkipState_MCP_SKIP_STATE_SKIPPED_BEING_REPLACED McpSkipState = 1
+	McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH McpSkipState = 2
+)
+
+// Enum value maps for McpSkipState.
+var (
+	McpSkipState_name = map[int32]string{
+		0: "MCP_SKIP_STATE_UNSPECIFIED",
+		1: "MCP_SKIP_STATE_SKIPPED_BEING_REPLACED",
+		2: "MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH",
+	}
+	McpSkipState_value = map[string]int32{
+		"MCP_SKIP_STATE_UNSPECIFIED":            0,
+		"MCP_SKIP_STATE_SKIPPED_BEING_REPLACED": 1,
+		"MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH": 2,
+	}
+)
+
+func (x McpSkipState) Enum() *McpSkipState {
+	p := new(McpSkipState)
+	*p = x
+	return p
+}
+
+func (x McpSkipState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpSkipState) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[27].Descriptor()
+}
+
+func (McpSkipState) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[27]
+}
+
+func (x McpSkipState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpSkipState.Descriptor instead.
+func (McpSkipState) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{27}
+}
+
 type AgentCheck_State int32
 
 const (
@@ -1615,11 +1664,11 @@ func (x AgentCheck_State) String() string {
 }
 
 func (AgentCheck_State) Descriptor() protoreflect.EnumDescriptor {
-	return file_switchboard_proto_enumTypes[27].Descriptor()
+	return file_switchboard_proto_enumTypes[28].Descriptor()
 }
 
 func (AgentCheck_State) Type() protoreflect.EnumType {
-	return &file_switchboard_proto_enumTypes[27]
+	return &file_switchboard_proto_enumTypes[28]
 }
 
 func (x AgentCheck_State) Number() protoreflect.EnumNumber {
@@ -1629,6 +1678,296 @@ func (x AgentCheck_State) Number() protoreflect.EnumNumber {
 // Deprecated: Use AgentCheck_State.Descriptor instead.
 func (AgentCheck_State) EnumDescriptor() ([]byte, []int) {
 	return file_switchboard_proto_rawDescGZIP(), []int{4, 0}
+}
+
+type McpFieldFlag_Kind int32
+
+const (
+	McpFieldFlag_KIND_UNSPECIFIED     McpFieldFlag_Kind = 0
+	McpFieldFlag_CHANGED_ON_HOST      McpFieldFlag_Kind = 1
+	McpFieldFlag_NOT_RECOVERABLE      McpFieldFlag_Kind = 2
+	McpFieldFlag_LITERAL_ON_HOST      McpFieldFlag_Kind = 3
+	McpFieldFlag_RESOLVED_UNCHECKABLE McpFieldFlag_Kind = 4 // inspect returns resolved values (FR-423 flag)
+)
+
+// Enum value maps for McpFieldFlag_Kind.
+var (
+	McpFieldFlag_Kind_name = map[int32]string{
+		0: "KIND_UNSPECIFIED",
+		1: "CHANGED_ON_HOST",
+		2: "NOT_RECOVERABLE",
+		3: "LITERAL_ON_HOST",
+		4: "RESOLVED_UNCHECKABLE",
+	}
+	McpFieldFlag_Kind_value = map[string]int32{
+		"KIND_UNSPECIFIED":     0,
+		"CHANGED_ON_HOST":      1,
+		"NOT_RECOVERABLE":      2,
+		"LITERAL_ON_HOST":      3,
+		"RESOLVED_UNCHECKABLE": 4,
+	}
+)
+
+func (x McpFieldFlag_Kind) Enum() *McpFieldFlag_Kind {
+	p := new(McpFieldFlag_Kind)
+	*p = x
+	return p
+}
+
+func (x McpFieldFlag_Kind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpFieldFlag_Kind) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[29].Descriptor()
+}
+
+func (McpFieldFlag_Kind) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[29]
+}
+
+func (x McpFieldFlag_Kind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpFieldFlag_Kind.Descriptor instead.
+func (McpFieldFlag_Kind) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{79, 0}
+}
+
+type McpSecretStatus_Status int32
+
+const (
+	McpSecretStatus_STATUS_UNSPECIFIED McpSecretStatus_Status = 0
+	McpSecretStatus_SET                McpSecretStatus_Status = 1
+	McpSecretStatus_MISSING            McpSecretStatus_Status = 2
+	McpSecretStatus_REMOVAL_FAILED     McpSecretStatus_Status = 3
+)
+
+// Enum value maps for McpSecretStatus_Status.
+var (
+	McpSecretStatus_Status_name = map[int32]string{
+		0: "STATUS_UNSPECIFIED",
+		1: "SET",
+		2: "MISSING",
+		3: "REMOVAL_FAILED",
+	}
+	McpSecretStatus_Status_value = map[string]int32{
+		"STATUS_UNSPECIFIED": 0,
+		"SET":                1,
+		"MISSING":            2,
+		"REMOVAL_FAILED":     3,
+	}
+)
+
+func (x McpSecretStatus_Status) Enum() *McpSecretStatus_Status {
+	p := new(McpSecretStatus_Status)
+	*p = x
+	return p
+}
+
+func (x McpSecretStatus_Status) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpSecretStatus_Status) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[30].Descriptor()
+}
+
+func (McpSecretStatus_Status) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[30]
+}
+
+func (x McpSecretStatus_Status) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpSecretStatus_Status.Descriptor instead.
+func (McpSecretStatus_Status) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{80, 0}
+}
+
+type McpSaveOutcome_State int32
+
+const (
+	McpSaveOutcome_STATE_UNSPECIFIED      McpSaveOutcome_State = 0
+	McpSaveOutcome_REGISTERED             McpSaveOutcome_State = 1
+	McpSaveOutcome_UNCHANGED_REGISTRATION McpSaveOutcome_State = 2
+	McpSaveOutcome_STILL_REGISTERED       McpSaveOutcome_State = 3
+	McpSaveOutcome_NOT_REGISTERED         McpSaveOutcome_State = 4
+)
+
+// Enum value maps for McpSaveOutcome_State.
+var (
+	McpSaveOutcome_State_name = map[int32]string{
+		0: "STATE_UNSPECIFIED",
+		1: "REGISTERED",
+		2: "UNCHANGED_REGISTRATION",
+		3: "STILL_REGISTERED",
+		4: "NOT_REGISTERED",
+	}
+	McpSaveOutcome_State_value = map[string]int32{
+		"STATE_UNSPECIFIED":      0,
+		"REGISTERED":             1,
+		"UNCHANGED_REGISTRATION": 2,
+		"STILL_REGISTERED":       3,
+		"NOT_REGISTERED":         4,
+	}
+)
+
+func (x McpSaveOutcome_State) Enum() *McpSaveOutcome_State {
+	p := new(McpSaveOutcome_State)
+	*p = x
+	return p
+}
+
+func (x McpSaveOutcome_State) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpSaveOutcome_State) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[31].Descriptor()
+}
+
+func (McpSaveOutcome_State) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[31]
+}
+
+func (x McpSaveOutcome_State) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpSaveOutcome_State.Descriptor instead.
+func (McpSaveOutcome_State) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{83, 0}
+}
+
+type McpSaveOutcome_Identity int32
+
+const (
+	McpSaveOutcome_IDENTITY_UNSPECIFIED McpSaveOutcome_Identity = 0
+	McpSaveOutcome_NOT_TOUCHED          McpSaveOutcome_Identity = 1
+	McpSaveOutcome_LEFT_IN_PLACE        McpSaveOutcome_Identity = 2
+	McpSaveOutcome_CLEARED              McpSaveOutcome_Identity = 3
+	McpSaveOutcome_NOT_CLEARED          McpSaveOutcome_Identity = 4
+	McpSaveOutcome_UNCONFIRMED          McpSaveOutcome_Identity = 5
+)
+
+// Enum value maps for McpSaveOutcome_Identity.
+var (
+	McpSaveOutcome_Identity_name = map[int32]string{
+		0: "IDENTITY_UNSPECIFIED",
+		1: "NOT_TOUCHED",
+		2: "LEFT_IN_PLACE",
+		3: "CLEARED",
+		4: "NOT_CLEARED",
+		5: "UNCONFIRMED",
+	}
+	McpSaveOutcome_Identity_value = map[string]int32{
+		"IDENTITY_UNSPECIFIED": 0,
+		"NOT_TOUCHED":          1,
+		"LEFT_IN_PLACE":        2,
+		"CLEARED":              3,
+		"NOT_CLEARED":          4,
+		"UNCONFIRMED":          5,
+	}
+)
+
+func (x McpSaveOutcome_Identity) Enum() *McpSaveOutcome_Identity {
+	p := new(McpSaveOutcome_Identity)
+	*p = x
+	return p
+}
+
+func (x McpSaveOutcome_Identity) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpSaveOutcome_Identity) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[32].Descriptor()
+}
+
+func (McpSaveOutcome_Identity) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[32]
+}
+
+func (x McpSaveOutcome_Identity) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpSaveOutcome_Identity.Descriptor instead.
+func (McpSaveOutcome_Identity) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{83, 1}
+}
+
+type McpSaveRefusal_Reason int32
+
+const (
+	McpSaveRefusal_REASON_UNSPECIFIED     McpSaveRefusal_Reason = 0
+	McpSaveRefusal_STALE_CHANGED          McpSaveRefusal_Reason = 1
+	McpSaveRefusal_STALE_RESTARTED        McpSaveRefusal_Reason = 2
+	McpSaveRefusal_PENDING_ENDED          McpSaveRefusal_Reason = 3
+	McpSaveRefusal_PENDING_REMOVAL_FAILED McpSaveRefusal_Reason = 4
+	McpSaveRefusal_AUTH_IN_PROGRESS       McpSaveRefusal_Reason = 5
+	McpSaveRefusal_BEING_REPLACED         McpSaveRefusal_Reason = 6
+	McpSaveRefusal_PENDING_EXISTS         McpSaveRefusal_Reason = 7
+	McpSaveRefusal_GONE                   McpSaveRefusal_Reason = 8
+	McpSaveRefusal_UNVERIFIED             McpSaveRefusal_Reason = 9
+)
+
+// Enum value maps for McpSaveRefusal_Reason.
+var (
+	McpSaveRefusal_Reason_name = map[int32]string{
+		0: "REASON_UNSPECIFIED",
+		1: "STALE_CHANGED",
+		2: "STALE_RESTARTED",
+		3: "PENDING_ENDED",
+		4: "PENDING_REMOVAL_FAILED",
+		5: "AUTH_IN_PROGRESS",
+		6: "BEING_REPLACED",
+		7: "PENDING_EXISTS",
+		8: "GONE",
+		9: "UNVERIFIED",
+	}
+	McpSaveRefusal_Reason_value = map[string]int32{
+		"REASON_UNSPECIFIED":     0,
+		"STALE_CHANGED":          1,
+		"STALE_RESTARTED":        2,
+		"PENDING_ENDED":          3,
+		"PENDING_REMOVAL_FAILED": 4,
+		"AUTH_IN_PROGRESS":       5,
+		"BEING_REPLACED":         6,
+		"PENDING_EXISTS":         7,
+		"GONE":                   8,
+		"UNVERIFIED":             9,
+	}
+)
+
+func (x McpSaveRefusal_Reason) Enum() *McpSaveRefusal_Reason {
+	p := new(McpSaveRefusal_Reason)
+	*p = x
+	return p
+}
+
+func (x McpSaveRefusal_Reason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (McpSaveRefusal_Reason) Descriptor() protoreflect.EnumDescriptor {
+	return file_switchboard_proto_enumTypes[33].Descriptor()
+}
+
+func (McpSaveRefusal_Reason) Type() protoreflect.EnumType {
+	return &file_switchboard_proto_enumTypes[33]
+}
+
+func (x McpSaveRefusal_Reason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use McpSaveRefusal_Reason.Descriptor instead.
+func (McpSaveRefusal_Reason) EnumDescriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{90, 0}
 }
 
 type AgentSpec struct {
@@ -2084,7 +2423,10 @@ type Sandbox struct {
 	// NEVER carried here (I-C4).
 	Controller *SandboxController `protobuf:"bytes,23,opt,name=controller,proto3" json:"controller,omitempty"`
 	// --- SWI-18 ---
-	Revision      uint64 `protobuf:"varint,24,opt,name=revision,proto3" json:"revision,omitempty"` // stamped by the registry on every write (FR-308c)
+	Revision uint64 `protobuf:"varint,24,opt,name=revision,proto3" json:"revision,omitempty"` // stamped by the registry on every write (FR-308c)
+	// --- SWI-21 (FR-425) ---
+	// Marked servers skipped at launch because they were being replaced, and what became of them.
+	McpSkipped    []*McpSkippedServer `protobuf:"bytes,25,rep,name=mcp_skipped,json=mcpSkipped,proto3" json:"mcp_skipped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2285,6 +2627,13 @@ func (x *Sandbox) GetRevision() uint64 {
 		return x.Revision
 	}
 	return 0
+}
+
+func (x *Sandbox) GetMcpSkipped() []*McpSkippedServer {
+	if x != nil {
+		return x.McpSkipped
+	}
+	return nil
 }
 
 // KitSpec is a kit authored client-side. The client owns kit storage (mirroring
@@ -5787,11 +6136,15 @@ type McpServer struct {
 	AttachByDefault bool                   `protobuf:"varint,5,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"` // switchboard-owned mark (FR-080)
 	// Verbatim columns of the real `sbx mcp ls` table (reconciled 2026-10-10:
 	// NAME / TRANSPORT / STATUS / GATEWAY / DETAIL — no URL column):
-	Transport     string `protobuf:"bytes,6,opt,name=transport,proto3" json:"transport,omitempty"`                     // e.g. "remote http"
-	StatusText    string `protobuf:"bytes,7,opt,name=status_text,json=statusText,proto3" json:"status_text,omitempty"` // e.g. "needs auth"
-	Detail        string `protobuf:"bytes,8,opt,name=detail,proto3" json:"detail,omitempty"`                           // e.g. "sbx mcp auth notion"
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Transport  string `protobuf:"bytes,6,opt,name=transport,proto3" json:"transport,omitempty"`                     // e.g. "remote http"
+	StatusText string `protobuf:"bytes,7,opt,name=status_text,json=statusText,proto3" json:"status_text,omitempty"` // e.g. "needs auth"
+	Detail     string `protobuf:"bytes,8,opt,name=detail,proto3" json:"detail,omitempty"`                           // e.g. "sbx mcp auth notion"
+	// --- SWI-21 ---
+	RebindPending  bool `protobuf:"varint,9,opt,name=rebind_pending,json=rebindPending,proto3" json:"rebind_pending,omitempty"`       // FR-415: client changed, identity binding left in place
+	SaveInProgress bool `protobuf:"varint,10,opt,name=save_in_progress,json=saveInProgress,proto3" json:"save_in_progress,omitempty"` // a live save holds an in-progress record (research R2)
+	Recovering     bool `protobuf:"varint,11,opt,name=recovering,proto3" json:"recovering,omitempty"`                                 // a leftover in-progress record waits for recovery
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *McpServer) Reset() {
@@ -5880,13 +6233,38 @@ func (x *McpServer) GetDetail() string {
 	return ""
 }
 
+func (x *McpServer) GetRebindPending() bool {
+	if x != nil {
+		return x.RebindPending
+	}
+	return false
+}
+
+func (x *McpServer) GetSaveInProgress() bool {
+	if x != nil {
+		return x.SaveInProgress
+	}
+	return false
+}
+
+func (x *McpServer) GetRecovering() bool {
+	if x != nil {
+		return x.Recovering
+	}
+	return false
+}
+
 // Persisted per daemon in the registry's `mcp` bucket (research R3).
 type McpGatewaySettings struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	DefaultAttachMode McpAttachMode          `protobuf:"varint,1,opt,name=default_attach_mode,json=defaultAttachMode,proto3,enum=switchboard.v1.McpAttachMode" json:"default_attach_mode,omitempty"`
 	Marks             map[string]bool        `protobuf:"bytes,2,rep,name=marks,proto3" json:"marks,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // server name -> attach by default
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// --- SWI-21 (research R4, R8, R2) --- never sent to clients (cleared in ListMcpServers).
+	Definitions     map[string]*McpServerDefinition `protobuf:"bytes,3,rep,name=definitions,proto3" json:"definitions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	PendingReplaces map[string]*McpPendingReplace   `protobuf:"bytes,4,rep,name=pending_replaces,json=pendingReplaces,proto3" json:"pending_replaces,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	SavesInProgress map[string]*McpSaveInProgress   `protobuf:"bytes,5,rep,name=saves_in_progress,json=savesInProgress,proto3" json:"saves_in_progress,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *McpGatewaySettings) Reset() {
@@ -5933,6 +6311,27 @@ func (x *McpGatewaySettings) GetMarks() map[string]bool {
 	return nil
 }
 
+func (x *McpGatewaySettings) GetDefinitions() map[string]*McpServerDefinition {
+	if x != nil {
+		return x.Definitions
+	}
+	return nil
+}
+
+func (x *McpGatewaySettings) GetPendingReplaces() map[string]*McpPendingReplace {
+	if x != nil {
+		return x.PendingReplaces
+	}
+	return nil
+}
+
+func (x *McpGatewaySettings) GetSavesInProgress() map[string]*McpSaveInProgress {
+	if x != nil {
+		return x.SavesInProgress
+	}
+	return nil
+}
+
 type ListMcpServersRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -5970,11 +6369,12 @@ func (*ListMcpServersRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListMcpServersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Servers       []*McpServer           `protobuf:"bytes,1,rep,name=servers,proto3" json:"servers,omitempty"`
-	Settings      *McpGatewaySettings    `protobuf:"bytes,2,opt,name=settings,proto3" json:"settings,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Servers         []*McpServer           `protobuf:"bytes,1,rep,name=servers,proto3" json:"servers,omitempty"`
+	Settings        *McpGatewaySettings    `protobuf:"bytes,2,opt,name=settings,proto3" json:"settings,omitempty"`
+	PendingReplaces []*McpPendingReplace   `protobuf:"bytes,3,rep,name=pending_replaces,json=pendingReplaces,proto3" json:"pending_replaces,omitempty"` // SWI-21 (FR-426)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ListMcpServersResponse) Reset() {
@@ -6021,6 +6421,13 @@ func (x *ListMcpServersResponse) GetSettings() *McpGatewaySettings {
 	return nil
 }
 
+func (x *ListMcpServersResponse) GetPendingReplaces() []*McpPendingReplace {
+	if x != nil {
+		return x.PendingReplaces
+	}
+	return nil
+}
+
 type AddMcpServerRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -6042,8 +6449,10 @@ type AddMcpServerRequest struct {
 	// RFC 8414 metadata (an absolute path on the daemon's host, or an http(s)
 	// URL) for a server that publishes none → `--oauth-authorization-server`.
 	OauthAuthorizationServer string `protobuf:"bytes,8,opt,name=oauth_authorization_server,json=oauthAuthorizationServer,proto3" json:"oauth_authorization_server,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// SWI-21 (FR-416): default OAuth scopes → one `--scope` each. Remote only.
+	Scopes        []string `protobuf:"bytes,9,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AddMcpServerRequest) Reset() {
@@ -6141,6 +6550,13 @@ func (x *AddMcpServerRequest) GetOauthAuthorizationServer() string {
 		return x.OauthAuthorizationServer
 	}
 	return ""
+}
+
+func (x *AddMcpServerRequest) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
 }
 
 type isAddMcpServerRequest_Definition interface {
@@ -6248,8 +6664,12 @@ func (x *RemoveMcpServerResponse) GetNotes() []string {
 }
 
 type AuthorizeMcpServerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// SWI-21 (FR-418): one-time scopes (`--scope` each) or none at all (`--no-scope`).
+	// Neither set keeps the registration's defaults. Both set is INVALID_ARGUMENT.
+	Scopes        []string `protobuf:"bytes,2,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	NoScope       bool     `protobuf:"varint,3,opt,name=no_scope,json=noScope,proto3" json:"no_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6289,6 +6709,20 @@ func (x *AuthorizeMcpServerRequest) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *AuthorizeMcpServerRequest) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *AuthorizeMcpServerRequest) GetNoScope() bool {
+	if x != nil {
+		return x.NoScope
+	}
+	return false
 }
 
 type McpAuthProgress struct {
@@ -6717,6 +7151,1347 @@ func (x *DetachMcpServerRequest) GetName() string {
 	return ""
 }
 
+type McpServerDefinition struct {
+	state                    protoimpl.MessageState            `protogen:"open.v1"`
+	Kind                     McpServerKind                     `protobuf:"varint,1,opt,name=kind,proto3,enum=switchboard.v1.McpServerKind" json:"kind,omitempty"`
+	Url                      string                            `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	Command                  *AddMcpServerRequest_LocalCommand `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
+	Headers                  []string                          `protobuf:"bytes,4,rep,name=headers,proto3" json:"headers,omitempty"` // "Name: value"; never a credential literal (FR-423)
+	ClientId                 string                            `protobuf:"bytes,5,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	OauthAuthorizationServer string                            `protobuf:"bytes,6,opt,name=oauth_authorization_server,json=oauthAuthorizationServer,proto3" json:"oauth_authorization_server,omitempty"`
+	Scopes                   []string                          `protobuf:"bytes,7,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	RebindPending            bool                              `protobuf:"varint,8,opt,name=rebind_pending,json=rebindPending,proto3" json:"rebind_pending,omitempty"`  // FR-415
+	LiteralOnHost            []string                          `protobuf:"bytes,9,rep,name=literal_on_host,json=literalOnHost,proto3" json:"literal_on_host,omitempty"` // header names held redacted (FR-423)
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *McpServerDefinition) Reset() {
+	*x = McpServerDefinition{}
+	mi := &file_switchboard_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpServerDefinition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpServerDefinition) ProtoMessage() {}
+
+func (x *McpServerDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpServerDefinition.ProtoReflect.Descriptor instead.
+func (*McpServerDefinition) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{75}
+}
+
+func (x *McpServerDefinition) GetKind() McpServerKind {
+	if x != nil {
+		return x.Kind
+	}
+	return McpServerKind_MCP_SERVER_KIND_UNSPECIFIED
+}
+
+func (x *McpServerDefinition) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *McpServerDefinition) GetCommand() *AddMcpServerRequest_LocalCommand {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *McpServerDefinition) GetHeaders() []string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *McpServerDefinition) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *McpServerDefinition) GetOauthAuthorizationServer() string {
+	if x != nil {
+		return x.OauthAuthorizationServer
+	}
+	return ""
+}
+
+func (x *McpServerDefinition) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *McpServerDefinition) GetRebindPending() bool {
+	if x != nil {
+		return x.RebindPending
+	}
+	return false
+}
+
+func (x *McpServerDefinition) GetLiteralOnHost() []string {
+	if x != nil {
+		return x.LiteralOnHost
+	}
+	return nil
+}
+
+type McpPendingReplace struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Name                 string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	AttachByDefault      bool                   `protobuf:"varint,2,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"`
+	Definition           *McpServerDefinition   `protobuf:"bytes,3,opt,name=definition,proto3" json:"definition,omitempty"`
+	Previous             *McpServerDefinition   `protobuf:"bytes,4,opt,name=previous,proto3" json:"previous,omitempty"`
+	RemovedSecrets       []string               `protobuf:"bytes,5,rep,name=removed_secrets,json=removedSecrets,proto3" json:"removed_secrets,omitempty"`
+	RemovalFailedSecrets []string               `protobuf:"bytes,6,rep,name=removal_failed_secrets,json=removalFailedSecrets,proto3" json:"removal_failed_secrets,omitempty"`
+	AddStarted           bool                   `protobuf:"varint,7,opt,name=add_started,json=addStarted,proto3" json:"add_started,omitempty"`
+	Error                string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	FailedAt             *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=failed_at,json=failedAt,proto3" json:"failed_at,omitempty"`
+	Revision             uint64                 `protobuf:"varint,10,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *McpPendingReplace) Reset() {
+	*x = McpPendingReplace{}
+	mi := &file_switchboard_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpPendingReplace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpPendingReplace) ProtoMessage() {}
+
+func (x *McpPendingReplace) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpPendingReplace.ProtoReflect.Descriptor instead.
+func (*McpPendingReplace) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *McpPendingReplace) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpPendingReplace) GetAttachByDefault() bool {
+	if x != nil {
+		return x.AttachByDefault
+	}
+	return false
+}
+
+func (x *McpPendingReplace) GetDefinition() *McpServerDefinition {
+	if x != nil {
+		return x.Definition
+	}
+	return nil
+}
+
+func (x *McpPendingReplace) GetPrevious() *McpServerDefinition {
+	if x != nil {
+		return x.Previous
+	}
+	return nil
+}
+
+func (x *McpPendingReplace) GetRemovedSecrets() []string {
+	if x != nil {
+		return x.RemovedSecrets
+	}
+	return nil
+}
+
+func (x *McpPendingReplace) GetRemovalFailedSecrets() []string {
+	if x != nil {
+		return x.RemovalFailedSecrets
+	}
+	return nil
+}
+
+func (x *McpPendingReplace) GetAddStarted() bool {
+	if x != nil {
+		return x.AddStarted
+	}
+	return false
+}
+
+func (x *McpPendingReplace) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *McpPendingReplace) GetFailedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FailedAt
+	}
+	return nil
+}
+
+func (x *McpPendingReplace) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+// Crash safety (research R2): written by a registration change under the per-name lock before its
+// first host mutation, deleted by its persist. Leftovers (from an earlier daemon run)
+// are resolved only by the manager's recovery routine.
+// Never sent to clients. Kept apart from McpPendingReplace so a Retry's pending replace is untouched.
+type McpSaveInProgress struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	Name                      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	AttachByDefault           bool                   `protobuf:"varint,2,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"` // the save's mark (copy)
+	Definition                *McpServerDefinition   `protobuf:"bytes,3,opt,name=definition,proto3" json:"definition,omitempty"`
+	Previous                  *McpServerDefinition   `protobuf:"bytes,4,opt,name=previous,proto3" json:"previous,omitempty"` // replace: live; Retry: pending's previous; new server: unset
+	Retry                     bool                   `protobuf:"varint,5,opt,name=retry,proto3" json:"retry,omitempty"`
+	PlannedCreatedSecrets     []string               `protobuf:"bytes,6,rep,name=planned_created_secrets,json=plannedCreatedSecrets,proto3" json:"planned_created_secrets,omitempty"`             // absent in the snapshot
+	PlannedOverwrittenSecrets []string               `protobuf:"bytes,7,rep,name=planned_overwritten_secrets,json=plannedOverwrittenSecrets,proto3" json:"planned_overwritten_secrets,omitempty"` // present in the snapshot
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *McpSaveInProgress) Reset() {
+	*x = McpSaveInProgress{}
+	mi := &file_switchboard_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpSaveInProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpSaveInProgress) ProtoMessage() {}
+
+func (x *McpSaveInProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpSaveInProgress.ProtoReflect.Descriptor instead.
+func (*McpSaveInProgress) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *McpSaveInProgress) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpSaveInProgress) GetAttachByDefault() bool {
+	if x != nil {
+		return x.AttachByDefault
+	}
+	return false
+}
+
+func (x *McpSaveInProgress) GetDefinition() *McpServerDefinition {
+	if x != nil {
+		return x.Definition
+	}
+	return nil
+}
+
+func (x *McpSaveInProgress) GetPrevious() *McpServerDefinition {
+	if x != nil {
+		return x.Previous
+	}
+	return nil
+}
+
+func (x *McpSaveInProgress) GetRetry() bool {
+	if x != nil {
+		return x.Retry
+	}
+	return false
+}
+
+func (x *McpSaveInProgress) GetPlannedCreatedSecrets() []string {
+	if x != nil {
+		return x.PlannedCreatedSecrets
+	}
+	return nil
+}
+
+func (x *McpSaveInProgress) GetPlannedOverwrittenSecrets() []string {
+	if x != nil {
+		return x.PlannedOverwrittenSecrets
+	}
+	return nil
+}
+
+// for_add: only the secret status (stored_secrets, secrets_available) for a name that
+// need not be registered (add mode, R11).
+type GetMcpServerDefinitionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ForAdd        bool                   `protobuf:"varint,2,opt,name=for_add,json=forAdd,proto3" json:"for_add,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMcpServerDefinitionRequest) Reset() {
+	*x = GetMcpServerDefinitionRequest{}
+	mi := &file_switchboard_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMcpServerDefinitionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMcpServerDefinitionRequest) ProtoMessage() {}
+
+func (x *GetMcpServerDefinitionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMcpServerDefinitionRequest.ProtoReflect.Descriptor instead.
+func (*GetMcpServerDefinitionRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *GetMcpServerDefinitionRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetMcpServerDefinitionRequest) GetForAdd() bool {
+	if x != nil {
+		return x.ForAdd
+	}
+	return false
+}
+
+type McpFieldFlag struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Field         string                 `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"` // "url", "headers", "headers/<Name>", "client_id", "oauth_authorization_server", "scopes", "command"
+	Kind          McpFieldFlag_Kind      `protobuf:"varint,2,opt,name=kind,proto3,enum=switchboard.v1.McpFieldFlag_Kind" json:"kind,omitempty"`
+	HostValue     string                 `protobuf:"bytes,3,opt,name=host_value,json=hostValue,proto3" json:"host_value,omitempty"` // redacted where FR-423 applies
+	RecordedValue string                 `protobuf:"bytes,4,opt,name=recorded_value,json=recordedValue,proto3" json:"recorded_value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *McpFieldFlag) Reset() {
+	*x = McpFieldFlag{}
+	mi := &file_switchboard_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpFieldFlag) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpFieldFlag) ProtoMessage() {}
+
+func (x *McpFieldFlag) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpFieldFlag.ProtoReflect.Descriptor instead.
+func (*McpFieldFlag) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *McpFieldFlag) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *McpFieldFlag) GetKind() McpFieldFlag_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return McpFieldFlag_KIND_UNSPECIFIED
+}
+
+func (x *McpFieldFlag) GetHostValue() string {
+	if x != nil {
+		return x.HostValue
+	}
+	return ""
+}
+
+func (x *McpFieldFlag) GetRecordedValue() string {
+	if x != nil {
+		return x.RecordedValue
+	}
+	return ""
+}
+
+type McpSecretStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // full name mcp:<server>:<placeholder|client_secret>
+	Status        McpSecretStatus_Status `protobuf:"varint,2,opt,name=status,proto3,enum=switchboard.v1.McpSecretStatus_Status" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *McpSecretStatus) Reset() {
+	*x = McpSecretStatus{}
+	mi := &file_switchboard_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpSecretStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpSecretStatus) ProtoMessage() {}
+
+func (x *McpSecretStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpSecretStatus.ProtoReflect.Descriptor instead.
+func (*McpSecretStatus) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *McpSecretStatus) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpSecretStatus) GetStatus() McpSecretStatus_Status {
+	if x != nil {
+		return x.Status
+	}
+	return McpSecretStatus_STATUS_UNSPECIFIED
+}
+
+type McpDefinitionView struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Name                     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Definition               *McpServerDefinition   `protobuf:"bytes,2,opt,name=definition,proto3" json:"definition,omitempty"` // merged pre-fill (redacted)
+	Flags                    []*McpFieldFlag        `protobuf:"bytes,3,rep,name=flags,proto3" json:"flags,omitempty"`
+	UnsupportedSettings      []string               `protobuf:"bytes,4,rep,name=unsupported_settings,json=unsupportedSettings,proto3" json:"unsupported_settings,omitempty"` // e.g. "resource", "skip-ssrf-check", "registry image"
+	Secrets                  []*McpSecretStatus     `protobuf:"bytes,5,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	SecretsAvailable         bool                   `protobuf:"varint,6,opt,name=secrets_available,json=secretsAvailable,proto3" json:"secrets_available,omitempty"`
+	SecretsUnavailableReason string                 `protobuf:"bytes,7,opt,name=secrets_unavailable_reason,json=secretsUnavailableReason,proto3" json:"secrets_unavailable_reason,omitempty"`
+	AuthState                McpAuthState           `protobuf:"varint,8,opt,name=auth_state,json=authState,proto3,enum=switchboard.v1.McpAuthState" json:"auth_state,omitempty"`
+	HasRecord                bool                   `protobuf:"varint,9,opt,name=has_record,json=hasRecord,proto3" json:"has_record,omitempty"`
+	AttachByDefault          bool                   `protobuf:"varint,10,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"`
+	PendingReplace           *McpPendingReplace     `protobuf:"bytes,11,opt,name=pending_replace,json=pendingReplace,proto3" json:"pending_replace,omitempty"`
+	Fingerprint              string                 `protobuf:"bytes,12,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"` // opaque; echo in SaveMcpServerRequest
+	// FR-406 Cancel confirmation: removal-failed names still in the global list;
+	// unknown when the list cannot be read.
+	PendingRemovalFailedListed      []string `protobuf:"bytes,13,rep,name=pending_removal_failed_listed,json=pendingRemovalFailedListed,proto3" json:"pending_removal_failed_listed,omitempty"`
+	PendingRemovalFailedListUnknown bool     `protobuf:"varint,14,opt,name=pending_removal_failed_list_unknown,json=pendingRemovalFailedListUnknown,proto3" json:"pending_removal_failed_list_unknown,omitempty"`
+	// Every global-scope mcp:<name>:* secret name (never values); the form derives
+	// set/missing for placeholders typed after it opened (FR-409, FR-411).
+	StoredSecrets []string `protobuf:"bytes,15,rep,name=stored_secrets,json=storedSecrets,proto3" json:"stored_secrets,omitempty"`
+	// A live save of the name holds an in-progress record (research R2); when the name is not listed
+	// this is returned instead of NOT_FOUND.
+	SaveInProgress bool `protobuf:"varint,16,opt,name=save_in_progress,json=saveInProgress,proto3" json:"save_in_progress,omitempty"`
+	// A leftover in-progress record is waiting for recovery (research R2); same NOT_FOUND rule.
+	Recovering    bool `protobuf:"varint,17,opt,name=recovering,proto3" json:"recovering,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *McpDefinitionView) Reset() {
+	*x = McpDefinitionView{}
+	mi := &file_switchboard_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpDefinitionView) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpDefinitionView) ProtoMessage() {}
+
+func (x *McpDefinitionView) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpDefinitionView.ProtoReflect.Descriptor instead.
+func (*McpDefinitionView) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *McpDefinitionView) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpDefinitionView) GetDefinition() *McpServerDefinition {
+	if x != nil {
+		return x.Definition
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetFlags() []*McpFieldFlag {
+	if x != nil {
+		return x.Flags
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetUnsupportedSettings() []string {
+	if x != nil {
+		return x.UnsupportedSettings
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetSecrets() []*McpSecretStatus {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetSecretsAvailable() bool {
+	if x != nil {
+		return x.SecretsAvailable
+	}
+	return false
+}
+
+func (x *McpDefinitionView) GetSecretsUnavailableReason() string {
+	if x != nil {
+		return x.SecretsUnavailableReason
+	}
+	return ""
+}
+
+func (x *McpDefinitionView) GetAuthState() McpAuthState {
+	if x != nil {
+		return x.AuthState
+	}
+	return McpAuthState_MCP_AUTH_STATE_UNSPECIFIED
+}
+
+func (x *McpDefinitionView) GetHasRecord() bool {
+	if x != nil {
+		return x.HasRecord
+	}
+	return false
+}
+
+func (x *McpDefinitionView) GetAttachByDefault() bool {
+	if x != nil {
+		return x.AttachByDefault
+	}
+	return false
+}
+
+func (x *McpDefinitionView) GetPendingReplace() *McpPendingReplace {
+	if x != nil {
+		return x.PendingReplace
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+func (x *McpDefinitionView) GetPendingRemovalFailedListed() []string {
+	if x != nil {
+		return x.PendingRemovalFailedListed
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetPendingRemovalFailedListUnknown() bool {
+	if x != nil {
+		return x.PendingRemovalFailedListUnknown
+	}
+	return false
+}
+
+func (x *McpDefinitionView) GetStoredSecrets() []string {
+	if x != nil {
+		return x.StoredSecrets
+	}
+	return nil
+}
+
+func (x *McpDefinitionView) GetSaveInProgress() bool {
+	if x != nil {
+		return x.SaveInProgress
+	}
+	return false
+}
+
+func (x *McpDefinitionView) GetRecovering() bool {
+	if x != nil {
+		return x.Recovering
+	}
+	return false
+}
+
+type SaveMcpServerRequest struct {
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	Name                        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Definition                  *McpServerDefinition   `protobuf:"bytes,2,opt,name=definition,proto3" json:"definition,omitempty"` // rebind_pending / literal_on_host ignored (daemon-owned)
+	AttachByDefault             bool                   `protobuf:"varint,3,opt,name=attach_by_default,json=attachByDefault,proto3" json:"attach_by_default,omitempty"`
+	IsNew                       bool                   `protobuf:"varint,4,opt,name=is_new,json=isNew,proto3" json:"is_new,omitempty"`                                                                                               // add from the form
+	Fingerprint                 string                 `protobuf:"bytes,5,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`                                                                                                 // "" only with is_new
+	RetryOfRevision             uint64                 `protobuf:"varint,6,opt,name=retry_of_revision,json=retryOfRevision,proto3" json:"retry_of_revision,omitempty"`                                                               // Retry of a pending replace
+	SecretValues                map[string]string      `protobuf:"bytes,7,rep,name=secret_values,json=secretValues,proto3" json:"secret_values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // full secret name -> value; never logged (FR-104)
+	AcknowledgeLocalExecution   bool                   `protobuf:"varint,8,opt,name=acknowledge_local_execution,json=acknowledgeLocalExecution,proto3" json:"acknowledge_local_execution,omitempty"`                                 // FR-076/FR-407
+	ConfirmDropUnsupported      bool                   `protobuf:"varint,9,opt,name=confirm_drop_unsupported,json=confirmDropUnsupported,proto3" json:"confirm_drop_unsupported,omitempty"`                                          // FR-402
+	ConfirmDiscardAuthorization bool                   `protobuf:"varint,10,opt,name=confirm_discard_authorization,json=confirmDiscardAuthorization,proto3" json:"confirm_discard_authorization,omitempty"`                          // FR-404
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
+}
+
+func (x *SaveMcpServerRequest) Reset() {
+	*x = SaveMcpServerRequest{}
+	mi := &file_switchboard_proto_msgTypes[82]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SaveMcpServerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SaveMcpServerRequest) ProtoMessage() {}
+
+func (x *SaveMcpServerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[82]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SaveMcpServerRequest.ProtoReflect.Descriptor instead.
+func (*SaveMcpServerRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{82}
+}
+
+func (x *SaveMcpServerRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SaveMcpServerRequest) GetDefinition() *McpServerDefinition {
+	if x != nil {
+		return x.Definition
+	}
+	return nil
+}
+
+func (x *SaveMcpServerRequest) GetAttachByDefault() bool {
+	if x != nil {
+		return x.AttachByDefault
+	}
+	return false
+}
+
+func (x *SaveMcpServerRequest) GetIsNew() bool {
+	if x != nil {
+		return x.IsNew
+	}
+	return false
+}
+
+func (x *SaveMcpServerRequest) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+func (x *SaveMcpServerRequest) GetRetryOfRevision() uint64 {
+	if x != nil {
+		return x.RetryOfRevision
+	}
+	return 0
+}
+
+func (x *SaveMcpServerRequest) GetSecretValues() map[string]string {
+	if x != nil {
+		return x.SecretValues
+	}
+	return nil
+}
+
+func (x *SaveMcpServerRequest) GetAcknowledgeLocalExecution() bool {
+	if x != nil {
+		return x.AcknowledgeLocalExecution
+	}
+	return false
+}
+
+func (x *SaveMcpServerRequest) GetConfirmDropUnsupported() bool {
+	if x != nil {
+		return x.ConfirmDropUnsupported
+	}
+	return false
+}
+
+func (x *SaveMcpServerRequest) GetConfirmDiscardAuthorization() bool {
+	if x != nil {
+		return x.ConfirmDiscardAuthorization
+	}
+	return false
+}
+
+type McpSaveOutcome struct {
+	state             protoimpl.MessageState  `protogen:"open.v1"`
+	Name              string                  `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	State             McpSaveOutcome_State    `protobuf:"varint,2,opt,name=state,proto3,enum=switchboard.v1.McpSaveOutcome_State" json:"state,omitempty"`
+	Replaced          bool                    `protobuf:"varint,3,opt,name=replaced,proto3" json:"replaced,omitempty"`
+	AddStarted        bool                    `protobuf:"varint,4,opt,name=add_started,json=addStarted,proto3" json:"add_started,omitempty"`
+	Created           []string                `protobuf:"bytes,5,rep,name=created,proto3" json:"created,omitempty"`
+	Overwritten       []string                `protobuf:"bytes,6,rep,name=overwritten,proto3" json:"overwritten,omitempty"`
+	RolledBack        []string                `protobuf:"bytes,7,rep,name=rolled_back,json=rolledBack,proto3" json:"rolled_back,omitempty"`
+	RollbackFailed    []string                `protobuf:"bytes,8,rep,name=rollback_failed,json=rollbackFailed,proto3" json:"rollback_failed,omitempty"`
+	Identity          McpSaveOutcome_Identity `protobuf:"varint,9,opt,name=identity,proto3,enum=switchboard.v1.McpSaveOutcome_Identity" json:"identity,omitempty"`
+	RebindPending     bool                    `protobuf:"varint,10,opt,name=rebind_pending,json=rebindPending,proto3" json:"rebind_pending,omitempty"`
+	HostErrors        []string                `protobuf:"bytes,11,rep,name=host_errors,json=hostErrors,proto3" json:"host_errors,omitempty"`
+	AttachedSandboxes []*McpAttachedSandbox   `protobuf:"bytes,12,rep,name=attached_sandboxes,json=attachedSandboxes,proto3" json:"attached_sandboxes,omitempty"`
+	UnusedSecrets     []string                `protobuf:"bytes,13,rep,name=unused_secrets,json=unusedSecrets,proto3" json:"unused_secrets,omitempty"`
+	PendingReplace    *McpPendingReplace      `protobuf:"bytes,14,opt,name=pending_replace,json=pendingReplace,proto3" json:"pending_replace,omitempty"`
+	Server            *McpServer              `protobuf:"bytes,15,opt,name=server,proto3" json:"server,omitempty"` // decorated row when registered
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *McpSaveOutcome) Reset() {
+	*x = McpSaveOutcome{}
+	mi := &file_switchboard_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpSaveOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpSaveOutcome) ProtoMessage() {}
+
+func (x *McpSaveOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpSaveOutcome.ProtoReflect.Descriptor instead.
+func (*McpSaveOutcome) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *McpSaveOutcome) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpSaveOutcome) GetState() McpSaveOutcome_State {
+	if x != nil {
+		return x.State
+	}
+	return McpSaveOutcome_STATE_UNSPECIFIED
+}
+
+func (x *McpSaveOutcome) GetReplaced() bool {
+	if x != nil {
+		return x.Replaced
+	}
+	return false
+}
+
+func (x *McpSaveOutcome) GetAddStarted() bool {
+	if x != nil {
+		return x.AddStarted
+	}
+	return false
+}
+
+func (x *McpSaveOutcome) GetCreated() []string {
+	if x != nil {
+		return x.Created
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetOverwritten() []string {
+	if x != nil {
+		return x.Overwritten
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetRolledBack() []string {
+	if x != nil {
+		return x.RolledBack
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetRollbackFailed() []string {
+	if x != nil {
+		return x.RollbackFailed
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetIdentity() McpSaveOutcome_Identity {
+	if x != nil {
+		return x.Identity
+	}
+	return McpSaveOutcome_IDENTITY_UNSPECIFIED
+}
+
+func (x *McpSaveOutcome) GetRebindPending() bool {
+	if x != nil {
+		return x.RebindPending
+	}
+	return false
+}
+
+func (x *McpSaveOutcome) GetHostErrors() []string {
+	if x != nil {
+		return x.HostErrors
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetAttachedSandboxes() []*McpAttachedSandbox {
+	if x != nil {
+		return x.AttachedSandboxes
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetUnusedSecrets() []string {
+	if x != nil {
+		return x.UnusedSecrets
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetPendingReplace() *McpPendingReplace {
+	if x != nil {
+		return x.PendingReplace
+	}
+	return nil
+}
+
+func (x *McpSaveOutcome) GetServer() *McpServer {
+	if x != nil {
+		return x.Server
+	}
+	return nil
+}
+
+type McpAttachedSandbox struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId       string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	DisplayName     string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	SkippedAtLaunch bool                   `protobuf:"varint,3,opt,name=skipped_at_launch,json=skippedAtLaunch,proto3" json:"skipped_at_launch,omitempty"` // FR-425 entry
+	Exclusive       bool                   `protobuf:"varint,4,opt,name=exclusive,proto3" json:"exclusive,omitempty"`                                      // launched with --static-mcp
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *McpAttachedSandbox) Reset() {
+	*x = McpAttachedSandbox{}
+	mi := &file_switchboard_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpAttachedSandbox) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpAttachedSandbox) ProtoMessage() {}
+
+func (x *McpAttachedSandbox) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpAttachedSandbox.ProtoReflect.Descriptor instead.
+func (*McpAttachedSandbox) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *McpAttachedSandbox) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
+	}
+	return ""
+}
+
+func (x *McpAttachedSandbox) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *McpAttachedSandbox) GetSkippedAtLaunch() bool {
+	if x != nil {
+		return x.SkippedAtLaunch
+	}
+	return false
+}
+
+func (x *McpAttachedSandbox) GetExclusive() bool {
+	if x != nil {
+		return x.Exclusive
+	}
+	return false
+}
+
+type CancelMcpPendingReplaceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Revision      uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelMcpPendingReplaceRequest) Reset() {
+	*x = CancelMcpPendingReplaceRequest{}
+	mi := &file_switchboard_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelMcpPendingReplaceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelMcpPendingReplaceRequest) ProtoMessage() {}
+
+func (x *CancelMcpPendingReplaceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelMcpPendingReplaceRequest.ProtoReflect.Descriptor instead.
+func (*CancelMcpPendingReplaceRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *CancelMcpPendingReplaceRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CancelMcpPendingReplaceRequest) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+type CancelMcpPendingReplaceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LeftOnHost    []string               `protobuf:"bytes,1,rep,name=left_on_host,json=leftOnHost,proto3" json:"left_on_host,omitempty"`
+	Unconfirmed   []string               `protobuf:"bytes,2,rep,name=unconfirmed,proto3" json:"unconfirmed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelMcpPendingReplaceResponse) Reset() {
+	*x = CancelMcpPendingReplaceResponse{}
+	mi := &file_switchboard_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelMcpPendingReplaceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelMcpPendingReplaceResponse) ProtoMessage() {}
+
+func (x *CancelMcpPendingReplaceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelMcpPendingReplaceResponse.ProtoReflect.Descriptor instead.
+func (*CancelMcpPendingReplaceResponse) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *CancelMcpPendingReplaceResponse) GetLeftOnHost() []string {
+	if x != nil {
+		return x.LeftOnHost
+	}
+	return nil
+}
+
+func (x *CancelMcpPendingReplaceResponse) GetUnconfirmed() []string {
+	if x != nil {
+		return x.Unconfirmed
+	}
+	return nil
+}
+
+type RemoveMcpServerSecretsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Secrets       []string               `protobuf:"bytes,2,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveMcpServerSecretsRequest) Reset() {
+	*x = RemoveMcpServerSecretsRequest{}
+	mi := &file_switchboard_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveMcpServerSecretsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveMcpServerSecretsRequest) ProtoMessage() {}
+
+func (x *RemoveMcpServerSecretsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveMcpServerSecretsRequest.ProtoReflect.Descriptor instead.
+func (*RemoveMcpServerSecretsRequest) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *RemoveMcpServerSecretsRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RemoveMcpServerSecretsRequest) GetSecrets() []string {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+type RemoveMcpServerSecretsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Removed       []string               `protobuf:"bytes,1,rep,name=removed,proto3" json:"removed,omitempty"`
+	Failed        []string               `protobuf:"bytes,2,rep,name=failed,proto3" json:"failed,omitempty"`
+	RebindPending bool                   `protobuf:"varint,3,opt,name=rebind_pending,json=rebindPending,proto3" json:"rebind_pending,omitempty"`
+	HostErrors    []string               `protobuf:"bytes,4,rep,name=host_errors,json=hostErrors,proto3" json:"host_errors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveMcpServerSecretsResponse) Reset() {
+	*x = RemoveMcpServerSecretsResponse{}
+	mi := &file_switchboard_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveMcpServerSecretsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveMcpServerSecretsResponse) ProtoMessage() {}
+
+func (x *RemoveMcpServerSecretsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveMcpServerSecretsResponse.ProtoReflect.Descriptor instead.
+func (*RemoveMcpServerSecretsResponse) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *RemoveMcpServerSecretsResponse) GetRemoved() []string {
+	if x != nil {
+		return x.Removed
+	}
+	return nil
+}
+
+func (x *RemoveMcpServerSecretsResponse) GetFailed() []string {
+	if x != nil {
+		return x.Failed
+	}
+	return nil
+}
+
+func (x *RemoveMcpServerSecretsResponse) GetRebindPending() bool {
+	if x != nil {
+		return x.RebindPending
+	}
+	return false
+}
+
+func (x *RemoveMcpServerSecretsResponse) GetHostErrors() []string {
+	if x != nil {
+		return x.HostErrors
+	}
+	return nil
+}
+
+type McpSkippedServer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	State         McpSkipState           `protobuf:"varint,2,opt,name=state,proto3,enum=switchboard.v1.McpSkipState" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *McpSkippedServer) Reset() {
+	*x = McpSkippedServer{}
+	mi := &file_switchboard_proto_msgTypes[89]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpSkippedServer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpSkippedServer) ProtoMessage() {}
+
+func (x *McpSkippedServer) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[89]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpSkippedServer.ProtoReflect.Descriptor instead.
+func (*McpSkippedServer) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *McpSkippedServer) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *McpSkippedServer) GetState() McpSkipState {
+	if x != nil {
+		return x.State
+	}
+	return McpSkipState_MCP_SKIP_STATE_UNSPECIFIED
+}
+
+type McpSaveRefusal struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Reason        McpSaveRefusal_Reason  `protobuf:"varint,1,opt,name=reason,proto3,enum=switchboard.v1.McpSaveRefusal_Reason" json:"reason,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *McpSaveRefusal) Reset() {
+	*x = McpSaveRefusal{}
+	mi := &file_switchboard_proto_msgTypes[90]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *McpSaveRefusal) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*McpSaveRefusal) ProtoMessage() {}
+
+func (x *McpSaveRefusal) ProtoReflect() protoreflect.Message {
+	mi := &file_switchboard_proto_msgTypes[90]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use McpSaveRefusal.ProtoReflect.Descriptor instead.
+func (*McpSaveRefusal) Descriptor() ([]byte, []int) {
+	return file_switchboard_proto_rawDescGZIP(), []int{90}
+}
+
+func (x *McpSaveRefusal) GetReason() McpSaveRefusal_Reason {
+	if x != nil {
+		return x.Reason
+	}
+	return McpSaveRefusal_REASON_UNSPECIFIED
+}
+
+func (x *McpSaveRefusal) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // Secret is one row of `sbx secret ls`: scope ("global" or a sandbox name), the
 // runtime's type ("service", "registry", "custom"; "service" when the host's
 // table has no TYPE column), the name (service id, `mcp:<server>:<placeholder>`,
@@ -6733,7 +8508,7 @@ type Secret struct {
 
 func (x *Secret) Reset() {
 	*x = Secret{}
-	mi := &file_switchboard_proto_msgTypes[75]
+	mi := &file_switchboard_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6745,7 +8520,7 @@ func (x *Secret) String() string {
 func (*Secret) ProtoMessage() {}
 
 func (x *Secret) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[75]
+	mi := &file_switchboard_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6758,7 +8533,7 @@ func (x *Secret) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Secret.ProtoReflect.Descriptor instead.
 func (*Secret) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{75}
+	return file_switchboard_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *Secret) GetScope() string {
@@ -6797,7 +8572,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_switchboard_proto_msgTypes[76]
+	mi := &file_switchboard_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6809,7 +8584,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[76]
+	mi := &file_switchboard_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6822,7 +8597,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{76}
+	return file_switchboard_proto_rawDescGZIP(), []int{92}
 }
 
 type ListSecretsResponse struct {
@@ -6834,7 +8609,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_switchboard_proto_msgTypes[77]
+	mi := &file_switchboard_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6846,7 +8621,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[77]
+	mi := &file_switchboard_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6859,7 +8634,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{77}
+	return file_switchboard_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *ListSecretsResponse) GetSecrets() []*Secret {
@@ -6882,7 +8657,7 @@ type SetSecretRequest struct {
 
 func (x *SetSecretRequest) Reset() {
 	*x = SetSecretRequest{}
-	mi := &file_switchboard_proto_msgTypes[78]
+	mi := &file_switchboard_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6894,7 +8669,7 @@ func (x *SetSecretRequest) String() string {
 func (*SetSecretRequest) ProtoMessage() {}
 
 func (x *SetSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[78]
+	mi := &file_switchboard_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6907,7 +8682,7 @@ func (x *SetSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSecretRequest.ProtoReflect.Descriptor instead.
 func (*SetSecretRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{78}
+	return file_switchboard_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *SetSecretRequest) GetName() string {
@@ -6944,7 +8719,7 @@ type RemoveSecretRequest struct {
 
 func (x *RemoveSecretRequest) Reset() {
 	*x = RemoveSecretRequest{}
-	mi := &file_switchboard_proto_msgTypes[79]
+	mi := &file_switchboard_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6956,7 +8731,7 @@ func (x *RemoveSecretRequest) String() string {
 func (*RemoveSecretRequest) ProtoMessage() {}
 
 func (x *RemoveSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[79]
+	mi := &file_switchboard_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6969,7 +8744,7 @@ func (x *RemoveSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSecretRequest.ProtoReflect.Descriptor instead.
 func (*RemoveSecretRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{79}
+	return file_switchboard_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *RemoveSecretRequest) GetName() string {
@@ -7001,7 +8776,7 @@ type RemoveSecretResponse struct {
 
 func (x *RemoveSecretResponse) Reset() {
 	*x = RemoveSecretResponse{}
-	mi := &file_switchboard_proto_msgTypes[80]
+	mi := &file_switchboard_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7013,7 +8788,7 @@ func (x *RemoveSecretResponse) String() string {
 func (*RemoveSecretResponse) ProtoMessage() {}
 
 func (x *RemoveSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[80]
+	mi := &file_switchboard_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7026,7 +8801,7 @@ func (x *RemoveSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSecretResponse.ProtoReflect.Descriptor instead.
 func (*RemoveSecretResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{80}
+	return file_switchboard_proto_rawDescGZIP(), []int{96}
 }
 
 // Recorded on the sandbox by its OWNING daemon (Key Decision 5). Absent => not a
@@ -7052,7 +8827,7 @@ type SandboxController struct {
 
 func (x *SandboxController) Reset() {
 	*x = SandboxController{}
-	mi := &file_switchboard_proto_msgTypes[81]
+	mi := &file_switchboard_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7064,7 +8839,7 @@ func (x *SandboxController) String() string {
 func (*SandboxController) ProtoMessage() {}
 
 func (x *SandboxController) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[81]
+	mi := &file_switchboard_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7077,7 +8852,7 @@ func (x *SandboxController) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxController.ProtoReflect.Descriptor instead.
 func (*SandboxController) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{81}
+	return file_switchboard_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *SandboxController) GetOrchestratorId() string {
@@ -7177,7 +8952,7 @@ type WorkerRun struct {
 
 func (x *WorkerRun) Reset() {
 	*x = WorkerRun{}
-	mi := &file_switchboard_proto_msgTypes[82]
+	mi := &file_switchboard_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7189,7 +8964,7 @@ func (x *WorkerRun) String() string {
 func (*WorkerRun) ProtoMessage() {}
 
 func (x *WorkerRun) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[82]
+	mi := &file_switchboard_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7202,7 +8977,7 @@ func (x *WorkerRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerRun.ProtoReflect.Descriptor instead.
 func (*WorkerRun) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{82}
+	return file_switchboard_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *WorkerRun) GetId() string {
@@ -7285,7 +9060,7 @@ type WorkerBundle struct {
 
 func (x *WorkerBundle) Reset() {
 	*x = WorkerBundle{}
-	mi := &file_switchboard_proto_msgTypes[83]
+	mi := &file_switchboard_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7297,7 +9072,7 @@ func (x *WorkerBundle) String() string {
 func (*WorkerBundle) ProtoMessage() {}
 
 func (x *WorkerBundle) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[83]
+	mi := &file_switchboard_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7310,7 +9085,7 @@ func (x *WorkerBundle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerBundle.ProtoReflect.Descriptor instead.
 func (*WorkerBundle) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{83}
+	return file_switchboard_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *WorkerBundle) GetController() *SandboxController {
@@ -7343,7 +9118,7 @@ type OrchestratorHost struct {
 
 func (x *OrchestratorHost) Reset() {
 	*x = OrchestratorHost{}
-	mi := &file_switchboard_proto_msgTypes[84]
+	mi := &file_switchboard_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7355,7 +9130,7 @@ func (x *OrchestratorHost) String() string {
 func (*OrchestratorHost) ProtoMessage() {}
 
 func (x *OrchestratorHost) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[84]
+	mi := &file_switchboard_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7368,7 +9143,7 @@ func (x *OrchestratorHost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorHost.ProtoReflect.Descriptor instead.
 func (*OrchestratorHost) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{84}
+	return file_switchboard_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *OrchestratorHost) GetHostId() string {
@@ -7425,7 +9200,7 @@ type ActionArgument struct {
 
 func (x *ActionArgument) Reset() {
 	*x = ActionArgument{}
-	mi := &file_switchboard_proto_msgTypes[85]
+	mi := &file_switchboard_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7437,7 +9212,7 @@ func (x *ActionArgument) String() string {
 func (*ActionArgument) ProtoMessage() {}
 
 func (x *ActionArgument) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[85]
+	mi := &file_switchboard_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7450,7 +9225,7 @@ func (x *ActionArgument) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionArgument.ProtoReflect.Descriptor instead.
 func (*ActionArgument) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{85}
+	return file_switchboard_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *ActionArgument) GetName() string {
@@ -7498,7 +9273,7 @@ type ActionSequence struct {
 
 func (x *ActionSequence) Reset() {
 	*x = ActionSequence{}
-	mi := &file_switchboard_proto_msgTypes[86]
+	mi := &file_switchboard_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7510,7 +9285,7 @@ func (x *ActionSequence) String() string {
 func (*ActionSequence) ProtoMessage() {}
 
 func (x *ActionSequence) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[86]
+	mi := &file_switchboard_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7523,7 +9298,7 @@ func (x *ActionSequence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionSequence.ProtoReflect.Descriptor instead.
 func (*ActionSequence) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{86}
+	return file_switchboard_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *ActionSequence) GetModelEnabled() bool {
@@ -7599,7 +9374,7 @@ type Action struct {
 
 func (x *Action) Reset() {
 	*x = Action{}
-	mi := &file_switchboard_proto_msgTypes[87]
+	mi := &file_switchboard_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7611,7 +9386,7 @@ func (x *Action) String() string {
 func (*Action) ProtoMessage() {}
 
 func (x *Action) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[87]
+	mi := &file_switchboard_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7624,7 +9399,7 @@ func (x *Action) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Action.ProtoReflect.Descriptor instead.
 func (*Action) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{87}
+	return file_switchboard_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *Action) GetName() string {
@@ -7728,7 +9503,7 @@ type TimedEvent struct {
 
 func (x *TimedEvent) Reset() {
 	*x = TimedEvent{}
-	mi := &file_switchboard_proto_msgTypes[88]
+	mi := &file_switchboard_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7740,7 +9515,7 @@ func (x *TimedEvent) String() string {
 func (*TimedEvent) ProtoMessage() {}
 
 func (x *TimedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[88]
+	mi := &file_switchboard_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7753,7 +9528,7 @@ func (x *TimedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimedEvent.ProtoReflect.Descriptor instead.
 func (*TimedEvent) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{88}
+	return file_switchboard_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *TimedEvent) GetId() string {
@@ -7861,7 +9636,7 @@ type ActiveWindow struct {
 
 func (x *ActiveWindow) Reset() {
 	*x = ActiveWindow{}
-	mi := &file_switchboard_proto_msgTypes[89]
+	mi := &file_switchboard_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7873,7 +9648,7 @@ func (x *ActiveWindow) String() string {
 func (*ActiveWindow) ProtoMessage() {}
 
 func (x *ActiveWindow) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[89]
+	mi := &file_switchboard_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7886,7 +9661,7 @@ func (x *ActiveWindow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActiveWindow.ProtoReflect.Descriptor instead.
 func (*ActiveWindow) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{89}
+	return file_switchboard_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *ActiveWindow) GetStart() string {
@@ -7931,7 +9706,7 @@ type ReasoningSetup struct {
 
 func (x *ReasoningSetup) Reset() {
 	*x = ReasoningSetup{}
-	mi := &file_switchboard_proto_msgTypes[90]
+	mi := &file_switchboard_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7943,7 +9718,7 @@ func (x *ReasoningSetup) String() string {
 func (*ReasoningSetup) ProtoMessage() {}
 
 func (x *ReasoningSetup) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[90]
+	mi := &file_switchboard_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7956,7 +9731,7 @@ func (x *ReasoningSetup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReasoningSetup.ProtoReflect.Descriptor instead.
 func (*ReasoningSetup) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{90}
+	return file_switchboard_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *ReasoningSetup) GetSources() []*SourceRef {
@@ -8006,7 +9781,7 @@ type Worker struct {
 
 func (x *Worker) Reset() {
 	*x = Worker{}
-	mi := &file_switchboard_proto_msgTypes[91]
+	mi := &file_switchboard_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8018,7 +9793,7 @@ func (x *Worker) String() string {
 func (*Worker) ProtoMessage() {}
 
 func (x *Worker) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[91]
+	mi := &file_switchboard_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8031,7 +9806,7 @@ func (x *Worker) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Worker.ProtoReflect.Descriptor instead.
 func (*Worker) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{91}
+	return file_switchboard_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *Worker) GetSandboxId() string {
@@ -8115,7 +9890,7 @@ type Orchestrator struct {
 
 func (x *Orchestrator) Reset() {
 	*x = Orchestrator{}
-	mi := &file_switchboard_proto_msgTypes[92]
+	mi := &file_switchboard_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8127,7 +9902,7 @@ func (x *Orchestrator) String() string {
 func (*Orchestrator) ProtoMessage() {}
 
 func (x *Orchestrator) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[92]
+	mi := &file_switchboard_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8140,7 +9915,7 @@ func (x *Orchestrator) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Orchestrator.ProtoReflect.Descriptor instead.
 func (*Orchestrator) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{92}
+	return file_switchboard_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *Orchestrator) GetId() string {
@@ -8261,7 +10036,7 @@ type Lane struct {
 
 func (x *Lane) Reset() {
 	*x = Lane{}
-	mi := &file_switchboard_proto_msgTypes[93]
+	mi := &file_switchboard_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8273,7 +10048,7 @@ func (x *Lane) String() string {
 func (*Lane) ProtoMessage() {}
 
 func (x *Lane) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[93]
+	mi := &file_switchboard_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8286,7 +10061,7 @@ func (x *Lane) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Lane.ProtoReflect.Descriptor instead.
 func (*Lane) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{93}
+	return file_switchboard_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *Lane) GetId() string {
@@ -8331,7 +10106,7 @@ type AttachTicket struct {
 
 func (x *AttachTicket) Reset() {
 	*x = AttachTicket{}
-	mi := &file_switchboard_proto_msgTypes[94]
+	mi := &file_switchboard_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8343,7 +10118,7 @@ func (x *AttachTicket) String() string {
 func (*AttachTicket) ProtoMessage() {}
 
 func (x *AttachTicket) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[94]
+	mi := &file_switchboard_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8356,7 +10131,7 @@ func (x *AttachTicket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachTicket.ProtoReflect.Descriptor instead.
 func (*AttachTicket) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{94}
+	return file_switchboard_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *AttachTicket) GetId() string {
@@ -8408,7 +10183,7 @@ type HighWaterMark struct {
 
 func (x *HighWaterMark) Reset() {
 	*x = HighWaterMark{}
-	mi := &file_switchboard_proto_msgTypes[95]
+	mi := &file_switchboard_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8420,7 +10195,7 @@ func (x *HighWaterMark) String() string {
 func (*HighWaterMark) ProtoMessage() {}
 
 func (x *HighWaterMark) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[95]
+	mi := &file_switchboard_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8433,7 +10208,7 @@ func (x *HighWaterMark) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HighWaterMark.ProtoReflect.Descriptor instead.
 func (*HighWaterMark) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{95}
+	return file_switchboard_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *HighWaterMark) GetRevision() uint64 {
@@ -8482,7 +10257,7 @@ type DroppedWorkerTag struct {
 
 func (x *DroppedWorkerTag) Reset() {
 	*x = DroppedWorkerTag{}
-	mi := &file_switchboard_proto_msgTypes[96]
+	mi := &file_switchboard_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8494,7 +10269,7 @@ func (x *DroppedWorkerTag) String() string {
 func (*DroppedWorkerTag) ProtoMessage() {}
 
 func (x *DroppedWorkerTag) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[96]
+	mi := &file_switchboard_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8507,7 +10282,7 @@ func (x *DroppedWorkerTag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DroppedWorkerTag.ProtoReflect.Descriptor instead.
 func (*DroppedWorkerTag) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{96}
+	return file_switchboard_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *DroppedWorkerTag) GetAction() string {
@@ -8542,7 +10317,7 @@ type KeptLaneSetting struct {
 
 func (x *KeptLaneSetting) Reset() {
 	*x = KeptLaneSetting{}
-	mi := &file_switchboard_proto_msgTypes[97]
+	mi := &file_switchboard_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8554,7 +10329,7 @@ func (x *KeptLaneSetting) String() string {
 func (*KeptLaneSetting) ProtoMessage() {}
 
 func (x *KeptLaneSetting) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[97]
+	mi := &file_switchboard_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8567,7 +10342,7 @@ func (x *KeptLaneSetting) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeptLaneSetting.ProtoReflect.Descriptor instead.
 func (*KeptLaneSetting) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{97}
+	return file_switchboard_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *KeptLaneSetting) GetLaneIds() []string {
@@ -8595,7 +10370,7 @@ type WorkerLaneDisplay struct {
 
 func (x *WorkerLaneDisplay) Reset() {
 	*x = WorkerLaneDisplay{}
-	mi := &file_switchboard_proto_msgTypes[98]
+	mi := &file_switchboard_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8607,7 +10382,7 @@ func (x *WorkerLaneDisplay) String() string {
 func (*WorkerLaneDisplay) ProtoMessage() {}
 
 func (x *WorkerLaneDisplay) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[98]
+	mi := &file_switchboard_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8620,7 +10395,7 @@ func (x *WorkerLaneDisplay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerLaneDisplay.ProtoReflect.Descriptor instead.
 func (*WorkerLaneDisplay) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{98}
+	return file_switchboard_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *WorkerLaneDisplay) GetNames() []string {
@@ -8648,7 +10423,7 @@ type LaneGuardConfirm struct {
 
 func (x *LaneGuardConfirm) Reset() {
 	*x = LaneGuardConfirm{}
-	mi := &file_switchboard_proto_msgTypes[99]
+	mi := &file_switchboard_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8660,7 +10435,7 @@ func (x *LaneGuardConfirm) String() string {
 func (*LaneGuardConfirm) ProtoMessage() {}
 
 func (x *LaneGuardConfirm) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[99]
+	mi := &file_switchboard_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8673,7 +10448,7 @@ func (x *LaneGuardConfirm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LaneGuardConfirm.ProtoReflect.Descriptor instead.
 func (*LaneGuardConfirm) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{99}
+	return file_switchboard_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *LaneGuardConfirm) GetUnlanedActions() []string {
@@ -8706,7 +10481,7 @@ type LaneChangeImpact struct {
 
 func (x *LaneChangeImpact) Reset() {
 	*x = LaneChangeImpact{}
-	mi := &file_switchboard_proto_msgTypes[100]
+	mi := &file_switchboard_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8718,7 +10493,7 @@ func (x *LaneChangeImpact) String() string {
 func (*LaneChangeImpact) ProtoMessage() {}
 
 func (x *LaneChangeImpact) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[100]
+	mi := &file_switchboard_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8731,7 +10506,7 @@ func (x *LaneChangeImpact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LaneChangeImpact.ProtoReflect.Descriptor instead.
 func (*LaneChangeImpact) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{100}
+	return file_switchboard_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *LaneChangeImpact) GetUnlanedActions() []string {
@@ -8786,7 +10561,7 @@ type LaneActionUse struct {
 
 func (x *LaneActionUse) Reset() {
 	*x = LaneActionUse{}
-	mi := &file_switchboard_proto_msgTypes[101]
+	mi := &file_switchboard_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8798,7 +10573,7 @@ func (x *LaneActionUse) String() string {
 func (*LaneActionUse) ProtoMessage() {}
 
 func (x *LaneActionUse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[101]
+	mi := &file_switchboard_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8811,7 +10586,7 @@ func (x *LaneActionUse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LaneActionUse.ProtoReflect.Descriptor instead.
 func (*LaneActionUse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{101}
+	return file_switchboard_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *LaneActionUse) GetAction() string {
@@ -8843,7 +10618,7 @@ type OrchestratorSummary struct {
 
 func (x *OrchestratorSummary) Reset() {
 	*x = OrchestratorSummary{}
-	mi := &file_switchboard_proto_msgTypes[102]
+	mi := &file_switchboard_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8855,7 +10630,7 @@ func (x *OrchestratorSummary) String() string {
 func (*OrchestratorSummary) ProtoMessage() {}
 
 func (x *OrchestratorSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[102]
+	mi := &file_switchboard_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8868,7 +10643,7 @@ func (x *OrchestratorSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorSummary.ProtoReflect.Descriptor instead.
 func (*OrchestratorSummary) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{102}
+	return file_switchboard_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *OrchestratorSummary) GetOrchestrator() *Orchestrator {
@@ -8947,7 +10722,7 @@ type WorkerView struct {
 
 func (x *WorkerView) Reset() {
 	*x = WorkerView{}
-	mi := &file_switchboard_proto_msgTypes[103]
+	mi := &file_switchboard_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8959,7 +10734,7 @@ func (x *WorkerView) String() string {
 func (*WorkerView) ProtoMessage() {}
 
 func (x *WorkerView) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[103]
+	mi := &file_switchboard_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8972,7 +10747,7 @@ func (x *WorkerView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerView.ProtoReflect.Descriptor instead.
 func (*WorkerView) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{103}
+	return file_switchboard_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *WorkerView) GetSandboxId() string {
@@ -9107,7 +10882,7 @@ type RunStep struct {
 
 func (x *RunStep) Reset() {
 	*x = RunStep{}
-	mi := &file_switchboard_proto_msgTypes[104]
+	mi := &file_switchboard_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9119,7 +10894,7 @@ func (x *RunStep) String() string {
 func (*RunStep) ProtoMessage() {}
 
 func (x *RunStep) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[104]
+	mi := &file_switchboard_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9132,7 +10907,7 @@ func (x *RunStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunStep.ProtoReflect.Descriptor instead.
 func (*RunStep) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{104}
+	return file_switchboard_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *RunStep) GetRole() StepRole {
@@ -9213,7 +10988,7 @@ type Run struct {
 
 func (x *Run) Reset() {
 	*x = Run{}
-	mi := &file_switchboard_proto_msgTypes[105]
+	mi := &file_switchboard_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9225,7 +11000,7 @@ func (x *Run) String() string {
 func (*Run) ProtoMessage() {}
 
 func (x *Run) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[105]
+	mi := &file_switchboard_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9238,7 +11013,7 @@ func (x *Run) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Run.ProtoReflect.Descriptor instead.
 func (*Run) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{105}
+	return file_switchboard_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *Run) GetId() string {
@@ -9496,7 +11271,7 @@ type OrchestratorLinkFrame struct {
 
 func (x *OrchestratorLinkFrame) Reset() {
 	*x = OrchestratorLinkFrame{}
-	mi := &file_switchboard_proto_msgTypes[106]
+	mi := &file_switchboard_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9508,7 +11283,7 @@ func (x *OrchestratorLinkFrame) String() string {
 func (*OrchestratorLinkFrame) ProtoMessage() {}
 
 func (x *OrchestratorLinkFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[106]
+	mi := &file_switchboard_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9521,7 +11296,7 @@ func (x *OrchestratorLinkFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorLinkFrame.ProtoReflect.Descriptor instead.
 func (*OrchestratorLinkFrame) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{106}
+	return file_switchboard_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *OrchestratorLinkFrame) GetFrame() isOrchestratorLinkFrame_Frame {
@@ -9603,7 +11378,7 @@ type ListOrchestratorsRequest struct {
 
 func (x *ListOrchestratorsRequest) Reset() {
 	*x = ListOrchestratorsRequest{}
-	mi := &file_switchboard_proto_msgTypes[107]
+	mi := &file_switchboard_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9615,7 +11390,7 @@ func (x *ListOrchestratorsRequest) String() string {
 func (*ListOrchestratorsRequest) ProtoMessage() {}
 
 func (x *ListOrchestratorsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[107]
+	mi := &file_switchboard_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9628,7 +11403,7 @@ func (x *ListOrchestratorsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOrchestratorsRequest.ProtoReflect.Descriptor instead.
 func (*ListOrchestratorsRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{107}
+	return file_switchboard_proto_rawDescGZIP(), []int{123}
 }
 
 type ListOrchestratorsResponse struct {
@@ -9640,7 +11415,7 @@ type ListOrchestratorsResponse struct {
 
 func (x *ListOrchestratorsResponse) Reset() {
 	*x = ListOrchestratorsResponse{}
-	mi := &file_switchboard_proto_msgTypes[108]
+	mi := &file_switchboard_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9652,7 +11427,7 @@ func (x *ListOrchestratorsResponse) String() string {
 func (*ListOrchestratorsResponse) ProtoMessage() {}
 
 func (x *ListOrchestratorsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[108]
+	mi := &file_switchboard_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9665,7 +11440,7 @@ func (x *ListOrchestratorsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOrchestratorsResponse.ProtoReflect.Descriptor instead.
 func (*ListOrchestratorsResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{108}
+	return file_switchboard_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *ListOrchestratorsResponse) GetOrchestrators() []*OrchestratorSummary {
@@ -9684,7 +11459,7 @@ type OrchestratorIdRequest struct {
 
 func (x *OrchestratorIdRequest) Reset() {
 	*x = OrchestratorIdRequest{}
-	mi := &file_switchboard_proto_msgTypes[109]
+	mi := &file_switchboard_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9696,7 +11471,7 @@ func (x *OrchestratorIdRequest) String() string {
 func (*OrchestratorIdRequest) ProtoMessage() {}
 
 func (x *OrchestratorIdRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[109]
+	mi := &file_switchboard_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9709,7 +11484,7 @@ func (x *OrchestratorIdRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorIdRequest.ProtoReflect.Descriptor instead.
 func (*OrchestratorIdRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{109}
+	return file_switchboard_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *OrchestratorIdRequest) GetOrchestratorId() string {
@@ -9730,7 +11505,7 @@ type OrchestratorDetail struct {
 
 func (x *OrchestratorDetail) Reset() {
 	*x = OrchestratorDetail{}
-	mi := &file_switchboard_proto_msgTypes[110]
+	mi := &file_switchboard_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9742,7 +11517,7 @@ func (x *OrchestratorDetail) String() string {
 func (*OrchestratorDetail) ProtoMessage() {}
 
 func (x *OrchestratorDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[110]
+	mi := &file_switchboard_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9755,7 +11530,7 @@ func (x *OrchestratorDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorDetail.ProtoReflect.Descriptor instead.
 func (*OrchestratorDetail) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{110}
+	return file_switchboard_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *OrchestratorDetail) GetSummary() *OrchestratorSummary {
@@ -9788,7 +11563,7 @@ type CreateOrchestratorRequest struct {
 
 func (x *CreateOrchestratorRequest) Reset() {
 	*x = CreateOrchestratorRequest{}
-	mi := &file_switchboard_proto_msgTypes[111]
+	mi := &file_switchboard_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9800,7 +11575,7 @@ func (x *CreateOrchestratorRequest) String() string {
 func (*CreateOrchestratorRequest) ProtoMessage() {}
 
 func (x *CreateOrchestratorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[111]
+	mi := &file_switchboard_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9813,7 +11588,7 @@ func (x *CreateOrchestratorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateOrchestratorRequest.ProtoReflect.Descriptor instead.
 func (*CreateOrchestratorRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{111}
+	return file_switchboard_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *CreateOrchestratorRequest) GetName() string {
@@ -9833,7 +11608,7 @@ type RenameOrchestratorRequest struct {
 
 func (x *RenameOrchestratorRequest) Reset() {
 	*x = RenameOrchestratorRequest{}
-	mi := &file_switchboard_proto_msgTypes[112]
+	mi := &file_switchboard_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9845,7 +11620,7 @@ func (x *RenameOrchestratorRequest) String() string {
 func (*RenameOrchestratorRequest) ProtoMessage() {}
 
 func (x *RenameOrchestratorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[112]
+	mi := &file_switchboard_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9858,7 +11633,7 @@ func (x *RenameOrchestratorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameOrchestratorRequest.ProtoReflect.Descriptor instead.
 func (*RenameOrchestratorRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{112}
+	return file_switchboard_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *RenameOrchestratorRequest) GetOrchestratorId() string {
@@ -9886,7 +11661,7 @@ type RemoveOrchestratorResponse struct {
 
 func (x *RemoveOrchestratorResponse) Reset() {
 	*x = RemoveOrchestratorResponse{}
-	mi := &file_switchboard_proto_msgTypes[113]
+	mi := &file_switchboard_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9898,7 +11673,7 @@ func (x *RemoveOrchestratorResponse) String() string {
 func (*RemoveOrchestratorResponse) ProtoMessage() {}
 
 func (x *RemoveOrchestratorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[113]
+	mi := &file_switchboard_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9911,7 +11686,7 @@ func (x *RemoveOrchestratorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveOrchestratorResponse.ProtoReflect.Descriptor instead.
 func (*RemoveOrchestratorResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{113}
+	return file_switchboard_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *RemoveOrchestratorResponse) GetWorkersDetached() uint32 {
@@ -9945,7 +11720,7 @@ type SetOrchestratorHostsRequest struct {
 
 func (x *SetOrchestratorHostsRequest) Reset() {
 	*x = SetOrchestratorHostsRequest{}
-	mi := &file_switchboard_proto_msgTypes[114]
+	mi := &file_switchboard_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9957,7 +11732,7 @@ func (x *SetOrchestratorHostsRequest) String() string {
 func (*SetOrchestratorHostsRequest) ProtoMessage() {}
 
 func (x *SetOrchestratorHostsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[114]
+	mi := &file_switchboard_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9970,7 +11745,7 @@ func (x *SetOrchestratorHostsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetOrchestratorHostsRequest.ProtoReflect.Descriptor instead.
 func (*SetOrchestratorHostsRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{114}
+	return file_switchboard_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *SetOrchestratorHostsRequest) GetOrchestratorId() string {
@@ -9998,7 +11773,7 @@ type GetWorkerBundleRequest struct {
 
 func (x *GetWorkerBundleRequest) Reset() {
 	*x = GetWorkerBundleRequest{}
-	mi := &file_switchboard_proto_msgTypes[115]
+	mi := &file_switchboard_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10010,7 +11785,7 @@ func (x *GetWorkerBundleRequest) String() string {
 func (*GetWorkerBundleRequest) ProtoMessage() {}
 
 func (x *GetWorkerBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[115]
+	mi := &file_switchboard_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10023,7 +11798,7 @@ func (x *GetWorkerBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkerBundleRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkerBundleRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{115}
+	return file_switchboard_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *GetWorkerBundleRequest) GetOrchestratorId() string {
@@ -10059,7 +11834,7 @@ type AttachWorkerRequest struct {
 
 func (x *AttachWorkerRequest) Reset() {
 	*x = AttachWorkerRequest{}
-	mi := &file_switchboard_proto_msgTypes[116]
+	mi := &file_switchboard_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10071,7 +11846,7 @@ func (x *AttachWorkerRequest) String() string {
 func (*AttachWorkerRequest) ProtoMessage() {}
 
 func (x *AttachWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[116]
+	mi := &file_switchboard_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10084,7 +11859,7 @@ func (x *AttachWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachWorkerRequest.ProtoReflect.Descriptor instead.
 func (*AttachWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{116}
+	return file_switchboard_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *AttachWorkerRequest) GetOrchestratorId() string {
@@ -10126,7 +11901,7 @@ type DetachWorkerRequest struct {
 
 func (x *DetachWorkerRequest) Reset() {
 	*x = DetachWorkerRequest{}
-	mi := &file_switchboard_proto_msgTypes[117]
+	mi := &file_switchboard_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10138,7 +11913,7 @@ func (x *DetachWorkerRequest) String() string {
 func (*DetachWorkerRequest) ProtoMessage() {}
 
 func (x *DetachWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[117]
+	mi := &file_switchboard_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10151,7 +11926,7 @@ func (x *DetachWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachWorkerRequest.ProtoReflect.Descriptor instead.
 func (*DetachWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{117}
+	return file_switchboard_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *DetachWorkerRequest) GetOrchestratorId() string {
@@ -10183,7 +11958,7 @@ type DetachWorkerResponse struct {
 
 func (x *DetachWorkerResponse) Reset() {
 	*x = DetachWorkerResponse{}
-	mi := &file_switchboard_proto_msgTypes[118]
+	mi := &file_switchboard_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10195,7 +11970,7 @@ func (x *DetachWorkerResponse) String() string {
 func (*DetachWorkerResponse) ProtoMessage() {}
 
 func (x *DetachWorkerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[118]
+	mi := &file_switchboard_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10208,7 +11983,7 @@ func (x *DetachWorkerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachWorkerResponse.ProtoReflect.Descriptor instead.
 func (*DetachWorkerResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{118}
+	return file_switchboard_proto_rawDescGZIP(), []int{134}
 }
 
 type MarkWorkerFreeRequest struct {
@@ -10223,7 +11998,7 @@ type MarkWorkerFreeRequest struct {
 
 func (x *MarkWorkerFreeRequest) Reset() {
 	*x = MarkWorkerFreeRequest{}
-	mi := &file_switchboard_proto_msgTypes[119]
+	mi := &file_switchboard_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10235,7 +12010,7 @@ func (x *MarkWorkerFreeRequest) String() string {
 func (*MarkWorkerFreeRequest) ProtoMessage() {}
 
 func (x *MarkWorkerFreeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[119]
+	mi := &file_switchboard_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10248,7 +12023,7 @@ func (x *MarkWorkerFreeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkWorkerFreeRequest.ProtoReflect.Descriptor instead.
 func (*MarkWorkerFreeRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{119}
+	return file_switchboard_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *MarkWorkerFreeRequest) GetOrchestratorId() string {
@@ -10291,7 +12066,7 @@ type PutActionRequest struct {
 
 func (x *PutActionRequest) Reset() {
 	*x = PutActionRequest{}
-	mi := &file_switchboard_proto_msgTypes[120]
+	mi := &file_switchboard_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10303,7 +12078,7 @@ func (x *PutActionRequest) String() string {
 func (*PutActionRequest) ProtoMessage() {}
 
 func (x *PutActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[120]
+	mi := &file_switchboard_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10316,7 +12091,7 @@ func (x *PutActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutActionRequest.ProtoReflect.Descriptor instead.
 func (*PutActionRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{120}
+	return file_switchboard_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *PutActionRequest) GetOrchestratorId() string {
@@ -10357,7 +12132,7 @@ type DeleteActionRequest struct {
 
 func (x *DeleteActionRequest) Reset() {
 	*x = DeleteActionRequest{}
-	mi := &file_switchboard_proto_msgTypes[121]
+	mi := &file_switchboard_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10369,7 +12144,7 @@ func (x *DeleteActionRequest) String() string {
 func (*DeleteActionRequest) ProtoMessage() {}
 
 func (x *DeleteActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[121]
+	mi := &file_switchboard_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10382,7 +12157,7 @@ func (x *DeleteActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteActionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteActionRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{121}
+	return file_switchboard_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *DeleteActionRequest) GetOrchestratorId() string {
@@ -10408,7 +12183,7 @@ type DeleteActionResponse struct {
 
 func (x *DeleteActionResponse) Reset() {
 	*x = DeleteActionResponse{}
-	mi := &file_switchboard_proto_msgTypes[122]
+	mi := &file_switchboard_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10420,7 +12195,7 @@ func (x *DeleteActionResponse) String() string {
 func (*DeleteActionResponse) ProtoMessage() {}
 
 func (x *DeleteActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[122]
+	mi := &file_switchboard_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10433,7 +12208,7 @@ func (x *DeleteActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteActionResponse.ProtoReflect.Descriptor instead.
 func (*DeleteActionResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{122}
+	return file_switchboard_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *DeleteActionResponse) GetDisabledEvents() []string {
@@ -10453,7 +12228,7 @@ type PutTimedEventRequest struct {
 
 func (x *PutTimedEventRequest) Reset() {
 	*x = PutTimedEventRequest{}
-	mi := &file_switchboard_proto_msgTypes[123]
+	mi := &file_switchboard_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10465,7 +12240,7 @@ func (x *PutTimedEventRequest) String() string {
 func (*PutTimedEventRequest) ProtoMessage() {}
 
 func (x *PutTimedEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[123]
+	mi := &file_switchboard_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10478,7 +12253,7 @@ func (x *PutTimedEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutTimedEventRequest.ProtoReflect.Descriptor instead.
 func (*PutTimedEventRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{123}
+	return file_switchboard_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *PutTimedEventRequest) GetOrchestratorId() string {
@@ -10505,7 +12280,7 @@ type DeleteTimedEventRequest struct {
 
 func (x *DeleteTimedEventRequest) Reset() {
 	*x = DeleteTimedEventRequest{}
-	mi := &file_switchboard_proto_msgTypes[124]
+	mi := &file_switchboard_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10517,7 +12292,7 @@ func (x *DeleteTimedEventRequest) String() string {
 func (*DeleteTimedEventRequest) ProtoMessage() {}
 
 func (x *DeleteTimedEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[124]
+	mi := &file_switchboard_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10530,7 +12305,7 @@ func (x *DeleteTimedEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTimedEventRequest.ProtoReflect.Descriptor instead.
 func (*DeleteTimedEventRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{124}
+	return file_switchboard_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *DeleteTimedEventRequest) GetOrchestratorId() string {
@@ -10555,7 +12330,7 @@ type DeleteTimedEventResponse struct {
 
 func (x *DeleteTimedEventResponse) Reset() {
 	*x = DeleteTimedEventResponse{}
-	mi := &file_switchboard_proto_msgTypes[125]
+	mi := &file_switchboard_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10567,7 +12342,7 @@ func (x *DeleteTimedEventResponse) String() string {
 func (*DeleteTimedEventResponse) ProtoMessage() {}
 
 func (x *DeleteTimedEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[125]
+	mi := &file_switchboard_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10580,7 +12355,7 @@ func (x *DeleteTimedEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTimedEventResponse.ProtoReflect.Descriptor instead.
 func (*DeleteTimedEventResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{125}
+	return file_switchboard_proto_rawDescGZIP(), []int{141}
 }
 
 type FireTimedEventRequest struct {
@@ -10593,7 +12368,7 @@ type FireTimedEventRequest struct {
 
 func (x *FireTimedEventRequest) Reset() {
 	*x = FireTimedEventRequest{}
-	mi := &file_switchboard_proto_msgTypes[126]
+	mi := &file_switchboard_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10605,7 +12380,7 @@ func (x *FireTimedEventRequest) String() string {
 func (*FireTimedEventRequest) ProtoMessage() {}
 
 func (x *FireTimedEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[126]
+	mi := &file_switchboard_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10618,7 +12393,7 @@ func (x *FireTimedEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FireTimedEventRequest.ProtoReflect.Descriptor instead.
 func (*FireTimedEventRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{126}
+	return file_switchboard_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *FireTimedEventRequest) GetOrchestratorId() string {
@@ -10646,7 +12421,7 @@ type CallActionRequest struct {
 
 func (x *CallActionRequest) Reset() {
 	*x = CallActionRequest{}
-	mi := &file_switchboard_proto_msgTypes[127]
+	mi := &file_switchboard_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10658,7 +12433,7 @@ func (x *CallActionRequest) String() string {
 func (*CallActionRequest) ProtoMessage() {}
 
 func (x *CallActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[127]
+	mi := &file_switchboard_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10671,7 +12446,7 @@ func (x *CallActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallActionRequest.ProtoReflect.Descriptor instead.
 func (*CallActionRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{127}
+	return file_switchboard_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *CallActionRequest) GetOrchestratorId() string {
@@ -10704,7 +12479,7 @@ type ListRunsRequest struct {
 
 func (x *ListRunsRequest) Reset() {
 	*x = ListRunsRequest{}
-	mi := &file_switchboard_proto_msgTypes[128]
+	mi := &file_switchboard_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10716,7 +12491,7 @@ func (x *ListRunsRequest) String() string {
 func (*ListRunsRequest) ProtoMessage() {}
 
 func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[128]
+	mi := &file_switchboard_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10729,7 +12504,7 @@ func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListRunsRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{128}
+	return file_switchboard_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *ListRunsRequest) GetOrchestratorId() string {
@@ -10750,7 +12525,7 @@ type ListRunsResponse struct {
 
 func (x *ListRunsResponse) Reset() {
 	*x = ListRunsResponse{}
-	mi := &file_switchboard_proto_msgTypes[129]
+	mi := &file_switchboard_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10762,7 +12537,7 @@ func (x *ListRunsResponse) String() string {
 func (*ListRunsResponse) ProtoMessage() {}
 
 func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[129]
+	mi := &file_switchboard_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10775,7 +12550,7 @@ func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListRunsResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{129}
+	return file_switchboard_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *ListRunsResponse) GetQueued() []*Run {
@@ -10809,7 +12584,7 @@ type GetRunRequest struct {
 
 func (x *GetRunRequest) Reset() {
 	*x = GetRunRequest{}
-	mi := &file_switchboard_proto_msgTypes[130]
+	mi := &file_switchboard_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10821,7 +12596,7 @@ func (x *GetRunRequest) String() string {
 func (*GetRunRequest) ProtoMessage() {}
 
 func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[130]
+	mi := &file_switchboard_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10834,7 +12609,7 @@ func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunRequest.ProtoReflect.Descriptor instead.
 func (*GetRunRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{130}
+	return file_switchboard_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *GetRunRequest) GetOrchestratorId() string {
@@ -10861,7 +12636,7 @@ type CancelRunRequest struct {
 
 func (x *CancelRunRequest) Reset() {
 	*x = CancelRunRequest{}
-	mi := &file_switchboard_proto_msgTypes[131]
+	mi := &file_switchboard_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10873,7 +12648,7 @@ func (x *CancelRunRequest) String() string {
 func (*CancelRunRequest) ProtoMessage() {}
 
 func (x *CancelRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[131]
+	mi := &file_switchboard_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10886,7 +12661,7 @@ func (x *CancelRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRunRequest.ProtoReflect.Descriptor instead.
 func (*CancelRunRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{131}
+	return file_switchboard_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *CancelRunRequest) GetOrchestratorId() string {
@@ -10915,7 +12690,7 @@ type ResolveRunStepRequest struct {
 
 func (x *ResolveRunStepRequest) Reset() {
 	*x = ResolveRunStepRequest{}
-	mi := &file_switchboard_proto_msgTypes[132]
+	mi := &file_switchboard_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10927,7 +12702,7 @@ func (x *ResolveRunStepRequest) String() string {
 func (*ResolveRunStepRequest) ProtoMessage() {}
 
 func (x *ResolveRunStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[132]
+	mi := &file_switchboard_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10940,7 +12715,7 @@ func (x *ResolveRunStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveRunStepRequest.ProtoReflect.Descriptor instead.
 func (*ResolveRunStepRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{132}
+	return file_switchboard_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *ResolveRunStepRequest) GetOrchestratorId() string {
@@ -10981,7 +12756,7 @@ type RebuildReasoningSandboxRequest struct {
 
 func (x *RebuildReasoningSandboxRequest) Reset() {
 	*x = RebuildReasoningSandboxRequest{}
-	mi := &file_switchboard_proto_msgTypes[133]
+	mi := &file_switchboard_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10993,7 +12768,7 @@ func (x *RebuildReasoningSandboxRequest) String() string {
 func (*RebuildReasoningSandboxRequest) ProtoMessage() {}
 
 func (x *RebuildReasoningSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[133]
+	mi := &file_switchboard_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11006,7 +12781,7 @@ func (x *RebuildReasoningSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebuildReasoningSandboxRequest.ProtoReflect.Descriptor instead.
 func (*RebuildReasoningSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{133}
+	return file_switchboard_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *RebuildReasoningSandboxRequest) GetOrchestratorId() string {
@@ -11034,7 +12809,7 @@ type AttachControllerRequest struct {
 
 func (x *AttachControllerRequest) Reset() {
 	*x = AttachControllerRequest{}
-	mi := &file_switchboard_proto_msgTypes[134]
+	mi := &file_switchboard_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11046,7 +12821,7 @@ func (x *AttachControllerRequest) String() string {
 func (*AttachControllerRequest) ProtoMessage() {}
 
 func (x *AttachControllerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[134]
+	mi := &file_switchboard_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11059,7 +12834,7 @@ func (x *AttachControllerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachControllerRequest.ProtoReflect.Descriptor instead.
 func (*AttachControllerRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{134}
+	return file_switchboard_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *AttachControllerRequest) GetSandboxId() string {
@@ -11094,7 +12869,7 @@ type DetachControllerRequest struct {
 
 func (x *DetachControllerRequest) Reset() {
 	*x = DetachControllerRequest{}
-	mi := &file_switchboard_proto_msgTypes[135]
+	mi := &file_switchboard_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11106,7 +12881,7 @@ func (x *DetachControllerRequest) String() string {
 func (*DetachControllerRequest) ProtoMessage() {}
 
 func (x *DetachControllerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[135]
+	mi := &file_switchboard_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11119,7 +12894,7 @@ func (x *DetachControllerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachControllerRequest.ProtoReflect.Descriptor instead.
 func (*DetachControllerRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{135}
+	return file_switchboard_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *DetachControllerRequest) GetSandboxId() string {
@@ -11167,7 +12942,7 @@ type UpdateWorkerRequest struct {
 
 func (x *UpdateWorkerRequest) Reset() {
 	*x = UpdateWorkerRequest{}
-	mi := &file_switchboard_proto_msgTypes[136]
+	mi := &file_switchboard_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11179,7 +12954,7 @@ func (x *UpdateWorkerRequest) String() string {
 func (*UpdateWorkerRequest) ProtoMessage() {}
 
 func (x *UpdateWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[136]
+	mi := &file_switchboard_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11192,7 +12967,7 @@ func (x *UpdateWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkerRequest.ProtoReflect.Descriptor instead.
 func (*UpdateWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{136}
+	return file_switchboard_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *UpdateWorkerRequest) GetSandboxId() string {
@@ -11271,7 +13046,7 @@ type DeliverWorkerPromptRequest struct {
 
 func (x *DeliverWorkerPromptRequest) Reset() {
 	*x = DeliverWorkerPromptRequest{}
-	mi := &file_switchboard_proto_msgTypes[137]
+	mi := &file_switchboard_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11283,7 +13058,7 @@ func (x *DeliverWorkerPromptRequest) String() string {
 func (*DeliverWorkerPromptRequest) ProtoMessage() {}
 
 func (x *DeliverWorkerPromptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[137]
+	mi := &file_switchboard_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11296,7 +13071,7 @@ func (x *DeliverWorkerPromptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverWorkerPromptRequest.ProtoReflect.Descriptor instead.
 func (*DeliverWorkerPromptRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{137}
+	return file_switchboard_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *DeliverWorkerPromptRequest) GetSandboxId() string {
@@ -11344,7 +13119,7 @@ type DeliverWorkerPromptResponse struct {
 
 func (x *DeliverWorkerPromptResponse) Reset() {
 	*x = DeliverWorkerPromptResponse{}
-	mi := &file_switchboard_proto_msgTypes[138]
+	mi := &file_switchboard_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11356,7 +13131,7 @@ func (x *DeliverWorkerPromptResponse) String() string {
 func (*DeliverWorkerPromptResponse) ProtoMessage() {}
 
 func (x *DeliverWorkerPromptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[138]
+	mi := &file_switchboard_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11369,7 +13144,7 @@ func (x *DeliverWorkerPromptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverWorkerPromptResponse.ProtoReflect.Descriptor instead.
 func (*DeliverWorkerPromptResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{138}
+	return file_switchboard_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *DeliverWorkerPromptResponse) GetAccepted() bool {
@@ -11398,7 +13173,7 @@ type PutLaneRequest struct {
 
 func (x *PutLaneRequest) Reset() {
 	*x = PutLaneRequest{}
-	mi := &file_switchboard_proto_msgTypes[139]
+	mi := &file_switchboard_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11410,7 +13185,7 @@ func (x *PutLaneRequest) String() string {
 func (*PutLaneRequest) ProtoMessage() {}
 
 func (x *PutLaneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[139]
+	mi := &file_switchboard_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11423,7 +13198,7 @@ func (x *PutLaneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutLaneRequest.ProtoReflect.Descriptor instead.
 func (*PutLaneRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{139}
+	return file_switchboard_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *PutLaneRequest) GetOrchestratorId() string {
@@ -11465,7 +13240,7 @@ type DeleteLaneRequest struct {
 
 func (x *DeleteLaneRequest) Reset() {
 	*x = DeleteLaneRequest{}
-	mi := &file_switchboard_proto_msgTypes[140]
+	mi := &file_switchboard_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11477,7 +13252,7 @@ func (x *DeleteLaneRequest) String() string {
 func (*DeleteLaneRequest) ProtoMessage() {}
 
 func (x *DeleteLaneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[140]
+	mi := &file_switchboard_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11490,7 +13265,7 @@ func (x *DeleteLaneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteLaneRequest.ProtoReflect.Descriptor instead.
 func (*DeleteLaneRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{140}
+	return file_switchboard_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *DeleteLaneRequest) GetOrchestratorId() string {
@@ -11523,7 +13298,7 @@ type DeleteLaneResponse struct {
 
 func (x *DeleteLaneResponse) Reset() {
 	*x = DeleteLaneResponse{}
-	mi := &file_switchboard_proto_msgTypes[141]
+	mi := &file_switchboard_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11535,7 +13310,7 @@ func (x *DeleteLaneResponse) String() string {
 func (*DeleteLaneResponse) ProtoMessage() {}
 
 func (x *DeleteLaneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[141]
+	mi := &file_switchboard_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11548,7 +13323,7 @@ func (x *DeleteLaneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteLaneResponse.ProtoReflect.Descriptor instead.
 func (*DeleteLaneResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{141}
+	return file_switchboard_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *DeleteLaneResponse) GetApplied() *LaneChangeImpact {
@@ -11573,7 +13348,7 @@ type SetWorkerLanesRequest struct {
 
 func (x *SetWorkerLanesRequest) Reset() {
 	*x = SetWorkerLanesRequest{}
-	mi := &file_switchboard_proto_msgTypes[142]
+	mi := &file_switchboard_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11585,7 +13360,7 @@ func (x *SetWorkerLanesRequest) String() string {
 func (*SetWorkerLanesRequest) ProtoMessage() {}
 
 func (x *SetWorkerLanesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[142]
+	mi := &file_switchboard_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11598,7 +13373,7 @@ func (x *SetWorkerLanesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetWorkerLanesRequest.ProtoReflect.Descriptor instead.
 func (*SetWorkerLanesRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{142}
+	return file_switchboard_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *SetWorkerLanesRequest) GetOrchestratorId() string {
@@ -11657,7 +13432,7 @@ type SetLaneMembersRequest struct {
 
 func (x *SetLaneMembersRequest) Reset() {
 	*x = SetLaneMembersRequest{}
-	mi := &file_switchboard_proto_msgTypes[143]
+	mi := &file_switchboard_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11669,7 +13444,7 @@ func (x *SetLaneMembersRequest) String() string {
 func (*SetLaneMembersRequest) ProtoMessage() {}
 
 func (x *SetLaneMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[143]
+	mi := &file_switchboard_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11682,7 +13457,7 @@ func (x *SetLaneMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLaneMembersRequest.ProtoReflect.Descriptor instead.
 func (*SetLaneMembersRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{143}
+	return file_switchboard_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *SetLaneMembersRequest) GetOrchestratorId() string {
@@ -11737,7 +13512,7 @@ type CheckLaneChangeRequest struct {
 
 func (x *CheckLaneChangeRequest) Reset() {
 	*x = CheckLaneChangeRequest{}
-	mi := &file_switchboard_proto_msgTypes[144]
+	mi := &file_switchboard_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11749,7 +13524,7 @@ func (x *CheckLaneChangeRequest) String() string {
 func (*CheckLaneChangeRequest) ProtoMessage() {}
 
 func (x *CheckLaneChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[144]
+	mi := &file_switchboard_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11762,7 +13537,7 @@ func (x *CheckLaneChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckLaneChangeRequest.ProtoReflect.Descriptor instead.
 func (*CheckLaneChangeRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{144}
+	return file_switchboard_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *CheckLaneChangeRequest) GetOrchestratorId() string {
@@ -11886,7 +13661,7 @@ type DeliverWorkerStepRequest struct {
 
 func (x *DeliverWorkerStepRequest) Reset() {
 	*x = DeliverWorkerStepRequest{}
-	mi := &file_switchboard_proto_msgTypes[145]
+	mi := &file_switchboard_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11898,7 +13673,7 @@ func (x *DeliverWorkerStepRequest) String() string {
 func (*DeliverWorkerStepRequest) ProtoMessage() {}
 
 func (x *DeliverWorkerStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[145]
+	mi := &file_switchboard_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11911,7 +13686,7 @@ func (x *DeliverWorkerStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverWorkerStepRequest.ProtoReflect.Descriptor instead.
 func (*DeliverWorkerStepRequest) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{145}
+	return file_switchboard_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *DeliverWorkerStepRequest) GetSandboxId() string {
@@ -11996,7 +13771,7 @@ type DeliverWorkerStepResponse struct {
 
 func (x *DeliverWorkerStepResponse) Reset() {
 	*x = DeliverWorkerStepResponse{}
-	mi := &file_switchboard_proto_msgTypes[146]
+	mi := &file_switchboard_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12008,7 +13783,7 @@ func (x *DeliverWorkerStepResponse) String() string {
 func (*DeliverWorkerStepResponse) ProtoMessage() {}
 
 func (x *DeliverWorkerStepResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[146]
+	mi := &file_switchboard_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12021,7 +13796,7 @@ func (x *DeliverWorkerStepResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverWorkerStepResponse.ProtoReflect.Descriptor instead.
 func (*DeliverWorkerStepResponse) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{146}
+	return file_switchboard_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *DeliverWorkerStepResponse) GetOutcome() StepOutcome {
@@ -12066,7 +13841,7 @@ type PortForwardFrame_Open struct {
 
 func (x *PortForwardFrame_Open) Reset() {
 	*x = PortForwardFrame_Open{}
-	mi := &file_switchboard_proto_msgTypes[148]
+	mi := &file_switchboard_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12078,7 +13853,7 @@ func (x *PortForwardFrame_Open) String() string {
 func (*PortForwardFrame_Open) ProtoMessage() {}
 
 func (x *PortForwardFrame_Open) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[148]
+	mi := &file_switchboard_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12123,7 +13898,7 @@ type PortForwardFrame_Opened struct {
 
 func (x *PortForwardFrame_Opened) Reset() {
 	*x = PortForwardFrame_Opened{}
-	mi := &file_switchboard_proto_msgTypes[149]
+	mi := &file_switchboard_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12135,7 +13910,7 @@ func (x *PortForwardFrame_Opened) String() string {
 func (*PortForwardFrame_Opened) ProtoMessage() {}
 
 func (x *PortForwardFrame_Opened) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[149]
+	mi := &file_switchboard_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12160,7 +13935,7 @@ type PortForwardFrame_Closed struct {
 
 func (x *PortForwardFrame_Closed) Reset() {
 	*x = PortForwardFrame_Closed{}
-	mi := &file_switchboard_proto_msgTypes[150]
+	mi := &file_switchboard_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12172,7 +13947,7 @@ func (x *PortForwardFrame_Closed) String() string {
 func (*PortForwardFrame_Closed) ProtoMessage() {}
 
 func (x *PortForwardFrame_Closed) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[150]
+	mi := &file_switchboard_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12209,7 +13984,7 @@ type OptionManifest_Option struct {
 
 func (x *OptionManifest_Option) Reset() {
 	*x = OptionManifest_Option{}
-	mi := &file_switchboard_proto_msgTypes[151]
+	mi := &file_switchboard_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12221,7 +13996,7 @@ func (x *OptionManifest_Option) String() string {
 func (*OptionManifest_Option) ProtoMessage() {}
 
 func (x *OptionManifest_Option) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[151]
+	mi := &file_switchboard_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12290,7 +14065,7 @@ type LaunchProgress_CopyProgress struct {
 
 func (x *LaunchProgress_CopyProgress) Reset() {
 	*x = LaunchProgress_CopyProgress{}
-	mi := &file_switchboard_proto_msgTypes[152]
+	mi := &file_switchboard_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12302,7 +14077,7 @@ func (x *LaunchProgress_CopyProgress) String() string {
 func (*LaunchProgress_CopyProgress) ProtoMessage() {}
 
 func (x *LaunchProgress_CopyProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[152]
+	mi := &file_switchboard_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12349,7 +14124,7 @@ type AgentInput_Resize struct {
 
 func (x *AgentInput_Resize) Reset() {
 	*x = AgentInput_Resize{}
-	mi := &file_switchboard_proto_msgTypes[153]
+	mi := &file_switchboard_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12361,7 +14136,7 @@ func (x *AgentInput_Resize) String() string {
 func (*AgentInput_Resize) ProtoMessage() {}
 
 func (x *AgentInput_Resize) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[153]
+	mi := &file_switchboard_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12407,7 +14182,7 @@ type AgentInput_AttachInfo struct {
 
 func (x *AgentInput_AttachInfo) Reset() {
 	*x = AgentInput_AttachInfo{}
-	mi := &file_switchboard_proto_msgTypes[154]
+	mi := &file_switchboard_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12419,7 +14194,7 @@ func (x *AgentInput_AttachInfo) String() string {
 func (*AgentInput_AttachInfo) ProtoMessage() {}
 
 func (x *AgentInput_AttachInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[154]
+	mi := &file_switchboard_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12475,7 +14250,7 @@ type AgentOutput_Snapshot struct {
 
 func (x *AgentOutput_Snapshot) Reset() {
 	*x = AgentOutput_Snapshot{}
-	mi := &file_switchboard_proto_msgTypes[155]
+	mi := &file_switchboard_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12487,7 +14262,7 @@ func (x *AgentOutput_Snapshot) String() string {
 func (*AgentOutput_Snapshot) ProtoMessage() {}
 
 func (x *AgentOutput_Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[155]
+	mi := &file_switchboard_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12540,7 +14315,7 @@ type Event_SandboxRemoved struct {
 
 func (x *Event_SandboxRemoved) Reset() {
 	*x = Event_SandboxRemoved{}
-	mi := &file_switchboard_proto_msgTypes[156]
+	mi := &file_switchboard_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12552,7 +14327,7 @@ func (x *Event_SandboxRemoved) String() string {
 func (*Event_SandboxRemoved) ProtoMessage() {}
 
 func (x *Event_SandboxRemoved) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[156]
+	mi := &file_switchboard_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12576,15 +14351,18 @@ func (x *Event_SandboxRemoved) GetSandboxId() string {
 }
 
 type Event_McpGatewayChanged struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	HostId string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	// SWI-21: set when a save finished (the developer's own client shows it; others re-list).
+	Outcome         *McpSaveOutcome      `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	PendingReplaces []*McpPendingReplace `protobuf:"bytes,3,rep,name=pending_replaces,json=pendingReplaces,proto3" json:"pending_replaces,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Event_McpGatewayChanged) Reset() {
 	*x = Event_McpGatewayChanged{}
-	mi := &file_switchboard_proto_msgTypes[157]
+	mi := &file_switchboard_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12596,7 +14374,7 @@ func (x *Event_McpGatewayChanged) String() string {
 func (*Event_McpGatewayChanged) ProtoMessage() {}
 
 func (x *Event_McpGatewayChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[157]
+	mi := &file_switchboard_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12619,6 +14397,20 @@ func (x *Event_McpGatewayChanged) GetHostId() string {
 	return ""
 }
 
+func (x *Event_McpGatewayChanged) GetOutcome() *McpSaveOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *Event_McpGatewayChanged) GetPendingReplaces() []*McpPendingReplace {
+	if x != nil {
+		return x.PendingReplaces
+	}
+	return nil
+}
+
 type Event_SecretsChanged struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
@@ -12628,7 +14420,7 @@ type Event_SecretsChanged struct {
 
 func (x *Event_SecretsChanged) Reset() {
 	*x = Event_SecretsChanged{}
-	mi := &file_switchboard_proto_msgTypes[158]
+	mi := &file_switchboard_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12640,7 +14432,7 @@ func (x *Event_SecretsChanged) String() string {
 func (*Event_SecretsChanged) ProtoMessage() {}
 
 func (x *Event_SecretsChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[158]
+	mi := &file_switchboard_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12673,7 +14465,7 @@ type Event_OrchestratorChanged struct {
 
 func (x *Event_OrchestratorChanged) Reset() {
 	*x = Event_OrchestratorChanged{}
-	mi := &file_switchboard_proto_msgTypes[159]
+	mi := &file_switchboard_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12685,7 +14477,7 @@ func (x *Event_OrchestratorChanged) String() string {
 func (*Event_OrchestratorChanged) ProtoMessage() {}
 
 func (x *Event_OrchestratorChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[159]
+	mi := &file_switchboard_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12726,7 +14518,7 @@ type AddMcpServerRequest_LocalCommand struct {
 
 func (x *AddMcpServerRequest_LocalCommand) Reset() {
 	*x = AddMcpServerRequest_LocalCommand{}
-	mi := &file_switchboard_proto_msgTypes[161]
+	mi := &file_switchboard_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12738,7 +14530,7 @@ func (x *AddMcpServerRequest_LocalCommand) String() string {
 func (*AddMcpServerRequest_LocalCommand) ProtoMessage() {}
 
 func (x *AddMcpServerRequest_LocalCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[161]
+	mi := &file_switchboard_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12785,7 +14577,7 @@ type OrchestratorLinkFrame_Hello struct {
 
 func (x *OrchestratorLinkFrame_Hello) Reset() {
 	*x = OrchestratorLinkFrame_Hello{}
-	mi := &file_switchboard_proto_msgTypes[165]
+	mi := &file_switchboard_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12797,7 +14589,7 @@ func (x *OrchestratorLinkFrame_Hello) String() string {
 func (*OrchestratorLinkFrame_Hello) ProtoMessage() {}
 
 func (x *OrchestratorLinkFrame_Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[165]
+	mi := &file_switchboard_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12810,7 +14602,7 @@ func (x *OrchestratorLinkFrame_Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorLinkFrame_Hello.ProtoReflect.Descriptor instead.
 func (*OrchestratorLinkFrame_Hello) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{106, 0}
+	return file_switchboard_proto_rawDescGZIP(), []int{122, 0}
 }
 
 func (x *OrchestratorLinkFrame_Hello) GetOrchestratorId() string {
@@ -12839,7 +14631,7 @@ type OrchestratorLinkFrame_Call struct {
 
 func (x *OrchestratorLinkFrame_Call) Reset() {
 	*x = OrchestratorLinkFrame_Call{}
-	mi := &file_switchboard_proto_msgTypes[166]
+	mi := &file_switchboard_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12851,7 +14643,7 @@ func (x *OrchestratorLinkFrame_Call) String() string {
 func (*OrchestratorLinkFrame_Call) ProtoMessage() {}
 
 func (x *OrchestratorLinkFrame_Call) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[166]
+	mi := &file_switchboard_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12864,7 +14656,7 @@ func (x *OrchestratorLinkFrame_Call) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorLinkFrame_Call.ProtoReflect.Descriptor instead.
 func (*OrchestratorLinkFrame_Call) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{106, 1}
+	return file_switchboard_proto_rawDescGZIP(), []int{122, 1}
 }
 
 func (x *OrchestratorLinkFrame_Call) GetId() string {
@@ -12907,7 +14699,7 @@ type OrchestratorLinkFrame_Result struct {
 
 func (x *OrchestratorLinkFrame_Result) Reset() {
 	*x = OrchestratorLinkFrame_Result{}
-	mi := &file_switchboard_proto_msgTypes[167]
+	mi := &file_switchboard_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12919,7 +14711,7 @@ func (x *OrchestratorLinkFrame_Result) String() string {
 func (*OrchestratorLinkFrame_Result) ProtoMessage() {}
 
 func (x *OrchestratorLinkFrame_Result) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[167]
+	mi := &file_switchboard_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12932,7 +14724,7 @@ func (x *OrchestratorLinkFrame_Result) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorLinkFrame_Result.ProtoReflect.Descriptor instead.
 func (*OrchestratorLinkFrame_Result) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{106, 2}
+	return file_switchboard_proto_rawDescGZIP(), []int{122, 2}
 }
 
 func (x *OrchestratorLinkFrame_Result) GetId() string {
@@ -12971,7 +14763,7 @@ type OrchestratorLinkFrame_Ping struct {
 
 func (x *OrchestratorLinkFrame_Ping) Reset() {
 	*x = OrchestratorLinkFrame_Ping{}
-	mi := &file_switchboard_proto_msgTypes[168]
+	mi := &file_switchboard_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12983,7 +14775,7 @@ func (x *OrchestratorLinkFrame_Ping) String() string {
 func (*OrchestratorLinkFrame_Ping) ProtoMessage() {}
 
 func (x *OrchestratorLinkFrame_Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_switchboard_proto_msgTypes[168]
+	mi := &file_switchboard_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12996,7 +14788,7 @@ func (x *OrchestratorLinkFrame_Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrchestratorLinkFrame_Ping.ProtoReflect.Descriptor instead.
 func (*OrchestratorLinkFrame_Ping) Descriptor() ([]byte, []int) {
-	return file_switchboard_proto_rawDescGZIP(), []int{106, 3}
+	return file_switchboard_proto_rawDescGZIP(), []int{122, 3}
 }
 
 var File_switchboard_proto protoreflect.FileDescriptor
@@ -13049,7 +14841,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\vSTATE_CLEAR\x10\x00\x12\x11\n" +
 	"\rSTATE_UNKNOWN\x10\x01\x12\x12\n" +
 	"\x0eSTATE_DETACHED\x10\x02\x12\x16\n" +
-	"\x12STATE_CHECK_FAILED\x10\x03\"\xcf\b\n" +
+	"\x12STATE_CHECK_FAILED\x10\x03\"\x92\t\n" +
 	"\aSandbox\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x122\n" +
@@ -13080,7 +14872,9 @@ const file_switchboard_proto_rawDesc = "" +
 	"\n" +
 	"controller\x18\x17 \x01(\v2!.switchboard.v1.SandboxControllerR\n" +
 	"controller\x12\x1a\n" +
-	"\brevision\x18\x18 \x01(\x04R\brevision\"\xb5\x01\n" +
+	"\brevision\x18\x18 \x01(\x04R\brevision\x12A\n" +
+	"\vmcp_skipped\x18\x19 \x03(\v2 .switchboard.v1.McpSkippedServerR\n" +
+	"mcpSkipped\"\xb5\x01\n" +
 	"\aKitSpec\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tspec_yaml\x18\x02 \x01(\tR\bspecYaml\x12E\n" +
@@ -13344,7 +15138,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"scrollback\x18\x04 \x01(\fR\n" +
 	"scrollback\"A\n" +
 	"\x10SubscribeRequest\x12-\n" +
-	"\x12replay_undelivered\x18\x01 \x01(\bR\x11replayUndelivered\"\xb0\a\n" +
+	"\x12replay_undelivered\x18\x01 \x01(\bR\x11replayUndelivered\"\xb9\b\n" +
 	"\x05Event\x12B\n" +
 	"\x0fsandbox_changed\x18\x01 \x01(\v2\x17.switchboard.v1.SandboxH\x00R\x0esandboxChanged\x12G\n" +
 	"\fnotification\x18\x02 \x01(\v2!.switchboard.v1.NotificationEventH\x00R\fnotification\x12@\n" +
@@ -13357,9 +15151,11 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0eevents_dropped\x18\t \x01(\v2\x1d.switchboard.v1.EventsDroppedH\x00R\reventsDropped\x1a/\n" +
 	"\x0eSandboxRemoved\x12\x1d\n" +
 	"\n" +
-	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x1a,\n" +
+	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x1a\xb4\x01\n" +
 	"\x11McpGatewayChanged\x12\x17\n" +
-	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x1a)\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x128\n" +
+	"\aoutcome\x18\x02 \x01(\v2\x1e.switchboard.v1.McpSaveOutcomeR\aoutcome\x12L\n" +
+	"\x10pending_replaces\x18\x03 \x03(\v2!.switchboard.v1.McpPendingReplaceR\x0fpendingReplaces\x1a)\n" +
 	"\x0eSecretsChanged\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x1aW\n" +
 	"\x13OrchestratorChanged\x12\x17\n" +
@@ -13384,7 +15180,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12%\n" +
 	"\x0eworkspace_path\x18\x02 \x01(\tR\rworkspacePath\x12\x1d\n" +
 	"\n" +
-	"ssh_target\x18\x03 \x01(\tR\tsshTarget\"\xaa\x02\n" +
+	"ssh_target\x18\x03 \x01(\tR\tsshTarget\"\x9b\x03\n" +
 	"\tMcpServer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x121\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1d.switchboard.v1.McpServerKindR\x04kind\x12\x16\n" +
@@ -13395,18 +15191,37 @@ const file_switchboard_proto_rawDesc = "" +
 	"\ttransport\x18\x06 \x01(\tR\ttransport\x12\x1f\n" +
 	"\vstatus_text\x18\a \x01(\tR\n" +
 	"statusText\x12\x16\n" +
-	"\x06detail\x18\b \x01(\tR\x06detail\"\xe2\x01\n" +
+	"\x06detail\x18\b \x01(\tR\x06detail\x12%\n" +
+	"\x0erebind_pending\x18\t \x01(\bR\rrebindPending\x12(\n" +
+	"\x10save_in_progress\x18\n" +
+	" \x01(\bR\x0esaveInProgress\x12\x1e\n" +
+	"\n" +
+	"recovering\x18\v \x01(\bR\n" +
+	"recovering\"\xb5\x06\n" +
 	"\x12McpGatewaySettings\x12M\n" +
 	"\x13default_attach_mode\x18\x01 \x01(\x0e2\x1d.switchboard.v1.McpAttachModeR\x11defaultAttachMode\x12C\n" +
-	"\x05marks\x18\x02 \x03(\v2-.switchboard.v1.McpGatewaySettings.MarksEntryR\x05marks\x1a8\n" +
+	"\x05marks\x18\x02 \x03(\v2-.switchboard.v1.McpGatewaySettings.MarksEntryR\x05marks\x12U\n" +
+	"\vdefinitions\x18\x03 \x03(\v23.switchboard.v1.McpGatewaySettings.DefinitionsEntryR\vdefinitions\x12b\n" +
+	"\x10pending_replaces\x18\x04 \x03(\v27.switchboard.v1.McpGatewaySettings.PendingReplacesEntryR\x0fpendingReplaces\x12c\n" +
+	"\x11saves_in_progress\x18\x05 \x03(\v27.switchboard.v1.McpGatewaySettings.SavesInProgressEntryR\x0fsavesInProgress\x1a8\n" +
 	"\n" +
 	"MarksEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"\x17\n" +
-	"\x15ListMcpServersRequest\"\x8d\x01\n" +
+	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\x1ac\n" +
+	"\x10DefinitionsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x129\n" +
+	"\x05value\x18\x02 \x01(\v2#.switchboard.v1.McpServerDefinitionR\x05value:\x028\x01\x1ae\n" +
+	"\x14PendingReplacesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
+	"\x05value\x18\x02 \x01(\v2!.switchboard.v1.McpPendingReplaceR\x05value:\x028\x01\x1ae\n" +
+	"\x14SavesInProgressEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
+	"\x05value\x18\x02 \x01(\v2!.switchboard.v1.McpSaveInProgressR\x05value:\x028\x01\"\x17\n" +
+	"\x15ListMcpServersRequest\"\xdb\x01\n" +
 	"\x16ListMcpServersResponse\x123\n" +
 	"\aservers\x18\x01 \x03(\v2\x19.switchboard.v1.McpServerR\aservers\x12>\n" +
-	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\"\xca\x03\n" +
+	"\bsettings\x18\x02 \x01(\v2\".switchboard.v1.McpGatewaySettingsR\bsettings\x12L\n" +
+	"\x10pending_replaces\x18\x03 \x03(\v2!.switchboard.v1.McpPendingReplaceR\x0fpendingReplaces\"\xe2\x03\n" +
 	"\x13AddMcpServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x03url\x18\x02 \x01(\tH\x00R\x03url\x12L\n" +
@@ -13415,7 +15230,8 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x1backnowledge_local_execution\x18\x05 \x01(\bR\x19acknowledgeLocalExecution\x12\x18\n" +
 	"\aheaders\x18\x06 \x03(\tR\aheaders\x12\x1b\n" +
 	"\tclient_id\x18\a \x01(\tR\bclientId\x12<\n" +
-	"\x1aoauth_authorization_server\x18\b \x01(\tR\x18oauthAuthorizationServer\x1aN\n" +
+	"\x1aoauth_authorization_server\x18\b \x01(\tR\x18oauthAuthorizationServer\x12\x16\n" +
+	"\x06scopes\x18\t \x03(\tR\x06scopes\x1aN\n" +
 	"\fLocalCommand\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
@@ -13425,9 +15241,11 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x16RemoveMcpServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"/\n" +
 	"\x17RemoveMcpServerResponse\x12\x14\n" +
-	"\x05notes\x18\x01 \x03(\tR\x05notes\"/\n" +
+	"\x05notes\x18\x01 \x03(\tR\x05notes\"b\n" +
 	"\x19AuthorizeMcpServerRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"\xe0\x01\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06scopes\x18\x02 \x03(\tR\x06scopes\x12\x19\n" +
+	"\bno_scope\x18\x03 \x01(\bR\anoScope\"\xe0\x01\n" +
 	"\x0fMcpAuthProgress\x12\x12\n" +
 	"\x03url\x18\x01 \x01(\tH\x00R\x03url\x12\x1a\n" +
 	"\amessage\x18\x02 \x01(\tH\x00R\amessage\x122\n" +
@@ -13452,7 +15270,181 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x16DetachMcpServerRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"i\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\x82\x03\n" +
+	"\x13McpServerDefinition\x121\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1d.switchboard.v1.McpServerKindR\x04kind\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12J\n" +
+	"\acommand\x18\x03 \x01(\v20.switchboard.v1.AddMcpServerRequest.LocalCommandR\acommand\x12\x18\n" +
+	"\aheaders\x18\x04 \x03(\tR\aheaders\x12\x1b\n" +
+	"\tclient_id\x18\x05 \x01(\tR\bclientId\x12<\n" +
+	"\x1aoauth_authorization_server\x18\x06 \x01(\tR\x18oauthAuthorizationServer\x12\x16\n" +
+	"\x06scopes\x18\a \x03(\tR\x06scopes\x12%\n" +
+	"\x0erebind_pending\x18\b \x01(\bR\rrebindPending\x12&\n" +
+	"\x0fliteral_on_host\x18\t \x03(\tR\rliteralOnHost\"\xc4\x03\n" +
+	"\x11McpPendingReplace\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12*\n" +
+	"\x11attach_by_default\x18\x02 \x01(\bR\x0fattachByDefault\x12C\n" +
+	"\n" +
+	"definition\x18\x03 \x01(\v2#.switchboard.v1.McpServerDefinitionR\n" +
+	"definition\x12?\n" +
+	"\bprevious\x18\x04 \x01(\v2#.switchboard.v1.McpServerDefinitionR\bprevious\x12'\n" +
+	"\x0fremoved_secrets\x18\x05 \x03(\tR\x0eremovedSecrets\x124\n" +
+	"\x16removal_failed_secrets\x18\x06 \x03(\tR\x14removalFailedSecrets\x12\x1f\n" +
+	"\vadd_started\x18\a \x01(\bR\n" +
+	"addStarted\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x127\n" +
+	"\tfailed_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bfailedAt\x12\x1a\n" +
+	"\brevision\x18\n" +
+	" \x01(\x04R\brevision\"\xe7\x02\n" +
+	"\x11McpSaveInProgress\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12*\n" +
+	"\x11attach_by_default\x18\x02 \x01(\bR\x0fattachByDefault\x12C\n" +
+	"\n" +
+	"definition\x18\x03 \x01(\v2#.switchboard.v1.McpServerDefinitionR\n" +
+	"definition\x12?\n" +
+	"\bprevious\x18\x04 \x01(\v2#.switchboard.v1.McpServerDefinitionR\bprevious\x12\x14\n" +
+	"\x05retry\x18\x05 \x01(\bR\x05retry\x126\n" +
+	"\x17planned_created_secrets\x18\x06 \x03(\tR\x15plannedCreatedSecrets\x12>\n" +
+	"\x1bplanned_overwritten_secrets\x18\a \x03(\tR\x19plannedOverwrittenSecrets\"L\n" +
+	"\x1dGetMcpServerDefinitionRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
+	"\afor_add\x18\x02 \x01(\bR\x06forAdd\"\x98\x02\n" +
+	"\fMcpFieldFlag\x12\x14\n" +
+	"\x05field\x18\x01 \x01(\tR\x05field\x125\n" +
+	"\x04kind\x18\x02 \x01(\x0e2!.switchboard.v1.McpFieldFlag.KindR\x04kind\x12\x1d\n" +
+	"\n" +
+	"host_value\x18\x03 \x01(\tR\thostValue\x12%\n" +
+	"\x0erecorded_value\x18\x04 \x01(\tR\rrecordedValue\"u\n" +
+	"\x04Kind\x12\x14\n" +
+	"\x10KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
+	"\x0fCHANGED_ON_HOST\x10\x01\x12\x13\n" +
+	"\x0fNOT_RECOVERABLE\x10\x02\x12\x13\n" +
+	"\x0fLITERAL_ON_HOST\x10\x03\x12\x18\n" +
+	"\x14RESOLVED_UNCHECKABLE\x10\x04\"\xb1\x01\n" +
+	"\x0fMcpSecretStatus\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12>\n" +
+	"\x06status\x18\x02 \x01(\x0e2&.switchboard.v1.McpSecretStatus.StatusR\x06status\"J\n" +
+	"\x06Status\x12\x16\n" +
+	"\x12STATUS_UNSPECIFIED\x10\x00\x12\a\n" +
+	"\x03SET\x10\x01\x12\v\n" +
+	"\aMISSING\x10\x02\x12\x12\n" +
+	"\x0eREMOVAL_FAILED\x10\x03\"\xf1\x06\n" +
+	"\x11McpDefinitionView\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12C\n" +
+	"\n" +
+	"definition\x18\x02 \x01(\v2#.switchboard.v1.McpServerDefinitionR\n" +
+	"definition\x122\n" +
+	"\x05flags\x18\x03 \x03(\v2\x1c.switchboard.v1.McpFieldFlagR\x05flags\x121\n" +
+	"\x14unsupported_settings\x18\x04 \x03(\tR\x13unsupportedSettings\x129\n" +
+	"\asecrets\x18\x05 \x03(\v2\x1f.switchboard.v1.McpSecretStatusR\asecrets\x12+\n" +
+	"\x11secrets_available\x18\x06 \x01(\bR\x10secretsAvailable\x12<\n" +
+	"\x1asecrets_unavailable_reason\x18\a \x01(\tR\x18secretsUnavailableReason\x12;\n" +
+	"\n" +
+	"auth_state\x18\b \x01(\x0e2\x1c.switchboard.v1.McpAuthStateR\tauthState\x12\x1d\n" +
+	"\n" +
+	"has_record\x18\t \x01(\bR\thasRecord\x12*\n" +
+	"\x11attach_by_default\x18\n" +
+	" \x01(\bR\x0fattachByDefault\x12J\n" +
+	"\x0fpending_replace\x18\v \x01(\v2!.switchboard.v1.McpPendingReplaceR\x0ependingReplace\x12 \n" +
+	"\vfingerprint\x18\f \x01(\tR\vfingerprint\x12A\n" +
+	"\x1dpending_removal_failed_listed\x18\r \x03(\tR\x1apendingRemovalFailedListed\x12L\n" +
+	"#pending_removal_failed_list_unknown\x18\x0e \x01(\bR\x1fpendingRemovalFailedListUnknown\x12%\n" +
+	"\x0estored_secrets\x18\x0f \x03(\tR\rstoredSecrets\x12(\n" +
+	"\x10save_in_progress\x18\x10 \x01(\bR\x0esaveInProgress\x12\x1e\n" +
+	"\n" +
+	"recovering\x18\x11 \x01(\bR\n" +
+	"recovering\"\xdc\x04\n" +
+	"\x14SaveMcpServerRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12C\n" +
+	"\n" +
+	"definition\x18\x02 \x01(\v2#.switchboard.v1.McpServerDefinitionR\n" +
+	"definition\x12*\n" +
+	"\x11attach_by_default\x18\x03 \x01(\bR\x0fattachByDefault\x12\x15\n" +
+	"\x06is_new\x18\x04 \x01(\bR\x05isNew\x12 \n" +
+	"\vfingerprint\x18\x05 \x01(\tR\vfingerprint\x12*\n" +
+	"\x11retry_of_revision\x18\x06 \x01(\x04R\x0fretryOfRevision\x12[\n" +
+	"\rsecret_values\x18\a \x03(\v26.switchboard.v1.SaveMcpServerRequest.SecretValuesEntryR\fsecretValues\x12>\n" +
+	"\x1backnowledge_local_execution\x18\b \x01(\bR\x19acknowledgeLocalExecution\x128\n" +
+	"\x18confirm_drop_unsupported\x18\t \x01(\bR\x16confirmDropUnsupported\x12B\n" +
+	"\x1dconfirm_discard_authorization\x18\n" +
+	" \x01(\bR\x1bconfirmDiscardAuthorization\x1a?\n" +
+	"\x11SecretValuesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x98\a\n" +
+	"\x0eMcpSaveOutcome\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12:\n" +
+	"\x05state\x18\x02 \x01(\x0e2$.switchboard.v1.McpSaveOutcome.StateR\x05state\x12\x1a\n" +
+	"\breplaced\x18\x03 \x01(\bR\breplaced\x12\x1f\n" +
+	"\vadd_started\x18\x04 \x01(\bR\n" +
+	"addStarted\x12\x18\n" +
+	"\acreated\x18\x05 \x03(\tR\acreated\x12 \n" +
+	"\voverwritten\x18\x06 \x03(\tR\voverwritten\x12\x1f\n" +
+	"\vrolled_back\x18\a \x03(\tR\n" +
+	"rolledBack\x12'\n" +
+	"\x0frollback_failed\x18\b \x03(\tR\x0erollbackFailed\x12C\n" +
+	"\bidentity\x18\t \x01(\x0e2'.switchboard.v1.McpSaveOutcome.IdentityR\bidentity\x12%\n" +
+	"\x0erebind_pending\x18\n" +
+	" \x01(\bR\rrebindPending\x12\x1f\n" +
+	"\vhost_errors\x18\v \x03(\tR\n" +
+	"hostErrors\x12Q\n" +
+	"\x12attached_sandboxes\x18\f \x03(\v2\".switchboard.v1.McpAttachedSandboxR\x11attachedSandboxes\x12%\n" +
+	"\x0eunused_secrets\x18\r \x03(\tR\runusedSecrets\x12J\n" +
+	"\x0fpending_replace\x18\x0e \x01(\v2!.switchboard.v1.McpPendingReplaceR\x0ependingReplace\x121\n" +
+	"\x06server\x18\x0f \x01(\v2\x19.switchboard.v1.McpServerR\x06server\"t\n" +
+	"\x05State\x12\x15\n" +
+	"\x11STATE_UNSPECIFIED\x10\x00\x12\x0e\n" +
+	"\n" +
+	"REGISTERED\x10\x01\x12\x1a\n" +
+	"\x16UNCHANGED_REGISTRATION\x10\x02\x12\x14\n" +
+	"\x10STILL_REGISTERED\x10\x03\x12\x12\n" +
+	"\x0eNOT_REGISTERED\x10\x04\"w\n" +
+	"\bIdentity\x12\x18\n" +
+	"\x14IDENTITY_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vNOT_TOUCHED\x10\x01\x12\x11\n" +
+	"\rLEFT_IN_PLACE\x10\x02\x12\v\n" +
+	"\aCLEARED\x10\x03\x12\x0f\n" +
+	"\vNOT_CLEARED\x10\x04\x12\x0f\n" +
+	"\vUNCONFIRMED\x10\x05\"\xa0\x01\n" +
+	"\x12McpAttachedSandbox\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12*\n" +
+	"\x11skipped_at_launch\x18\x03 \x01(\bR\x0fskippedAtLaunch\x12\x1c\n" +
+	"\texclusive\x18\x04 \x01(\bR\texclusive\"P\n" +
+	"\x1eCancelMcpPendingReplaceRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x04R\brevision\"e\n" +
+	"\x1fCancelMcpPendingReplaceResponse\x12 \n" +
+	"\fleft_on_host\x18\x01 \x03(\tR\n" +
+	"leftOnHost\x12 \n" +
+	"\vunconfirmed\x18\x02 \x03(\tR\vunconfirmed\"M\n" +
+	"\x1dRemoveMcpServerSecretsRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\asecrets\x18\x02 \x03(\tR\asecrets\"\x9a\x01\n" +
+	"\x1eRemoveMcpServerSecretsResponse\x12\x18\n" +
+	"\aremoved\x18\x01 \x03(\tR\aremoved\x12\x16\n" +
+	"\x06failed\x18\x02 \x03(\tR\x06failed\x12%\n" +
+	"\x0erebind_pending\x18\x03 \x01(\bR\rrebindPending\x12\x1f\n" +
+	"\vhost_errors\x18\x04 \x03(\tR\n" +
+	"hostErrors\"Z\n" +
+	"\x10McpSkippedServer\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1c.switchboard.v1.McpSkipStateR\x05state\"\xbb\x02\n" +
+	"\x0eMcpSaveRefusal\x12=\n" +
+	"\x06reason\x18\x01 \x01(\x0e2%.switchboard.v1.McpSaveRefusal.ReasonR\x06reason\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xcf\x01\n" +
+	"\x06Reason\x12\x16\n" +
+	"\x12REASON_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rSTALE_CHANGED\x10\x01\x12\x13\n" +
+	"\x0fSTALE_RESTARTED\x10\x02\x12\x11\n" +
+	"\rPENDING_ENDED\x10\x03\x12\x1a\n" +
+	"\x16PENDING_REMOVAL_FAILED\x10\x04\x12\x14\n" +
+	"\x10AUTH_IN_PROGRESS\x10\x05\x12\x12\n" +
+	"\x0eBEING_REPLACED\x10\x06\x12\x12\n" +
+	"\x0ePENDING_EXISTS\x10\a\x12\b\n" +
+	"\x04GONE\x10\b\x12\x0e\n" +
+	"\n" +
+	"UNVERIFIED\x10\t\"i\n" +
 	"\x06Secret\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -14112,7 +16104,11 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x1bSTEP_RESOLUTION_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15STEP_RESOLUTION_RETRY\x10\x01\x12\x18\n" +
 	"\x14STEP_RESOLUTION_SKIP\x10\x02\x12\x18\n" +
-	"\x14STEP_RESOLUTION_FAIL\x10\x032\xae4\n" +
+	"\x14STEP_RESOLUTION_FAIL\x10\x03*\x84\x01\n" +
+	"\fMcpSkipState\x12\x1e\n" +
+	"\x1aMCP_SKIP_STATE_UNSPECIFIED\x10\x00\x12)\n" +
+	"%MCP_SKIP_STATE_SKIPPED_BEING_REPLACED\x10\x01\x12)\n" +
+	"%MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH\x10\x022\xe67\n" +
 	"\vSwitchboard\x12Q\n" +
 	"\rGetDaemonInfo\x12$.switchboard.v1.GetDaemonInfoRequest\x1a\x1a.switchboard.v1.DaemonInfo\x12]\n" +
 	"\x11GetOptionManifest\x12(.switchboard.v1.GetOptionManifestRequest\x1a\x1e.switchboard.v1.OptionManifest\x12U\n" +
@@ -14151,7 +16147,11 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x13SetMcpServerDefault\x12*.switchboard.v1.SetMcpServerDefaultRequest\x1a\x19.switchboard.v1.McpServer\x12_\n" +
 	"\x10SetMcpAttachMode\x12'.switchboard.v1.SetMcpAttachModeRequest\x1a\".switchboard.v1.McpGatewaySettings\x12R\n" +
 	"\x0fAttachMcpServer\x12&.switchboard.v1.AttachMcpServerRequest\x1a\x17.switchboard.v1.Sandbox\x12R\n" +
-	"\x0fDetachMcpServer\x12&.switchboard.v1.DetachMcpServerRequest\x1a\x17.switchboard.v1.Sandbox\x12V\n" +
+	"\x0fDetachMcpServer\x12&.switchboard.v1.DetachMcpServerRequest\x1a\x17.switchboard.v1.Sandbox\x12j\n" +
+	"\x16GetMcpServerDefinition\x12-.switchboard.v1.GetMcpServerDefinitionRequest\x1a!.switchboard.v1.McpDefinitionView\x12U\n" +
+	"\rSaveMcpServer\x12$.switchboard.v1.SaveMcpServerRequest\x1a\x1e.switchboard.v1.McpSaveOutcome\x12z\n" +
+	"\x17CancelMcpPendingReplace\x12..switchboard.v1.CancelMcpPendingReplaceRequest\x1a/.switchboard.v1.CancelMcpPendingReplaceResponse\x12w\n" +
+	"\x16RemoveMcpServerSecrets\x12-.switchboard.v1.RemoveMcpServerSecretsRequest\x1a..switchboard.v1.RemoveMcpServerSecretsResponse\x12V\n" +
 	"\vListSecrets\x12\".switchboard.v1.ListSecretsRequest\x1a#.switchboard.v1.ListSecretsResponse\x12E\n" +
 	"\tSetSecret\x12 .switchboard.v1.SetSecretRequest\x1a\x16.switchboard.v1.Secret\x12Y\n" +
 	"\fRemoveSecret\x12#.switchboard.v1.RemoveSecretRequest\x1a$.switchboard.v1.RemoveSecretResponse\x12h\n" +
@@ -14203,8 +16203,8 @@ func file_switchboard_proto_rawDescGZIP() []byte {
 	return file_switchboard_proto_rawDescData
 }
 
-var file_switchboard_proto_enumTypes = make([]protoimpl.EnumInfo, 28)
-var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 170)
+var file_switchboard_proto_enumTypes = make([]protoimpl.EnumInfo, 34)
+var file_switchboard_proto_msgTypes = make([]protoimpl.MessageInfo, 190)
 var file_switchboard_proto_goTypes = []any{
 	(SeedingMode)(0),                         // 0: switchboard.v1.SeedingMode
 	(SandboxState)(0),                        // 1: switchboard.v1.SandboxState
@@ -14233,520 +16233,587 @@ var file_switchboard_proto_goTypes = []any{
 	(WorkerHold)(0),                          // 24: switchboard.v1.WorkerHold
 	(StepOutcome)(0),                         // 25: switchboard.v1.StepOutcome
 	(StepResolution)(0),                      // 26: switchboard.v1.StepResolution
-	(AgentCheck_State)(0),                    // 27: switchboard.v1.AgentCheck.State
-	(*AgentSpec)(nil),                        // 28: switchboard.v1.AgentSpec
-	(*SourceRef)(nil),                        // 29: switchboard.v1.SourceRef
-	(*ConfigSnapshot)(nil),                   // 30: switchboard.v1.ConfigSnapshot
-	(*AgentSession)(nil),                     // 31: switchboard.v1.AgentSession
-	(*AgentCheck)(nil),                       // 32: switchboard.v1.AgentCheck
-	(*Sandbox)(nil),                          // 33: switchboard.v1.Sandbox
-	(*KitSpec)(nil),                          // 34: switchboard.v1.KitSpec
-	(*KitRef)(nil),                           // 35: switchboard.v1.KitRef
-	(*ValidateKitRequest)(nil),               // 36: switchboard.v1.ValidateKitRequest
-	(*ValidateKitResponse)(nil),              // 37: switchboard.v1.ValidateKitResponse
-	(*AddSandboxKitRequest)(nil),             // 38: switchboard.v1.AddSandboxKitRequest
-	(*EscapeHatchCommand)(nil),               // 39: switchboard.v1.EscapeHatchCommand
-	(*EscapeHatchRun)(nil),                   // 40: switchboard.v1.EscapeHatchRun
-	(*DecideEscapeHatchRunRequest)(nil),      // 41: switchboard.v1.DecideEscapeHatchRunRequest
-	(*DecideEscapeHatchRunResponse)(nil),     // 42: switchboard.v1.DecideEscapeHatchRunResponse
-	(*ListEscapeHatchRunsRequest)(nil),       // 43: switchboard.v1.ListEscapeHatchRunsRequest
-	(*ListEscapeHatchRunsResponse)(nil),      // 44: switchboard.v1.ListEscapeHatchRunsResponse
-	(*KitService)(nil),                       // 45: switchboard.v1.KitService
-	(*ServiceInstance)(nil),                  // 46: switchboard.v1.ServiceInstance
-	(*SandboxService)(nil),                   // 47: switchboard.v1.SandboxService
-	(*ListSandboxServicesRequest)(nil),       // 48: switchboard.v1.ListSandboxServicesRequest
-	(*ListSandboxServicesResponse)(nil),      // 49: switchboard.v1.ListSandboxServicesResponse
-	(*StartSandboxServiceRequest)(nil),       // 50: switchboard.v1.StartSandboxServiceRequest
-	(*StartSandboxServiceResponse)(nil),      // 51: switchboard.v1.StartSandboxServiceResponse
-	(*StopSandboxServiceRequest)(nil),        // 52: switchboard.v1.StopSandboxServiceRequest
-	(*StopSandboxServiceResponse)(nil),       // 53: switchboard.v1.StopSandboxServiceResponse
-	(*PortForwardFrame)(nil),                 // 54: switchboard.v1.PortForwardFrame
-	(*GetDaemonInfoRequest)(nil),             // 55: switchboard.v1.GetDaemonInfoRequest
-	(*DaemonInfo)(nil),                       // 56: switchboard.v1.DaemonInfo
-	(*UpdateDaemonRequest)(nil),              // 57: switchboard.v1.UpdateDaemonRequest
-	(*UpdateProgress)(nil),                   // 58: switchboard.v1.UpdateProgress
-	(*GetOptionManifestRequest)(nil),         // 59: switchboard.v1.GetOptionManifestRequest
-	(*OptionManifest)(nil),                   // 60: switchboard.v1.OptionManifest
-	(*ListSandboxesRequest)(nil),             // 61: switchboard.v1.ListSandboxesRequest
-	(*ListSandboxesResponse)(nil),            // 62: switchboard.v1.ListSandboxesResponse
-	(*LaunchSandboxRequest)(nil),             // 63: switchboard.v1.LaunchSandboxRequest
-	(*LaunchProgress)(nil),                   // 64: switchboard.v1.LaunchProgress
-	(*SandboxIdRequest)(nil),                 // 65: switchboard.v1.SandboxIdRequest
-	(*DestroyResponse)(nil),                  // 66: switchboard.v1.DestroyResponse
-	(*RenameSandboxRequest)(nil),             // 67: switchboard.v1.RenameSandboxRequest
-	(*SetSandboxTagRequest)(nil),             // 68: switchboard.v1.SetSandboxTagRequest
-	(*AddSandboxSourcesRequest)(nil),         // 69: switchboard.v1.AddSandboxSourcesRequest
-	(*RemoveSandboxSourcesRequest)(nil),      // 70: switchboard.v1.RemoveSandboxSourcesRequest
-	(*ResolveWorkspaceRequest)(nil),          // 71: switchboard.v1.ResolveWorkspaceRequest
-	(*ResolveWorkspaceResponse)(nil),         // 72: switchboard.v1.ResolveWorkspaceResponse
-	(*ListSourceCandidatesRequest)(nil),      // 73: switchboard.v1.ListSourceCandidatesRequest
-	(*ListSourceCandidatesResponse)(nil),     // 74: switchboard.v1.ListSourceCandidatesResponse
-	(*CheckResourcesRequest)(nil),            // 75: switchboard.v1.CheckResourcesRequest
-	(*ResourceReport)(nil),                   // 76: switchboard.v1.ResourceReport
-	(*PromptAgentRequest)(nil),               // 77: switchboard.v1.PromptAgentRequest
-	(*PromptAgentResponse)(nil),              // 78: switchboard.v1.PromptAgentResponse
-	(*AgentInput)(nil),                       // 79: switchboard.v1.AgentInput
-	(*AgentOutput)(nil),                      // 80: switchboard.v1.AgentOutput
-	(*SubscribeRequest)(nil),                 // 81: switchboard.v1.SubscribeRequest
-	(*Event)(nil),                            // 82: switchboard.v1.Event
-	(*EventsDropped)(nil),                    // 83: switchboard.v1.EventsDropped
-	(*NotificationEvent)(nil),                // 84: switchboard.v1.NotificationEvent
-	(*AckNotificationRequest)(nil),           // 85: switchboard.v1.AckNotificationRequest
-	(*AckNotificationResponse)(nil),          // 86: switchboard.v1.AckNotificationResponse
-	(*VSCodeTarget)(nil),                     // 87: switchboard.v1.VSCodeTarget
-	(*McpServer)(nil),                        // 88: switchboard.v1.McpServer
-	(*McpGatewaySettings)(nil),               // 89: switchboard.v1.McpGatewaySettings
-	(*ListMcpServersRequest)(nil),            // 90: switchboard.v1.ListMcpServersRequest
-	(*ListMcpServersResponse)(nil),           // 91: switchboard.v1.ListMcpServersResponse
-	(*AddMcpServerRequest)(nil),              // 92: switchboard.v1.AddMcpServerRequest
-	(*RemoveMcpServerRequest)(nil),           // 93: switchboard.v1.RemoveMcpServerRequest
-	(*RemoveMcpServerResponse)(nil),          // 94: switchboard.v1.RemoveMcpServerResponse
-	(*AuthorizeMcpServerRequest)(nil),        // 95: switchboard.v1.AuthorizeMcpServerRequest
-	(*McpAuthProgress)(nil),                  // 96: switchboard.v1.McpAuthProgress
-	(*CompleteMcpAuthCallbackRequest)(nil),   // 97: switchboard.v1.CompleteMcpAuthCallbackRequest
-	(*CompleteMcpAuthCallbackResponse)(nil),  // 98: switchboard.v1.CompleteMcpAuthCallbackResponse
-	(*SetMcpServerDefaultRequest)(nil),       // 99: switchboard.v1.SetMcpServerDefaultRequest
-	(*SetMcpAttachModeRequest)(nil),          // 100: switchboard.v1.SetMcpAttachModeRequest
-	(*AttachMcpServerRequest)(nil),           // 101: switchboard.v1.AttachMcpServerRequest
-	(*DetachMcpServerRequest)(nil),           // 102: switchboard.v1.DetachMcpServerRequest
-	(*Secret)(nil),                           // 103: switchboard.v1.Secret
-	(*ListSecretsRequest)(nil),               // 104: switchboard.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),              // 105: switchboard.v1.ListSecretsResponse
-	(*SetSecretRequest)(nil),                 // 106: switchboard.v1.SetSecretRequest
-	(*RemoveSecretRequest)(nil),              // 107: switchboard.v1.RemoveSecretRequest
-	(*RemoveSecretResponse)(nil),             // 108: switchboard.v1.RemoveSecretResponse
-	(*SandboxController)(nil),                // 109: switchboard.v1.SandboxController
-	(*WorkerRun)(nil),                        // 110: switchboard.v1.WorkerRun
-	(*WorkerBundle)(nil),                     // 111: switchboard.v1.WorkerBundle
-	(*OrchestratorHost)(nil),                 // 112: switchboard.v1.OrchestratorHost
-	(*ActionArgument)(nil),                   // 113: switchboard.v1.ActionArgument
-	(*ActionSequence)(nil),                   // 114: switchboard.v1.ActionSequence
-	(*Action)(nil),                           // 115: switchboard.v1.Action
-	(*TimedEvent)(nil),                       // 116: switchboard.v1.TimedEvent
-	(*ActiveWindow)(nil),                     // 117: switchboard.v1.ActiveWindow
-	(*ReasoningSetup)(nil),                   // 118: switchboard.v1.ReasoningSetup
-	(*Worker)(nil),                           // 119: switchboard.v1.Worker
-	(*Orchestrator)(nil),                     // 120: switchboard.v1.Orchestrator
-	(*Lane)(nil),                             // 121: switchboard.v1.Lane
-	(*AttachTicket)(nil),                     // 122: switchboard.v1.AttachTicket
-	(*HighWaterMark)(nil),                    // 123: switchboard.v1.HighWaterMark
-	(*DroppedWorkerTag)(nil),                 // 124: switchboard.v1.DroppedWorkerTag
-	(*KeptLaneSetting)(nil),                  // 125: switchboard.v1.KeptLaneSetting
-	(*WorkerLaneDisplay)(nil),                // 126: switchboard.v1.WorkerLaneDisplay
-	(*LaneGuardConfirm)(nil),                 // 127: switchboard.v1.LaneGuardConfirm
-	(*LaneChangeImpact)(nil),                 // 128: switchboard.v1.LaneChangeImpact
-	(*LaneActionUse)(nil),                    // 129: switchboard.v1.LaneActionUse
-	(*OrchestratorSummary)(nil),              // 130: switchboard.v1.OrchestratorSummary
-	(*WorkerView)(nil),                       // 131: switchboard.v1.WorkerView
-	(*RunStep)(nil),                          // 132: switchboard.v1.RunStep
-	(*Run)(nil),                              // 133: switchboard.v1.Run
-	(*OrchestratorLinkFrame)(nil),            // 134: switchboard.v1.OrchestratorLinkFrame
-	(*ListOrchestratorsRequest)(nil),         // 135: switchboard.v1.ListOrchestratorsRequest
-	(*ListOrchestratorsResponse)(nil),        // 136: switchboard.v1.ListOrchestratorsResponse
-	(*OrchestratorIdRequest)(nil),            // 137: switchboard.v1.OrchestratorIdRequest
-	(*OrchestratorDetail)(nil),               // 138: switchboard.v1.OrchestratorDetail
-	(*CreateOrchestratorRequest)(nil),        // 139: switchboard.v1.CreateOrchestratorRequest
-	(*RenameOrchestratorRequest)(nil),        // 140: switchboard.v1.RenameOrchestratorRequest
-	(*RemoveOrchestratorResponse)(nil),       // 141: switchboard.v1.RemoveOrchestratorResponse
-	(*SetOrchestratorHostsRequest)(nil),      // 142: switchboard.v1.SetOrchestratorHostsRequest
-	(*GetWorkerBundleRequest)(nil),           // 143: switchboard.v1.GetWorkerBundleRequest
-	(*AttachWorkerRequest)(nil),              // 144: switchboard.v1.AttachWorkerRequest
-	(*DetachWorkerRequest)(nil),              // 145: switchboard.v1.DetachWorkerRequest
-	(*DetachWorkerResponse)(nil),             // 146: switchboard.v1.DetachWorkerResponse
-	(*MarkWorkerFreeRequest)(nil),            // 147: switchboard.v1.MarkWorkerFreeRequest
-	(*PutActionRequest)(nil),                 // 148: switchboard.v1.PutActionRequest
-	(*DeleteActionRequest)(nil),              // 149: switchboard.v1.DeleteActionRequest
-	(*DeleteActionResponse)(nil),             // 150: switchboard.v1.DeleteActionResponse
-	(*PutTimedEventRequest)(nil),             // 151: switchboard.v1.PutTimedEventRequest
-	(*DeleteTimedEventRequest)(nil),          // 152: switchboard.v1.DeleteTimedEventRequest
-	(*DeleteTimedEventResponse)(nil),         // 153: switchboard.v1.DeleteTimedEventResponse
-	(*FireTimedEventRequest)(nil),            // 154: switchboard.v1.FireTimedEventRequest
-	(*CallActionRequest)(nil),                // 155: switchboard.v1.CallActionRequest
-	(*ListRunsRequest)(nil),                  // 156: switchboard.v1.ListRunsRequest
-	(*ListRunsResponse)(nil),                 // 157: switchboard.v1.ListRunsResponse
-	(*GetRunRequest)(nil),                    // 158: switchboard.v1.GetRunRequest
-	(*CancelRunRequest)(nil),                 // 159: switchboard.v1.CancelRunRequest
-	(*ResolveRunStepRequest)(nil),            // 160: switchboard.v1.ResolveRunStepRequest
-	(*RebuildReasoningSandboxRequest)(nil),   // 161: switchboard.v1.RebuildReasoningSandboxRequest
-	(*AttachControllerRequest)(nil),          // 162: switchboard.v1.AttachControllerRequest
-	(*DetachControllerRequest)(nil),          // 163: switchboard.v1.DetachControllerRequest
-	(*UpdateWorkerRequest)(nil),              // 164: switchboard.v1.UpdateWorkerRequest
-	(*DeliverWorkerPromptRequest)(nil),       // 165: switchboard.v1.DeliverWorkerPromptRequest
-	(*DeliverWorkerPromptResponse)(nil),      // 166: switchboard.v1.DeliverWorkerPromptResponse
-	(*PutLaneRequest)(nil),                   // 167: switchboard.v1.PutLaneRequest
-	(*DeleteLaneRequest)(nil),                // 168: switchboard.v1.DeleteLaneRequest
-	(*DeleteLaneResponse)(nil),               // 169: switchboard.v1.DeleteLaneResponse
-	(*SetWorkerLanesRequest)(nil),            // 170: switchboard.v1.SetWorkerLanesRequest
-	(*SetLaneMembersRequest)(nil),            // 171: switchboard.v1.SetLaneMembersRequest
-	(*CheckLaneChangeRequest)(nil),           // 172: switchboard.v1.CheckLaneChangeRequest
-	(*DeliverWorkerStepRequest)(nil),         // 173: switchboard.v1.DeliverWorkerStepRequest
-	(*DeliverWorkerStepResponse)(nil),        // 174: switchboard.v1.DeliverWorkerStepResponse
-	nil,                                      // 175: switchboard.v1.ConfigSnapshot.KitOptionsEntry
-	(*PortForwardFrame_Open)(nil),            // 176: switchboard.v1.PortForwardFrame.Open
-	(*PortForwardFrame_Opened)(nil),          // 177: switchboard.v1.PortForwardFrame.Opened
-	(*PortForwardFrame_Closed)(nil),          // 178: switchboard.v1.PortForwardFrame.Closed
-	(*OptionManifest_Option)(nil),            // 179: switchboard.v1.OptionManifest.Option
-	(*LaunchProgress_CopyProgress)(nil),      // 180: switchboard.v1.LaunchProgress.CopyProgress
-	(*AgentInput_Resize)(nil),                // 181: switchboard.v1.AgentInput.Resize
-	(*AgentInput_AttachInfo)(nil),            // 182: switchboard.v1.AgentInput.AttachInfo
-	(*AgentOutput_Snapshot)(nil),             // 183: switchboard.v1.AgentOutput.Snapshot
-	(*Event_SandboxRemoved)(nil),             // 184: switchboard.v1.Event.SandboxRemoved
-	(*Event_McpGatewayChanged)(nil),          // 185: switchboard.v1.Event.McpGatewayChanged
-	(*Event_SecretsChanged)(nil),             // 186: switchboard.v1.Event.SecretsChanged
-	(*Event_OrchestratorChanged)(nil),        // 187: switchboard.v1.Event.OrchestratorChanged
-	nil,                                      // 188: switchboard.v1.McpGatewaySettings.MarksEntry
-	(*AddMcpServerRequest_LocalCommand)(nil), // 189: switchboard.v1.AddMcpServerRequest.LocalCommand
-	nil,                                      // 190: switchboard.v1.TimedEvent.ArgumentsEntry
-	nil,                                      // 191: switchboard.v1.Orchestrator.HighWaterMarksEntry
-	nil,                                      // 192: switchboard.v1.Run.ArgumentsEntry
-	(*OrchestratorLinkFrame_Hello)(nil),      // 193: switchboard.v1.OrchestratorLinkFrame.Hello
-	(*OrchestratorLinkFrame_Call)(nil),       // 194: switchboard.v1.OrchestratorLinkFrame.Call
-	(*OrchestratorLinkFrame_Result)(nil),     // 195: switchboard.v1.OrchestratorLinkFrame.Result
-	(*OrchestratorLinkFrame_Ping)(nil),       // 196: switchboard.v1.OrchestratorLinkFrame.Ping
-	nil,                                      // 197: switchboard.v1.CallActionRequest.ArgumentsEntry
-	(*timestamppb.Timestamp)(nil),            // 198: google.protobuf.Timestamp
+	(McpSkipState)(0),                        // 27: switchboard.v1.McpSkipState
+	(AgentCheck_State)(0),                    // 28: switchboard.v1.AgentCheck.State
+	(McpFieldFlag_Kind)(0),                   // 29: switchboard.v1.McpFieldFlag.Kind
+	(McpSecretStatus_Status)(0),              // 30: switchboard.v1.McpSecretStatus.Status
+	(McpSaveOutcome_State)(0),                // 31: switchboard.v1.McpSaveOutcome.State
+	(McpSaveOutcome_Identity)(0),             // 32: switchboard.v1.McpSaveOutcome.Identity
+	(McpSaveRefusal_Reason)(0),               // 33: switchboard.v1.McpSaveRefusal.Reason
+	(*AgentSpec)(nil),                        // 34: switchboard.v1.AgentSpec
+	(*SourceRef)(nil),                        // 35: switchboard.v1.SourceRef
+	(*ConfigSnapshot)(nil),                   // 36: switchboard.v1.ConfigSnapshot
+	(*AgentSession)(nil),                     // 37: switchboard.v1.AgentSession
+	(*AgentCheck)(nil),                       // 38: switchboard.v1.AgentCheck
+	(*Sandbox)(nil),                          // 39: switchboard.v1.Sandbox
+	(*KitSpec)(nil),                          // 40: switchboard.v1.KitSpec
+	(*KitRef)(nil),                           // 41: switchboard.v1.KitRef
+	(*ValidateKitRequest)(nil),               // 42: switchboard.v1.ValidateKitRequest
+	(*ValidateKitResponse)(nil),              // 43: switchboard.v1.ValidateKitResponse
+	(*AddSandboxKitRequest)(nil),             // 44: switchboard.v1.AddSandboxKitRequest
+	(*EscapeHatchCommand)(nil),               // 45: switchboard.v1.EscapeHatchCommand
+	(*EscapeHatchRun)(nil),                   // 46: switchboard.v1.EscapeHatchRun
+	(*DecideEscapeHatchRunRequest)(nil),      // 47: switchboard.v1.DecideEscapeHatchRunRequest
+	(*DecideEscapeHatchRunResponse)(nil),     // 48: switchboard.v1.DecideEscapeHatchRunResponse
+	(*ListEscapeHatchRunsRequest)(nil),       // 49: switchboard.v1.ListEscapeHatchRunsRequest
+	(*ListEscapeHatchRunsResponse)(nil),      // 50: switchboard.v1.ListEscapeHatchRunsResponse
+	(*KitService)(nil),                       // 51: switchboard.v1.KitService
+	(*ServiceInstance)(nil),                  // 52: switchboard.v1.ServiceInstance
+	(*SandboxService)(nil),                   // 53: switchboard.v1.SandboxService
+	(*ListSandboxServicesRequest)(nil),       // 54: switchboard.v1.ListSandboxServicesRequest
+	(*ListSandboxServicesResponse)(nil),      // 55: switchboard.v1.ListSandboxServicesResponse
+	(*StartSandboxServiceRequest)(nil),       // 56: switchboard.v1.StartSandboxServiceRequest
+	(*StartSandboxServiceResponse)(nil),      // 57: switchboard.v1.StartSandboxServiceResponse
+	(*StopSandboxServiceRequest)(nil),        // 58: switchboard.v1.StopSandboxServiceRequest
+	(*StopSandboxServiceResponse)(nil),       // 59: switchboard.v1.StopSandboxServiceResponse
+	(*PortForwardFrame)(nil),                 // 60: switchboard.v1.PortForwardFrame
+	(*GetDaemonInfoRequest)(nil),             // 61: switchboard.v1.GetDaemonInfoRequest
+	(*DaemonInfo)(nil),                       // 62: switchboard.v1.DaemonInfo
+	(*UpdateDaemonRequest)(nil),              // 63: switchboard.v1.UpdateDaemonRequest
+	(*UpdateProgress)(nil),                   // 64: switchboard.v1.UpdateProgress
+	(*GetOptionManifestRequest)(nil),         // 65: switchboard.v1.GetOptionManifestRequest
+	(*OptionManifest)(nil),                   // 66: switchboard.v1.OptionManifest
+	(*ListSandboxesRequest)(nil),             // 67: switchboard.v1.ListSandboxesRequest
+	(*ListSandboxesResponse)(nil),            // 68: switchboard.v1.ListSandboxesResponse
+	(*LaunchSandboxRequest)(nil),             // 69: switchboard.v1.LaunchSandboxRequest
+	(*LaunchProgress)(nil),                   // 70: switchboard.v1.LaunchProgress
+	(*SandboxIdRequest)(nil),                 // 71: switchboard.v1.SandboxIdRequest
+	(*DestroyResponse)(nil),                  // 72: switchboard.v1.DestroyResponse
+	(*RenameSandboxRequest)(nil),             // 73: switchboard.v1.RenameSandboxRequest
+	(*SetSandboxTagRequest)(nil),             // 74: switchboard.v1.SetSandboxTagRequest
+	(*AddSandboxSourcesRequest)(nil),         // 75: switchboard.v1.AddSandboxSourcesRequest
+	(*RemoveSandboxSourcesRequest)(nil),      // 76: switchboard.v1.RemoveSandboxSourcesRequest
+	(*ResolveWorkspaceRequest)(nil),          // 77: switchboard.v1.ResolveWorkspaceRequest
+	(*ResolveWorkspaceResponse)(nil),         // 78: switchboard.v1.ResolveWorkspaceResponse
+	(*ListSourceCandidatesRequest)(nil),      // 79: switchboard.v1.ListSourceCandidatesRequest
+	(*ListSourceCandidatesResponse)(nil),     // 80: switchboard.v1.ListSourceCandidatesResponse
+	(*CheckResourcesRequest)(nil),            // 81: switchboard.v1.CheckResourcesRequest
+	(*ResourceReport)(nil),                   // 82: switchboard.v1.ResourceReport
+	(*PromptAgentRequest)(nil),               // 83: switchboard.v1.PromptAgentRequest
+	(*PromptAgentResponse)(nil),              // 84: switchboard.v1.PromptAgentResponse
+	(*AgentInput)(nil),                       // 85: switchboard.v1.AgentInput
+	(*AgentOutput)(nil),                      // 86: switchboard.v1.AgentOutput
+	(*SubscribeRequest)(nil),                 // 87: switchboard.v1.SubscribeRequest
+	(*Event)(nil),                            // 88: switchboard.v1.Event
+	(*EventsDropped)(nil),                    // 89: switchboard.v1.EventsDropped
+	(*NotificationEvent)(nil),                // 90: switchboard.v1.NotificationEvent
+	(*AckNotificationRequest)(nil),           // 91: switchboard.v1.AckNotificationRequest
+	(*AckNotificationResponse)(nil),          // 92: switchboard.v1.AckNotificationResponse
+	(*VSCodeTarget)(nil),                     // 93: switchboard.v1.VSCodeTarget
+	(*McpServer)(nil),                        // 94: switchboard.v1.McpServer
+	(*McpGatewaySettings)(nil),               // 95: switchboard.v1.McpGatewaySettings
+	(*ListMcpServersRequest)(nil),            // 96: switchboard.v1.ListMcpServersRequest
+	(*ListMcpServersResponse)(nil),           // 97: switchboard.v1.ListMcpServersResponse
+	(*AddMcpServerRequest)(nil),              // 98: switchboard.v1.AddMcpServerRequest
+	(*RemoveMcpServerRequest)(nil),           // 99: switchboard.v1.RemoveMcpServerRequest
+	(*RemoveMcpServerResponse)(nil),          // 100: switchboard.v1.RemoveMcpServerResponse
+	(*AuthorizeMcpServerRequest)(nil),        // 101: switchboard.v1.AuthorizeMcpServerRequest
+	(*McpAuthProgress)(nil),                  // 102: switchboard.v1.McpAuthProgress
+	(*CompleteMcpAuthCallbackRequest)(nil),   // 103: switchboard.v1.CompleteMcpAuthCallbackRequest
+	(*CompleteMcpAuthCallbackResponse)(nil),  // 104: switchboard.v1.CompleteMcpAuthCallbackResponse
+	(*SetMcpServerDefaultRequest)(nil),       // 105: switchboard.v1.SetMcpServerDefaultRequest
+	(*SetMcpAttachModeRequest)(nil),          // 106: switchboard.v1.SetMcpAttachModeRequest
+	(*AttachMcpServerRequest)(nil),           // 107: switchboard.v1.AttachMcpServerRequest
+	(*DetachMcpServerRequest)(nil),           // 108: switchboard.v1.DetachMcpServerRequest
+	(*McpServerDefinition)(nil),              // 109: switchboard.v1.McpServerDefinition
+	(*McpPendingReplace)(nil),                // 110: switchboard.v1.McpPendingReplace
+	(*McpSaveInProgress)(nil),                // 111: switchboard.v1.McpSaveInProgress
+	(*GetMcpServerDefinitionRequest)(nil),    // 112: switchboard.v1.GetMcpServerDefinitionRequest
+	(*McpFieldFlag)(nil),                     // 113: switchboard.v1.McpFieldFlag
+	(*McpSecretStatus)(nil),                  // 114: switchboard.v1.McpSecretStatus
+	(*McpDefinitionView)(nil),                // 115: switchboard.v1.McpDefinitionView
+	(*SaveMcpServerRequest)(nil),             // 116: switchboard.v1.SaveMcpServerRequest
+	(*McpSaveOutcome)(nil),                   // 117: switchboard.v1.McpSaveOutcome
+	(*McpAttachedSandbox)(nil),               // 118: switchboard.v1.McpAttachedSandbox
+	(*CancelMcpPendingReplaceRequest)(nil),   // 119: switchboard.v1.CancelMcpPendingReplaceRequest
+	(*CancelMcpPendingReplaceResponse)(nil),  // 120: switchboard.v1.CancelMcpPendingReplaceResponse
+	(*RemoveMcpServerSecretsRequest)(nil),    // 121: switchboard.v1.RemoveMcpServerSecretsRequest
+	(*RemoveMcpServerSecretsResponse)(nil),   // 122: switchboard.v1.RemoveMcpServerSecretsResponse
+	(*McpSkippedServer)(nil),                 // 123: switchboard.v1.McpSkippedServer
+	(*McpSaveRefusal)(nil),                   // 124: switchboard.v1.McpSaveRefusal
+	(*Secret)(nil),                           // 125: switchboard.v1.Secret
+	(*ListSecretsRequest)(nil),               // 126: switchboard.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),              // 127: switchboard.v1.ListSecretsResponse
+	(*SetSecretRequest)(nil),                 // 128: switchboard.v1.SetSecretRequest
+	(*RemoveSecretRequest)(nil),              // 129: switchboard.v1.RemoveSecretRequest
+	(*RemoveSecretResponse)(nil),             // 130: switchboard.v1.RemoveSecretResponse
+	(*SandboxController)(nil),                // 131: switchboard.v1.SandboxController
+	(*WorkerRun)(nil),                        // 132: switchboard.v1.WorkerRun
+	(*WorkerBundle)(nil),                     // 133: switchboard.v1.WorkerBundle
+	(*OrchestratorHost)(nil),                 // 134: switchboard.v1.OrchestratorHost
+	(*ActionArgument)(nil),                   // 135: switchboard.v1.ActionArgument
+	(*ActionSequence)(nil),                   // 136: switchboard.v1.ActionSequence
+	(*Action)(nil),                           // 137: switchboard.v1.Action
+	(*TimedEvent)(nil),                       // 138: switchboard.v1.TimedEvent
+	(*ActiveWindow)(nil),                     // 139: switchboard.v1.ActiveWindow
+	(*ReasoningSetup)(nil),                   // 140: switchboard.v1.ReasoningSetup
+	(*Worker)(nil),                           // 141: switchboard.v1.Worker
+	(*Orchestrator)(nil),                     // 142: switchboard.v1.Orchestrator
+	(*Lane)(nil),                             // 143: switchboard.v1.Lane
+	(*AttachTicket)(nil),                     // 144: switchboard.v1.AttachTicket
+	(*HighWaterMark)(nil),                    // 145: switchboard.v1.HighWaterMark
+	(*DroppedWorkerTag)(nil),                 // 146: switchboard.v1.DroppedWorkerTag
+	(*KeptLaneSetting)(nil),                  // 147: switchboard.v1.KeptLaneSetting
+	(*WorkerLaneDisplay)(nil),                // 148: switchboard.v1.WorkerLaneDisplay
+	(*LaneGuardConfirm)(nil),                 // 149: switchboard.v1.LaneGuardConfirm
+	(*LaneChangeImpact)(nil),                 // 150: switchboard.v1.LaneChangeImpact
+	(*LaneActionUse)(nil),                    // 151: switchboard.v1.LaneActionUse
+	(*OrchestratorSummary)(nil),              // 152: switchboard.v1.OrchestratorSummary
+	(*WorkerView)(nil),                       // 153: switchboard.v1.WorkerView
+	(*RunStep)(nil),                          // 154: switchboard.v1.RunStep
+	(*Run)(nil),                              // 155: switchboard.v1.Run
+	(*OrchestratorLinkFrame)(nil),            // 156: switchboard.v1.OrchestratorLinkFrame
+	(*ListOrchestratorsRequest)(nil),         // 157: switchboard.v1.ListOrchestratorsRequest
+	(*ListOrchestratorsResponse)(nil),        // 158: switchboard.v1.ListOrchestratorsResponse
+	(*OrchestratorIdRequest)(nil),            // 159: switchboard.v1.OrchestratorIdRequest
+	(*OrchestratorDetail)(nil),               // 160: switchboard.v1.OrchestratorDetail
+	(*CreateOrchestratorRequest)(nil),        // 161: switchboard.v1.CreateOrchestratorRequest
+	(*RenameOrchestratorRequest)(nil),        // 162: switchboard.v1.RenameOrchestratorRequest
+	(*RemoveOrchestratorResponse)(nil),       // 163: switchboard.v1.RemoveOrchestratorResponse
+	(*SetOrchestratorHostsRequest)(nil),      // 164: switchboard.v1.SetOrchestratorHostsRequest
+	(*GetWorkerBundleRequest)(nil),           // 165: switchboard.v1.GetWorkerBundleRequest
+	(*AttachWorkerRequest)(nil),              // 166: switchboard.v1.AttachWorkerRequest
+	(*DetachWorkerRequest)(nil),              // 167: switchboard.v1.DetachWorkerRequest
+	(*DetachWorkerResponse)(nil),             // 168: switchboard.v1.DetachWorkerResponse
+	(*MarkWorkerFreeRequest)(nil),            // 169: switchboard.v1.MarkWorkerFreeRequest
+	(*PutActionRequest)(nil),                 // 170: switchboard.v1.PutActionRequest
+	(*DeleteActionRequest)(nil),              // 171: switchboard.v1.DeleteActionRequest
+	(*DeleteActionResponse)(nil),             // 172: switchboard.v1.DeleteActionResponse
+	(*PutTimedEventRequest)(nil),             // 173: switchboard.v1.PutTimedEventRequest
+	(*DeleteTimedEventRequest)(nil),          // 174: switchboard.v1.DeleteTimedEventRequest
+	(*DeleteTimedEventResponse)(nil),         // 175: switchboard.v1.DeleteTimedEventResponse
+	(*FireTimedEventRequest)(nil),            // 176: switchboard.v1.FireTimedEventRequest
+	(*CallActionRequest)(nil),                // 177: switchboard.v1.CallActionRequest
+	(*ListRunsRequest)(nil),                  // 178: switchboard.v1.ListRunsRequest
+	(*ListRunsResponse)(nil),                 // 179: switchboard.v1.ListRunsResponse
+	(*GetRunRequest)(nil),                    // 180: switchboard.v1.GetRunRequest
+	(*CancelRunRequest)(nil),                 // 181: switchboard.v1.CancelRunRequest
+	(*ResolveRunStepRequest)(nil),            // 182: switchboard.v1.ResolveRunStepRequest
+	(*RebuildReasoningSandboxRequest)(nil),   // 183: switchboard.v1.RebuildReasoningSandboxRequest
+	(*AttachControllerRequest)(nil),          // 184: switchboard.v1.AttachControllerRequest
+	(*DetachControllerRequest)(nil),          // 185: switchboard.v1.DetachControllerRequest
+	(*UpdateWorkerRequest)(nil),              // 186: switchboard.v1.UpdateWorkerRequest
+	(*DeliverWorkerPromptRequest)(nil),       // 187: switchboard.v1.DeliverWorkerPromptRequest
+	(*DeliverWorkerPromptResponse)(nil),      // 188: switchboard.v1.DeliverWorkerPromptResponse
+	(*PutLaneRequest)(nil),                   // 189: switchboard.v1.PutLaneRequest
+	(*DeleteLaneRequest)(nil),                // 190: switchboard.v1.DeleteLaneRequest
+	(*DeleteLaneResponse)(nil),               // 191: switchboard.v1.DeleteLaneResponse
+	(*SetWorkerLanesRequest)(nil),            // 192: switchboard.v1.SetWorkerLanesRequest
+	(*SetLaneMembersRequest)(nil),            // 193: switchboard.v1.SetLaneMembersRequest
+	(*CheckLaneChangeRequest)(nil),           // 194: switchboard.v1.CheckLaneChangeRequest
+	(*DeliverWorkerStepRequest)(nil),         // 195: switchboard.v1.DeliverWorkerStepRequest
+	(*DeliverWorkerStepResponse)(nil),        // 196: switchboard.v1.DeliverWorkerStepResponse
+	nil,                                      // 197: switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	(*PortForwardFrame_Open)(nil),            // 198: switchboard.v1.PortForwardFrame.Open
+	(*PortForwardFrame_Opened)(nil),          // 199: switchboard.v1.PortForwardFrame.Opened
+	(*PortForwardFrame_Closed)(nil),          // 200: switchboard.v1.PortForwardFrame.Closed
+	(*OptionManifest_Option)(nil),            // 201: switchboard.v1.OptionManifest.Option
+	(*LaunchProgress_CopyProgress)(nil),      // 202: switchboard.v1.LaunchProgress.CopyProgress
+	(*AgentInput_Resize)(nil),                // 203: switchboard.v1.AgentInput.Resize
+	(*AgentInput_AttachInfo)(nil),            // 204: switchboard.v1.AgentInput.AttachInfo
+	(*AgentOutput_Snapshot)(nil),             // 205: switchboard.v1.AgentOutput.Snapshot
+	(*Event_SandboxRemoved)(nil),             // 206: switchboard.v1.Event.SandboxRemoved
+	(*Event_McpGatewayChanged)(nil),          // 207: switchboard.v1.Event.McpGatewayChanged
+	(*Event_SecretsChanged)(nil),             // 208: switchboard.v1.Event.SecretsChanged
+	(*Event_OrchestratorChanged)(nil),        // 209: switchboard.v1.Event.OrchestratorChanged
+	nil,                                      // 210: switchboard.v1.McpGatewaySettings.MarksEntry
+	nil,                                      // 211: switchboard.v1.McpGatewaySettings.DefinitionsEntry
+	nil,                                      // 212: switchboard.v1.McpGatewaySettings.PendingReplacesEntry
+	nil,                                      // 213: switchboard.v1.McpGatewaySettings.SavesInProgressEntry
+	(*AddMcpServerRequest_LocalCommand)(nil), // 214: switchboard.v1.AddMcpServerRequest.LocalCommand
+	nil,                                      // 215: switchboard.v1.SaveMcpServerRequest.SecretValuesEntry
+	nil,                                      // 216: switchboard.v1.TimedEvent.ArgumentsEntry
+	nil,                                      // 217: switchboard.v1.Orchestrator.HighWaterMarksEntry
+	nil,                                      // 218: switchboard.v1.Run.ArgumentsEntry
+	(*OrchestratorLinkFrame_Hello)(nil),      // 219: switchboard.v1.OrchestratorLinkFrame.Hello
+	(*OrchestratorLinkFrame_Call)(nil),       // 220: switchboard.v1.OrchestratorLinkFrame.Call
+	(*OrchestratorLinkFrame_Result)(nil),     // 221: switchboard.v1.OrchestratorLinkFrame.Result
+	(*OrchestratorLinkFrame_Ping)(nil),       // 222: switchboard.v1.OrchestratorLinkFrame.Ping
+	nil,                                      // 223: switchboard.v1.CallActionRequest.ArgumentsEntry
+	(*timestamppb.Timestamp)(nil),            // 224: google.protobuf.Timestamp
 }
 var file_switchboard_proto_depIdxs = []int32{
-	175, // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
+	197, // 0: switchboard.v1.ConfigSnapshot.kit_options:type_name -> switchboard.v1.ConfigSnapshot.KitOptionsEntry
 	0,   // 1: switchboard.v1.ConfigSnapshot.seeding_mode:type_name -> switchboard.v1.SeedingMode
-	28,  // 2: switchboard.v1.ConfigSnapshot.agent:type_name -> switchboard.v1.AgentSpec
-	28,  // 3: switchboard.v1.AgentSession.spec:type_name -> switchboard.v1.AgentSpec
+	34,  // 2: switchboard.v1.ConfigSnapshot.agent:type_name -> switchboard.v1.AgentSpec
+	34,  // 3: switchboard.v1.AgentSession.spec:type_name -> switchboard.v1.AgentSpec
 	2,   // 4: switchboard.v1.AgentSession.status:type_name -> switchboard.v1.AgentStatus
-	198, // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
-	198, // 6: switchboard.v1.AgentSession.last_submit_at:type_name -> google.protobuf.Timestamp
-	198, // 7: switchboard.v1.AgentSession.last_turn_end_at:type_name -> google.protobuf.Timestamp
-	198, // 8: switchboard.v1.AgentSession.last_session_start_at:type_name -> google.protobuf.Timestamp
-	198, // 9: switchboard.v1.AgentSession.input_idle_since:type_name -> google.protobuf.Timestamp
-	198, // 10: switchboard.v1.AgentSession.last_needs_input_at:type_name -> google.protobuf.Timestamp
-	32,  // 11: switchboard.v1.AgentSession.agent_check:type_name -> switchboard.v1.AgentCheck
-	27,  // 12: switchboard.v1.AgentCheck.state:type_name -> switchboard.v1.AgentCheck.State
+	224, // 5: switchboard.v1.AgentSession.last_event_at:type_name -> google.protobuf.Timestamp
+	224, // 6: switchboard.v1.AgentSession.last_submit_at:type_name -> google.protobuf.Timestamp
+	224, // 7: switchboard.v1.AgentSession.last_turn_end_at:type_name -> google.protobuf.Timestamp
+	224, // 8: switchboard.v1.AgentSession.last_session_start_at:type_name -> google.protobuf.Timestamp
+	224, // 9: switchboard.v1.AgentSession.input_idle_since:type_name -> google.protobuf.Timestamp
+	224, // 10: switchboard.v1.AgentSession.last_needs_input_at:type_name -> google.protobuf.Timestamp
+	38,  // 11: switchboard.v1.AgentSession.agent_check:type_name -> switchboard.v1.AgentCheck
+	28,  // 12: switchboard.v1.AgentCheck.state:type_name -> switchboard.v1.AgentCheck.State
 	2,   // 13: switchboard.v1.AgentCheck.last_status:type_name -> switchboard.v1.AgentStatus
-	198, // 14: switchboard.v1.AgentCheck.last_seen_at:type_name -> google.protobuf.Timestamp
+	224, // 14: switchboard.v1.AgentCheck.last_seen_at:type_name -> google.protobuf.Timestamp
 	1,   // 15: switchboard.v1.Sandbox.state:type_name -> switchboard.v1.SandboxState
-	30,  // 16: switchboard.v1.Sandbox.config_snapshot:type_name -> switchboard.v1.ConfigSnapshot
-	29,  // 17: switchboard.v1.Sandbox.sources:type_name -> switchboard.v1.SourceRef
+	36,  // 16: switchboard.v1.Sandbox.config_snapshot:type_name -> switchboard.v1.ConfigSnapshot
+	35,  // 17: switchboard.v1.Sandbox.sources:type_name -> switchboard.v1.SourceRef
 	0,   // 18: switchboard.v1.Sandbox.seeding_mode:type_name -> switchboard.v1.SeedingMode
-	31,  // 19: switchboard.v1.Sandbox.agent:type_name -> switchboard.v1.AgentSession
-	198, // 20: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	198, // 21: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
-	39,  // 22: switchboard.v1.Sandbox.escape_hatch_commands:type_name -> switchboard.v1.EscapeHatchCommand
-	45,  // 23: switchboard.v1.Sandbox.services:type_name -> switchboard.v1.KitService
+	37,  // 19: switchboard.v1.Sandbox.agent:type_name -> switchboard.v1.AgentSession
+	224, // 20: switchboard.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	224, // 21: switchboard.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
+	45,  // 22: switchboard.v1.Sandbox.escape_hatch_commands:type_name -> switchboard.v1.EscapeHatchCommand
+	51,  // 23: switchboard.v1.Sandbox.services:type_name -> switchboard.v1.KitService
 	11,  // 24: switchboard.v1.Sandbox.mcp_attach_mode:type_name -> switchboard.v1.McpAttachMode
-	109, // 25: switchboard.v1.Sandbox.controller:type_name -> switchboard.v1.SandboxController
-	39,  // 26: switchboard.v1.KitSpec.escape_hatch:type_name -> switchboard.v1.EscapeHatchCommand
-	45,  // 27: switchboard.v1.KitSpec.services:type_name -> switchboard.v1.KitService
-	34,  // 28: switchboard.v1.KitRef.spec:type_name -> switchboard.v1.KitSpec
-	34,  // 29: switchboard.v1.ValidateKitRequest.kit:type_name -> switchboard.v1.KitSpec
-	35,  // 30: switchboard.v1.AddSandboxKitRequest.kit:type_name -> switchboard.v1.KitRef
-	5,   // 31: switchboard.v1.EscapeHatchCommand.consent_mode:type_name -> switchboard.v1.ConsentMode
-	6,   // 32: switchboard.v1.EscapeHatchRun.status:type_name -> switchboard.v1.EscapeHatchRunStatus
-	198, // 33: switchboard.v1.EscapeHatchRun.started_at:type_name -> google.protobuf.Timestamp
-	198, // 34: switchboard.v1.EscapeHatchRun.ended_at:type_name -> google.protobuf.Timestamp
-	6,   // 35: switchboard.v1.DecideEscapeHatchRunResponse.status:type_name -> switchboard.v1.EscapeHatchRunStatus
-	40,  // 36: switchboard.v1.ListEscapeHatchRunsResponse.runs:type_name -> switchboard.v1.EscapeHatchRun
-	7,   // 37: switchboard.v1.KitService.location:type_name -> switchboard.v1.ServiceLocation
-	8,   // 38: switchboard.v1.ServiceInstance.state:type_name -> switchboard.v1.ServiceState
-	9,   // 39: switchboard.v1.ServiceInstance.failure_reason:type_name -> switchboard.v1.ServiceFailureReason
-	198, // 40: switchboard.v1.ServiceInstance.started_at:type_name -> google.protobuf.Timestamp
-	198, // 41: switchboard.v1.ServiceInstance.ended_at:type_name -> google.protobuf.Timestamp
-	45,  // 42: switchboard.v1.SandboxService.declared:type_name -> switchboard.v1.KitService
-	46,  // 43: switchboard.v1.SandboxService.instance:type_name -> switchboard.v1.ServiceInstance
-	47,  // 44: switchboard.v1.ListSandboxServicesResponse.services:type_name -> switchboard.v1.SandboxService
-	46,  // 45: switchboard.v1.StartSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
-	46,  // 46: switchboard.v1.StopSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
-	176, // 47: switchboard.v1.PortForwardFrame.open:type_name -> switchboard.v1.PortForwardFrame.Open
-	177, // 48: switchboard.v1.PortForwardFrame.opened:type_name -> switchboard.v1.PortForwardFrame.Opened
-	178, // 49: switchboard.v1.PortForwardFrame.closed:type_name -> switchboard.v1.PortForwardFrame.Closed
-	179, // 50: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
-	33,  // 51: switchboard.v1.ListSandboxesResponse.sandboxes:type_name -> switchboard.v1.Sandbox
-	30,  // 52: switchboard.v1.LaunchSandboxRequest.config:type_name -> switchboard.v1.ConfigSnapshot
-	29,  // 53: switchboard.v1.LaunchSandboxRequest.sources:type_name -> switchboard.v1.SourceRef
-	28,  // 54: switchboard.v1.LaunchSandboxRequest.agent_override:type_name -> switchboard.v1.AgentSpec
-	35,  // 55: switchboard.v1.LaunchSandboxRequest.kits:type_name -> switchboard.v1.KitRef
-	111, // 56: switchboard.v1.LaunchSandboxRequest.controller:type_name -> switchboard.v1.WorkerBundle
-	180, // 57: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
-	33,  // 58: switchboard.v1.LaunchProgress.done:type_name -> switchboard.v1.Sandbox
-	76,  // 59: switchboard.v1.LaunchProgress.blocked:type_name -> switchboard.v1.ResourceReport
-	29,  // 60: switchboard.v1.AddSandboxSourcesRequest.sources:type_name -> switchboard.v1.SourceRef
-	1,   // 61: switchboard.v1.ResolveWorkspaceResponse.state:type_name -> switchboard.v1.SandboxState
-	29,  // 62: switchboard.v1.ListSourceCandidatesResponse.candidates:type_name -> switchboard.v1.SourceRef
-	29,  // 63: switchboard.v1.CheckResourcesRequest.sources:type_name -> switchboard.v1.SourceRef
-	181, // 64: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
-	182, // 65: switchboard.v1.AgentInput.attach:type_name -> switchboard.v1.AgentInput.AttachInfo
-	183, // 66: switchboard.v1.AgentOutput.snapshot:type_name -> switchboard.v1.AgentOutput.Snapshot
-	33,  // 67: switchboard.v1.Event.sandbox_changed:type_name -> switchboard.v1.Sandbox
-	84,  // 68: switchboard.v1.Event.notification:type_name -> switchboard.v1.NotificationEvent
-	184, // 69: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
-	40,  // 70: switchboard.v1.Event.escape_hatch_run:type_name -> switchboard.v1.EscapeHatchRun
-	46,  // 71: switchboard.v1.Event.service_instance:type_name -> switchboard.v1.ServiceInstance
-	185, // 72: switchboard.v1.Event.mcp_gateway_changed:type_name -> switchboard.v1.Event.McpGatewayChanged
-	186, // 73: switchboard.v1.Event.secrets_changed:type_name -> switchboard.v1.Event.SecretsChanged
-	187, // 74: switchboard.v1.Event.orchestrator_changed:type_name -> switchboard.v1.Event.OrchestratorChanged
-	83,  // 75: switchboard.v1.Event.events_dropped:type_name -> switchboard.v1.EventsDropped
-	3,   // 76: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
-	198, // 77: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
-	12,  // 78: switchboard.v1.McpServer.kind:type_name -> switchboard.v1.McpServerKind
-	13,  // 79: switchboard.v1.McpServer.auth_state:type_name -> switchboard.v1.McpAuthState
-	11,  // 80: switchboard.v1.McpGatewaySettings.default_attach_mode:type_name -> switchboard.v1.McpAttachMode
-	188, // 81: switchboard.v1.McpGatewaySettings.marks:type_name -> switchboard.v1.McpGatewaySettings.MarksEntry
-	88,  // 82: switchboard.v1.ListMcpServersResponse.servers:type_name -> switchboard.v1.McpServer
-	89,  // 83: switchboard.v1.ListMcpServersResponse.settings:type_name -> switchboard.v1.McpGatewaySettings
-	189, // 84: switchboard.v1.AddMcpServerRequest.command:type_name -> switchboard.v1.AddMcpServerRequest.LocalCommand
-	13,  // 85: switchboard.v1.McpAuthProgress.done:type_name -> switchboard.v1.McpAuthState
-	11,  // 86: switchboard.v1.SetMcpAttachModeRequest.mode:type_name -> switchboard.v1.McpAttachMode
-	103, // 87: switchboard.v1.ListSecretsResponse.secrets:type_name -> switchboard.v1.Secret
-	198, // 88: switchboard.v1.SandboxController.attached_at:type_name -> google.protobuf.Timestamp
-	110, // 89: switchboard.v1.SandboxController.run:type_name -> switchboard.v1.WorkerRun
-	20,  // 90: switchboard.v1.WorkerRun.step_role:type_name -> switchboard.v1.StepRole
-	24,  // 91: switchboard.v1.WorkerRun.hold:type_name -> switchboard.v1.WorkerHold
-	198, // 92: switchboard.v1.WorkerRun.step_sent_at:type_name -> google.protobuf.Timestamp
-	109, // 93: switchboard.v1.WorkerBundle.controller:type_name -> switchboard.v1.SandboxController
-	18,  // 94: switchboard.v1.ActionSequence.model:type_name -> switchboard.v1.ModelChoice
-	19,  // 95: switchboard.v1.ActionSequence.effort:type_name -> switchboard.v1.EffortChoice
-	14,  // 96: switchboard.v1.Action.type:type_name -> switchboard.v1.ActionType
-	113, // 97: switchboard.v1.Action.arguments:type_name -> switchboard.v1.ActionArgument
-	198, // 98: switchboard.v1.Action.created_at:type_name -> google.protobuf.Timestamp
-	198, // 99: switchboard.v1.Action.updated_at:type_name -> google.protobuf.Timestamp
-	114, // 100: switchboard.v1.Action.sequence:type_name -> switchboard.v1.ActionSequence
-	4,   // 101: switchboard.v1.Action.lane_mode:type_name -> switchboard.v1.LaneMode
-	190, // 102: switchboard.v1.TimedEvent.arguments:type_name -> switchboard.v1.TimedEvent.ArgumentsEntry
-	198, // 103: switchboard.v1.TimedEvent.next_fire_at:type_name -> google.protobuf.Timestamp
-	198, // 104: switchboard.v1.TimedEvent.last_fired_at:type_name -> google.protobuf.Timestamp
-	198, // 105: switchboard.v1.TimedEvent.last_skipped_at:type_name -> google.protobuf.Timestamp
-	117, // 106: switchboard.v1.TimedEvent.window:type_name -> switchboard.v1.ActiveWindow
-	29,  // 107: switchboard.v1.ReasoningSetup.sources:type_name -> switchboard.v1.SourceRef
-	30,  // 108: switchboard.v1.ReasoningSetup.config:type_name -> switchboard.v1.ConfigSnapshot
-	35,  // 109: switchboard.v1.ReasoningSetup.kits:type_name -> switchboard.v1.KitRef
-	198, // 110: switchboard.v1.Worker.attached_at:type_name -> google.protobuf.Timestamp
-	198, // 111: switchboard.v1.Orchestrator.created_at:type_name -> google.protobuf.Timestamp
-	112, // 112: switchboard.v1.Orchestrator.hosts:type_name -> switchboard.v1.OrchestratorHost
-	115, // 113: switchboard.v1.Orchestrator.actions:type_name -> switchboard.v1.Action
-	116, // 114: switchboard.v1.Orchestrator.timed_events:type_name -> switchboard.v1.TimedEvent
-	118, // 115: switchboard.v1.Orchestrator.reasoning_setup:type_name -> switchboard.v1.ReasoningSetup
-	119, // 116: switchboard.v1.Orchestrator.workers:type_name -> switchboard.v1.Worker
-	121, // 117: switchboard.v1.Orchestrator.lanes:type_name -> switchboard.v1.Lane
-	122, // 118: switchboard.v1.Orchestrator.attach_tickets:type_name -> switchboard.v1.AttachTicket
-	191, // 119: switchboard.v1.Orchestrator.high_water_marks:type_name -> switchboard.v1.Orchestrator.HighWaterMarksEntry
-	124, // 120: switchboard.v1.Orchestrator.dropped_worker_tags:type_name -> switchboard.v1.DroppedWorkerTag
-	198, // 121: switchboard.v1.Lane.created_at:type_name -> google.protobuf.Timestamp
-	198, // 122: switchboard.v1.AttachTicket.issued_at:type_name -> google.protobuf.Timestamp
-	198, // 123: switchboard.v1.HighWaterMark.removed_at:type_name -> google.protobuf.Timestamp
-	198, // 124: switchboard.v1.DroppedWorkerTag.dropped_at:type_name -> google.protobuf.Timestamp
-	4,   // 125: switchboard.v1.KeptLaneSetting.mode:type_name -> switchboard.v1.LaneMode
-	129, // 126: switchboard.v1.LaneChangeImpact.actions:type_name -> switchboard.v1.LaneActionUse
-	4,   // 127: switchboard.v1.LaneActionUse.mode:type_name -> switchboard.v1.LaneMode
-	120, // 128: switchboard.v1.OrchestratorSummary.orchestrator:type_name -> switchboard.v1.Orchestrator
-	1,   // 129: switchboard.v1.WorkerView.state:type_name -> switchboard.v1.SandboxState
-	2,   // 130: switchboard.v1.WorkerView.agent_status:type_name -> switchboard.v1.AgentStatus
-	17,  // 131: switchboard.v1.WorkerView.availability:type_name -> switchboard.v1.WorkerAvailability
-	24,  // 132: switchboard.v1.WorkerView.hold:type_name -> switchboard.v1.WorkerHold
-	20,  // 133: switchboard.v1.RunStep.role:type_name -> switchboard.v1.StepRole
-	21,  // 134: switchboard.v1.RunStep.kind:type_name -> switchboard.v1.StepKind
-	14,  // 135: switchboard.v1.Run.type:type_name -> switchboard.v1.ActionType
-	192, // 136: switchboard.v1.Run.arguments:type_name -> switchboard.v1.Run.ArgumentsEntry
-	16,  // 137: switchboard.v1.Run.event_kind:type_name -> switchboard.v1.EventKind
-	198, // 138: switchboard.v1.Run.received_at:type_name -> google.protobuf.Timestamp
-	198, // 139: switchboard.v1.Run.started_at:type_name -> google.protobuf.Timestamp
-	198, // 140: switchboard.v1.Run.ended_at:type_name -> google.protobuf.Timestamp
-	15,  // 141: switchboard.v1.Run.state:type_name -> switchboard.v1.RunState
-	132, // 142: switchboard.v1.Run.steps:type_name -> switchboard.v1.RunStep
-	22,  // 143: switchboard.v1.Run.step_status:type_name -> switchboard.v1.StepStatus
-	198, // 144: switchboard.v1.Run.step_sent_at:type_name -> google.protobuf.Timestamp
-	23,  // 145: switchboard.v1.Run.step_kind_seen:type_name -> switchboard.v1.StepObserved
-	24,  // 146: switchboard.v1.Run.hold:type_name -> switchboard.v1.WorkerHold
-	198, // 147: switchboard.v1.Run.hold_since:type_name -> google.protobuf.Timestamp
-	125, // 148: switchboard.v1.Run.kept_lanes:type_name -> switchboard.v1.KeptLaneSetting
-	193, // 149: switchboard.v1.OrchestratorLinkFrame.hello:type_name -> switchboard.v1.OrchestratorLinkFrame.Hello
-	194, // 150: switchboard.v1.OrchestratorLinkFrame.call:type_name -> switchboard.v1.OrchestratorLinkFrame.Call
-	195, // 151: switchboard.v1.OrchestratorLinkFrame.result:type_name -> switchboard.v1.OrchestratorLinkFrame.Result
-	196, // 152: switchboard.v1.OrchestratorLinkFrame.ping:type_name -> switchboard.v1.OrchestratorLinkFrame.Ping
-	130, // 153: switchboard.v1.ListOrchestratorsResponse.orchestrators:type_name -> switchboard.v1.OrchestratorSummary
-	130, // 154: switchboard.v1.OrchestratorDetail.summary:type_name -> switchboard.v1.OrchestratorSummary
-	131, // 155: switchboard.v1.OrchestratorDetail.workers:type_name -> switchboard.v1.WorkerView
-	112, // 156: switchboard.v1.OrchestratorDetail.hosts:type_name -> switchboard.v1.OrchestratorHost
-	112, // 157: switchboard.v1.SetOrchestratorHostsRequest.hosts:type_name -> switchboard.v1.OrchestratorHost
-	127, // 158: switchboard.v1.DetachWorkerRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
-	115, // 159: switchboard.v1.PutActionRequest.action:type_name -> switchboard.v1.Action
-	127, // 160: switchboard.v1.PutActionRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
-	116, // 161: switchboard.v1.PutTimedEventRequest.event:type_name -> switchboard.v1.TimedEvent
-	197, // 162: switchboard.v1.CallActionRequest.arguments:type_name -> switchboard.v1.CallActionRequest.ArgumentsEntry
-	133, // 163: switchboard.v1.ListRunsResponse.queued:type_name -> switchboard.v1.Run
-	133, // 164: switchboard.v1.ListRunsResponse.in_flight:type_name -> switchboard.v1.Run
-	133, // 165: switchboard.v1.ListRunsResponse.history:type_name -> switchboard.v1.Run
-	26,  // 166: switchboard.v1.ResolveRunStepRequest.resolution:type_name -> switchboard.v1.StepResolution
-	118, // 167: switchboard.v1.RebuildReasoningSandboxRequest.setup:type_name -> switchboard.v1.ReasoningSetup
-	109, // 168: switchboard.v1.AttachControllerRequest.controller:type_name -> switchboard.v1.SandboxController
-	110, // 169: switchboard.v1.UpdateWorkerRequest.run:type_name -> switchboard.v1.WorkerRun
-	126, // 170: switchboard.v1.UpdateWorkerRequest.lanes:type_name -> switchboard.v1.WorkerLaneDisplay
-	127, // 171: switchboard.v1.DeleteLaneRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
-	128, // 172: switchboard.v1.DeleteLaneResponse.applied:type_name -> switchboard.v1.LaneChangeImpact
-	127, // 173: switchboard.v1.SetWorkerLanesRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
-	127, // 174: switchboard.v1.SetLaneMembersRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
-	170, // 175: switchboard.v1.CheckLaneChangeRequest.set_worker_lanes:type_name -> switchboard.v1.SetWorkerLanesRequest
-	171, // 176: switchboard.v1.CheckLaneChangeRequest.set_lane_members:type_name -> switchboard.v1.SetLaneMembersRequest
-	148, // 177: switchboard.v1.CheckLaneChangeRequest.put_action:type_name -> switchboard.v1.PutActionRequest
-	168, // 178: switchboard.v1.CheckLaneChangeRequest.delete_lane:type_name -> switchboard.v1.DeleteLaneRequest
-	145, // 179: switchboard.v1.CheckLaneChangeRequest.detach_worker:type_name -> switchboard.v1.DetachWorkerRequest
-	132, // 180: switchboard.v1.DeliverWorkerStepRequest.step:type_name -> switchboard.v1.RunStep
-	25,  // 181: switchboard.v1.DeliverWorkerStepResponse.outcome:type_name -> switchboard.v1.StepOutcome
-	198, // 182: switchboard.v1.DeliverWorkerStepResponse.sent_at:type_name -> google.protobuf.Timestamp
-	198, // 183: switchboard.v1.DeliverWorkerStepResponse.submit_at:type_name -> google.protobuf.Timestamp
-	10,  // 184: switchboard.v1.AgentInput.AttachInfo.kind:type_name -> switchboard.v1.ClientKind
-	181, // 185: switchboard.v1.AgentInput.AttachInfo.initial_size:type_name -> switchboard.v1.AgentInput.Resize
-	123, // 186: switchboard.v1.Orchestrator.HighWaterMarksEntry.value:type_name -> switchboard.v1.HighWaterMark
-	55,  // 187: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
-	59,  // 188: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
-	57,  // 189: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
-	61,  // 190: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
-	63,  // 191: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
-	65,  // 192: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	65,  // 193: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	65,  // 194: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
-	67,  // 195: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
-	65,  // 196: switchboard.v1.Switchboard.RefreshSandbox:input_type -> switchboard.v1.SandboxIdRequest
-	36,  // 197: switchboard.v1.Switchboard.ValidateKit:input_type -> switchboard.v1.ValidateKitRequest
-	38,  // 198: switchboard.v1.Switchboard.AddSandboxKit:input_type -> switchboard.v1.AddSandboxKitRequest
-	73,  // 199: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
-	75,  // 200: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
-	68,  // 201: switchboard.v1.Switchboard.SetSandboxTag:input_type -> switchboard.v1.SetSandboxTagRequest
-	71,  // 202: switchboard.v1.Switchboard.ResolveWorkspace:input_type -> switchboard.v1.ResolveWorkspaceRequest
-	77,  // 203: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
-	79,  // 204: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
-	81,  // 205: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
-	85,  // 206: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
-	65,  // 207: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
-	41,  // 208: switchboard.v1.Switchboard.DecideEscapeHatchRun:input_type -> switchboard.v1.DecideEscapeHatchRunRequest
-	43,  // 209: switchboard.v1.Switchboard.ListEscapeHatchRuns:input_type -> switchboard.v1.ListEscapeHatchRunsRequest
-	48,  // 210: switchboard.v1.Switchboard.ListSandboxServices:input_type -> switchboard.v1.ListSandboxServicesRequest
-	50,  // 211: switchboard.v1.Switchboard.StartSandboxService:input_type -> switchboard.v1.StartSandboxServiceRequest
-	52,  // 212: switchboard.v1.Switchboard.StopSandboxService:input_type -> switchboard.v1.StopSandboxServiceRequest
-	54,  // 213: switchboard.v1.Switchboard.ForwardPort:input_type -> switchboard.v1.PortForwardFrame
-	69,  // 214: switchboard.v1.Switchboard.AddSandboxSources:input_type -> switchboard.v1.AddSandboxSourcesRequest
-	70,  // 215: switchboard.v1.Switchboard.RemoveSandboxSources:input_type -> switchboard.v1.RemoveSandboxSourcesRequest
-	90,  // 216: switchboard.v1.Switchboard.ListMcpServers:input_type -> switchboard.v1.ListMcpServersRequest
-	92,  // 217: switchboard.v1.Switchboard.AddMcpServer:input_type -> switchboard.v1.AddMcpServerRequest
-	93,  // 218: switchboard.v1.Switchboard.RemoveMcpServer:input_type -> switchboard.v1.RemoveMcpServerRequest
-	95,  // 219: switchboard.v1.Switchboard.AuthorizeMcpServer:input_type -> switchboard.v1.AuthorizeMcpServerRequest
-	97,  // 220: switchboard.v1.Switchboard.CompleteMcpAuthCallback:input_type -> switchboard.v1.CompleteMcpAuthCallbackRequest
-	99,  // 221: switchboard.v1.Switchboard.SetMcpServerDefault:input_type -> switchboard.v1.SetMcpServerDefaultRequest
-	100, // 222: switchboard.v1.Switchboard.SetMcpAttachMode:input_type -> switchboard.v1.SetMcpAttachModeRequest
-	101, // 223: switchboard.v1.Switchboard.AttachMcpServer:input_type -> switchboard.v1.AttachMcpServerRequest
-	102, // 224: switchboard.v1.Switchboard.DetachMcpServer:input_type -> switchboard.v1.DetachMcpServerRequest
-	104, // 225: switchboard.v1.Switchboard.ListSecrets:input_type -> switchboard.v1.ListSecretsRequest
-	106, // 226: switchboard.v1.Switchboard.SetSecret:input_type -> switchboard.v1.SetSecretRequest
-	107, // 227: switchboard.v1.Switchboard.RemoveSecret:input_type -> switchboard.v1.RemoveSecretRequest
-	135, // 228: switchboard.v1.Switchboard.ListOrchestrators:input_type -> switchboard.v1.ListOrchestratorsRequest
-	137, // 229: switchboard.v1.Switchboard.GetOrchestrator:input_type -> switchboard.v1.OrchestratorIdRequest
-	139, // 230: switchboard.v1.Switchboard.CreateOrchestrator:input_type -> switchboard.v1.CreateOrchestratorRequest
-	140, // 231: switchboard.v1.Switchboard.RenameOrchestrator:input_type -> switchboard.v1.RenameOrchestratorRequest
-	137, // 232: switchboard.v1.Switchboard.RemoveOrchestrator:input_type -> switchboard.v1.OrchestratorIdRequest
-	142, // 233: switchboard.v1.Switchboard.SetOrchestratorHosts:input_type -> switchboard.v1.SetOrchestratorHostsRequest
-	143, // 234: switchboard.v1.Switchboard.GetWorkerBundle:input_type -> switchboard.v1.GetWorkerBundleRequest
-	144, // 235: switchboard.v1.Switchboard.AttachWorker:input_type -> switchboard.v1.AttachWorkerRequest
-	145, // 236: switchboard.v1.Switchboard.DetachWorker:input_type -> switchboard.v1.DetachWorkerRequest
-	147, // 237: switchboard.v1.Switchboard.MarkWorkerFree:input_type -> switchboard.v1.MarkWorkerFreeRequest
-	148, // 238: switchboard.v1.Switchboard.PutAction:input_type -> switchboard.v1.PutActionRequest
-	149, // 239: switchboard.v1.Switchboard.DeleteAction:input_type -> switchboard.v1.DeleteActionRequest
-	151, // 240: switchboard.v1.Switchboard.PutTimedEvent:input_type -> switchboard.v1.PutTimedEventRequest
-	152, // 241: switchboard.v1.Switchboard.DeleteTimedEvent:input_type -> switchboard.v1.DeleteTimedEventRequest
-	154, // 242: switchboard.v1.Switchboard.FireTimedEvent:input_type -> switchboard.v1.FireTimedEventRequest
-	155, // 243: switchboard.v1.Switchboard.CallAction:input_type -> switchboard.v1.CallActionRequest
-	156, // 244: switchboard.v1.Switchboard.ListRuns:input_type -> switchboard.v1.ListRunsRequest
-	158, // 245: switchboard.v1.Switchboard.GetRun:input_type -> switchboard.v1.GetRunRequest
-	159, // 246: switchboard.v1.Switchboard.CancelRun:input_type -> switchboard.v1.CancelRunRequest
-	160, // 247: switchboard.v1.Switchboard.ResolveRunStep:input_type -> switchboard.v1.ResolveRunStepRequest
-	161, // 248: switchboard.v1.Switchboard.RebuildReasoningSandbox:input_type -> switchboard.v1.RebuildReasoningSandboxRequest
-	162, // 249: switchboard.v1.Switchboard.AttachController:input_type -> switchboard.v1.AttachControllerRequest
-	163, // 250: switchboard.v1.Switchboard.DetachController:input_type -> switchboard.v1.DetachControllerRequest
-	164, // 251: switchboard.v1.Switchboard.UpdateWorker:input_type -> switchboard.v1.UpdateWorkerRequest
-	165, // 252: switchboard.v1.Switchboard.DeliverWorkerPrompt:input_type -> switchboard.v1.DeliverWorkerPromptRequest
-	173, // 253: switchboard.v1.Switchboard.DeliverWorkerStep:input_type -> switchboard.v1.DeliverWorkerStepRequest
-	134, // 254: switchboard.v1.Switchboard.OrchestratorLink:input_type -> switchboard.v1.OrchestratorLinkFrame
-	167, // 255: switchboard.v1.Switchboard.PutLane:input_type -> switchboard.v1.PutLaneRequest
-	168, // 256: switchboard.v1.Switchboard.DeleteLane:input_type -> switchboard.v1.DeleteLaneRequest
-	170, // 257: switchboard.v1.Switchboard.SetWorkerLanes:input_type -> switchboard.v1.SetWorkerLanesRequest
-	171, // 258: switchboard.v1.Switchboard.SetLaneMembers:input_type -> switchboard.v1.SetLaneMembersRequest
-	172, // 259: switchboard.v1.Switchboard.CheckLaneChange:input_type -> switchboard.v1.CheckLaneChangeRequest
-	137, // 260: switchboard.v1.Switchboard.DismissDroppedWorkerTags:input_type -> switchboard.v1.OrchestratorIdRequest
-	56,  // 261: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
-	60,  // 262: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
-	58,  // 263: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
-	62,  // 264: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
-	64,  // 265: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
-	33,  // 266: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
-	64,  // 267: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
-	66,  // 268: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
-	33,  // 269: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
-	64,  // 270: switchboard.v1.Switchboard.RefreshSandbox:output_type -> switchboard.v1.LaunchProgress
-	37,  // 271: switchboard.v1.Switchboard.ValidateKit:output_type -> switchboard.v1.ValidateKitResponse
-	64,  // 272: switchboard.v1.Switchboard.AddSandboxKit:output_type -> switchboard.v1.LaunchProgress
-	74,  // 273: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
-	76,  // 274: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
-	33,  // 275: switchboard.v1.Switchboard.SetSandboxTag:output_type -> switchboard.v1.Sandbox
-	72,  // 276: switchboard.v1.Switchboard.ResolveWorkspace:output_type -> switchboard.v1.ResolveWorkspaceResponse
-	78,  // 277: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
-	80,  // 278: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
-	82,  // 279: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
-	86,  // 280: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
-	87,  // 281: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
-	42,  // 282: switchboard.v1.Switchboard.DecideEscapeHatchRun:output_type -> switchboard.v1.DecideEscapeHatchRunResponse
-	44,  // 283: switchboard.v1.Switchboard.ListEscapeHatchRuns:output_type -> switchboard.v1.ListEscapeHatchRunsResponse
-	49,  // 284: switchboard.v1.Switchboard.ListSandboxServices:output_type -> switchboard.v1.ListSandboxServicesResponse
-	51,  // 285: switchboard.v1.Switchboard.StartSandboxService:output_type -> switchboard.v1.StartSandboxServiceResponse
-	53,  // 286: switchboard.v1.Switchboard.StopSandboxService:output_type -> switchboard.v1.StopSandboxServiceResponse
-	54,  // 287: switchboard.v1.Switchboard.ForwardPort:output_type -> switchboard.v1.PortForwardFrame
-	64,  // 288: switchboard.v1.Switchboard.AddSandboxSources:output_type -> switchboard.v1.LaunchProgress
-	33,  // 289: switchboard.v1.Switchboard.RemoveSandboxSources:output_type -> switchboard.v1.Sandbox
-	91,  // 290: switchboard.v1.Switchboard.ListMcpServers:output_type -> switchboard.v1.ListMcpServersResponse
-	88,  // 291: switchboard.v1.Switchboard.AddMcpServer:output_type -> switchboard.v1.McpServer
-	94,  // 292: switchboard.v1.Switchboard.RemoveMcpServer:output_type -> switchboard.v1.RemoveMcpServerResponse
-	96,  // 293: switchboard.v1.Switchboard.AuthorizeMcpServer:output_type -> switchboard.v1.McpAuthProgress
-	98,  // 294: switchboard.v1.Switchboard.CompleteMcpAuthCallback:output_type -> switchboard.v1.CompleteMcpAuthCallbackResponse
-	88,  // 295: switchboard.v1.Switchboard.SetMcpServerDefault:output_type -> switchboard.v1.McpServer
-	89,  // 296: switchboard.v1.Switchboard.SetMcpAttachMode:output_type -> switchboard.v1.McpGatewaySettings
-	33,  // 297: switchboard.v1.Switchboard.AttachMcpServer:output_type -> switchboard.v1.Sandbox
-	33,  // 298: switchboard.v1.Switchboard.DetachMcpServer:output_type -> switchboard.v1.Sandbox
-	105, // 299: switchboard.v1.Switchboard.ListSecrets:output_type -> switchboard.v1.ListSecretsResponse
-	103, // 300: switchboard.v1.Switchboard.SetSecret:output_type -> switchboard.v1.Secret
-	108, // 301: switchboard.v1.Switchboard.RemoveSecret:output_type -> switchboard.v1.RemoveSecretResponse
-	136, // 302: switchboard.v1.Switchboard.ListOrchestrators:output_type -> switchboard.v1.ListOrchestratorsResponse
-	138, // 303: switchboard.v1.Switchboard.GetOrchestrator:output_type -> switchboard.v1.OrchestratorDetail
-	120, // 304: switchboard.v1.Switchboard.CreateOrchestrator:output_type -> switchboard.v1.Orchestrator
-	120, // 305: switchboard.v1.Switchboard.RenameOrchestrator:output_type -> switchboard.v1.Orchestrator
-	141, // 306: switchboard.v1.Switchboard.RemoveOrchestrator:output_type -> switchboard.v1.RemoveOrchestratorResponse
-	120, // 307: switchboard.v1.Switchboard.SetOrchestratorHosts:output_type -> switchboard.v1.Orchestrator
-	111, // 308: switchboard.v1.Switchboard.GetWorkerBundle:output_type -> switchboard.v1.WorkerBundle
-	131, // 309: switchboard.v1.Switchboard.AttachWorker:output_type -> switchboard.v1.WorkerView
-	146, // 310: switchboard.v1.Switchboard.DetachWorker:output_type -> switchboard.v1.DetachWorkerResponse
-	133, // 311: switchboard.v1.Switchboard.MarkWorkerFree:output_type -> switchboard.v1.Run
-	115, // 312: switchboard.v1.Switchboard.PutAction:output_type -> switchboard.v1.Action
-	150, // 313: switchboard.v1.Switchboard.DeleteAction:output_type -> switchboard.v1.DeleteActionResponse
-	116, // 314: switchboard.v1.Switchboard.PutTimedEvent:output_type -> switchboard.v1.TimedEvent
-	153, // 315: switchboard.v1.Switchboard.DeleteTimedEvent:output_type -> switchboard.v1.DeleteTimedEventResponse
-	133, // 316: switchboard.v1.Switchboard.FireTimedEvent:output_type -> switchboard.v1.Run
-	133, // 317: switchboard.v1.Switchboard.CallAction:output_type -> switchboard.v1.Run
-	157, // 318: switchboard.v1.Switchboard.ListRuns:output_type -> switchboard.v1.ListRunsResponse
-	133, // 319: switchboard.v1.Switchboard.GetRun:output_type -> switchboard.v1.Run
-	133, // 320: switchboard.v1.Switchboard.CancelRun:output_type -> switchboard.v1.Run
-	133, // 321: switchboard.v1.Switchboard.ResolveRunStep:output_type -> switchboard.v1.Run
-	64,  // 322: switchboard.v1.Switchboard.RebuildReasoningSandbox:output_type -> switchboard.v1.LaunchProgress
-	33,  // 323: switchboard.v1.Switchboard.AttachController:output_type -> switchboard.v1.Sandbox
-	33,  // 324: switchboard.v1.Switchboard.DetachController:output_type -> switchboard.v1.Sandbox
-	33,  // 325: switchboard.v1.Switchboard.UpdateWorker:output_type -> switchboard.v1.Sandbox
-	166, // 326: switchboard.v1.Switchboard.DeliverWorkerPrompt:output_type -> switchboard.v1.DeliverWorkerPromptResponse
-	174, // 327: switchboard.v1.Switchboard.DeliverWorkerStep:output_type -> switchboard.v1.DeliverWorkerStepResponse
-	134, // 328: switchboard.v1.Switchboard.OrchestratorLink:output_type -> switchboard.v1.OrchestratorLinkFrame
-	121, // 329: switchboard.v1.Switchboard.PutLane:output_type -> switchboard.v1.Lane
-	169, // 330: switchboard.v1.Switchboard.DeleteLane:output_type -> switchboard.v1.DeleteLaneResponse
-	131, // 331: switchboard.v1.Switchboard.SetWorkerLanes:output_type -> switchboard.v1.WorkerView
-	121, // 332: switchboard.v1.Switchboard.SetLaneMembers:output_type -> switchboard.v1.Lane
-	128, // 333: switchboard.v1.Switchboard.CheckLaneChange:output_type -> switchboard.v1.LaneChangeImpact
-	120, // 334: switchboard.v1.Switchboard.DismissDroppedWorkerTags:output_type -> switchboard.v1.Orchestrator
-	261, // [261:335] is the sub-list for method output_type
-	187, // [187:261] is the sub-list for method input_type
-	187, // [187:187] is the sub-list for extension type_name
-	187, // [187:187] is the sub-list for extension extendee
-	0,   // [0:187] is the sub-list for field type_name
+	131, // 25: switchboard.v1.Sandbox.controller:type_name -> switchboard.v1.SandboxController
+	123, // 26: switchboard.v1.Sandbox.mcp_skipped:type_name -> switchboard.v1.McpSkippedServer
+	45,  // 27: switchboard.v1.KitSpec.escape_hatch:type_name -> switchboard.v1.EscapeHatchCommand
+	51,  // 28: switchboard.v1.KitSpec.services:type_name -> switchboard.v1.KitService
+	40,  // 29: switchboard.v1.KitRef.spec:type_name -> switchboard.v1.KitSpec
+	40,  // 30: switchboard.v1.ValidateKitRequest.kit:type_name -> switchboard.v1.KitSpec
+	41,  // 31: switchboard.v1.AddSandboxKitRequest.kit:type_name -> switchboard.v1.KitRef
+	5,   // 32: switchboard.v1.EscapeHatchCommand.consent_mode:type_name -> switchboard.v1.ConsentMode
+	6,   // 33: switchboard.v1.EscapeHatchRun.status:type_name -> switchboard.v1.EscapeHatchRunStatus
+	224, // 34: switchboard.v1.EscapeHatchRun.started_at:type_name -> google.protobuf.Timestamp
+	224, // 35: switchboard.v1.EscapeHatchRun.ended_at:type_name -> google.protobuf.Timestamp
+	6,   // 36: switchboard.v1.DecideEscapeHatchRunResponse.status:type_name -> switchboard.v1.EscapeHatchRunStatus
+	46,  // 37: switchboard.v1.ListEscapeHatchRunsResponse.runs:type_name -> switchboard.v1.EscapeHatchRun
+	7,   // 38: switchboard.v1.KitService.location:type_name -> switchboard.v1.ServiceLocation
+	8,   // 39: switchboard.v1.ServiceInstance.state:type_name -> switchboard.v1.ServiceState
+	9,   // 40: switchboard.v1.ServiceInstance.failure_reason:type_name -> switchboard.v1.ServiceFailureReason
+	224, // 41: switchboard.v1.ServiceInstance.started_at:type_name -> google.protobuf.Timestamp
+	224, // 42: switchboard.v1.ServiceInstance.ended_at:type_name -> google.protobuf.Timestamp
+	51,  // 43: switchboard.v1.SandboxService.declared:type_name -> switchboard.v1.KitService
+	52,  // 44: switchboard.v1.SandboxService.instance:type_name -> switchboard.v1.ServiceInstance
+	53,  // 45: switchboard.v1.ListSandboxServicesResponse.services:type_name -> switchboard.v1.SandboxService
+	52,  // 46: switchboard.v1.StartSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
+	52,  // 47: switchboard.v1.StopSandboxServiceResponse.instance:type_name -> switchboard.v1.ServiceInstance
+	198, // 48: switchboard.v1.PortForwardFrame.open:type_name -> switchboard.v1.PortForwardFrame.Open
+	199, // 49: switchboard.v1.PortForwardFrame.opened:type_name -> switchboard.v1.PortForwardFrame.Opened
+	200, // 50: switchboard.v1.PortForwardFrame.closed:type_name -> switchboard.v1.PortForwardFrame.Closed
+	201, // 51: switchboard.v1.OptionManifest.options:type_name -> switchboard.v1.OptionManifest.Option
+	39,  // 52: switchboard.v1.ListSandboxesResponse.sandboxes:type_name -> switchboard.v1.Sandbox
+	36,  // 53: switchboard.v1.LaunchSandboxRequest.config:type_name -> switchboard.v1.ConfigSnapshot
+	35,  // 54: switchboard.v1.LaunchSandboxRequest.sources:type_name -> switchboard.v1.SourceRef
+	34,  // 55: switchboard.v1.LaunchSandboxRequest.agent_override:type_name -> switchboard.v1.AgentSpec
+	41,  // 56: switchboard.v1.LaunchSandboxRequest.kits:type_name -> switchboard.v1.KitRef
+	133, // 57: switchboard.v1.LaunchSandboxRequest.controller:type_name -> switchboard.v1.WorkerBundle
+	202, // 58: switchboard.v1.LaunchProgress.copy:type_name -> switchboard.v1.LaunchProgress.CopyProgress
+	39,  // 59: switchboard.v1.LaunchProgress.done:type_name -> switchboard.v1.Sandbox
+	82,  // 60: switchboard.v1.LaunchProgress.blocked:type_name -> switchboard.v1.ResourceReport
+	35,  // 61: switchboard.v1.AddSandboxSourcesRequest.sources:type_name -> switchboard.v1.SourceRef
+	1,   // 62: switchboard.v1.ResolveWorkspaceResponse.state:type_name -> switchboard.v1.SandboxState
+	35,  // 63: switchboard.v1.ListSourceCandidatesResponse.candidates:type_name -> switchboard.v1.SourceRef
+	35,  // 64: switchboard.v1.CheckResourcesRequest.sources:type_name -> switchboard.v1.SourceRef
+	203, // 65: switchboard.v1.AgentInput.resize:type_name -> switchboard.v1.AgentInput.Resize
+	204, // 66: switchboard.v1.AgentInput.attach:type_name -> switchboard.v1.AgentInput.AttachInfo
+	205, // 67: switchboard.v1.AgentOutput.snapshot:type_name -> switchboard.v1.AgentOutput.Snapshot
+	39,  // 68: switchboard.v1.Event.sandbox_changed:type_name -> switchboard.v1.Sandbox
+	90,  // 69: switchboard.v1.Event.notification:type_name -> switchboard.v1.NotificationEvent
+	206, // 70: switchboard.v1.Event.removed:type_name -> switchboard.v1.Event.SandboxRemoved
+	46,  // 71: switchboard.v1.Event.escape_hatch_run:type_name -> switchboard.v1.EscapeHatchRun
+	52,  // 72: switchboard.v1.Event.service_instance:type_name -> switchboard.v1.ServiceInstance
+	207, // 73: switchboard.v1.Event.mcp_gateway_changed:type_name -> switchboard.v1.Event.McpGatewayChanged
+	208, // 74: switchboard.v1.Event.secrets_changed:type_name -> switchboard.v1.Event.SecretsChanged
+	209, // 75: switchboard.v1.Event.orchestrator_changed:type_name -> switchboard.v1.Event.OrchestratorChanged
+	89,  // 76: switchboard.v1.Event.events_dropped:type_name -> switchboard.v1.EventsDropped
+	3,   // 77: switchboard.v1.NotificationEvent.kind:type_name -> switchboard.v1.NotificationKind
+	224, // 78: switchboard.v1.NotificationEvent.created_at:type_name -> google.protobuf.Timestamp
+	12,  // 79: switchboard.v1.McpServer.kind:type_name -> switchboard.v1.McpServerKind
+	13,  // 80: switchboard.v1.McpServer.auth_state:type_name -> switchboard.v1.McpAuthState
+	11,  // 81: switchboard.v1.McpGatewaySettings.default_attach_mode:type_name -> switchboard.v1.McpAttachMode
+	210, // 82: switchboard.v1.McpGatewaySettings.marks:type_name -> switchboard.v1.McpGatewaySettings.MarksEntry
+	211, // 83: switchboard.v1.McpGatewaySettings.definitions:type_name -> switchboard.v1.McpGatewaySettings.DefinitionsEntry
+	212, // 84: switchboard.v1.McpGatewaySettings.pending_replaces:type_name -> switchboard.v1.McpGatewaySettings.PendingReplacesEntry
+	213, // 85: switchboard.v1.McpGatewaySettings.saves_in_progress:type_name -> switchboard.v1.McpGatewaySettings.SavesInProgressEntry
+	94,  // 86: switchboard.v1.ListMcpServersResponse.servers:type_name -> switchboard.v1.McpServer
+	95,  // 87: switchboard.v1.ListMcpServersResponse.settings:type_name -> switchboard.v1.McpGatewaySettings
+	110, // 88: switchboard.v1.ListMcpServersResponse.pending_replaces:type_name -> switchboard.v1.McpPendingReplace
+	214, // 89: switchboard.v1.AddMcpServerRequest.command:type_name -> switchboard.v1.AddMcpServerRequest.LocalCommand
+	13,  // 90: switchboard.v1.McpAuthProgress.done:type_name -> switchboard.v1.McpAuthState
+	11,  // 91: switchboard.v1.SetMcpAttachModeRequest.mode:type_name -> switchboard.v1.McpAttachMode
+	12,  // 92: switchboard.v1.McpServerDefinition.kind:type_name -> switchboard.v1.McpServerKind
+	214, // 93: switchboard.v1.McpServerDefinition.command:type_name -> switchboard.v1.AddMcpServerRequest.LocalCommand
+	109, // 94: switchboard.v1.McpPendingReplace.definition:type_name -> switchboard.v1.McpServerDefinition
+	109, // 95: switchboard.v1.McpPendingReplace.previous:type_name -> switchboard.v1.McpServerDefinition
+	224, // 96: switchboard.v1.McpPendingReplace.failed_at:type_name -> google.protobuf.Timestamp
+	109, // 97: switchboard.v1.McpSaveInProgress.definition:type_name -> switchboard.v1.McpServerDefinition
+	109, // 98: switchboard.v1.McpSaveInProgress.previous:type_name -> switchboard.v1.McpServerDefinition
+	29,  // 99: switchboard.v1.McpFieldFlag.kind:type_name -> switchboard.v1.McpFieldFlag.Kind
+	30,  // 100: switchboard.v1.McpSecretStatus.status:type_name -> switchboard.v1.McpSecretStatus.Status
+	109, // 101: switchboard.v1.McpDefinitionView.definition:type_name -> switchboard.v1.McpServerDefinition
+	113, // 102: switchboard.v1.McpDefinitionView.flags:type_name -> switchboard.v1.McpFieldFlag
+	114, // 103: switchboard.v1.McpDefinitionView.secrets:type_name -> switchboard.v1.McpSecretStatus
+	13,  // 104: switchboard.v1.McpDefinitionView.auth_state:type_name -> switchboard.v1.McpAuthState
+	110, // 105: switchboard.v1.McpDefinitionView.pending_replace:type_name -> switchboard.v1.McpPendingReplace
+	109, // 106: switchboard.v1.SaveMcpServerRequest.definition:type_name -> switchboard.v1.McpServerDefinition
+	215, // 107: switchboard.v1.SaveMcpServerRequest.secret_values:type_name -> switchboard.v1.SaveMcpServerRequest.SecretValuesEntry
+	31,  // 108: switchboard.v1.McpSaveOutcome.state:type_name -> switchboard.v1.McpSaveOutcome.State
+	32,  // 109: switchboard.v1.McpSaveOutcome.identity:type_name -> switchboard.v1.McpSaveOutcome.Identity
+	118, // 110: switchboard.v1.McpSaveOutcome.attached_sandboxes:type_name -> switchboard.v1.McpAttachedSandbox
+	110, // 111: switchboard.v1.McpSaveOutcome.pending_replace:type_name -> switchboard.v1.McpPendingReplace
+	94,  // 112: switchboard.v1.McpSaveOutcome.server:type_name -> switchboard.v1.McpServer
+	27,  // 113: switchboard.v1.McpSkippedServer.state:type_name -> switchboard.v1.McpSkipState
+	33,  // 114: switchboard.v1.McpSaveRefusal.reason:type_name -> switchboard.v1.McpSaveRefusal.Reason
+	125, // 115: switchboard.v1.ListSecretsResponse.secrets:type_name -> switchboard.v1.Secret
+	224, // 116: switchboard.v1.SandboxController.attached_at:type_name -> google.protobuf.Timestamp
+	132, // 117: switchboard.v1.SandboxController.run:type_name -> switchboard.v1.WorkerRun
+	20,  // 118: switchboard.v1.WorkerRun.step_role:type_name -> switchboard.v1.StepRole
+	24,  // 119: switchboard.v1.WorkerRun.hold:type_name -> switchboard.v1.WorkerHold
+	224, // 120: switchboard.v1.WorkerRun.step_sent_at:type_name -> google.protobuf.Timestamp
+	131, // 121: switchboard.v1.WorkerBundle.controller:type_name -> switchboard.v1.SandboxController
+	18,  // 122: switchboard.v1.ActionSequence.model:type_name -> switchboard.v1.ModelChoice
+	19,  // 123: switchboard.v1.ActionSequence.effort:type_name -> switchboard.v1.EffortChoice
+	14,  // 124: switchboard.v1.Action.type:type_name -> switchboard.v1.ActionType
+	135, // 125: switchboard.v1.Action.arguments:type_name -> switchboard.v1.ActionArgument
+	224, // 126: switchboard.v1.Action.created_at:type_name -> google.protobuf.Timestamp
+	224, // 127: switchboard.v1.Action.updated_at:type_name -> google.protobuf.Timestamp
+	136, // 128: switchboard.v1.Action.sequence:type_name -> switchboard.v1.ActionSequence
+	4,   // 129: switchboard.v1.Action.lane_mode:type_name -> switchboard.v1.LaneMode
+	216, // 130: switchboard.v1.TimedEvent.arguments:type_name -> switchboard.v1.TimedEvent.ArgumentsEntry
+	224, // 131: switchboard.v1.TimedEvent.next_fire_at:type_name -> google.protobuf.Timestamp
+	224, // 132: switchboard.v1.TimedEvent.last_fired_at:type_name -> google.protobuf.Timestamp
+	224, // 133: switchboard.v1.TimedEvent.last_skipped_at:type_name -> google.protobuf.Timestamp
+	139, // 134: switchboard.v1.TimedEvent.window:type_name -> switchboard.v1.ActiveWindow
+	35,  // 135: switchboard.v1.ReasoningSetup.sources:type_name -> switchboard.v1.SourceRef
+	36,  // 136: switchboard.v1.ReasoningSetup.config:type_name -> switchboard.v1.ConfigSnapshot
+	41,  // 137: switchboard.v1.ReasoningSetup.kits:type_name -> switchboard.v1.KitRef
+	224, // 138: switchboard.v1.Worker.attached_at:type_name -> google.protobuf.Timestamp
+	224, // 139: switchboard.v1.Orchestrator.created_at:type_name -> google.protobuf.Timestamp
+	134, // 140: switchboard.v1.Orchestrator.hosts:type_name -> switchboard.v1.OrchestratorHost
+	137, // 141: switchboard.v1.Orchestrator.actions:type_name -> switchboard.v1.Action
+	138, // 142: switchboard.v1.Orchestrator.timed_events:type_name -> switchboard.v1.TimedEvent
+	140, // 143: switchboard.v1.Orchestrator.reasoning_setup:type_name -> switchboard.v1.ReasoningSetup
+	141, // 144: switchboard.v1.Orchestrator.workers:type_name -> switchboard.v1.Worker
+	143, // 145: switchboard.v1.Orchestrator.lanes:type_name -> switchboard.v1.Lane
+	144, // 146: switchboard.v1.Orchestrator.attach_tickets:type_name -> switchboard.v1.AttachTicket
+	217, // 147: switchboard.v1.Orchestrator.high_water_marks:type_name -> switchboard.v1.Orchestrator.HighWaterMarksEntry
+	146, // 148: switchboard.v1.Orchestrator.dropped_worker_tags:type_name -> switchboard.v1.DroppedWorkerTag
+	224, // 149: switchboard.v1.Lane.created_at:type_name -> google.protobuf.Timestamp
+	224, // 150: switchboard.v1.AttachTicket.issued_at:type_name -> google.protobuf.Timestamp
+	224, // 151: switchboard.v1.HighWaterMark.removed_at:type_name -> google.protobuf.Timestamp
+	224, // 152: switchboard.v1.DroppedWorkerTag.dropped_at:type_name -> google.protobuf.Timestamp
+	4,   // 153: switchboard.v1.KeptLaneSetting.mode:type_name -> switchboard.v1.LaneMode
+	151, // 154: switchboard.v1.LaneChangeImpact.actions:type_name -> switchboard.v1.LaneActionUse
+	4,   // 155: switchboard.v1.LaneActionUse.mode:type_name -> switchboard.v1.LaneMode
+	142, // 156: switchboard.v1.OrchestratorSummary.orchestrator:type_name -> switchboard.v1.Orchestrator
+	1,   // 157: switchboard.v1.WorkerView.state:type_name -> switchboard.v1.SandboxState
+	2,   // 158: switchboard.v1.WorkerView.agent_status:type_name -> switchboard.v1.AgentStatus
+	17,  // 159: switchboard.v1.WorkerView.availability:type_name -> switchboard.v1.WorkerAvailability
+	24,  // 160: switchboard.v1.WorkerView.hold:type_name -> switchboard.v1.WorkerHold
+	20,  // 161: switchboard.v1.RunStep.role:type_name -> switchboard.v1.StepRole
+	21,  // 162: switchboard.v1.RunStep.kind:type_name -> switchboard.v1.StepKind
+	14,  // 163: switchboard.v1.Run.type:type_name -> switchboard.v1.ActionType
+	218, // 164: switchboard.v1.Run.arguments:type_name -> switchboard.v1.Run.ArgumentsEntry
+	16,  // 165: switchboard.v1.Run.event_kind:type_name -> switchboard.v1.EventKind
+	224, // 166: switchboard.v1.Run.received_at:type_name -> google.protobuf.Timestamp
+	224, // 167: switchboard.v1.Run.started_at:type_name -> google.protobuf.Timestamp
+	224, // 168: switchboard.v1.Run.ended_at:type_name -> google.protobuf.Timestamp
+	15,  // 169: switchboard.v1.Run.state:type_name -> switchboard.v1.RunState
+	154, // 170: switchboard.v1.Run.steps:type_name -> switchboard.v1.RunStep
+	22,  // 171: switchboard.v1.Run.step_status:type_name -> switchboard.v1.StepStatus
+	224, // 172: switchboard.v1.Run.step_sent_at:type_name -> google.protobuf.Timestamp
+	23,  // 173: switchboard.v1.Run.step_kind_seen:type_name -> switchboard.v1.StepObserved
+	24,  // 174: switchboard.v1.Run.hold:type_name -> switchboard.v1.WorkerHold
+	224, // 175: switchboard.v1.Run.hold_since:type_name -> google.protobuf.Timestamp
+	147, // 176: switchboard.v1.Run.kept_lanes:type_name -> switchboard.v1.KeptLaneSetting
+	219, // 177: switchboard.v1.OrchestratorLinkFrame.hello:type_name -> switchboard.v1.OrchestratorLinkFrame.Hello
+	220, // 178: switchboard.v1.OrchestratorLinkFrame.call:type_name -> switchboard.v1.OrchestratorLinkFrame.Call
+	221, // 179: switchboard.v1.OrchestratorLinkFrame.result:type_name -> switchboard.v1.OrchestratorLinkFrame.Result
+	222, // 180: switchboard.v1.OrchestratorLinkFrame.ping:type_name -> switchboard.v1.OrchestratorLinkFrame.Ping
+	152, // 181: switchboard.v1.ListOrchestratorsResponse.orchestrators:type_name -> switchboard.v1.OrchestratorSummary
+	152, // 182: switchboard.v1.OrchestratorDetail.summary:type_name -> switchboard.v1.OrchestratorSummary
+	153, // 183: switchboard.v1.OrchestratorDetail.workers:type_name -> switchboard.v1.WorkerView
+	134, // 184: switchboard.v1.OrchestratorDetail.hosts:type_name -> switchboard.v1.OrchestratorHost
+	134, // 185: switchboard.v1.SetOrchestratorHostsRequest.hosts:type_name -> switchboard.v1.OrchestratorHost
+	149, // 186: switchboard.v1.DetachWorkerRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
+	137, // 187: switchboard.v1.PutActionRequest.action:type_name -> switchboard.v1.Action
+	149, // 188: switchboard.v1.PutActionRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
+	138, // 189: switchboard.v1.PutTimedEventRequest.event:type_name -> switchboard.v1.TimedEvent
+	223, // 190: switchboard.v1.CallActionRequest.arguments:type_name -> switchboard.v1.CallActionRequest.ArgumentsEntry
+	155, // 191: switchboard.v1.ListRunsResponse.queued:type_name -> switchboard.v1.Run
+	155, // 192: switchboard.v1.ListRunsResponse.in_flight:type_name -> switchboard.v1.Run
+	155, // 193: switchboard.v1.ListRunsResponse.history:type_name -> switchboard.v1.Run
+	26,  // 194: switchboard.v1.ResolveRunStepRequest.resolution:type_name -> switchboard.v1.StepResolution
+	140, // 195: switchboard.v1.RebuildReasoningSandboxRequest.setup:type_name -> switchboard.v1.ReasoningSetup
+	131, // 196: switchboard.v1.AttachControllerRequest.controller:type_name -> switchboard.v1.SandboxController
+	132, // 197: switchboard.v1.UpdateWorkerRequest.run:type_name -> switchboard.v1.WorkerRun
+	148, // 198: switchboard.v1.UpdateWorkerRequest.lanes:type_name -> switchboard.v1.WorkerLaneDisplay
+	149, // 199: switchboard.v1.DeleteLaneRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
+	150, // 200: switchboard.v1.DeleteLaneResponse.applied:type_name -> switchboard.v1.LaneChangeImpact
+	149, // 201: switchboard.v1.SetWorkerLanesRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
+	149, // 202: switchboard.v1.SetLaneMembersRequest.guard:type_name -> switchboard.v1.LaneGuardConfirm
+	192, // 203: switchboard.v1.CheckLaneChangeRequest.set_worker_lanes:type_name -> switchboard.v1.SetWorkerLanesRequest
+	193, // 204: switchboard.v1.CheckLaneChangeRequest.set_lane_members:type_name -> switchboard.v1.SetLaneMembersRequest
+	170, // 205: switchboard.v1.CheckLaneChangeRequest.put_action:type_name -> switchboard.v1.PutActionRequest
+	190, // 206: switchboard.v1.CheckLaneChangeRequest.delete_lane:type_name -> switchboard.v1.DeleteLaneRequest
+	167, // 207: switchboard.v1.CheckLaneChangeRequest.detach_worker:type_name -> switchboard.v1.DetachWorkerRequest
+	154, // 208: switchboard.v1.DeliverWorkerStepRequest.step:type_name -> switchboard.v1.RunStep
+	25,  // 209: switchboard.v1.DeliverWorkerStepResponse.outcome:type_name -> switchboard.v1.StepOutcome
+	224, // 210: switchboard.v1.DeliverWorkerStepResponse.sent_at:type_name -> google.protobuf.Timestamp
+	224, // 211: switchboard.v1.DeliverWorkerStepResponse.submit_at:type_name -> google.protobuf.Timestamp
+	10,  // 212: switchboard.v1.AgentInput.AttachInfo.kind:type_name -> switchboard.v1.ClientKind
+	203, // 213: switchboard.v1.AgentInput.AttachInfo.initial_size:type_name -> switchboard.v1.AgentInput.Resize
+	117, // 214: switchboard.v1.Event.McpGatewayChanged.outcome:type_name -> switchboard.v1.McpSaveOutcome
+	110, // 215: switchboard.v1.Event.McpGatewayChanged.pending_replaces:type_name -> switchboard.v1.McpPendingReplace
+	109, // 216: switchboard.v1.McpGatewaySettings.DefinitionsEntry.value:type_name -> switchboard.v1.McpServerDefinition
+	110, // 217: switchboard.v1.McpGatewaySettings.PendingReplacesEntry.value:type_name -> switchboard.v1.McpPendingReplace
+	111, // 218: switchboard.v1.McpGatewaySettings.SavesInProgressEntry.value:type_name -> switchboard.v1.McpSaveInProgress
+	145, // 219: switchboard.v1.Orchestrator.HighWaterMarksEntry.value:type_name -> switchboard.v1.HighWaterMark
+	61,  // 220: switchboard.v1.Switchboard.GetDaemonInfo:input_type -> switchboard.v1.GetDaemonInfoRequest
+	65,  // 221: switchboard.v1.Switchboard.GetOptionManifest:input_type -> switchboard.v1.GetOptionManifestRequest
+	63,  // 222: switchboard.v1.Switchboard.UpdateDaemon:input_type -> switchboard.v1.UpdateDaemonRequest
+	67,  // 223: switchboard.v1.Switchboard.ListSandboxes:input_type -> switchboard.v1.ListSandboxesRequest
+	69,  // 224: switchboard.v1.Switchboard.LaunchSandbox:input_type -> switchboard.v1.LaunchSandboxRequest
+	71,  // 225: switchboard.v1.Switchboard.StopSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	71,  // 226: switchboard.v1.Switchboard.RestartSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	71,  // 227: switchboard.v1.Switchboard.DestroySandbox:input_type -> switchboard.v1.SandboxIdRequest
+	73,  // 228: switchboard.v1.Switchboard.RenameSandbox:input_type -> switchboard.v1.RenameSandboxRequest
+	71,  // 229: switchboard.v1.Switchboard.RefreshSandbox:input_type -> switchboard.v1.SandboxIdRequest
+	42,  // 230: switchboard.v1.Switchboard.ValidateKit:input_type -> switchboard.v1.ValidateKitRequest
+	44,  // 231: switchboard.v1.Switchboard.AddSandboxKit:input_type -> switchboard.v1.AddSandboxKitRequest
+	79,  // 232: switchboard.v1.Switchboard.ListSourceCandidates:input_type -> switchboard.v1.ListSourceCandidatesRequest
+	81,  // 233: switchboard.v1.Switchboard.CheckResources:input_type -> switchboard.v1.CheckResourcesRequest
+	74,  // 234: switchboard.v1.Switchboard.SetSandboxTag:input_type -> switchboard.v1.SetSandboxTagRequest
+	77,  // 235: switchboard.v1.Switchboard.ResolveWorkspace:input_type -> switchboard.v1.ResolveWorkspaceRequest
+	83,  // 236: switchboard.v1.Switchboard.PromptAgent:input_type -> switchboard.v1.PromptAgentRequest
+	85,  // 237: switchboard.v1.Switchboard.AttachAgent:input_type -> switchboard.v1.AgentInput
+	87,  // 238: switchboard.v1.Switchboard.Subscribe:input_type -> switchboard.v1.SubscribeRequest
+	91,  // 239: switchboard.v1.Switchboard.AckNotification:input_type -> switchboard.v1.AckNotificationRequest
+	71,  // 240: switchboard.v1.Switchboard.GetVSCodeTarget:input_type -> switchboard.v1.SandboxIdRequest
+	47,  // 241: switchboard.v1.Switchboard.DecideEscapeHatchRun:input_type -> switchboard.v1.DecideEscapeHatchRunRequest
+	49,  // 242: switchboard.v1.Switchboard.ListEscapeHatchRuns:input_type -> switchboard.v1.ListEscapeHatchRunsRequest
+	54,  // 243: switchboard.v1.Switchboard.ListSandboxServices:input_type -> switchboard.v1.ListSandboxServicesRequest
+	56,  // 244: switchboard.v1.Switchboard.StartSandboxService:input_type -> switchboard.v1.StartSandboxServiceRequest
+	58,  // 245: switchboard.v1.Switchboard.StopSandboxService:input_type -> switchboard.v1.StopSandboxServiceRequest
+	60,  // 246: switchboard.v1.Switchboard.ForwardPort:input_type -> switchboard.v1.PortForwardFrame
+	75,  // 247: switchboard.v1.Switchboard.AddSandboxSources:input_type -> switchboard.v1.AddSandboxSourcesRequest
+	76,  // 248: switchboard.v1.Switchboard.RemoveSandboxSources:input_type -> switchboard.v1.RemoveSandboxSourcesRequest
+	96,  // 249: switchboard.v1.Switchboard.ListMcpServers:input_type -> switchboard.v1.ListMcpServersRequest
+	98,  // 250: switchboard.v1.Switchboard.AddMcpServer:input_type -> switchboard.v1.AddMcpServerRequest
+	99,  // 251: switchboard.v1.Switchboard.RemoveMcpServer:input_type -> switchboard.v1.RemoveMcpServerRequest
+	101, // 252: switchboard.v1.Switchboard.AuthorizeMcpServer:input_type -> switchboard.v1.AuthorizeMcpServerRequest
+	103, // 253: switchboard.v1.Switchboard.CompleteMcpAuthCallback:input_type -> switchboard.v1.CompleteMcpAuthCallbackRequest
+	105, // 254: switchboard.v1.Switchboard.SetMcpServerDefault:input_type -> switchboard.v1.SetMcpServerDefaultRequest
+	106, // 255: switchboard.v1.Switchboard.SetMcpAttachMode:input_type -> switchboard.v1.SetMcpAttachModeRequest
+	107, // 256: switchboard.v1.Switchboard.AttachMcpServer:input_type -> switchboard.v1.AttachMcpServerRequest
+	108, // 257: switchboard.v1.Switchboard.DetachMcpServer:input_type -> switchboard.v1.DetachMcpServerRequest
+	112, // 258: switchboard.v1.Switchboard.GetMcpServerDefinition:input_type -> switchboard.v1.GetMcpServerDefinitionRequest
+	116, // 259: switchboard.v1.Switchboard.SaveMcpServer:input_type -> switchboard.v1.SaveMcpServerRequest
+	119, // 260: switchboard.v1.Switchboard.CancelMcpPendingReplace:input_type -> switchboard.v1.CancelMcpPendingReplaceRequest
+	121, // 261: switchboard.v1.Switchboard.RemoveMcpServerSecrets:input_type -> switchboard.v1.RemoveMcpServerSecretsRequest
+	126, // 262: switchboard.v1.Switchboard.ListSecrets:input_type -> switchboard.v1.ListSecretsRequest
+	128, // 263: switchboard.v1.Switchboard.SetSecret:input_type -> switchboard.v1.SetSecretRequest
+	129, // 264: switchboard.v1.Switchboard.RemoveSecret:input_type -> switchboard.v1.RemoveSecretRequest
+	157, // 265: switchboard.v1.Switchboard.ListOrchestrators:input_type -> switchboard.v1.ListOrchestratorsRequest
+	159, // 266: switchboard.v1.Switchboard.GetOrchestrator:input_type -> switchboard.v1.OrchestratorIdRequest
+	161, // 267: switchboard.v1.Switchboard.CreateOrchestrator:input_type -> switchboard.v1.CreateOrchestratorRequest
+	162, // 268: switchboard.v1.Switchboard.RenameOrchestrator:input_type -> switchboard.v1.RenameOrchestratorRequest
+	159, // 269: switchboard.v1.Switchboard.RemoveOrchestrator:input_type -> switchboard.v1.OrchestratorIdRequest
+	164, // 270: switchboard.v1.Switchboard.SetOrchestratorHosts:input_type -> switchboard.v1.SetOrchestratorHostsRequest
+	165, // 271: switchboard.v1.Switchboard.GetWorkerBundle:input_type -> switchboard.v1.GetWorkerBundleRequest
+	166, // 272: switchboard.v1.Switchboard.AttachWorker:input_type -> switchboard.v1.AttachWorkerRequest
+	167, // 273: switchboard.v1.Switchboard.DetachWorker:input_type -> switchboard.v1.DetachWorkerRequest
+	169, // 274: switchboard.v1.Switchboard.MarkWorkerFree:input_type -> switchboard.v1.MarkWorkerFreeRequest
+	170, // 275: switchboard.v1.Switchboard.PutAction:input_type -> switchboard.v1.PutActionRequest
+	171, // 276: switchboard.v1.Switchboard.DeleteAction:input_type -> switchboard.v1.DeleteActionRequest
+	173, // 277: switchboard.v1.Switchboard.PutTimedEvent:input_type -> switchboard.v1.PutTimedEventRequest
+	174, // 278: switchboard.v1.Switchboard.DeleteTimedEvent:input_type -> switchboard.v1.DeleteTimedEventRequest
+	176, // 279: switchboard.v1.Switchboard.FireTimedEvent:input_type -> switchboard.v1.FireTimedEventRequest
+	177, // 280: switchboard.v1.Switchboard.CallAction:input_type -> switchboard.v1.CallActionRequest
+	178, // 281: switchboard.v1.Switchboard.ListRuns:input_type -> switchboard.v1.ListRunsRequest
+	180, // 282: switchboard.v1.Switchboard.GetRun:input_type -> switchboard.v1.GetRunRequest
+	181, // 283: switchboard.v1.Switchboard.CancelRun:input_type -> switchboard.v1.CancelRunRequest
+	182, // 284: switchboard.v1.Switchboard.ResolveRunStep:input_type -> switchboard.v1.ResolveRunStepRequest
+	183, // 285: switchboard.v1.Switchboard.RebuildReasoningSandbox:input_type -> switchboard.v1.RebuildReasoningSandboxRequest
+	184, // 286: switchboard.v1.Switchboard.AttachController:input_type -> switchboard.v1.AttachControllerRequest
+	185, // 287: switchboard.v1.Switchboard.DetachController:input_type -> switchboard.v1.DetachControllerRequest
+	186, // 288: switchboard.v1.Switchboard.UpdateWorker:input_type -> switchboard.v1.UpdateWorkerRequest
+	187, // 289: switchboard.v1.Switchboard.DeliverWorkerPrompt:input_type -> switchboard.v1.DeliverWorkerPromptRequest
+	195, // 290: switchboard.v1.Switchboard.DeliverWorkerStep:input_type -> switchboard.v1.DeliverWorkerStepRequest
+	156, // 291: switchboard.v1.Switchboard.OrchestratorLink:input_type -> switchboard.v1.OrchestratorLinkFrame
+	189, // 292: switchboard.v1.Switchboard.PutLane:input_type -> switchboard.v1.PutLaneRequest
+	190, // 293: switchboard.v1.Switchboard.DeleteLane:input_type -> switchboard.v1.DeleteLaneRequest
+	192, // 294: switchboard.v1.Switchboard.SetWorkerLanes:input_type -> switchboard.v1.SetWorkerLanesRequest
+	193, // 295: switchboard.v1.Switchboard.SetLaneMembers:input_type -> switchboard.v1.SetLaneMembersRequest
+	194, // 296: switchboard.v1.Switchboard.CheckLaneChange:input_type -> switchboard.v1.CheckLaneChangeRequest
+	159, // 297: switchboard.v1.Switchboard.DismissDroppedWorkerTags:input_type -> switchboard.v1.OrchestratorIdRequest
+	62,  // 298: switchboard.v1.Switchboard.GetDaemonInfo:output_type -> switchboard.v1.DaemonInfo
+	66,  // 299: switchboard.v1.Switchboard.GetOptionManifest:output_type -> switchboard.v1.OptionManifest
+	64,  // 300: switchboard.v1.Switchboard.UpdateDaemon:output_type -> switchboard.v1.UpdateProgress
+	68,  // 301: switchboard.v1.Switchboard.ListSandboxes:output_type -> switchboard.v1.ListSandboxesResponse
+	70,  // 302: switchboard.v1.Switchboard.LaunchSandbox:output_type -> switchboard.v1.LaunchProgress
+	39,  // 303: switchboard.v1.Switchboard.StopSandbox:output_type -> switchboard.v1.Sandbox
+	70,  // 304: switchboard.v1.Switchboard.RestartSandbox:output_type -> switchboard.v1.LaunchProgress
+	72,  // 305: switchboard.v1.Switchboard.DestroySandbox:output_type -> switchboard.v1.DestroyResponse
+	39,  // 306: switchboard.v1.Switchboard.RenameSandbox:output_type -> switchboard.v1.Sandbox
+	70,  // 307: switchboard.v1.Switchboard.RefreshSandbox:output_type -> switchboard.v1.LaunchProgress
+	43,  // 308: switchboard.v1.Switchboard.ValidateKit:output_type -> switchboard.v1.ValidateKitResponse
+	70,  // 309: switchboard.v1.Switchboard.AddSandboxKit:output_type -> switchboard.v1.LaunchProgress
+	80,  // 310: switchboard.v1.Switchboard.ListSourceCandidates:output_type -> switchboard.v1.ListSourceCandidatesResponse
+	82,  // 311: switchboard.v1.Switchboard.CheckResources:output_type -> switchboard.v1.ResourceReport
+	39,  // 312: switchboard.v1.Switchboard.SetSandboxTag:output_type -> switchboard.v1.Sandbox
+	78,  // 313: switchboard.v1.Switchboard.ResolveWorkspace:output_type -> switchboard.v1.ResolveWorkspaceResponse
+	84,  // 314: switchboard.v1.Switchboard.PromptAgent:output_type -> switchboard.v1.PromptAgentResponse
+	86,  // 315: switchboard.v1.Switchboard.AttachAgent:output_type -> switchboard.v1.AgentOutput
+	88,  // 316: switchboard.v1.Switchboard.Subscribe:output_type -> switchboard.v1.Event
+	92,  // 317: switchboard.v1.Switchboard.AckNotification:output_type -> switchboard.v1.AckNotificationResponse
+	93,  // 318: switchboard.v1.Switchboard.GetVSCodeTarget:output_type -> switchboard.v1.VSCodeTarget
+	48,  // 319: switchboard.v1.Switchboard.DecideEscapeHatchRun:output_type -> switchboard.v1.DecideEscapeHatchRunResponse
+	50,  // 320: switchboard.v1.Switchboard.ListEscapeHatchRuns:output_type -> switchboard.v1.ListEscapeHatchRunsResponse
+	55,  // 321: switchboard.v1.Switchboard.ListSandboxServices:output_type -> switchboard.v1.ListSandboxServicesResponse
+	57,  // 322: switchboard.v1.Switchboard.StartSandboxService:output_type -> switchboard.v1.StartSandboxServiceResponse
+	59,  // 323: switchboard.v1.Switchboard.StopSandboxService:output_type -> switchboard.v1.StopSandboxServiceResponse
+	60,  // 324: switchboard.v1.Switchboard.ForwardPort:output_type -> switchboard.v1.PortForwardFrame
+	70,  // 325: switchboard.v1.Switchboard.AddSandboxSources:output_type -> switchboard.v1.LaunchProgress
+	39,  // 326: switchboard.v1.Switchboard.RemoveSandboxSources:output_type -> switchboard.v1.Sandbox
+	97,  // 327: switchboard.v1.Switchboard.ListMcpServers:output_type -> switchboard.v1.ListMcpServersResponse
+	94,  // 328: switchboard.v1.Switchboard.AddMcpServer:output_type -> switchboard.v1.McpServer
+	100, // 329: switchboard.v1.Switchboard.RemoveMcpServer:output_type -> switchboard.v1.RemoveMcpServerResponse
+	102, // 330: switchboard.v1.Switchboard.AuthorizeMcpServer:output_type -> switchboard.v1.McpAuthProgress
+	104, // 331: switchboard.v1.Switchboard.CompleteMcpAuthCallback:output_type -> switchboard.v1.CompleteMcpAuthCallbackResponse
+	94,  // 332: switchboard.v1.Switchboard.SetMcpServerDefault:output_type -> switchboard.v1.McpServer
+	95,  // 333: switchboard.v1.Switchboard.SetMcpAttachMode:output_type -> switchboard.v1.McpGatewaySettings
+	39,  // 334: switchboard.v1.Switchboard.AttachMcpServer:output_type -> switchboard.v1.Sandbox
+	39,  // 335: switchboard.v1.Switchboard.DetachMcpServer:output_type -> switchboard.v1.Sandbox
+	115, // 336: switchboard.v1.Switchboard.GetMcpServerDefinition:output_type -> switchboard.v1.McpDefinitionView
+	117, // 337: switchboard.v1.Switchboard.SaveMcpServer:output_type -> switchboard.v1.McpSaveOutcome
+	120, // 338: switchboard.v1.Switchboard.CancelMcpPendingReplace:output_type -> switchboard.v1.CancelMcpPendingReplaceResponse
+	122, // 339: switchboard.v1.Switchboard.RemoveMcpServerSecrets:output_type -> switchboard.v1.RemoveMcpServerSecretsResponse
+	127, // 340: switchboard.v1.Switchboard.ListSecrets:output_type -> switchboard.v1.ListSecretsResponse
+	125, // 341: switchboard.v1.Switchboard.SetSecret:output_type -> switchboard.v1.Secret
+	130, // 342: switchboard.v1.Switchboard.RemoveSecret:output_type -> switchboard.v1.RemoveSecretResponse
+	158, // 343: switchboard.v1.Switchboard.ListOrchestrators:output_type -> switchboard.v1.ListOrchestratorsResponse
+	160, // 344: switchboard.v1.Switchboard.GetOrchestrator:output_type -> switchboard.v1.OrchestratorDetail
+	142, // 345: switchboard.v1.Switchboard.CreateOrchestrator:output_type -> switchboard.v1.Orchestrator
+	142, // 346: switchboard.v1.Switchboard.RenameOrchestrator:output_type -> switchboard.v1.Orchestrator
+	163, // 347: switchboard.v1.Switchboard.RemoveOrchestrator:output_type -> switchboard.v1.RemoveOrchestratorResponse
+	142, // 348: switchboard.v1.Switchboard.SetOrchestratorHosts:output_type -> switchboard.v1.Orchestrator
+	133, // 349: switchboard.v1.Switchboard.GetWorkerBundle:output_type -> switchboard.v1.WorkerBundle
+	153, // 350: switchboard.v1.Switchboard.AttachWorker:output_type -> switchboard.v1.WorkerView
+	168, // 351: switchboard.v1.Switchboard.DetachWorker:output_type -> switchboard.v1.DetachWorkerResponse
+	155, // 352: switchboard.v1.Switchboard.MarkWorkerFree:output_type -> switchboard.v1.Run
+	137, // 353: switchboard.v1.Switchboard.PutAction:output_type -> switchboard.v1.Action
+	172, // 354: switchboard.v1.Switchboard.DeleteAction:output_type -> switchboard.v1.DeleteActionResponse
+	138, // 355: switchboard.v1.Switchboard.PutTimedEvent:output_type -> switchboard.v1.TimedEvent
+	175, // 356: switchboard.v1.Switchboard.DeleteTimedEvent:output_type -> switchboard.v1.DeleteTimedEventResponse
+	155, // 357: switchboard.v1.Switchboard.FireTimedEvent:output_type -> switchboard.v1.Run
+	155, // 358: switchboard.v1.Switchboard.CallAction:output_type -> switchboard.v1.Run
+	179, // 359: switchboard.v1.Switchboard.ListRuns:output_type -> switchboard.v1.ListRunsResponse
+	155, // 360: switchboard.v1.Switchboard.GetRun:output_type -> switchboard.v1.Run
+	155, // 361: switchboard.v1.Switchboard.CancelRun:output_type -> switchboard.v1.Run
+	155, // 362: switchboard.v1.Switchboard.ResolveRunStep:output_type -> switchboard.v1.Run
+	70,  // 363: switchboard.v1.Switchboard.RebuildReasoningSandbox:output_type -> switchboard.v1.LaunchProgress
+	39,  // 364: switchboard.v1.Switchboard.AttachController:output_type -> switchboard.v1.Sandbox
+	39,  // 365: switchboard.v1.Switchboard.DetachController:output_type -> switchboard.v1.Sandbox
+	39,  // 366: switchboard.v1.Switchboard.UpdateWorker:output_type -> switchboard.v1.Sandbox
+	188, // 367: switchboard.v1.Switchboard.DeliverWorkerPrompt:output_type -> switchboard.v1.DeliverWorkerPromptResponse
+	196, // 368: switchboard.v1.Switchboard.DeliverWorkerStep:output_type -> switchboard.v1.DeliverWorkerStepResponse
+	156, // 369: switchboard.v1.Switchboard.OrchestratorLink:output_type -> switchboard.v1.OrchestratorLinkFrame
+	143, // 370: switchboard.v1.Switchboard.PutLane:output_type -> switchboard.v1.Lane
+	191, // 371: switchboard.v1.Switchboard.DeleteLane:output_type -> switchboard.v1.DeleteLaneResponse
+	153, // 372: switchboard.v1.Switchboard.SetWorkerLanes:output_type -> switchboard.v1.WorkerView
+	143, // 373: switchboard.v1.Switchboard.SetLaneMembers:output_type -> switchboard.v1.Lane
+	150, // 374: switchboard.v1.Switchboard.CheckLaneChange:output_type -> switchboard.v1.LaneChangeImpact
+	142, // 375: switchboard.v1.Switchboard.DismissDroppedWorkerTags:output_type -> switchboard.v1.Orchestrator
+	298, // [298:376] is the sub-list for method output_type
+	220, // [220:298] is the sub-list for method input_type
+	220, // [220:220] is the sub-list for extension type_name
+	220, // [220:220] is the sub-list for extension extendee
+	0,   // [0:220] is the sub-list for field type_name
 }
 
 func init() { file_switchboard_proto_init() }
@@ -14791,14 +16858,14 @@ func file_switchboard_proto_init() {
 		(*McpAuthProgress_Done)(nil),
 		(*McpAuthProgress_Error)(nil),
 	}
-	file_switchboard_proto_msgTypes[106].OneofWrappers = []any{
+	file_switchboard_proto_msgTypes[122].OneofWrappers = []any{
 		(*OrchestratorLinkFrame_Hello_)(nil),
 		(*OrchestratorLinkFrame_Call_)(nil),
 		(*OrchestratorLinkFrame_Result_)(nil),
 		(*OrchestratorLinkFrame_Ping_)(nil),
 	}
-	file_switchboard_proto_msgTypes[136].OneofWrappers = []any{}
-	file_switchboard_proto_msgTypes[144].OneofWrappers = []any{
+	file_switchboard_proto_msgTypes[152].OneofWrappers = []any{}
+	file_switchboard_proto_msgTypes[160].OneofWrappers = []any{
 		(*CheckLaneChangeRequest_SetWorkerLanes)(nil),
 		(*CheckLaneChangeRequest_SetLaneMembers)(nil),
 		(*CheckLaneChangeRequest_PutAction)(nil),
@@ -14810,8 +16877,8 @@ func file_switchboard_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_switchboard_proto_rawDesc), len(file_switchboard_proto_rawDesc)),
-			NumEnums:      28,
-			NumMessages:   170,
+			NumEnums:      34,
+			NumMessages:   190,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
