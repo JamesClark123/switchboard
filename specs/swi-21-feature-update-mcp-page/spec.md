@@ -623,10 +623,11 @@ runtime adds it to recorded defaults).
   credential-header rule, placeholder names, client ID, authorization server, scopes, the URL) MUST also be applied by the TUI before any
   request is sent, so the form stays open on an invalid value. A header value MUST NOT hold a control
   character (RFC 9110 field-value; a tab is allowed), and a host command, its arguments and its directory
-  MUST NOT hold one either. A save that registers a remote server MUST carry an absolute `http://` or
-  `https://` URL with a host and no spaces or control characters (`mcprules.ValidURL`), so a value the host
-  CLI would refuse never reaches a replace that has already removed the server; a save that does not
-  re-register keeps whatever URL the host reports.
+  MUST NOT hold one either (a tab is allowed there too). A save that registers a remote server MUST carry an
+  absolute `http://` or `https://` URL with a host and no spaces or control characters (`mcprules.ValidURL`),
+  so a value the host CLI would refuse never reaches a replace that has already removed the server; a save
+  that does not re-register keeps whatever URL the host reports, and a Retry that restores the pending
+  replace's previous URL is not held to the rule (the host accepted it once).
 - **FR-421**: Every completed save, edit, secret store or secret removal MUST refresh the gateway view
   and the Secrets view, and MUST reach other connected clients through the existing
   `mcp_gateway_changed` and `secrets_changed` events.
@@ -662,7 +663,8 @@ runtime adds it to recorded defaults).
   typed, the form MUST offer to convert it in one step: the value keeps the scheme token (if any), any
   cookie names and any `${…}` it already holds, its first run of literal text is replaced by a
   `${placeholder}`, and that literal text moves into the placeholder's masked secret field, so a secret
-  never holds `${…}` (a value with several literal runs converts one run per step). The derived placeholder name is the header name lower-cased with `_` mapped to `-`, MUST
+  never holds `${…}` (a value with several literal runs converts one run per step; in a Cookie header each
+  cookie's value is its own run, so every cookie name stays in the header). The derived placeholder name is the header name lower-cased with `_` mapped to `-`, MUST
   satisfy FR-408, MUST NOT be `client_secret`, and MUST NOT collide with a placeholder already used by
   another header; on collision or an invalid name the form appends `-2`, `-3`, … and the field stays
   editable, so two credentials are never merged into one secret. There is no *not a credential*

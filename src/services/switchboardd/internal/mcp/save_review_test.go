@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
 	"google.golang.org/protobuf/encoding/prototext"
 )
 
@@ -44,20 +45,29 @@ func TestSaveRemoveFailureWithFailedRelistRecovers(t *testing.T) {
 	b := recoverBackoff
 	recoverBackoff = 10 * time.Millisecond
 	t.Cleanup(func() { recoverBackoff = b })
+	org, team := mcprules.SecretName("gh", "org"), mcprules.SecretName("gh", "team")
 	for _, removed := range []bool{true, false} {
 		e := newSaveEnv(t)
-		e.add("gh", remote("https://x/mcp"), true, nil)
+		e.add("gh", remote("https://x/mcp", "X-Org: ${org}"), true, map[string]string{org: "acme"})
 		v := e.open("gh")
 		e.touch("rm.fail", "rm.fail.breakls")
 		if removed {
 			e.touch("rm.fail.removes")
 		}
-		out, err := e.edit(v, remote("https://y/mcp"), true, nil)
+		// One overwritten and one created secret are planned, and the client
+		// changes: none of it may be recorded, as neither the stores nor the add ran.
+		next := remote("https://y/mcp", "X-Org: ${org}", "X-Team: ${team}")
+		next.ClientId = "cid"
+		out, err := e.edit(v, next, true, map[string]string{org: "acme2", team: "core"})
 		if refusalReason(err) != pb.McpSaveRefusal_UNVERIFIED || out != nil || !strings.Contains(err.Error(), "rm refused by host") {
 			t.Fatalf("removed=%v: %v / %v", removed, out, err)
 		}
-		if e.settings().GetSavesInProgress()["gh"] == nil || e.settings().GetDefinitions()["gh"] == nil {
-			t.Errorf("removed=%v: record dropped: %v", removed, e.settings())
+		rec := e.settings().GetSavesInProgress()["gh"]
+		if rec == nil || e.settings().GetDefinitions()["gh"] == nil {
+			t.Fatalf("removed=%v: record dropped: %v", removed, e.settings())
+		}
+		if !rec.GetRemoveOnly() || len(rec.GetPlannedCreatedSecrets())+len(rec.GetPlannedOverwrittenSecrets()) > 0 || !strings.Contains(rec.GetRemoveError(), "rm refused by host") {
+			t.Errorf("removed=%v: record not remove-only: %v", removed, rec)
 		}
 		if st := e.m.stateSnapshot("gh"); !st.recovering || st.saving || e.m.ReplaceState("gh") != BeingReplaced {
 			t.Errorf("removed=%v: state %+v", removed, st)
@@ -69,11 +79,23 @@ func TestSaveRemoveFailureWithFailedRelistRecovers(t *testing.T) {
 		e.rm("rm.fail", "rm.fail.breakls", "ls.fail")
 		waitFor(t, "the recovery", func() bool { return len(e.settings().GetSavesInProgress()) == 0 && !e.m.stateSnapshot("gh").recovering })
 		s := e.settings()
-		if removed && (s.GetPendingReplaces()["gh"] == nil || s.GetDefinitions()["gh"].GetUrl() != "https://x/mcp") {
-			t.Errorf("removed: want a pending replace: %v", s)
+		if e.sec.has(team) || !e.sec.has(org) {
+			t.Errorf("removed=%v: secrets changed: %v", removed, e.sec.callLog())
 		}
-		if !removed && (s.GetPendingReplaces()["gh"] != nil || s.GetDefinitions()["gh"].GetUrl() != "https://x/mcp" || !s.GetMarks()["gh"]) {
-			t.Errorf("kept: want the definition and mark: %v", s)
+		if removed {
+			p := s.GetPendingReplaces()["gh"]
+			if p == nil || s.GetDefinitions()["gh"].GetUrl() != "https://x/mcp" || p.GetDefinition().GetUrl() != "https://y/mcp" {
+				t.Fatalf("removed: want a pending replace: %v", s)
+			}
+			if p.GetAddStarted() || len(p.GetRemovalFailedSecrets()) > 0 || len(p.GetRemovedSecrets()) > 0 ||
+				!strings.Contains(p.GetError(), "turned out to be removed") || strings.Contains(p.GetError(), "daemon stopped") || strings.Contains(p.GetError(), "cannot be restored") {
+				t.Errorf("removed: pending records false facts: %v", p)
+			}
+		} else {
+			d := s.GetDefinitions()["gh"]
+			if s.GetPendingReplaces()["gh"] != nil || d.GetUrl() != "https://x/mcp" || d.GetRebindPending() || d.GetClientId() != "" || !s.GetMarks()["gh"] {
+				t.Errorf("kept: want the definition and mark unchanged: %v", s)
+			}
 		}
 	}
 }
@@ -343,6 +365,44 @@ func TestSaveRefusesBadURLAndControlCharacters(t *testing.T) {
 	}
 	if hasPrefix(e.argv(), "mcp rm") {
 		t.Error("a bad URL removed the server")
+	}
+}
+
+// A tab in a host command's argument is allowed, as in a header value.
+func TestCheckCommandAllowsTabs(t *testing.T) {
+	if err := checkCommand(&pb.AddMcpServerRequest_LocalCommand{Command: "npx", Args: []string{"a\tb"}, Dir: "/tmp"}); err != nil {
+		t.Errorf("tab = %v", err)
+	}
+	for _, bad := range []string{"a\x00", "a\nb", "a\x1bb"} {
+		if err := checkCommand(&pb.AddMcpServerRequest_LocalCommand{Command: "npx", Args: []string{bad}}); !errors.Is(err, ErrInvalidArgs) {
+			t.Errorf("%q = %v", bad, err)
+		}
+	}
+}
+
+// A Retry that restores the previous URL of a server registered by hand is not
+// held to the URL rule (the host accepted it once); a different URL still is.
+func TestRetryPreviousKeepsAHandRegisteredURL(t *testing.T) {
+	e := newSaveEnv(t)
+	e.write("ext.srv", "remote http")
+	e.write("ext.inspect", `{"url":"https://x/a b"}`)
+	v := e.open("ext")
+	e.touch("add.fail")
+	out, err := e.edit(v, remote("https://y/mcp"), false, nil)
+	if err != nil || out.GetState() != pb.McpSaveOutcome_NOT_REGISTERED {
+		t.Fatalf("replace = %v, %v", out, err)
+	}
+	p := e.settings().GetPendingReplaces()["ext"]
+	if p.GetPrevious().GetUrl() != "https://x/a b" {
+		t.Fatalf("previous = %v", p.GetPrevious())
+	}
+	e.rm("add.fail")
+	if _, err := e.m.Save(context.Background(), &pb.SaveMcpServerRequest{Name: "ext", Definition: remote("ftp://z/mcp"), RetryOfRevision: p.GetRevision()}); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("retry with a new bad URL = %v", err)
+	}
+	out, err = e.m.Save(context.Background(), &pb.SaveMcpServerRequest{Name: "ext", Definition: p.GetPrevious(), RetryOfRevision: p.GetRevision()})
+	if err != nil || out.GetState() != pb.McpSaveOutcome_REGISTERED || !e.registered("ext") {
+		t.Errorf("retry previous = %v, %v", out, err)
 	}
 }
 

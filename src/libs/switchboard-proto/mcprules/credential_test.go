@@ -83,7 +83,7 @@ func TestConvert(t *testing.T) {
 		{"Authorization", "Bearer ${x} tail", nil, "Bearer ${x} ${authorization}", "authorization", "tail"},
 		{"Authorization", "Custom ${k}", nil, "${authorization} ${k}", "authorization", "Custom"},
 		{"Cookie", "a=${a}; b=lit", nil, "a=${a}; b=${cookie}", "cookie", "lit"},
-		{"Cookie", "session=abc; csrf=def", nil, "session=${cookie}", "cookie", "abc; csrf=def"},
+		{"Cookie", "session=${cookie}; csrf=def", map[string]bool{"cookie": true}, "session=${cookie}; csrf=${cookie-2}", "cookie-2", "def"},
 		{"Authorization", "Bearer abc ${x", nil, "Bearer ${authorization}", "authorization", "abc ${x"},
 	} {
 		v, p, s := Convert(tc.name, tc.value, tc.used)
@@ -93,6 +93,11 @@ func TestConvert(t *testing.T) {
 		if err := CheckCredentialValue(tc.name, v); err != nil {
 			t.Errorf("converted %q refused: %v", v, err)
 		}
+	}
+	// Review: each cookie's value is its own run; later cookie names stay out
+	// of the secret.
+	if v, _, sec := Convert("Cookie", "session=abc; csrf=def", nil); v != "session=${cookie}; csrf=def" || sec != "abc" {
+		t.Errorf("multi-cookie: %q %q", v, sec)
 	}
 	// Two literal runs convert one per call; no secret holds ${…}.
 	v, _, sec := Convert("Authorization", "lit1 ${x} lit2", nil)
@@ -108,6 +113,21 @@ func TestConvert(t *testing.T) {
 	}
 	if _, p, _ := Convert("!!", "x", nil); p != "secret" {
 		t.Errorf("fallback placeholder %q", p)
+	}
+}
+
+func TestRedactValue(t *testing.T) {
+	const w = "withheld"
+	for _, c := range []struct{ msg, value, want string }{
+		{"sbx secret set k: refused: sk-live-1", "sk-live-1", "sbx secret set k: refused: " + RedactMarker},
+		{"sbx secret set k: refused", "sk-live-1", "sbx secret set k: refused"},
+		{"sbx secret set k: refused: x", "x", w}, // short: never garbled into sb•••• …
+		{"sbx secret set k: refused", "abc", "sbx secret set k: refused"},
+		{"anything", "", "anything"},
+	} {
+		if got := RedactValue(c.msg, c.value, w); got != c.want {
+			t.Errorf("RedactValue(%q, %q) = %q, want %q", c.msg, c.value, got, c.want)
+		}
 	}
 }
 

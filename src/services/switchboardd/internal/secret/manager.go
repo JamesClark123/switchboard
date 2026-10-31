@@ -156,7 +156,8 @@ func (m *Manager) SetQuiet(ctx context.Context, name, value string) error {
 	if _, err := m.cli.run(mctx, value+"\n", argvSet(name, "")...); err != nil {
 		// The error carries the CLI's output tail, which could echo the value
 		// back; the MCP save persists and broadcasts it, so it is redacted.
-		return &redactedError{msg: strings.ReplaceAll(err.Error(), value, mcprules.RedactMarker), err: err}
+		withheld := fmt.Sprintf("sbx secret set %s failed (the host's output is withheld: it may hold the value)", name)
+		return &redactedError{msg: mcprules.RedactValue(err.Error(), value, withheld), err: err}
 	}
 	return nil
 }

@@ -265,6 +265,12 @@ func TestQuietOpsAndListGlobal(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "v-quiet-3") || !strings.Contains(err.Error(), "bad value: ••••") || !errors.As(err, &exitErr) {
 		t.Errorf("echoed SetQuiet failure = %v", err)
 	}
+	// A short echoed value is not replaced inside other words: the output is
+	// withheld whole, and the error stays readable.
+	err = e.m.SetQuiet(ctx, "mcp:s:echo", "e")
+	if err == nil || strings.Contains(err.Error(), "bad value") || !strings.Contains(err.Error(), "sbx secret set mcp:s:echo failed") || !errors.As(err, &exitErr) {
+		t.Errorf("short echoed SetQuiet failure = %v", err)
+	}
 	for _, bad := range []string{"", "a\nb"} {
 		if err := e.m.SetQuiet(ctx, "mcp:s:k", bad); !errors.Is(err, ErrInvalidArgs) {
 			t.Errorf("SetQuiet(%q) = %v", bad, err)

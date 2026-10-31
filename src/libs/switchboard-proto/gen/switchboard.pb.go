@@ -7388,8 +7388,13 @@ type McpSaveInProgress struct {
 	Retry                     bool                   `protobuf:"varint,5,opt,name=retry,proto3" json:"retry,omitempty"`
 	PlannedCreatedSecrets     []string               `protobuf:"bytes,6,rep,name=planned_created_secrets,json=plannedCreatedSecrets,proto3" json:"planned_created_secrets,omitempty"`             // absent in the snapshot
 	PlannedOverwrittenSecrets []string               `protobuf:"bytes,7,rep,name=planned_overwritten_secrets,json=plannedOverwrittenSecrets,proto3" json:"planned_overwritten_secrets,omitempty"` // present in the snapshot
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// The save's `mcp rm` failed and its re-list failed too (recoverLater): nothing was stored and
+	// `mcp add` never ran, so recovery records only whether the remove landed. remove_error holds
+	// the host errors. The planned_* lists are cleared when this is set.
+	RemoveOnly    bool   `protobuf:"varint,8,opt,name=remove_only,json=removeOnly,proto3" json:"remove_only,omitempty"`
+	RemoveError   string `protobuf:"bytes,9,opt,name=remove_error,json=removeError,proto3" json:"remove_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *McpSaveInProgress) Reset() {
@@ -7469,6 +7474,20 @@ func (x *McpSaveInProgress) GetPlannedOverwrittenSecrets() []string {
 		return x.PlannedOverwrittenSecrets
 	}
 	return nil
+}
+
+func (x *McpSaveInProgress) GetRemoveOnly() bool {
+	if x != nil {
+		return x.RemoveOnly
+	}
+	return false
+}
+
+func (x *McpSaveInProgress) GetRemoveError() string {
+	if x != nil {
+		return x.RemoveError
+	}
+	return ""
 }
 
 // for_add: only the secret status (stored_secrets, secrets_available) for a name that
@@ -15295,7 +15314,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x05error\x18\b \x01(\tR\x05error\x127\n" +
 	"\tfailed_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bfailedAt\x12\x1a\n" +
 	"\brevision\x18\n" +
-	" \x01(\x04R\brevision\"\xe7\x02\n" +
+	" \x01(\x04R\brevision\"\xab\x03\n" +
 	"\x11McpSaveInProgress\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12*\n" +
 	"\x11attach_by_default\x18\x02 \x01(\bR\x0fattachByDefault\x12C\n" +
@@ -15305,7 +15324,10 @@ const file_switchboard_proto_rawDesc = "" +
 	"\bprevious\x18\x04 \x01(\v2#.switchboard.v1.McpServerDefinitionR\bprevious\x12\x14\n" +
 	"\x05retry\x18\x05 \x01(\bR\x05retry\x126\n" +
 	"\x17planned_created_secrets\x18\x06 \x03(\tR\x15plannedCreatedSecrets\x12>\n" +
-	"\x1bplanned_overwritten_secrets\x18\a \x03(\tR\x19plannedOverwrittenSecrets\"L\n" +
+	"\x1bplanned_overwritten_secrets\x18\a \x03(\tR\x19plannedOverwrittenSecrets\x12\x1f\n" +
+	"\vremove_only\x18\b \x01(\bR\n" +
+	"removeOnly\x12!\n" +
+	"\fremove_error\x18\t \x01(\tR\vremoveError\"L\n" +
 	"\x1dGetMcpServerDefinitionRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
 	"\afor_add\x18\x02 \x01(\bR\x06forAdd\"\x98\x02\n" +

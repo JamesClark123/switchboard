@@ -500,10 +500,11 @@ func checkCommand(c *pb.AddMcpServerRequest_LocalCommand) error {
 		}
 	}
 	// A NUL makes the exec fail before `sbx` starts (after a replace's `mcp rm`
-	// has run), and other control characters would reach every client.
+	// has run), and other control characters would reach every client. A tab
+	// is allowed, as in a header value (a tab-separated or JSON argument).
 	for _, f := range append([]string{c.GetCommand(), c.GetDir()}, c.GetArgs()...) {
-		if strings.IndexFunc(f, unicode.IsControl) >= 0 {
-			return fmt.Errorf("%w: the command, its arguments and its directory must not hold control characters", ErrInvalidArgs)
+		if strings.IndexFunc(f, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }) >= 0 {
+			return fmt.Errorf("%w: the command, its arguments and its directory must not hold control characters such as NUL or line breaks (a tab is allowed)", ErrInvalidArgs)
 		}
 	}
 	return nil

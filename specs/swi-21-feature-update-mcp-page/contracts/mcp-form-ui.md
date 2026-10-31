@@ -124,8 +124,10 @@ server whose auth state is not `authorized` or `no auth` (an unknown state still
 A save left with esc while running ("saving… in the background") is matched to its form by a per-form
 generation, never by name alone, so its reply never touches a later form, even of the same name. If it lands
 while another form is open, no outcome panel or follow-up opens over that form: the status line reads `saved
-<server> in the background: <state>` (or an `error:` line when the replace did not complete) and the view
-re-lists.
+<server> in the background: <state>` (or an `error:` line when the replace did not complete), followed by
+`; no longer used: <names>` when the save left secrets unused, and the view re-lists. Its follow-ups (the
+FR-413 removal and FR-405 authorize offers) are kept and open once the list is idle again (no form, panel or
+modal open).
 
 On a failure the form stays open with the edits. Leaving a form that holds a pending replace (after a
 `NOT_REGISTERED` outcome, or in retry mode) opens the same `y`-only Cancel confirmation as `X`; accepting calls

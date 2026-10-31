@@ -151,10 +151,11 @@ func checkSaveRequest(name string, req *pb.SaveMcpServerRequest) (*pb.McpServerD
 		if def.Url == "" && (req.GetIsNew() || req.GetRetryOfRevision() != 0) {
 			return nil, errNoURL
 		}
-		// The URL rule (FR-103) applies to a save that registers; an edit that
-		// re-registers is checked in classify, so a mark-only save of a server
-		// registered by hand with an odd URL still goes through.
-		if req.GetIsNew() || req.GetRetryOfRevision() != 0 {
+		// The URL rule (FR-103) applies to a save that registers; an edit or a
+		// Retry that re-registers is checked in classify, so a mark-only save of
+		// a server registered by hand with an odd URL still goes through, and so
+		// does a Retry that restores the previous URL.
+		if req.GetIsNew() && req.GetRetryOfRevision() == 0 {
 			if err := mcprules.ValidURL(def.Url); err != nil {
 				return nil, ruleErr(err)
 			}
@@ -305,18 +306,40 @@ func (j *saveJob) refusedAfterPreStep(err error, reply func(*pb.McpSaveOutcome, 
 // exists) and the name turns from saving to recovering in one hold; the
 // recovery resolves it from a fresh list once this save releases the lock. The
 // caller gets an UNVERIFIED refusal naming the host errors. Nothing was stored:
-// the stores come after the remove.
+// the stores come after the remove. The record is first marked remove_only, so
+// the recovery records only whether the remove landed, not a crash at an
+// unknown step; if that write fails the crash rules apply.
 func (j *saveJob) recoverLater(reply func(*pb.McpSaveOutcome, error)) {
 	m := j.m
-	m.clearRefusing(j.name, j.l, func(s *nameState) { s.recovering = true })
-	settings, err := m.reg.GetMcpSettings()
-	if err != nil {
-		settings = j.settings
+	hostErrors := strings.Join(j.out.HostErrors, "; ")
+	var settings *pb.McpGatewaySettings
+	var err error
+	for i := 0; i < persistAttempts; i++ {
+		if i > 0 {
+			time.Sleep(persistRetryDelay)
+		}
+		settings, err = m.reg.UpdateMcpSettings(func(s *pb.McpGatewaySettings) error {
+			if rec := s.GetSavesInProgress()[j.name]; rec != nil {
+				rec.RemoveOnly, rec.RemoveError = true, hostErrors
+				rec.PlannedCreatedSecrets, rec.PlannedOverwrittenSecrets = nil, nil
+			}
+			return nil
+		})
+		if err == nil {
+			break
+		}
 	}
+	if err != nil {
+		log.Printf("mcp: %s: mark the in-progress record remove-only: %v", j.name, err)
+		if settings, err = m.reg.GetMcpSettings(); err != nil {
+			settings = j.settings
+		}
+	}
+	m.clearRefusing(j.name, j.l, func(s *nameState) { s.recovering = true })
 	m.emitOutcome(nil, settings)
 	go m.recoverLoop(m.daemonCtx, []string{j.name})
 	reply(nil, refuse(pb.McpSaveRefusal_UNVERIFIED, "couldn't confirm whether %s was removed from the host (%s); recovering the save, try again shortly",
-		j.name, strings.Join(j.out.HostErrors, "; ")))
+		j.name, hostErrors))
 }
 
 func (j *saveJob) hook(step string) {
@@ -510,8 +533,13 @@ func (j *saveJob) classify() error {
 		if j.def.Url == "" {
 			return errNoURL
 		}
-		if err := mcprules.ValidURL(j.def.Url); err != nil {
-			return ruleErr(err)
+		// A Retry that keeps the previous URL is not checked: the host accepted
+		// it once (a server registered by hand, FR-402), and refusing it would
+		// leave the removed server impossible to restore as it was.
+		if !j.retry || j.def.Url != j.prev.GetUrl() {
+			if err := mcprules.ValidURL(j.def.Url); err != nil {
+				return ruleErr(err)
+			}
 		}
 	}
 	if j.regChange && len(j.def.LiteralOnHost) > 0 {
@@ -641,8 +669,9 @@ func (j *saveJob) storeStep(ctx context.Context) bool {
 		v := j.req.GetSecretValues()[n]
 		if err := j.m.secrets.SetQuiet(ctx, n, v); err != nil {
 			// The host's output may echo the value; it is persisted in the
-			// pending replace and sent in events, so it is redacted here too.
-			j.out.HostErrors = append(j.out.HostErrors, strings.ReplaceAll(err.Error(), v, mcprules.RedactMarker))
+			// pending replace and sent in events. secret.Manager already
+			// redacts; this is defence in depth for any other SecretStore.
+			j.out.HostErrors = append(j.out.HostErrors, mcprules.RedactValue(err.Error(), v, "storing "+n+" failed (the host's output is withheld: it may hold the value)"))
 			return false
 		}
 		j.storedAny = true

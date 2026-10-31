@@ -168,10 +168,11 @@ func CheckCredentialHeaders(headers []string, skip map[string]bool) error {
 }
 
 // Convert turns a credential header's literal text into a placeholder (FR-423):
-// newValue keeps a listed scheme (or, in a Cookie header, the cookie names) and
+// newValue keeps a listed scheme (or, in a Cookie header, every cookie name) and
 // the value's existing `${…}`s, and its first run of literal text becomes `${placeholder}`;
 // secret is that literal text, so a secret never holds `${…}` itself. A value
-// with more than one literal run is converted one run per call. The placeholder
+// with more than one literal run (in a Cookie header, each cookie's value is
+// one) is converted one run per call. The placeholder
 // is derived from the header name (lower-cased, `_` → `-`) and gets `-2`, `-3`,
 // … when it is invalid, reserved or in use. A value with no literal text comes
 // back unchanged with an empty secret.
@@ -192,8 +193,9 @@ func Convert(name, value string, used map[string]bool) (newValue, placeholder, s
 // literalRun returns the bounds of the first run of literal text in v: text
 // that is neither a separator (space, `:`, `;`, `,`) nor a well-formed `${…}`,
 // up to the next well-formed `${…}`, trailing separators trimmed. In a cookie
-// header a leading `<cookie-name>=` is not literal. start is -1 when there is
-// none.
+// header a leading `<cookie-name>=` is not literal and a `;` ends the run, so
+// each cookie's value converts on its own and later cookie names stay visible.
+// start is -1 when there is none.
 func literalRun(v string, cookie bool) (start, end int) {
 	placeholderAt := func(i int) int {
 		if !strings.HasPrefix(v[i:], "${") {
@@ -228,7 +230,7 @@ func literalRun(v string, cookie bool) (start, end int) {
 			}
 			start = i
 		}
-		if placeholderAt(i) >= 0 {
+		if placeholderAt(i) >= 0 || cookie && v[i] == ';' {
 			break
 		}
 		i++
@@ -271,6 +273,23 @@ func Redact(value string) string {
 		return s + " " + RedactMarker
 	}
 	return RedactMarker
+}
+
+// minRedactLen is the shortest value RedactValue replaces in place.
+const minRedactLen = 4
+
+// RedactValue returns msg with every occurrence of value replaced by
+// RedactMarker. A shorter value would match inside unrelated words (a path, an
+// argv, the CLI's own text) and garble the message, so a msg holding one is
+// replaced whole by withheld instead.
+func RedactValue(msg, value, withheld string) string {
+	switch {
+	case value == "" || !strings.Contains(msg, value):
+		return msg
+	case len(value) < minRedactLen:
+		return withheld
+	}
+	return strings.ReplaceAll(msg, value, RedactMarker)
 }
 
 // RedactHeader returns the header with its value redacted when it is a

@@ -1264,6 +1264,9 @@ func TestMcpLateDefinitionReadDoesNotReplaceForm(t *testing.T) {
 		t.Fatalf("loading: %q", m.mcpView.loadingDef)
 	}
 	m = keyIn(m, press("a"))
+	if strings.Contains(m.mcpView.status, "loading linear") {
+		t.Errorf("opening the add form leaves %q", m.mcpView.status)
+	}
 	m.mcpView.vals.name = "fresh"
 	*m.mcpView.secretPtr("mcp:fresh:k") = "typed"
 	m = drainEdit(m, readCmd)
@@ -1277,6 +1280,9 @@ func TestMcpLateDefinitionReadDoesNotReplaceForm(t *testing.T) {
 	m = drainEdit(m, readCmd)
 	if m.mcpView.form != nil || m.mcpView.loadingDef != "" || m.mcpView.outcome == nil {
 		t.Errorf("a read under a modal opens nothing: form %v", m.mcpView.form != nil)
+	}
+	if m.mcpView.status == "loading linear…" {
+		t.Errorf("a dropped read leaves %q on the status line", m.mcpView.status)
 	}
 }
 
@@ -1330,6 +1336,35 @@ func TestMcpEscapedSaveReplyLeavesNewFormAlone(t *testing.T) {
 		if m.mcpView.view != nil || m.mcpView.vals.url != "https://typed/mcp" {
 			t.Errorf("%s: a stale reload/refresh reached the new form", name)
 		}
+	}
+}
+
+// A background save's follow-ups (FR-413 removal) are not lost: the status
+// names the unused secrets, and the offer opens once the other form closes.
+func TestMcpBackgroundSaveFollowupsWaitForTheForm(t *testing.T) {
+	out := &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_REGISTERED, UnusedSecrets: []string{"mcp:linear:k"},
+		Server: &pb.McpServer{Name: "linear", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, AuthState: pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED}}
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
+		mcpSaveResults: []mcpSaveResult{{out: out}}, mcpRmResp: &pb.RemoveMcpServerSecretsResponse{Removed: []string{"mcp:linear:k"}}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.attach = true
+	m, saveCmd := update(m, ctrlS())
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = keyIn(m, press("a"))
+	m = drainEdit(m, saveCmd)
+	if m.mcpView.vals == nil || m.screen != screenMcp {
+		t.Fatalf("the add form should stay open: screen %v", m.screen)
+	}
+	if !strings.Contains(m.mcpView.status, "no longer used: mcp:linear:k") {
+		t.Errorf("status %q", m.mcpView.status)
+	}
+	m = keyIn(m, tea.KeyMsg{Type: tea.KeyEsc}) // the untouched add form closes
+	if m.mcpView.vals != nil || !strings.Contains(m.View(), "Remove unused secrets?") {
+		t.Fatalf("FR-413 offer after the form closed:\n%s", m.View())
+	}
+	m = accept(t, m)
+	if len(d.mcpRmSecrets) != 1 || d.mcpRmSecrets[0][0] != "linear" || m.mcpView.deferred != nil {
+		t.Errorf("removal = %v, deferred %v", d.mcpRmSecrets, m.mcpView.deferred)
 	}
 }
 

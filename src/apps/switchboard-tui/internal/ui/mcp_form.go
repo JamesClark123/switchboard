@@ -610,7 +610,9 @@ func (m Model) openMcpAdd(vals mcpFormVals) (tea.Model, tea.Cmd) {
 	m.resetMcpForm()
 	v.formGen++
 	// A definition read still in flight (e, R, X) is superseded: its reply
-	// must not replace this form (it is dropped while a form is open anyway).
+	// must not replace this form (it is dropped while a form is open anyway),
+	// and its loading line goes.
+	v.clearMcpLoading(v.loadingDef)
 	v.loadingDef = ""
 	vals.mode = mcpModeAdd
 	if vals.kind == "" {
@@ -1316,11 +1318,16 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 	if !formOpen && v.vals != nil {
 		// A save left mid-flight (esc) landed while another form is open: no
 		// panel over that form (its "any key closes" would take the next
-		// keystroke), and no follow-up offers; the row shows the result.
+		// keystroke); the row shows the result, and the follow-up offers
+		// (FR-413 removal, FR-405 authorize) wait until that form closes.
 		v.status = "saved " + msg.name + " in the background: " + mcpOutcomeState(out)
 		if mcpOutcomeFailed(out) {
 			v.status = "error: the background save of " + msg.name + " did not complete: " + mcpOutcomeState(out)
 		}
+		if unused := out.GetUnusedSecrets(); len(unused) > 0 {
+			v.status += "; no longer used: " + strings.Join(unused, ", ") + " (offered for removal when this form closes)"
+		}
+		v.deferred = append(v.deferred, m.mcpFollowups(out, msg.remote)...)
 		return m, relist
 	}
 	followups := m.mcpFollowups(out, msg.remote)

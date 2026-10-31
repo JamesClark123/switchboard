@@ -60,6 +60,11 @@ message McpSaveInProgress {
   bool retry = 5;
   repeated string planned_created_secrets = 6;     // absent in the snapshot
   repeated string planned_overwritten_secrets = 7; // present in the snapshot
+  // The save's `mcp rm` failed and its re-list failed too (recoverLater): nothing was stored and
+  // `mcp add` never ran, so recovery records only whether the remove landed. remove_error holds
+  // the host errors. The planned_* lists are cleared when this is set.
+  bool remove_only = 8;
+  string remove_error = 9;
 }
 
 // for_add: only the secret status (stored_secrets, secrets_available) for a name that

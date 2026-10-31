@@ -160,6 +160,22 @@ func (m *Manager) recoverName(ctx context.Context, name string, listed bool) err
 		}
 		replace := !rec.GetRetry() && rec.GetPrevious() != nil
 		switch {
+		case rec.GetRemoveOnly() && !listed:
+			// Only the remove ran (recoverLater) and it landed: nothing was stored
+			// and the add never ran.
+			s.PendingReplaces[name] = &pb.McpPendingReplace{
+				Name: name, AttachByDefault: rec.GetAttachByDefault(), Definition: rec.GetDefinition(), Previous: rec.GetPrevious(),
+				Error:    "`mcp rm` failed and the host could not be re-read; the server turned out to be removed: " + rec.GetRemoveError(),
+				FailedAt: timestamppb.Now(), Revision: 1,
+			}
+			delete(s.Marks, name)
+			s.Definitions[name] = proto.Clone(rec.GetPrevious()).(*pb.McpServerDefinition)
+			result = "removed; pending replace"
+		case rec.GetRemoveOnly():
+			// The remove did not land and the add never ran: the host holds the
+			// previous definition, so the record (and its rebind_pending) stays.
+			ended = true
+			result = "remove did not land; registration unchanged"
 		case !listed && rec.GetRetry():
 			p := s.PendingReplaces[name]
 			if p == nil {

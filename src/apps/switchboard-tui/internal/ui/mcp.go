@@ -33,8 +33,11 @@ import (
 
 // Client-side bounds (package constants, never env vars; research R11).
 const (
-	mcpOpTimeout   = 2 * time.Minute                 // register / remove / marks / mode
-	mcpSaveTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute save bound plus slack
+	mcpOpTimeout = 2 * time.Minute // register / remove / marks / mode
+	// The daemon's worst case: a 10-minute wait for the name's lock, then its own
+	// 10-minute save budget and the persist retries; plus slack. A shorter bound
+	// would give the form back while the detached save is still queued.
+	mcpSaveTimeout = 21 * time.Minute
 	mcpAuthTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute wait plus slack
 )
 
@@ -114,6 +117,9 @@ type mcpState struct {
 	// the FR-413 removal and FR-405 authorize offers that open after it.
 	outcome   *pb.McpSaveOutcome
 	followups []confirmState
+	// deferred are the follow-ups of a background save (esc mid-save) that
+	// landed while another form was open; they open once the list is idle.
+	deferred []confirmState
 	// choose is the pending replace whose Retry asks held / previous (R).
 	choose *pb.McpPendingReplace
 	// scopes is the one-time scope prompt of Authorize with scopes… (S).
@@ -404,7 +410,7 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "h", "p":
 			v.choose = nil
-			v.loadingDef, v.status = p.GetName(), "loading "+p.GetName()+"…"
+			v.loadingDef, v.status = p.GetName(), mcpLoadingMsg(p.GetName())
 			return m, m.mcpDefCmd(p.GetName(), mcpDefRetry, p, msg.String() == "p")
 		case "esc", "q", "n":
 			v.choose = nil
@@ -467,7 +473,7 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.status = busy // refused locally: no definition read (R11)
 				return m, nil
 			}
-			v.loadingDef, v.status = srv.GetName(), "loading "+srv.GetName()+"…"
+			v.loadingDef, v.status = srv.GetName(), mcpLoadingMsg(srv.GetName())
 			return m, m.mcpDefCmd(srv.GetName(), mcpDefEdit, nil, false)
 		}
 	case "R":
@@ -480,7 +486,7 @@ func (m Model) updateMcpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "X":
 		if p, ok := m.highlightedPending(); ok {
-			v.loadingDef, v.status = p.GetName(), "loading "+p.GetName()+"…"
+			v.loadingDef, v.status = p.GetName(), mcpLoadingMsg(p.GetName())
 			return m, m.mcpDefCmd(p.GetName(), mcpDefCancel, p, false)
 		}
 	case "d":
@@ -613,7 +619,9 @@ func (m Model) applyMcpDef(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	v.loadingDef = ""
 	if v.vals != nil || v.mcpModalOpen() {
 		// A form or modal opened while the read was in flight (a, an outcome
-		// panel, R's chooser): the late reply must not replace it.
+		// panel, R's chooser): the late reply must not replace it, and its
+		// loading line goes (unless something newer replaced it).
+		v.clearMcpLoading(msg.name)
 		return m, nil
 	}
 	view := msg.view
@@ -803,6 +811,19 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome, savedRemote bool) []confirmS
 		steps = append(steps, st)
 	}
 	return steps
+}
+
+// openDeferredMcpFollowups offers a background save's follow-ups once the
+// list is idle: no form, panel or modal open (Update calls it after every
+// message).
+func (m Model) openDeferredMcpFollowups() (Model, tea.Cmd) {
+	v := &m.mcpView
+	if len(v.deferred) == 0 || m.screen != screenMcp || v.vals != nil || v.mcpModalOpen() {
+		return m, nil
+	}
+	steps := v.deferred
+	v.deferred = nil
+	return m, m.mcpFollowChain(steps)
 }
 
 // mcpFollowChain opens the follow-up offers one after another; declining one
@@ -1331,6 +1352,16 @@ func mcpAge(p *pb.McpPendingReplace) string {
 }
 
 // mcpModalOpen reports a modal layer over the gateway view.
+// mcpLoadingMsg is the status line while name's definition read is in flight.
+func mcpLoadingMsg(name string) string { return "loading " + name + "…" }
+
+// clearMcpLoading clears the status when it is still name's loading line.
+func (v *mcpState) clearMcpLoading(name string) {
+	if name != "" && v.status == mcpLoadingMsg(name) {
+		v.status = ""
+	}
+}
+
 func (v mcpState) mcpModalOpen() bool {
 	return v.auth != nil || v.pending != nil || v.outcome != nil || v.choose != nil || v.scopes != nil
 }

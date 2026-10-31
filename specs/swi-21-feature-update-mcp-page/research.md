@@ -71,7 +71,9 @@ for a few hundred lines of code); keeping two copies with a shared fixture (stil
 `Manager.Save` on a context derived with `context.WithoutCancel(ctx)` bounded by `saveTimeout` (10 min: one
 `mcp rm` + N stores + one `mcp add` + rollbacks, each with its own existing bound). The `saveTimeout` clock
 starts once the per-name lock is taken; the wait for the lock is bounded separately (`lockWaitTimeout`, also
-10 min), so time queued behind another holder never shortens the save's own budget.
+10 min), so time queued behind another holder never shortens the save's own budget. The TUI's save deadline
+(`mcpSaveTimeout`, 21 min) covers both bounds plus the persist retries, so it never gives the form back while
+the detached save is still queued.
 If the client goes away the gRPC handler returns, but the goroutine finishes, persists the outcome and emits
 `mcp_gateway_changed` (with the outcome) and `secrets_changed`. The response returns the same
 `McpSaveOutcome`.
@@ -286,6 +288,15 @@ the lock, because every name was queued before the first list and every other op
   doubling to 5 min) until it succeeds. `reconcile` never resolves in-progress records. Until then the names
   stay protected as above: kept by `reconcile`, refused by `Authorize`, by `SetMcpServerDefault` and by every
   lock holder, and skipped at launch while marked.
+
+A save whose `mcp rm` failed and whose re-list failed too hands its name to the same routine (`recoverLater`),
+but it knows more than a crash leaves behind: nothing was stored and `mcp add` never ran. Before the hand-off
+it marks the record `remove_only` (with its host errors in `remove_error`) and clears the `planned_*` lists.
+Recovery then records only whether the remove landed. If the name is **not listed**, it records a pending
+replace with `add_started` false, no removal-failed secrets and an error saying the `rm` failed, the host could
+not be re-read and the server turned out to be removed. If it is **listed**, the record (and its
+`rebind_pending`) is left as it was and the replace ends registered. If that write fails, the crash rules above
+apply.
 
 Every recovery logs `mcp: <name>: recovered interrupted save (<result>)`, clears `recovering` in the state map
 and emits one `mcp_gateway_changed`. The routine stops with the daemon; anything still queued is found again at
