@@ -1,0 +1,130 @@
+package mcprules
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// ErrInvalid marks every rule violation; the daemon maps it to INVALID_ARGUMENT.
+var ErrInvalid = errors.New("invalid argument")
+
+// MaxPlaceholder bounds a placeholder name (FR-408).
+const MaxPlaceholder = 128
+
+// ClientSecret is the reserved secret name of a confidential OAuth client.
+const ClientSecret = "client_secret"
+
+// headerNameRe is an HTTP field name (RFC 9110 token).
+var headerNameRe = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
+
+// placeholderRe finds `${name}` in a header value.
+var placeholderRe = regexp.MustCompile(`\$\{([^{}]*)\}`)
+
+// placeholderNameRe is the placeholder name rule (FR-408): no `:`, so a
+// placeholder never addresses the runtime's `:identity` / `:endpoint` records.
+var placeholderNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func invalid(format string, a ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
+}
+
+// quoteHeader is the safe way to quote a whole header in a message: a
+// credential header's value is redacted.
+func quoteHeader(name, value string) string {
+	if IsCredentialHeader(name) {
+		value = Redact(value)
+	}
+	if value == "" {
+		return fmt.Sprintf("%q", name)
+	}
+	return fmt.Sprintf("%q", name+": "+value)
+}
+
+// NormalizeHeaders validates "Name: value" entries for `--header` (FR-103): a
+// token name, a colon, a non-empty single-line value. Blank entries are
+// dropped, and a name given twice is refused (the runtime takes each name once).
+func NormalizeHeaders(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range in {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(h, ":")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		switch {
+		case !ok || name == "" || value == "":
+			return nil, invalid("header %s must be \"Name: value\"", quoteHeader(name, value))
+		case !headerNameRe.MatchString(name):
+			return nil, invalid("header name %q is not a valid HTTP field name", name)
+		case strings.ContainsAny(value, "\r\n"):
+			return nil, invalid("header %q must be a single line", name)
+		case seen[strings.ToLower(name)]:
+			return nil, invalid("header %q is given more than once", name)
+		}
+		seen[strings.ToLower(name)] = true
+		out = append(out, name+": "+value)
+	}
+	return out, nil
+}
+
+// SplitHeader returns a header's trimmed name and value.
+func SplitHeader(h string) (name, value string) {
+	name, value, _ = strings.Cut(h, ":")
+	return strings.TrimSpace(name), strings.TrimSpace(value)
+}
+
+// Placeholders returns the distinct placeholder names used in headers, in
+// order of first use. Names are returned as written (valid or not).
+func Placeholders(headers []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range headers {
+		_, value := SplitHeader(h)
+		for _, m := range placeholderRe.FindAllStringSubmatch(value, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				out = append(out, m[1])
+			}
+		}
+	}
+	return out
+}
+
+// ValidPlaceholder applies the placeholder name rule (FR-408).
+func ValidPlaceholder(name string) error {
+	switch {
+	case name == ClientSecret:
+		return invalid("placeholder ${%s} is reserved: it would collide with the OAuth client secret mcp:<server>:%s", name, ClientSecret)
+	case len(name) > MaxPlaceholder:
+		return invalid("placeholder ${%s} is longer than %d characters", name, MaxPlaceholder)
+	case !placeholderNameRe.MatchString(name):
+		return invalid("placeholder ${%s} must start with a letter or digit and contain only letters, digits, dots, hyphens and underscores (no \":\")", name)
+	}
+	return nil
+}
+
+// CheckPlaceholders applies ValidPlaceholder to every placeholder in headers.
+func CheckPlaceholders(headers []string) error {
+	for _, p := range Placeholders(headers) {
+		if err := ValidPlaceholder(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SecretName is the host secret a placeholder of a server resolves to.
+func SecretName(server, placeholder string) string { return "mcp:" + server + ":" + placeholder }
+
+// ClientSecretName is the confidential client's secret of a server.
+func ClientSecretName(server string) string { return SecretName(server, ClientSecret) }
+
+// IdentityName is the runtime-managed identity binding of a server's client.
+func IdentityName(server string) string { return ClientSecretName(server) + ":identity" }
+
+// SecretPrefix is the prefix every secret name of a server shares.
+func SecretPrefix(server string) string { return "mcp:" + server + ":" }
