@@ -27,6 +27,8 @@ func TestCheckCredentialValue(t *testing.T) {
 		{"Authorization", "basic ${user}:${pass}"},
 		{"Cookie", "session=${session}"},
 		{"Cookie", "a=${a}; b=${b}"},
+		{"Cookie", "theme=; session=${s}"},
+		{"Cookie", "theme= ;a=${a}"},
 		{"X-Api-Key", "${key}"},
 		{"X-Org", "acme"},
 	}
@@ -87,6 +89,15 @@ func TestConvert(t *testing.T) {
 		{"Cookie", "session=${cookie-csrf}; csrf=def", map[string]bool{"cookie-csrf": true}, "session=${cookie-csrf}; csrf=${cookie-csrf-2}", "cookie-csrf-2", "def"},
 		{"Cookie", "My_Pref=dark", nil, "My_Pref=${cookie-my-pref}", "cookie-my-pref", "dark"},
 		{"Authorization", "Bearer abc ${x", nil, "Bearer ${authorization}", "authorization", "abc ${x"},
+		// Review round 4: an empty cookie value is not literal text (it used
+		// to panic with start > end), and placeholders collapse runs of `-`.
+		{"Cookie", "a=; b=x", nil, "a=; b=${cookie-b}", "cookie-b", "x"},
+		{"Cookie", "a= ; b=x", nil, "a= ; b=${cookie-b}", "cookie-b", "x"},
+		{"Cookie", "a=;", nil, "a=;", "cookie", ""},
+		{"Cookie", "theme=; session=${s}", nil, "theme=; session=${s}", "cookie", ""},
+		{"Cookie", "__Host-sid=abc", nil, "__Host-sid=${cookie-host-sid}", "cookie-host-sid", "abc"},
+		{"Cookie", "a._b=abc", nil, "a._b=${cookie-a.-b}", "cookie-a.-b", "abc"},
+		{"X--Key_", "abc", nil, "${x-key}", "x-key", "abc"},
 	} {
 		v, p, s := Convert(tc.name, tc.value, tc.used)
 		if v != tc.wantValue || p != tc.wantP || s != tc.s {
@@ -107,6 +118,8 @@ func TestConvert(t *testing.T) {
 		{"Cookie", "session=abc; csrf=def", "session"},
 		{"Cookie", "abc", ""},
 		{"Cookie", "a=${a}", ""},
+		{"Cookie", "theme=; session=abc", "session"},
+		{"Cookie", "theme=", ""},
 		{"Authorization", "session=abc", ""},
 	} {
 		if got := LiteralCookie(c.name, c.value); got != c.want {

@@ -73,9 +73,10 @@ for a few hundred lines of code); keeping two copies with a shared fixture (stil
 starts once the per-name lock is taken; the wait for the lock is bounded separately (`lockWaitTimeout`, also
 10 min), so time queued behind another holder never shortens the save's own budget. The TUI's save deadline
 (`mcpSaveTimeout`, 21 min) covers both bounds plus the persist retries. A rollback or re-list on a slow host
-runs on its own contexts and can outlast it, so when that deadline fires the TUI treats the save like one not
-recorded yet (the form closes and the row shows saving… until `mcp_gateway_changed`), never as a failure the
-developer could save over.
+runs on its own contexts and can outlast it, so when that deadline fires the TUI closes the form, never
+treating it as a failure the developer could save over. It does not mark the row saving… itself (the call may
+never have reached the daemon, e.g. over a half-open SSH tunnel, and nothing would clear the mark): the re-list
+shows the daemon's own `save_in_progress` (review round 4).
 If the client goes away the gRPC handler returns, but the goroutine finishes, persists the outcome and emits
 `mcp_gateway_changed` (with the outcome) and `secrets_changed`. The response returns the same
 `McpSaveOutcome`.

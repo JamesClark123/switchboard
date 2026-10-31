@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/status"
 )
 
 // fakeDaemon implements the ui.Daemon interface for teatest, simulating a local
@@ -60,6 +61,7 @@ type fakeDaemon struct {
 	mcpDefReads    []string
 	mcpSaves       []*pb.SaveMcpServerRequest
 	mcpSaveResults []mcpSaveResult
+	mcpSaveBlock   bool // SaveMcpServer waits for its context to end
 	mcpCancels     []string
 	mcpCancelResp  *pb.CancelMcpPendingReplaceResponse
 	mcpCancelErr   error
@@ -634,8 +636,14 @@ func (f *fakeDaemon) GetMcpServerDefinition(_ context.Context, name string, forA
 	return &pb.McpDefinitionView{Name: name, SecretsAvailable: true}, nil
 }
 
-func (f *fakeDaemon) SaveMcpServer(_ context.Context, req *pb.SaveMcpServerRequest) (*pb.McpSaveOutcome, error) {
+func (f *fakeDaemon) SaveMcpServer(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.McpSaveOutcome, error) {
 	f.mu.Lock()
+	if f.mcpSaveBlock {
+		f.mcpSaves = append(f.mcpSaves, req)
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
 	defer f.mu.Unlock()
 	f.mcpSaves = append(f.mcpSaves, req)
 	if len(f.mcpSaveResults) > 0 {

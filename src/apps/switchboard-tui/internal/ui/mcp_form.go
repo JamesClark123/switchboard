@@ -1302,13 +1302,23 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 		if ref, ok := client.AsSaveRefusal(msg.err); ok {
 			return m.applyMcpRefusal(msg.name, ref, formOpen)
 		}
-		text := status.Convert(msg.err).Message()
 		if msg.timedOut {
-			// The daemon may still be running the save (a slow rollback can
-			// outlast mcpSaveTimeout): handled like a save not recorded yet.
-			text = "the save of " + msg.name + " is still running on the daemon; the row shows saving… until it lands"
+			// No reply within mcpSaveTimeout. The daemon may still be running
+			// the save (a slow rollback can outlast the bound), or the call may
+			// never have reached it (a half-open SSH tunnel). Saving again is
+			// unsafe either way, so the form closes; the row is left to the
+			// daemon's own save state in the re-list (save_in_progress →
+			// saving…), never pinned by localSaving, which nothing would clear
+			// if no save ran.
+			if formOpen {
+				m.resetMcpForm()
+			}
+			v.status = "no reply to the save of " + msg.name + " within " + mcpSaveTimeout.String() +
+				"; it may still be running on the daemon (the list shows its state)"
+			return m, relist
 		}
-		if msg.timedOut || client.IsSaveNotRecorded(msg.err) {
+		text := status.Convert(msg.err).Message()
+		if client.IsSaveNotRecorded(msg.err) {
 			// The save ran; its result is not recorded yet. Saving again is
 			// pointless: close, and the row shows saving… until it lands. A
 			// bare UNAVAILABLE (daemon unreachable) is a plain error below:

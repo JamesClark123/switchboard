@@ -33,15 +33,17 @@ import (
 
 // Client-side bounds (package constants, never env vars; research R11).
 const (
-	mcpOpTimeout = 2 * time.Minute // register / remove / marks / mode
-	// Covers the daemon's 10-minute wait for the name's lock, then its own
-	// 10-minute save budget and the persist retries, plus slack. A rollback or
-	// re-list on a slow host runs on its own contexts and can go past it; the
-	// save then still runs detached, so a reply lost to this bound is handled
-	// like a save not recorded yet (applyMcpSave), never as a failure.
-	mcpSaveTimeout = 21 * time.Minute
+	mcpOpTimeout   = 2 * time.Minute                 // register / remove / marks / mode
 	mcpAuthTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute wait plus slack
 )
+
+// mcpSaveTimeout covers the daemon's 10-minute wait for the name's lock, then
+// its own 10-minute save budget and the persist retries, plus slack. A
+// rollback or re-list on a slow host runs on its own contexts and can go past
+// it; the save then still runs detached, so a reply lost to this bound is never
+// shown as a failure: the form closes and the re-list shows whether the daemon
+// is still saving (applyMcpSave). A var so tests can shorten it.
+var mcpSaveTimeout = 21 * time.Minute
 
 var mcpNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
@@ -122,6 +124,9 @@ type mcpState struct {
 	// deferred are the follow-ups of a background save (esc mid-save) that
 	// landed while another form was open; they open once the list is idle.
 	deferred []confirmState
+	// followAfter holds deferred back until mcpFollowupDelay after the last
+	// key on the idle list.
+	followAfter time.Time
 	// choose is the pending replace whose Retry asks held / previous (R).
 	choose *pb.McpPendingReplace
 	// scopes is the one-time scope prompt of Authorize with scopes… (S).
@@ -818,26 +823,36 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome, savedRemote bool) []confirmS
 	return steps
 }
 
+// mcpFollowupDelay is how long a key on the idle list holds back a background
+// save's follow-ups, so a quick second key (a double esc to leave the screen)
+// lands on the list rather than answering the offer. A var so tests can zero it.
+var mcpFollowupDelay = 400 * time.Millisecond
+
 // openDeferredMcpFollowups offers a background save's follow-ups once the
 // list is idle: no form, panel or modal open and no credential prompt up
-// (Update calls it after every message). It opens on a non-key message, so the
-// offer never takes a second press of the key that closed the form; after a
-// key it asks for one (mcpFollowupsReadyMsg).
+// (Update calls it after every message). A key on the idle list holds the offer
+// back for mcpFollowupDelay and asks to be woken after it
+// (mcpFollowupsReadyMsg); every later key restarts the wait, so the offer opens
+// only once the developer has paused, on the first message after it.
 func (m Model) openDeferredMcpFollowups(msg tea.Msg) (Model, tea.Cmd) {
 	v := &m.mcpView
 	if len(v.deferred) == 0 || m.screen != screenMcp || v.vals != nil || v.mcpModalOpen() || m.credentialPromptUp() {
 		return m, nil
 	}
 	if _, key := msg.(tea.KeyMsg); key {
-		return m, func() tea.Msg { return mcpFollowupsReadyMsg{} }
+		v.followAfter = time.Now().Add(mcpFollowupDelay)
+		return m, tea.Tick(mcpFollowupDelay, func(time.Time) tea.Msg { return mcpFollowupsReadyMsg{} })
+	}
+	if time.Now().Before(v.followAfter) {
+		return m, nil
 	}
 	steps := v.deferred
 	v.deferred = nil
 	return m, m.mcpFollowChain(steps)
 }
 
-// mcpFollowupsReadyMsg wakes openDeferredMcpFollowups after a key left the list
-// idle; it carries nothing.
+// mcpFollowupsReadyMsg wakes openDeferredMcpFollowups once a key's delay has
+// passed; it carries nothing.
 type mcpFollowupsReadyMsg struct{}
 
 // mcpFollowChain opens the follow-up offers one after another; declining one

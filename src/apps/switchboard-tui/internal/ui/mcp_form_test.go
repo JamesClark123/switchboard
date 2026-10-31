@@ -489,6 +489,26 @@ func TestMcpCookieConversionNamesEachCookie(t *testing.T) {
 	}
 }
 
+// Review round 4: an empty cookie value is not offered for conversion (it
+// used to panic in mcprules.Convert and kill the TUI); the cookie after it is.
+func TestMcpCookieConversionSkipsAnEmptyCookie(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	m := openEdit(t, editModel(t, d))
+	m.mcpView.vals.headers = "Cookie: theme=; session=abc"
+	m = leaveGroup1(t, m)
+	if strings.Contains(m.View(), "Convert the theme cookie") || !strings.Contains(m.View(), "Convert the session cookie to a secret?") {
+		t.Fatalf("expected only the session offer:\n%s", m.View())
+	}
+	m = accept(t, m)
+	v := m.mcpView
+	if v.vals.headers != "Cookie: theme=; session=${cookie-session}" || v.secretValue("mcp:linear:cookie-session") != "abc" {
+		t.Errorf("headers %q secrets %v", v.vals.headers, v.secretVals)
+	}
+	if v.focusInDefinition() {
+		t.Errorf("the converted header should pass: status %q", v.status)
+	}
+}
+
 func TestMcpLiteralConversionOnLeave(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
 	m := openEdit(t, editModel(t, d))
@@ -1384,6 +1404,7 @@ func TestMcpEscapedSaveReplyLeavesNewFormAlone(t *testing.T) {
 // A background save's follow-ups (FR-413 removal) are not lost: the status
 // names the unused secrets, and the offer opens once the other form closes.
 func TestMcpBackgroundSaveFollowupsWaitForTheForm(t *testing.T) {
+	noFollowupDelay(t)
 	out := &pb.McpSaveOutcome{Name: "linear", State: pb.McpSaveOutcome_REGISTERED, UnusedSecrets: []string{"mcp:linear:k"},
 		Server: &pb.McpServer{Name: "linear", Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, AuthState: pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED}}
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()},
@@ -1600,16 +1621,93 @@ func TestMcpPendingRowWhoseReplaceEndedRelists(t *testing.T) {
 	}
 }
 
-// A save whose reply outlasts the client's bound is handled like one not
-// recorded yet: the daemon may still be running it, so the form closes and the
-// row shows saving… instead of offering the form back for a second save.
+// A save whose reply outlasts the client's bound closes the form (saving again
+// is unsafe), but the row is left to the daemon's own save state: the call may
+// never have reached the daemon (a half-open tunnel), so nothing pins it to
+// saving… and e/R/X stay usable (review round 4).
 func TestMcpSaveClientTimeoutClosesTheForm(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
 	m := openEdit(t, editModel(t, d))
 	v := m.mcpView
-	m, _ = update(m, mcpSaveMsg{host: v.host, name: "linear", gen: v.formGen, err: status.Error(codes.DeadlineExceeded, "context deadline exceeded"), timedOut: true})
-	if m.mcpView.vals != nil || !m.mcpView.localSaving["linear"] || !strings.Contains(m.mcpView.status, "still running on the daemon") {
+	m, cmd := update(m, mcpSaveMsg{host: v.host, name: "linear", gen: v.formGen, err: status.Error(codes.DeadlineExceeded, "context deadline exceeded"), timedOut: true})
+	m = drainEdit(m, cmd)
+	if m.mcpView.vals != nil || m.mcpView.localSaving["linear"] || !strings.Contains(m.mcpView.status, "may still be running on the daemon") {
 		t.Errorf("form open %v, saving %v, status %q", m.mcpView.vals != nil, m.mcpView.localSaving, m.mcpView.status)
+	}
+	if strings.Contains(m.View(), "saving…") {
+		t.Errorf("the row is pinned to saving… although the daemon reports no save:\n%s", m.View())
+	}
+	m = keyIn(m, press("e"))
+	if m.mcpView.vals == nil {
+		t.Errorf("e is refused after a client timeout: status %q", m.mcpView.status)
+	}
+	// A save the daemon is still running shows from its own state.
+	srv := linearServer()
+	srv.SaveInProgress = true
+	d.mcpServers = []*pb.McpServer{srv}
+	m = keyIn(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd = update(m, mcpSaveMsg{host: v.host, name: "linear", gen: m.mcpView.formGen + 1, err: status.Error(codes.DeadlineExceeded, "x"), timedOut: true})
+	m = drainEdit(m, cmd)
+	if !strings.Contains(m.View(), "saving…") {
+		t.Errorf("the re-list's save_in_progress should show saving…:\n%s", m.View())
+	}
+}
+
+// sendMcpSave flags timedOut only when its own deadline ended the call, not
+// when the daemon itself answered DEADLINE_EXCEEDED.
+func TestMcpSendSaveTimedOutOnlyOnTheClientDeadline(t *testing.T) {
+	old := mcpSaveTimeout
+	mcpSaveTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { mcpSaveTimeout = old })
+	d := &fakeDaemon{mcpSaveBlock: true}
+	m := editModel(t, d)
+	if msg := m.sendMcpSave(&pb.SaveMcpServerRequest{Name: "linear"})().(mcpSaveMsg); !msg.timedOut || msg.err == nil {
+		t.Errorf("client deadline: timedOut %v err %v", msg.timedOut, msg.err)
+	}
+	d.mcpSaveBlock = false
+	d.mcpSaveResults = []mcpSaveResult{{err: status.Error(codes.DeadlineExceeded, "the daemon's own deadline")}}
+	if msg := m.sendMcpSave(&pb.SaveMcpServerRequest{Name: "linear"})().(mcpSaveMsg); msg.timedOut || msg.err == nil {
+		t.Errorf("daemon's reply: timedOut %v err %v", msg.timedOut, msg.err)
+	}
+}
+
+// noFollowupDelay turns off the pause a key puts on deferred follow-ups, so a
+// story sees them open right after the key.
+func noFollowupDelay(t *testing.T) {
+	t.Helper()
+	old := mcpFollowupDelay
+	mcpFollowupDelay = 0
+	t.Cleanup(func() { mcpFollowupDelay = old })
+}
+
+// Review round 4: a key on the idle list really holds a deferred offer back,
+// so a quick second esc leaves the screen instead of answering it, and a
+// message that arrives inside the pause (a spinner tick, a re-list) does not
+// open it either; the wake-up after the pause does.
+func TestMcpDeferredFollowupsWaitOutAQuickSecondKey(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}}
+	m := editModel(t, d)
+	m.mcpView.deferred = []confirmState{{title: "Remove unused secrets?"}}
+	m, cmd := update(m, press("j"))
+	if cmd == nil || m.screen != screenMcp || len(m.mcpView.deferred) != 1 {
+		t.Fatalf("a key should schedule the wake-up, not open: screen %v", m.screen)
+	}
+	m, _ = update(m, mcpFollowupsReadyMsg{}) // early: inside the pause
+	if m.screen != screenMcp || len(m.mcpView.deferred) != 1 {
+		t.Fatalf("the offer opened inside the pause: screen %v", m.screen)
+	}
+	m.mcpView.followAfter = time.Now().Add(-time.Millisecond) // the pause has passed
+	m, _ = update(m, mcpFollowupsReadyMsg{})
+	if m.screen != screenConfirm || m.mcpView.deferred != nil {
+		t.Errorf("the offer should open after the pause: screen %v", m.screen)
+	}
+
+	m = editModel(t, d)
+	m.mcpView.deferred = []confirmState{{title: "Remove unused secrets?"}}
+	m, _ = update(m, press("j"))
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen == screenMcp || m.screen == screenConfirm {
+		t.Errorf("a quick esc should leave the list: screen %v", m.screen)
 	}
 }
 

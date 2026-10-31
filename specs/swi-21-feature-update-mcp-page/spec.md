@@ -656,7 +656,9 @@ runtime adds it to recorded defaults).
   one auth-scheme token from a fixed list (`Bearer`, `Basic`, `Token`, `Bot`, `ApiKey`, `Key`, `SSWS`,
   `DPoP`, `Splunk`, `GenieKey`; case-insensitive) and joined by literal separators (space, `:`, `;`,
   `,`). In a `Cookie` header each placeholder MAY also be led by a cookie name and `=`
-  (`<cookie-name>=${…}`, the name an RFC 6265 token), since a cookie name is not a secret. Any other
+  (`<cookie-name>=${…}`, the name an RFC 6265 token), since a cookie name is not a secret, and a cookie with
+  an empty value (`<cookie-name>=` then `;` or the end) holds no literal text, so it is accepted and never
+  offered for conversion. Any other
   literal text is refused by the TUI and the daemon (FR-420), with a message saying which part is
   literal and why; for an unlisted scheme the message says the scheme then has to go inside the secret.
   The list is not open-ended on purpose, so `sk-live-abc ${x}` stays refused. When such a value is
@@ -664,7 +666,7 @@ runtime adds it to recorded defaults).
   cookie names and any `${…}` it already holds, its first run of literal text is replaced by a
   `${placeholder}`, and that literal text moves into the placeholder's masked secret field, so a secret
   never holds `${…}` (a value with several literal runs converts one run per step; in a Cookie header each
-  cookie's value is its own run, so every cookie name stays in the header, and each offer names its cookie). The derived placeholder name is the header name lower-cased with `_` mapped to `-` (for a cookie's value, `cookie-<cookie name>`), MUST
+  cookie's value is its own run, so every cookie name stays in the header, and each offer names its cookie). The derived placeholder name is the header name lower-cased with `_` and any other character a placeholder may not hold mapped to `-`, runs of `-` collapsed and edge `-` trimmed (for a cookie's value, `cookie-<cookie name>`, so `__Host-sid` gives `cookie-host-sid`), MUST
   satisfy FR-408, MUST NOT be `client_secret`, and MUST NOT collide with a placeholder already used by
   another header; on collision or an invalid name the form appends `-2`, `-3`, … and the field stays
   editable, so two credentials are never merged into one secret. There is no *not a credential*

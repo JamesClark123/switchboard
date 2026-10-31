@@ -105,6 +105,13 @@ Authorize and the Secrets view stay available from the gateway view. A bare `UNA
 connection dropped: the save may never have run) is a plain error: the form stays with every edit and typed
 secret, and the row is not marked `saving…`.
 
+A save with no reply within the TUI's own deadline (`mcpSaveTimeout`, 21 min) closes the form (saving again is
+unsafe: the daemon may still be running it) and says "no reply to the save of <server> within …; it may still
+be running on the daemon (the list shows its state)". The call may also never have reached the daemon (a
+half-open SSH tunnel), so the TUI does **not** mark the row `saving…` itself: the re-list decides, showing
+`saving…` only while the daemon reports `save_in_progress`, and `e`/`R`/`X` stay available otherwise (review
+round 4).
+
 ## Save sequence
 
 Client-side rules (`mcprules`) → confirmations (each `y`-only, back-out returns to the form with every
@@ -127,7 +134,9 @@ while another form is open, no outcome panel or follow-up opens over that form: 
 <server> in the background: <state>` (or an `error:` line when the replace did not complete), followed by
 `; no longer used: <names>` when the save left secrets unused, and the view re-lists. Its follow-ups (the
 FR-413 removal and FR-405 authorize offers) are kept and open once the list is idle again (no form, panel or
-modal open).
+modal open, no credential prompt up). A key on the idle list holds them back for 400 ms, and every further key
+restarts the pause, so a quick second key (a double esc to leave the screen) lands on the list rather than
+answering the offer; leaving the screen drops them (the unused secrets stay removable from the Secrets view).
 
 On a failure the form stays open with the edits. Leaving a form that holds a pending replace (after a
 `NOT_REGISTERED` outcome, or in retry mode) opens the same `y`-only Cancel confirmation as `X`; accepting calls
