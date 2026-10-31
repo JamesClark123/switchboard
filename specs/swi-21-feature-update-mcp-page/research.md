@@ -91,7 +91,9 @@ Steps, all under the per-name lock (R3):
 4a. Registration change: write the **in-progress record** (crash safety, below) before any host mutation. Once
     that write has landed, one `m.mu` hold (with `stateMu` nested) marks the name `saving` and closes the lock's
     `refuse` channel (*Leftover records*). Neither happens inside the write's mutate func, so a write that fails
-    marks nothing, and the save stops with no host change.
+    marks nothing, and the save stops with no host change. The gap between the write and that hold is closed for
+    every caller: a lock taker that queues in it is refused when the channel closes, and `SetMcpServerDefault`
+    re-checks the record inside its own transaction (*Leftover records*).
 5. Registration change: `sbx mcp rm --force` (existing argv) → on failure, wait for exit, re-list (R7).
 6. Stores (`secret.Manager.Set`, global, stdin) in placeholder order, then the client secret.
 7. `sbx mcp add … --skip-auth` with the new definition (scopes added, R10).
@@ -150,9 +152,16 @@ and unlocks as usual. A taker that queues between the write and that hold is ref
 so nothing is lost. For `recording`, it is the hold after the third failed `persist` (*Failed `persist`*). The
 `m.mu` hold whose state-map update **clears** `saving`/`recording` (the post-`persist` tail's first step) also
 swaps a closed channel for a fresh one and resets the flag, so on the normal path the swap happens there, not at
-unlock. As a backstop for any early-exit path that skips the tail, unlock also swaps the channel if `refused` is
-still set, in its own `m.mu` hold before it frees the slot; on the normal path it finds `refused` false and keeps
-the channel. A channel
+unlock. Every save path that sets `saving`/`recording` reaches that tail (a failed host step goes through rollback
+and `persist`), except two early exits: the `persist` retry returning because the daemon's context is done
+(shutdown), and a panic unwinding through the save's deferred unlock. Both leave the name `saving`/`recording` in
+the state map on purpose, because the host may already be mutated and the record still exists: lock takers stay
+refused by the state-map check above until the process exits, and a restart loads the record as `recovering`
+(a `recording` name has no record and simply starts clean). As a backstop for those exits, unlock also swaps the
+channel if `refused` is still set, in its own `m.mu` hold before it frees the slot. It restores only the
+invariant "a closed channel has no live waiters", so a later close can neither double-close nor refuse a waiter
+it should not; it never clears `saving`/`recording`. On the normal path it finds `refused` false and keeps the
+channel. A channel
 nobody closed stays, so every waiter, including one that queued under an earlier holder, selects on the channel
 the next holder closes. A closed channel therefore has no live waiters: each was refused when it closed, a taker
 arriving while the name is still `saving`/`recording` is refused by the state-map check above, and a taker
@@ -162,10 +171,17 @@ ctx.Done(), refuse }` and returns `ErrBeingReplaced` (dropping its waiter count)
 taker waits on a save that has written its record or entered the persist retry, whether it arrived before or
 after, and a queued `Save` (whose context is the detached `saveTimeout` one, not the client's) never sits on the
 lock for its full 10 minutes keeping `Authorize` refused. `SetMcpServerDefault` (the
-existing mark RPC) takes no lock, so it only reads the state map: while the name is `saving`, `recording` or
+existing mark RPC) takes no lock. As a fast path it reads the state map: while the name is `saving`, `recording` or
 `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED` as above / `UNVERIFIED`, message
-"recovering an interrupted save; try again") and changes nothing. So `marks` never changes under an in-progress record, and recovery always applies
-the record's own copy of the mark. Only the save that wrote a record, or the recovery routine for a leftover,
+"recovering an interrupted save; try again") and changes nothing. That check alone would miss the gap between a
+save's in-progress write and the `m.mu` hold that marks the name `saving` (step 4a), so the mark write also
+re-checks `saves_in_progress[name]` **inside its own `UpdateMcpSettings` mutate func** (the in-transaction
+re-check of the *Late launch race*, R12). When the record is present it writes nothing and refuses: `UNVERIFIED`
+if the state map (`stateMu`, a leaf, read in that transaction) shows `recovering`, `BEING_REPLACED` otherwise.
+bbolt serializes write transactions, so a toggle either commits before the record exists (an ordinary earlier
+write; the save then persists its own mark, as it would for a switchboard-only save) or sees the record and is
+refused. It never holds `m.mu`. So `marks` never changes under an in-progress record (the state map, re-checked
+against the record in the same transaction), and recovery always applies the record's own copy of the mark. Only the save that wrote a record, or the recovery routine for a leftover,
 deletes it. This refusal is a deliberate change to an existing RPC (proto delta *Compatibility*): an older TUI
 shows the status message on its usual error line. The new TUI does not send the toggle for such a row
 (contracts/mcp-form-ui.md).
@@ -504,8 +520,9 @@ replace). `NOT_REGISTERED` with a pending replace held ⇒ no call (still pendin
 
 **Lock order**: the MCP manager keeps a small in-memory **state map**, `name → {replacing, pending, saving,
 recording, recovering, generation}`, guarded by its own leaf mutex `stateMu`. It is updated whenever a lock is taken or released, a
-save turns `replacing`, a pending replace is created or ends, or an in-progress record (R2) is written or
-deleted (`saving`), or a leftover is queued for or resolved by recovery (`recovering`). It is loaded from the
+save turns `replacing`, a pending replace is created or ends, a live save's in-progress record (R2) lands
+(`saving` set in the `m.mu` hold right after the write commits) or the save's post-`persist` tail runs after the
+write that deleted it (`saving` cleared), or a leftover is queued for or resolved by recovery (`recovering`). It is loaded from the
 settings record in `NewManager`, with every in-progress record as `recovering` (R2). It is the only source `Authorize`, `reconcile` and
 `ReplaceState` read for "pending". `stateMu` is a leaf: nothing else is acquired while it is held, and it may be taken under `m.mu` or
 inside a bbolt transaction. Rules: no registry write (bbolt `Update`) and no `onReplaceEnded` call happens
