@@ -136,9 +136,10 @@ at once with `all goroutines are asleep - deadlock!`; in the child a test hook i
 called first in that func before anything that takes `stateMu` (the lock is not reentrant, so a hook placed after a
 `ReplaceState`-style call would self-deadlock before it panics), calls `m.stateMu.Lock()` and panics with no deferred
 unlock, and a second child's hook calls
-`m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock on a malformed record, called
-after `lockName` returns and outside any `m.mu`/`stateMu` hold (right after the record re-read, before the
-state-map update; `m.mu` is not reentrant either, so a hook placed where it is held would self-deadlock before it
+`m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock (the hook fires only on the test
+env flag and simulates a panic while reading a malformed record, research R2; the child seeds a well-formed
+leftover so the re-read succeeds), called after `lockName` returns and outside any `m.mu`/`stateMu` hold
+(right after the record re-read, before the state-map update; `m.mu` is not reentrant either, so a hook placed where it is held would self-deadlock before it
 panics), so the lock is still held when the release runs whatever unlock style production code uses; the hooks
 panic with distinct values `swi21-test-hook-persist` and `swi21-test-hook-recover`): the parent runs each child
 with `exec.CommandContext` and a 5 s deadline that kills it, and checks each child exits non-zero within 5 s
