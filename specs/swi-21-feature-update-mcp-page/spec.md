@@ -252,9 +252,11 @@ provider's consent page.
    switchboard stores the secret, then clears the binding record `mcp:<server>:client_secret:identity`,
    so the next authorization binds the new client, and the developer is told this happened (FR-415).
 4. **Given** the client ID is changed but no new client secret is entered while one is stored, **When**
-   the developer saves, **Then** the form warns that the runtime will refuse to authorize until the new
-   client's secret is entered, and the binding is left in place, so the old secret is never offered to
-   the new client (FR-415).
+   the developer saves, **Then** the form warns that the runtime will refuse to authorize the new client
+   while the old client's binding is in place and that entering the new client's secret and saving
+   clears it (or, for a public client, removing the stored secret and its binding record), and the
+   binding is left in place and the server is marked *client re-bind pending*, so the old secret is
+   never offered to the new client (FR-415).
 5. **Given** the client ID is cleared on edit while a client secret is stored, **When** the save
    completes, **Then** the developer is offered removal of `mcp:<server>:client_secret` and its binding
    record (FR-413).
@@ -370,7 +372,8 @@ runtime adds it to recorded defaults).
   registration changes → identity clear (FR-415) → rollback on failure (FR-412). The save is not tied to
   the client's connection: if the client goes away, the daemon finishes it. The response (and the
   gateway-changed event) reports the outcome: which secrets were created, overwritten or rolled back,
-  whether the identity binding was cleared, not cleared or could not be confirmed (FR-415; not a
+  the identity binding outcome as one of *not touched* (no clear needed), *left in place* (*client
+  re-bind pending*), *cleared*, *not cleared* or *unconfirmed* (may still be in place) (FR-415; not a
   yes/no), and the resulting registration state. The TUI only renders
   it. A save that changes the registration is carried out as a **replace**: remove the registration,
   then add the edited definition, always registering without authorizing. It keeps the
@@ -550,7 +553,9 @@ runtime adds it to recorded defaults).
   the developer. If no new client secret was entered, the binding MUST be left in place, the server's
   definition MUST be marked **client re-bind pending**, and the form MUST warn before saving that the
   runtime will refuse to authorize the new client while the old client's binding is in place, and that
-  entering the new client's secret and saving clears it. A later save that stores a
+  entering the new client's secret and saving clears it, or, if the new client is public (has no
+  client secret), removing `mcp:<server>:client_secret` and `mcp:<server>:client_secret:identity` in
+  the Secrets view or the host CLI. FR-404 reports this outcome as *left in place*. A later save that stores a
   client secret for a server marked *re-bind pending*, including a secrets-only save (FR-403), MUST then
   clear the binding and the mark; a failed clear that the re-check below does not count as success
   keeps the mark. For a server switchboard has no definition of (so no *re-bind
@@ -558,13 +563,14 @@ runtime adds it to recorded defaults).
   The edit form MUST show the pending state next to the client-secret
   field, worded so it holds for both causes of the mark (no new secret entered, or a failed clear):
   the old binding may still be in place, and saving with the client secret entered clears it and the
-  mark. A failed clear of the binding is re-checked with a fresh read of the host's secret list
+  mark (for a public client, the stored secret and its binding record can instead be removed in the
+  Secrets view or the host CLI; the mark then stays, round-18 known limitation under *Assumptions*). A failed clear of the binding is re-checked with a fresh read of the host's secret list
   (not FR-404's snapshot) under the same lock and counts as success only if the list is read and the
   identity record is not in it (a binding that never existed, or was already removed, is already
   cleared, so the daemon does not rely on recognising the runtime's *not found* answer). If the record
   is still listed, the removal's failure MUST be shown verbatim and the binding described as *not
   cleared*; if the list cannot be read, the removal's failure and the read failure MUST both be shown
-  verbatim and the binding described as *may still be in place*. Either way the registration is not
+  verbatim and the binding described as *unconfirmed* (may still be in place). Either way the registration is not
   rolled back, the server MUST be marked (or stay) *client re-bind pending*, and the message MUST lead
   with the in-product retry (re-enter the client secret and save to retry the clear), then name
   `mcp:<server>:client_secret:identity` as the record that can instead be removed in the Secrets view
@@ -842,3 +848,9 @@ runtime adds it to recorded defaults).
   keeps showing the pending state until the secret is re-entered. The failure message says so. Whether
   every save of a marked server should retry the clear (and whether the mark should record its cause)
   is an open item for the plan phase; the spec adds no mechanism for it.
+- Known limitation (review round 18): a developer who switches a server to a public client follows
+  FR-415's warning by removing `mcp:<server>:client_secret` and its `:identity` record by hand, but
+  the *client re-bind pending* mark stays (it clears only on a save that stores a client secret), and
+  FR-413's removal offer covers only a cleared client ID. Whether FR-413's offer (and the mark's clear)
+  should extend to a client-ID change saved without a secret is an open item for the plan phase,
+  alongside the round-17 item; the spec adds no mechanism for it.
