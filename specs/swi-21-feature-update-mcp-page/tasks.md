@@ -136,9 +136,15 @@ at once with `all goroutines are asleep - deadlock!`; in the child a test hook i
 called first in that func before anything that takes `stateMu` (the lock is not reentrant, so a hook placed after a
 `ReplaceState`-style call would self-deadlock before it panics), calls `m.stateMu.Lock()` and panics with no deferred
 unlock, and a second child's hook calls
-`m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock on a malformed record, so the lock
-is still held when the release runs whatever unlock style production code uses): the parent checks each child
-exits non-zero with `panic:` in stderr within 5 s instead of hanging, so wrapping the release, moving the
+`m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock on a malformed record, called
+after `lockName` returns and outside any `m.mu`/`stateMu` hold (right after the record re-read, before the
+state-map update; `m.mu` is not reentrant either, so a hook placed where it is held would self-deadlock before it
+panics), so the lock is still held when the release runs whatever unlock style production code uses; the hooks
+panic with distinct values `swi21-test-hook-persist` and `swi21-test-hook-recover`): the parent runs each child
+with `exec.CommandContext` and a 5 s deadline that kills it, and checks each child exits non-zero within 5 s
+instead of hanging, with `panic: swi21-test-hook-persist` (or `-recover`) in stderr and no `test timed out` (so the
+child's own `-test.timeout` panic never passes; the 5 s deadline must stay well below the child's 1 m
+`-test.timeout`), so wrapping the release, moving the
 `recover()` into a helper, or a deferred call that takes `m.mu`/`stateMu` before the release all fail it. A
 negative control re-runs the first child with the guard switched off by a test-only package variable
 (`if !skipPanicGuard { if r := recover(); r != nil { panic(r) } }`) and expects it still running at the 5 s
