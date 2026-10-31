@@ -91,9 +91,20 @@ type Daemon interface {
 	// MCP gateway (feature 008, FR-072..FR-100): the host's registrations with
 	// switchboard's marks; register/remove/authorize; marks and attach mode.
 	ListMcpServers(ctx context.Context) ([]*pb.McpServer, *pb.McpGatewaySettings, error)
+	// ListMcpGateway is the whole list response, with the pending replaces (SWI-21).
+	ListMcpGateway(ctx context.Context) (*pb.ListMcpServersResponse, error)
 	AddMcpServer(ctx context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error)
 	RemoveMcpServer(ctx context.Context, name string) ([]string, error)
-	AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error)
+	// AuthorizeMcpServer takes one-time scopes or no scope (SWI-21 FR-418);
+	// neither keeps the recorded defaults.
+	AuthorizeMcpServer(ctx context.Context, name string, scopes []string, noScope bool, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error)
+	// SWI-21 (only with the "mcp-edit" capability): the edit form's definition
+	// read, the one-call save, the pending replace's cancel and the FR-413
+	// removal. Refusals are *client.SaveRefusal.
+	GetMcpServerDefinition(ctx context.Context, name string, forAdd bool) (*pb.McpDefinitionView, error)
+	SaveMcpServer(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.McpSaveOutcome, error)
+	CancelMcpPendingReplace(ctx context.Context, name string, revision uint64) (*pb.CancelMcpPendingReplaceResponse, error)
+	RemoveMcpServerSecrets(ctx context.Context, name string, secrets []string) (*pb.RemoveMcpServerSecretsResponse, error)
 	// CompleteMcpAuthCallback replays a pasted browser redirect on the daemon's host
 	// (paste-back fallback for a remote authorization).
 	CompleteMcpAuthCallback(ctx context.Context, name, callbackURL string) error
@@ -914,6 +925,10 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyMcpAuthEnd(msg)
 	case mcpPasteMsg:
 		return m.applyMcpPaste(msg)
+	case mcpDefMsg:
+		return m.applyMcpDef(msg)
+	case mcpSaveMsg:
+		return m.applyMcpSave(msg)
 	case opStartedMsg:
 		return m.handleOpStarted(msg)
 	case opProgressMsg:
@@ -1205,7 +1220,7 @@ func (m Model) viewScreen() string {
 
 	// The gateway view's authorization wait and host-command warning float over it
 	// (feature 008).
-	if m.screen == screenMcp && (m.mcpView.auth != nil || m.mcpView.pending != nil) {
+	if m.screen == screenMcp && m.mcpView.mcpModalOpen() {
 		bg := m.chrome(m.viewMcp(), m.mcpHelp())
 		return overlayCenter(bg, m.mcpModal(), m.width, m.height)
 	}

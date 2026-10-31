@@ -616,3 +616,59 @@ func TestMcpServersListLandingWhileConfirmIsOpenIsKept(t *testing.T) {
 		t.Error("r must reload again once the list landed")
 	}
 }
+
+// SWI-21 (T031, FR-425): marked servers the launch skipped are listed after the
+// attached ones with why; `a` on a not-attached-at-launch entry attaches it, and
+// in exclusive mode the overlay says to relaunch instead.
+func TestMcpServersOverlayListsSkippedEntries(t *testing.T) {
+	d := &fakeDaemon{}
+	m := mcpOverlayModel(t, d)
+	d.sandboxes[0].McpSkipped = []*pb.McpSkippedServer{
+		{Name: "notion", State: pb.McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH}, // attached since: not listed
+		{Name: "linear", State: pb.McpSkipState_MCP_SKIP_STATE_SKIPPED_BEING_REPLACED},
+		{Name: "pw", State: pb.McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH},
+	}
+	m = withSandboxes(m, d.sandboxes)
+	if !strings.Contains(m.View(), "mcp skipped: 3") {
+		t.Errorf("the row's third line counts the skips:\n%s", m.View())
+	}
+	m = openMcpOverlay(t, m)
+	v := m.View()
+	for _, want := range []string{"skipped: being replaced", "not attached at launch — a to attach"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("overlay should show %q:\n%s", want, v)
+		}
+	}
+	if got := len(m.sandboxMcpView.skipped); got != 2 {
+		t.Fatalf("skipped = %d, want 2 (notion is attached)", got)
+	}
+	m, _ = update(m, press("j"))
+	m, _ = update(m, press("j"))
+	m, _ = update(m, press("j")) // clamps on the last row
+	if s, ok := m.sandboxMcpView.highlightedSkip(); !ok || s.GetName() != "pw" {
+		t.Fatalf("cursor %d", m.sandboxMcpView.cursor)
+	}
+	m, cmd := update(m, press("a"))
+	if m.sandboxMcpView.busy != "pw" || m.sandboxMcpView.picking {
+		t.Fatal("a on a skipped entry attaches it directly")
+	}
+	_, _ = update(m, runAttach(t, cmd))
+	if got := d.attachedMcp["sb-1"]; len(got) != 1 || got[0] != "pw" {
+		t.Errorf("attach calls = %v", got)
+	}
+
+	// Exclusive: missing from the fixed set; a explains instead of attaching.
+	d2 := &fakeDaemon{}
+	m2 := mcpOverlayModel(t, d2)
+	d2.sandboxes[0].McpAttachMode = pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE
+	d2.sandboxes[0].McpSkipped = []*pb.McpSkippedServer{{Name: "pw", State: pb.McpSkipState_MCP_SKIP_STATE_NOT_ATTACHED_AT_LAUNCH}}
+	m2 = openMcpOverlay(t, withSandboxes(m2, d2.sandboxes))
+	if !strings.Contains(m2.View(), "missing from this sandbox's fixed set") {
+		t.Errorf("exclusive note:\n%s", m2.View())
+	}
+	m2, _ = update(m2, press("j"))
+	m2, cmd = update(m2, press("a"))
+	if cmd != nil || len(d2.attachedMcp) != 0 || !strings.Contains(m2.sandboxMcpView.status, "relaunch") {
+		t.Errorf("exclusive a: status %q", m2.sandboxMcpView.status)
+	}
+}

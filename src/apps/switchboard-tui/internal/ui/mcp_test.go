@@ -14,6 +14,7 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
 )
 
 func notionServer() *pb.McpServer {
@@ -442,7 +443,7 @@ func TestMcpRegisterRemoteOAuthClient(t *testing.T) {
 		m = escDiscard(t, m)
 	}
 	for _, as := range []string{"http://localhost:9000/x", "http://[::1]/x", "http://127.0.0.2/x"} {
-		if !authServerOK(as) {
+		if !mcprules.AuthServerOK(as) {
 			t.Errorf("%s should be accepted", as)
 		}
 	}

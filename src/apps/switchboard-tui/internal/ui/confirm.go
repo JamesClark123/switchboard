@@ -54,6 +54,13 @@ type confirmState struct {
 	// dialog is a choice rather than a yes/no ("replace" / "wait"); empty keeps
 	// "confirm" / "cancel".
 	acceptLabel, cancelLabel string
+	// next runs on accept after onAccept, with the live model, and its command
+	// joins onConfirm's: a chain of y-only confirms (the SWI-21 MCP save
+	// sequence) opens its next step from here.
+	next func(m *Model) tea.Cmd
+	// onCancel runs on every back-out (n/esc/q/ctrl+c, and enter when
+	// enterCancels): the MCP form's "back-out returns to the form".
+	onCancel func(m *Model) tea.Cmd
 }
 
 // enterConfirm opens the dialog over the sandbox list. The caller supplies the
@@ -93,19 +100,22 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
 		if msg.String() == "enter" && m.confirm.enterCancels {
-			m.screen = m.confirm.returnTo
-			m.confirm = confirmState{}
-			return m, nil
+			return m.cancelConfirm()
 		}
 		if msg.String() == "enter" && m.confirm.yOnly {
 			return m, nil
 		}
-		cmd, accept := m.confirm.onConfirm, m.confirm.onAccept
+		cmd, accept, next := m.confirm.onConfirm, m.confirm.onAccept, m.confirm.next
 		id, verb := m.confirm.sandboxID, m.confirm.verb
 		m.screen = m.confirm.returnTo
 		m.confirm = confirmState{}
 		if accept != nil {
 			accept(&m)
+		}
+		if next != nil {
+			if c := next(&m); c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
 		}
 		if cmd == nil {
 			return m, nil
@@ -115,9 +125,18 @@ func (m Model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case "n", "N", "esc", "q", "ctrl+c":
-		m.screen = m.confirm.returnTo
-		m.confirm = confirmState{}
-		return m, nil
+		return m.cancelConfirm()
+	}
+	return m, nil
+}
+
+// cancelConfirm closes the dialog unanswered and runs its onCancel.
+func (m Model) cancelConfirm() (tea.Model, tea.Cmd) {
+	back := m.confirm.onCancel
+	m.screen = m.confirm.returnTo
+	m.confirm = confirmState{}
+	if back != nil {
+		return m, back(&m)
 	}
 	return m, nil
 }
