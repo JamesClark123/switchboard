@@ -102,10 +102,14 @@ the flag (an unclosed one is kept, so waiters that queued under an earlier holde
 channel); as a backstop for the one early exit that skips the tail (the `persist` retry ending on daemon
 shutdown), unlock also swaps it if `refused` is still set, in its `m.mu` hold before
 freeing the slot. The backstop never clears `saving`/`recording`: it only keeps "a closed channel has no live
-waiters" true (research R2 *Leftover records*). A save never recovers a panic (it crashes the daemon and the
-restart resolves the record as `recovering`); the save's deferred unlock starts with
-`if r := recover(); r != nil { panic(r) }`, so a panicking save skips the unlock body (taking neither `m.mu` nor
-`stateMu`) and a panic while either lock is held cannot deadlock the unlock instead of crashing. A waiting
+waiters" true (research R2 *Leftover records*). The daemon never swallows a panic (a panic crashes the daemon and the
+restart resolves any record as `recovering`): `lockName` hands back one shared release that every lock holder
+(the save, `Remove`, Cancel, `AddMcpServer`/`Add` (T010), `RemoveMcpServerSecrets` and `recoverLoop` (T022)) defers
+directly as `defer release()`, never wrapped in a function literal or called from a helper, and whose first
+statement is `if r := recover(); r != nil { panic(r) }` (Go stops a panic only when the deferred function itself
+calls `recover()`). So every lock holder's deferred release skips its body on a panic (taking neither `m.mu` nor
+`stateMu`) and a panic while either lock is held cannot deadlock the release instead of crashing; no deferred call
+registered after the release (so run before it) takes `m.mu` or `stateMu`. A waiting
 `lockName` selects on `{slot, ctx.Done(), refuse}` and returns `ErrBeingReplaced` (dropping its waiter count)
 when it closes. So no caller, queued or new, ever waits on a save that holds an in-progress record or retries
 its `persist` (research R2 *Leftover records*). Tests: a `Remove` and a second `Save` queued during a save's step 1
@@ -118,7 +122,12 @@ second time in one hold is a no-op (no double-close panic); an unlock with `refu
 exit, driven by cancelling the daemon context during the `persist` retry so the tail is skipped and the name is
 still `saving`; no simulated panic) leaves a fresh channel with `refused` false, a new taker is
 still refused `BEING_REPLACED` by the state-map check while the flag stands, and a later close of the new channel
-does not panic. Add
+does not panic; a panic-path test uses the re-exec pattern (`TestSavePanicCrashes` re-runs the test binary with
+`exec.Command(os.Args[0], "-test.run=TestSavePanicCrashes")` and an env flag; in the child a test hook makes the
+`persist` mutate func panic while holding `stateMu`, and a second child does the same in `recoverLoop` on a
+malformed record): the parent checks each child exits non-zero with `panic:` in stderr within 5 s instead of
+hanging, so wrapping the release, moving the `recover()` into a helper, or a deferred call that takes
+`m.mu`/`stateMu` before the release all fail it. Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings

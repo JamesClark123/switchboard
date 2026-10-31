@@ -157,19 +157,24 @@ and `persist`), except one early exit: the `persist` retry returning because the
 (shutdown). It leaves the name `saving`/`recording` in the state map on purpose, because the host may already be
 mutated and the record still exists: lock takers stay refused by the state-map check above until the process
 exits, and a restart loads the record as `recovering` (a `recording` name has no record and simply starts
-clean). A panic is not an exit the save handles: the daemon has no `recover()` and the save runs on its own
-goroutine, so a panic crashes the daemon and the restart resolves the record as `recovering`, like any other
-crash. So that a panic always reaches that crash instead of hanging, the save's deferred unlock starts with
-`if r := recover(); r != nil { panic(r) }`: a panicking save skips the unlock body entirely (it takes neither
-`m.mu` nor `stateMu`) and the crash goes ahead. Otherwise a panic while the save holds `m.mu` or `stateMu` (for
-example inside a bbolt mutate func, which takes `stateMu` alone) would leave that lock held and the unlock body
-would block on it forever, wedging every `m.mu` caller with no crash and no restart. As a backstop for the shutdown exit, unlock also swaps the
-channel if `refused` is still set, in its own `m.mu` hold before it frees the slot. It restores only the
-invariant "a closed channel has no live waiters", so a later close can neither double-close nor refuse a waiter
-it should not; it never clears `saving`/`recording`. On the normal path it finds `refused` false and keeps the
-channel. A channel
-nobody closed stays, so every waiter, including one that queued under an earlier holder, selects on the channel
-the next holder closes. A closed channel therefore has no live waiters: each was refused when it closed, a taker
+clean). A panic is not an exit the save handles: the daemon never swallows a panic (the only `recover()` is the
+unlock guard below, which re-panics at once) and the save runs on its own goroutine, so a panic crashes the daemon
+and the restart resolves the record as `recovering`, like any other crash. So that a panic always reaches that
+crash instead of hanging, the shared release that `lockName` hands back (the one every lock holder uses: the save,
+`Remove`, Cancel, `AddMcpServer`, `RemoveMcpServerSecrets` and the start-up recovery routine) starts with
+`if r := recover(); r != nil { panic(r) }`: a panicking holder skips the release body entirely (it takes neither
+`m.mu` nor `stateMu`) and the crash goes ahead. Go stops a panic only when `recover()` is called directly by the
+deferred function, so the form is pinned: the release is deferred directly as `defer release()` (never wrapped in
+a function literal or called from a helper), the `recover()` is its first statement, and no deferred call
+registered after it (so run before it, LIFO) takes `m.mu` or `stateMu`. Otherwise a panic while a holder has
+`m.mu` or `stateMu` (for example inside a bbolt mutate func, which takes `stateMu` alone, or recovery reading a
+malformed record left by an earlier build) would leave that lock held and the release body would block on it
+forever, wedging every `m.mu` caller with no crash and no restart. As a backstop for the shutdown exit, unlock
+also swaps the channel if `refused` is still set, in its own `m.mu` hold before it frees the slot. It restores
+only the invariant "a closed channel has no live waiters", so a later close can neither double-close nor refuse
+a waiter it should not; it never clears `saving`/`recording`. On the normal path it finds `refused` false and
+keeps the channel. A channel nobody closed stays, so every waiter, including one that queued under an earlier
+holder, selects on the channel the next holder closes. A closed channel therefore has no live waiters: each was refused when it closed, a taker
 arriving while the name is still `saving`/`recording` is refused by the state-map check above, and a taker
 arriving after the clear (while the tail's `onReplaceEnded` and outcome event still run, before unlock) captures
 the fresh channel and waits for the slot. `lockName` waits on `select { slot,
