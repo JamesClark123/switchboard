@@ -147,7 +147,26 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17;
+Active feature: `specs/swi-21-feature-update-mcp-page/plan.md` (MCP Page Quality of Life — Edit, In-Page Secrets,
+Scopes, SWI-21; **planned, implementation pending**: `mcprules`, `mcp/save.go`, `mcp/definition.go`, `ui/mcp_form.go`
+do not exist yet). Ticket item 5 (fixed OAuth callback port) is deferred to SWI-22. Shared definition rules live in a new
+pure package **`src/libs/switchboard-proto/mcprules`** used by daemon and TUI (FR-420: headers, `${placeholder}` rule +
+reserved `client_secret`, credential-header rule + one-step conversion + `Redact`, scopes, client ID, authorization
+server). Every MCP form save is one RPC **`SaveMcpServer`**, run on `context.WithoutCancel` under a per-name lock
+(`mcp/locks.go`, checked with the auth `inflight` record in one `Manager.mu` section, FR-424): fingerprint (HMAC-SHA-256
+under a per-start key; `STALE_CHANGED`/`STALE_RESTARTED`; a failed re-read is `UNVERIFIED`) → secret snapshot →
+classify (re-checks `inflight`) → crash-safety *in-progress* record (`saves_in_progress`, separate from pending replaces; mark stays in `marks`; a lock holder or `SetMcpServerDefault` that finds one refuses `UNVERIFIED`; resolved only by one background recovery routine for start-up leftovers (queued by `NewManager` without a host call); a `persist` that failed 3 times keeps the lock and re-runs its own per-name mutate func, and other lock takers, queued or new, refuse a `saving` name (or `recording`: a switchboard-only save in that retry) at once via the lock's `refuse` channel instead of waiting; the TUI refuses `e`/`R` on a `saving…` row locally, `rebind_pending` on a client change, `onReplaceEnded` on a listed replace/Retry) → `rm` (re-listed on failure) → stores
+(stdin) → `add` (never re-checked on failure; rollback) → identity clear of `mcp:<s>:client_secret:identity` (re-checked;
+*client re-bind pending* mark) → one persist + one event. Definitions and **pending replaces** (Retry held/previous,
+Cancel, ended by *registered by another path*) live in `McpGatewaySettings.definitions`/`pending_replaces`/`saves_in_progress` (3–5).
+`GetMcpServerDefinition` merges the record with `sbx mcp inspect --json` + `auth status --json` (runtime wins where
+positively reported; credential literals redacted in the daemon). Scopes: `--scope` on add, `--scope`/`--no-scope` on
+authorize. Launch skips a marked server being replaced → `Sandbox.mcp_skipped` (25). New RPCs
+`GetMcpServerDefinition`, `SaveMcpServer`, `CancelMcpPendingReplace`, `RemoveMcpServerSecrets`; capability `mcp-edit`.
+Real-host flags in `mcp/hostflags.go` (all documentation-derived). See `research.md` (R1–R16), `data-model.md`,
+`contracts/`, `quickstart.md`, `tasks.md`.
+
+Prior feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17;
 **implemented** — T001–T042 done, T043 manual quickstart pending). Every
 action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`), **Effort** (`/effort
 low|medium|high|xhigh|max|auto`; **ultracode dropped** — it is a sticky session toggle, research R1) and **Clear**
