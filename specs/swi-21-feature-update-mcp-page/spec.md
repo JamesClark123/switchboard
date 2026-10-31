@@ -381,12 +381,14 @@ runtime adds it to recorded defaults).
   and this save stores no client secret (FR-415 retries the clear only on a save that stores it;
   round-17 open item). *Left in place* takes precedence whenever this save completed a client change
   under FR-415's no-new-secret branch, whether or not the server was already marked; a save that
-  fails or is refused before the add reports *not touched*. It never means the binding is gone or the mark is cleared; the mark is
-  reported in the resulting state, not in this outcome. The TUI only renders it. A save that changes
-  the registration is carried out as a **replace**: remove the registration, then add the edited
-  definition, always registering without authorizing. It keeps the attach-by-default mark and
-  switchboard's definition across the remove and add (a list taken
-  mid-replace MUST NOT drop them), and emits one gateway-changed event when it finishes. The save MUST
+  fails or is refused before it completes (including a failed add or store, FR-406) reports *not
+  touched* and sets no mark (FR-415 applies again on the retry). *Not touched* never means the
+  binding is gone or the mark is cleared; the mark is reported in the resulting state, not in this
+  outcome. The TUI only renders it. A save that changes the registration is carried out as a
+  **replace**: remove the registration, then add the edited definition, always registering without
+  authorizing. It keeps the attach-by-default mark and switchboard's definition across the remove
+  and add (a list taken mid-replace MUST NOT drop them), and emits one gateway-changed event when it
+  finishes. The save MUST
   be refused, with no change, when the server no longer matches what the form was opened with
   (switchboard's stored definition and the runtime-reported fields, FR-402); the check runs under the
   lock before any secret is stored. The fingerprint is computed by the daemon over the
@@ -856,10 +858,10 @@ runtime adds it to recorded defaults).
   (FR-415) keeps the mark until a save that stores the client secret, even after the developer removes
   the `:identity` record by hand or saves other changes without re-entering the secret, so the form
   keeps showing the pending state until the secret is re-entered. The failure message says so. FR-404
-  reports such a save without the secret as *not touched* (no clear attempted), with the mark shown
-  in the resulting state. Whether every save of a marked server should retry the clear (and whether
-  the mark should record its cause) is an open item for the plan phase; the spec adds no mechanism for
-  it.
+  reports such a save without the secret as *not touched* (no clear attempted), or *left in place* if
+  it changes the client (FR-404 precedence), with the mark shown in the resulting state. Whether
+  every save of a marked server should retry the clear (and whether the mark should record its
+  cause) is an open item for the plan phase; the spec adds no mechanism for it.
 - Known limitation (review round 18): a developer who switches a server to a public client follows
   FR-415's warning by removing `mcp:<server>:client_secret` and its `:identity` record by hand, but
   the *client re-bind pending* mark stays (it clears only on a save that stores a client secret), and
