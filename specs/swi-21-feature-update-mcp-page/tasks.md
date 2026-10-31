@@ -102,10 +102,17 @@ the flag (an unclosed one is kept, so waiters that queued under an earlier holde
 channel); as a backstop for the one early exit that skips the tail (the `persist` retry ending on daemon
 shutdown), unlock also swaps it if `refused` is still set, in its `m.mu` hold before
 freeing the slot. The backstop never clears `saving`/`recording`: it only keeps "a closed channel has no live
-waiters" true (research R2 *Leftover records*). The daemon never swallows a panic (a panic crashes the daemon and the
-restart resolves any record as `recovering`): `lockName` hands back one shared release that every lock holder
-(the save, `Remove`, Cancel, `AddMcpServer`/`Add` (T010), `RemoveMcpServerSecrets` and `recoverLoop` (T022)) defers
-directly as `defer release()`, never wrapped in a function literal or called from a helper, and whose first
+waiters" true (research R2 *Leftover records*). No lock holder runs on a
+goroutine that recovers panics, so a panic crashes the daemon and the restart resolves any record as
+`recovering` (gRPC has no recovery interceptor; the hook `http.Server` in `cmd/sxbd/main.go` recovers handler
+panics, so no lock holder may run under an `http.Handler`): `lockName` hands back one shared release that every
+lock holder (the save, `Remove`, Cancel, `AddMcpServer`/`Add` (T010), `RemoveMcpServerSecrets` and `recoverName`
+(T022)) defers directly as `defer release()` in the function that holds the lock for one name, so it runs when
+that function returns. Only the deferred call is pinned: `defer func() { release() }()` and calling the release
+from a helper are forbidden, while a goroutine body such as `go func() { defer release(); ... }()` (the detached
+save) is fine. A `defer` never sits inside a loop: `recoverLoop` resolves each name by calling
+`recoverName(ctx, name)`, which takes `lockName`, defers `release()` and returns, so each name's lock is freed
+before the next name or backoff attempt. The release's first
 statement is `if r := recover(); r != nil { panic(r) }` (Go stops a panic only when the deferred function itself
 calls `recover()`). So every lock holder's deferred release skips its body on a panic (taking neither `m.mu` nor
 `stateMu`) and a panic while either lock is held cannot deadlock the release instead of crashing; no deferred call
@@ -123,11 +130,15 @@ exit, driven by cancelling the daemon context during the `persist` retry so the 
 still `saving`; no simulated panic) leaves a fresh channel with `refused` false, a new taker is
 still refused `BEING_REPLACED` by the state-map check while the flag stands, and a later close of the new channel
 does not panic; a panic-path test uses the re-exec pattern (`TestSavePanicCrashes` re-runs the test binary with
-`exec.Command(os.Args[0], "-test.run=TestSavePanicCrashes")` and an env flag; in the child a test hook makes the
-`persist` mutate func panic while holding `stateMu`, and a second child does the same in `recoverLoop` on a
-malformed record): the parent checks each child exits non-zero with `panic:` in stderr within 5 s instead of
-hanging, so wrapping the release, moving the `recover()` into a helper, or a deferred call that takes
-`m.mu`/`stateMu` before the release all fail it. Add
+`exec.Command(os.Args[0], "-test.run=TestSavePanicCrashes")` and an env flag; in the child a test hook inside the
+`persist` mutate func calls `m.stateMu.Lock()` and panics with no deferred unlock, and a second child's hook calls
+`m.mu.Lock()` and panics the same way in `recoverName` under the per-name lock on a malformed record, so the lock
+is still held when the release runs whatever unlock style production code uses): the parent checks each child
+exits non-zero with `panic:` in stderr within 5 s instead of hanging, so wrapping the release, moving the
+`recover()` into a helper, or a deferred call that takes `m.mu`/`stateMu` before the release all fail it. A
+negative control re-runs the first child with the guard switched off by a test-only package variable
+(`if !skipPanicGuard { if r := recover(); r != nil { panic(r) } }`) and expects it still running at the 5 s
+deadline (the parent then kills it), so the test is shown to fail on a broken guard. Add
   `recheckInflight(name)`, which `Save` calls under `m.mu` right after `classify`/`ClientChanged` once it knows
   the save replaces or clears identity (research R3 *Re-check after classify*). `Authorize` refuses with the new
   `ErrBeingReplaced` when `busy[name]` is held or waited on, or the R12 state map (`stateMu`, never the settings
@@ -290,8 +301,12 @@ unchanged.
   record dropped, planned-created names removed best effort. Listed ⇒ record dropped; replace keeps mark and
   `previous`; new server/Retry get `definition` + mark (Retry's pending dropped); replace and Retry call
   `onReplaceEnded(name, true)` after the registry write returns (a new server: no call); `rebind_pending` set
-  when `definition` vs `previous` is `mcprules.ClientChanged` (FR-415). A failed list or registry write keeps
-  the names queued and retries with backoff (5 s doubling to 5 min); `reconcile` never resolves records. Tests:
+  when `definition` vs `previous` is `mcprules.ClientChanged` (FR-415). Each name is resolved in
+  `recoverName`, which defers its own release (T009), so no name's lock outlives its resolution. A failed list or
+  registry write keeps the names queued and retries with backoff (5 s doubling to 5 min); `reconcile` never
+  resolves records. Tests: after a recovery attempt resolves a name, a `Remove` of that name takes the lock
+  without waiting; an attempt whose registry write fails for a name retries, and the second attempt takes that
+  name's lock without hanging;
   the manager is stopped between `rm` and `add`, a new manager starts on the same registry, and expect a pending
   row with the mark held, Retry and Cancel working, and `reconcile` not dropping it. Stopped before `rm` ⇒ mark
   and previous definition live. Stopped after the add ⇒ mark live, and for a client change (new client ID)

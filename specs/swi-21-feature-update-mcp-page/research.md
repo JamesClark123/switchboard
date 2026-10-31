@@ -157,15 +157,19 @@ and `persist`), except one early exit: the `persist` retry returning because the
 (shutdown). It leaves the name `saving`/`recording` in the state map on purpose, because the host may already be
 mutated and the record still exists: lock takers stay refused by the state-map check above until the process
 exits, and a restart loads the record as `recovering` (a `recording` name has no record and simply starts
-clean). A panic is not an exit the save handles: the daemon never swallows a panic (the only `recover()` is the
-unlock guard below, which re-panics at once) and the save runs on its own goroutine, so a panic crashes the daemon
+clean). A panic is not an exit the save handles: no lock holder runs on a goroutine that recovers panics (the
+only `recover()` is the unlock guard below, which re-panics at once; gRPC has no recovery interceptor; the hook
+`http.Server` in `cmd/sxbd/main.go` recovers handler panics, so no lock holder may run under an `http.Handler`)
+and the save runs on its own goroutine, so a panic crashes the daemon
 and the restart resolves the record as `recovering`, like any other crash. So that a panic always reaches that
 crash instead of hanging, the shared release that `lockName` hands back (the one every lock holder uses: the save,
 `Remove`, Cancel, `AddMcpServer`, `RemoveMcpServerSecrets` and the start-up recovery routine) starts with
 `if r := recover(); r != nil { panic(r) }`: a panicking holder skips the release body entirely (it takes neither
 `m.mu` nor `stateMu`) and the crash goes ahead. Go stops a panic only when `recover()` is called directly by the
-deferred function, so the form is pinned: the release is deferred directly as `defer release()` (never wrapped in
-a function literal or called from a helper), the `recover()` is its first statement, and no deferred call
+deferred function, so the form is pinned: the release is deferred directly as `defer release()` in the function that
+holds the lock for one name (only the deferred call is pinned: never `defer func() { release() }()` or a call
+from a helper; a goroutine body such as `go func() { defer release(); ... }()` is fine), never inside a loop
+(recovery resolves each name in a per-name function, see *Recovery*), the `recover()` is its first statement, and no deferred call
 registered after it (so run before it, LIFO) takes `m.mu` or `stateMu`. Otherwise a panic while a holder has
 `m.mu` or `stateMu` (for example inside a bbolt mutate func, which takes `stateMu` alone, or recovery reading a
 malformed record left by an earlier build) would leave that lock held and the release body would block on it
@@ -243,7 +247,9 @@ daemon does not need a restart.
 goroutine, started by `NewManager`. `NewManager` does no host call: it loads the state map with every leftover
 as `recovering` and queues all of them, then returns, so daemon start never waits on `sbx`. Nothing is queued
 after start. Each attempt runs one `sbx mcp ls`, then resolves every queued name under `lockName` (re-reading
-the record under the lock; a name whose record is already gone is skipped). It is the only lock holder allowed
+the record under the lock; a name whose record is already gone is skipped). Each name is resolved in its own
+function that takes the lock, defers the release and returns, so the lock is freed before the next name and a
+later backoff attempt never waits on a lock it still holds. It is the only lock holder allowed
 to act on a leftover. The listed state of a queued name cannot change through switchboard between the list and
 the lock, because every name was queued before the first list and every other operation on it is refused
 (above). Each name is resolved as follows:
