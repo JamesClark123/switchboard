@@ -119,3 +119,33 @@ func hasString(list []string, s string) bool {
 	}
 	return false
 }
+
+// FR-421 (T048): a save announces its outcome on mcp_gateway_changed and its
+// secret stores on secrets_changed, so every other client refreshes both views.
+func TestSaveMcpServerEmitsGatewayAndSecretsEvents(t *testing.T) {
+	env := startMcpServer(t, available)
+	sub := subscribe(t, env.client, &pb.SubscribeRequest{})
+	_, err := env.client.SaveMcpServer(context.Background(), &pb.SaveMcpServerRequest{
+		Name: "gh", IsNew: true, AttachByDefault: true,
+		Definition:   &pb.McpServerDefinition{Kind: pb.McpServerKind_MCP_SERVER_KIND_REMOTE, Url: "https://x/mcp", Headers: []string{"Authorization: Bearer ${k}"}},
+		SecretValues: map[string]string{"mcp:gh:k": "v"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome *pb.McpSaveOutcome
+	var secrets bool
+	for outcome == nil || !secrets {
+		ev, err := sub.Recv()
+		if err != nil {
+			t.Fatalf("recv: %v (outcome %v, secrets %v)", err, outcome, secrets)
+		}
+		if o := ev.GetMcpGatewayChanged().GetOutcome(); o != nil {
+			outcome = o
+		}
+		secrets = secrets || ev.GetSecretsChanged() != nil
+	}
+	if outcome.GetName() != "gh" || outcome.GetState() != pb.McpSaveOutcome_REGISTERED {
+		t.Errorf("outcome = %v", outcome)
+	}
+}
