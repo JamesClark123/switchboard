@@ -218,6 +218,37 @@ func TestConvertReachesCheck(t *testing.T) {
 	}
 }
 
+// Review round 6: an empty or separators-only credential value is refused but
+// holds no literal, so Convert leaves it alone and nothing offers to convert it.
+func TestHasLiteral(t *testing.T) {
+	for _, c := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"Authorization", "", false},
+		{"Authorization", " ; ", false},
+		{"Authorization", "Bearer ;", false},
+		{"X-Api-Key", ",", false},
+		{"Cookie", ";", false},
+		{"Cookie", "a=; b=${x}", false},
+		{"Authorization", "Bearer", true},
+		{"Authorization", "Bearer sk-live", true},
+		{"Cookie", "a=,; b=${x}", true},
+	} {
+		if got := HasLiteral(c.name, c.value); got != c.want {
+			t.Errorf("HasLiteral(%q, %q) = %v, want %v", c.name, c.value, got, c.want)
+		}
+		if !c.want {
+			if nv, _, sec := Convert(c.name, c.value, nil); sec != "" || nv != strings.TrimSpace(c.value) {
+				t.Errorf("Convert(%q, %q) = %q, %q", c.name, c.value, nv, sec)
+			}
+		}
+	}
+	if err := CheckCredentialValue("Authorization", ";"); err == nil || strings.Contains(err.Error(), "convert it") {
+		t.Errorf("separators-only value = %v", err)
+	}
+}
+
 func TestReviewRegressions(t *testing.T) {
 	if _, err := NormalizeHeaders([]string{"Authorization Bearer sk_live_abc123"}); err == nil || strings.Contains(err.Error(), "sk_live") {
 		t.Errorf("no-colon header = %v", err)

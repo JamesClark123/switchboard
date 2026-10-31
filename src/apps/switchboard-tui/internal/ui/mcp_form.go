@@ -782,6 +782,11 @@ func (v mcpState) mcpConversions() []mcpConversion {
 			continue
 		}
 		onHost := host[strings.ToLower(n)] != "" && host[strings.ToLower(n)] == val
+		if !onHost && !mcprules.HasLiteral(n, val) {
+			// Empty or separators only: Convert has nothing to move, so the
+			// inline rule error stands and no offer opens.
+			continue
+		}
 		if onHost && v.declinedHost[strings.ToLower(n)] {
 			continue
 		}
@@ -900,7 +905,13 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 		if name == "" {
 			// The rule refuses the header but Convert finds nothing to move:
 			// offering it again would loop, so stop with the refusal.
-			m.mcpView.status = "error: " + c.header + " holds literal text that cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)"
+			why := c.header + " holds literal text"
+			if lines := headerLines(m.mcpView.vals.headers); c.line < len(lines) {
+				if err := mcprules.CheckCredentialValue(mcprules.SplitHeader(lines[c.line])); err != nil {
+					why = err.Error()
+				}
+			}
+			m.mcpView.status = "error: " + why + " — it cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)"
 			cmd := m.reopenForm(gMcp)
 			m.focusMcpField("headers")
 			return cmd

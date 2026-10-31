@@ -155,7 +155,7 @@ func CheckCredentialValue(name, value string) error {
 		return invalid("header %q is a credential header and %s is literal text; it must hold only ${placeholder}s (convert the literal to a secret)", name, pos)
 	}
 	if !found && !emptyCookie {
-		return invalid("header %q is a credential header and has no ${placeholder}; its value must be held as a secret (convert it)", name)
+		return invalid("header %q is a credential header and has no ${placeholder}; it must hold a ${placeholder} whose value is stored as a secret", name)
 	}
 	return nil
 }
@@ -205,6 +205,13 @@ func Convert(name, value string, used map[string]bool) (newValue, placeholder, s
 func LiteralCookie(name, value string) string {
 	_, _, _, _, cookie := convertRun(name, strings.TrimSpace(value))
 	return cookie
+}
+
+// HasLiteral reports whether value holds literal text that Convert would move
+// into a secret; an empty or separators-only value holds none.
+func HasLiteral(name, value string) bool {
+	_, _, start, _, _ := convertRun(name, strings.TrimSpace(value))
+	return start >= 0
 }
 
 // convertRun splits off a listed scheme (head) and finds the first literal run
@@ -279,13 +286,10 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 			}
 			start, end = i, i
 		}
+		// A run starts on a byte that is not a separator (trimEnd keeps it) or
+		// on a cookie's whole value (trimEnd keeps all of it), so start < end.
 		if placeholderAt(i) >= 0 || cookie && v[i] == ';' {
-			if end = trimEnd(start, end); end > start {
-				return start, end, cookieName
-			}
-			// Only separators: no literal here, so keep scanning.
-			start, cookieName = -1, ""
-			continue
+			return start, trimEnd(start, end), cookieName
 		}
 		i++
 		end = i
@@ -293,10 +297,7 @@ func literalRun(v string, cookie bool) (start, end int, cookieName string) {
 	if start < 0 {
 		return -1, -1, ""
 	}
-	if end = trimEnd(start, end); end <= start {
-		return -1, -1, ""
-	}
-	return start, end, cookieName
+	return start, trimEnd(start, end), cookieName
 }
 
 func derivePlaceholder(name string, used map[string]bool) string {

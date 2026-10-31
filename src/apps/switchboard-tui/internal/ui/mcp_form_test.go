@@ -550,6 +550,19 @@ func TestMcpConversionThatFindsNothingStops(t *testing.T) {
 	}
 }
 
+// Review round 6: an empty or separators-only credential header holds nothing
+// to convert, so no offer opens; the inline rule error explains it instead.
+func TestMcpNoConversionOfferForEmptyCredential(t *testing.T) {
+	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
+	for _, h := range []string{"Authorization:", "Authorization: ;", "X-Api-Key: ,", "Cookie: ;", "Authorization: Bearer ;"} {
+		m := openEdit(t, editModel(t, d))
+		m.mcpView.vals.headers = h
+		if convs := m.mcpView.mcpConversions(); len(convs) != 0 {
+			t.Errorf("%q: offers %+v", h, convs)
+		}
+	}
+}
+
 func TestMcpLiteralConversionOnLeave(t *testing.T) {
 	d := &fakeDaemon{mcpServers: []*pb.McpServer{linearServer()}, mcpViews: map[string]*pb.McpDefinitionView{"linear": linearView()}}
 	m := openEdit(t, editModel(t, d))
