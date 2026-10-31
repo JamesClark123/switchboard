@@ -117,7 +117,8 @@ definition. The attach-by-default mark and the server's sandbox records are unch
    and a secret whose removal failed is never kept blank by a retry (a cancel or discard tries to
    remove it and names any still left on the host for the developer to remove). Discarding the form asks for a `y`-only confirmation that names the server
    as not registered, says its attach-by-default mark and switchboard's record of it will be
-   dropped, and names any *removal failed* secrets it will remove (FR-406). If the failed add
+   dropped, and names, as ones it will remove, any *removal failed* secrets still in the host's
+   global secret list (all of them as *may be left on the host* if the list cannot be read) (FR-406). If the failed add
    finishes on the host later, the server shows as *registered by another path*: its mark and
    switchboard's record of it are dropped, and Edit shows only what the runtime reports (FR-406).
    **Given**
@@ -552,11 +553,11 @@ runtime adds it to recorded defaults).
   clear the binding and the mark. For a server switchboard has no definition of (so no *re-bind
   pending* flag can be known), a save that stores a client secret MUST clear the binding as well.
   The edit form MUST show the pending state next to the client-secret
-  field. A failed clear of the binding MUST be shown verbatim, without rolling back the
-  registration, and the server MUST keep (or get) the *client re-bind pending* mark, so a later save
-  that stores a client secret clears it again. The clear counts as success after a failed removal only
-  once the real-host run confirms the secret list shows the identity record (FR-422) and the record is
-  not listed; until then the mark stays set whenever the clear is not confirmed.
+  field. A failed clear of the binding is re-checked against the host's secret list under the same
+  lock and counts as success if the identity record is not listed (a binding that never existed, or
+  was already removed, is already cleared, so the daemon does not rely on recognising the runtime's
+  *not found* answer). Any other failure MUST be shown verbatim, without rolling back the
+  registration.
 
 ### Scopes
 
@@ -594,7 +595,7 @@ runtime adds it to recorded defaults).
   authorize, the per-server inspect, scopes read from the authorization status, removing the identity
   record) MUST be pinned by an argv-asserting test and listed in the host CLI contract as
   *documentation-derived* until it is run on a real host, together with whether the scope flags treat a
-  `,` literally (FR-417), whether the secret list shows the `:identity` record (FR-415), whether the authorization status and inspect positively report scopes and
+  `,` literally (FR-417), whether the authorization status and inspect positively report scopes and
   headers (FR-402), whether a killed `mcp add` / `mcp rm` can still complete on the host (FR-406),
   whether inspect returns header templates or resolved values (the FR-423 behaviour flag), and whether `mcp load` attaches a server to a sandbox launched in exclusive mode
   (FR-425). The new client-facing operations (the save, the cancel of a pending replace, the FR-413
@@ -814,3 +815,8 @@ runtime adds it to recorded defaults).
   it as *set* and a blank field keeps it without a warning. This keeps Cancel always available at
   the cost of a named leftover, which arises only when the removal fails on Cancel (or cannot be
   confirmed) and stays on the host until the developer removes it.
+- Known limitation (review round 15): a failed clear of the identity binding counts as done when
+  the secret list does not show the `:identity` record (FR-415). If a real host shows the list never
+  shows that record, a genuine failed clear is not reported; the runtime then refuses to authorize
+  the new client, and the developer removes `mcp:<server>:client_secret:identity` in the Secrets
+  view or the host CLI. The real-host run (FR-422, *Assumptions*) checks whether the list shows it.
