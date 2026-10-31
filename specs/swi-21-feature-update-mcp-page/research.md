@@ -647,7 +647,8 @@ The two groups are:
    client-secret field when a client ID is present. Values entered are kept by secret name across rebuilds.
 
 Pre-save checks (all client-side, then confirmations in this order, each `y`-only through `confirm.go`):
-literal-credential conversion offer (on leaving group 1, and again on save); URL/argument
+literal-credential conversion offer (on leaving group 1, and again on save; a credential header with nothing to
+convert — empty or separators only — is refused on leaving group 1 instead, focus back on the headers); URL/argument
 credential warning; FR-402 dropped settings; host-command local-execution warning (FR-407); authorization
 will be discarded (unless `UNAUTHORIZED`); FR-411 missing secrets / FR-409 removal-failed / FR-409 URL
 change must re-enter; FR-415 left-in-place warning. Then `SaveMcpServer`.

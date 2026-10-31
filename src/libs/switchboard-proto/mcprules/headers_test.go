@@ -37,6 +37,10 @@ func TestNormalizeHeaders(t *testing.T) {
 	if _, err := NormalizeHeaders([]string{"Authorization:"}); err == nil || strings.Contains(err.Error(), "sk-") {
 		t.Errorf("credential: %v", err)
 	}
+	// Review: an empty value is not redacted as if one were typed.
+	if _, err := NormalizeHeaders([]string{"Authorization:"}); err == nil || strings.Contains(err.Error(), RedactMarker) || !strings.Contains(err.Error(), `header "Authorization" must be`) {
+		t.Errorf("empty credential value: %v", err)
+	}
 }
 
 func TestPlaceholders(t *testing.T) {

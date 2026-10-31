@@ -783,8 +783,8 @@ func (v mcpState) mcpConversions() []mcpConversion {
 		}
 		onHost := host[strings.ToLower(n)] != "" && host[strings.ToLower(n)] == val
 		if !onHost && !mcprules.HasLiteral(n, val) {
-			// Empty or separators only: Convert has nothing to move, so the
-			// inline rule error stands and no offer opens.
+			// Empty or separators only: Convert has nothing to move, so no
+			// offer opens; leaveMcpDefinition refuses the header instead.
 			continue
 		}
 		if onHost && v.declinedHost[strings.ToLower(n)] {
@@ -875,9 +875,39 @@ func (m *Model) mcpChain(steps []confirmState, done, back func(m *Model) tea.Cmd
 
 // leaveMcpDefinition runs when focus leaves group 1 (R14): each literal
 // credential header gets a conversion offer, then the form is rebuilt so the
-// secrets group matches the headers, and focus lands in it.
+// secrets group matches the headers, and focus lands in it. A credential
+// header the rule still refuses (one with nothing to convert, such as an empty
+// or separators-only value) returns to the form at the headers with the
+// refusal instead.
 func (m Model) leaveMcpDefinition() (tea.Model, tea.Cmd) {
-	return m, m.mcpOfferConversions(m.mcpView.mcpConversions(), func(m *Model) tea.Cmd { return m.enterMcpSecrets() })
+	return m, m.mcpOfferConversions(m.mcpView.mcpConversions(), func(m *Model) tea.Cmd {
+		if err := m.mcpView.mcpCredentialRefusal(); err != nil {
+			m.mcpView.status = ruleMsg(err)
+			cmd := m.reopenForm(gMcp)
+			m.focusMcpField("headers")
+			return cmd
+		}
+		return m.enterMcpSecrets()
+	})
+}
+
+// mcpCredentialRefusal applies the credential header rule to the typed
+// headers, skipping on-host literals as continueMcpSave does (their refusal
+// depends on whether the save re-registers).
+func (v mcpState) mcpCredentialRefusal() error {
+	if v.vals == nil || v.vals.kind == "command" {
+		return nil
+	}
+	lines := headerLines(v.vals.headers)
+	skip := map[string]bool{}
+	host := v.literalOnHost()
+	for _, h := range lines {
+		n, val := mcprules.SplitHeader(h)
+		if r := host[strings.ToLower(n)]; r != "" && r == val {
+			skip[strings.ToLower(n)] = true
+		}
+	}
+	return mcprules.CheckCredentialHeaders(lines, skip)
 }
 
 // mcpOfferConversions offers each conversion in turn, then runs done. Declining
@@ -908,7 +938,7 @@ func (m *Model) mcpOfferConversions(convs []mcpConversion, done func(m *Model) t
 			why := c.header + " holds literal text"
 			if lines := headerLines(m.mcpView.vals.headers); c.line < len(lines) {
 				if err := mcprules.CheckCredentialValue(mcprules.SplitHeader(lines[c.line])); err != nil {
-					why = err.Error()
+					why = ruleText(err)
 				}
 			}
 			m.mcpView.status = "error: " + why + " — it cannot be converted; edit it to hold only ${placeholder}s (saving it as typed is refused)"
@@ -1028,9 +1058,14 @@ func (m Model) applyMcpForm() (tea.Model, tea.Cmd) {
 	return m, m.mcpAddCmd(v.daemon, v.host, req)
 }
 
-// ruleMsg is an mcprules error without its "invalid argument: " prefix.
+// ruleMsg is the error status for an mcprules error (see ruleText).
 func ruleMsg(err error) string {
-	return "error: " + strings.TrimPrefix(err.Error(), mcprules.ErrInvalid.Error()+": ")
+	return "error: " + ruleText(err)
+}
+
+// ruleText is a rule error's message without the "invalid argument: " prefix.
+func ruleText(err error) string {
+	return strings.TrimPrefix(err.Error(), mcprules.ErrInvalid.Error()+": ")
 }
 
 // mcpCheckRules applies the client-side rules (FR-420) that need no answer

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -559,6 +560,18 @@ func TestMcpNoConversionOfferForEmptyCredential(t *testing.T) {
 		m.mcpView.vals.headers = h
 		if convs := m.mcpView.mcpConversions(); len(convs) != 0 {
 			t.Errorf("%q: offers %+v", h, convs)
+		}
+		// Tabbing out refuses the header: no offer, focus stays at the headers.
+		name, _ := mcprules.SplitHeader(h)
+		m = leaveGroup1(t, m)
+		if m.screen != screenMcp || !m.mcpView.focusInDefinition() || !strings.Contains(m.mcpView.status, "error: header \""+name+"\"") {
+			t.Errorf("%q: leave: screen %v focus-in-def %v status %q", h, m.screen, m.mcpView.focusInDefinition(), m.mcpView.status)
+		}
+		if f := m.mcpView.form.GetFocusedField(); f == nil || f.GetKey() != "headers" {
+			t.Errorf("%q: focus not on headers", h)
+		}
+		if strings.Contains(m.mcpView.status, "invalid argument") {
+			t.Errorf("%q: status keeps the rule prefix: %q", h, m.mcpView.status)
 		}
 	}
 }

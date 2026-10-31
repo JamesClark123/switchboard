@@ -493,7 +493,9 @@ the value, save, and check the Secrets view lists `mcp:<server>:api-key`.
   refusal. A header that still equals the view's redacted `LITERAL_ON_HOST` value is converted to the template
   **without** moving `••••` into the secret: the new field stays blank and `missing`, with `re-enter the
   credential (held on the host)`. Declining for such a header continues into group 2 with the warning, so
-  secrets- and mark-only saves stay reachable (research R14). Tests: converting `Bearer ••••` leaves the secret
+  secrets- and mark-only saves stay reachable (research R14). A credential header the rule refuses with nothing
+  to convert (empty or separators only, e.g. `Authorization:`, `Cookie: ;`) gets no offer: leaving group 1
+  returns to the headers with the rule's refusal (on-host literals skipped, as on save). Tests: converting `Bearer ••••` leaves the secret
   field blank; declining it reaches group 2. URL/argument credential warning (US2 #10) as a `y`-only confirm. A save that would re-register
   while a `LITERAL_ON_HOST` header is unconverted is refused; a mark- or secrets-only save is allowed and
   keeps the warning. Tests.

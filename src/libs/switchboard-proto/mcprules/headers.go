@@ -35,11 +35,12 @@ func invalid(format string, a ...any) error {
 // quoteHeader is the safe way to quote a whole header in a message: a
 // credential header's value is redacted.
 func quoteHeader(name, value string) string {
+	if value == "" {
+		// Nothing to redact: a marker would suggest a value was typed.
+		return fmt.Sprintf("%q", name)
+	}
 	if IsCredentialHeader(name) {
 		value = Redact(value)
-	}
-	if value == "" {
-		return fmt.Sprintf("%q", name)
 	}
 	return fmt.Sprintf("%q", name+": "+value)
 }
