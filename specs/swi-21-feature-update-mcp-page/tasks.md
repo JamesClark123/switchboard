@@ -223,12 +223,14 @@ unchanged.
   one `UpdateMcpSettings` call before `removeStep` of any registration change. It changes nothing else: the
   mark stays in `marks` (or in the Retry's pending replace) and the pending replace is untouched. `persist`
   deletes it in the same write as the outcome; a failed `persist` write is retried up to 3 times (1 s apart, own
-  contexts), and if it still fails the save marks the name `recovering`, queues it for recovery and returns
-  `UNAVAILABLE`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
+  contexts), and if it still fails the save returns `UNAVAILABLE`, emits `secrets_changed` (if a store ran)
+  and one `mcp_gateway_changed` without an outcome, then keeps the lock and retries the **same** computed write
+  every 30 s on the daemon context until it lands (then the usual outcome event, then unlock) or the daemon
+  stops (then the record is a start-up leftover). It never hands the name to `recoverLoop`. `Save`, Cancel, `Remove`, FR-413 removals and `AddMcpServer` that find a record under the lock
   refuse `UNVERIFIED` with no change (it can only be a leftover); `SetDefault` (`SetMcpServerDefault`) refuses
   while the state map shows `saving` (`BEING_REPLACED`) or `recovering` (`UNVERIFIED`). `NewManager` makes **no**
   host call: it loads the state map with every record as `recovering`, queues them, and starts the one
-  `recoverLoop` goroutine. Each attempt runs one `sbx mcp ls`, then resolves each queued name under `lockName`
+  `recoverLoop` goroutine (start-up leftovers only; nothing is queued later). Each attempt runs one `sbx mcp ls`, then resolves each queued name under `lockName`
   (record re-read under the lock; gone ⇒ skipped): not listed ⇒ replace: new pending replace (mark moved out of
   `marks`, error `daemon stopped during the save`, planned-created names as `removal_failed_secrets`, overwritten
   names in the error); Retry: its pending replace kept and updated as a failed Retry (`previous`,
@@ -249,8 +251,12 @@ unchanged.
   reports the name `recovering`. A list failure keeps the record; a `Save`, an old-client `AddMcpServer` and a
   `SetMcpServerDefault` of that name are refused `UNVERIFIED`; the retry loop resolves it once the list
   succeeds. `persist` fails once ⇒ the retry succeeds and the outcome is normal; `persist` fails 3 times ⇒
-  `UNAVAILABLE`, the name reports `recovering`, and once the registry accepts writes the record is resolved
-  and the name is usable again with no restart. The recovered error names `planned_overwritten_secrets`.
+  `UNAVAILABLE` with both events, the name reports `save_in_progress`, `SetMcpServerDefault` is refused
+  `BEING_REPLACED`, and once the registry accepts writes the save's own outcome is recorded with no restart:
+  for a successful replace the recorded definition is the **new** one and no `rebind_pending` is set; for a
+  confirmed client change no `rebind_pending`; for a failed add the pending replace carries the real add error
+  and only the rollback's actual `removal_failed_secrets`. The recovered error (start-up leftover) names
+  `planned_overwritten_secrets`.
 - [ ] T023 [US1] `G/mcp_rpcs.go`: handlers for `GetMcpServerDefinition` and `CancelMcpPendingReplace`; and
   `ListMcpServers` returns `pending_replaces`. Tests in `G/mcp_rpcs_test.go`.
 - [ ] T024 [US1] FR-425 launch skip (research R12): `ResolveAttach` returns `BeingReplaced` (marked names
@@ -293,12 +299,17 @@ unchanged.
   gone" note for previous); `X` opens the `y`-only Cancel confirm naming the server as not registered, the
   dropped mark and record, and the secrets it will remove (or *may be left on the host*). Rows show `rebind
   pending`, `saving…` (`save_in_progress`) and `recovering interrupted save` (`recovering`); `e` on a
-  `recovering` row shows that status instead of opening the form. Help bindings updated. Tests.
+  `recovering` row shows that status instead of opening the form, and `m`/`space` on a `saving…` or
+  `recovering` row shows that status without calling `SetMcpServerDefault`. Help bindings updated. Tests,
+  including the `m` toggle on both row states (no RPC sent).
 - [ ] T028 [US1] `UI/mcp_form.go` save sequence: client rules → confirmations in the contract's order, each
   `y`-only through `confirm.go` with back-out reopening the form: dropped settings (FR-402), local execution
   for any resulting host-command definition (FR-407), authorization will be discarded (FR-404). Then
   `SaveMcpServer` with the fingerprint, `confirm_*` and `acknowledge_local_execution` set. Kind change clears
-  the remote-only fields with a status line. Tests for each confirm and its back-out.
+  the remote-only fields with a status line. `UNVERIFIED` shows the refusal's own message, keeps the form and
+  re-lists; `UNAVAILABLE` closes the form with the message, and the row shows `saving…` until the next
+  `mcp_gateway_changed` (contracts/mcp-form-ui.md). Tests for each confirm and its back-out, for `UNVERIFIED`
+  with each of its two messages, and for `UNAVAILABLE`.
 - [ ] T029 [US1] Outcome panel and follow-ups in `UI/mcp.go`: render `McpSaveOutcome` (state line, host
   messages verbatim, secret lists, FR-419 list with the skipped and exclusive notes), then the FR-405
   authorize offer after a successful replace of a remote server. On `STILL_REGISTERED`/`NOT_REGISTERED` the

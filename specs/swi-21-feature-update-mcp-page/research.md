@@ -120,27 +120,39 @@ protections above. They differ only in what the developer is told: `save_in_prog
 client") vs `recovering` ("recovering an interrupted save").
 
 **Leftover records**: a running save writes and deletes its in-progress record while it holds the per-name
-lock (R3). So an in-progress record seen **by a holder of that lock** is always a leftover (of an earlier daemon
-run, or of a `persist` that failed), never a live save's. That gives one simple rule: **every** operation that
+lock (R3), including while it retries a failed `persist` (below). So an in-progress record seen **by a holder
+of that lock** is always a leftover of an earlier daemon run, never a live save's. That gives one simple rule: **every** operation that
 takes the lock and finds an in-progress record refuses with `UNVERIFIED` ("recovering an interrupted save; try
 again") and changes nothing. The lock takers are `Save`, Cancel, `Remove`, FR-413 removals and the old-client
 `AddMcpServer`. `SetMcpServerDefault` (the existing mark RPC) takes no lock, so it reads the state map instead:
-while the name is `saving` or `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED` /
-`UNVERIFIED`) and changes nothing. So `marks` never changes under an in-progress record, and recovery always
-applies the record's own copy of the mark. Only the recovery routine resolves a record.
+while the name is `saving` or `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED`,
+message "being saved on another client; try again" / `UNVERIFIED`, message "recovering an interrupted save; try
+again") and changes nothing. So `marks` never changes under an in-progress record, and recovery always applies
+the record's own copy of the mark. Only the save that wrote a record, or the recovery routine for a leftover,
+deletes it. This refusal is a deliberate change to an existing RPC (proto delta *Compatibility*): an older TUI
+shows the status message on its usual error line. The new TUI does not send the toggle for such a row
+(contracts/mcp-form-ui.md).
 
 **Failed `persist`**: step 10 retries its write up to 3 times (1 s apart, each on its own context). If every
-attempt fails, the save still knows the record is its own: it marks the name `recovering` in the state map, hands
-it to the recovery routine, releases the lock and returns `UNAVAILABLE` ("the host was changed but the result
-could not be recorded; recovering"). The daemon does not need a restart.
+attempt fails, the save returns `UNAVAILABLE` ("the host was changed but the result could not be recorded yet;
+retrying") and emits `secrets_changed` (if any store ran) and one `mcp_gateway_changed` without an outcome, so
+other clients re-list. It does **not** hand the name to recovery. It keeps the lock and keeps retrying **the
+same write** (the outcome it computed, with the in-progress record deleted) every 30 s on the daemon's
+context, until it succeeds or the daemon stops. The name stays `saving` meanwhile, with every protection
+above; other lock takers wait for the lock as they wait for any save (R3). On success it emits the usual
+`mcp_gateway_changed` with the outcome, then releases the lock. The recorded result is the one the save
+knows (new definition, identity-clear result, the add's real error and rollback results), never an `ls`-based
+guess. If the daemon stops first, the record is a leftover and start-up recovery resolves it like a crash. The
+daemon does not need a restart.
 
-**Recovery** is one routine on one goroutine, started by `NewManager`. `NewManager` does no host call: it loads
-the state map with every leftover as `recovering` and queues all of them, then returns, so daemon start never
-waits on `sbx`. A failed `persist` queues its name the same way at runtime. Each attempt runs one `sbx mcp ls`,
-then resolves every queued name under `lockName` (re-reading the record under the lock; a name whose record is
-already gone is skipped). It is the only lock holder allowed to act on a record. The listed state of a queued
-name cannot change through switchboard between the list and the lock, because every other operation on it is
-refused (above). Each name is resolved as follows:
+**Recovery** is for start-up leftovers only (no outcome is known for them). It is one routine on one
+goroutine, started by `NewManager`. `NewManager` does no host call: it loads the state map with every leftover
+as `recovering` and queues all of them, then returns, so daemon start never waits on `sbx`. Nothing is queued
+after start. Each attempt runs one `sbx mcp ls`, then resolves every queued name under `lockName` (re-reading
+the record under the lock; a name whose record is already gone is skipped). It is the only lock holder allowed
+to act on a leftover. The listed state of a queued name cannot change through switchboard between the list and
+the lock, because every name was queued before the first list and every other operation on it is refused
+(above). Each name is resolved as follows:
 
 - **Name not listed** (the exit came after `rm`, and before the add finished):
   - a replace ⇒ it becomes a normal pending replace: the mark moves out of `marks` into it, `definition` and
@@ -176,6 +188,7 @@ refused (above). Each name is resolved as follows:
 Every recovery logs `mcp: <name>: recovered interrupted save (<result>)`, clears `recovering` in the state map
 and emits one `mcp_gateway_changed`. The routine stops with the daemon; anything still queued is found again at
 the next start.
+
 Secrets the save **overwrote** cannot be restored after a crash, because the old value is gone. The recovered
 pending replace's error names them from `planned_overwritten_secrets` (the listed case logs them). Shutdown
 does not wait for in-flight saves: recovery covers every exit point the same way, including a crash, which a

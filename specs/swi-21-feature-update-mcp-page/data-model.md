@@ -85,8 +85,10 @@ and deleted by its `persist`. Separate from `pending_replaces`, so it never over
 ```text
 (registration change, under the lock, before rm/add) ──► SAVING
 SAVING ──save persists──► (gone; the outcome is persisted in the same write)
-SAVING ──persist fails 3 times──► RECOVERING (queued for the recovery routine; the save returns UNAVAILABLE)
-SAVING ──daemon exits──► RECOVERING (NewManager loads every record as recovering and queues it; no host call)
+SAVING ──persist fails 3 times──► SAVING (the save returns UNAVAILABLE, keeps the lock and retries its own
+                                  computed outcome every 30 s; on success the record is gone as above)
+SAVING ──daemon exits──► RECOVERING (NewManager loads every record as recovering and queues it; no host call;
+                         the only way into RECOVERING)
 RECOVERING ──recovery, name not listed──► (gone) replace: new PENDING, planned-created names = removal_failed;
                                           Retry: its PENDING updated as a failed Retry; new server: names removed best effort
 RECOVERING ──recovery, name listed──► (gone) replace: mark + previous kept; new server/Retry: definition + mark live,
@@ -99,7 +101,8 @@ RECOVERING ──list or registry write fails──► RECOVERING (the routine r
 the same in both.
 
 Invariants: S1 a lock holder (`Save`, Cancel, `Remove`, FR-413 removals, `AddMcpServer`) that finds one refuses
-with `UNVERIFIED` (it can only be a leftover); only the recovery routine resolves it. S2 while it exists the name
+with `UNVERIFIED` (it can only be a leftover); only the save that wrote it, or the recovery routine for a
+leftover, deletes it. S2 while it exists the name
 is kept by `reconcile`, refused by `Authorize` and by `SetMcpServerDefault` (so `marks` never changes under it),
 skipped at launch while marked, and reported by `List` as `save_in_progress` (SAVING) or `recovering`
 (RECOVERING).

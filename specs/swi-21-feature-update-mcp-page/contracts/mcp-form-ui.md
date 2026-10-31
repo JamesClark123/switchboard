@@ -13,12 +13,13 @@ daemon advertises the `mcp-edit` capability (research R15); otherwise the view i
 | `S` | remote server | Authorize with scopes…: one line of space-separated scopes, or `ctrl+n` *no scopes*; note: "requested exactly as given; no refresh-token scope is added" | FR-418 |
 | `R` | pending-replace row | Retry: choose `h` held definition / `p` previous definition, then the form | FR-426 |
 | `X` | pending-replace row | Cancel: `y`-only confirm | FR-426 |
-| `d`, `space`, `m`, `r` | unchanged | | |
+| `space`, `m` | registered server | Toggle the mark (unchanged), except on a `saving…` or `recovering interrupted save` row: shows that status and does not call `SetMcpServerDefault` | FR-425 |
+| `d`, `r` | unchanged | | |
 
 Rows: a registered server shows `rebind pending` in its status column when marked, `saving…` while another
 client's save of it runs (`save_in_progress`), and `recovering interrupted save` while a leftover in-progress
-record waits for recovery (`recovering`; Edit, Remove, Authorize and the mark toggle are refused until it
-clears, so `e` shows the status instead of opening the form). A pending replace shows
+record from before a daemon restart waits for recovery (`recovering`; Edit, Remove, Authorize and the mark
+toggle are refused until it clears, so `e` shows the status instead of opening the form). A pending replace shows
 `<server> — not registered (replace failed <age> ago)`. The orchestrator per-worker servers stay hidden.
 
 ## Form
@@ -61,8 +62,13 @@ template **without** moving the redacted text: the new secret field stays blank 
 `literal credential on host` warning, so a secrets-only or mark-only save is still possible. Only a save that
 would re-register is blocked.
 
-A save refused `UNVERIFIED` shows "couldn't read the server from the host; try again" and keeps the form as it
-was (no reload).
+A save refused `UNVERIFIED` shows the refusal's `message` as sent by the daemon ("couldn't read the server
+from the host; try again", or "recovering an interrupted save; try again" for a leftover), keeps the form as it
+was (no reload) and re-lists the servers, so a leftover's row shows `recovering interrupted save`.
+
+A save that fails `UNAVAILABLE` (the host was changed, but the daemon has not recorded the result yet and keeps
+retrying the write) closes the form, because saving again is pointless, and shows the message as a status line.
+The row shows `saving…` until the daemon records the result and emits `mcp_gateway_changed`.
 
 ## Save sequence
 

@@ -1,7 +1,7 @@
 # Proto delta: SWI-21 (additive to `src/libs/switchboard-proto/proto/switchboard.proto`)
 
 Every change is additive. Older clients keep working: they never send the new fields, and the old RPCs keep
-their behaviour (FR-422). No `NotificationKind` is added. `AddMcpServer` in particular keeps today's header
+their behaviour (FR-422), with one deliberate exception (*Compatibility* below). No `NotificationKind` is added. `AddMcpServer` in particular keeps today's header
 validation: the broader `mcprules.CheckCredentialValue` rule applies only on `SaveMcpServer` (research R2).
 The definition `AddMcpServer` records holds any literal it flags redacted, with the name in `literal_on_host`.
 
@@ -49,7 +49,7 @@ message McpPendingReplace {
 }
 
 // Crash safety (research R2): written by a registration change under the per-name lock before its
-// first host mutation, deleted by its persist. Leftovers (an earlier daemon run, or a persist that failed)
+// first host mutation, deleted by its persist. Leftovers (from an earlier daemon run)
 // are resolved only by the manager's recovery routine.
 // Never sent to clients. Kept apart from McpPendingReplace so a Retry's pending replace is untouched.
 message McpSaveInProgress {
@@ -194,8 +194,8 @@ carries pending replaces in field 3; definitions only travel through `GetMcpServ
 | Fingerprint differs | `FAILED_PRECONDITION` | `McpSaveRefusal{STALE_CHANGED \| STALE_RESTARTED}` |
 | Fingerprint re-read failed (`ls`/`inspect`/`auth status`) | `FAILED_PRECONDITION` | `UNVERIFIED` (retryable; the form is not reloaded) |
 | Leftover in-progress record not yet recovered (research R2), on `SaveMcpServer`, Cancel, `RemoveMcpServer`, `RemoveMcpServerSecrets`, `AddMcpServer` or `SetMcpServerDefault` | `FAILED_PRECONDITION` | `UNVERIFIED` ("recovering an interrupted save; try again") |
-| `SetMcpServerDefault` while a live save holds an in-progress record | `FAILED_PRECONDITION` | `BEING_REPLACED` |
-| Runtime `persist` failed after 3 attempts (the host was changed) | `UNAVAILABLE` | message "the host was changed but the result could not be recorded; recovering" (no refusal detail) |
+| `SetMcpServerDefault` while a live save holds an in-progress record | `FAILED_PRECONDITION` | `BEING_REPLACED` ("being saved on another client; try again") |
+| Runtime `persist` failed after 3 attempts (the host was changed; the daemon keeps retrying the same write) | `UNAVAILABLE` | message "the host was changed but the result could not be recorded yet; retrying" (no refusal detail) |
 | Empty `secret_values` entry, or one containing `••••` | `INVALID_ARGUMENT` | message names the secret, never the value |
 | Retry of an ended pending replace | `FAILED_PRECONDITION` | `PENDING_ENDED` |
 | Retry pre-step removal still listed | `FAILED_PRECONDITION` | `PENDING_REMOVAL_FAILED` |
@@ -213,6 +213,15 @@ redacted value counts as unchanged (research R2) and is accepted only on a save 
 `RESOLVED_UNCHECKABLE` header carries the record's template and is accepted on any save (FR-423).
 
 Error messages never quote a credential header's value (research R1).
+
+## Compatibility
+
+The one behaviour change to an existing RPC: `SetMcpServerDefault` on a name that another client is saving
+(`saving`) or that has a leftover in-progress record (`recovering`) is refused with `FAILED_PRECONDITION` and
+changes nothing (research R2 *Leftover records*), for up to `saveTimeout` while a save runs. An older TUI has
+no refusal handling, so its `m`/`space` toggle shows the status message on its usual error line: "being saved
+on another client; try again" or "recovering an interrupted save; try again". This is deliberate: a mark
+changed under an in-progress record would be overwritten by that save's `persist` or by recovery.
 
 Secret values: `SaveMcpServerRequest.secret_values` is excluded from every log line; the gRPC logging
 interceptor (if any) must not print the request; tests assert no value reaches argv, logs or errors.
