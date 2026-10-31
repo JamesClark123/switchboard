@@ -685,7 +685,8 @@ func (m Model) advanceMcpForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	cmds := []tea.Cmd{cmd}
-	if v.vals.mode == mcpModeAdd && strings.TrimSpace(v.vals.name) != prevName {
+	if name := strings.TrimSpace(v.vals.name); v.vals.mode == mcpModeAdd && name != prevName {
+		v.renameSecrets(prevName, name)
 		cmds = append(cmds, m.mcpForAddCmd())
 	}
 	if prevKind != "command" && v.vals.kind == "command" {
@@ -1188,7 +1189,7 @@ func (m *Model) sendMcpSave(req *pb.SaveMcpServerRequest) tea.Cmd {
 	v.status = "saving " + req.GetName() + "…"
 	d, host := v.daemon, v.host
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), mcpOpTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), mcpSaveTimeout)
 		defer cancel()
 		out, err := d.SaveMcpServer(ctx, req)
 		return mcpSaveMsg{host: host, name: req.GetName(), outcome: out, err: err}
@@ -1401,4 +1402,21 @@ func (m Model) reloadMcpForm(msg mcpDefMsg) (tea.Model, tea.Cmd) {
 	v.baseline = mcpSnapshot{vals: rereadVals, secrets: map[string]string{}}
 	cmd := m.reopenForm(gMcp)
 	return m, cmd
+}
+
+// renameSecrets moves typed secret values to the new server name in add mode,
+// so a value typed (or converted) before the name was set or changed is kept.
+func (v *mcpState) renameSecrets(from, to string) {
+	oldPrefix, newPrefix := mcprules.SecretPrefix(from), mcprules.SecretPrefix(to)
+	for name, p := range v.secretVals {
+		rest, ok := strings.CutPrefix(name, oldPrefix)
+		if !ok || p == nil || *p == "" {
+			continue
+		}
+		if q := v.secretVals[newPrefix+rest]; q != nil && *q != "" {
+			continue
+		}
+		delete(v.secretVals, name)
+		v.secretVals[newPrefix+rest] = p
+	}
 }

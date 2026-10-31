@@ -34,6 +34,7 @@ import (
 // Client-side bounds (package constants, never env vars; research R11).
 const (
 	mcpOpTimeout   = 2 * time.Minute                 // register / remove / marks / mode
+	mcpSaveTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute save bound plus slack
 	mcpAuthTimeout = 10*time.Minute + 30*time.Second // the daemon's 10-minute wait plus slack
 )
 
@@ -745,8 +746,13 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome) []confirmState {
 			onConfirm: m.mcpRemoveSecretsCmd(name, unused),
 		})
 	}
-	if out.GetState() == pb.McpSaveOutcome_REGISTERED && out.GetServer().GetKind() != pb.McpServerKind_MCP_SERVER_KIND_LOCAL &&
-		(out.GetReplaced() || out.GetServer() != nil) {
+	// The row is best effort (nil when the daemon's re-list failed); the saved
+	// form's kind decides then, so a host command is never offered authorization.
+	remote := out.GetServer().GetKind() == pb.McpServerKind_MCP_SERVER_KIND_REMOTE
+	if out.GetServer() == nil {
+		remote = m.mcpView.vals != nil && m.mcpView.vals.kind == "remote"
+	}
+	if out.GetState() == pb.McpSaveOutcome_REGISTERED && remote {
 		st := confirmState{
 			title:  "Authorize " + name + " now?",
 			body:   []string{selectedStyle.Render(name) + " was registered without authorization."},

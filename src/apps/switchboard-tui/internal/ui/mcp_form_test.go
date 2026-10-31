@@ -1164,3 +1164,36 @@ func TestMcpFormDescriptionFlagsAndEditFormKeymap(t *testing.T) {
 		t.Error("fresh form")
 	}
 }
+
+// A replaced host command whose outcome row is missing (the daemon's re-list
+// failed) is never offered authorization; a remote one still is.
+func TestMcpAuthorizeOfferWithoutOutcomeRow(t *testing.T) {
+	m := editModel(t, &fakeDaemon{})
+	out := &pb.McpSaveOutcome{Name: "pw", State: pb.McpSaveOutcome_REGISTERED, Replaced: true}
+	for kind, want := range map[string]bool{"command": false, "remote": true} {
+		m.mcpView.vals = &mcpFormVals{name: "pw", kind: kind}
+		offered := false
+		for _, st := range m.mcpFollowups(out) {
+			offered = offered || strings.HasPrefix(st.title, "Authorize")
+		}
+		if offered != want {
+			t.Errorf("%s: offered = %v", kind, offered)
+		}
+	}
+}
+
+// A secret typed before the add form's name is set follows the name.
+func TestMcpAddRenameKeepsTypedSecrets(t *testing.T) {
+	v := &mcpState{}
+	*v.secretPtr("mcp::authorization") = "sk-123"
+	*v.secretPtr("mcp:keep:x") = "other"
+	v.renameSecrets("", "notion")
+	if v.secretValue("mcp:notion:authorization") != "sk-123" || v.secretValue("mcp::authorization") != "" || v.secretValue("mcp:keep:x") != "other" {
+		t.Errorf("secrets = %v", v.secretVals)
+	}
+	*v.secretPtr("mcp:linear:authorization") = "typed"
+	v.renameSecrets("notion", "linear")
+	if v.secretValue("mcp:linear:authorization") != "typed" {
+		t.Error("an already-typed value under the new name is kept")
+	}
+}

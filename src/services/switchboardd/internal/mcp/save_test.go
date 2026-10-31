@@ -810,3 +810,15 @@ func TestSaveInProgressWriteFailureEndsTheReplace(t *testing.T) {
 		t.Errorf("argv %v state %v hooks %v", e.argv(), e.m.ReplaceState("gh"), e.endedHooks())
 	}
 }
+
+// An authorization after the form opened makes the save stale (reloaded with
+// the new auth state) rather than confirm-required with no way to confirm.
+func TestSaveStaleAfterAuthorizationElsewhere(t *testing.T) {
+	e := newSaveEnv(t)
+	e.add("gh", remote("https://x/mcp"), false, nil)
+	v := e.open("gh")
+	e.write("gh.auth", `[{"server_name":"gh","status":"authorized"}]`)
+	if _, err := e.edit(v, remote("https://y/mcp"), false, nil, func(r *pb.SaveMcpServerRequest) { r.ConfirmDiscardAuthorization = false }); refusalReason(err) != pb.McpSaveRefusal_STALE_CHANGED {
+		t.Errorf("err = %v", err)
+	}
+}
