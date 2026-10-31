@@ -124,23 +124,34 @@ lock (R3), including while it retries a failed `persist` (below). So an in-progr
 of that lock** is always a leftover of an earlier daemon run, never a live save's. That gives one simple rule: **every** operation that
 takes the lock and finds an in-progress record refuses with `UNVERIFIED` ("recovering an interrupted save; try
 again") and changes nothing. The lock takers are `Save`, Cancel, `Remove`, FR-413 removals and the old-client
-`AddMcpServer`. `SetMcpServerDefault` (the existing mark RPC) takes no lock, so it reads the state map instead:
-while the name is `saving` or `recovering` it refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED`,
-message "being saved on another client; try again" / `UNVERIFIED`, message "recovering an interrupted save; try
-again") and changes nothing. So `marks` never changes under an in-progress record, and recovery always applies
+`AddMcpServer`. They **never wait for a `saving` name**: before waiting for the lock, each checks the state map
+(R12) in the same `m.mu` hold that would register it as a waiter, and while the name is `saving` it refuses at
+once with `FAILED_PRECONDITION` (`BEING_REPLACED`, message "being saved on another client; try again") and
+changes nothing. A taker that started waiting before the name became `saving` (the short window between a save
+taking the lock and writing its record) is bounded by its own RPC context, as today. `SetMcpServerDefault` (the
+existing mark RPC) takes no lock, so it only reads the state map: while the name is `saving` or `recovering` it
+refuses with the same `FAILED_PRECONDITION` (`BEING_REPLACED` as above / `UNVERIFIED`, message "recovering an
+interrupted save; try again") and changes nothing. So `marks` never changes under an in-progress record, and recovery always applies
 the record's own copy of the mark. Only the save that wrote a record, or the recovery routine for a leftover,
 deletes it. This refusal is a deliberate change to an existing RPC (proto delta *Compatibility*): an older TUI
 shows the status message on its usual error line. The new TUI does not send the toggle for such a row
 (contracts/mcp-form-ui.md).
 
-**Failed `persist`**: step 10 retries its write up to 3 times (1 s apart, each on its own context). If every
-attempt fails, the save returns `UNAVAILABLE` ("the host was changed but the result could not be recorded yet;
+**Failed `persist`**: step 10's write is a **per-name mutate func**, built once from the save's outcome. It
+touches only `definitions[name]`, `marks[name]`, `pending_replaces[name]` and `saves_in_progress[name]`, and
+every attempt re-applies it to the record read in that attempt's own `UpdateMcpSettings` transaction. It is never
+a stored `McpGatewaySettings` snapshot, so an attempt never reverts another name's change made in between. Step 10
+retries the write up to 3 times (1 s apart, each on its own context). If every attempt fails, the save returns `UNAVAILABLE` ("the host was changed but the result could not be recorded yet;
 retrying") and emits `secrets_changed` (if any store ran) and one `mcp_gateway_changed` without an outcome, so
-other clients re-list. It does **not** hand the name to recovery. It keeps the lock and keeps retrying **the
-same write** (the outcome it computed, with the in-progress record deleted) every 30 s on the daemon's
-context, until it succeeds or the daemon stops. The name stays `saving` meanwhile, with every protection
-above; other lock takers wait for the lock as they wait for any save (R3). On success it emits the usual
-`mcp_gateway_changed` with the outcome, then releases the lock. The recorded result is the one the save
+other clients re-list. It does **not** hand the name to recovery. It keeps the lock and re-runs **the same
+mutate func** every 30 s on the daemon's context, until a write lands or the daemon stops. The name stays
+`saving` meanwhile, with every protection above, and every other lock taker is refused at once instead of
+waiting (above), so nothing queues on the lock however long this lasts. Everything that follows a normal
+`persist` (the post-`persist` tail) runs **only after the write lands**, and the retry path reuses that same
+tail: the state-map update (`saving` cleared, `pending` set for a `NOT_REGISTERED` replace), `onReplaceEnded`
+where the normal path calls it (R12), the `mcp_gateway_changed` with the outcome, then unlock and the generation
+bump. Returning `UNAVAILABLE` runs none of it, so the sweep, `Authorize` and `ResolveAttach` see the same state
+as the record. The recorded result is the one the save
 knows (new definition, identity-clear result, the add's real error and rollback results), never an `ls`-based
 guess. If the daemon stops first, the record is a leftover and start-up recovery resolves it like a crash. The
 daemon does not need a restart.
@@ -247,7 +258,8 @@ value holding the marker can only be a redacted view value copied into a secret.
 
 **Decision**: `Manager.mu` (already guarding `inflight`) also guards `busy map[string]*nameLock`, where
 `nameLock` is a 1-slot channel semaphore plus a waiter count. `lockName(ctx, name)` takes it (waiting is
-allowed for saves, adds, removes and FR-413 removals; serialised, FR-404). Before taking it a caller whose
+allowed for saves, adds, removes and FR-413 removals; serialised, FR-404), except that no caller waits while
+the name is `saving`: it is refused at once with `BEING_REPLACED` (R2 *Leftover records*). Before taking it a caller whose
 **request alone** shows it touches `client_secret`/`:identity` or removes the registration (`Remove`, an
 FR-413 removal of those names, a request carrying `mcp:<s>:client_secret`) checks `inflight[name]` under `m.mu`
 and fails with `ErrAuthInProgress` (FR-424 refusals). `Authorize` checks, under the same `m.mu` hold, that no

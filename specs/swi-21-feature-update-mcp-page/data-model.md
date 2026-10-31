@@ -85,8 +85,9 @@ and deleted by its `persist`. Separate from `pending_replaces`, so it never over
 ```text
 (registration change, under the lock, before rm/add) ──► SAVING
 SAVING ──save persists──► (gone; the outcome is persisted in the same write)
-SAVING ──persist fails 3 times──► SAVING (the save returns UNAVAILABLE, keeps the lock and retries its own
-                                  computed outcome every 30 s; on success the record is gone as above)
+SAVING ──persist fails 3 times──► SAVING (the save returns UNAVAILABLE, keeps the lock and re-runs its own
+                                  per-name mutate func every 30 s; other lock takers are refused at once;
+                                  on success the record is gone and the post-persist tail runs, as above)
 SAVING ──daemon exits──► RECOVERING (NewManager loads every record as recovering and queues it; no host call;
                          the only way into RECOVERING)
 RECOVERING ──recovery, name not listed──► (gone) replace: new PENDING, planned-created names = removal_failed;

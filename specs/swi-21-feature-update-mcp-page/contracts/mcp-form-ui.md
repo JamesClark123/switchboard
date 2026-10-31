@@ -19,7 +19,9 @@ daemon advertises the `mcp-edit` capability (research R15); otherwise the view i
 Rows: a registered server shows `rebind pending` in its status column when marked, `saving…` while another
 client's save of it runs (`save_in_progress`), and `recovering interrupted save` while a leftover in-progress
 record from before a daemon restart waits for recovery (`recovering`; Edit, Remove, Authorize and the mark
-toggle are refused until it clears, so `e` shows the status instead of opening the form). A pending replace shows
+toggle are refused until it clears, so `e` shows the status instead of opening the form). `d`, `e`, `R` and `X` on a
+`saving…` row send their request as usual; the daemon refuses it at once (`BEING_REPLACED`) and the TUI shows the
+message on the status line. A pending replace shows
 `<server> — not registered (replace failed <age> ago)`. The orchestrator per-worker servers stay hidden.
 
 ## Form
@@ -68,7 +70,11 @@ was (no reload) and re-lists the servers, so a leftover's row shows `recovering 
 
 A save that fails `UNAVAILABLE` (the host was changed, but the daemon has not recorded the result yet and keeps
 retrying the write) closes the form, because saving again is pointless, and shows the message as a status line.
-The row shows `saving…` until the daemon records the result and emits `mcp_gateway_changed`.
+The row shows `saving…` until the daemon records the result and emits `mcp_gateway_changed`; the view then
+re-lists. The TUI does **not** open the outcome panel or its follow-up offers (FR-405 authorize, FR-413
+removal) for this save when the result lands later. This is a deliberate scope cut for a rare registry failure:
+the result shows on the row (`registered`, `rebind pending`, or a pending-replace row with Retry/Cancel), and
+Authorize and the Secrets view stay available from the gateway view.
 
 ## Save sequence
 

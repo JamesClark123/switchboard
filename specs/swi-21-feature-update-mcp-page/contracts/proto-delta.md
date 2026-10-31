@@ -218,7 +218,10 @@ Error messages never quote a credential header's value (research R1).
 
 The one behaviour change to an existing RPC: `SetMcpServerDefault` on a name that another client is saving
 (`saving`) or that has a leftover in-progress record (`recovering`) is refused with `FAILED_PRECONDITION` and
-changes nothing (research R2 *Leftover records*), for up to `saveTimeout` while a save runs. An older TUI has
+changes nothing (research R2 *Leftover records*), until the save's result is recorded (normally within
+`saveTimeout`; longer only while a failed `persist` is retried, research R2 *Failed `persist`*). `AddMcpServer`
+and `RemoveMcpServer` of a `saving` name are likewise refused at once with `BEING_REPLACED` instead of waiting
+for the lock; a name is `saving` only while a new client's `SaveMcpServer` runs. An older TUI has
 no refusal handling, so its `m`/`space` toggle shows the status message on its usual error line: "being saved
 on another client; try again" or "recovering an interrupted save; try again". This is deliberate: a mark
 changed under an in-progress record would be overwritten by that save's `persist` or by recovery.
