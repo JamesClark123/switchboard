@@ -53,9 +53,7 @@ func (m *Manager) readHost(ctx context.Context, name string, listOnly bool) *hos
 	hr := &hostRead{auth: pb.McpAuthState_MCP_AUTH_STATE_UNKNOWN}
 	var inspectOut, authOut string
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	list := func() {
 		rows, err := m.listRows(rctx)
 		hr.lsErr = err
 		for i := range rows {
@@ -63,12 +61,16 @@ func (m *Manager) readHost(ctx context.Context, name string, listOnly bool) *hos
 				hr.row = &rows[i]
 			}
 		}
-	}()
+	}
 	if listOnly {
-		wg.Wait()
+		list()
 		return hr
 	}
-	wg.Add(2)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		list()
+	}()
 	go func() {
 		defer wg.Done()
 		inspectOut, hr.inspectErr = m.cli.run(rctx, argvInspect(name)...)
@@ -358,10 +360,11 @@ func (m *Manager) fingerprint(rec *pb.McpServerDefinition, hr *hostRead, pending
 	field(flagStr(hr.row != nil))
 	if hr.row != nil {
 		field(hr.row.transport)
-		// Whether a replace needs the discard-authorization confirm: a form
-		// opened before an authorization elsewhere is reloaded as stale instead
-		// of failing confirm-required on every save.
-		field(flagStr(hr.auth != pb.McpAuthState_MCP_AUTH_STATE_UNAUTHORIZED && hr.auth != pb.McpAuthState_MCP_AUTH_STATE_NOT_APPLICABLE))
+		// Whether the server is authorized: a form opened before an
+		// authorization elsewhere is reloaded as stale instead of failing
+		// confirm-required on every save (UNKNOWN is left out, so a transient
+		// status read never makes a save stale).
+		field(flagStr(hr.auth == pb.McpAuthState_MCP_AUTH_STATE_AUTHORIZED))
 		field(flagStr(hr.inspectErr != nil))
 		headers := append([]string(nil), hr.info.headers...)
 		sort.Strings(headers)

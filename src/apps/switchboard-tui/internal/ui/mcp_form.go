@@ -1192,13 +1192,15 @@ func (m *Model) sendMcpSave(req *pb.SaveMcpServerRequest) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), mcpSaveTimeout)
 		defer cancel()
 		out, err := d.SaveMcpServer(ctx, req)
-		return mcpSaveMsg{host: host, name: req.GetName(), outcome: out, err: err}
+		remote := req.GetDefinition().GetKind() == pb.McpServerKind_MCP_SERVER_KIND_REMOTE
+		return mcpSaveMsg{host: host, name: req.GetName(), remote: remote, outcome: out, err: err}
 	}
 }
 
 // mcpSaveMsg is a save's reply.
 type mcpSaveMsg struct {
 	host, name string
+	remote     bool // the saved definition's kind, for the authorize offer
 	outcome    *pb.McpSaveOutcome
 	err        error
 }
@@ -1239,7 +1241,7 @@ func (m Model) applyMcpSave(msg mcpSaveMsg) (tea.Model, tea.Cmd) {
 		return m, relist
 	}
 	out := msg.outcome
-	followups := m.mcpFollowups(out)
+	followups := m.mcpFollowups(out, msg.remote)
 	switch out.GetState() {
 	case pb.McpSaveOutcome_STILL_REGISTERED, pb.McpSaveOutcome_NOT_REGISTERED:
 		// The form stays open with the edits (FR-406).
@@ -1413,10 +1415,9 @@ func (v *mcpState) renameSecrets(from, to string) {
 		if !ok || p == nil || *p == "" {
 			continue
 		}
-		if q := v.secretVals[newPrefix+rest]; q != nil && *q != "" {
-			continue
-		}
 		delete(v.secretVals, name)
-		v.secretVals[newPrefix+rest] = p
+		if q := v.secretVals[newPrefix+rest]; q == nil || *q == "" {
+			v.secretVals[newPrefix+rest] = p
+		}
 	}
 }

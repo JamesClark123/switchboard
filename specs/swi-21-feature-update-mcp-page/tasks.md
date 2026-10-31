@@ -583,7 +583,7 @@ link requests them.
   *documentation-derived*.
 - [X] T050 Update the `CLAUDE.md` SPECKIT block to mark SWI-21 **implemented** (tasks done, T052 pending) and
   summarise the shipped design in the house style.
-- [ ] T051 Run `make fmt-check vet lint test cover env-check` (≥ 90% per module) and fix any gaps.
+- [X] T051 Run `make fmt-check vet lint test cover env-check` (≥ 90% per module) and fix any gaps.
 - [ ] T052 Manual: quickstart Scenario 0 on a real host. Record each flag's outcome in
   `contracts/sbx-cli-delta.md` and `M/hostflags.go`, then run Scenarios 1–6.
 

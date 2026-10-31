@@ -726,7 +726,7 @@ func (m Model) mcpLeavePending() (tea.Model, tea.Cmd, bool) {
 
 // mcpFollowups are the offers after the outcome panel, in order: FR-413
 // removal of unused secrets, then FR-405 authorize after a registration.
-func (m Model) mcpFollowups(out *pb.McpSaveOutcome) []confirmState {
+func (m Model) mcpFollowups(out *pb.McpSaveOutcome, savedRemote bool) []confirmState {
 	name := out.GetName()
 	var steps []confirmState
 	if unused := out.GetUnusedSecrets(); len(unused) > 0 {
@@ -747,10 +747,11 @@ func (m Model) mcpFollowups(out *pb.McpSaveOutcome) []confirmState {
 		})
 	}
 	// The row is best effort (nil when the daemon's re-list failed); the saved
-	// form's kind decides then, so a host command is never offered authorization.
+	// definition's kind decides then, so a host command is never offered
+	// authorization.
 	remote := out.GetServer().GetKind() == pb.McpServerKind_MCP_SERVER_KIND_REMOTE
 	if out.GetServer() == nil {
-		remote = m.mcpView.vals != nil && m.mcpView.vals.kind == "remote"
+		remote = savedRemote
 	}
 	if out.GetState() == pb.McpSaveOutcome_REGISTERED && remote {
 		st := confirmState{

@@ -1171,9 +1171,8 @@ func TestMcpAuthorizeOfferWithoutOutcomeRow(t *testing.T) {
 	m := editModel(t, &fakeDaemon{})
 	out := &pb.McpSaveOutcome{Name: "pw", State: pb.McpSaveOutcome_REGISTERED, Replaced: true}
 	for kind, want := range map[string]bool{"command": false, "remote": true} {
-		m.mcpView.vals = &mcpFormVals{name: "pw", kind: kind}
 		offered := false
-		for _, st := range m.mcpFollowups(out) {
+		for _, st := range m.mcpFollowups(out, kind == "remote") {
 			offered = offered || strings.HasPrefix(st.title, "Authorize")
 		}
 		if offered != want {
@@ -1193,7 +1192,7 @@ func TestMcpAddRenameKeepsTypedSecrets(t *testing.T) {
 	}
 	*v.secretPtr("mcp:linear:authorization") = "typed"
 	v.renameSecrets("notion", "linear")
-	if v.secretValue("mcp:linear:authorization") != "typed" {
-		t.Error("an already-typed value under the new name is kept")
+	if v.secretValue("mcp:linear:authorization") != "typed" || v.secretVals["mcp:notion:authorization"] != nil {
+		t.Errorf("an already-typed value under the new name is kept, the old one dropped: %v", v.secretVals)
 	}
 }
