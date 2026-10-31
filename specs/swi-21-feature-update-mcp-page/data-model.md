@@ -101,7 +101,7 @@ NOT_RECOVERABLE | LITERAL_ON_HOST | RESOLVED_UNCHECKABLE, host_value (redacted)}
 also returned `for_add`), `pending_removal_failed_listed` + `pending_removal_failed_list_unknown` (for the Cancel
 confirmation),
 `auth_state`, `has_record` (switchboard has a definition), `pending_replace`, `fingerprint`,
-`secrets_available` (+ reason).
+`secrets_available` (+ reason), `save_in_progress` (not listed because a save of it is running).
 
 ## Secret names (existing host secrets)
 
