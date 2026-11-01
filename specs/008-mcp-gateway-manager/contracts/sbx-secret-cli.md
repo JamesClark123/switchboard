@@ -12,6 +12,8 @@ real host first.
 | store | `sbx secret set <name> [--sandbox <sandbox>] --force`, value on **stdin** + `\n` | the documented non-interactive form (`echo "$TOKEN" \| sbx secret set -g github`); global is the runtime's default scope; `--force` overwrites without a prompt (documented beside `--token`, assumed to apply to stdin too — **reconcile**). The value never enters argv, logs or errors | 60 s |
 | remove service | `sbx secret rm <name> [--sandbox <sandbox>] -f` | `-f` is documented on registry removals; assumed accepted for service removals — **reconcile** (drop it if rejected; if `rm` prompts without it, keep it) | 60 s |
 | remove registry | `sbx secret rm --registry <host> [--sandbox <sandbox>] -f` | documented form | 60 s |
+| store a form secret (SWI-21) | `sbx secret set mcp:<name>:<placeholder> --force`, value on stdin | **Documentation-derived (SWI-21, 2026-10-31)**: the store row above, global scope, run by `SaveMcpServer` before the `mcp add` (FR-410); no `secrets_changed` per call, one per save | 60 s |
+| remove identity binding (SWI-21) | `sbx secret rm mcp:<name>:client_secret:identity -f` | **Documentation-derived (SWI-21)**: the service-removal row above; a failure is re-checked against `sbx secret ls` (FR-415, flag `secretListShowsIdentity`) | 60 s |
 | custom secrets | — | `sbx secret set-custom` entries are listed but never removed from switchboard (hint to the host) | — |
 
 Rules:

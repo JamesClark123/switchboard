@@ -388,7 +388,7 @@ func (m Model) overrideMayOpen(head parkedOverride, msg tea.Msg) bool {
 	if _, ok := msg.(tea.KeyMsg); ok {
 		return false
 	}
-	if (m.hosts.connecting && m.hosts.pwMode != pwHostsScreen) || (m.signIn.active && m.signIn.phase == signInFailed) {
+	if m.credentialPromptUp() {
 		return false
 	}
 	switch m.screen {
@@ -399,6 +399,12 @@ func (m Model) overrideMayOpen(head parkedOverride, msg tea.Msg) bool {
 		return ok && g == gSources && m.sourcesView.sandboxID == head.msg.id && !m.unsaved.open
 	}
 	return false
+}
+
+// credentialPromptUp reports a host password or failed sign-in prompt drawn
+// over every layer: a queued confirm never opens under it (SWI-9 R7).
+func (m Model) credentialPromptUp() bool {
+	return (m.hosts.connecting && m.hosts.pwMode != pwHostsScreen) || (m.signIn.active && m.signIn.phase == signInFailed)
 }
 
 // openParkedOverride opens the queue's head when it may (Update calls it after

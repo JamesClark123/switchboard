@@ -79,6 +79,8 @@ and deleted by its `persist`. Separate from `pending_replaces`, so it never over
 | `retry` | bool | a Retry: a pending replace of the name exists |
 | `planned_created_secrets` | repeated string | `secret_values` names absent in the snapshot (the save would create them) |
 | `planned_overwritten_secrets` | repeated string | `secret_values` names present in the snapshot (the save would overwrite them) |
+| `remove_only` | bool | set by a save whose `mcp rm` failed and whose re-list failed too (it hands the name to recovery): nothing was stored and `mcp add` never ran; the `planned_*` lists are cleared in the same write |
+| `remove_error` | string | that save's host errors, carried into the recovered pending replace's error |
 
 **State transitions**
 

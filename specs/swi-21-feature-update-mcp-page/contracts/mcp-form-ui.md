@@ -13,6 +13,11 @@ daemon advertises the `mcp-edit` capability (research R15); otherwise the view i
 | `S` | remote server | Authorize with scopes…: one line of space-separated scopes, or `ctrl+n` *no scopes*; note: "requested exactly as given; no refresh-token scope is added" | FR-418 |
 | `R` | pending-replace row | Retry: choose `h` held definition / `p` previous definition, then the form | FR-426 |
 | `X` | pending-replace row | Cancel: `y`-only confirm | FR-426 |
+
+If the definition read for `R` or `X` shows the replace has ended elsewhere (`GONE`, or the server is registered
+again with no pending replace), no form or confirm opens: the TUI re-lists and says "the pending replace of
+<server> has ended (retried, cancelled or registered by another path)". A definition read (`e`, `R`, `X`) that
+lands after another form or modal opened (`a`, an outcome panel, the Retry chooser) is dropped.
 | `space`, `m` | registered server | Toggle the mark (unchanged), except on a `saving…` or `recovering interrupted save` row: shows that status and does not call `SetMcpServerDefault` | FR-425 |
 | `d`, `r` | unchanged | | |
 
@@ -34,8 +39,11 @@ may be the developer's own save after `UNAVAILABLE`, whose result can take until
 
 Group 1 — **Definition** (edit mode title: `Edit <server> @ <host>`; name shown in the title, not editable):
 
-- Kind (remote / host command). Switching kind clears the remote-only fields with a status line.
-- URL · Headers (multi-line; description lists derived secret names `mcp:<server>:<p>` live) · OAuth client
+- Kind (remote / host command). Switching to host command clears the remote-only fields with a status line;
+  switching back to remote restores them, unless remote values were typed in between (huh's Select sets the
+  value as the highlight moves, so passing over the option must not lose them).
+- URL · Headers (multi-line; description lists derived secret names `mcp:<server>:<p>` live, as typed; with
+  the add form's Name still blank, secret names use `<name>` as the server, and move when the name is set) · OAuth client
   ID · OAuth authorization server · Scopes (space-separated) — remote only.
 - Command · Arguments · Working directory — host command only.
 - Attach to every sandbox.
@@ -62,7 +70,10 @@ When focus leaves group 1 (tracked from the focused group; the form is suspended
 `reopenForm`), and again on save, each credential header with literal text opens a `y`-only
 prompt: `Authorization: Bearer sk-…` → `Authorization: Bearer ${authorization}` with the literal moved into
 that secret field. Derived names: header name lower-cased, `_`→`-`, suffixed `-2`, `-3`, … on a collision or
-reserved name. Declining leaves the form open with the refusal message.
+reserved name. Declining leaves the form open with the refusal message. Accepting on save rebuilds the form, so
+a save that is then refused or fails keeps the converted header. While secret storage is unavailable, a typed
+literal is not offered conversion (its secret field does not exist): the form returns to Headers with a refusal
+naming the reason.
 
 A header that still equals the view's redacted `LITERAL_ON_HOST` value (`Bearer ••••`) is converted to the
 template **without** moving the redacted text: the new secret field stays blank and `missing`, with the status
@@ -83,13 +94,23 @@ so the later save goes through with the form's mark, which may revert the other 
 warning. That is the same last-writer-wins on the mark as two saves in sequence (FR-404 covers the definition,
 not the mark); fingerprinting the mark is a deliberate scope cut.
 
-A save that fails `UNAVAILABLE` (the save ran, but the daemon has not recorded the result yet and keeps
-retrying the write; the message says whether the host was changed) closes the form, because saving again is pointless, and shows the message as a status line.
+A save that fails `UNAVAILABLE` carrying the `ErrorInfo` detail `{reason: "MCP_SAVE_NOT_RECORDED", domain:
+"switchboard"}` (the save ran, but the daemon has not recorded the result yet and keeps retrying the write; the
+message says whether the host was changed) closes the form, because saving again is pointless, and shows the message as a status line.
 The row shows `saving…` until the daemon records the result and emits `mcp_gateway_changed`; the view then
 re-lists. The TUI does **not** open the outcome panel or its follow-up offers (FR-405 authorize, FR-413
 removal) for this save when the result lands later. This is a deliberate scope cut for a rare registry failure:
 the result shows on the row (`registered`, `rebind pending`, or a pending-replace row with Retry/Cancel), and
-Authorize and the Secrets view stay available from the gateway view.
+Authorize and the Secrets view stay available from the gateway view. A bare `UNAVAILABLE` (daemon unreachable,
+connection dropped: the save may never have run) is a plain error: the form stays with every edit and typed
+secret, and the row is not marked `saving…`.
+
+A save with no reply within the TUI's own deadline (`mcpSaveTimeout`, 21 min) closes the form (saving again is
+unsafe: the daemon may still be running it) and says "no reply to the save of <server> within …; it may still
+be running on the daemon (the list shows its state)". The call may also never have reached the daemon (a
+half-open SSH tunnel), so the TUI does **not** mark the row `saving…` itself: the re-list decides, showing
+`saving…` only while the daemon reports `save_in_progress`, and `e`/`R`/`X` stay available otherwise (review
+round 4).
 
 ## Save sequence
 
@@ -98,12 +119,27 @@ value): URL/argument credential warning · dropped unsupported settings · local
 authorization will be discarded · missing / removal-failed / must-re-enter secrets · FR-415 left-in-place
 warning → `SaveMcpServer`.
 
-Outcome panel (modal, any key closes): state line (`registered`, `registration unchanged`, `still
+Outcome panel (modal, any key closes; titled `Saved <server>`, or `The save of <server> did not complete` for
+`still registered` / `not registered`): state line (`registered`, `registration unchanged`, `still
 registered, authorization may be lost`, `not registered`, plus `the add may still complete on the host`),
 host messages verbatim, secrets created / overwritten / rolled back / rollback failed, identity outcome
 text, FR-419 sandbox list (`<sandbox> picks up the new definition after a restart or a re-attach from its MCP
 overlay`; skipped-at-launch and exclusive-mode notes). Then, in order: FR-413 removal offer (`y`-only, names
-each secret), FR-405 authorize offer (`y` starts the existing authorization modal).
+each secret), FR-405 authorize offer (`y` starts the existing authorization modal) — only for a registered remote
+server whose auth state is not `authorized` or `no auth` (an unknown state still offers).
+
+A save left with esc while running ("saving… in the background") is matched to its form by a per-form
+generation, never by name alone, so its reply never touches a later form, even of the same name. If it lands
+while another form is open, no outcome panel or follow-up opens over that form: the status line reads `saved
+<server> in the background: <state>` (or an `error:` line when the replace did not complete), followed by
+`; no longer used: <names> (offered for removal once the list is idle)` when the save left secrets unused, and
+the view re-lists. Its follow-ups (the
+FR-413 removal and FR-405 authorize offers) are kept and open once the list is idle again (no form, panel or
+modal open, no credential prompt up). A key on the idle list holds them back for 400 ms, and every further key
+restarts the pause, so a quick second key (a double esc to leave the screen) lands on the list rather than
+answering the offer. Leaving the screen first drops them, and the status line says so: `skipped the follow-ups
+of a background save: unused secrets <names> stay removable from the Secrets view; press A on <server> to
+authorize it` (each part only for the offer it replaces).
 
 On a failure the form stays open with the edits. Leaving a form that holds a pending replace (after a
 `NOT_REGISTERED` outcome, or in retry mode) opens the same `y`-only Cancel confirmation as `X`; accepting calls

@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/libs/switchboard-proto/mcprules"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 )
 
@@ -213,7 +214,7 @@ func TestAddRemoteOAuthClient(t *testing.T) {
 		t.Errorf("first argv = %q", log[0])
 	}
 	for _, as := range []string{"http://127.0.0.1:9000/x", "http://127.0.0.2/x", "http://[::1]:9000/x", "http://localhost:9000/x", "http://LocalHost/x"} {
-		if _, _, err := normalizeOAuthClient("", as); err != nil {
+		if err := mcprules.CheckAuthServer(as); err != nil {
 			t.Errorf("%s: a loopback http auth server should be accepted: %v", as, err)
 		}
 	}
@@ -223,7 +224,7 @@ func TestAddRemoteOAuthClient(t *testing.T) {
 	for name, req := range map[string]*pb.AddMcpServerRequest{
 		"client id with a space":     remote("a b", ""),
 		"flag-like client id":        remote("--skip-auth", ""),
-		"over-long client id":        remote(strings.Repeat("c", maxClientID+1), ""),
+		"over-long client id":        remote(strings.Repeat("c", mcprules.MaxClientID+1), ""),
 		"relative auth server path":  remote("", "as.json"),
 		"auth server with a line":    remote("", "https://as/x\nmore"),
 		"cleartext auth server":      remote("", "http://as.example/x"),

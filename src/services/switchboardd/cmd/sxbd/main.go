@@ -322,10 +322,15 @@ func runServe(cfg *config.Config, debug bool) error {
 
 	// Feature 008: the gateway manager drives `sbx mcp` on this host and owns the
 	// attach-by-default marks; its change events ride the same hub.
-	mcpManager := mcp.NewManager(&mcp.CLI{Bin: cfg.SbxBin}, reg, cfg.HostID, hub.Publish)
 	// The secret manager drives `sbx secret` on this host (FR-104); its change
-	// events ride the same hub.
+	// events ride the same hub. Built first: the MCP form's save stores a
+	// server's secrets through it (SWI-21).
 	secretManager := secret.NewManager(&secret.CLI{Bin: cfg.SbxBin}, cfg.HostID, hub.Publish)
+	// SWI-21: the save lists attached sandboxes (FR-419) and, when a replace ends,
+	// sweeps the sandboxes' skipped-at-launch records (FR-425).
+	mcpManager := mcp.NewManager(&mcp.CLI{Bin: cfg.SbxBin}, reg, cfg.HostID, hub.Publish,
+		mcp.WithSecrets(secretManager), mcp.WithSandboxes(reg), mcp.WithContext(ctx),
+		mcp.WithReplaceEnded(mgr.SweepMcpSkipped))
 
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 

@@ -153,8 +153,15 @@ func (m Model) handleEvent(hostID string, ev *pb.Event) (tea.Model, tea.Cmd) {
 	case *pb.Event_McpGatewayChanged_:
 		// feature 008: a daemon's registrations/marks/mode changed (here or in
 		// another client). An open gateway view for that host re-lists.
-		if m.screen == screenMcp && m.mcpView.host == e.McpGatewayChanged.GetHostId() {
-			cmd = m.mcpLoadCmd(m.mcpView.daemon, m.mcpView.host)
+		// SWI-21 (FR-421, T048): the same for a save, edit, cancel or secret
+		// removal made elsewhere (the event carries its outcome); this client's
+		// own UNAVAILABLE saves stop showing saving… once the result is recorded
+		// and the list says so.
+		if m.mcpView.host == e.McpGatewayChanged.GetHostId() {
+			m.mcpView.localSaving = nil
+			if m.screen == screenMcp {
+				cmd = m.mcpLoadCmd(m.mcpView.daemon, m.mcpView.host)
+			}
 		}
 		out = m
 	case *pb.Event_OrchestratorChanged_:

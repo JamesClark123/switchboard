@@ -85,10 +85,11 @@ func startMcpServerWith(t *testing.T, avail mcp.Availability, bin, sbxLog string
 	runner := &testRunner{running: map[string]bool{}}
 	mgr := sandbox.NewManager(reg, runner, ws, "host-1")
 	hub := agent.NewHub("host-1")
-	manager := mcp.NewManager(&mcp.CLI{Bin: bin}, reg, "host-1", hub.Publish)
+	secrets := secret.NewManager(&secret.CLI{Bin: bin}, "host-1", hub.Publish)
+	manager := mcp.NewManager(&mcp.CLI{Bin: bin}, reg, "host-1", hub.Publish, mcp.WithSecrets(secrets), mcp.WithSandboxes(reg))
 	srv := sbgrpc.NewServer(sbgrpc.Config{
 		Manager: mgr, HostID: "host-1", DaemonVersion: "test", WorkspaceRoot: ws,
-		KitRoot: filepath.Join(dir, "kits"), Hub: hub, McpAvailability: avail, Mcp: manager, Secrets: secret.NewManager(&secret.CLI{Bin: bin}, "host-1", hub.Publish),
+		KitRoot: filepath.Join(dir, "kits"), Hub: hub, McpAvailability: avail, Mcp: manager, Secrets: secrets,
 	})
 	sock := filepath.Join(dir, "d.sock")
 	lis, err := net.Listen("unix", sock)

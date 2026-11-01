@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -237,4 +238,64 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestQuietOpsAndListGlobal(t *testing.T) {
+	e := newEnv(t, `  set) cat > STDIN_FILE; [ "$3" = "mcp:s:bad" ] && { echo "denied" >&2; exit 1; }; [ "$3" = "mcp:s:echo" ] && { echo "bad value: $(cat STDIN_FILE)" >&2; exit 1; }; echo ok ;;
+  rm) [ "$3" = "mcp:s:gone" ] && { echo "secret not found" >&2; exit 1; }; echo removed ;;
+  ls) printf '`+strings.ReplaceAll(docsTable, "\n", `\n`)+`' ;;`)
+	ctx := context.Background()
+	names, err := e.m.ListGlobal(ctx)
+	if err != nil || !names["github"] || names["anthropic"] || names["ghcr.io"] {
+		t.Fatalf("ListGlobal = %v, %v (global service secrets only)", names, err)
+	}
+	if err := e.m.SetQuiet(ctx, "mcp:s:k", "v-quiet-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(e.stdin); string(got) != "v-quiet-1\n" {
+		t.Errorf("stdin = %q", got)
+	}
+	err = e.m.SetQuiet(ctx, "mcp:s:bad", "v-quiet-2")
+	if err == nil || strings.Contains(err.Error(), "v-quiet-2") || !strings.Contains(err.Error(), "denied") {
+		t.Errorf("SetQuiet failure = %v (verbatim, never the value)", err)
+	}
+	// A CLI that echoes the value back: the error carries the marker instead.
+	err = e.m.SetQuiet(ctx, "mcp:s:echo", "v-quiet-3")
+	var exitErr *exec.ExitError
+	if err == nil || strings.Contains(err.Error(), "v-quiet-3") || !strings.Contains(err.Error(), "bad value: ••••") || !errors.As(err, &exitErr) {
+		t.Errorf("echoed SetQuiet failure = %v", err)
+	}
+	// A short echoed value is not replaced inside other words: the output is
+	// withheld whole, and the error stays readable.
+	err = e.m.SetQuiet(ctx, "mcp:s:echo", "e")
+	if err == nil || strings.Contains(err.Error(), "bad value") || !strings.Contains(err.Error(), "sbx secret set mcp:s:echo failed") || !errors.As(err, &exitErr) {
+		t.Errorf("short echoed SetQuiet failure = %v", err)
+	}
+	for _, bad := range []string{"", "a\nb"} {
+		if err := e.m.SetQuiet(ctx, "mcp:s:k", bad); !errors.Is(err, ErrInvalidArgs) {
+			t.Errorf("SetQuiet(%q) = %v", bad, err)
+		}
+	}
+	if err := e.m.SetQuiet(ctx, "bad name", "x"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("bad name = %v", err)
+	}
+	if out, err := e.m.RemoveQuiet(ctx, "mcp:s:k"); err != nil || !strings.Contains(out, "removed") {
+		t.Errorf("RemoveQuiet = %q, %v", out, err)
+	}
+	if out, err := e.m.RemoveQuiet(ctx, "mcp:s:gone"); err == nil || !LooksNotFound(out) {
+		t.Errorf("RemoveQuiet failure = %q, %v", out, err)
+	}
+	if _, err := e.m.RemoveQuiet(ctx, "bad name"); !errors.Is(err, ErrInvalidArgs) {
+		t.Errorf("bad name = %v", err)
+	}
+	if !contains(e.calls(t), "secret rm mcp:s:k -f") || !contains(e.calls(t), "secret set mcp:s:k --force") {
+		t.Errorf("argv = %v", e.calls(t))
+	}
+	if e.events != 0 {
+		t.Errorf("quiet ops emitted %d events", e.events)
+	}
+	e.m.EmitChanged()
+	if e.events != 1 {
+		t.Errorf("EmitChanged: events = %d", e.events)
+	}
 }

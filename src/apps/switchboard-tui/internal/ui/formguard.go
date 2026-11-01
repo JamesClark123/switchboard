@@ -422,7 +422,10 @@ func (m Model) guardDirty(g guardSurface) bool {
 	case gConfig:
 		return m.editor.vals != nil && !m.editor.vals.snapshot().equal(m.editor.baseline)
 	case gMcp:
-		return m.mcpView.vals != nil && *m.mcpView.vals != m.mcpView.baseline
+		// vals + entered secrets against a deep-copied baseline (SWI-21 T032):
+		// a non-empty masked field is an edit. A save in flight holds nothing
+		// unsaved.
+		return m.mcpView.vals != nil && !m.mcpView.saving && !m.mcpView.mcpSnapshot().equal(m.mcpView.baseline)
 	case gSecrets:
 		return m.secretsView.vals != nil && *m.secretsView.vals != m.secretsView.baseline
 	case gOrchAdmin:
@@ -526,7 +529,7 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 	case gConfig:
 		m.screen = screenList
 	case gMcp:
-		m.mcpView.form, m.mcpView.vals, m.mcpView.spec = nil, nil, nil
+		m.resetMcpForm()
 	case gSecrets:
 		m.secretsView.form, m.secretsView.vals = nil, nil
 	case gOrchAdmin:
@@ -652,6 +655,14 @@ func (m Model) withEnlargeHint(hb helpBindings) helpBindings {
 // requestExit is every guarded exit key: a clean surface leaves at once, a
 // changed one opens the unsaved-changes dialog.
 func (m Model) requestExit(g guardSurface) (tea.Model, tea.Cmd) {
+	if g == gMcp {
+		// A form holding a pending replace (a NOT_REGISTERED outcome, or Retry)
+		// leaves only through the y-only Cancel confirmation, clean or dirty
+		// (FR-406); declining keeps the form.
+		if mm, cmd, ok := m.mcpLeavePending(); ok {
+			return mm, cmd
+		}
+	}
 	if !m.guardDirty(g) {
 		return m.guardLeave(g)
 	}
@@ -731,6 +742,9 @@ func (m *Model) reconcileGuardLayers() {
 func (m Model) suspendedGuard() (guardSurface, bool) {
 	if m.screen == screenMcp && m.mcpView.pending != nil && m.mcpView.vals != nil {
 		return gMcp, true // the "register anyway?" step keeps the form's values
+	}
+	if m.screen == screenConfirm && m.confirm.returnTo == screenMcp && m.mcpView.vals != nil {
+		return gMcp, true // a save-sequence or conversion confirm over the form (SWI-21)
 	}
 	if m.screen != screenConfirm {
 		return gNone, false

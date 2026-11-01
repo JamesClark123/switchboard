@@ -18,6 +18,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/duplicate"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/escapehatch"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/portforward"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
@@ -265,6 +266,12 @@ type McpAttach struct {
 	Mode    pb.McpAttachMode
 	Servers []string
 	Skipped []string
+	// BeingReplaced are marked servers skipped because a replace of them is
+	// running or pending (SWI-21 FR-425). Each is recorded on the sandbox as
+	// Sandbox.mcp_skipped, re-checked through ReplaceState inside the record
+	// write so a replace that ended meanwhile records its post-sweep state.
+	BeingReplaced []string
+	ReplaceState  func(name string) mcp.ReplaceStatus
 }
 
 // mcpLoadTimeout bounds each `mcp load` at launch (research R11). A package
@@ -437,6 +444,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
 		s.McpServers = attached
 		s.McpAttachMode = mode
+		s.McpSkipped = skippedEntries(req.Mcp)
 		s.UpdatedAt = timestamppb.Now()
 		return nil
 	})
@@ -618,6 +626,9 @@ func (m *Manager) applyMcp(ctx context.Context, ref string, att *McpAttach, onLo
 	}
 	for _, name := range att.Skipped {
 		logf("mcp: skipped stale mark %s (no longer registered on this host)", name)
+	}
+	for _, name := range att.BeingReplaced {
+		logf("mcp: %s skipped: being replaced", name)
 	}
 	mode := att.Mode
 	if mode == pb.McpAttachMode_MCP_ATTACH_MODE_UNSPECIFIED {

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/status"
 )
 
 // fakeDaemon implements the ui.Daemon interface for teatest, simulating a local
@@ -47,17 +49,38 @@ type fakeDaemon struct {
 	mcpAvail    bool
 	mcpReason   string
 	// SWI-18: the fake advertises "lanes" unless noLanes is set.
-	noLanes     bool
-	mcpServers  []*pb.McpServer
-	mcpSettings *pb.McpGatewaySettings
-	mcpListErr  error
-	mcpErr      error // returned by add/remove/set/authorize
-	addedMcp    []*pb.AddMcpServerRequest
-	removedMcp  []string
-	mcpNotes    []string
-	mcpAuthed   []string
-	mcpPasted   []string
-	mcpPasteErr error
+	noLanes bool
+	// SWI-21 fakes: mcpEdit advertises "mcp-edit"; mcpPendings ride on the
+	// list; mcpViews answers GetMcpServerDefinition by name (mcpDefErr fails
+	// it); mcpSaveResults are popped one per SaveMcpServer (an empty queue
+	// answers REGISTERED); the calls are recorded.
+	mcpEdit        bool
+	mcpPendings    []*pb.McpPendingReplace
+	mcpViews       map[string]*pb.McpDefinitionView
+	mcpDefErr      error
+	mcpDefReads    []string
+	mcpSaves       []*pb.SaveMcpServerRequest
+	mcpSaveResults []mcpSaveResult
+	mcpSaveBlock   bool // SaveMcpServer waits for its context to end
+	mcpCancels     []string
+	mcpCancelResp  *pb.CancelMcpPendingReplaceResponse
+	mcpCancelErr   error
+	mcpRmSecrets   [][]string
+	mcpRmResp      *pb.RemoveMcpServerSecretsResponse
+	mcpRmErr       error
+	mcpAuthScopes  [][]string
+	mcpAuthNoScope []bool
+	mcpDefaults    []string // SetMcpServerDefault calls
+	mcpServers     []*pb.McpServer
+	mcpSettings    *pb.McpGatewaySettings
+	mcpListErr     error
+	mcpErr         error // returned by add/remove/set/authorize
+	addedMcp       []*pb.AddMcpServerRequest
+	removedMcp     []string
+	mcpNotes       []string
+	mcpAuthed      []string
+	mcpPasted      []string
+	mcpPasteErr    error
 	// mcpAuthFrames are replayed to AuthorizeMcpServer's callback; mcpAuthState is
 	// the terminal state it returns; mcpAuthGate, when set, blocks the authorize
 	// call until closed (so a test can cancel a wait in flight).
@@ -374,7 +397,9 @@ func (f *fakeDaemon) SbxMinVersion() string      { return f.sbxMin }
 func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
 func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
 
-func (f *fakeDaemon) HasCapability(name string) bool { return name == "lanes" && !f.noLanes }
+func (f *fakeDaemon) HasCapability(name string) bool {
+	return name == "lanes" && !f.noLanes || name == "mcp-edit" && f.mcpEdit
+}
 
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {
 	f.mu.Lock()
@@ -582,6 +607,79 @@ func (f *fakeDaemon) ListMcpServers(context.Context) ([]*pb.McpServer, *pb.McpGa
 	return f.mcpServers, settings, nil
 }
 
+func (f *fakeDaemon) ListMcpGateway(ctx context.Context) (*pb.ListMcpServersResponse, error) {
+	servers, settings, err := f.ListMcpServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &pb.ListMcpServersResponse{Servers: servers, Settings: settings, PendingReplaces: f.mcpPendings}, nil
+}
+
+// mcpSaveResult is one canned SaveMcpServer answer.
+type mcpSaveResult struct {
+	out *pb.McpSaveOutcome
+	err error
+}
+
+func (f *fakeDaemon) GetMcpServerDefinition(_ context.Context, name string, forAdd bool) (*pb.McpDefinitionView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpDefReads = append(f.mcpDefReads, fmt.Sprintf("%s/%v", name, forAdd))
+	if f.mcpDefErr != nil {
+		return nil, f.mcpDefErr
+	}
+	if v, ok := f.mcpViews[name]; ok {
+		return v, nil
+	}
+	return &pb.McpDefinitionView{Name: name, SecretsAvailable: true}, nil
+}
+
+func (f *fakeDaemon) SaveMcpServer(ctx context.Context, req *pb.SaveMcpServerRequest) (*pb.McpSaveOutcome, error) {
+	f.mu.Lock()
+	if f.mcpSaveBlock {
+		f.mcpSaves = append(f.mcpSaves, req)
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
+	defer f.mu.Unlock()
+	f.mcpSaves = append(f.mcpSaves, req)
+	if len(f.mcpSaveResults) > 0 {
+		r := f.mcpSaveResults[0]
+		f.mcpSaveResults = f.mcpSaveResults[1:]
+		return r.out, r.err
+	}
+	return &pb.McpSaveOutcome{Name: req.GetName(), State: pb.McpSaveOutcome_REGISTERED, Replaced: !req.GetIsNew()}, nil
+}
+
+func (f *fakeDaemon) CancelMcpPendingReplace(_ context.Context, name string, revision uint64) (*pb.CancelMcpPendingReplaceResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpCancels = append(f.mcpCancels, fmt.Sprintf("%s@%d", name, revision))
+	if f.mcpCancelErr != nil {
+		return nil, f.mcpCancelErr
+	}
+	if f.mcpCancelResp != nil {
+		return f.mcpCancelResp, nil
+	}
+	return &pb.CancelMcpPendingReplaceResponse{}, nil
+}
+
+func (f *fakeDaemon) RemoveMcpServerSecrets(_ context.Context, name string, secrets []string) (*pb.RemoveMcpServerSecretsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpRmSecrets = append(f.mcpRmSecrets, append([]string{name}, secrets...))
+	if f.mcpRmErr != nil {
+		return nil, f.mcpRmErr
+	}
+	if f.mcpRmResp != nil {
+		return f.mcpRmResp, nil
+	}
+	return &pb.RemoveMcpServerSecretsResponse{Removed: secrets}, nil
+}
+
 func (f *fakeDaemon) AddMcpServer(_ context.Context, req *pb.AddMcpServerRequest) (*pb.McpServer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -621,8 +719,10 @@ func (f *fakeDaemon) CompleteMcpAuthCallback(ctx context.Context, name, callback
 	return f.mcpPasteErr
 }
 
-func (f *fakeDaemon) AuthorizeMcpServer(ctx context.Context, name string, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error) {
+func (f *fakeDaemon) AuthorizeMcpServer(ctx context.Context, name string, scopes []string, noScope bool, onUpdate func(client.McpAuthUpdate)) (pb.McpAuthState, error) {
 	f.mu.Lock()
+	f.mcpAuthScopes = append(f.mcpAuthScopes, scopes)
+	f.mcpAuthNoScope = append(f.mcpAuthNoScope, noScope)
 	frames, gate, state, err := f.mcpAuthFrames, f.mcpAuthGate, f.mcpAuthState, f.mcpErr
 	f.mu.Unlock()
 	if err != nil {
@@ -649,6 +749,7 @@ func (f *fakeDaemon) AuthorizeMcpServer(ctx context.Context, name string, onUpda
 func (f *fakeDaemon) SetMcpServerDefault(_ context.Context, name string, on bool) (*pb.McpServer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.mcpDefaults = append(f.mcpDefaults, name)
 	if f.mcpErr != nil {
 		return nil, f.mcpErr
 	}

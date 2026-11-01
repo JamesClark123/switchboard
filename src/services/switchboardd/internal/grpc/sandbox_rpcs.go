@@ -92,7 +92,8 @@ func (s *Server) LaunchSandbox(req *pb.LaunchSandboxRequest, stream pb.Switchboa
 		if att, err := s.mcp.ResolveAttach(ctx); err != nil {
 			onLog("mcp: could not resolve attach-by-default servers (launching without): " + err.Error())
 		} else {
-			mcpAttach = &sandbox.McpAttach{Mode: att.Mode, Servers: att.Servers, Skipped: att.Skipped}
+			mcpAttach = &sandbox.McpAttach{Mode: att.Mode, Servers: att.Servers, Skipped: att.Skipped,
+				BeingReplaced: att.BeingReplaced, ReplaceState: s.mcp.ReplaceState}
 		}
 	}
 
