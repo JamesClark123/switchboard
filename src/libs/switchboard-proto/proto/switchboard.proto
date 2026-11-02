@@ -690,7 +690,7 @@ message AgentSession {
   google.protobuf.Timestamp last_event_at = 3;
   bool pty_attached = 4;
   // --- SWI-17: per-agent evidence (research R4, R7, R8, R13, R14) ---
-  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit
+  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit, or a turn's first main-session PreToolUse with it lost
   google.protobuf.Timestamp last_turn_end_at = 6;       // Stop w/o background tasks, or backstop expiry
   google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
   string last_session_source = 8;                       // "startup" | "resume" | "clear"
@@ -1745,7 +1745,6 @@ message RunStep {
 message StepResult {
   int32 index = 1;                       // into Run.steps
   StepResultOutcome outcome = 2;
-  StepObserved kind_seen = 3;            // Run.step_kind_seen when it ended
 }
 
 // One call of an action (FR-125). `prompt` is the composed prompt, frozen at

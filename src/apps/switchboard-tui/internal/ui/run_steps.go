@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,8 +117,9 @@ func runStepDetail(r *pb.Run) string {
 	case pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING:
 		return swb.WorkerHoldLabel(r.GetHold())
 	case pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
-		// The note says why a retried Clear waits, or that its retries stopped.
-		if note != "" {
+		// The note says what frees the worker, why a retried Clear waits, or that
+		// its retries stopped. It may be several of those, so it gets more room.
+		if note := sanitizeLine(r.GetStepNote(), 90); note != "" {
 			return swb.WorkerHoldLabel(r.GetHold()) + ": " + note
 		}
 		return swb.WorkerHoldLabel(r.GetHold())
@@ -271,6 +273,9 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 		st.title = "Fail " + id + " at " + name + "?"
 		st.body = []string{failConsequence(run)}
 		st.warning = "The run fails; this cannot be undone."
+		if mayHaveRun(run) && hasClear(run) {
+			st.body = append(st.body, "This step may still be running — check the worker's terminal: Clear ends that session.")
+		}
 	}
 	od, ok := m.requireDaemon(s, t.host)
 	if !ok {
@@ -307,6 +312,11 @@ func failConsequence(r *pb.Run) string {
 		return "The remaining post-prompts are dropped; Clear (if enabled) is still sent."
 	}
 	return "No post-prompt follows; Clear (if enabled) is sent once the agent is idle."
+}
+
+// hasClear reports whether the run's cleanup includes Clear.
+func hasClear(r *pb.Run) bool {
+	return slices.ContainsFunc(r.GetSteps(), func(st *pb.RunStep) bool { return st.GetKind() == pb.StepKind_STEP_KIND_CLEAR })
 }
 
 // lastSeenOf is " (last seen working 10:42)" for a restart halt's detached

@@ -140,6 +140,66 @@ func TestCaptureFixtures(t *testing.T) {
 	c.waitIdleNotification()
 }
 
+// TestCaptureTurnFixtures captures a real model turn's screens (SWI-28), apart
+// from TestCaptureFixtures so these don't rewrite the others:
+//
+//	SXB_CAPTURE_CLAUDE=1 go test -run TestCaptureTurnFixtures -v -timeout 5m ./internal/agent/
+//
+// turn-before is the screen before a turn; turn-running and turn-running-narrow
+// while its tool runs, at the full size and at 80×24; reply-row after it. effort-repeat-
+// before and -after are one setting command typed twice on a transcript longer
+// than the screen: the agent repaints whole frames on the alternate screen, so
+// the rows move with nothing scrolled or erased (see agent.Added).
+func TestCaptureTurnFixtures(t *testing.T) {
+	if os.Getenv("SXB_CAPTURE_CLAUDE") != "1" {
+		t.Skip("set SXB_CAPTURE_CLAUDE=1 to capture the claudeui fixtures from a local claude")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("no claude on PATH: %v", err)
+	}
+	restore := backupUserSettings(t)
+	defer restore()
+
+	c := startCapture(t, bin, "--model", "haiku")
+	defer c.stop()
+	c.waitScreen("the input box or a startup dialog", 60*time.Second, func(s string) bool {
+		return hasBox(s) || strings.Contains(s, "Enter to confirm")
+	})
+	if !hasBox(c.text()) {
+		c.keys("\r")
+	}
+	c.waitHook("SessionStart", 60*time.Second)
+	c.waitScreen("the input box", 30*time.Second, hasBox)
+	time.Sleep(2 * time.Second)
+
+	c.save("turn-before")
+	stops := c.hookCount("Stop")
+	c.submit("Use the Bash tool to run exactly `sleep 15 && echo done`. After it finishes, reply with the single word pong.")
+	c.waitHook("PreToolUse", 60*time.Second)
+	time.Sleep(3 * time.Second)
+	c.save("turn-running")
+	c.resize(80, 24)
+	time.Sleep(time.Second)
+	c.save("turn-running-narrow")
+	c.resize(140, 45)
+	c.waitHookN("Stop", stops+1, 120*time.Second)
+	time.Sleep(time.Second)
+	c.save("reply-row")
+
+	stops = c.hookCount("Stop")
+	c.submit("Without using any tools, reply with the numbers 1 to 80, one number per line, and nothing else.")
+	c.waitHookN("Stop", stops+1, 120*time.Second)
+	time.Sleep(time.Second)
+	c.submit("/effort medium")
+	c.waitScreen("the first confirmation", 10*time.Second, func(s string) bool { return strings.Contains(s, "Set effort level to medium") })
+	time.Sleep(time.Second)
+	c.save("effort-repeat-before")
+	c.submit("/effort medium")
+	time.Sleep(2 * time.Second)
+	c.save("effort-repeat-after")
+}
+
 // hasBox reports whether a screen shows Claude Code's input box: a `❯` row
 // right under a horizontal rule (an echoed command has no rule above it).
 func hasBox(s string) bool {
@@ -192,7 +252,7 @@ type capture struct {
 
 const skillName = "sxb-ping"
 
-func startCapture(t *testing.T, bin string) *capture {
+func startCapture(t *testing.T, bin string, args ...string) *capture {
 	t.Helper()
 	dir := t.TempDir()
 	c := &capture{t: t, dir: dir, hookLog: filepath.Join(dir, "hooks.log"), done: make(chan struct{})}
@@ -220,7 +280,7 @@ func startCapture(t *testing.T, bin string) *capture {
 	if err := os.WriteFile(settingsPath, settings, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c.cmd = exec.Command(bin, "--dangerously-skip-permissions", "--settings", settingsPath)
+	c.cmd = exec.Command(bin, append([]string{"--dangerously-skip-permissions", "--settings", settingsPath}, args...)...)
 	c.cmd.Dir = dir
 	// A standalone agent, as a worker runs one: nothing inherited from a Claude
 	// Code session running this test (CLAUDECODE, CLAUDE_EFFORT, …).
@@ -295,6 +355,14 @@ func (c *capture) clearBox() {
 	time.Sleep(300 * time.Millisecond)
 	c.keys("\x1b")
 	time.Sleep(300 * time.Millisecond)
+}
+
+// resize changes the PTY's size and the screen's, as the daemon's broadcaster does.
+func (c *capture) resize(cols, rows int) {
+	c.scr.Resize(cols, rows)
+	if err := pty.Setsize(c.f, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+		c.t.Fatal(err)
+	}
 }
 
 // settle lets a redraw finish before a capture.

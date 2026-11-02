@@ -458,25 +458,3 @@ func TestResizeMarksTheScreenStale(t *testing.T) {
 		t.Fatal("the resize's repaint should clear the flag once it settled")
 	}
 }
-
-func TestScreenAtFollowsTheView(t *testing.T) {
-	fastNudges(t)
-	p := newFakePTY()
-	b := newBroadcaster(p, 0, nil, true)
-	defer func() { _ = b.Close() }()
-	c, err := b.Attach(KindInTUI, 20, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	p.feed([]byte("a\r\nb\r\nc\r\nd\r\ne"))
-	waitFor(t, func() bool { _, pos, _ := b.ScreenAt(); return pos.Scrolled == 2 })
-	if lines, pos, _ := b.ScreenAt(); pos.Scrolled != 2 || !strings.HasPrefix(lines[0].Text, "c") {
-		t.Fatalf("scrolled = %d, top row %q", pos.Scrolled, lines[0].Text)
-	}
-	plain := newBroadcaster(newFakePTY(), 0, nil, false)
-	defer func() { _ = plain.Close() }()
-	if lines, pos, stale := plain.ScreenAt(); lines != nil || pos != (termview.Position{}) || stale {
-		t.Fatalf("no screen = %v %+v %v", lines, pos, stale)
-	}
-}

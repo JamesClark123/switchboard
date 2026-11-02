@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,7 +13,8 @@ import (
 
 // The fixtures are the screens research R1 recorded, captured from Claude Code
 // 2.1.312 by TestCaptureFixtures, except auto-mode-dialog, which is
-// hand-authored (no start-up dialog appeared on the capture).
+// hand-authored (no start-up dialog appeared on the capture), and those of a real
+// turn, captured on Linux from 2.1.316 by TestCaptureTurnFixtures.
 
 // confirm is a fixture's expected read-back of one command.
 type confirm struct {
@@ -36,6 +39,15 @@ func TestClaudeUIFixtures(t *testing.T) {
 	}{
 		// The placeholder hint is faint: the box reads empty.
 		{name: "startup-placeholder", present: true, ready: true},
+		// A real turn (SWI-28): the box reads empty and ready all through it.
+		{name: "turn-before", present: true, ready: true},
+		{name: "turn-running", present: true, ready: true},
+		{name: "turn-running-narrow", present: true, ready: true},
+		{name: "reply-row", present: true, ready: true},
+		{name: "effort-repeat-before", present: true, ready: true,
+			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
+		{name: "effort-repeat-after", present: true, ready: true,
+			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
 		{name: "empty-after-command", present: true, ready: true,
 			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
 		{name: "model-set-opus", present: true, ready: true,
@@ -151,6 +163,123 @@ func TestConfirmationAfterJoinsWrapsAndTakesTheLastEcho(t *testing.T) {
 	}
 	if at := LastEcho(screen, "/model haiku"); at != -1 {
 		t.Fatalf("LastEcho of no echo = %d, want -1", at)
+	}
+}
+
+// The glyph a real reply draws on Linux (SWI-28).
+func TestLastReplyOnARealScreen(t *testing.T) {
+	lines := loadFixture(t, "reply-row")
+	if at := LastReply(lines); at < 0 || lines[at].Text != "● pong" {
+		t.Fatalf("LastReply = %d on:\n%s", at, encodeRows(lines))
+	}
+	// Before the turn: no reply; the right-aligned `◐` or `●` effort row isn't one.
+	if at := LastReply(loadFixture(t, "effort-set-medium")); at != -1 {
+		t.Fatalf("LastReply with no reply = %d", at)
+	}
+}
+
+func TestTurnRunning(t *testing.T) {
+	for _, name := range []string{"turn-running", "turn-running-narrow"} {
+		lines := loadFixture(t, name)
+		if !TurnRunning(lines) {
+			t.Errorf("%s: a running turn must read as running:\n%s", name, encodeRows(lines))
+		}
+		// The box alone says nothing: that is why the footer is read.
+		if text, present, ready := InputBox(lines); !present || !ready || strings.TrimSpace(text) != "" {
+			t.Errorf("%s: box = %q %v %v", name, text, present, ready)
+		}
+	}
+	for _, name := range []string{"reply-row", "startup-placeholder", "empty-after-command", "effort-repeat-after", "model-picker"} {
+		if TurnRunning(loadFixture(t, name)) {
+			t.Errorf("%s: no turn is running", name)
+		}
+	}
+	// Quoted in the transcript, or with no box on screen, it doesn't count.
+	quoted := append(rows("❯ what does esc to interrupt do?"), loadFixture(t, "empty-after-command")[1:]...)
+	if TurnRunning(quoted) {
+		t.Error("a transcript quoting the hint is no turn")
+	}
+	if TurnRunning(rows("esc to interrupt")) {
+		t.Error("no box, no footer")
+	}
+}
+
+func TestTranscriptLeavesOutTheBoxAndTheUIOverIt(t *testing.T) {
+	got := TranscriptTexts(loadFixture(t, "effort-repeat-after"))
+	for _, r := range got {
+		if strings.Contains(r, "/effort") && !strings.HasPrefix(r, "❯ /effort") {
+			t.Errorf("the effort indicator is no transcript row: %q", r)
+		}
+		if strings.TrimSpace(r) == "" {
+			t.Error("blank rows are left out")
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] == "❯" {
+		t.Fatalf("transcript = %q", got)
+	}
+	if got := TranscriptTexts(rows("a", "", "b")); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("no box = %q", got)
+	}
+}
+
+func TestAdded(t *testing.T) {
+	const e, r = "❯ /effort medium", "  ⎿  Set"
+	tests := []struct {
+		name        string
+		before, now []string
+		added       []string
+		notAligned  bool
+	}{
+		{name: "nothing before", now: []string{"a"}, added: []string{"a"}},
+		{name: "unchanged", before: []string{"a", e, r}, now: []string{"a", e, r}},
+		{name: "appended", before: []string{"a"}, now: []string{"a", e, r}, added: []string{e, r}},
+		{name: "appended as the top moved off", before: []string{"a", "b", e, r}, now: []string{"b", e, r, e, r}, added: []string{e, r}},
+		{name: "only moved up", before: []string{"a", e, r}, now: []string{e, r}},
+		{name: "a repeat of the rows before", before: []string{e, r, e, r}, now: []string{r, e, r, e, r}, added: []string{e, r}},
+		{name: "one row shared", before: []string{"a", "b"}, now: []string{"b", "c", "d"}, added: []string{"c", "d"}},
+		{name: "nothing shared", before: []string{"a", "b"}, now: []string{"c", "d"}, added: []string{"c", "d"}, notAligned: true},
+		{name: "cleared", before: []string{"a", "b"}, notAligned: true},
+	}
+	for _, c := range tests {
+		t.Run(c.name, func(t *testing.T) {
+			added, aligned := Added(c.before, rows(c.now...))
+			if aligned == c.notAligned {
+				t.Errorf("aligned = %v", aligned)
+			}
+			got := []string{}
+			for _, l := range added {
+				got = append(got, l.Text)
+			}
+			if !slices.Equal(got, append([]string{}, c.added...)) {
+				t.Errorf("added = %q, want %q", got, c.added)
+			}
+		})
+	}
+	// The top rows changing on their own (a notice hiding) doesn't lose the match.
+	long := make([]string, alignRows+2)
+	for i := range long {
+		long[i] = fmt.Sprintf("row %d", i)
+	}
+	now := append(append([]string{"notice gone"}, long[1:]...), "new")
+	if added, aligned := Added(long, rows(now...)); !aligned || len(added) != 1 || added[0].Text != "new" {
+		t.Errorf("top row changed = %v, %v", added, aligned)
+	}
+}
+
+// On real screens the echo typed lands on the row of the one before it, which is
+// why positions can't tell them apart.
+func TestAddedOnRealFrames(t *testing.T) {
+	before, after := loadFixture(t, "effort-repeat-before"), loadFixture(t, "effort-repeat-after")
+	if b, a := LastEcho(before, "/effort medium"), LastEcho(after, "/effort medium"); a != b {
+		t.Fatalf("the frames no longer show the case: last echo on row %d, then %d", b, a)
+	}
+	added, aligned := Added(TranscriptTexts(before), Transcript(after))
+	if !aligned || LastEcho(added, "/effort medium") < 0 {
+		t.Errorf("added = %v, aligned = %v", added, aligned)
+	}
+	added, aligned = Added(TranscriptTexts(after), Transcript(after))
+	if !aligned || len(added) != 0 {
+		t.Errorf("same frame: added = %v, aligned = %v", added, aligned)
 	}
 }
 
@@ -323,4 +452,9 @@ func TestPlaceholderNeedsTheFaintSidecar(t *testing.T) {
 	if got, _, _ := InputBox(unstyled); !strings.HasPrefix(got, "Try ") {
 		t.Fatalf("InputBox without faint = %q, want the hint text", got)
 	}
+}
+
+func encodeRows(lines []termview.Line) string {
+	text, _ := encodeFixture(lines)
+	return text
 }

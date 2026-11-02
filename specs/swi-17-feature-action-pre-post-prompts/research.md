@@ -127,6 +127,10 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
    the screen as **unknown**: it extends its window by at most 1 s (contracts/worker-step.md §6). A **size change**
    marks the screen stale too (SWI-28): termview only truncates or pads, so it is wrong until the agent repaints. The
    resize counts as the nudge, and the repaint it causes clears the flag; a resize to the same size changes nothing.
+   **The agent repaints whole frames** (captured from 2.1.314 and 2.1.316, SWI-28): it runs on the alternate screen and
+   rewrites each frame with cursor moves, with no line feed, scroll or erase. An 80-line reply scrolled the transcript
+   with termview's scroll count at 0, and three identical `/effort medium` echoes in a row all landed on one row. So a
+   row can't be recognised by where it is, and what a send added is found by content (`claudeui.Added`).
    - **Still stale when the extension ends:** the check returns **UNCONFIRMED** (`screen resyncing`): the step was
      typed, but nothing confirms it was accepted. The orchestrator treats it like a lost response: SENT, resolved by
      R8's evidence rules (a turn-start or turn-end hook finishes it; a built-in is read back with `check_only` once
@@ -470,8 +474,9 @@ it; rule 3 (screen read-back) does not.
    a turn for, SWI-28, contracts/worker-step.md §3) is a model turn if `last_submit_at > step_sent_at`, **or** the
    main session reported needs-input after the send, `last_needs_input_at > step_sent_at` (FR-217). That field is
    session-filtered (R13); status and `last_event_at` are not, so a nested `claude -p` can't satisfy the rule. For
-   a step that isn't a built-in, `last_turn_end_at > step_sent_at` is one too, its start report lost (SWI-28). It is
-   then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
+   a step that isn't a built-in, `last_turn_end_at > step_sent_at` is one too, its start report lost (SWI-28).
+   `last_submit_at` also takes a turn's first main-session `PreToolUse` when no submit was recorded for it, as the
+   submit check counts one (SWI-28). It is then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
 3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`
    after `step_sent_at` finishes it.
@@ -479,7 +484,10 @@ it; rule 3 (screen read-back) does not.
    alone never finishes it. The halt is also written to the daemon (`controller.run.halted = true` through
    `workerRunFor` with `expect_run_id`), so `R`'s `retry` passes guard 3a and the worker is surfaced. On every
    reconnect the orchestrator repairs a HALTED run whose `controller.run.halted` disagrees, as `repairReviewFlag`
-   does for the review flag, so a halt push lost on a down link doesn't strand a retry.
+   does for the review flag, so a halt push lost on a down link doesn't strand a retry. **Evidence arriving later
+   takes the halt back** (SWI-28): a custom step or action prompt halted here goes to TURN once rule 2 holds, because
+   a turn can outlast `sentGrace` with its hooks late or lost. A built-in stays halted (it starts no turn, so a submit
+   after it is the developer's), as does a restart halt or one the worker saw as not accepted.
 
 **Rationale.** It applies the spec's rule literally, and the recorded evidence (R4) shrinks the developer-decides
 case to the minimum: a turn that ended with no recorded evidence. A restart of the owning daemon leaves an orphan
@@ -1110,8 +1118,8 @@ effect is written into `controller.run.step_note`, and a failed run raises the u
 - **ACTION** (the action step TURN or AWAIT_CLOSE): **left in flight**, as for runs without steps today.
   - Hooks keep the status current, and the agent's completion report closes the run normally.
   - At close, cleanup can't be typed into an orphan. The cleanup steps are dropped, and the hold is
-    `NEEDS_DEVELOPER` with the note `agent detached by a daemon restart; t → Replace frees the worker`, plus
-    `custom post-prompts were dropped` when there were any.
+    `NEEDS_DEVELOPER` with the note `agent detached; t → Replace frees it`, plus `post-prompts dropped` when there
+    were any.
   - Replace's fresh agent fires `startup`, which ends the hold (FR-216). Clear isn't needed, since the session is
     fresh.
   - **If the orphan asks for input**, its `Notification` hook sets NEEDS_INPUT, so the worker is surfaced, with the

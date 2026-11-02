@@ -36,9 +36,9 @@ const (
 	waitingPrefix    = "waiting: "
 	orphanNote       = "agent detached by a daemon restart"
 	orphanSetupNote  = orphanNote + "; R restarts setup with a fresh agent"
-	orphanCloseNote  = orphanNote + "; t → Replace frees the worker"
-	droppedPostNote  = "custom post-prompts were dropped"
-	clearStoppedNote = "clear retry stopped by developer"
+	orphanCloseNote  = "agent detached; t → Replace frees it"
+	droppedPostNote  = "post-prompts dropped"
+	clearStoppedNote = "clear retries stopped"
 	restartingNote   = "restarting setup with a fresh agent"
 	unconfirmedNote  = "typed, but not confirmed; it may have run"
 	noEvidenceNote   = "typed, but no report says it was accepted"
@@ -219,8 +219,7 @@ func moveTo(r *pb.Run, i int, st pb.StepStatus) {
 
 // settleSteps records how the run left its current step on the way to step to
 // (or past the last step): the current step's outcome, and DROPPED for those
-// between. Call it before moveTo clears step_kind_seen and step_sent_at. Only a
-// step never sent is DROPPED: one halted as not accepted is FAILED, and any other
+// between. Call it before moveTo clears step_sent_at. Only a step never sent is DROPPED: one halted as not accepted is FAILED, and any other
 // that reached the agent is DONE. A step's first result stands, so a skip
 // recorded before advanceLocked stays a skip.
 func settleSteps(r *pb.Run, to int, outcome pb.StepResultOutcome) {
@@ -236,7 +235,7 @@ func settleSteps(r *pb.Run, to int, outcome pb.StepResultOutcome) {
 	for i := from; i < to && i < len(r.GetSteps()); i++ {
 		res := &pb.StepResult{Index: int32(i), Outcome: pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED}
 		if i == from {
-			res.Outcome, res.KindSeen = outcome, r.GetStepKindSeen()
+			res.Outcome = outcome
 		}
 		if !slices.ContainsFunc(r.GetStepResults(), func(x *pb.StepResult) bool { return x.GetIndex() == res.GetIndex() }) {
 			r.StepResults = append(r.StepResults, res)
@@ -251,6 +250,17 @@ func settleReleased(r *pb.Run) {
 	if curStep(r).GetKind() != pb.StepKind_STEP_KIND_CLEAR || r.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING {
 		settleSteps(r, len(r.GetSteps()), pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)
 	}
+}
+
+// reportedOutcome is how a run closing for cleanup left its current step. The
+// agent's own report shows its action prompt ran, even one halted as may have run
+// or not accepted (the report is accepted then, research R8). A mark free shows
+// nothing, so settleSteps decides from the step.
+func reportedOutcome(r *pb.Run) pb.StepResultOutcome {
+	if curStep(r).GetRole() == pb.StepRole_STEP_ROLE_ACTION && r.GetState() == pb.RunState_RUN_STATE_COMPLETED && !r.GetClosedByDeveloper() {
+		return pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE
+	}
+	return pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
 }
 
 // closedOutcome is how a closing run left its current step: an accepted action
@@ -581,6 +591,8 @@ func (rt *runtime) stepOnce(sandboxID string) (more, active bool) {
 		return rt.resolveSent(run, sb), true
 	case pb.StepStatus_STEP_STATUS_TURN:
 		return rt.finishTurn(run, sb), true
+	case pb.StepStatus_STEP_STATUS_HALTED:
+		return rt.resolveHalted(run, sb), true
 	}
 	return false, true
 }
@@ -1174,9 +1186,9 @@ func (rt *runtime) resolveSending(run *pb.Run) bool {
 }
 
 // turnEvidence classifies a typed step from the daemon's main-session
-// evidence after its send (research R8 rule 2): a prompt submit, a needs-input
-// report, or for a step that isn't a built-in a turn end (its start report lost;
-// finishTurn then finishes it). A built-in starts no turn: it reads back instead.
+// evidence after its send (research R8 rule 2): a turn start (a prompt submit, or
+// a tool call with the submit lost), a needs-input report, or for a step that
+// isn't a built-in a turn end (its start report lost; finishTurn then finishes it). A built-in starts no turn: it reads back instead.
 func turnEvidence(run *pb.Run, sb *pb.Sandbox) pb.StepObserved {
 	sent, a := run.GetStepSentAt(), sb.GetAgent()
 	switch {
@@ -1196,7 +1208,7 @@ func builtin(k pb.StepKind) bool {
 // outcome, a lost answer, an orchestrator restart) by evidence after its send,
 // never by an idle state that was already there (FR-206a, FR-217, research
 // R8). Rule 2: a turn start makes it a TURN (finishTurn then waits for its
-// end). Rule 3: a built-in whose setting reads back is finished; the daemon
+// end), also after a halt (resolveHalted). Rule 3: a built-in whose setting reads back is finished; the daemon
 // runs the read-back (check_only), and for Clear it requires the clear
 // session start after the send, corroborated by its own screen (R13), so the
 // orchestrator never finishes Clear on the hook evidence alone. An agent
@@ -1257,6 +1269,31 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		return false
 	}
 	return rt.haltSent(run, "")
+}
+
+// resolveHalted takes back a may-have-run halt once evidence after the send shows
+// the step's turn did start: its hooks were late or partly lost, or the turn
+// outlasted sentGrace with none of them. The run goes on as if never halted
+// (SWI-28). A built-in stays halted: it starts no turn, so a submit after it is
+// the developer's, not its own. A restart halt stays too: R restarts setup.
+func (rt *runtime) resolveHalted(run *pb.Run, sb *pb.Sandbox) bool {
+	if sb == nil || builtin(curStep(run).GetKind()) || restartHalt(run) || (!run.GetStepUnconfirmed() && !run.GetStepSentBeforeRestart()) {
+		return false
+	}
+	kind := turnEvidence(run, sb)
+	if kind == pb.StepObserved_STEP_OBSERVED_UNKNOWN {
+		return false
+	}
+	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
+		l.StepStatus, l.StepKindSeen = pb.StepStatus_STEP_STATUS_TURN, kind
+		l.StepNote = ""
+		l.StepUnconfirmed, l.StepSentBeforeRestart = false, false
+		return true
+	})
+	if ok {
+		rt.syncWorkerRun(live.GetId())
+	}
+	return true
 }
 
 // haltSent halts a SENT step for the developer: may have run.
@@ -1372,11 +1409,11 @@ func (rt *runtime) closeStepsLocked(l *pb.Run, reported bool) (stepFx, bool) {
 func (rt *runtime) beginCleanupLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
 	first := stepIndex(l, pb.StepRole_STEP_ROLE_CLEANUP, pb.StepKind_STEP_KIND_UNSPECIFIED)
 	if first < 0 {
-		settleSteps(l, len(l.GetSteps()), pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)
+		settleSteps(l, len(l.GetSteps()), reportedOutcome(l))
 		moveTo(l, int(l.GetStep()), pb.StepStatus_STEP_STATUS_DONE)
 		return stepFx{clear: true}
 	}
-	settleSteps(l, first, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)
+	settleSteps(l, first, reportedOutcome(l))
 	if !canType(sb) {
 		moveTo(l, first, pb.StepStatus_STEP_STATUS_PENDING) // what was left, for the dropped note
 		return rt.toDeveloperLocked(l, sb)

@@ -50,7 +50,8 @@ conflict; research R14 lists the same items as known limitations.
 - **`CheckOrphansAtStart` stays synchronous** before the gRPC server serves (at most 10 s on a slow runtime): async
   classification could retire a fresh agent's token on a stale listing.
 - **Model/Effort confirmation counts echoes**, so an identical echo scrolling off a full screen can halt a retried
-  setup step (R/S/X recover); termview exposes no scroll offset. Done in SWI-28.
+  setup step (R/S/X recover). Done in SWI-28, by content: the agent repaints whole frames, so no scroll offset would
+  tell (research R2).
 - **Main-agent bind is the first tokened SessionStart**; a lost first hook can bind a nested `claude -p` (Replace
   recovers). Nested events no longer drive status once a main PID is bound.
 - **The hook token is expanded into curl's argv** in the hook command (it is already in `/proc/<pid>/environ`, R13).
@@ -534,8 +535,8 @@ sequence model. No user story can be delivered before this phase.
     Replace or Wait`.
   - **Phases.** For each orphan whose sandbox has a `controller.run` with a `step_role` or `hold`:
     - **ACTION:** left as is (in flight; hooks and the MCP report still work). At close, the cleanup steps are
-      dropped, and the hold is NEEDS_DEVELOPER with the note `agent detached by a daemon restart; t → Replace frees
-      the worker` (+ `custom post-prompts were dropped` when there were any);
+      dropped, and the hold is NEEDS_DEVELOPER with the note `agent detached; t → Replace frees it` (+ `post-prompts
+      dropped` when there were any);
     - **SETUP**, or an action step not yet accepted: marked so the orchestrator halts the step with the note `agent
       detached by a daemon restart; last seen <state> <time>; R restarts setup with a fresh agent` (and
       `sent_before_restart` when it was sent). `X` fails the run and leaves the hold NEEDS_DEVELOPER;

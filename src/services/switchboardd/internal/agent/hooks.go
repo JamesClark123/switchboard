@@ -574,14 +574,15 @@ func (s *HookServer) dispatch(p hookPayload) (needsInput bool) {
 }
 
 // recordEvidence writes what a main-agent hook says about the agent's turns
-// and sessions on its record (research R4): the submit, the end of a turn
-// with nothing left in the background, a request for input, and a new session
-// (a compaction is not one).
+// and sessions on its record (research R4): the turn start (the submit, or the
+// first tool call of a turn whose submit was lost, as the submit check counts it),
+// the end of a turn with nothing left in the background, a request for input, and
+// a new session (a compaction is not one).
 func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Time) {
 	var fn func(*pb.AgentSession)
 	at := timestamppb.New(now)
 	switch {
-	case p.Event == "UserPromptSubmit":
+	case p.Event == "UserPromptSubmit", p.Event == "PreToolUse" && !s.turnStartRecorded(p.SandboxID):
 		fn = func(a *pb.AgentSession) { a.LastSubmitAt = at }
 	case p.Event == "Stop" && p.PendingBackground == 0:
 		fn = func(a *pb.AgentSession) { a.LastTurnEndAt = at }
@@ -598,6 +599,22 @@ func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Tim
 		return
 	}
 	s.writeEvidence(p.SandboxID, fn)
+}
+
+// turnStartRecorded reports whether the record has a turn start since the last
+// turn's end, so a turn's tool calls write (and publish) nothing more. It reads
+// true with no way to tell, for the same reason.
+func (s *HookServer) turnStartRecorded(sandboxID string) bool {
+	g, ok := s.status.(sandboxGetter)
+	if !ok {
+		return true
+	}
+	sb, err := g.Get(sandboxID)
+	if err != nil {
+		return true
+	}
+	start, end := sb.GetAgent().GetLastSubmitAt(), sb.GetAgent().GetLastTurnEndAt()
+	return start != nil && (end == nil || start.AsTime().After(end.AsTime()))
 }
 
 // writeEvidence applies fn through the status side's EvidenceRecorder, if it

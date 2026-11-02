@@ -276,8 +276,8 @@ func EffortConfirmed(line, level string) bool {
 }
 
 // assistantGlyphs start an assistant message or tool call in the transcript, at
-// column 0: the UI draws `⏺` on macOS and `●` elsewhere. A right-aligned `●` is
-// the effort indicator.
+// column 0: `●` on Linux (fixture reply-row), `⏺` on macOS (from memory: no fixture
+// has it). A right-aligned `●` is the effort indicator.
 var assistantGlyphs = []string{"⏺", "●"}
 
 func isReply(row string) bool {
@@ -297,6 +297,78 @@ func LastReply(lines []termview.Line) int {
 		}
 	}
 	return -1
+}
+
+// runningHint is in the footer under the input box while a turn runs (fixtures
+// turn-running, turn-running-narrow). The box itself reads empty and ready then.
+const runningHint = "esc to interrupt"
+
+// TurnRunning reports whether the screen shows a turn running, whatever the hooks
+// said. Only the rows under the box count, so a transcript quoting the hint doesn't
+// read as a turn; with no box, or a footer cut too short to show it, it reads false.
+func TurnRunning(lines []termview.Line) bool {
+	_, bottom, ok := boxBounds(lines)
+	return ok && slices.ContainsFunc(lines[bottom+1:], func(l termview.Line) bool { return strings.Contains(l.Text, runningHint) })
+}
+
+// rightAligned is how far a row must be indented to be UI drawn over the
+// transcript's end, not part of it: the effort indicator, an update notice.
+const rightAligned = 40
+
+// Transcript is the screen's transcript: the rows above the input box (all of them
+// with none on screen), less blank and right-aligned ones, which a repaint adds
+// and drops as it likes.
+func Transcript(lines []termview.Line) []termview.Line {
+	if top, _, ok := boxBounds(lines); ok {
+		lines = lines[:top]
+	}
+	out := make([]termview.Line, 0, len(lines))
+	for _, l := range lines {
+		if s := strings.TrimLeft(l.Text, " "); s != "" && len(l.Text)-len(s) < rightAligned {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TranscriptTexts is Transcript's rows as text, kept to compare with Added.
+func TranscriptTexts(lines []termview.Line) []string {
+	rows := Transcript(lines)
+	out := make([]string, len(rows))
+	for i, l := range rows {
+		out[i] = l.Text
+	}
+	return out
+}
+
+// alignRows is how many of the rows two transcripts share must match for Added to
+// line them up. It is not all of them because the rows at the top change on their
+// own (a start-up notice hiding).
+const alignRows = 12
+
+// Added returns the rows of the transcript now that came after the transcript
+// before. Rows can't be told apart by where they are: the agent repaints whole
+// frames on the alternate screen (fixtures effort-repeat-before and -after), so a
+// new echo lands on the row of the identical one before it, with nothing scrolled
+// or erased that a terminal could count. So it finds how far now moved up by content:
+// the smallest shift at which the rows they share match.
+//
+// aligned is false when no shift matches (the screen was rewrapped, or a long
+// reply pushed everything off), and then every row is returned. The one case read
+// wrongly is a transcript whose last alignRows rows are one command repeated, which
+// reads as unchanged: nothing is added, the safe direction.
+func Added(before []string, now []termview.Line) (added []termview.Line, aligned bool) {
+	for shift := range before {
+		shared := len(before) - shift
+		if shared > len(now) {
+			continue
+		}
+		n := min(shared, alignRows)
+		if slices.EqualFunc(now[shared-n:shared], before[len(before)-n:], func(l termview.Line, s string) bool { return l.Text == s }) {
+			return now[shared:], true
+		}
+	}
+	return now, len(before) == 0
 }
 
 // PostClear reports whether the screen shows a session just cleared (research

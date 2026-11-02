@@ -46,10 +46,6 @@ type Screen struct {
 	scroll     []string
 	viewOffset int
 	maxScroll  int // scrollback cap: maxScrollback, or 0 under WithoutScrollback
-	// scrolled counts the rows that ever scrolled off the top, and redraws the
-	// times the rows were rewritten other than by scrolling. Both only grow (see
-	// Position).
-	scrolled, redraws uint64
 
 	osc oscState // OSC filter state, carried across writes (see filterOSC)
 }
@@ -138,7 +134,6 @@ func (s *Screen) Resize(cols, rows int) {
 	}
 	s.buf.Resize(cols, rows)
 	s.cols, s.rows = cols, rows
-	s.redraws++
 	s.clampCursor()
 }
 
@@ -226,7 +221,6 @@ func (s *Screen) Reset() {
 	s.cursorHidden = false
 	s.scroll = nil
 	s.viewOffset = 0
-	s.redraws++
 	// A reset may follow dropped bytes (the daemon's screen): forget any
 	// half-read escape sequence too.
 	s.pars.Reset()
@@ -237,36 +231,13 @@ func (s *Screen) Reset() {
 // viewport, one Line per row (top to bottom). The result is a copy: later
 // writes never change it. No cursor is overlaid.
 func (s *Screen) Lines() []Line {
-	lines, _ := s.LinesAt()
-	return lines
-}
-
-// Position locates a screen's rows in its output. Scrolled+row names a row
-// across later scrolling, so a row can be told from an older identical one, but
-// only while Redraws is unchanged: a redraw (a screen erase, a reset or a size
-// change, a row inserted, deleted or scrolled back) puts any row anywhere.
-type Position struct {
-	Scrolled, Redraws uint64
-}
-
-// LinesAt is Lines with the Position read at the same instant.
-func (s *Screen) LinesAt() ([]Line, Position) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Line, s.rows)
 	for y := 0; y < s.rows; y++ {
 		out[y] = s.line(y)
 	}
-	return out, Position{Scrolled: s.scrolled, Redraws: s.redraws}
-}
-
-// ScrolledLines reports how many rows have scrolled off the top of the screen
-// since it was created. It counts with or without scrollback and never goes
-// back, unlike ScrollOffset, which is the viewport's position.
-func (s *Screen) ScrolledLines() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.scrolled
+	return out
 }
 
 // line renders row y as a Line. Called with s.mu held.
@@ -479,7 +450,6 @@ func (s *Screen) scrollUp(n int) {
 	if n > s.rows {
 		n = s.rows
 	}
-	s.scrolled += uint64(n)
 	for y := 0; y < n && s.maxScroll > 0; y++ {
 		_, line := cellbuf.RenderLine(s.buf, y)
 		s.pushScrollback(line)
@@ -510,7 +480,6 @@ func (s *Screen) pushScrollback(line string) {
 
 // scrollDown is symmetric — used by reverse-index (ESC M) at the top row.
 func (s *Screen) scrollDown(n int) {
-	s.redraws++
 	if n <= 0 {
 		return
 	}
@@ -571,10 +540,8 @@ func (s *Screen) csi(cmd ansi.Cmd, params ansi.Params) {
 		}
 		s.eraseLine(mode)
 	case 'L': // IL — insert line
-		s.redraws++
 		s.buf.InsertLine(s.cy, arg(0, 1), nil)
 	case 'M': // DL — delete line
-		s.redraws++
 		s.buf.DeleteLine(s.cy, arg(0, 1), nil)
 	case 'P': // DCH — delete character
 		s.deleteChars(arg(0, 1))
@@ -619,7 +586,6 @@ func (s *Screen) esc(cmd ansi.Cmd) {
 		s.cx = 0
 		s.linefeed()
 	case 'c': // RIS — full reset
-		s.redraws++
 		s.buf.Clear()
 		s.cx, s.cy = 0, 0
 		s.sx, s.sy = 0, 0
@@ -631,9 +597,6 @@ func (s *Screen) esc(cmd ansi.Cmd) {
 }
 
 func (s *Screen) eraseDisplay(mode int) {
-	if mode != 0 || (s.cx == 0 && s.cy == 0) {
-		s.redraws++
-	}
 	switch mode {
 	case 0: // from cursor to end
 		s.eraseLine(0)

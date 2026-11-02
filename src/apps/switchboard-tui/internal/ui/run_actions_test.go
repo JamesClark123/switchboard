@@ -282,7 +282,13 @@ func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	confirm("run-d", "R", "Restart setup of run-d?", "last seen working", "Anything it was doing is lost.")
 	confirm("run-c", "X", "left needing the developer")
 	confirm("run-x", "X", "remaining post-prompts are dropped")
-	confirm("run-u", "X", "No post-prompt follows")
+	confirm("run-u", "X", "No post-prompt follows", "may still be running", "Clear ends that session")
+	if v := func() string {
+		mm, _ := update(overviewAt(t, m, "run-a"), press("X"))
+		return ansi.Strip(mm.View())
+	}(); strings.Contains(v, "may still be running") {
+		t.Errorf("a step that can't have run needs no warning:\n%s", v)
+	}
 	// FAILED_PRECONDITION: the run moved on — shown, and the view reloads.
 	d.orchErr = status.Error(codes.FailedPrecondition, "the run moved on; reload")
 	mm := overviewAt(t, m, "run-u")
@@ -363,9 +369,14 @@ func TestPromptOverlayListsSteps(t *testing.T) {
 // none (an older daemon) the marks are inferred as before.
 func TestHeldRunRowShowsItsNote(t *testing.T) {
 	r := seqRun("h", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
-	r.Hold, r.StepNote = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, "clear retry stopped by developer"
-	if d := runStepDetail(r); !strings.Contains(d, "needing the developer") || !strings.HasSuffix(d, ": clear retry stopped by developer") {
+	r.Hold, r.StepNote = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, "clear retries stopped"
+	if d := runStepDetail(r); !strings.Contains(d, "needing the developer") || !strings.HasSuffix(d, ": clear retries stopped") {
 		t.Errorf("detail = %q", d)
+	}
+	// A detached agent: what frees it and that the retries stopped both show.
+	r.StepNote = "agent detached; t → Replace frees it; post-prompts dropped; clear retries stopped"
+	if d := runStepDetail(r); !strings.HasSuffix(d, ": "+r.StepNote) {
+		t.Errorf("detached detail = %q", d)
 	}
 	r.StepNote = ""
 	if d := runStepDetail(r); strings.Contains(d, ":") {

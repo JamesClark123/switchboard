@@ -525,10 +525,138 @@ func TestReportOnHaltedActionPrompt(t *testing.T) {
 	if r := runNow(env, o, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetSummary() != "done" {
 		t.Errorf("reported run = %+v", r)
 	}
-	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	r = waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
 	if got := d.typedTexts(); got[len(got)-1] != "wa: /clear" {
 		t.Errorf("cleanup after the report: %q", got)
 	}
+	// The report shows the prompt ran: no ✗ on a completed run's action prompt.
+	if got := outcomesOf(r)[2]; got != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE {
+		t.Errorf("action prompt's result = %v, want DONE: %v", got, outcomesOf(r))
+	}
+}
+
+// A developer's mark free shows nothing about the prompt: a halted one stays failed.
+func TestMarkFreeOfHaltedActionPromptStaysFailed(t *testing.T) {
+	r := &pb.Run{
+		Steps:      []*pb.RunStep{{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT}},
+		StepStatus: pb.StepStatus_STEP_STATUS_HALTED, State: pb.RunState_RUN_STATE_COMPLETED, ClosedByDeveloper: true,
+	}
+	settleSteps(r, 1, reportedOutcome(r))
+	if got := outcomesOf(r)[0]; got != pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED {
+		t.Errorf("result = %v", got)
+	}
+}
+
+// stepWithEvidence makes one transition of worker wa once its record shows the
+// submit just emitted: what a kick would do, for a test that nothing happens.
+func stepWithEvidence(t *testing.T, rt *runtime) {
+	t.Helper()
+	waitFor(t, func() bool { return rt.sandboxRecord("wa").GetAgent().GetLastSubmitAt() != nil })
+	rt.stepOnce("wa")
+}
+
+// SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
+// turn then finishes as usual and no R or X is needed.
+func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
+	unconfirmed := func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+		if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+		}
+		return nil, nil
+	}
+	for _, c := range []struct {
+		name string
+		ev   func(sb *pb.Sandbox)
+		want pb.StepObserved
+	}{
+		{"a turn start", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, 20*time.Second) }, pb.StepObserved_STEP_OBSERVED_MODEL_TURN},
+		{"a question", func(sb *pb.Sandbox) { sb.Agent.LastNeedsInputAt = sentAfter(sb, 20*time.Second) }, pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+			run := callSeq(t, env, o, "1")
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			waitSentSeen(t, rt, run.GetId())
+			env.clock.Advance(sentGrace)
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetHalted() })
+
+			emit(w, "wa", c.ev)
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+			if r.GetStepKindSeen() != c.want || r.GetStepUnconfirmed() || r.GetStepSentBeforeRestart() || r.GetStepNote() != "" {
+				t.Errorf("resumed = %+v", r)
+			}
+			waitFor(t, func() bool { return !w.get("wa").GetController().GetRun().GetHalted() })
+		})
+	}
+	t.Run("a turn end finishes the step", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 20*time.Second)
+		})
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	})
+	t.Run("evidence from before the send changes nothing", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, -time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("old evidence = %+v", r)
+		}
+	})
+	t.Run("a not-accepted halt stays", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "picker opened"}, nil
+				}
+				return nil, nil
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("not accepted = %+v", r)
+		}
+	})
+	t.Run("a built-in stays: a submit after it is the developer's", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+			}
+			d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "no confirmation"}
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_HALTED)
+		if !r.GetStepUnconfirmed() {
+			t.Fatalf("halted = %+v", r)
+		}
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("built-in = %+v", r)
+		}
+	})
 }
 
 // --- delivery: refusals, kicks during a call, single flight ---
@@ -2267,10 +2395,10 @@ func TestSettleSteps(t *testing.T) {
 		dropped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
 		failed  = pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED
 	)
-	r := &pb.Run{Steps: make([]*pb.RunStep, 5), StepKindSeen: pb.StepObserved_STEP_OBSERVED_AGENT_LOCAL}
+	r := &pb.Run{Steps: make([]*pb.RunStep, 5)}
 	settleSteps(r, 1, skipped)
 	settleSteps(r, 1, done) // a step's first result stands
-	if got := outcomesOf(r); got[0] != skipped || len(got) != 1 || r.GetStepResults()[0].GetKindSeen() != pb.StepObserved_STEP_OBSERVED_AGENT_LOCAL {
+	if got := outcomesOf(r); got[0] != skipped || len(got) != 1 {
 		t.Fatalf("skip = %+v", r.GetStepResults())
 	}
 	r.Step = 1

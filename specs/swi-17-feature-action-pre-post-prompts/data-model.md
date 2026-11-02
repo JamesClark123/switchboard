@@ -122,7 +122,7 @@ is compared; the orchestrator sees the cleared record in `sandbox_changed` and f
 
 | Field | Set on |
 |---|---|
-| `last_submit_at` | `UserPromptSubmit` |
+| `last_submit_at` | `UserPromptSubmit`, or a turn's first main-session `PreToolUse` with it lost (SWI-28) |
 | `last_turn_end_at` | `Stop` with no background tasks pending, or the WAITING backstop expiring |
 | `last_session_start_at`, `last_session_source` | `SessionStart` (`startup`, `resume`, `clear`; `compact` is ignored, as in SWI-15) |
 | `session_id` | The main agent's current session. The main agent is matched by **process** (the hook's `X-Sxb-Pid` equals the generation's main PID, bound by its first non-`compact` SessionStart), not by this id. The id follows `clear`/`resume` SessionStarts **from the main PID** only, never from a nested `claude -c -p` (research R13). It is used for Clear's read-back and hold release. Hook events from any other session are ignored for steps, evidence and holds. |

@@ -118,7 +118,6 @@ enum StepResultOutcome {
 message StepResult {
   int32 index = 1;
   StepResultOutcome outcome = 2;
-  StepObserved kind_seen = 3;
 }
 
 message Run {
@@ -144,7 +143,7 @@ message Run {
 
 message AgentSession {
   // … fields 1..4 unchanged …
-  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit
+  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit, or a turn's first main-session PreToolUse with it lost (SWI-28)
   google.protobuf.Timestamp last_turn_end_at = 6;       // Stop w/o background tasks, or backstop expiry
   google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
   string last_session_source = 8;                       // "startup" | "resume" | "clear"

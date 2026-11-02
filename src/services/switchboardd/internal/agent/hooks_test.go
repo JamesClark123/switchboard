@@ -166,6 +166,38 @@ func TestHookTapIsBestEffort(t *testing.T) {
 	}
 }
 
+// SWI-28: a turn's first tool call stands in for a lost submit, and the rest of
+// its tool calls write nothing.
+func TestHookPreToolUseRecordsALostTurnStart(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
+	s := mainServer(t, st)
+	s.now = tickingNow()
+	s.afterFunc = func(time.Duration, func()) stopper { return &fakeTimer{} }
+
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	first := st.agent("sb").GetLastSubmitAt()
+	if first == nil {
+		t.Fatal("a tool call with no submit must record the turn start")
+	}
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(first.AsTime()) {
+		t.Error("a turn's later tool calls must write nothing")
+	}
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().After(first.AsTime()) {
+		t.Error("the next turn's first tool call is a new turn start")
+	}
+	// A submit that arrived: its tool calls add nothing.
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
+	submit := st.agent("sb").GetLastSubmitAt()
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(submit.AsTime()) {
+		t.Error("a tool call after a recorded submit must write nothing")
+	}
+}
+
 func TestHookEvidencePerEvent(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
 	s := mainServer(t, st)

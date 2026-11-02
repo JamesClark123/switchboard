@@ -186,18 +186,11 @@ func (b *Broadcaster) enableScreenLocked() {
 // is stale (a chunk was dropped, the size changed, or no repaint has been parsed
 // since it was enabled). lines is nil when the broadcaster keeps no screen.
 func (b *Broadcaster) Screen() (lines []termview.Line, stale bool) {
-	lines, _, stale = b.ScreenAt()
-	return lines, stale
-}
-
-// ScreenAt is Screen with the rows' termview Position, read together with them.
-func (b *Broadcaster) ScreenAt() (lines []termview.Line, pos termview.Position, stale bool) {
 	sc := b.scr.Load()
 	if sc == nil {
-		return nil, termview.Position{}, false
+		return nil, false
 	}
-	lines, pos = sc.view.LinesAt()
-	return lines, pos, sc.isStale()
+	return sc.view.Lines(), sc.isStale()
 }
 
 // HasScreen reports whether the broadcaster keeps an agent screen.
