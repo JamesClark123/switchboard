@@ -66,8 +66,9 @@ Fixed before planning, as the review asked:
 
 Settled in the spec:
 
-- **The remote path limit also covers set override variables**, including `SWITCHBOARD_CODE_BIN`, because a
-  wrapper script can re-parse its arguments. Default commands aren't limited. (FR-517, FR-524)
+- **The remote path limit also covers the selected editor's set override variable**, including
+  `SWITCHBOARD_CODE_BIN`, because a wrapper script can re-parse its arguments. Default commands aren't limited.
+  (FR-517, FR-524)
 - **The `-` check also runs on the normalised SSH target**, so `ssh://-oX` is refused. (FR-513, FR-517)
 - **Letters and digits in the path limit are Unicode**, with combining marks. `~`, `(` and `#` stay refused,
   and the refusal names the character. SC-005's promise is limited to paths FR-517 accepts. (FR-517, SC-005)
@@ -90,6 +91,38 @@ Settled in the spec:
   authority. (FR-526)
 - **`enter` in the Editor list always saves**, even on the marked entry, and clears the unknown-editor
   notice. `esc` leaves the saved value in place. (FR-505, FR-508)
+
+### PR review 2026-11-02 (re-review run `run-c275c8f2-1516`, resolved in pr-response run `run-c275c8f2-1523`)
+
+Fixed before planning, as the review asked:
+
+- **The documented `sh -c` form now has a terminal.** It's `kitty -e sh -c 'cd "$1" && nvim .' sh {path}`, and the
+  note beside the input says a terminal editor needs a terminal emulator. (FR-521, FR-524, FR-511)
+- **A command that fails FR-506 is never displayed.** The Editor row shows `Custom (invalid command)`, and a
+  rejection or refusal names only the rule it broke. A first argument starting with `NAME=` is now rejected
+  whether or not it's quoted, so it can't reach the row either. (FR-532, FR-506, FR-522)
+- **One message can carry two notices.** Custom on a remote sandbox with an unreadable file needs both, so a
+  message carries every notice that applies, settings notices first. The unreadable-file notice now says
+  `settings couldn't be read at startup, changes aren't saved`, which stays true whichever editor is in use.
+  (FR-529, FR-525)
+- **The status line wraps instead of being cut off.** Lines it adds come out of the body. Long values are cut to
+  60 columns and a message to 6 lines, and every message in this spec fits at 80 columns. (FR-533, SC-004)
+
+Settled in the spec:
+
+- **A file that breaks mid-session is its own state.** The message says to fix the file, with no restart, and the
+  notice clears at the next successful save. It stays on the settings screen and isn't added to `v`, because `v`
+  doesn't read the file and could only repeat a stale claim. (FR-525, FR-529)
+- **Session-only changes are marked.** A row that wasn't written shows `(not saved)` until a save writes that row.
+  A later save still doesn't write it, because a hand fix may have changed that key. (FR-530, FR-504, FR-509)
+- **A failed write keeps the command input open**, as SWI-9 FR-017 requires. FR-525's refusal is the stated
+  exception, and so is having no store. Success returns to the settings row. (FR-528, FR-505)
+- **The input's cleaning is part of the spec.** Tabs and newlines become spaces and other control characters are
+  dropped. FR-506's control-character check applies to saved text, and the starting value is the cleaned text. A
+  saved command that opening would change shows SWI-9's rewrite notice. (FR-528, FR-506)
+- **The remote path limit depends on the selected editor's variable**, as FR-502 defines set. Another editor's
+  variable, or an empty one, doesn't trigger it. (FR-517, SC-002, SC-005)
+- **FR-526's filesystem checks run off the UI thread.** This is a note for planning.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -181,7 +214,10 @@ sandbox and check that the command ran with the sandbox's folder in place of the
    nothing saved (FR-528).
 7. **Given** the developer submits `cd {path} && nvim .`, **When** they confirm, **Then** it is rejected
    with a message saying the command doesn't run in a shell and that `sh -c` or a wrapper script is the way
-   to do this (FR-506).
+   to do this, with the note beside the input giving the form to use (FR-506, FR-521).
+8. **Given** a hand-edited command `API_TOKEN=abc123 myeditor {path}`, **When** the settings screen is shown
+   or `v` is pressed, **Then** the Editor row shows `Custom (invalid command)`, `v` refuses, and no part of the
+   command appears in either (FR-532, FR-522).
 
 ---
 
@@ -252,12 +288,19 @@ sandbox. Check that a clear message appears and nothing is started.
   of host need to edit the command when they switch, or use a wrapper script. The note beside the input
   (FR-521) and the docs (FR-524) say so.
 - **Settings file can't be parsed.** The file has broken TOML or a wrong type (for example `editor = 5`).
-  Defaults apply for the session, and the file is never overwritten, so a saved editor and custom command
-  aren't lost when another setting is toggled (FR-525).
+  Defaults apply until the developer changes a setting for the session, and the file is never overwritten, so
+  a saved editor and custom command aren't lost when another setting is toggled (FR-525). A file that breaks
+  after startup has its own, shorter path: the file just needs fixing, with no restart (FR-525).
 - **Empty variable.** An editor's command variable is set but empty or only spaces. That counts as unset,
   and the default command is used.
-- **Settings store unavailable.** The settings file can't be written. The choice applies to this session
-  only and the status line says so, the same as the existing sign-in setting does.
+- **Settings store unavailable.** There's no settings store, or the file can't be written. A toggle or an
+  Editor list entry applies to this session only, its row shows `(not saved)` (FR-530) and the status line
+  says so, the same as the existing sign-in setting does. The command input is different: a failed write
+  keeps it open with the error, and only having no store closes it with the command applied to the session
+  (FR-528).
+- **A session-only change after the file is fixed.** The developer toggles a setting while the file is broken,
+  fixes the file, then saves something else. The save writes only that other setting, so the toggle's row keeps
+  showing `(not saved)` and it warns that the value won't be there at the next start (FR-530).
 - **The editor exits at once.** Some editor commands hand the work to an already running window and exit
   straight away. An exit with status 0 counts as success. A non-zero exit soon after starting counts as a
   failure (FR-523). The TUI does not wait for the editor to close.
@@ -300,33 +343,36 @@ sandbox. Check that a clear message appears and nothing is started.
 
 - **FR-504**: The settings screen MUST have an **Editor** setting that shows the selected editor's display
   name. For Custom it shows `Custom` and the command's executable only (FR-532). It MUST default to VS Code
-  when nothing is saved.
+  when nothing is saved. It shows `(not saved)` when the choice applied to the session only (FR-530).
 - **FR-505**: Activating the Editor setting MUST let the developer choose one entry from FR-501's list,
   with the current choice marked. `space` or `enter` activates the row, like the existing rows. In the list,
   `↑`/`↓` and `j`/`k` move, `enter` confirms, and `esc` cancels and leaves the setting unchanged. `space`,
   `q` and `,` do nothing in the list. `enter` MUST always save the chosen entry, even when it's already
   marked, so confirming VS Code over an unknown saved value replaces that value and clears its notice
   (FR-508). `esc` leaves the saved value in place, unknown or not. Choosing Custom saves only when the
-  command input is confirmed (FR-506).
+  command input is confirmed (FR-506). Confirming a built-in editor returns to the settings row, and so does
+  `esc`.
 - **FR-506**: Choosing Custom MUST ask for a command line, with the session's custom command filled in when
   one exists. The text is split by FR-531's rules. The command MUST be rejected with a message that gives
-  the reason when it:
+  the reason, naming only the rule it broke and quoting no part of the command (FR-532), when it:
   - is empty, contains only spaces, has unbalanced quotes, ends in an unquoted backslash, contains a control
-    character other than a tab, or splits into no arguments;
+    character other than a tab (only saved text can, FR-528), or splits into no arguments;
   - has an empty first argument (`"" {path}`), because there would be no program to start;
   - has a `{path}` or `{host}` marker anywhere in its first argument (the executable), because that would
     run the folder path or SSH target as a program, or leave no program at all;
-  - has a first argument that starts with an unquoted `NAME=` (`FOO=1 myeditor {path}`), because nothing
-    sets the variable and `FOO=1` would be run as the program;
+  - has a first argument that starts with `NAME=`, quoted or not (`FOO=1 myeditor {path}`), because nothing
+    sets the variable and `FOO=1` would be run as the program. A program in such a folder is reached as
+    `./FOO=1/edit`;
   - contains an unquoted or double-quoted `$` (`$VAR`, `${VAR}`) or backtick, or an unquoted `|`, `;`, `&`,
     `<` or `>`, because nothing interprets them. The message MUST repeat that the command doesn't run in a
-    shell, and that `sh -c` or a wrapper script is the way to do this. Inside single quotes, or after a
-    backslash that FR-531 honours, these are literal characters.
+    shell, and that `sh -c` or a wrapper script is the way to do this, using the form in the note beside the
+    input (FR-521). Inside single quotes, or after a backslash that FR-531 honours, these are literal
+    characters.
 
   Other characters a shell treats specially, including the globs `*`, `?` and `[`, are passed as literal
-  text. The text MUST be saved as typed, with only surrounding spaces trimmed. When a command is rejected,
-  the input stays open with the reason and the previous editor choice MUST stay in force. FR-528 sets the
-  keys while the input is open.
+  text. The text MUST be saved as the input holds it, with only surrounding spaces trimmed, and nothing else
+  rewritten after the input's own cleaning (FR-528). When a command is rejected, the input stays open with the
+  reason and the previous editor choice MUST stay in force. FR-528 sets the keys while the input is open.
 - **FR-507**: The chosen editor (and the custom command, if any) MUST be saved per user, client-side,
   through the same settings store and file as the existing settings. It MUST take effect for the next `v`
   press with no restart, and it MUST survive a restart.
@@ -339,7 +385,8 @@ sandbox. Check that a clear message appears and nothing is started.
   command MUST NOT be changed by a save of any other setting (FR-530). For example, toggling automatic host
   sign-in MUST NOT replace an unknown editor value.
 - **FR-509**: The existing on/off setting (automatic host sign-in) MUST keep its current behaviour and
-  key bindings on the settings screen, except that FR-525 can stop a toggle from being saved. The help footer MUST describe the keys for both kinds of rows.
+  key bindings on the settings screen, except that FR-525 can stop a toggle from being saved, and then its
+  row shows `(not saved)` (FR-530). The help footer MUST describe the keys for both kinds of rows.
 
 **Opening a sandbox**
 
@@ -382,13 +429,14 @@ sandbox. Check that a clear message appears and nothing is started.
   FR-517 limits the risk and FR-521 warns about it.
 - **FR-517**: Before any editor is started, the workspace folder MUST be an absolute path and MUST NOT
   contain control characters, including newlines. The SSH target MUST NOT start with `-`, checked on the
-  target as given and again after any normalisation (FR-513). For a **remote sandbox with Custom or with a
-  set override variable**, the path comes from the remote daemon and the program may re-parse it (FR-516; a
-  wrapper script recommended by FR-502 is that kind of program), so the path MUST also be valid UTF-8 and
-  contain only Unicode letters, marks and digits, the ASCII space, and the characters `/ . _ - + = @ , :`.
-  None of those letters, marks or digits is shell syntax, so a home such as `/home/josé` works. Anything else
-  is refused, including every shell metacharacter, `~`, `(` and `#`. A default command with no override isn't
-  limited, so SC-002 holds. Otherwise `v` MUST refuse with a message, so neither value is read as an option
+  target as given and again after any normalisation (FR-513). For a **remote sandbox with Custom, or with the
+  selected editor's override variable set** (FR-502's meaning of set, so an empty or spaces-only value
+  doesn't count), the path comes from the remote daemon and the program may re-parse it (FR-516; a wrapper
+  script recommended by FR-502 is that kind of program), so the path MUST also be valid UTF-8 and contain only
+  Unicode letters, marks and digits, the ASCII space, and the characters `/ . _ - + = @ , :`. None of those
+  letters, marks or digits is shell syntax, so a home such as `/home/josé` works. Anything else is refused,
+  including every shell metacharacter, `~`, `(` and `#`. A default command isn't limited, even when another
+  editor's variable is set, so SC-002 holds. Otherwise `v` MUST refuse with a message, so neither value is read as an option
   and a remote daemon can't supply shell syntax. A refusal under the path limit MUST name the first rejected
   character, giving its code point when it can't be shown safely, so the developer can tell what to change.
   Spaces stay allowed because real workspace paths can contain them. A space can still split words when a
@@ -410,14 +458,16 @@ sandbox. Check that a clear message appears and nothing is started.
   - what the `{path}` and `{host}` markers do, and that the folder is added last when `{path}` is missing;
   - that the command doesn't run in a shell, so a leading `~/` is expanded, `$VAR` and shell syntax such as
     `&&` or `|` are not allowed, and globs are not expanded;
+  - that the command runs with no terminal (FR-511), so an editor that needs one must be wrapped in a terminal
+    emulator;
   - that a program which re-parses its arguments, such as `sh -c`, can run a folder path as code when the
     marker is inside its script, so the path must be passed as a separate argument:
-    `sh -c 'cd "$1" && nvim .' sh {path}`;
+    `kitty -e sh -c 'cd "$1" && nvim .' sh {path}`;
   - that a `{host}` embedded in a larger argument only works on remote sandboxes.
 - **FR-522**: When Custom is selected, FR-506's checks MUST run again on the session's custom command on
   every `v` press. That is the command loaded at startup or confirmed on the settings screen, so a hand edit
-  reaches `v` at the next start (FR-530). If the checks fail, `v` MUST refuse with the reason and point to
-  the settings screen.
+  reaches `v` at the next start (FR-530). If the checks fail, `v` MUST refuse with the reason, naming only the
+  rule the command broke (FR-532), and point to the settings screen.
 - **FR-523**: If an editor command exits with a **non-zero status** (or is killed by a signal) within
   3 seconds of starting, the status line MUST report a failure that names the sandbox, the executable
   (FR-532), the exit status and where to fix it: the override variable for a built-in editor, the settings
@@ -428,31 +478,38 @@ sandbox. Check that a clear message appears and nothing is started.
   started. An exit with status 0, or a command still running after 3 seconds, counts as success.
 - **FR-524**: The README MUST cover the configurable editor: the editor list and requirements, the
   environment variables (FR-503), and the `v` row in the key table. It MUST also document:
-  - the Custom command's rules, including FR-506, FR-516, FR-521 and FR-531, with the positional
-    `sh -c 'cd "$1" && nvim .' sh {path}` form as the example;
+  - the Custom command's rules, including FR-506, FR-511, FR-516, FR-521 and FR-531, with the positional
+    `kitty -e sh -c 'cd "$1" && nvim .' sh {path}` form as the example;
   - beside the override variables, the same re-parsing warning and FR-517's remote path limit;
   - that the command is stored in plain text, and that arguments are visible in the process list (`ps`,
     `/proc/<pid>/cmdline`) while the editor runs, so a secret belongs in a wrapper script or the environment;
   - that the settings screen is the recommended way to set a command with quotes, because the TUI handles the
     escaping. A hand-edited command is best written as a TOML literal string
     (`editor_custom_command = '"/My Editor/edit" {path}'`), or as a multi-line literal when it contains a
-    single quote (`editor_custom_command = '''sh -c 'cd "$1" && nvim .' sh {path}'''`);
+    single quote (`editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''`);
   - that hand edits take effect at the next start, and that a save doesn't keep comments in the file (FR-530).
-- **FR-525**: When the settings file exists but can't be read or parsed at startup, the TUI MUST NOT
-  overwrite it for the rest of that session, even if the file is fixed in the meantime. Defaults apply, and
-  any change on the settings screen, including toggling automatic host sign-in, applies to this session only.
-  The status line MUST say the change wasn't saved and that the file needs fixing **and a restart**. If the
-  file parsed at startup but no longer parses when a save re-reads it (FR-530), that save MUST be refused in
-  the same way, and a later save re-reads it again. The "settings could not be read" notice MUST say this and
-  MUST stay on the settings screen for the session. FR-529 sets where else it appears, because `v` opens
-  VS Code in this state even when the file names another editor. A fixed file takes effect at the next start.
+- **FR-525**: A settings file that can't be read or parsed MUST NOT be overwritten. There are two states:
+  - **Unreadable at startup.** The file exists but can't be read or parsed when the TUI starts. The TUI MUST NOT
+    write it for the rest of that session, even if the file is fixed in the meantime. Defaults apply until the
+    developer changes a setting, and any change on the settings screen, including toggling automatic host
+    sign-in, applies to this session only. So `v` opens VS Code in this state until the Editor setting is
+    changed, even when the file names another editor. The status line MUST say the change wasn't saved and that
+    the file needs fixing **and a restart**. The settings screen MUST show the "settings could not be read"
+    notice, saying the same, for the session, and FR-529 adds it to `v`. A fixed file takes effect at the next
+    start.
+  - **Broken mid-session.** The file parsed at startup but can't be read or parsed when a save re-reads it
+    (FR-530). That save MUST be refused, and the change applies to this session only. The status line MUST say
+    the change wasn't saved and that the file needs fixing, with **no** restart, because the next save re-reads
+    it and can succeed. The settings screen MUST show a notice that the file couldn't be read at the last save.
+    The notice clears at the next save that re-reads the file successfully. Nothing is added to `v`, because `v`
+    doesn't read the file and uses the session's values as before.
 - **FR-526**: Every check that doesn't need the workspace path MUST run **before** the daemon is asked for
   it, so `v` refuses at once even when a remote host is unreachable. These are: the host lookup (FR-520), no
   remote support (FR-514), a missing or invalid custom command (FR-522), an SSH target starting with `-`
   (FR-517), a target Zed can't use (FR-513), a home directory that can't be determined when the command needs
   it (FR-531), and an executable that can't be found (FR-518). The launch error stays the final authority,
   because the executable can change between the check and the start. The path checks in FR-517 run after the
-  daemon replies.
+  daemon replies. A check that touches the filesystem MUST NOT block the TUI (see Notes for Planning).
 - **FR-527**: The settings file MUST be written with owner-only permissions (`0600`), including any
   temporary file used to write it, because a custom command can hold a token or a licence key. The temporary
   file MUST be created fresh with a unique name, so a leftover from a crash can't pass on wider permissions
@@ -464,6 +521,20 @@ sandbox. Check that a clear message appears and nothing is started.
     MUST raise the unsaved-changes dialog. Save acts exactly like `enter`, so an FR-506 rejection keeps the
     input open with the reason. Cancel returns to the input unchanged. Discard returns to the list with
     nothing saved.
+  - `enter` writes before it closes. On success the input closes to the **settings row** and the command
+    applies. If the write itself fails, the input MUST stay open with its text and the error (SWI-9 FR-017),
+    and the session's editor and command don't change, so `v` never starts using a command that failed to save
+    this way.
+  - **Stated exception to SWI-9 FR-017:** when FR-525 refuses the save, or there's no settings store, no write
+    was tried, so the input closes to the settings row, the command applies to this session only, and the row
+    shows `(not saved)` (FR-530). This is how a developer keeps working with an unreadable file.
+  - The input cleans its text, as every single-line input does: tabs and newlines become spaces and other
+    control characters are dropped, both when it opens and on paste. So FR-506's control-character check can't
+    fire from the input. It applies to saved text, which only a hand edit can make hold one, and `v` enforces
+    it (FR-522). A pasted newline becomes a space, and FR-506's other checks run on the result.
+  - The starting value is the cleaned, trimmed text. When cleaning changes a saved command as the input opens,
+    the input MUST show SWI-9's notice that the text will be rewritten when saved. `enter` then saves the cleaned
+    text. `esc` with no further edit raises no dialog and leaves the saved text as it was.
   - If the value is unchanged, `esc` returns to the list with no dialog.
   - `esc` backs out **one level** at a time (input → list → settings row) and never closes the settings
     screen from inside the list or the input. List → settings row drops no typed text, so it raises no
@@ -473,17 +544,20 @@ sandbox. Check that a clear message appears and nothing is started.
     on inline inputs (SWI-9 FR-012). `enter` confirms.
 - **FR-529**: The status line holds one message, so a notice the developer must read MUST be part of the
   message for the action it concerns, rather than a message of its own that the next one replaces:
-  - While the unknown-editor state (FR-508) or the unreadable-settings state (FR-525) holds, the outcome
+  - While the unknown-editor state (FR-508) or the unreadable-at-startup state (FR-525) holds, the outcome
     message of **every** `v` MUST include the notice. That covers completion, refusal and failure, including
     FR-523. For example `opened abc in VS Code (unknown editor 'foo' in settings)` and
-    `opened abc in VS Code (settings file can't be read, defaults apply)`.
+    `opened abc in Zed (settings couldn't be read at startup, changes aren't saved)`. That wording stays true
+    whichever editor the session is using. The broken-mid-session state adds nothing to `v` (FR-525).
   - FR-515's remote warning MUST be part of the completion message, for example
     `opened abc in Custom (the path is on the remote host)`.
-  - One message never carries two notices. Both settings states use VS Code, the remote warning applies only
-    to Custom, and an unreadable file can't name an unknown editor.
+  - A message MUST carry **every** notice that applies, in one pair of parentheses separated by `; `, with settings
+    notices first and the remote warning last. The case that arises is Custom chosen for the session while the
+    file was unreadable at startup, on a remote sandbox with no `{host}`:
+    `opened abc in Custom (settings couldn't be read at startup, changes aren't saved; the path is on the remote host)`.
   - The two settings notices MUST also be set in the status line at startup, as best effort. A later message,
     such as the sign-in summary, may replace them, and that's accepted because `v` and the settings screen
-    always show them.
+    always show them, and FR-533 keeps them from being cut off.
   - Text from the settings file MUST be shown with control characters removed.
 - **FR-530**: Every save MUST re-read the settings file, apply only the setting that changed to the values
   just read, and write the result. A toggle changes its own key, confirming a built-in editor changes the
@@ -492,7 +566,11 @@ sandbox. Check that a clear message appears and nothing is started.
   the command shown in the input, because the developer has just confirmed it.
   - The session's values stay as loaded at startup plus its own changes, so a hand edit reaches `v` and the
     settings screen at the next start.
-  - A change that applied to the session only (FR-525, or a failed write) isn't written by a later save.
+  - A change that applied to the session only (FR-525, no settings store, or a failed write from a toggle or
+    the Editor list) isn't written by a later save, because a hand fix may have changed that key. Its row MUST
+    show `(not saved)` on the settings screen until a save writes that row's own key or keys, which pressing the
+    toggle or confirming an Editor entry again does. So the session's value can't silently disappear at the next
+    start. In the unreadable-at-startup state nothing is written, so the marks stay for the session.
   - Comments in the file aren't kept, nor are keys this version doesn't know (see Downgrade).
   - There is no lock. If two TUIs save at the same instant the last write wins, which is accepted.
 - **FR-531**: A Custom command MUST be split by these rules, which follow POSIX shell word splitting with no
@@ -508,15 +586,24 @@ sandbox. Check that a clear message appears and nothing is started.
     the developer's home directory. Nothing else expands: not `~user`, not `--dir=~/x`, and not a quoted or
     escaped `~`.
   - Markers are found in the split arguments, whatever quoting produced them (FR-516).
-  - Expansion happens at launch, on each `v`, never at save. The saved text stays as typed, and a hand-edited
+  - Expansion happens at launch, on each `v`, never at save. The saved text is never expanded, and a hand-edited
     command is treated the same way. If the home directory can't be determined and the command needs it, `v`
     MUST refuse with a message. The order on `v` is: split, FR-506's checks, `~`, then markers, so a
     substituted value is never expanded.
 - **FR-532**: A custom command can hold a secret, so outside the command input the TUI MUST show only its
-  executable (the first argument after splitting), never its other arguments. This applies to status messages
-  (FR-518, FR-522, FR-523), rejection reasons (FR-506) and logs. The Editor row shows `Custom: <executable>`,
-  followed by `…` when there are more arguments, or `Custom (invalid command)` when the command can't be
-  split. The input shows the full text, because the developer has to edit it.
+  executable (the first argument after splitting), never its other arguments, and only for a command that
+  passes FR-506's checks. This applies to status messages (FR-518, FR-523) and logs. A rejection (FR-506) or
+  refusal (FR-522) MUST NOT quote any part of the command, and names only the rule it broke. The Editor row
+  shows `Custom: <executable>`, followed by `…` when there are more arguments, or `Custom (invalid command)`
+  for any command that fails FR-506's checks, including an empty one or one that can't be split. The input
+  shows the full text, because the developer has to edit it.
+- **FR-533**: The status line MUST wrap to the terminal's width instead of being cut off, at spaces where it
+  can, so the end of a message stays readable, including FR-529's notices and FR-523's "where to fix it". The
+  lines it adds MUST come out of the body, so the header and help footer stay on screen. To keep one message
+  from filling the screen, a value taken from the settings file or an override variable (an unknown editor
+  value, an executable) MUST be cut to 60 columns with `…`, and a message MAY be cut after 6 lines with `…`.
+  At 80 columns or wider, every message this spec defines MUST fit within those 6 lines, so nothing it requires
+  is lost.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -524,7 +611,7 @@ sandbox. Check that a clear message appears and nothing is started.
   a default command, an override variable, and how it opens remote folders (Remote-SSH option, SSH
   address, or not supported).
 - **Editor preference**: part of the saved settings. It holds the selected editor's identifier, plus the
-  custom command line as typed. The custom command is kept even when another editor is
+  custom command line as saved. The custom command is kept even when another editor is
   selected, so switching back to Custom fills it in again.
 - **Open request**: what one `v` press resolves to. It holds the sandbox's workspace folder, the host's
   SSH target (empty for local), the selected editor, and the resolved command. From these it produces
@@ -540,8 +627,9 @@ sandbox. Check that a clear message appears and nothing is started.
   command and arguments as before this feature for 100% of local and remote sandboxes, and its footer text
   and success messages are unchanged. The only differences are detached launch (FR-511), the new input
   checks (FR-517, FR-526), the error texts and refusals in FR-518 and FR-520, the failure report in FR-523,
-  and FR-529's notices when the settings file names an unknown editor or can't be parsed. FR-517's remote
-  path limit can apply only when an override is set, and that includes an existing `SWITCHBOARD_CODE_BIN`.
+  FR-529's notices when the settings file names an unknown editor or can't be parsed, and long status messages
+  wrapping (FR-533). FR-517's remote path limit can apply only when the selected editor's override variable is
+  set, and that includes an existing `SWITCHBOARD_CODE_BIN` with VS Code selected.
 - **SC-003**: For every editor in the catalogue, the command and arguments started for a local sandbox,
   and for a remote sandbox where supported, match the editor's documented form. This is checked by an
   automated test for each editor.
@@ -552,13 +640,15 @@ sandbox. Check that a clear message appears and nothing is started.
   determined (FR-531), and a failed host lookup. For the path and target causes, "where to fix it" is the
   daemon or the host entry. A rejected custom command on
   the settings screen (FR-506) also says why it was rejected. Failures inside the editor after it has started
-  can't be detected and aren't covered.
+  can't be detected and aren't covered. An automated test at 80 columns checks that the whole message is on
+  screen, including every notice and where to fix it (FR-533).
 - **SC-005**: For a local sandbox, or a remote path that FR-517 accepts, a custom command whose programs
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
   positional `sh -c` form in FR-521. For a command with a marker inside a script it re-parses, the TUI can't
-  give this guarantee. On a remote sandbox with Custom or a set override variable, a path outside FR-517's
-  limit is refused before anything starts, and the note beside the input and the README warn about the rest.
+  give this guarantee. On a remote sandbox with Custom, or with the selected editor's override variable set, a
+  path outside FR-517's limit is refused before anything starts, and the note beside the input and the README
+  warn about the rest.
 - **SC-006**: After a settings file becomes unparseable, no action in the TUI changes its contents. The saved
   editor and custom command are still there once the developer fixes the file.
 - **SC-007**: A hand edit made to any setting while the TUI runs is still in the file after the TUI saves a
@@ -580,7 +670,23 @@ These follow from the requirements above and from how the code works today. They
   when it creates the file. The review confirmed that a leftover `0644` temporary file gives a final mode of
   `644`, so add a test for that case. `SaveTOML` is also used for hosts, groups and configs, so choose how the
   owner-only mode reaches settings alone.
-- **Guard (FR-528):** add a surface to `guardSurface` in `formguard.go`, following `gRename`.
+- **Guard (FR-528):** add a surface to `guardSurface` in `formguard.go`. `activeGuard` must choose it from a
+  sub-state of `screenSettings`, like the `screenHosts` case and `gHostAdd`, because the input shares that screen
+  with the row and the list. `gRename` is chosen from the screen alone, so it doesn't fit. Neither `submitRename`
+  nor `submitHostAdd` is a model for the submit, since both close the input before acting. This one writes first
+  and closes after.
+- **Filesystem checks (FR-526):** today `openVSCodeCmd` does its host lookup on the update loop, and only the daemon
+  call runs inside the returned command. `exec.LookPath` belongs inside that command, before the daemon call,
+  because it stats a file in each `PATH` directory and a stale network mount can block it for a long time. The
+  other new work on `v` is small parsing and character checks, and the settings re-read happens only on a save.
+- **Status line (FR-533):** `footer` calls `sanitizeLine` with width 0, and Bubble Tea cuts wider lines with no
+  ellipsis. `renderHelp` already wraps at `m.width`. `bodyHeight` assumes one status line and `m.list.SetSize` runs
+  only on a resize, while Bubble Tea drops the **top** lines of a view taller than the terminal, so body heights
+  must take the status line's height into account whenever it changes. The change reaches every screen using
+  `chrome`, not only `v`.
+- **Input cleaning (FR-528):** `textinput.SetValue` and paste both sanitise (`runeutil` in Bubbles v1.0.0). Take the
+  starting value after `SetValue`, as `enterRename` does, and compare with the saved text to decide on the notice
+  (`normalizeSuffix`).
 
 ## Assumptions
 
