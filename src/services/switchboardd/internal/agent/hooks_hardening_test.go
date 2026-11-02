@@ -557,7 +557,12 @@ func TestParseLaunchRecord(t *testing.T) {
 	if r := parseLaunchRecord(" 3  319 442 "); r == nil || r.gen != 3 || r.pid != 319 || r.start != "442" {
 		t.Errorf("record = %+v", r)
 	}
-	for _, v := range []string{"", "   ", "3 319", "x 319 442", "3 y 442", "3 319 442 extra", "3 319 z"} {
+	// The record's start reaches the registry through BindRecorded, so padding
+	// does not: only the number is kept.
+	if r := parseLaunchRecord("3 319 " + strings.Repeat("0", 1024) + "442"); r == nil || r.start != "442" {
+		t.Errorf("zero-padded record = %+v", r)
+	}
+	for _, v := range []string{"", "   ", "3 319", "x 319 442", "3 y 442", "3 319 442 extra", "3 319 z", "3 319 " + strings.Repeat("9", 1024)} {
 		if parseLaunchRecord(v) != nil {
 			t.Errorf("%q parsed", v)
 		}
@@ -565,8 +570,9 @@ func TestParseLaunchRecord(t *testing.T) {
 }
 
 // X-Sxb-Pid-Start reaches the registry through a wrapped bind, so Handle keeps it
-// only when it is a start time, whatever else a token holder sends. Anything else
-// counts as unknown, which every consumer already handles.
+// only when it is a start time, whatever else a token holder sends, and keeps only
+// the number, so padding cannot make it any longer. Anything else counts as
+// unknown, which every consumer already handles.
 func TestHandleBlanksAnInvalidPIDStart(t *testing.T) {
 	for _, tc := range []struct{ header, want string }{
 		{"501", "501"},
@@ -576,7 +582,9 @@ func TestHandleBlanksAnInvalidPIDStart(t *testing.T) {
 		{"-1", ""},
 		{"+501", ""},
 		{"501 502", ""},
-		{strings.Repeat("9", 1024), ""}, // all digits, but no start time is this long
+		{strings.Repeat("9", 1024), ""}, // all digits, but it overflows a uint64
+		{strings.Repeat("0", 1024) + "501", "501"}, // ParseUint takes any run of leading zeros
+		{strings.Repeat("0", 1024), "0"},
 	} {
 		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", State: pb.SandboxState_SANDBOX_STATE_RUNNING})
 		s, sp := tokenServer(t, st)

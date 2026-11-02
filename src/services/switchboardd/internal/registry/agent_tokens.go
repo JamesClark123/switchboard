@@ -30,7 +30,8 @@ var ErrAgentTokenNotFound = errors.New("agent token not found")
 // AgentToken is one agent generation's hook token and the main agent process
 // bound to it (research R13): the PID of the `claude` process a hook or probe
 // bound, and that process's start time (/proc/<pid>/stat field 22), empty when
-// the binder had none (a hook with no launch record).
+// the binder had none (a hook with no launch record, or a wrapped hook that sent
+// no valid start).
 type AgentToken struct {
 	Gen       int64  `json:"-"`
 	Token     string `json:"token"`

@@ -335,11 +335,22 @@ func parseLaunchRecord(v string) *launchRecord {
 	}
 	gen, gerr := strconv.ParseInt(f[0], 10, 64)
 	pid, perr := strconv.Atoi(f[1])
-	_, serr := strconv.ParseUint(f[2], 10, 64) // it is persisted: a start time, nothing else
-	if gerr != nil || perr != nil || serr != nil {
+	start := parseStart(f[2])
+	if gerr != nil || perr != nil || start == "" {
 		return nil
 	}
-	return &launchRecord{gen: gen, pid: pid, start: f[2]}
+	return &launchRecord{gen: gen, pid: pid, start: start}
+}
+
+// parseStart returns a process start time in canonical form, "" unless v is one.
+// The result can be persisted, so it is a start time and nothing else, and it is
+// the parsed number because ParseUint accepts any run of leading zeros.
+func parseStart(v string) string {
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatUint(n, 10)
 }
 
 // hasRecord reports whether the hook read a launch record of its own generation.
@@ -549,10 +560,7 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 		p.NotificationType, p.Source, p.SessionID = in.NotificationType, in.Source, in.SessionID
 		p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		p.PID, _ = strconv.Atoi(r.Header.Get(headerPID))
-		p.PIDStart = r.Header.Get(headerPIDStart)
-		if _, err := strconv.ParseUint(p.PIDStart, 10, 64); err != nil {
-			p.PIDStart = "" // it can be persisted (BindWrapped): a start time, nothing else
-		}
+		p.PIDStart = parseStart(r.Header.Get(headerPIDStart)) // BindWrapped can persist it
 		p.PIDParent, _ = strconv.Atoi(r.Header.Get(headerParent))
 		p.Record = parseLaunchRecord(r.Header.Get(headerRecord))
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
