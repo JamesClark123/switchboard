@@ -100,7 +100,7 @@ arguments. Select WebStorm and press `v`. Check that the script ran with the san
 1. **Given** no editor command variables are set, **When** an editor is opened, **Then** its documented
    default command is used (for example `code` for VS Code, `webstorm` for WebStorm).
 2. **Given** the variable for the selected editor is set to a path or command name, **When** `v` is
-   pressed, **Then** that command is started instead of the default.
+   pressed, **Then** that one executable is started instead of the default (FR-502).
 3. **Given** `SWITCHBOARD_CODE_BIN` is already set from before this feature, **When** VS Code is the
    selected editor, **Then** it is still honoured with no change to the variable's name or meaning.
 4. **Given** the developer asks for the client's list of environment variables (the existing env check
@@ -124,8 +124,8 @@ sandbox and check that the command ran with the sandbox's folder in place of the
 **Acceptance Scenarios**:
 
 1. **Given** the developer selects **Custom** in the editor list, **When** they confirm, **Then** they are
-   asked for a command, with the current custom command (if any) filled in, and a short note explains the
-   folder marker.
+   asked for a command, with the current custom command (if any) filled in, and a short note beside the
+   input gives the rules in FR-521.
 2. **Given** a custom command containing the folder marker, **When** `v` is pressed, **Then** the command
    runs with the marker replaced by the sandbox's workspace folder, as one argument even if the folder
    path contains spaces.
@@ -185,19 +185,31 @@ sandbox. Check that a clear message appears and nothing is started.
   This loss is accepted.
 - **Older settings file.** A settings file written before this feature has no editor entry. The editor
   defaults to VS Code, and automatic host sign-in keeps its saved value.
-- **Custom selected but the command is missing.** Custom is selected but the saved command is empty or
-  missing. `v` reports that no custom command is set and points to the settings screen. It does not fall
-  back to another editor without saying so.
+- **Custom selected but the saved command is missing or invalid.** Custom is selected but the saved command
+  is empty, missing, or fails FR-506's checks (it can be hand-edited in the settings file). `v` refuses with
+  the reason and points to the settings screen (FR-522). It does not fall back to another editor.
 - **Quoting in the custom command.** The custom command contains quoted arguments (for example
   `"/Applications/My Editor.app/bin/edit" {path}`). It is split into arguments the way a shell would
-  split it, honouring quotes. It is **not** run through a shell, so a folder path with special characters
-  can never be read as shell syntax.
+  split it, honouring quotes. The TUI does **not** run it through a shell, so the TUI itself never reads a
+  folder path as shell syntax. A command that starts its own shell (for example `sh -c '…{path}…'`) is the
+  exception, and FR-516 and SC-005 cover it.
+- **`~` and `$VAR` in the custom command.** There is no shell to expand them, so FR-506 sets the rules: a
+  leading `~/` is expanded and `$VAR` is rejected with a message.
+- **One Custom command for local and remote sandboxes.** This is a known limitation. There is one command
+  for every host. A `{host}` embedded in a larger argument (`--remote ssh-remote+{host}`) or used as an
+  option's value (`--host {host}`) produces a broken command on a local sandbox. Developers with both kinds
+  of host need to edit the command when they switch, or use a wrapper script. The note beside the input
+  (FR-521) and the docs (FR-524) say so.
+- **Settings file can't be parsed.** The file has broken TOML or a wrong type (for example `editor = 5`).
+  Defaults apply for the session, and the file is never overwritten, so a saved editor and custom command
+  aren't lost when another setting is toggled (FR-525).
 - **Empty variable.** An editor's command variable is set but empty or only spaces. That counts as unset,
   and the default command is used.
 - **Settings store unavailable.** The settings file can't be written. The choice applies to this session
   only and the status line says so, the same as the existing sign-in setting does.
 - **The editor exits at once.** Some editor commands hand the work to an already running window and exit
-  straight away. That counts as success. The TUI does not wait for the editor to close.
+  straight away. An exit with status 0 counts as success. A non-zero exit soon after starting counts as a
+  failure (FR-523). The TUI does not wait for the editor to close.
 
 ## Requirements *(mandatory)*
 
@@ -227,6 +239,9 @@ sandbox. Check that a clear message appears and nothing is started.
 
 - **FR-502**: Every override variable MUST be optional. When it is unset, empty or only spaces, the
   default command MUST be used. `SWITCHBOARD_CODE_BIN` MUST keep its current name, default and meaning.
+  A set value MUST be used as **one executable**, exactly as given. It is never split into words, because
+  macOS paths contain spaces, and `~` and `$VAR` are not expanded, as with `SWITCHBOARD_CODE_BIN` today. A
+  command with arguments (for example `flatpak run dev.zed.Zed`) needs a wrapper script or Custom.
 - **FR-503**: Every override variable MUST appear in the client's declared configuration (the same list
   the env check and documentation read from), each with its default and the editor it belongs to.
 
@@ -235,23 +250,36 @@ sandbox. Check that a clear message appears and nothing is started.
 - **FR-504**: The settings screen MUST have an **Editor** setting that shows the selected editor's display
   name (and, for Custom, the saved command). It MUST default to VS Code when nothing is saved.
 - **FR-505**: Activating the Editor setting MUST let the developer choose one entry from FR-501's list,
-  with the current choice marked. They confirm with one key and cancel with `esc`, which leaves the
-  setting unchanged.
+  with the current choice marked. `space` or `enter` activates the row, like the existing rows. In the list,
+  `↑`/`↓` and `j`/`k` move, `enter` confirms, and `esc` cancels and leaves the setting unchanged. `space`,
+  `q` and `,` do nothing in the list.
 - **FR-506**: Choosing Custom MUST ask for a command line, with the saved custom command filled in when one
-  exists. The command MUST be rejected with a message when it is empty, contains only spaces, has
-  unbalanced quotes, or splits into no arguments. When it is rejected, the previous editor choice MUST
-  stay in force. `enter` confirms and `esc` cancels, both in the editor list and in the command input.
+  exists. The command MUST be rejected with a message that gives the reason when it:
+  - is empty, contains only spaces, has unbalanced quotes, or splits into no arguments;
+  - has a `{path}` or `{host}` marker anywhere in its first argument (the executable), because that would
+    run the folder path or SSH target as a program, or leave no program at all;
+  - contains an unquoted or double-quoted `$` (`$VAR`, `${VAR}`), because nothing expands it. A `$` inside
+    single quotes is a literal character.
+
+  An unquoted leading `~/` in any argument MUST be expanded to the developer's home directory, as must an
+  argument that is exactly an unquoted `~`. This happens before markers are replaced, so a substituted value
+  is never expanded. When a command is rejected, the previous editor choice MUST stay in force. While the
+  input is open, every key except `enter` and `esc` is text, including `q`, `,`, `j`, `k`, space and pasted
+  text. `enter` confirms. `esc` backs out **one level** at a time (input → list → settings row) and never
+  closes the settings screen from inside the list or the input.
 - **FR-507**: The chosen editor (and the custom command, if any) MUST be saved per user, client-side,
   through the same settings store and file as the existing settings. It MUST take effect for the next `v`
   press with no restart, and it MUST survive a restart.
 - **FR-508**: A settings file with no editor entry MUST load as VS Code without changing any other saved
   setting. A settings file naming an unknown editor MUST load as VS Code for the session, MUST load every
   other setting as saved, and MUST show a notice naming the unknown value. The notice MUST be separate from
-  the "settings could not be read" notice. The saved editor value and custom command MUST be written back
+  the "settings could not be read" notice. It MUST appear in the status line at startup, and the first `v`
+  of the session MUST repeat it. On the settings screen it MUST be derived from the saved value, so it stays
+  until the Editor row is changed and a save of another setting doesn't clear it. The saved editor value and custom command MUST be written back
   unchanged on every save until the developer changes the Editor row itself. For example, toggling
   automatic host sign-in MUST NOT replace an unknown editor value.
 - **FR-509**: The existing on/off setting (automatic host sign-in) MUST keep its current behaviour and
-  key bindings on the settings screen. The help footer MUST describe the keys for both kinds of rows.
+  key bindings on the settings screen, except that FR-525 can stop a toggle from being saved. The help footer MUST describe the keys for both kinds of rows.
 
 **Opening a sandbox**
 
@@ -270,30 +298,80 @@ sandbox. Check that a clear message appears and nothing is started.
   MUST be given one `ssh://<target><absolute-path>` address. There is exactly one `/` between the target
   and the path, because the absolute path starts with one, and the path is encoded the way Zed's address
   parser expects, so spaces and special characters reach the right folder. The exact form and encoding
-  MUST be confirmed against Zed's documentation or source during planning.
+  MUST be confirmed against Zed's documentation or source during planning. Host entries are free text, so
+  the target MUST also be normalised for this address: a leading `ssh://` is removed and an IPv6 address
+  gets brackets. A target that still can't be a URL authority (for example one containing `/`, `?` or `#`)
+  MUST make `v` refuse with a message. Planning confirms the exact rules alongside the address form.
 - **FR-514**: For a remote sandbox and an editor without remote-folder support, `v` MUST NOT start
   anything, and the status line MUST say that the selected editor cannot open folders on remote hosts and
-  that the editor can be changed on the settings screen.
+  that the editor can be changed on the settings screen. FR-526 sets when this check runs.
 - **FR-515**: A Custom command MUST support two markers: `{path}` for the workspace folder and `{host}`
   for the SSH target (empty for a local sandbox). When `{path}` is missing, the folder MUST be added as the
   last argument. When the sandbox is remote and the command has no `{host}` marker, the command MUST
   still run, and the status line MUST warn that the path is on the remote host.
 - **FR-516**: A Custom command MUST be split into arguments with shell-style quoting rules and run
   **without** a shell. Each marker MUST be replaced inside its argument, so a substituted value can never
-  add or split arguments. For a local sandbox, an argument that is exactly `{host}` and nothing else is
-  dropped. Any other argument containing `{host}` gets an empty string in its place. Markers cannot be
-  escaped, so a literal `{path}` or `{host}` in the command is not supported.
-- **FR-517**: Before any editor is started, the workspace folder MUST be an absolute path. The SSH
-  target MUST NOT start with `-`. Otherwise `v` MUST refuse with a message, so a value supplied by a
-  remote daemon is never read as an option.
+  add or split arguments. Replacement MUST be a **single pass** over the original arguments, so a marker
+  that appears inside a substituted value (for example a path containing a literal `{host}`) is not expanded
+  again. For a local sandbox, an argument that is exactly `{host}` and nothing else is dropped. Any other
+  argument containing `{host}` gets an empty string in its place. Markers cannot be escaped, so a literal
+  `{path}` or `{host}` in the command is not supported. These guarantees cover the TUI's own launch only. A
+  program in the command that re-parses or executes its arguments (for example `sh -c '…{path}…'` or
+  `kitty -e {path}/bin/edit`) can still treat the value as code. The TUI can't detect this reliably, so
+  FR-517 limits the risk and FR-521 warns about it.
+- **FR-517**: Before any editor is started, the workspace folder MUST be an absolute path and MUST NOT
+  contain control characters, including newlines. The SSH target MUST NOT start with `-`. For a **remote
+  sandbox with Custom**, the path comes from the remote daemon and the command may re-parse it (FR-516), so
+  the path MUST also contain only letters, digits, spaces and the characters `/ . _ - + = @ , :`. Anything
+  else, including every shell metacharacter, is refused. Spaces stay allowed because real workspace paths
+  can contain them. Otherwise `v` MUST refuse with a message, so neither value is read as an option and a
+  remote daemon can't supply shell syntax. A space can still split words inside a developer's own `sh -c`,
+  so that form needs its marker quoted, and FR-521 says so.
 - **FR-518**: When the editor's command can't be started (not found, not executable), the status line
-  MUST name the command and, for a built-in editor, the environment variable that overrides it. For
-  Custom, it MUST point to the settings screen.
-- **FR-519**: The sandbox list's help footer and the status message shown while opening MUST name the
-  selected editor instead of a fixed "vscode". The footer uses the editor's identifier (FR-501), and
-  "custom" for Custom. With VS Code selected, both MUST read exactly as they do today.
+  MUST name the command and, for a built-in editor, the environment variable that overrides it, with a
+  reminder that the variable holds a single executable (a wrapper script or Custom covers a command with
+  arguments). For Custom, it MUST point to the settings screen.
+- **FR-519**: The sandbox list's help footer MUST name the selected editor instead of a fixed "vscode",
+  using the editor's identifier (FR-501), and "custom" for Custom. The status label shown while opening
+  stays `opening`, as it is today, and names no editor. The completion message (`opened <sandbox> in <name>`)
+  and the "opener not configured" message MUST use the editor's display name instead of a fixed "VS Code".
+  With VS Code selected, all of these MUST read exactly as they do today.
 - **FR-520**: A sandbox is **remote** when its host has an SSH target. This is the same rule that decides
-  today whether VS Code opens the folder over Remote-SSH. Every "remote" in this spec means this.
+  today whether VS Code opens the folder over Remote-SSH. Every "remote" in this spec means this. If the
+  host's entry can't be looked up (the hosts file can't be read, or the host is gone), `v` MUST refuse with
+  an error for every editor. The sandbox MUST NOT be treated as local, because that would bypass FR-514.
+- **FR-521**: The note beside the custom command input MUST state, briefly:
+  - what the `{path}` and `{host}` markers do, and that the folder is added last when `{path}` is missing;
+  - that the command doesn't run in a shell, so a leading `~/` is expanded and `$VAR` is not allowed;
+  - that a program which re-parses its arguments, such as `sh -c`, can run a folder path as code, so such
+    commands are unsafe on remote hosts and need the marker quoted;
+  - that a `{host}` embedded in a larger argument only works on remote sandboxes.
+- **FR-522**: When Custom is selected, FR-506's checks MUST run again on the saved command on every `v`
+  press. If they fail, `v` MUST refuse with the reason and point to the settings screen.
+- **FR-523**: If an editor command exits with a **non-zero status** (or is killed by a signal) within
+  3 seconds of starting, the status line MUST report a failure that names the command and the exit status,
+  replacing the earlier completion message. The exit status comes from the background reaper in FR-511, and
+  `v` MUST NOT wait for it before reporting that the editor started. An exit with status 0, or a command
+  still running after 3 seconds, counts as success.
+- **FR-524**: The README MUST cover the configurable editor: the editor list and requirements, the
+  environment variables (FR-503), and the `v` row in the key table. It MUST also document the Custom
+  command's rules, including the limits in FR-516 and FR-521, that the command is stored in plain text, and
+  that a hand-edited command is best written as a TOML literal string
+  (`editor_custom_command = '"/My Editor/edit" {path}'`).
+- **FR-525**: When the settings file exists but can't be read or parsed, the TUI MUST NOT overwrite it for
+  the rest of that session. Defaults apply, and any change on the settings screen, including toggling
+  automatic host sign-in, applies to this session only. The status line MUST say the change wasn't saved and
+  that the file needs fixing. Before every save the TUI MUST also re-read the file, and if the file no longer
+  parses it MUST refuse in the same way. The "settings could not be read" notice MUST say this, MUST stay on
+  the settings screen for the session, and MUST also appear in the status line at startup, because `v` opens
+  VS Code in this state even when the file names another editor. A fixed file takes effect at the next start.
+- **FR-526**: Every check that doesn't need the workspace path MUST run **before** the daemon is asked for
+  it, so `v` refuses at once even when a remote host is unreachable. These are: the host lookup (FR-520), no
+  remote support (FR-514), a missing or invalid custom command (FR-522), an SSH target starting with `-`
+  (FR-517) and a target Zed can't use (FR-513). The path checks in FR-517 run after the daemon replies.
+- **FR-527**: The settings file MUST be written with owner-only permissions (`0600`), including any
+  temporary file used to write it, because a custom command can hold a token or a licence key. An existing
+  file with wider permissions is corrected on the next save.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -313,18 +391,27 @@ sandbox. Check that a clear message appears and nothing is started.
 
 - **SC-001**: A developer can switch the `v` editor from VS Code to any other listed editor in under 15
   seconds from the sandbox list, without editing any file or environment variable.
-- **SC-002**: With no new settings and no new environment variables, `v` behaves identically to before
-  this feature for 100% of local and remote sandboxes.
+- **SC-002**: With no new settings and no new environment variables, `v` opens the same folder with the same
+  command and arguments as before this feature for 100% of local and remote sandboxes, and its footer text
+  and success messages are unchanged. The only differences are detached launch (FR-511), the new input
+  checks (FR-517), the error texts and refusals in FR-518 and FR-520, and the failure report in FR-523.
 - **SC-003**: For every editor in the catalogue, the command and arguments started for a local sandbox,
   and for a remote sandbox where supported, match the editor's documented form. This is checked by an
   automated test for each editor.
-- **SC-004**: Every failed `v` press shows a status message that names the cause and where to fix it,
-  and the TUI stays usable. The causes are: command missing, remote not supported, no custom command, a
-  workspace path that isn't absolute, and an SSH target starting with `-`. For the last two, "where to fix
-  it" is the daemon or the host entry. A rejected custom command on the settings screen (FR-506) also
-  says why it was rejected.
-- **SC-005**: A custom command with a folder path containing spaces or shell characters opens the right
-  folder, and no part of the path is ever run as a command.
+- **SC-004**: Every failure the TUI can detect on a `v` press shows a status message that names the cause
+  and where to fix it, and the TUI stays usable. The causes are: command missing, a command that exits
+  non-zero soon after starting (FR-523), remote not supported, no custom command or an invalid saved one, a
+  workspace path that fails FR-517, an SSH target that fails FR-513 or FR-517, and a failed host lookup. For
+  the path and target causes, "where to fix it" is the daemon or the host entry. A rejected custom command on
+  the settings screen (FR-506) also says why it was rejected. Failures inside the editor after it has started
+  can't be detected and aren't covered.
+- **SC-005**: A custom command whose programs don't re-parse or execute their arguments, given a folder path
+  containing spaces or shell characters, opens the right folder, and no part of the path is ever run as a
+  command. For a command that does re-parse them (for example `sh -c`), the TUI can't give this guarantee. On
+  a remote sandbox, a path containing shell metacharacters or control characters is refused before anything
+  starts (FR-517), and the note beside the input warns about the rest (FR-521).
+- **SC-006**: After a settings file becomes unparseable, no action in the TUI changes its contents. The saved
+  editor and custom command are still there once the developer fixes the file.
 
 ## Assumptions
 
@@ -346,8 +433,8 @@ sandbox. Check that a clear message appears and nothing is started.
   `zeditor`. The override variables cover these cases, and the "command not found" message names the
   variable.
 - VS Code forks (Cursor, Windsurf) need their own remote-SSH extension installed to open remote folders.
-  The TUI can't detect a failure inside the editor once the editor has started. Windsurf's `--remote`
-  support is to be confirmed during planning.
+  The TUI can't detect a failure inside the editor once the editor has started, unless the command itself
+  exits non-zero (FR-523). Windsurf's `--remote` support is to be confirmed during planning.
 - Editors reach the remote host through the developer's own SSH configuration, as VS Code does today. A
   host's switchboard-specific SSH options (for example `-i <key>`) are not passed to editors.
 - The key stays `v`. Its help text changes to name the selected editor.
