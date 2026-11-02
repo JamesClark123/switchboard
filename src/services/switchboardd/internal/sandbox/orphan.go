@@ -704,9 +704,10 @@ func (m *Manager) MarkOrphanCandidates() {
 //
 // It runs alongside the gRPC server (SWI-26): MarkOrphanCandidates already
 // has the gate refuse every candidate, and the token generations are read
-// before the listing, so an agent spawned since (a newer generation, e.g. into
-// a sandbox that was not a candidate) is never retired or marked EXITED from
-// the older listing: that sandbox is left to its own observers.
+// before the listing, so a sandbox with an agent spawned since (a newer
+// generation, e.g. a worker warm-started that was not a candidate) is skipped:
+// that agent is the daemon's own, never retired, marked EXITED or made
+// unknown from the older listing. Each record is re-read as it is classified.
 func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 	all, err := m.store.List()
 	if err != nil {
@@ -727,6 +728,14 @@ func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 	var probe []string
 	for _, sb := range all {
 		id := sb.GetId()
+		if d.Tokens != nil && d.Tokens.Generation(id) > snap[id] {
+			continue // an agent spawned since the snapshot: the daemon's own
+		}
+		if cur, err := m.store.Get(id); err == nil {
+			sb = cur // e.g. a Restart since the snapshot
+		} else {
+			continue // destroyed meanwhile
+		}
 		var state pb.SandboxState
 		unknown := ""
 		if lerr == nil {
@@ -736,9 +745,6 @@ func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 		switch {
 		case readable && state != pb.SandboxState_SANDBOX_STATE_RUNNING:
 			if d.Tokens != nil {
-				if d.Tokens.Generation(id) > snap[id] {
-					continue // an agent spawned since the listing was taken
-				}
 				for _, g := range d.Tokens.Unretired(id) {
 					if g <= snap[id] {
 						d.Tokens.Retire(id, g)

@@ -178,20 +178,20 @@ func TestServiceStartAndStopBesideAProbe(t *testing.T) {
 	}
 }
 
-// SWI-26 B4/B5: once a lifecycle operation holds the runtime lock, a start
-// already past its launch runs no further `sbx exec` (readiness check) and
-// no `sbx ports --publish`, and leaves its group to the operation's drain.
-func TestStartRunsNoExecUnderALifecycleOperation(t *testing.T) {
-	ln, port := listenAllInterfaces(t)
-	defer func() { _ = ln.Close() }()
-	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+// startUnderOperation starts an in-sandbox service whose readiness never
+// succeeds, and takes the runtime lock for writing (a lifecycle operation)
+// right after its launch. It returns the lock and the instance id once the
+// readiness window has passed.
+func startUnderOperation(t *testing.T) (*Supervisor, *fakeRunner, *sync.RWMutex, string) {
+	t.Helper()
+	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
 	s, _, runner, _ := newTestSupervisor(t, sb)
 	s.SetReadinessTimeout(200 * time.Millisecond)
 	var rw sync.RWMutex
 	var calls atomic.Int32
 	s.SetRuntimeLock(func(string) (func(), bool) {
 		if calls.Add(1) == 2 {
-			rw.Lock() // the stop takes the lock right after the launch
+			rw.Lock() // the operation takes the lock right after the launch
 		}
 		if !rw.TryRLock() {
 			return nil, false
@@ -212,12 +212,47 @@ func TestStartRunsNoExecUnderALifecycleOperation(t *testing.T) {
 		return pgid > 0
 	})
 	t.Cleanup(func() { killPGID(pgid, true) })
-	inst := waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_FAILED, 5*time.Second)
-	if inst.GetFailureReason() != pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING {
-		t.Errorf("failed = %v", inst)
-	}
+	time.Sleep(500 * time.Millisecond) // the readiness window passes
+	return s, runner, &rw, id
+}
+
+// SWI-26 B4/B5: once a lifecycle operation holds the runtime lock, a start
+// already past its launch runs no further `sbx exec` (readiness check, kill)
+// and no `sbx ports --publish`; it stays STARTING, so the operation's drain
+// settles it.
+func TestStartRunsNoExecUnderALifecycleOperation(t *testing.T) {
+	s, runner, rw, id := startUnderOperation(t)
 	if runner.execed("/proc/net/tcp") || runner.execed("kill -") || len(runner.publishes()) != 0 {
-		t.Errorf("an exec or publish ran under the lifecycle operation: %v, %v", runner.execArgv, runner.publishes())
+		t.Fatalf("an exec or publish ran under the lifecycle operation: %v", runner.publishes())
+	}
+	if inst, _ := s.insts.Get(id); inst.GetState() != pb.ServiceState_SERVICE_STATE_STARTING {
+		t.Fatalf("the start must wait for the operation, got %v", inst)
+	}
+	// The stop's drain, under the operation's lock.
+	if groups := s.InterruptStarting("sb1"); len(groups) != 1 {
+		t.Errorf("the drain finds the start: %+v", groups)
 	}
 	rw.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	if inst, _ := s.insts.Get(id); inst.GetFailureDetail() != startInterruptedDetail {
+		t.Errorf("the start overwrote the drain: %v", inst)
+	}
+	if runner.execed("/proc/net/tcp") {
+		t.Error("the cancelled start ran a readiness check")
+	}
+}
+
+// An operation that ends without touching the start (a kit attach refused
+// before its recreate) leaves it to finish: the failed start's kill and
+// diagnosis run once the lock is free.
+func TestStartFinishesAfterAnOperationThatLeftItAlone(t *testing.T) {
+	s, runner, rw, id := startUnderOperation(t)
+	rw.Unlock()
+	inst := waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_FAILED, 5*time.Second)
+	if inst.GetId() != id || inst.GetFailureReason() != pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING {
+		t.Errorf("failed = %v", inst)
+	}
+	if !runner.execed("kill -TERM") {
+		t.Error("the failed start's group was never signalled")
+	}
 }

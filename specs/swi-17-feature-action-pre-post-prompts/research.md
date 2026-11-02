@@ -1171,13 +1171,17 @@ one exclusive lock, operations that don't conflict refused each other: a develop
 - **Read, try-lock (`TryRLockRuntime`), never waiting:** every other call that may start a stopped sandbox:
   - probes and reaps, and every spawn (`Admit`), through the orphan gate (below);
   - the service supervisor's own in-sandbox execs: the developer's launch and stop (as before), and now also each
-    readiness check (`lockedListenState`; refused reads as *not listening*), the failed-start kill (`stopProc`;
-    refused leaves the group to the operation's drain, since the instance is still STARTING) and
-    `sbx ports --publish`, held until the handle records the published port so the drain can always unpublish it;
+    readiness check (`lockedListenState`; refused reads as *not listening*, and the loop tries again), the
+    failed-start kill (`stopProc`), the failed start's loopback diagnosis and `sbx ports --publish`, held until the
+    handle records the published port so the drain can always unpublish it. The last three **wait** for a refused
+    lock (`awaitRuntime`, polling, holding nothing) with the instance still STARTING: the operation's drain or
+    teardown cancels the start and owns its group (a Stop, Refresh or Destroy drain; AddKit's CREATING teardown),
+    or the operation ends without touching it and the start carries on. Each `sbx` call made under the read lock is
+    bounded by `runtimeHoldTimeout` (10 s), so a wedged one can't hold a waiting stop for long;
   - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
     `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
-    load (`worker.gateway.load`; refused at attach, the load is left to the operation's bring-up; refused at a
-    bring-up, a stop is pending and the next bring-up loads it).
+    load (`worker.gateway.load`; a refused load is retried in the background, `Service.loadWhen`, re-reading the
+    record each time and giving up if the operation left the sandbox not RUNNING, whose next bring-up loads it).
 
   A waiting writer blocks new readers (`sync.RWMutex`), so once a lifecycle operation asks for the lock no new read
   holder starts, and it waits only for the ones in flight.
@@ -1226,9 +1230,11 @@ was the time between the listing and the exec).
 
 **Start-up check off the serving path (B2).** `CheckOrphansAtStart` now runs in a goroutine beside the gRPC server.
 `MarkOrphanCandidates` still marks every candidate unknown before the hook server serves, so the gate refuses
-those spawns meanwhile. The check reads every sandbox's token generation **before** listing the runtime. In the
-"listed stopped" branch it skips a sandbox whose generation has moved since (an agent spawned after the snapshot,
-e.g. into a sandbox that was not a candidate), and otherwise retires only generations at or below the snapshot.
+those spawns meanwhile. The check reads every sandbox's token generation **before** listing the runtime, and skips
+a sandbox whose generation has moved since (an agent spawned after the snapshot, e.g. a worker warm-started that
+was not a candidate): that agent is the daemon's own, so it is never retired, marked EXITED or made unknown from
+the older listing. Otherwise it retires only generations at or below the snapshot, and classifies each sandbox
+from its record re-read at that moment.
 Test: `TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot`.
 
 **`sbx mcp`/`sbx ports` and a stopped sandbox (quickstart Scenario 0 step 5).** Not re-verified on a real host

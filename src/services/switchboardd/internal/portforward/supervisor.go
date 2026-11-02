@@ -126,6 +126,32 @@ func (s *Supervisor) lockRuntime(sandboxID string) (func(), bool) {
 	return s.tryRuntime(sandboxID)
 }
 
+// runtimeHoldTimeout bounds each `sbx` call the supervisor makes while it holds
+// a sandbox's runtime lock (a readiness check, a port publish attempt): a
+// lifecycle operation waits for every holder, and its drain is what would
+// otherwise cancel a wedged call (SWI-26).
+const runtimeHoldTimeout = 10 * time.Second
+
+// runtimeRetryStep is how often awaitRuntime retries a refused lock.
+const runtimeRetryStep = 50 * time.Millisecond
+
+// awaitRuntime takes the sandbox's runtime lock, retrying while a lifecycle
+// operation holds it, until ctx ends (ok false). It holds nothing while it
+// waits, so it never stands in that operation's way; the operation's drain or
+// teardown cancels ctx when it settles the instance itself.
+func (s *Supervisor) awaitRuntime(ctx context.Context, sandboxID string) (func(), bool) {
+	for {
+		if unlock, ok := s.lockRuntime(sandboxID); ok {
+			return unlock, true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(runtimeRetryStep):
+		}
+	}
+}
+
 // SetClock overrides the supervisor clock; used in tests for deterministic stamps.
 func (s *Supervisor) SetClock(now func() time.Time) { s.now = now }
 

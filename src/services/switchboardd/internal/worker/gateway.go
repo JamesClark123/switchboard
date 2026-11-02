@@ -75,16 +75,11 @@ func (g *gateway) register(ctx context.Context, sandboxID, ref string, running b
 		g.logf("[worker] %s registered; load deferred until sandbox %s is running", name, sandboxID)
 		return nil
 	}
-	if err := g.load(ctx, sandboxID, ref); !errors.Is(err, errLoadBusy) {
-		return err
-	}
-	// A lifecycle operation holds the sandbox: its bring-up loads it.
-	g.logf("[worker] %s registered; load deferred to the bring-up of sandbox %s", name, sandboxID)
-	return nil
+	return g.load(ctx, sandboxID, ref)
 }
 
 // errLoadBusy refuses a load while a lifecycle operation holds the sandbox's
-// runtime lock.
+// runtime lock; Service.loadWhenFree retries it.
 var errLoadBusy = errors.New("sandbox is busy")
 
 // load attaches the registration to the sandbox live, under the sandbox's

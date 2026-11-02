@@ -187,7 +187,11 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 		live = launching
 	}
 	running := live.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
-	if err := s.gw.register(ctx, sb.GetId(), sandboxRef(live), running, token); err != nil {
+	if err := s.gw.register(ctx, sb.GetId(), sandboxRef(live), running, token); errors.Is(err, errLoadBusy) {
+		// Registered; a lifecycle operation holds the sandbox, so the load
+		// waits it out (SWI-26).
+		go s.loadWhenFree(sb.GetId())
+	} else if err != nil {
 		// The controller stands; the registration is retried at the next bring-up.
 		s.logf("[worker] attach %s: gateway registration failed (retried at bring-up): %v", sb.GetId(), err)
 	}
@@ -431,7 +435,7 @@ func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
 	s.markBringUp(sb.GetId(), 1)
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
+		err := s.loadWhen(ctx, sb)
 		cancel()
 		s.markBringUp(sb.GetId(), -1)
 		if err != nil {
@@ -441,6 +445,48 @@ func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
 		s.WarmStart(sb)
 	}
 }
+
+// loadWhenFree is a gateway load refused busy at attach, retried in the
+// background (loadWhen).
+func (s *Service) loadWhenFree(sandboxID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	sb, err := s.mgr.Get(sandboxID)
+	if err == nil {
+		err = s.loadWhen(ctx, sb)
+	}
+	if err != nil {
+		s.logf("[worker] gateway load %s: %v", sandboxID, err)
+	}
+}
+
+// loadWhen loads the sandbox's gateway registration, retrying while a
+// lifecycle operation holds its runtime lock (errLoadBusy) until ctx ends.
+// Each retry re-reads the record: a sandbox that operation left not RUNNING
+// is left to its next bring-up, since the load would start it again (SWI-26).
+func (s *Service) loadWhen(ctx context.Context, sb *pb.Sandbox) error {
+	for {
+		if err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb)); !errors.Is(err, errLoadBusy) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("load gateway server %s: %w", ServerName(sb.GetId()), errLoadBusy)
+		case <-time.After(loadRetryStep):
+		}
+		cur, err := s.mgr.Get(sb.GetId())
+		if err != nil {
+			return err
+		}
+		if cur.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+			return nil
+		}
+		sb = cur
+	}
+}
+
+// loadRetryStep is how often loadWhen retries a busy sandbox.
+var loadRetryStep = 100 * time.Millisecond
 
 // markBringUp adds delta to the sandbox's count of bring-ups in progress.
 func (s *Service) markBringUp(sandboxID string, delta int) {

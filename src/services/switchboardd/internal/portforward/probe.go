@@ -142,6 +142,26 @@ func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref strin
 		return listenNone
 	}
 	defer unlock()
+	return s.boundedListenState(ctx, ref, port)
+}
+
+// diagnoseListenState is lockedListenState for the one check that classifies
+// a failed start: it waits for the lock (awaitRuntime) rather than reading a
+// busy sandbox as not listening, so a loopback-only bind is still named.
+func (s *Supervisor) diagnoseListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
+	unlock, ok := s.awaitRuntime(ctx, sandboxID)
+	if !ok {
+		return listenNone
+	}
+	defer unlock()
+	return s.boundedListenState(ctx, ref, port)
+}
+
+// boundedListenState is sandboxListenState within runtimeHoldTimeout: it runs
+// under the runtime lock, and a wedged exec must not hold a waiting stop.
+func (s *Supervisor) boundedListenState(ctx context.Context, ref string, port uint32) listenState {
+	ctx, cancel := context.WithTimeout(ctx, runtimeHoldTimeout)
+	defer cancel()
 	return s.sandboxListenState(ctx, ref, port)
 }
 
