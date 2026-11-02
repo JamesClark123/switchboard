@@ -107,12 +107,14 @@ func (m Model) tooOldForLanes(host string) string {
 // shipped in v0.0.40, before the "steps" capability was advertised.
 const stepsSince = "v0.0.40"
 
-// releaseVersion matches a released daemon version ("v0.0.40", "0.1.2-rc1").
-var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+([-+].*)?$`)
+// releaseVersion matches a released daemon version ("v0.0.40"). A suffixed one
+// ("0.1.0-dev" from an unstamped build, a snapshot) is not a release: it may
+// predate sequences whatever its number says.
+var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 // daemonHasSteps reports whether d keeps action sequences (SWI-29 E4): it
-// advertises "steps", or is a release from stepsSince on. "dev" or an
-// unparseable version relies on the capability alone.
+// advertises "steps", or is a release from stepsSince on. Any other version
+// (dev, suffixed, unparseable) relies on the capability alone.
 func daemonHasSteps(d Daemon) bool {
 	if d == nil {
 		return false

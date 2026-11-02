@@ -596,11 +596,11 @@ func TestRefusedClaimMovesToAnotherWorker(t *testing.T) {
 		t.Fatalf("claimed by %q, want wa first", r.GetSandboxId())
 	}
 	// Short of the limit the run stays with wa.
-	refuseFor(t, env, w, claimRefuseLimit-stepRetryEvery)
+	refuseFor(t, env, rt, w, claimRefuseLimit-stepRetryEvery)
 	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Fatalf("before the limit = %+v", got)
 	}
-	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	waitFor(t, func() bool { return retryArmed(rt) })
 	env.clock.Advance(stepRetryEvery)
 	got := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
 	if got.GetSandboxId() != "wb" {
@@ -628,24 +628,31 @@ func TestRefusedClaimStaysWithTheOnlyWorker(t *testing.T) {
 	})
 	run := callSeq(t, env, o, "1")
 	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
-	refuseFor(t, env, w, claimRefuseLimit+2*stepRetryEvery)
+	refuseFor(t, env, rt, w, claimRefuseLimit+2*stepRetryEvery)
 	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
 		t.Fatalf("past the limit = %+v", got)
 	}
 	if rt.avoided("wa") {
 		t.Error("the only worker is never passed over")
 	}
-	rt.mu.Lock()
-	timed := rt.seq.marks[run.GetId()] != nil
-	rt.mu.Unlock()
-	if !timed {
+	waitSince := func() time.Time {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		if m := rt.seq.marks[run.GetId()]; m != nil {
+			return m.waitSince
+		}
+		return time.Time{}
+	}
+	first := waitSince()
+	if first.IsZero() {
 		t.Fatal("the refusals should be timed")
 	}
+	// The re-claim that follows may be refused again at once: its wait must
+	// start now, not at the first claim's first refusal.
+	env.clock.Advance(time.Second)
 	rt.unclaimOn("wa")
-	rt.mu.Lock()
-	timed = rt.seq.marks[run.GetId()] != nil
-	rt.mu.Unlock()
-	if timed {
+	settle(t, rt)
+	if got := waitSince(); got.Equal(first) {
 		t.Error("unclaimOn keeps the refusal timing for the next claim")
 	}
 	d.set(func(d *fakeDaemon) { d.refuse = nil })
@@ -656,14 +663,20 @@ func TestRefusedClaimStaysWithTheOnlyWorker(t *testing.T) {
 	}
 }
 
+func retryArmed(rt *runtime) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.seq.retry != nil
+}
+
 // refuseFor advances the clock a retry tick at a time for d, each time once
 // the retry ticker is armed and waiting for the refused send it triggers.
-func refuseFor(t *testing.T, env *testEnv, w *fakeWorker, d time.Duration) {
+func refuseFor(t *testing.T, env *testEnv, rt *runtime, w *fakeWorker, d time.Duration) {
 	t.Helper()
 	waitFor(t, func() bool { return len(stepReqs(w)) >= 1 })
 	for elapsed := time.Duration(0); elapsed < d; elapsed += stepRetryEvery {
 		n := len(stepReqs(w))
-		waitFor(t, func() bool { return env.clock.pending() > 0 })
+		waitFor(t, func() bool { return retryArmed(rt) })
 		env.clock.Advance(stepRetryEvery)
 		waitFor(t, func() bool { return len(stepReqs(w)) > n })
 	}
@@ -847,7 +860,7 @@ func TestStepSentResolvesByEvidence(t *testing.T) {
 func TestUnconfirmedResolution(t *testing.T) {
 	a := withSequence([]string{"/prepare {ticket}"}, nil)
 	a.Name = "review-pr"
-	env, _, o, _, d := seqEnv(t, 1, a)
+	env, _, o, rt, d := seqEnv(t, 1, a)
 	d.set(func(d *fakeDaemon) {
 		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
 			if req.GetStep().GetKind() != pb.StepKind_STEP_KIND_ACTION_PROMPT {
@@ -864,7 +877,12 @@ func TestUnconfirmedResolution(t *testing.T) {
 	if !r.GetStepUnconfirmed() {
 		t.Fatalf("unconfirmed custom step = %+v", r)
 	}
-	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	waitFor(t, func() bool { // the sent-grace wake-up, not just any timer
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		m := rt.seq.marks[run.GetId()]
+		return m != nil && m.step == 2 && m.wake != nil
+	})
 	env.clock.Advance(sentGrace)
 	r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
 	if !r.GetStepUnconfirmed() || r.GetStepNote() != unconfirmedNote {

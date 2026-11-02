@@ -1021,8 +1021,8 @@ func (rt *runtime) handBack(run *pb.Run, reason string) bool {
 }
 
 // otherFreeWorker reports whether a worker other than the run's could take it
-// now: allowed by its lanes, free, steps-capable, not passed over, and claimed
-// or held by no other run.
+// now: allowed by its lanes, free, steps-capable, not passed over or being
+// detached, and claimed or held by no other run.
 func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	rec := rt.record()
 	ids, mode, ok := effectiveLanes(rec, run)
@@ -1032,7 +1032,7 @@ func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	for _, w := range rec.GetWorkers() {
 		id := w.GetSandboxId()
 		if id == run.GetSandboxId() || w.GetReasoning() || w.GetLanesPending() || !allowed(w.GetLaneIds(), ids, mode) ||
-			rt.stepsUnsupported(id) || rt.avoided(id) {
+			rt.stepsUnsupported(id) || rt.avoided(id) || rt.isDetaching(id) {
 			continue
 		}
 		if up, _ := rt.reachability(w.GetHostId()); !free(rt.sandboxRecord(id), up) {

@@ -1108,6 +1108,11 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			}{{"pre-prompt", seq.GetPrePrompts()}, {"post-prompt", seq.GetPostPrompts()}} {
 				if err := checkStepPrompts(l.what, l.prompts, args); err != nil {
 					op.status = err.Error()
+					if !v.steps {
+						// The prompts are not on this form: it opened before
+						// the daemon was known.
+						op.status += " (close and reopen the form to edit pre/post prompts)"
+					}
 					return m, nil
 				}
 			}
