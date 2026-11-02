@@ -310,8 +310,8 @@ silent), `LaunchSandboxRequest.controller` (7). TUI: third top-level **Orchestra
 the shift+←/→ cycle (views Workers/Actions/Queue/Events/Reasoning/Hosts, `huh` forms), header
 strip naming all three screens, **per-host event streams** (today only the local daemon is
 subscribed), workers hidden from All/host/group tabs unless they need the developer (needs-input
-or review rows ordered first on every tab), `O` toggles the hidden **Orchestrator Sandboxes** tab,
-`o` attach/detach (offers to copy the TUI's host entry), launch wizard `O`, and a 3-line list
+or review rows ordered first on every tab, except that stopped rows always sort last, SWI-31), `O`
+toggles the hidden **Orchestrator Sandboxes** tab, `o` attach/detach (offers to copy the TUI's host entry), launch wizard `O`, and a 3-line list
 delegate (`Spacing 0`) whose third line is `mcp: … · orchestrator: …`. **No new env vars**; all
 bounds are constants (R15). See `research.md` (R1–R17), `data-model.md`, `contracts/`,
 `quickstart.md`.

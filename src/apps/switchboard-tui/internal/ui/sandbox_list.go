@@ -257,6 +257,8 @@ func surfaceFirst(rows []sandboxRow) []sandboxRow {
 
 // stoppedLast stable-partitions rows so stopped sandboxes come last, even those
 // that need the developer (SWI-31); the existing order is kept within each half.
+// It goes purely on state, so a Refresh, which passes through STOPPED while it
+// re-copies the sources, sinks the row until the sandbox is running again.
 func stoppedLast(rows []sandboxRow) []sandboxRow {
 	return stablePartition(rows, func(sb *pb.Sandbox) bool {
 		return sb.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED
@@ -280,7 +282,8 @@ func withoutHiddenWorkers(rows []sandboxRow) []sandboxRow {
 // surfaces the rows that need the developer first and sinks stopped sandboxes
 // last (SWI-31). Stopped wins: a stopped sandbox that needs the developer sits
 // at the bottom with the other stopped rows, ahead of them only because the
-// partition is stable.
+// partition is stable. An active "/" filter is a search and ranks its matches
+// best-match-first over this order (FR-114).
 func (m Model) currentTabRows() []sandboxRow {
 	return stoppedLast(surfaceFirst(m.tabRowsUnordered()))
 }

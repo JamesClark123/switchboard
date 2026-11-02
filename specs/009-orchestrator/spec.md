@@ -316,12 +316,14 @@ confirm switching tabs hides the tab again.
 1. **Given** a sandbox becomes a worker, **Then** it is absent from the All tab, its host's tab and
    every group tab it belongs to, while its group memberships are preserved.
 2. **Given** a worker whose agent asks for input, or on which a run is awaiting review, **Then**
-   within 5 seconds it appears in the tabs it would otherwise be hidden from, at the top, visibly
-   marked as needing input or review and as a worker.
+   within 5 seconds it appears in the tabs it would otherwise be hidden from, at the top (or, if
+   it is stopped, among the stopped rows at the bottom, FR-114), visibly marked as needing input
+   or review and as a worker.
 3. **Given** the developer answers the worker through the ordinary prompt path, or marks it free,
    **Then** it leaves those tabs again as soon as it no longer needs the developer.
 4. **Given** any tab, **When** several sandboxes need the developer, **Then** all of them are
-   listed above every sandbox that does not, whether or not they are workers.
+   listed above every sandbox that does not, whether or not they are workers, unless they are
+   stopped: a stopped sandbox is listed below every non-stopped sandbox (FR-114).
 5. **Given** the sandbox list, **When** the developer presses the documented key combination,
    **Then** the Orchestrator Sandboxes tab appears in the tab bar, is selected, and lists every
    worker and reasoning sandbox of every reachable orchestrator with its controller, state,
@@ -631,8 +633,10 @@ placed on, so "the orchestrator restarts" means that daemon restarts.
   the same need, the existing order is kept. **Exception (SWI-31):** every tab MUST order
   **stopped** sandboxes below all non-stopped sandboxes, and a stopped sandbox that needs the
   developer sinks with the other stopped rows (it still surfaces on the tabs it is otherwise
-  hidden from, and leads the stopped rows only because the ordering is stable). A surfaced worker
-  MUST be marked as a worker, say which need it has, and name its controller.
+  hidden from, and leads the stopped rows only because the ordering is stable). This order applies
+  to the unfiltered list: an active `/` filter is a search and ranks its matches best-match-first,
+  so a stopped sandbox can rank above a running one there. A surfaced worker MUST be marked as a
+  worker, say which need it has, and name its controller.
 - **FR-115** [1.d.ii]: The sandbox list MUST have an **Orchestrator Sandboxes** tab that is absent
   from the tab bar by default, is shown and selected by a single documented key combination on the
   sandbox list, and leaves the tab bar when the developer switches to any other tab. It MUST list
@@ -932,8 +936,9 @@ placed on, so "the orchestrator restarts" means that daemon restarts.
 
 - **SC-001**: 100% of workers and reasoning sandboxes are absent from the All, host and group tabs
   while they need nothing from the developer; one whose agent asks for input, or whose run is
-  awaiting review, appears at the top of those tabs within 5 seconds, and disappears within 5
-  seconds of being answered or marked free.
+  awaiting review, appears at the top of those tabs (among the stopped rows at the bottom if it is
+  stopped, FR-114) within 5 seconds, and disappears within 5 seconds of being answered or marked
+  free.
 - **SC-002**: A queued run starts on a free sandbox that satisfies it within 10 seconds of that
   sandbox becoming free (or of the call, when a suitable sandbox is already free), in 100% of
   cases.
@@ -1108,7 +1113,8 @@ placed on, so "the orchestrator restarts" means that daemon restarts.
   of third-party payloads.
 - **Needs-input ordering applies to the whole list**: the "needing input at the top" rule is
   applied to every sandbox in every tab, not only to workers, because the rule is about what needs
-  the developer and a split ordering would be confusing.
+  the developer and a split ordering would be confusing. Stopped sandboxes are the one exception:
+  they sort last even when they need the developer (FR-114, SWI-31).
 - **Notification policy**: reported completions are silent in the inbox; failures, input requests
   and runs awaiting review are not. This can be revisited if completions turn out to be wanted.
 - **Scheduling is FIFO only**: no priorities, deadlines, automatic retries or rate limits in this

@@ -394,11 +394,20 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	if m.list.Index() != 0 || m.current().GetId() != "e-a" {
 		t.Errorf("cursor after stop: index %d selected %q, want row 0 / e-a", m.list.Index(), m.current().GetId())
 	}
-	// Starting it again restores its place among the running rows.
+	// Starting it again restores its place among the running rows. The cursor
+	// keeps its row number here too, so the row that moved up leaves the
+	// selection on another stopped sandbox.
+	m.list.Select(6)
+	if cur := m.current(); cur.GetId() != "r-a1" {
+		t.Fatalf("selected = %q, want r-a1", cur.GetId())
+	}
 	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{
 		SandboxChanged: plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_RUNNING)}}})
 	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
 		t.Errorf("after start list items = %v, want %s", got, wantAll)
+	}
+	if m.list.Index() != 6 || m.current().GetId() != "s-a1" {
+		t.Errorf("cursor after start: index %d selected %q, want row 6 / s-a1", m.list.Index(), m.current().GetId())
 	}
 
 	// A stopped sandbox that needs the developer stays below a running one
@@ -412,5 +421,29 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "worker · review") {
 		t.Error("the stopped review worker should still be visible and marked")
+	}
+}
+
+// An active "/" filter is a search: it ranks matches best-match-first, so a
+// stopped sandbox can rank above a running one (FR-114, SWI-31).
+func TestFilterRanksMatchesOverStoppedOrder(t *testing.T) {
+	m, _, _ := twoFakeHosts(t, &fakeDaemon{sandboxes: []*pb.Sandbox{
+		plainSB("app", pb.SandboxState_SANDBOX_STATE_STOPPED),
+		plainSB("zzappzz", pb.SandboxState_SANDBOX_STATE_RUNNING),
+		plainSB("other", pb.SandboxState_SANDBOX_STATE_RUNNING),
+	}}, &fakeDaemon{})
+	m = feed2(m, m.listDataCmd())
+	m.refreshListItems()
+	if got := listItemIDs(t, m); strings.Join(got, ",") != "zzappzz,other,app" {
+		t.Fatalf("unfiltered list items = %v, want zzappzz,other,app", got)
+	}
+
+	m.list.SetFilterText("app")
+	var got []string
+	for _, it := range m.list.VisibleItems() {
+		got = append(got, it.(listItem).id)
+	}
+	if strings.Join(got, ",") != "app,zzappzz" {
+		t.Errorf("filtered items = %v, want app,zzappzz", got)
 	}
 }
