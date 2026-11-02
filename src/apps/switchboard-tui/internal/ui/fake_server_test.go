@@ -23,8 +23,10 @@ type fakeDaemonServer struct {
 
 func (s *fakeDaemonServer) GetDaemonInfo(context.Context, *pb.GetDaemonInfoRequest) (*pb.DaemonInfo, error) {
 	info := &pb.DaemonInfo{HostId: s.d.HostID(), DaemonVersion: s.d.daemonVer, WorkspaceRoot: s.d.workspace}
-	if s.d.HasCapability("lanes") {
-		info.Capabilities = []string{"lanes"}
+	for _, c := range []string{"lanes", "steps", "mcp-edit"} {
+		if s.d.HasCapability(c) {
+			info.Capabilities = append(info.Capabilities, c)
+		}
 	}
 	return info, nil
 }

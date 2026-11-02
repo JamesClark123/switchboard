@@ -287,6 +287,9 @@ func TestSequenceDefaultOrderAndCleanup(t *testing.T) {
 	if got := d.typedTexts(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("typed = %q, want %q", got, want)
 	}
+	if txt := r.GetSteps()[2].GetText(); txt != "" {
+		t.Errorf("the action prompt is stored on its step too: %q", txt) // only on Run.prompt (SWI-29)
+	}
 	reqs := stepReqs(w)
 	for i, req := range reqs {
 		if req.GetFirst() != (i == 0) || req.GetStepIndex() != int32(i+1) || req.GetRetry() || req.GetRestart() {
@@ -570,6 +573,123 @@ func TestClaimRefusalsAndCancel(t *testing.T) {
 	for _, txt := range d.typedTexts() {
 		if strings.Contains(txt, "pull request 1 ") {
 			t.Errorf("the cancelled run was typed: %q", txt)
+		}
+	}
+}
+
+// A claim whose first step one worker keeps refusing goes back to the queue
+// after claimRefuseLimit and, that worker passed over for claimAvoidFor, to the
+// other free worker on the next pass (SWI-29).
+func TestRefusedClaimMovesToAnotherWorker(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string {
+			if req.GetSandboxId() == "wa" {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if r.GetSandboxId() != "wa" {
+		t.Fatalf("claimed by %q, want wa first", r.GetSandboxId())
+	}
+	// Short of the limit the run stays with wa.
+	refuseFor(t, env, w, claimRefuseLimit-stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("before the limit = %+v", got)
+	}
+	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	env.clock.Advance(stepRetryEvery)
+	got := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if got.GetSandboxId() != "wb" {
+		t.Errorf("handed to %q, want wb", got.GetSandboxId())
+	}
+	for _, req := range stepReqs(w) {
+		if req.GetSandboxId() == "wa" && req.GetStep().GetKind() != pb.StepKind_STEP_KIND_MODEL {
+			t.Errorf("wa was sent more than the refused first step: %v", req.GetStep())
+		}
+	}
+	if !rt.avoided("wa") {
+		t.Error("wa should be passed over for runs with steps for a while")
+	}
+	env.clock.Advance(claimAvoidFor)
+	waitFor(t, func() bool { return !rt.avoided("wa") })
+}
+
+// With no other worker free, a refused claim is never handed back (that would
+// only delay it): it waits on its worker and is typed once the box clears. A
+// claim taken back by unclaimOn times its next refusals afresh.
+func TestRefusedClaimStaysWithTheOnlyWorker(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, w, claimRefuseLimit+2*stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("past the limit = %+v", got)
+	}
+	if rt.avoided("wa") {
+		t.Error("the only worker is never passed over")
+	}
+	rt.mu.Lock()
+	timed := rt.seq.marks[run.GetId()] != nil
+	rt.mu.Unlock()
+	if !timed {
+		t.Fatal("the refusals should be timed")
+	}
+	rt.unclaimOn("wa")
+	rt.mu.Lock()
+	timed = rt.seq.marks[run.GetId()] != nil
+	rt.mu.Unlock()
+	if timed {
+		t.Error("unclaimOn keeps the refusal timing for the next claim")
+	}
+	d.set(func(d *fakeDaemon) { d.refuse = nil })
+	env.clock.Advance(stepRetryEvery)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || handBackable(got) {
+		t.Errorf("typed run = %+v", got)
+	}
+}
+
+// refuseFor advances the clock a retry tick at a time for d, each time once
+// the retry ticker is armed and waiting for the refused send it triggers.
+func refuseFor(t *testing.T, env *testEnv, w *fakeWorker, d time.Duration) {
+	t.Helper()
+	waitFor(t, func() bool { return len(stepReqs(w)) >= 1 })
+	for elapsed := time.Duration(0); elapsed < d; elapsed += stepRetryEvery {
+		n := len(stepReqs(w))
+		waitFor(t, func() bool { return env.clock.pending() > 0 })
+		env.clock.Advance(stepRetryEvery)
+		waitFor(t, func() bool { return len(stepReqs(w)) > n })
+	}
+}
+
+// Only a queued, untyped claim of a prompt run is handed back.
+func TestHandBackable(t *testing.T) {
+	pending := func(mut func(*pb.Run)) *pb.Run {
+		r := &pb.Run{State: pb.RunState_RUN_STATE_QUEUED, StepStatus: pb.StepStatus_STEP_STATUS_PENDING, Steps: []*pb.RunStep{{}}, SandboxId: "wa"}
+		if mut != nil {
+			mut(r)
+		}
+		return r
+	}
+	if !handBackable(pending(nil)) {
+		t.Error("a pending claim is handed back")
+	}
+	for name, mut := range map[string]func(*pb.Run){
+		"running":    func(r *pb.Run) { r.State = pb.RunState_RUN_STATE_RUNNING },
+		"retry":      func(r *pb.Run) { r.StepSentAt = timestamppb.Now() },
+		"restart":    func(r *pb.Run) { r.StepNote = restartingNote },
+		"halted":     func(r *pb.Run) { r.StepStatus = pb.StepStatus_STEP_STATUS_HALTED },
+		"reason run": func(r *pb.Run) { r.Type = pb.ActionType_ACTION_TYPE_REASON },
+	} {
+		if handBackable(pending(mut)) {
+			t.Errorf("%s: handed back", name)
 		}
 	}
 }

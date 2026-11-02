@@ -49,6 +49,12 @@ const (
 	// stepWaitNote is how long refusals last before the step's note reads
 	// "waiting: <reason>" (research R6).
 	stepWaitNote = 10 * time.Second
+	// claimRefuseLimit is how long a claimed run's first step may keep being
+	// refused, nothing typed, before the run goes back to the queue (SWI-29).
+	claimRefuseLimit = 30 * time.Second
+	// claimAvoidFor is how long dispatch then passes over the refusing worker
+	// for runs with steps, so the next pass hands the run to another one.
+	claimAvoidFor = 30 * time.Second
 	// inputOnlyIdle is how long the input box must stay empty and ready after a
 	// step classified only by a needs-input report before it is finished (the
 	// idle-nudge fallback, FR-206b, research R1).
@@ -90,3 +96,8 @@ const (
 // CapabilityLanes is advertised in DaemonInfo.capabilities by a daemon that
 // serves worker lanes (FR-318a).
 const CapabilityLanes = "lanes"
+
+// CapabilitySteps is advertised in DaemonInfo.capabilities by a daemon whose
+// actions carry a step sequence (SWI-17): a client shows and sends
+// Action.sequence only to such a daemon.
+const CapabilitySteps = "steps"

@@ -10893,7 +10893,7 @@ type RunStep struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Role          StepRole               `protobuf:"varint,1,opt,name=role,proto3,enum=switchboard.v1.StepRole" json:"role,omitempty"`
 	Kind          StepKind               `protobuf:"varint,2,opt,name=kind,proto3,enum=switchboard.v1.StepKind" json:"kind,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`     // exactly what is typed (ACTION_PROMPT: Run.prompt; frame added at delivery)
+	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`     // exactly what is typed; ACTION_PROMPT: stored empty, Run.prompt on the wire (frame added at delivery)
 	Expect        string                 `protobuf:"bytes,4,opt,name=expect,proto3" json:"expect,omitempty"` // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

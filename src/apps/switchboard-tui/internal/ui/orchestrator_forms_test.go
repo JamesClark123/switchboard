@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
@@ -215,24 +216,297 @@ func wideView(m Model) string {
 
 func TestActionLineSequenceSummary(t *testing.T) {
 	a := reviewAction()
-	if got := sequenceSummary(a); got != "pre: /model opus · /effort medium — post: /clear" {
+	if got := sequenceSummary(a, true); got != "pre: /model opus · /effort medium — post: /clear" {
 		t.Errorf("legacy summary = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_OPUS, EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true,
 		PrePrompts: []string{"/a"}, PostPrompts: []string{"/b"}}
-	if got := sequenceSummary(a); got != "pre: /model opus · /effort medium · 1 custom — post: 1 custom · /clear" {
+	if got := sequenceSummary(a, true); got != "pre: /model opus · /effort medium · 1 custom — post: 1 custom · /clear" {
 		t.Errorf("summary = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{PostPrompts: []string{"/b"}}
-	if got := sequenceSummary(a); got != "post: 1 custom" {
+	if got := sequenceSummary(a, true); got != "post: 1 custom" {
 		t.Errorf("post only = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{}
-	if got := sequenceSummary(a); got != "" || strings.Contains(actionLine(a, nil), "pre:") {
+	if got := sequenceSummary(a, true); got != "" || strings.Contains(actionLine(a, nil, true), "pre:") {
 		t.Errorf("no steps = %q", got)
 	}
 	m, _ := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
 	if !strings.Contains(ansi.Strip(wideView(m)), "pre: /model opus · /effort medium — post: /clear") {
 		t.Errorf("actions tab:\n%s", ansi.Strip(wideView(m)))
+	}
+}
+
+// SWI-29 E4: against a daemon without "steps" no default sequence is shown,
+// none is offered in the editor and none is sent.
+func TestActionFormOldDaemonHasNoSequence(t *testing.T) {
+	m, d := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	d.noSteps = true
+	if v := ansi.Strip(wideView(m)); strings.Contains(v, "pre:") || strings.Contains(v, "post:") {
+		t.Errorf("an old daemon's action shows a sequence:\n%s", v)
+	}
+	m, cmd := update(m, press("e"))
+	m = feed(m, cmd)
+	v := m.jobs.formVals.(*actionFormVals)
+	if v.steps {
+		t.Fatal("the form should know the daemon has no steps")
+	}
+	// Step forward from Arguments: the last page holds nothing after it (a
+	// NextField there only blurs), and its view shows no sequence field.
+	walkFocus(t, m.jobs.form, "args")
+	m.jobs.form.NextField()
+	if k := m.jobs.form.GetFocusedField().GetKey(); k != "args" {
+		t.Errorf("a field follows Arguments: %q", k)
+	}
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "page 2/2") || !strings.Contains(view, "Arguments") || !strings.Contains(view, "pre/post prompts need a") {
+		t.Errorf("an old daemon's form has two pages:\n%s", view)
+	}
+	for _, title := range []string{"Model", "Effort", "Clear after run", "Pre-prompts", "Post-prompts"} {
+		if strings.Contains(view, title) {
+			t.Errorf("sequence field %q shown to an old daemon:\n%s", title, view)
+		}
+	}
+	_, a := saveAction(t, m, d)
+	if a.Sequence != nil {
+		t.Errorf("sent a sequence to an old daemon: %v", a.GetSequence())
+	}
+	// A recorded sequence is the daemon's own: still summarised.
+	withSeq := reviewAction()
+	withSeq.Sequence = &pb.ActionSequence{PostPrompts: []string{"/b"}}
+	if got := sequenceSummary(withSeq, false); got != "post: 1 custom" {
+		t.Errorf("recorded sequence = %q", got)
+	}
+}
+
+// The daemon going older under an open form: an edited sequence is refused
+// locally, an untouched one is saved without it.
+func TestActionFormStepsLostUnderOpenForm(t *testing.T) {
+	m, d := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	m, _ = update(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	d.noSteps = true
+	v.model = "haiku"
+	m, _ = update(m, ctrlS())
+	if !strings.Contains(m.jobs.status, "the daemon on test-host predates pre/post prompts — update with u") || strings.Contains(d.orchCallsJoined(), "PutAction") {
+		t.Fatalf("edited sequence: status %q calls %q", m.jobs.status, d.orchCallsJoined())
+	}
+	v.model = "opus"
+	_, a := saveAction(t, m, d)
+	if a.Sequence != nil {
+		t.Errorf("untouched sequence sent to an old daemon: %v", a.GetSequence())
+	}
+}
+
+// walkFocus moves f's focus to the field keyed key, searching back and then
+// forward and crossing groups at a group's end (as focusField).
+func walkFocus(t *testing.T, f *huh.Form, key string) {
+	t.Helper()
+	for _, step := range [][2]func() tea.Cmd{{f.PrevField, f.PrevGroup}, {f.NextField, f.NextGroup}} {
+		for range 30 {
+			if f.GetFocusedField().GetKey() == key {
+				return
+			}
+			before := f.GetFocusedField()
+			step[0]()
+			if f.GetFocusedField() == before && f.State == huh.StateNormal {
+				step[1]()
+			}
+		}
+	}
+	t.Fatalf("could not reach %q (at %q)", key, f.GetFocusedField().GetKey())
+}
+
+// E5: the header counts only the pages shown.
+func TestActionFormPageIndicator(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e")) // build-ui: a ticked lane, every page shown
+	for key, want := range map[string]string{"name": "page 1/4", "lanes": "page 2/4", "mode": "page 3/4", "pre": "page 4/4"} {
+		walkFocus(t, m.jobs.form, key)
+		if got := ansi.Strip(m.View()); !strings.Contains(got, "› action  page") || !strings.Contains(got, want) {
+			t.Errorf("%s: want %q in\n%s", key, want, got)
+		}
+		m = keys(m, escKey)
+		m = keys(m, press("e"))
+	}
+	// No lane ticked: Mode hides; a reason action: Lanes too.
+	v := m.jobs.formVals.(*actionFormVals)
+	v.lanes = nil
+	if n, total := v.page("args"); n != 3 || total != 3 {
+		t.Errorf("unticked: page %d/%d", n, total)
+	}
+	v.kind = "reason"
+	if n, total := v.page("args"); n != 2 || total != 2 {
+		t.Errorf("reason: page %d/%d", n, total)
+	}
+	if n, _ := v.page("lanes"); n != 0 {
+		t.Errorf("a hidden page has no number: %d", n)
+	}
+}
+
+// E5: a rebuild returns focus to the field that had it, on any page, and never
+// submits; a field on a page now hidden leaves focus on page 1.
+func TestRebuildActionFormKeepsFocus(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	for _, key := range []string{"description", "body", "lanes", "mode", "args", "effort", "post"} {
+		walkFocus(t, m.jobs.form, key)
+		cmd := m.rebuildActionForm(surfaceJobs, v)
+		m = feed(m, cmd)
+		if got := m.jobs.form.GetFocusedField().GetKey(); got != key || m.jobs.form.State != huh.StateNormal {
+			t.Errorf("rebuilt on %q: focus %q state %v", key, got, m.jobs.form.State)
+		}
+	}
+	walkFocus(t, m.jobs.form, "mode")
+	v.lanes = nil // Mode hides
+	cmd := m.rebuildActionForm(surfaceJobs, v)
+	m = feed(m, cmd)
+	if got := m.jobs.form.GetFocusedField().GetKey(); got != "name" || m.jobs.form.State != huh.StateNormal {
+		t.Errorf("hidden page: focus %q state %v", got, m.jobs.form.State)
+	}
+}
+
+// E5 through the rebuild triggers: the lane guard's confirm, a refused save, a
+// lane reload and back from ctrl+l each return to the focused field.
+func TestActionFormTriggersKeepFocus(t *testing.T) {
+	a := lanesDaemon()
+	a.orchDetail = nil
+	m := openJobs(sized(New(a, "/work")))
+	m.jobs.tab = jobsActions
+	m = keys(m, press("e"))
+	focusOn := func(key string) {
+		t.Helper()
+		walkFocus(t, m.jobs.form, key)
+	}
+	check := func(what, key string) {
+		t.Helper()
+		if m.jobs.form == nil {
+			t.Fatalf("%s: form closed", what)
+		}
+		if got := m.jobs.form.GetFocusedField().GetKey(); got != key {
+			t.Errorf("%s: focus %q, want %q", what, got, key)
+		}
+	}
+	// Back from ctrl+l.
+	focusOn("lanes")
+	m = keys(m, tea.KeyMsg{Type: tea.KeyCtrlL}, escKey)
+	check("ctrl+l", "lanes")
+	// A refused save (not NotFound: no lane reload).
+	focusOn("pre")
+	a.queueLaneErr("PutAction", status.Error(codes.InvalidArgument, "nope"))
+	m = keys(m, ctrlS())
+	check("refused save", "pre")
+	// A lane gone: refusal plus reload, each a rebuild.
+	focusOn("effort")
+	a.queueLaneErr("PutAction", status.Error(codes.NotFound, `lane "ln-fe" no longer exists`))
+	a.orchestrators[0].Orchestrator.Lanes = nil
+	m = keys(m, ctrlS())
+	if v := m.jobs.formVals.(*actionFormVals); len(v.options) != 0 {
+		t.Fatalf("lanes not reloaded: %+v", v.options)
+	}
+	check("lane reload", "effort")
+	// The open-lane guard's confirm (now un-laned: the lane is gone).
+	a.laneCheck = &pb.LaneChangeImpact{UnlanedActions: []string{"build-ui"}}
+	focusOn("clear")
+	m = keys(m, ctrlS())
+	if m.screen != screenConfirm {
+		t.Fatalf("guard should confirm: %v status %q calls %q", m.screen, m.jobs.status, a.orchCallsJoined())
+	}
+	check("guard confirm", "clear")
+}
+
+// v0.0.40 shipped sequences before the "steps" capability: a release from it
+// on counts; "dev" or an unparseable version relies on the capability.
+func TestDaemonHasStepsByVersion(t *testing.T) {
+	for _, c := range []struct {
+		ver     string
+		noSteps bool
+		want    bool
+	}{
+		{"", false, true},
+		{"dev", false, true},
+		{"v0.0.40", true, true},
+		{"0.0.41", true, true},
+		{"v0.1.0", true, true},
+		{"v0.0.40-rc1", true, true},
+		{"v0.0.39", true, false},
+		{"dev", true, false},
+		{"", true, false},
+		{"v0.0", true, false},
+		{"garbage", true, false},
+	} {
+		if got := daemonHasSteps(&fakeDaemon{daemonVer: c.ver, noSteps: c.noSteps}); got != c.want {
+			t.Errorf("version %q noSteps %v: %v, want %v", c.ver, c.noSteps, got, c.want)
+		}
+	}
+	if daemonHasSteps(nil) {
+		t.Error("no daemon has no steps")
+	}
+}
+
+// A form opened while its host's link is lost keeps the last-known "steps"
+// (fields shown, list summary kept); saved after reconnect with a rename, the
+// action's own sequence is sent, not dropped or swapped for defaults.
+func TestActionFormLostHostKeepsSequence(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	act := reviewAction()
+	act.Sequence = &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_HAIKU, Effort: pb.EffortChoice_EFFORT_CHOICE_HIGH, PrePrompts: []string{"/pre {repo}"}}
+	sum := orchSummary("o-b", "beta-bot")
+	sum.Orchestrator.Actions = []*pb.Action{act}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{sum}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	m.jobs.hostLoad("hostb").lost = status.Error(codes.Unavailable, "eof")
+	if _, err := m.connectedDaemon("hostb"); err == nil {
+		t.Fatal("hostb should read as lost")
+	}
+	if !m.hostHasSteps("hostb") || sequenceSummary(reviewAction(), m.hostHasSteps("hostb")) == "" {
+		t.Error("a lost host keeps its last-known steps and the default summary")
+	}
+	if has, known := m.hostSteps("hostc"); has || known {
+		t.Errorf("a never-connected host: has %v known %v", has, known)
+	}
+	mm, _ := m.openActionForm(surfaceJobs, targetOf("hostb", "beta", sum.Orchestrator), act)
+	m = mm.(Model)
+	v := m.jobs.formVals.(*actionFormVals)
+	if !v.steps || !v.stepsKnown {
+		t.Fatalf("opened while lost: steps %v known %v", v.steps, v.stepsKnown)
+	}
+	walkFocus(t, m.jobs.form, "pre")
+	m.jobs.hostLoad("hostb").lost = nil // reconnected
+	v.name = "review-pr-2"
+	mm, cmd := m.sendOrchOpForm(surfaceJobs) // m is not on the Jobs screen
+	m = feed2(mm.(Model), cmd)
+	if len(b.putActions) != 1 {
+		t.Fatalf("no PutAction: status %q", m.jobs.status)
+	}
+	if got := b.putActions[0]; got.GetName() != "review-pr-2" || !proto.Equal(got.GetSequence(), act.GetSequence()) {
+		t.Errorf("sent %q sequence %v, want %v", got.GetName(), got.GetSequence(), act.GetSequence())
+	}
+}
+
+// Opened with nothing known of the daemon, the hidden sequence is not blamed
+// on its age, and the save still sends it once a steps daemon answers.
+func TestActionFormUnknownDaemonHint(t *testing.T) {
+	m, d := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	m, _ = update(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	v.steps, v.stepsKnown = false, false
+	cmd := m.rebuildActionForm(surfaceJobs, v)
+	m = feed(m, cmd)
+	walkFocus(t, m.jobs.form, "args")
+	if view := ansi.Strip(m.View()); strings.Contains(view, "need a") || !strings.Contains(view, "pre/post prompts show once") {
+		t.Errorf("unknown daemon hint:\n%s", view)
+	}
+	_, a := saveAction(t, m, d)
+	if !proto.Equal(a.GetSequence(), defaultSeq()) {
+		t.Errorf("sent sequence = %v", a.GetSequence())
 	}
 }

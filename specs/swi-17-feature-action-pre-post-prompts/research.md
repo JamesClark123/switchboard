@@ -377,6 +377,14 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
 - The orchestrator tries again on every `sandbox_changed` for that sandbox, plus a `stepRetryEvery = 2s` ticker that
   runs only while some run has a pending step on a reachable host. The ticker covers a box the developer empties
   without any hook firing.
+- **Hand-back (SWI-29).** A claim whose **first** step keeps being refused — the run still QUEUED, nothing typed (no
+  `step_sent_at`, not a retry or restart), not a `reason` run — goes back to the queue once refusals have lasted
+  `claimRefuseLimit` (30 s) **and** another worker could take it now (lanes allow it, free, steps-capable, nothing
+  claimed or held on it): the claim is dropped exactly as `unclaim` does, and the refusing worker is passed over by
+  dispatch for runs with steps for `claimAvoidFor` (30 s, in memory), so the next pass hands the run to that worker;
+  when the avoid ends a pass runs again. With no other worker free the run keeps waiting on its claim (handing it back
+  would only delay it) and is checked again on each refusal. A claim's refusals are timed afresh on every claim. A
+  halted step, a retry and a RUNNING run are never handed back.
 - **Mixed versions.** `Unimplemented` (an older daemon) on the first step **unclaims** the run (back to QUEUED, no
   sandbox, no daemon record, since the old daemon recorded nothing) and marks that worker, in memory, as unable to
   take sequenced runs until its host's link reconnects. Dispatch then picks another worker. Only when **no**

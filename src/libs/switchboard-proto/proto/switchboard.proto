@@ -1727,7 +1727,7 @@ message WorkerView {
 message RunStep {
   StepRole role = 1;
   StepKind kind = 2;
-  string text = 3;                       // exactly what is typed (ACTION_PROMPT: Run.prompt; frame added at delivery)
+  string text = 3;                       // exactly what is typed; ACTION_PROMPT: stored empty, Run.prompt on the wire (frame added at delivery)
   string expect = 4;                     // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
 }
 
