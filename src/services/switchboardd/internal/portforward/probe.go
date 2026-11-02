@@ -137,6 +137,9 @@ func (s *Supervisor) awaitSandboxListening(ctx context.Context, sandboxID, ref s
 // While a lifecycle operation holds the lock nothing runs and it reads as not
 // listening; that operation's drain ends the start anyway.
 func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
+	if ctx.Err() != nil {
+		return listenNone
+	}
 	unlock, ok := s.lockRuntime(sandboxID)
 	if !ok {
 		return listenNone

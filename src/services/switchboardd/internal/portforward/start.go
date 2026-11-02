@@ -140,6 +140,9 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 			if ctx.Err() == nil {
 				s.stopProc(ctx, proc, sb.GetId(), sb.GetContainerRef(), inSandbox)
 			}
+			if ctx.Err() != nil {
+				return // cancelled: whoever cancelled it owns the outcome
+			}
 			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
 				"could not publish the sandbox port: "+err.Error())
 			return
@@ -203,8 +206,11 @@ func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declar
 		s.stopProc(ctx, proc, sb.GetId(), sb.GetContainerRef(), inSandbox)
 	}
 
+	// Checked on ctx, not cause: the stopProc above may have been waiting for the
+	// runtime lock when the attempt was cancelled, which says nothing about why
+	// readiness failed.
 	switch {
-	case errors.Is(cause, context.Canceled):
+	case ctx.Err() != nil:
 		s.transitionStarting(instID, func(i *pb.ServiceInstance) {
 			i.State = pb.ServiceState_SERVICE_STATE_STOPPED
 			i.EndedAt = timestamppb.New(s.now())
@@ -217,7 +223,14 @@ func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declar
 		// The window elapsed with the process still alive. Inside a sandbox that is
 		// most often a loopback-only bind — diagnosable, and with a concrete fix —
 		// so look before reporting a bare "never listened" (research R5).
-		if inSandbox && s.diagnoseListenState(ctx, sb.GetId(), sb.GetContainerRef(), effPort) == listenLoopbackOnly {
+		state := listenNone
+		if inSandbox {
+			state = s.diagnoseListenState(ctx, sb.GetId(), sb.GetContainerRef(), effPort)
+		}
+		if ctx.Err() != nil {
+			return // cancelled during the diagnosis: whoever cancelled it owns the outcome
+		}
+		if state == listenLoopbackOnly {
 			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING_LOOPBACK,
 				fmt.Sprintf("%q is listening on 127.0.0.1:%d inside the sandbox, which is unreachable from outside it — bind all interfaces instead (e.g. --host 0.0.0.0)",
 					declared.GetName(), effPort))

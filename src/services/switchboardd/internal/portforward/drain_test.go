@@ -24,6 +24,17 @@ func (r *fakeRunner) execed(sub string) bool {
 	return false
 }
 
+// failedNotifications counts the SERVICE_FAILED notifications s has emitted.
+func failedNotifications(s *Supervisor) int {
+	failed := 0
+	for _, n := range s.emitter.(*fakeEmitter).notifications() {
+		if n.kind == pb.NotificationKind_NOTIFICATION_KIND_SERVICE_FAILED {
+			failed++
+		}
+	}
+	return failed
+}
+
 // freePort is a port nothing listens on.
 func freePort(t *testing.T) uint32 {
 	t.Helper()
@@ -44,7 +55,7 @@ func TestInterruptStartingDrainsOnlyStartingServices(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 	slowPort := freePort(t)
 	sb := runningSandbox("sb1", listeningService("web", port, inSandbox), listeningService("slow", slowPort, inSandbox))
-	s, _, runner, emitter := newTestSupervisor(t, sb)
+	s, _, runner, _ := newTestSupervisor(t, sb)
 	s.SetReadinessTimeout(30 * time.Second)
 	if _, err := s.Start("sb1", "web"); err != nil {
 		t.Fatal(err)
@@ -91,13 +102,7 @@ func TestInterruptStartingDrainsOnlyStartingServices(t *testing.T) {
 	if inst, _ := s.insts.Get(slowID); inst.GetFailureDetail() != startInterruptedDetail {
 		t.Errorf("bringUp overwrote the drain: %v", inst)
 	}
-	failed := 0
-	for _, n := range emitter.notifications() {
-		if n.kind == pb.NotificationKind_NOTIFICATION_KIND_SERVICE_FAILED {
-			failed++
-		}
-	}
-	if failed != 1 {
+	if failed := failedNotifications(s); failed != 1 {
 		t.Errorf("%d SERVICE_FAILED notifications, want 1", failed)
 	}
 	if s.InterruptStarting("sb1") != nil {
@@ -239,6 +244,53 @@ func TestStartRunsNoExecUnderALifecycleOperation(t *testing.T) {
 	}
 	if runner.execed("/proc/net/tcp") {
 		t.Error("the cancelled start ran a readiness check")
+	}
+}
+
+// slowCancel stretches the gap between an instance's context being cancelled
+// and whatever its canceller does next, so a bringUp woken by the cancel always
+// gets to act inside it.
+func slowCancel(s *Supervisor, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := s.handles[id]
+	cancel := h.cancel
+	h.cancel = func() {
+		cancel()
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// SWI-26: the drain claims the instance before it cancels the attempt. A start
+// waiting on the lock to clean up wakes on that cancel and must find the outcome
+// decided, not record "never listened" over the drain's. Only the drain's
+// failure is published.
+func TestDrainClaimsTheStartBeforeCancellingIt(t *testing.T) {
+	s, _, rw, id := startUnderOperation(t)
+	defer rw.Unlock()
+	slowCancel(s, id)
+	if groups := s.InterruptStarting("sb1"); len(groups) != 1 {
+		t.Errorf("the drain finds the start: %+v", groups)
+	}
+	if inst, _ := s.insts.Get(id); inst.GetFailureDetail() != startInterruptedDetail {
+		t.Errorf("the start overwrote the drain: %v", inst)
+	}
+	if failed := failedNotifications(s); failed != 1 {
+		t.Errorf("%d SERVICE_FAILED notifications, want 1", failed)
+	}
+}
+
+// SWI-26: a teardown cancels a start waiting on the lock to clean up. The start
+// reports no failure of its own on the way to the teardown's STOPPED.
+func TestTeardownOfAWaitingStartReportsNoFailure(t *testing.T) {
+	s, _, rw, id := startUnderOperation(t)
+	defer rw.Unlock()
+	s.StopAll("sb1", true)
+	if inst, _ := s.insts.Get(id); inst.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Errorf("after the teardown: %v", inst)
+	}
+	if failed := failedNotifications(s); failed != 0 {
+		t.Errorf("%d SERVICE_FAILED notifications, want 0", failed)
 	}
 }
 

@@ -235,35 +235,49 @@ func (s *Supervisor) markFailed(id string, reason pb.ServiceFailureReason, detai
 	})
 }
 
-// transitionStarting is transition for a start attempt (bringUp): mutate
-// applies only while the instance is still STARTING, checked inside the store
-// update, and a skipped write is not published. Whoever moved it on (a stop's
-// drain, a developer's stop) owns the outcome (SWI-17, research R14).
-func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
+// updateStarting applies mutate only while the instance is still STARTING,
+// checked inside the store update, and reports whether it did. Whoever moved it
+// on (a stop's drain, a developer's stop) owns the outcome (SWI-17, research R14).
+func (s *Supervisor) updateStarting(id string, mutate func(*pb.ServiceInstance)) (*pb.ServiceInstance, bool) {
 	applied := false
-	inst, ok := s.insts.Update(id, func(i *pb.ServiceInstance) {
+	inst, _ := s.insts.Update(id, func(i *pb.ServiceInstance) {
 		if i.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
 			applied = true
 			mutate(i)
 		}
 	})
-	if ok && applied {
+	return inst, applied
+}
+
+// transitionStarting is transition for a start attempt (bringUp): a write
+// updateStarting skipped is not published.
+func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
+	inst, applied := s.updateStarting(id, mutate)
+	if applied {
 		s.publish(inst)
 	}
 	return applied
 }
 
-// failStarting is markFailed for a start attempt: the resources are released
-// and the instance FAILED only while it is still STARTING (transitionStarting).
+// failStarting is markFailed for a start attempt, applied only while the
+// instance is still STARTING. The state is claimed BEFORE the release: the
+// release cancels the attempt's context, and a bringUp woken by that must find
+// the outcome already decided, or it records its own over the caller's. The
+// failure is published after the release, as markFailed does. A skipped write
+// releases nothing: whoever moved the instance on owns its resources (SWI-26).
 func (s *Supervisor) failStarting(id string, reason pb.ServiceFailureReason, detail string) {
-	s.release(id)
-	s.transitionStarting(id, func(i *pb.ServiceInstance) {
+	inst, applied := s.updateStarting(id, func(i *pb.ServiceInstance) {
 		i.State = pb.ServiceState_SERVICE_STATE_FAILED
 		i.FailureReason = reason
 		i.FailureDetail = detail
 		i.LocalPort = 0
 		i.EndedAt = timestamppb.New(s.now())
 	})
+	if !applied {
+		return
+	}
+	s.release(id)
+	s.publish(inst)
 }
 
 // release drops the supervisor's grip on an instance and gives back the host-side

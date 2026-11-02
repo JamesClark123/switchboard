@@ -1177,7 +1177,9 @@ one exclusive lock, operations that don't conflict refused each other: a develop
     lock (`awaitRuntime`, polling, holding nothing, and giving up if the start was cancelled meanwhile) with the
     instance still STARTING: the operation's drain or
     teardown cancels the start and owns its group (a Stop, Refresh or Destroy drain; AddKit's CREATING teardown),
-    or the operation ends without touching it and the start carries on. Each `sbx` call made under the read lock is
+    or the operation ends without touching it and the start carries on. A drain records FAILED **before** it cancels
+    (`failStarting`), because a start woken by that cancel would otherwise record its own failure first; a start
+    cancelled mid-wait records no failure of its own. Each `sbx` call made under the read lock is
     bounded by `runtimeHoldTimeout` (10 s), so a wedged one can't hold a waiting stop for long;
   - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
     `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
