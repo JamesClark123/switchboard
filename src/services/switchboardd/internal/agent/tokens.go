@@ -31,11 +31,12 @@ import (
 //
 // The generation's main agent process is bound by the first hook whose launch
 // record (the agent.pid the launch command writes) names the process that fired
-// it (BindRecorded, SWI-27); by the first non-compact SessionStart when a hook
-// has no record (BindMain); or, when none is bound, by a probe of agent.pid
-// (BindFromProbe, T047). An event is the main agent's when it carries the
-// current generation's token and that PID: nested `claude -p` sessions and
-// processes left by an earlier generation are not.
+// it (BindRecorded, SWI-27); by the first non-compact SessionStart of a direct
+// child of that process (BindWrapped, which BindRecorded can still replace); by
+// the first non-compact SessionStart when a hook has no record (BindMain); or,
+// when none is bound, by a probe of agent.pid (BindFromProbe, T047). An event is
+// the main agent's when it carries the current generation's token and that PID:
+// nested `claude -p` sessions and processes left by an earlier generation are not.
 
 // hookTokenBytes is the size of a per-agent hook token (data-model.md).
 const hookTokenBytes = 32

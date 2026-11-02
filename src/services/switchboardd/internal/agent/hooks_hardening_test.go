@@ -564,6 +564,47 @@ func TestParseLaunchRecord(t *testing.T) {
 	}
 }
 
+// X-Sxb-Pid-Start reaches the registry through a wrapped bind, so Handle keeps it
+// only when it is a start time, whatever else a token holder sends. Anything else
+// counts as unknown, which every consumer already handles.
+func TestHandleBlanksAnInvalidPIDStart(t *testing.T) {
+	for _, tc := range []struct{ header, want string }{
+		{"501", "501"},
+		{"", ""},
+		{"not-a-start-time", ""},
+		{"501x", ""},
+		{"-1", ""},
+		{"+501", ""},
+		{"501 502", ""},
+		{strings.Repeat("9", 1024), ""}, // all digits, but no start time is this long
+	} {
+		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", State: pb.SandboxState_SANDBOX_STATE_RUNNING})
+		s, sp := tokenServer(t, st)
+		r := httptest.NewRequest(http.MethodPost, "/hook?event=SessionStart&sandbox_id=sb", strings.NewReader(`{"source":"startup"}`))
+		for h, v := range map[string]string{
+			headerToken: sp.Token, headerGen: "1", headerRecord: "1 100 500",
+			headerPID: "101", headerParent: "100", headerPIDStart: tc.header,
+		} {
+			r.Header.Set(h, v)
+		}
+		w := httptest.NewRecorder()
+		s.Handle(w, r)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("%q: status %d", tc.header, w.Code)
+		}
+		if pid, start, ok := s.tokens.MainPID("sb", 1); !ok || pid != 101 || start != tc.want {
+			t.Errorf("%q: main = %d %q %v, want 101 %q", tc.header, pid, start, ok, tc.want)
+		}
+		gens, err := s.tokens.store.ListAgentTokens()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := gens["sb"].Tokens[0].MainStart; got != tc.want {
+			t.Errorf("%q: stored start = %q, want %q", tc.header, got, tc.want)
+		}
+	}
+}
+
 // A probe fills in the start time a hook with no record could not give, and
 // never replaces the binding.
 func TestBindFromProbeFillsTheStartTime(t *testing.T) {

@@ -550,6 +550,9 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 		p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		p.PID, _ = strconv.Atoi(r.Header.Get(headerPID))
 		p.PIDStart = r.Header.Get(headerPIDStart)
+		if _, err := strconv.ParseUint(p.PIDStart, 10, 64); err != nil {
+			p.PIDStart = "" // it can be persisted (BindWrapped): a start time, nothing else
+		}
 		p.PIDParent, _ = strconv.Atoi(r.Header.Get(headerParent))
 		p.Record = parseLaunchRecord(r.Header.Get(headerRecord))
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
