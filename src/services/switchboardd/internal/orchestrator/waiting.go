@@ -27,16 +27,13 @@ type laneCounts struct {
 	names   map[string][]string // live unpaused workers' display names, roster order
 	paused  map[string][]string // live paused workers' display names, roster order
 	pending int                 // workers awaiting a lane assignment
-	// pausedReady holds paused workers (by sandbox id) that are otherwise
-	// available (RUNNING, host up).
-	pausedReady map[string]bool
 }
 
 // laneCounts builds the index from the record, the cached sandbox records and
 // host reachability.
 func (rt *runtime) laneCounts() *laneCounts {
 	rec := rt.record()
-	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, paused: map[string][]string{}, pausedReady: map[string]bool{}}
+	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, paused: map[string][]string{}}
 	ups := map[string]bool{}
 	for _, w := range rec.GetWorkers() {
 		if w.GetReasoning() {
@@ -57,9 +54,6 @@ func (rt *runtime) laneCounts() *laneCounts {
 			name = sb.GetDisplayName()
 		}
 		ready := up && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
-		if w.GetPaused() && ready {
-			c.pausedReady[w.GetSandboxId()] = true
-		}
 		keys := w.GetLaneIds()
 		if len(keys) == 0 {
 			keys = []string{""}
@@ -83,11 +77,6 @@ func (rt *runtime) laneCounts() *laneCounts {
 // forAgent names no workers (the run's agent-facing check, R9).
 func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 	if run.GetState() != pb.RunState_RUN_STATE_QUEUED || run.GetType() != pb.ActionType_ACTION_TYPE_PROMPT {
-		return ""
-	}
-	// A run claimed by a worker paused since is on it already, not waiting
-	// (unless that worker has stopped or its host is down).
-	if c.pausedReady[run.GetSandboxId()] {
 		return ""
 	}
 	ids, mode, ok := effectiveLanes(c.rec, run)

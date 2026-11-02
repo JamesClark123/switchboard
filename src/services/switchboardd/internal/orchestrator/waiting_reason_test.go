@@ -12,7 +12,7 @@ import (
 // Waiting reasons (FR-315, research R9) over a hand-built index.
 
 func reasonCounts(rec *pb.Orchestrator, states map[string]bool, names map[string]string) *laneCounts {
-	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, paused: map[string][]string{}, pausedReady: map[string]bool{}}
+	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, paused: map[string][]string{}}
 	for _, w := range rec.GetWorkers() {
 		if w.GetLanesPending() {
 			c.pending++
@@ -26,7 +26,6 @@ func reasonCounts(rec *pb.Orchestrator, states map[string]bool, names map[string
 			c.live[k]++
 			if w.GetPaused() {
 				c.paused[k] = append(c.paused[k], names[w.GetSandboxId()])
-				c.pausedReady[w.GetSandboxId()] = states[w.GetSandboxId()]
 				continue
 			}
 			c.names[k] = append(c.names[k], names[w.GetSandboxId()])

@@ -288,7 +288,7 @@ func TestWorkersViewPause(t *testing.T) {
 	}
 	m, cmd := update(m, press("P"))
 	m = feed2(m, cmd)
-	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a w1 true") || !strings.Contains(m.status, "worker worker-one paused (current run will finish)") {
+	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a w1 true") || m.status != "worker worker-one paused" {
 		t.Errorf("pause: calls %q status %q", a.orchCallsJoined(), m.status)
 	}
 	m, _ = update(m, press("j"))

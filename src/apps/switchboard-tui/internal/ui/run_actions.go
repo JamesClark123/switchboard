@@ -486,18 +486,21 @@ func toggleWorkerPausedCmd(md Daemon, orchID, sandboxID, name string) tea.Cmd {
 		if err != nil {
 			return orchDoneMsg{err: err}
 		}
-		paused := true
+		paused, hasRun := true, false
 		for _, w := range detail.GetWorkers() {
 			if w.GetSandboxId() == sandboxID {
-				paused = !w.GetPaused()
+				paused, hasRun = !w.GetPaused(), w.GetRunId() != ""
 			}
 		}
 		if _, err := md.SetWorkerPaused(ctx, orchID, sandboxID, paused); err != nil {
 			return orchDoneMsg{err: err}
 		}
 		status := "worker " + sanitizeLine(name, 0) + " resumed"
-		if paused {
+		switch {
+		case paused && hasRun:
 			status = "worker " + sanitizeLine(name, 0) + " paused (current run will finish)"
+		case paused:
+			status = "worker " + sanitizeLine(name, 0) + " paused"
 		}
 		return orchDoneMsg{status: status, reload: true}
 	}

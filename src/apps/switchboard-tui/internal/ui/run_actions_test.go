@@ -457,7 +457,7 @@ func TestPauseWorkerKey(t *testing.T) {
 	}
 	mm, cmd := update(m, press("P"))
 	done, ok := runCmd(cmd).(orchDoneMsg)
-	if !ok || done.err != nil || done.status != "worker sand-b paused (current run will finish)" {
+	if !ok || done.err != nil || done.status != "worker sand-b paused" {
 		t.Errorf("pause = %+v", done)
 	}
 	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a sb true") {
@@ -466,6 +466,13 @@ func TestPauseWorkerKey(t *testing.T) {
 	mm, _ = update(mm, done)
 	if mm.status != done.status {
 		t.Errorf("status = %q", mm.status)
+	}
+
+	// Only a worker with a run is told that run will finish.
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{{SandboxId: "sb", RunId: "r1"}}}
+	_, cmd = update(m, press("P"))
+	if done, _ := runCmd(cmd).(orchDoneMsg); done.status != "worker sand-b paused (current run will finish)" {
+		t.Errorf("pause with a run = %+v", done)
 	}
 
 	// The row's display copy still says unpaused (its push has not landed, or

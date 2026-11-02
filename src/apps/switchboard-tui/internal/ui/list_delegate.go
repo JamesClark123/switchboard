@@ -74,8 +74,12 @@ func (d sandboxDelegate) Render(w io.Writer, m list.Model, index int, item list.
 
 // thirdLine renders a sandbox's third row line: `mcp: a, b · orchestrator:
 // <name>`, either half omitted when absent, empty when both are (FR-149).
+// `paused` comes first: the row cuts the end of this line.
 func thirdLine(sb *pb.Sandbox) string {
 	var parts []string
+	if sb.GetController().GetPaused() {
+		parts = append(parts, "paused")
+	}
 	if names := sb.GetMcpServers(); len(names) > 0 {
 		mode := ""
 		if sb.GetMcpAttachMode() == pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE {
@@ -107,9 +111,6 @@ func thirdLine(sb *pb.Sandbox) string {
 			parts = append(parts, "lanes: "+strings.Join(c.GetLaneNames(), ", "))
 		default:
 			parts = append(parts, "open lane")
-		}
-		if c.GetPaused() {
-			parts = append(parts, "paused")
 		}
 	}
 	// Daemon-supplied names (FR-309).

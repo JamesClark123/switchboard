@@ -16,14 +16,35 @@ func TestThirdLine(t *testing.T) {
 		"mcp: a, b (exclusive)":                {McpServers: []string{"a", "b"}, McpAttachMode: pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE},
 		"orchestrator: review-bot":             {Controller: &pb.SandboxController{Name: "review-bot"}},
 		"orchestrator: review-bot (reasoning)": {Controller: &pb.SandboxController{Name: "review-bot", Reasoning: true}},
-		"orchestrator: review-bot · paused":    {Controller: &pb.SandboxController{Name: "review-bot", Paused: true}},
-		"orchestrator: deadbeef":               {Controller: &pb.SandboxController{OrchestratorId: "deadbeef-1234"}},
-		"":                                     {},
+		"paused · orchestrator: review-bot":    {Controller: &pb.SandboxController{Name: "review-bot", Paused: true}},
+		"paused · mcp: a, b · orchestrator: review-bot · lanes: x": {
+			McpServers: []string{"a", "b"},
+			Controller: &pb.SandboxController{Name: "review-bot", Paused: true, LanesKnown: true, LaneNames: []string{"x"}},
+		},
+		"orchestrator: deadbeef": {Controller: &pb.SandboxController{OrchestratorId: "deadbeef-1234"}},
+		"":                       {},
 	}
 	for want, sb := range cases {
 		if got := thirdLine(sb); got != want {
 			t.Errorf("thirdLine = %q, want %q", got, want)
 		}
+	}
+}
+
+// A long third line loses its end, so the paused marker must not be there.
+func TestPausedMarkerSurvivesTruncation(t *testing.T) {
+	d := newSandboxDelegate()
+	l := list.New(nil, d, 40, 12)
+	line3 := thirdLine(&pb.Sandbox{
+		McpServers: []string{"server-name-one", "server-name-two", "server-name-three"},
+		Controller: &pb.SandboxController{Name: "review-bot", Paused: true},
+	})
+	l.SetItems([]list.Item{listItem{id: "a", title: "RUNNING  demo", desc: "duplicate · proj", line3: line3}})
+	var buf bytes.Buffer
+	d.Render(&buf, l, 0, l.Items()[0])
+	third := strings.Split(buf.String(), "\n")[2]
+	if !strings.Contains(third, "…") || !strings.Contains(third, "paused") {
+		t.Errorf("the marker should survive the cut: %q", third)
 	}
 }
 

@@ -231,7 +231,7 @@ The sandbox list is the home screen. Keys:
 | `o` | Attach the selected sandbox to an orchestrator as a worker, or detach it (offers to add the sandbox's host to the orchestrator first) |
 | `O` | Show/hide the **Orchestrator Sandboxes** tab: every worker and reasoning sandbox, which the everyday tabs hide unless they need you |
 | `m` | Mark a worker free: close the run it is holding for review (optionally as failed) so the orchestrator can use it again |
-| `P` | Pause or resume a worker: a paused worker gets no new runs, a run already on it finishes, and resuming picks up queued runs at once. It stays paused across daemon restarts; detaching resets it. |
+| `P` | Pause or resume a worker: a paused worker gets no new runs, a run already on it finishes, a run it claimed but hasn't started goes back to the queue, and resuming picks up queued runs at once. It stays paused across daemon restarts; detaching resets it. |
 | `,` | Settings — TUI-persisted preferences (`settings.toml` in the config dir) |
 | `F` | Refresh repos (re-seed workspace) · `R` rename · `r` reload · `j`/`k` navigate · `q` quit |
 

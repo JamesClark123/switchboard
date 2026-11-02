@@ -387,10 +387,10 @@ func (s *Service) SetWorkerLanes(req *pb.SetWorkerLanesRequest) (*pb.WorkerView,
 	return rt.workerView(req.GetSandboxId()), nil
 }
 
-// SetWorkerPaused pauses or resumes a prompt worker (SWI-23). Only dispatch
-// reads the flag, so a run already on the worker finishes as normal. The write
-// bumps recGen, so a pass mid-flight re-reads it before its next claim.
-// Setting the current value writes nothing and pushes nothing.
+// SetWorkerPaused pauses or resumes a prompt worker (SWI-23). A run already on
+// the worker finishes as normal; a claim it hasn't started goes back to the
+// queue. The write bumps recGen, so a pass mid-flight re-reads it before its
+// next claim. Setting the current value writes nothing and pushes nothing.
 func (s *Service) SetWorkerPaused(orchID, sandboxID string, paused bool) (*pb.WorkerView, error) {
 	rt, err := s.runtimeFor(orchID)
 	if err != nil {
@@ -413,6 +413,9 @@ func (s *Service) SetWorkerPaused(orchID, sandboxID string, paused bool) (*pb.Wo
 		return nil, err
 	}
 	if changed {
+		if paused {
+			rt.unclaimOn(sandboxID)
+		}
 		rt.afterLaneChange(laneChange{marked: []string{sandboxID}})
 	}
 	return rt.workerView(sandboxID), nil

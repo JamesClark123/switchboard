@@ -354,13 +354,15 @@ func (rt *runtime) syncWorkerRun(runID string) {
 
 // --- transactions on the live record ---
 
-// sameStep reports whether the live record is where the caller saw it. The
-// in-flight states count as one: status folding moves a run between running,
-// awaiting input and awaiting review while a step call is out, and the step's
-// answer still applies (lost, it would leave a typed step unclassified).
+// sameStep reports whether the live record is where the caller saw it, on the
+// same worker: a released claim can be re-claimed elsewhere at the same step.
+// The in-flight states count as one: status folding moves a run between
+// running, awaiting input and awaiting review while a step call is out, and
+// the step's answer still applies (lost, it would leave a typed step
+// unclassified).
 func sameStep(a, b *pb.Run) bool {
-	return stepState(a) == stepState(b) && a.GetStep() == b.GetStep() && a.GetStepSend() == b.GetStepSend() &&
-		a.GetStepStatus() == b.GetStepStatus() && a.GetHold() == b.GetHold()
+	return stepState(a) == stepState(b) && a.GetSandboxId() == b.GetSandboxId() && a.GetStep() == b.GetStep() &&
+		a.GetStepSend() == b.GetStepSend() && a.GetStepStatus() == b.GetStepStatus() && a.GetHold() == b.GetHold()
 }
 
 func stepState(r *pb.Run) pb.RunState {
@@ -536,10 +538,14 @@ func (rt *runtime) stepOnce(sandboxID string) (more, active bool) {
 func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 	pending := run.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING
 	if run.GetState() == pb.RunState_RUN_STATE_QUEUED {
-		// A claim the worker can't take (gone, stopped, detached agent): back
-		// to the queue, nothing having been typed.
-		if pending && (sb == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING ||
-			agentCheck(sb) != pb.AgentCheck_STATE_CLEAR || hostOf(rt.record(), run.GetSandboxId()) == "") {
+		// A claim the worker can't take (gone, stopped, detached agent, paused):
+		// back to the queue, nothing having been typed.
+		if !pending {
+			return false
+		}
+		w := onRosterEntry(rt.record(), run.GetSandboxId())
+		if sb == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING ||
+			agentCheck(sb) != pb.AgentCheck_STATE_CLEAR || w.GetHostId() == "" || w.GetPaused() {
 			return rt.unclaim(run)
 		}
 		return false
@@ -651,7 +657,8 @@ func unclaimLocked(l *pb.Run) {
 }
 
 // unclaimOn puts every claimed, untyped run on a sandbox back in the queue
-// (its worker was dropped): pending, or halted on a refused first step.
+// (its worker was dropped or paused): pending, or halted on a refused first
+// step.
 func (rt *runtime) unclaimOn(sandboxID string) {
 	rt.runs.mu.Lock()
 	runs, _ := rt.svc.reg.ListRuns(rt.id)
@@ -661,6 +668,7 @@ func (rt *runtime) unclaimOn(sandboxID string) {
 		if r.GetState() == pb.RunState_RUN_STATE_QUEUED && r.GetSandboxId() == sandboxID && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_HALTED) {
 			unclaimLocked(r)
 			if rt.putRun(r) == nil {
+				rt.dropMarks(r.GetId())
 				n++
 			}
 		}

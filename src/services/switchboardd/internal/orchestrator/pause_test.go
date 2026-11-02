@@ -1,11 +1,16 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Pausing workers (SWI-23).
@@ -221,20 +226,172 @@ func TestWaitingReasonsPaused(t *testing.T) {
 		"waiting: every worker that could take it is paused, stopped or unreachable", nil)
 }
 
-// A claimed run is on its worker running setup steps: pausing that worker does
-// not make the run wait, unless the worker has stopped too.
-func TestWaitingReasonClaimedRunOnPausedWorker(t *testing.T) {
-	rec := &pb.Orchestrator{
-		Actions: []*pb.Action{{Name: "plain", Type: pb.ActionType_ACTION_TYPE_PROMPT}},
-		Workers: []*pb.Worker{{SandboxId: "p0", Paused: true}},
+// refuseFirstStep leaves a run claimed on wa and QUEUED: its first step reached
+// the worker, which refused it, so nothing is typed.
+func refuseFirstStep(t *testing.T, env *testEnv, w *fakeWorker, o *pb.Orchestrator, d *fakeDaemon) *pb.Run {
+	t.Helper()
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string {
+			if req.GetSandboxId() == "wa" {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitFor(t, func() bool { return len(stepReqs(w)) > 0 })
+	r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if r.GetState() != pb.RunState_RUN_STATE_QUEUED || r.GetSandboxId() != "wa" {
+		t.Fatalf("claimed run = %v on %q", r.GetState(), r.GetSandboxId())
 	}
-	q := &pb.Run{Action: "plain", State: pb.RunState_RUN_STATE_QUEUED, Type: pb.ActionType_ACTION_TYPE_PROMPT, SandboxId: "p0"}
-	names := map[string]string{"p0": "p0"}
-	if got := waitingReason(q, reasonCounts(rec, map[string]bool{"p0": true}, names), false); got != "" {
-		t.Errorf("claimed run = %q", got)
+	return run
+}
+
+// Pausing a worker releases a claim it hasn't started: the run goes to another
+// free worker at once, and nothing is typed on the paused one.
+func TestPauseReleasesAClaimToAnotherWorker(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 2, nil)
+	run := refuseFirstStep(t, env, w, o, d)
+	pause(t, env, o.GetId(), "wa", true)
+	waitFor(t, func() bool {
+		r := runNow(env, o, run.GetId())
+		return r.GetSandboxId() == "wb" && r.GetState() == pb.RunState_RUN_STATE_RUNNING
+	})
+	for _, typed := range d.typedTexts() {
+		if strings.HasPrefix(typed, "wa: ") {
+			t.Errorf("typed on the paused worker: %q", typed)
+		}
 	}
-	if got := waitingReason(q, reasonCounts(rec, nil, names), false); got != "waiting for paused p0" {
-		t.Errorf("claimed run, worker stopped = %q", got)
+}
+
+// With no other worker the run waits and says why, and the refusal clearing
+// does not start it on the paused worker. Resuming does.
+func TestPausedClaimDoesNotStartWhenTheRefusalClears(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	id := o.GetId()
+	run := refuseFirstStep(t, env, w, o, d)
+	pause(t, env, id, "wa", true)
+	r := runOf(t, env, id, run.GetId())
+	if r.GetSandboxId() != "" || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_UNSPECIFIED || r.GetWaitingReason() != "waiting for paused worker-wa" {
+		t.Errorf("released run = %q %v %q", r.GetSandboxId(), r.GetStepStatus(), r.GetWaitingReason())
+	}
+	rt.mu.Lock()
+	marks := rt.seq.marks[run.GetId()]
+	rt.mu.Unlock()
+	if marks != nil {
+		t.Errorf("the refusal's timing should not follow the run to its next worker: %+v", marks)
+	}
+
+	d.set(func(d *fakeDaemon) { d.refuse = nil })
+	env.clock.Advance(stepRetryEvery)
+	settle(t, rt)
+	if r := runOf(t, env, id, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_QUEUED || r.GetSandboxId() != "" || len(d.typedTexts()) != 0 {
+		t.Errorf("after the refusal cleared = %v on %q, typed %q", r.GetState(), r.GetSandboxId(), d.typedTexts())
+	}
+
+	pause(t, env, id, "wa", false)
+	waitFor(t, func() bool {
+		r := runOf(t, env, id, run.GetId())
+		return r.GetSandboxId() == "wa" && r.GetState() == pb.RunState_RUN_STATE_RUNNING
+	})
+}
+
+// A claim halted on a refused first step is released too: its stepper has
+// nothing left to do, so only the pause itself can move it.
+func TestPauseReleasesAHaltedClaim(t *testing.T) {
+	env, w, o, _, _ := seqEnv(t, 1, nil)
+	w.mu.Lock()
+	w.steps = func(context.Context, *fakeWorker, *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+		return nil, status.Error(codes.InvalidArgument, "invalid")
+	}
+	w.mu.Unlock()
+	run := callSeq(t, env, o, "1")
+	r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_HALTED)
+	if r.GetState() != pb.RunState_RUN_STATE_QUEUED || r.GetSandboxId() != "wa" {
+		t.Fatalf("halted claim = %v on %q", r.GetState(), r.GetSandboxId())
+	}
+	pause(t, env, o.GetId(), "wa", true)
+	if r := runNow(env, o, run.GetId()); r.GetSandboxId() != "" || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_UNSPECIFIED {
+		t.Errorf("released run = %q %v", r.GetSandboxId(), r.GetStepStatus())
+	}
+}
+
+// A pause landing between recheckAndClaim and claim: the stepper checks before
+// it sends, so the claim goes back to the queue with nothing sent.
+func TestClaimLandingAfterThePauseIsReleased(t *testing.T) {
+	env, w, o, rt, _ := seqEnv(t, 1, nil)
+	pause(t, env, o.GetId(), "wa", true)
+	run := callSeq(t, env, o, "1")
+	settle(t, rt)
+	if !rt.claim(run, onRosterEntry(rt.record(), "wa")) {
+		t.Fatal("claim refused")
+	}
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetSandboxId() == "" })
+	if n := len(stepReqs(w)); n != 0 {
+		t.Errorf("sent to the paused worker: %d calls", n)
+	}
+}
+
+// holdFirstStep leaves a run's first step in flight on wa, answered once the
+// returned func is called.
+func holdFirstStep(t *testing.T, env *testEnv, o *pb.Orchestrator, d *fakeDaemon, answer error) (*pb.Run, func()) {
+	t.Helper()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	d.set(func(d *fakeDaemon) {
+		d.hold = func(*pb.DeliverWorkerStepRequest) {
+			once.Do(func() { close(entered); <-release })
+		}
+		if answer != nil {
+			d.outcome = func(*pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) { return nil, answer }
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	<-entered
+	return run, func() { close(release) }
+}
+
+// A first step already in flight when the pause lands may be typed: the run then
+// started just before the pause, and finishes like any other.
+func TestPauseDuringAFirstStepInFlight(t *testing.T) {
+	env, _, o, _, d := seqEnv(t, 1, nil)
+	run, answer := holdFirstStep(t, env, o, d, nil)
+	pause(t, env, o.GetId(), "wa", true)
+	if r := runNow(env, o, run.GetId()); r.GetSandboxId() != "wa" || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING {
+		t.Errorf("in flight = %q %v", r.GetSandboxId(), r.GetStepStatus())
+	}
+	answer()
+	waitFor(t, func() bool {
+		r := runNow(env, o, run.GetId())
+		return r.GetSandboxId() == "wa" && r.GetState() == pb.RunState_RUN_STATE_RUNNING
+	})
+}
+
+// That step refused instead: the claim is released on the next retry.
+func TestPauseDuringAFirstStepThenRefused(t *testing.T) {
+	env, _, o, _, d := seqEnv(t, 1, nil)
+	run, answer := holdFirstStep(t, env, o, d, fp("input box not empty"))
+	pause(t, env, o.GetId(), "wa", true)
+	answer()
+	waitFor(t, func() bool {
+		env.clock.Advance(stepRetryEvery)
+		return runNow(env, o, run.GetId()).GetSandboxId() == ""
+	})
+	if r := runNow(env, o, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Errorf("released run = %v", r.GetState())
+	}
+}
+
+// A stepper still holding a run from its old claim must not act on the new one.
+func TestSameStepSeesAClaimThatMoved(t *testing.T) {
+	onWorker := func(id string) *pb.Run {
+		return &pb.Run{State: pb.RunState_RUN_STATE_QUEUED, SandboxId: id, StepStatus: pb.StepStatus_STEP_STATUS_PENDING}
+	}
+	if !sameStep(onWorker("wa"), onWorker("wa")) {
+		t.Error("the same claim should match")
+	}
+	if sameStep(onWorker("wa"), onWorker("wb")) {
+		t.Error("a claim that moved to another worker should not match")
 	}
 }
 

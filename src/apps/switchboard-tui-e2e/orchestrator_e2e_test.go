@@ -581,8 +581,8 @@ func TestTUIPauseWorkerE2E(t *testing.T) {
 	p.expectNew(t, m, "orchestrator: review-bot", 10*time.Second)
 	m = p.mark()
 	p.send("P")
-	p.expectNew(t, m, "paused (current run will finish)", 15*time.Second)
-	p.expectNew(t, m, "· paused", 15*time.Second)
+	p.expectNew(t, m, " paused", 15*time.Second)
+	p.expectNew(t, m, "paused · orchestrator: review-bot", 15*time.Second)
 
 	// A call stays queued on the paused worker and says why.
 	m = p.mark()
@@ -602,7 +602,7 @@ func TestTUIPauseWorkerE2E(t *testing.T) {
 	// Resuming dispatches it, with no other trigger.
 	m = p.mark()
 	p.send("\x1b[1;2C") // shift+→: the list
-	p.expectNew(t, m, "· paused", 10*time.Second)
+	p.expectNew(t, m, "paused · orchestrator: review-bot", 10*time.Second)
 	m = p.mark()
 	p.send("P")
 	p.expectNew(t, m, "resumed", 15*time.Second)
