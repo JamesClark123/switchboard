@@ -238,17 +238,15 @@ func hiddenWorker(sb *pb.Sandbox) bool {
 // rest; the existing order is kept within each half.
 func stablePartition(rows []sandboxRow, first func(*pb.Sandbox) bool) []sandboxRow {
 	out := make([]sandboxRow, 0, len(rows))
+	var rest []sandboxRow
 	for _, r := range rows {
 		if first(r.sb) {
 			out = append(out, r)
+		} else {
+			rest = append(rest, r)
 		}
 	}
-	for _, r := range rows {
-		if !first(r.sb) {
-			out = append(out, r)
-		}
-	}
-	return out
+	return append(out, rest...)
 }
 
 // surfaceFirst stable-partitions rows so those that need the developer come

@@ -270,11 +270,16 @@ func plainSB(id string, state pb.SandboxState) *pb.Sandbox {
 }
 
 // listItemIDs reads the ids of the items the list currently renders, in order.
-func listItemIDs(m Model) []string {
+func listItemIDs(t *testing.T, m Model) []string {
+	t.Helper()
 	items := m.list.Items()
 	out := make([]string, 0, len(items))
 	for _, it := range items {
-		out = append(out, it.(listItem).id)
+		li, ok := it.(listItem)
+		if !ok {
+			t.Fatalf("list item %T is not a listItem", it)
+		}
+		out = append(out, li.id)
 	}
 	return out
 }
@@ -324,12 +329,12 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	if got := rowIDs(m.currentTabRows()); strings.Join(got, ",") != wantAll {
 		t.Fatalf("All rows = %v, want %s", got, wantAll)
 	}
-	if got := listItemIDs(m); strings.Join(got, ",") != wantAll {
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
 		t.Fatalf("All list items = %v, want %s", got, wantAll)
 	}
 	// Stable across renders.
 	m.refreshListItems()
-	if got := listItemIDs(m); strings.Join(got, ",") != wantAll {
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
 		t.Fatalf("All list items after re-render = %v, want %s", got, wantAll)
 	}
 
@@ -383,7 +388,7 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{
 		SandboxChanged: plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_STOPPED)}}})
 	const wantStopped = "e-a,r-b,c-b,pending-1,s-a2,s-a1,r-a1,s-b"
-	if got := listItemIDs(m); strings.Join(got, ",") != wantStopped {
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantStopped {
 		t.Errorf("after stop list items = %v, want %s", got, wantStopped)
 	}
 	if m.list.Index() != 0 || m.current().GetId() != "e-a" {
@@ -392,7 +397,7 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	// Starting it again restores its place among the running rows.
 	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{
 		SandboxChanged: plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_RUNNING)}}})
-	if got := listItemIDs(m); strings.Join(got, ",") != wantAll {
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
 		t.Errorf("after start list items = %v, want %s", got, wantAll)
 	}
 
