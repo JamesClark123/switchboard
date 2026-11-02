@@ -78,6 +78,10 @@ type genEntry struct {
 	token     []byte
 	mainPID   int
 	mainStart string
+	// mainWrapped marks a binding from BindWrapped, which BindRecorded may still
+	// correct despite its start time. It is not persisted: such a binding is
+	// final after a daemon restart.
+	mainWrapped bool
 }
 
 // LoadHookTokens builds the index from the store.
@@ -249,6 +253,21 @@ func (t *HookTokens) Verify(sandboxID, genHeader, token string) (gen int64, ok b
 // generation binds (a process left by an earlier one never does), only once,
 // and only a real PID. It reports whether it bound.
 func (t *HookTokens) BindMain(sandboxID string, gen int64, pid int) bool {
+	return t.bindFirst(sandboxID, gen, pid, "", false)
+}
+
+// BindWrapped binds the main agent from the first SessionStart of a direct child
+// of the recorded process (wrappedMain), with the start time the hook sent, so a
+// reused PID is not taken for main. BindRecorded can still replace it: a hook from
+// the recorded process itself shows that process is the agent and the child a
+// nested session it exec'd. A real wrapper fires no hooks, so that never happens
+// to a correct binding. It reports whether it bound.
+func (t *HookTokens) BindWrapped(sandboxID string, gen int64, pid int, start string) bool {
+	return t.bindFirst(sandboxID, gen, pid, start, true)
+}
+
+// bindFirst binds the current generation's main agent if none is bound yet.
+func (t *HookTokens) bindFirst(sandboxID string, gen int64, pid int, start string, wrapped bool) bool {
 	t.mu.Lock()
 	s, ok := t.sbs[sandboxID]
 	var e *genEntry
@@ -259,9 +278,9 @@ func (t *HookTokens) BindMain(sandboxID string, gen int64, pid int) bool {
 		t.mu.Unlock()
 		return false
 	}
-	e.mainPID = pid
+	e.mainPID, e.mainStart, e.mainWrapped = pid, start, wrapped
 	t.mu.Unlock()
-	if err := t.store.SetAgentMain(sandboxID, gen, pid, ""); err != nil {
+	if err := t.store.SetAgentMain(sandboxID, gen, pid, start); err != nil {
 		t.log("[agent] %s: persist main agent of generation %d: %v", sandboxID, gen, err)
 	}
 	return true
@@ -271,11 +290,11 @@ func (t *HookTokens) BindMain(sandboxID string, gen int64, pid int) bool {
 // hook whose launch record names the process that fired it (SWI-27), with the
 // recorded start time. Unlike BindMain it also corrects a binding with no start
 // time: made with no record, it may name a nested session (a lost first
-// SessionStart). One with a start time is final, as `exec` keeps the main PID for
-// the generation's life, so a generation is written at most twice however many
-// hooks arrive. It cannot widen what a process in the sandbox can do, as the PID
-// header is already forgeable (research R13: a filter, not a boundary). It
-// reports whether the binding changed.
+// SessionStart). The same goes for one from BindWrapped. Any other with a start
+// time is final, as `exec` keeps the main PID for the generation's life, so a
+// generation is written at most twice however many hooks arrive. It cannot widen
+// what a process in the sandbox can do, as the PID header is already forgeable
+// (research R13: a filter, not a boundary). It reports whether the binding changed.
 func (t *HookTokens) BindRecorded(sandboxID string, gen int64, pid int, start string) bool {
 	t.mu.Lock()
 	s, ok := t.sbs[sandboxID]
@@ -283,12 +302,12 @@ func (t *HookTokens) BindRecorded(sandboxID string, gen int64, pid int, start st
 	if ok && gen == s.current() {
 		e = s.gens[gen]
 	}
-	if e == nil || pid <= 0 || start == "" || e.mainStart != "" {
+	if e == nil || pid <= 0 || start == "" || (e.mainStart != "" && !e.mainWrapped) {
 		t.mu.Unlock()
 		return false
 	}
 	prev := e.mainPID
-	e.mainPID, e.mainStart = pid, start
+	e.mainPID, e.mainStart, e.mainWrapped = pid, start, false
 	t.mu.Unlock()
 	if prev != 0 && prev != pid {
 		t.log("[agent] %s: main agent of generation %d was bound to process %d; the launch record names %d", sandboxID, gen, prev, pid)
@@ -359,10 +378,11 @@ var notExecParents = map[string]bool{
 // subreaperExes are init-like processes that adopt orphans (SWI-27). Whether a
 // process is a subreaper cannot be read from /proc without prctl, so it goes by
 // its executable's name. Docker Sandboxes (Scenario 0) runs tini as PID 1, with exec children at
-// parent 0.
+// parent 0. A subreaper run by an interpreter (supervisord) cannot be caught this
+// way: its executable is the interpreter's.
 var subreaperExes = map[string]bool{
 	"tini": true, "dumb-init": true, "docker-init": true, "catatonit": true, "init": true, "systemd": true,
-	"s6-svscan": true, "runsvdir": true, "supervisord": true,
+	"s6-svscan": true, "runsvdir": true,
 }
 
 // CheckProbed decides whether a probed process may be bound as a generation's

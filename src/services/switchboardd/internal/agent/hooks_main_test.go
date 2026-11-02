@@ -381,6 +381,15 @@ func TestReadHookInputStreams(t *testing.T) {
 	if in := readHookInput(strings.NewReader(`{"background_tasks":[],"x":"` + strings.Repeat("m", 2*maxHookRead) + `"}`)); in.CutOff {
 		t.Error("a list read before the cap is not cut off")
 	}
+	head, tail := `{"hook_event_name":"Stop","last_assistant_message":"`, `"}`
+	exact := head + strings.Repeat("m", maxHookRead-len(head)-len(tail)) + tail
+	if in := readHookInput(strings.NewReader(exact)); in.CutOff || in.Unread {
+		t.Errorf("a body ending exactly at the cap was read whole: %+v", in)
+	}
+	over := head + strings.Repeat("m", maxHookRead-len(head)-len(tail)+1) + tail
+	if in := readHookInput(strings.NewReader(over)); !in.CutOff || !in.Unread {
+		t.Errorf("a body one byte past the cap is cut off: %+v", in)
+	}
 	if in := readHookInput(strings.NewReader(`{"background_tasks":[`)); len(in.BackgroundTasks) != 0 {
 		t.Error("a truncated list is no list")
 	}

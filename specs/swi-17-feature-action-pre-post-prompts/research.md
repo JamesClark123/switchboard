@@ -727,11 +727,15 @@ gets typed or what counts as evidence, and each needs a boundary.
        command from before SWI-27, kept until its agent restarts, or a launch that couldn't write the file, which can
        leave the previous generation's record: a record of another generation counts as none). A SessionStart from a
        direct child of the recorded process also binds, for a `claude` on PATH that is a wrapper that forks (hooks send
-       `X-Sxb-Pid-Parent`); a nested session runs under the agent's tool shell, so it isn't one. Any other unbound
-       SessionStart is logged and doesn't bind.
+       `X-Sxb-Pid-Parent`). A nested session usually runs under the agent's tool shell, so it isn't one, but a shell can
+       exec its last command (`bash -c 'claude -p …'`), which leaves it a direct child. Any other unbound SessionStart
+       is logged and doesn't bind.
      - **A proven hook may replace a binding with no start time** (revising run-590 for hooks; a probe still never
-       replaces one), which corrects one made with no record. One with a start time is final: `exec` keeps the main PID
-       for the generation's life. This does not widen anything: a process in the sandbox could already forge
+       replaces one), which corrects one made with no record. It may also replace one made for a direct child, which
+       stores the child's start time so a reused PID is caught: a hook from the recorded process proves that process is
+       the agent and the child a nested session, and a real wrapper fires no hooks. That mark is in memory only, so
+       after a daemon restart the child's binding is final. Any other binding with a start time is final: `exec` keeps
+       the main PID for the generation's life. This does not widen anything: a process in the sandbox could already forge
        `X-Sxb-Pid`, and the PID match remains a filter, **not** a security boundary.
      - **The start time is recorded when binding**, and an event whose start time differs from the bound one is not
        main: its PID was reused.
@@ -739,10 +743,10 @@ gets typed or what counts as evidence, and each needs a boundary.
        executable name, since `/proc` doesn't expose subreaper status): any orphan is reparented there and would look
        like an exec child. The sandbox falls back to the hook bind or Replace. Parent 0 still binds: it is outside the
        sandbox's PID namespace, and nothing is reparented to it. The list can't catch an unlisted subreaper that isn't
-       PID 1.
+       PID 1, or one run by an interpreter (supervisord), whose executable is the interpreter's.
      - **Bounded hook work.** The hard read cap is **1 MiB** (was 16 MiB); a request read no further than its fields
        is answered `Connection: close` rather than drained. A Stop cut off before its `background_tasks` counts as
-       still having work running. Hook-driven input-idle samples are limited to one per sandbox per second
+       still having work running; a body that ends exactly at the cap was read whole and is not cut off. Hook-driven input-idle samples are limited to one per sandbox per second
        (`idleSampleGap`), except for the main agent's SessionStart, UserPromptSubmit, Stop and Notification. That
        exemption rests on the forgeable PID, so a process holding the token can still avoid the limit.
 3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as

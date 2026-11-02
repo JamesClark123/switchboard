@@ -357,7 +357,8 @@ func (p hookPayload) recordedMain() bool {
 // wrappedMain reports whether the process that fired this hook is a direct child
 // of the recorded one: the launch `exec`s the `claude` on PATH, and a wrapper
 // there that forks leaves the agent one process below the record. A nested
-// session is not one, as the agent runs its tools under a shell.
+// session usually is not one, as the agent runs its tools under a shell, but a
+// shell can exec its last command, so BindWrapped leaves this open to correction.
 func (p hookPayload) wrappedMain() bool {
 	return p.hasRecord() && p.PIDParent > 0 && p.PIDParent == p.Record.pid
 }
@@ -608,7 +609,7 @@ func (s *HookServer) handle(p hookPayload) {
 // record of this generation (a hook command from before SWI-27, kept until its
 // agent restarts, or a launch that could not write the file) nothing can tell
 // them apart, and the generation's first non-compact SessionStart binds as before.
-// So does one from a direct child of the recorded process (wrappedMain). Any other
+// One from a direct child of the recorded process binds too (wrappedMain). Any other
 // SessionStart is logged while nothing is bound: if it was the agent's after all
 // (a deeper wrapper), that line says why its events are not counted.
 func (s *HookServer) bindMain(p hookPayload) {
@@ -619,7 +620,9 @@ func (s *HookServer) bindMain(p hookPayload) {
 	switch {
 	case p.recordedMain():
 		s.tokens.BindRecorded(p.SandboxID, p.Gen, p.PID, p.Record.start)
-	case start && (!p.hasRecord() || p.wrappedMain()):
+	case start && p.wrappedMain():
+		s.tokens.BindWrapped(p.SandboxID, p.Gen, p.PID, p.PIDStart)
+	case start && !p.hasRecord():
 		s.tokens.BindMain(p.SandboxID, p.Gen, p.PID)
 	case start:
 		if _, _, bound := s.tokens.MainPID(p.SandboxID, p.Gen); !bound {
@@ -894,6 +897,7 @@ func (s *HookServer) SampleIdle(ctx context.Context) {
 
 // sampleAll runs one input-idle sample over the status side's sandboxes.
 func (s *HookServer) sampleAll() {
+	s.pruneSampled(s.now())
 	l, ok := s.status.(sandboxLister)
 	if !ok {
 		return
@@ -905,6 +909,18 @@ func (s *HookServer) sampleAll() {
 	for _, sb := range all {
 		if sb.GetController().GetRun() != nil || sb.GetAgent().GetInputIdleSince() != nil {
 			s.sampleIdleOf(sb)
+		}
+	}
+}
+
+// pruneSampled drops the samples older than idleSampleGap: sampleAfterHook treats
+// them as absent, and a removed sandbox's would otherwise stay.
+func (s *HookServer) pruneSampled(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, last := range s.sampled {
+		if now.Sub(last) >= idleSampleGap {
+			delete(s.sampled, id)
 		}
 	}
 }

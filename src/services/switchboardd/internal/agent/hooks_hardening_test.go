@@ -260,7 +260,7 @@ func TestHookCommandWithABigBody(t *testing.T) {
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(s.Handle)}
 	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	body := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_input":{"content":"` + strings.Repeat("x", 4*maxHookRead) + `"}}`
 	runHook(t, "sh", "http://"+ln.Addr().String()+"/hook", "PreToolUse", t.TempDir(), body, "SXB_HOOK_TOKEN="+sp.Token, "SXB_AGENT_GEN=1")
 	if got := st.agent("sb").GetStatus(); got != pb.AgentStatus_AGENT_STATUS_WORKING {
@@ -338,6 +338,25 @@ func TestHookBurstSamplesTheScreenOnce(t *testing.T) {
 	}
 }
 
+// A sandbox's last sample is dropped once it no longer limits anything, so a
+// removed sandbox leaves nothing behind.
+func TestSampleAllPrunesOldSamples(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
+	s := NewHookServer(NewHub("h"), st)
+	now := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return now }
+	s.sampled["sb"] = now
+	s.sampleAll()
+	if _, kept := s.sampled["sb"]; !kept {
+		t.Error("a sample inside the gap still limits hooks")
+	}
+	now = now.Add(idleSampleGap)
+	s.sampleAll()
+	if _, kept := s.sampled["sb"]; kept {
+		t.Error("a sample past the gap is dropped")
+	}
+}
+
 // sampleIdle samples one sandbox as a hook past the gap would.
 func sampleIdle(s *HookServer, sandboxID string) {
 	if g, ok := s.status.(sandboxGetter); ok {
@@ -409,6 +428,30 @@ func TestWrappedAgentBinds(t *testing.T) {
 	s.handle(turn)
 	if st.agent("sb").GetLastSubmitAt() == nil {
 		t.Error("the wrapped agent's events are the main agent's")
+	}
+	if _, start, _ := s.tokens.MainPID("sb", 1); start != "501" {
+		t.Errorf("wrapped start = %q, want the hook's", start)
+	}
+	if s.tokens.IsMain("sb", 1, 101, "777") {
+		t.Error("a reused PID is not the wrapped agent")
+	}
+}
+
+// A shell can exec its last command, leaving a nested session a direct child of
+// the agent. If it took the binding after a lost SessionStart, the agent's own
+// next event takes it back, and that binding is final.
+func TestRecordedHookCorrectsAWrappedBind(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb", State: pb.SandboxState_SANDBOX_STATE_RUNNING})
+	s, _ := tokenServer(t, st)
+	child := recorded(hookPayload{Event: "SessionStart", Source: "startup", SandboxID: "sb"}, 101, "501")
+	child.PIDParent = 100
+	s.handle(child)
+	s.handle(recorded(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}, 100, "500"))
+	if pid, start, _ := s.tokens.MainPID("sb", 1); pid != 100 || start != "500" {
+		t.Fatalf("main = %d (%q), want the recorded process", pid, start)
+	}
+	if s.tokens.BindRecorded("sb", 1, 102, "600") {
+		t.Error("a recorded binding is final")
 	}
 }
 

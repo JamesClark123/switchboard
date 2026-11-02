@@ -73,8 +73,11 @@ func readHookInput(r io.Reader) hookInput {
 		}
 		return nil
 	})
-	in.Unread = errors.Is(err, errHookDone) || lim.N <= 0
-	in.CutOff = lim.N <= 0 && !seen["background_tasks"]
+	// A body ending exactly at the cap was read whole: the read must also have
+	// failed for it to be cut off.
+	cut := err != nil && lim.N <= 0
+	in.Unread = errors.Is(err, errHookDone) || cut
+	in.CutOff = cut && !seen["background_tasks"]
 	return in
 }
 
