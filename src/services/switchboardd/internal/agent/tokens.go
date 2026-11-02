@@ -29,11 +29,13 @@ import (
 // it as an orphan; research R14). An exec-client exit alone never retires it:
 // the agent may outlive its client, as it outlives a daemon restart.
 //
-// The generation's main agent process is bound by its first non-compact
-// SessionStart (BindMain), or, when none is bound, by a probe of the agent.pid
-// the launch command records (BindFromProbe, T047). An event is the main
-// agent's when it carries the current generation's token and that PID: nested
-// `claude -p` sessions and processes left by an earlier generation are not.
+// The generation's main agent process is bound by the first hook whose launch
+// record (the agent.pid the launch command writes) names the process that fired
+// it (BindRecorded, SWI-27); by the first non-compact SessionStart when a hook
+// has no record (BindMain); or, when none is bound, by a probe of agent.pid
+// (BindFromProbe, T047). An event is the main agent's when it carries the
+// current generation's token and that PID: nested `claude -p` sessions and
+// processes left by an earlier generation are not.
 
 // hookTokenBytes is the size of a per-agent hook token (data-model.md).
 const hookTokenBytes = 32
@@ -265,10 +267,43 @@ func (t *HookTokens) BindMain(sandboxID string, gen int64, pid int) bool {
 	return true
 }
 
-// IsMain reports whether a verified call of generation gen from process pid is
-// the sandbox's main agent: gen is the current generation and pid its bound
-// main PID. Until the PID is bound nothing is.
-func (t *HookTokens) IsMain(sandboxID string, gen int64, pid int) bool {
+// BindRecorded binds the main agent of the sandbox's current generation from a
+// hook whose launch record names the process that fired it (SWI-27), with the
+// recorded start time. Unlike BindMain it also corrects a binding with no start
+// time: made with no record, it may name a nested session (a lost first
+// SessionStart). One with a start time is final, as `exec` keeps the main PID for
+// the generation's life, so a generation is written at most twice however many
+// hooks arrive. It cannot widen what a process in the sandbox can do, as the PID
+// header is already forgeable (research R13: a filter, not a boundary). It
+// reports whether the binding changed.
+func (t *HookTokens) BindRecorded(sandboxID string, gen int64, pid int, start string) bool {
+	t.mu.Lock()
+	s, ok := t.sbs[sandboxID]
+	var e *genEntry
+	if ok && gen == s.current() {
+		e = s.gens[gen]
+	}
+	if e == nil || pid <= 0 || start == "" || e.mainStart != "" {
+		t.mu.Unlock()
+		return false
+	}
+	prev := e.mainPID
+	e.mainPID, e.mainStart = pid, start
+	t.mu.Unlock()
+	if prev != 0 && prev != pid {
+		t.log("[agent] %s: main agent of generation %d was bound to process %d; the launch record names %d", sandboxID, gen, prev, pid)
+	}
+	if err := t.store.SetAgentMain(sandboxID, gen, pid, start); err != nil {
+		t.log("[agent] %s: persist main agent of generation %d: %v", sandboxID, gen, err)
+	}
+	return true
+}
+
+// IsMain reports whether a verified call of generation gen from process pid,
+// started at start (empty when unknown), is the sandbox's main agent: gen is the
+// current generation and pid its bound main PID, not reused by another process.
+// Until the PID is bound nothing is.
+func (t *HookTokens) IsMain(sandboxID string, gen int64, pid int, start string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s, ok := t.sbs[sandboxID]
@@ -276,11 +311,11 @@ func (t *HookTokens) IsMain(sandboxID string, gen int64, pid int) bool {
 		return false
 	}
 	e := s.gens[gen]
-	return e != nil && e.mainPID == pid
+	return e != nil && e.mainPID == pid && !startsDiffer(start, e.mainStart)
 }
 
 // MainPID returns a generation's bound main process and its start time (empty
-// unless a probe bound it); ok is false when none is bound.
+// when a hook with no launch record bound it); ok is false when none is bound.
 func (t *HookTokens) MainPID(sandboxID string, gen int64) (pid int, start string, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -321,12 +356,26 @@ var notExecParents = map[string]bool{
 	"busybox": true, "script": true, "tmux": true, "screen": true,
 }
 
+// subreaperExes are init-like processes that adopt orphans (SWI-27). Whether a
+// process is a subreaper cannot be read from /proc without prctl, so it goes by
+// its executable's name. Docker Sandboxes (Scenario 0) runs tini as PID 1, with exec children at
+// parent 0.
+var subreaperExes = map[string]bool{
+	"tini": true, "dumb-init": true, "docker-init": true, "catatonit": true, "init": true, "systemd": true,
+	"s6-svscan": true, "runsvdir": true, "supervisord": true,
+}
+
 // CheckProbed decides whether a probed process may be bound as a generation's
 // main agent (research R13): its executable is the agent binary, its command
 // line starts with the fixed flags, and it was started by the runtime's exec
 // path, not from inside the sandbox — its parent matches the probe shell's own
 // (both 0, or both the same non-shell, non-agent executable). The agent.pid
 // file is writable from inside the sandbox, so nothing else in it is trusted.
+//
+// When that parent is PID 1 or a subreaper the match proves nothing: any orphan
+// in the sandbox is reparented to it and looks like an exec child (SWI-27). Such
+// a bind is refused, and the sandbox relies on the hook bind or Replace. Parent
+// 0 is outside the sandbox's PID namespace, and nothing is reparented there.
 func CheckProbed(p ProbedAgent) error {
 	want := agentArgv(nil) // claude --dangerously-skip-permissions
 	switch {
@@ -340,20 +389,31 @@ func CheckProbed(p ProbedAgent) error {
 		return nil
 	case p.PPID == 0 || p.RefPPID == 0:
 		return fmt.Errorf("%w: parent %d does not match the exec path's %d", errProbeRefused, p.PPID, p.RefPPID)
+	case p.PPID == 1 || p.RefPPID == 1:
+		return fmt.Errorf("%w: the exec path's parent is PID 1, which adopts orphans", errProbeRefused)
 	case p.PPIDExe == "" || p.PPIDExe != p.RefPPIDExe:
 		return fmt.Errorf("%w: parent %q does not match the exec path's %q", errProbeRefused, p.PPIDExe, p.RefPPIDExe)
-	case notExecParents[filepath.Base(p.PPIDExe)] || p.PPIDExe == p.AgentExe:
+	case subreaperExes[parentExeName(p.PPIDExe)]:
+		return fmt.Errorf("%w: the exec path's parent %q adopts orphans", errProbeRefused, p.PPIDExe)
+	case notExecParents[parentExeName(p.PPIDExe)] || strings.TrimSuffix(p.PPIDExe, deletedExe) == p.AgentExe:
 		return fmt.Errorf("%w: started from inside the sandbox (parent %q)", errProbeRefused, p.PPIDExe)
 	}
 	return nil
 }
+
+// deletedExe is what readlink /proc/<pid>/exe appends for a process whose
+// executable was since replaced (an upgrade).
+const deletedExe = " (deleted)"
+
+// parentExeName is the name of a parent's executable, upgraded since or not.
+func parentExeName(exe string) string { return filepath.Base(strings.TrimSuffix(exe, deletedExe)) }
 
 // agentBinary reports whether exe is the agent binary the probe resolved, as
 // probeDetect's isagent decides it: in the same directory, since an auto-update
 // repoints claude at a sibling version (possibly deleting the old one) while a
 // running agent keeps its executable.
 func agentBinary(exe, agent string) bool {
-	exe = strings.TrimSuffix(exe, " (deleted)")
+	exe = strings.TrimSuffix(exe, deletedExe)
 	return exe != "" && agent != "" && filepath.Dir(exe) == filepath.Dir(agent)
 }
 
@@ -377,9 +437,18 @@ func (t *HookTokens) BindFromProbe(sandboxID string, p ProbedAgent) error {
 		return fmt.Errorf("%w: generation %d has no token", errProbeRefused, p.Gen)
 	case e.mainPID != 0:
 		bound := e.mainPID
+		fill := bound == p.PID && e.mainStart == "" && p.Start != ""
+		if fill {
+			e.mainStart = p.Start // a hook with no launch record bound it without one
+		}
 		t.mu.Unlock()
 		if bound != p.PID {
 			t.log("[agent] %s: agent.pid names process %d, but generation %d's main agent is %d; keeping it", sandboxID, p.PID, p.Gen, bound)
+		}
+		if fill {
+			if err := t.store.SetAgentMain(sandboxID, p.Gen, p.PID, p.Start); err != nil {
+				t.log("[agent] %s: persist main agent of generation %d: %v", sandboxID, p.Gen, err)
+			}
 		}
 		return nil
 	}

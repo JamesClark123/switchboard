@@ -93,7 +93,7 @@ func TestBuildSettingsCarriesNoSecret(t *testing.T) {
 	for event, ms := range set.Hooks {
 		cmd := ms[0].Hooks[0].Command
 		for _, want := range []string{
-			`-H "X-Sxb-Token: $SXB_HOOK_TOKEN"`, `-H "X-Sxb-Gen: $SXB_AGENT_GEN"`, `-H "X-Sxb-Pid: $PPID"`,
+			`header = "X-Sxb-Token: $SXB_HOOK_TOKEN"`, `header = "X-Sxb-Gen: $SXB_AGENT_GEN"`, `header = "X-Sxb-Pid: $PPID"`,
 			"--data-binary @-", "event=" + event + "&sandbox_id=sb-1",
 		} {
 			if !strings.Contains(cmd, want) {
@@ -338,14 +338,14 @@ func TestNoTaskCompleteForSetupOrCleanup(t *testing.T) {
 }
 
 func TestReadHookInputStreams(t *testing.T) {
-	// A 5 MiB PreToolUse body: read, its session id found after the big value.
+	// A body just under the cap: its session id found after the big value.
 	var b bytes.Buffer
 	b.WriteString(`{"hook_event_name":"PreToolUse","tool_input":{"content":"`)
-	b.WriteString(strings.Repeat(`x\"y`, 5<<20/4))
+	b.WriteString(strings.Repeat(`x\"y`, (maxHookRead-1024)/4))
 	b.WriteString(`","n":[1,2,{"a":null}]},"flag":true,"num":-1.5e3,"session_id":"big-one"}`)
 	in := readHookInput(&b)
 	if in.HookEventName != "PreToolUse" || in.SessionID != "big-one" {
-		t.Errorf("5 MiB body = %+v", in)
+		t.Errorf("big body = %+v", in)
 	}
 	for body, want := range map[string]hookInput{
 		`{"source":"clear","session_id":"a\"b"}`: {Source: "clear", SessionID: `a"b`},
@@ -373,6 +373,13 @@ func TestReadHookInputStreams(t *testing.T) {
 	many := `{"background_tasks":[` + strings.Repeat(`{"id":"1","status":"completed"},`, maxHookField/30) + `{}]}`
 	if in := readHookInput(strings.NewReader(many)); pendingBackground(in.BackgroundTasks) == 0 {
 		t.Error("a task list too long to read counts as pending")
+	}
+	cut := `{"last_assistant_message":"` + strings.Repeat("m", 2*maxHookRead) + `","hook_event_name":"Stop","background_tasks":[]}`
+	if in := readHookInput(strings.NewReader(cut)); !in.CutOff {
+		t.Error("a body cut off before its list says so")
+	}
+	if in := readHookInput(strings.NewReader(`{"background_tasks":[],"x":"` + strings.Repeat("m", 2*maxHookRead) + `"}`)); in.CutOff {
+		t.Error("a list read before the cap is not cut off")
 	}
 	if in := readHookInput(strings.NewReader(`{"background_tasks":[`)); len(in.BackgroundTasks) != 0 {
 		t.Error("a truncated list is no list")

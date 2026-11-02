@@ -291,42 +291,42 @@ func TestInputIdleSinceSetAndUnset(t *testing.T) {
 	})
 	set := func(l []termview.Line, st, o bool) { mu.Lock(); lines, stale, ok = l, st, o; mu.Unlock() }
 
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	since := st.agent("sb").GetInputIdleSince()
 	if since == nil {
 		t.Fatal("an empty, ready box with the agent idle sets input_idle_since")
 	}
 	n := st.writes()
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	s.sampleAll()
 	if st.writes() != n || !proto.Equal(st.agent("sb").GetInputIdleSince(), since) {
 		t.Error("repeated samples in the same state write nothing")
 	}
 	// Unknown screens change nothing.
 	set(empty, true, true)
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	set(nil, false, false)
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	if st.writes() != n {
 		t.Error("a stale or missing screen tells nothing")
 	}
 	// Text in the box unsets it.
 	set(loadFixture(t, "text-left-in-box"), false, true)
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	if st.agent("sb").GetInputIdleSince() != nil {
 		t.Error("a box with text is not idle")
 	}
 	n = st.writes()
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	if st.writes() != n {
 		t.Error("an unset value is not rewritten")
 	}
 	// A picker is not idle; an empty box with the agent WORKING is not either.
 	set(loadFixture(t, "model-picker"), false, true)
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	set(empty, false, true)
 	_, _ = st.SetAgentStatus("sb", pb.AgentStatus_AGENT_STATUS_WORKING, time.Time{})
-	s.sampleIdle("sb")
+	sampleIdle(s, "sb")
 	if st.agent("sb").GetInputIdleSince() != nil || st.writes() != n {
 		t.Error("a modal or a working agent is not idle")
 	}
@@ -349,15 +349,15 @@ func TestInputIdleSinceSetAndUnset(t *testing.T) {
 func TestInputIdleSampleNeedsAScreenAndARecord(t *testing.T) {
 	st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: &pb.SandboxController{Run: &pb.WorkerRun{Id: "r"}}})
 	s := NewHookServer(NewHub("h"), st)
-	s.sampleIdle("sb") // no screen registered
-	s.sampleIdle("missing")
+	sampleIdle(s, "sb") // no screen registered
+	sampleIdle(s, "missing")
 	if st.writes() != 0 {
 		t.Error("nothing to sample with")
 	}
 	// A status side with no reader or lister samples nothing.
 	plain := NewHookServer(NewHub("h"), &fakeStatus{})
 	plain.SetScreen(screenOf(nil, false, true))
-	plain.sampleIdle("sb")
+	sampleIdle(plain, "sb")
 	plain.sampleAll()
 }
 

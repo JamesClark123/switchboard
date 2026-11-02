@@ -711,6 +711,40 @@ gets typed or what counts as evidence, and each needs a boundary.
        the sandbox can send any header. The token and the screen corroboration above are the boundary.
      - The submit check, the evidence fields (incl. `last_needs_input_at`) and hold release use main-session events
        only. Status display keeps today's behaviour.
+   - **Amended by SWI-27 (hook & bind hardening).** Where this conflicts with the text above, this wins.
+     - **Observed on Docker Sandboxes** (a worker sandbox, Claude Code 2.1.312-316; Scenario 0 step 4): the agent's
+       parent is **0**, PID 1 is `tini`, and hooks run under **dash** (`/bin/sh`) with a **socket** on stdin. The fresh
+       `sbx exec` reference side needs the host and is still to be recorded.
+     - **The token is not in curl's argv.** `sh -c` expanded `-H "X-Sxb-Token: $SXB_HOOK_TOKEN"` into
+       `/proc/<curl>/cmdline`, readable by any user. Hook commands now pass the headers as a curl config in a
+       here-document on fd 3 (`-K /dev/fd/3 … 3<<SXB`); the wrapper uses one on stdin (`-K -`). dash rules out `<(…)`,
+       and a socket can't be opened through `/dev/fd`, which rules out moving the body off stdin to `@/dev/fd/N`.
+     - **The launch record binds the main PID.** Every hook also sends `~/.sxb/agent.pid` (`X-Sxb-Main: <gen> <pid>
+       <start>`) and the start time of `$PPID` (`X-Sxb-Pid-Start`), read with shell builtins, no forks. A hook binds
+       only when the record names the process that fired it (same generation, PID and start time), on **any** event,
+       so a lost first SessionStart can't hand the binding to a nested `claude -p`: the main agent's next event takes
+       it. This replaces "bound by the first non-`compact` SessionStart", which stays only for a hook with no record (a
+       command from before SWI-27, kept until its agent restarts, or a launch that couldn't write the file, which can
+       leave the previous generation's record: a record of another generation counts as none). A SessionStart from a
+       direct child of the recorded process also binds, for a `claude` on PATH that is a wrapper that forks (hooks send
+       `X-Sxb-Pid-Parent`); a nested session runs under the agent's tool shell, so it isn't one. Any other unbound
+       SessionStart is logged and doesn't bind.
+     - **A proven hook may replace a binding with no start time** (revising run-590 for hooks; a probe still never
+       replaces one), which corrects one made with no record. One with a start time is final: `exec` keeps the main PID
+       for the generation's life. This does not widen anything: a process in the sandbox could already forge
+       `X-Sxb-Pid`, and the PID match remains a filter, **not** a security boundary.
+     - **The start time is recorded when binding**, and an event whose start time differs from the bound one is not
+       main: its PID was reused.
+     - **A first probe bind is refused when the exec path's parent is PID 1 or a known subreaper** (`subreaperExes`, by
+       executable name, since `/proc` doesn't expose subreaper status): any orphan is reparented there and would look
+       like an exec child. The sandbox falls back to the hook bind or Replace. Parent 0 still binds: it is outside the
+       sandbox's PID namespace, and nothing is reparented to it. The list can't catch an unlisted subreaper that isn't
+       PID 1.
+     - **Bounded hook work.** The hard read cap is **1 MiB** (was 16 MiB); a request read no further than its fields
+       is answered `Connection: close` rather than drained. A Stop cut off before its `background_tasks` counts as
+       still having work running. Hook-driven input-idle samples are limited to one per sandbox per second
+       (`idleSampleGap`), except for the main agent's SessionStart, UserPromptSubmit, Stop and Notification. That
+       exemption rests on the forgeable PID, so a process holding the token can still avoid the limit.
 3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as
    `DeliverWorkerPrompt`: the local daemon socket, and the orchestrator's SSH-dialled link. On top of that:
    - **Built-ins are derived and checked.** For MODEL, EFFORT and CLEAR the daemon types the text it derives from

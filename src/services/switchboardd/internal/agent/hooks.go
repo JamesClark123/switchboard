@@ -85,6 +85,17 @@ const tapBuffer = 64
 // a run recorded, besides on each hook (data-model.md AgentSession).
 const idleSampleEvery = 5 * time.Second
 
+// idleSampleGap is the least time between two input-idle samples a sandbox's
+// hooks ask for (SWI-27): each one reads and parses the screen, and a tool loop
+// (or a process holding the token) can fire hooks far faster than the screen
+// changes. Only the main agent's statusEvents are exempt. The periodic sample
+// picks up what a skipped one would have seen.
+const idleSampleGap = time.Second
+
+// statusEvents are the hook events that change what an input-idle sample would
+// read, so idleSampleGap does not hold them back.
+var statusEvents = map[string]bool{"SessionStart": true, "UserPromptSubmit": true, "Stop": true, "Notification": true}
+
 // Claude Code's Notification hook carries a notification_type (its matcher key);
 // these are the ones the daemon tells apart.
 const (
@@ -108,11 +119,16 @@ var (
 
 // The headers a hook (and the escape-hatch wrapper) identifies its agent with
 // (research R13): its generation's token and number, from the agent's
-// environment, and the PID of the claude process that fired it.
+// environment, the PID, start time and parent of the claude process that fired
+// it, and the launch record ~/.sxb/agent.pid ("<gen> <pid> <start>"), which names the
+// generation's main agent (SWI-27).
 const (
-	headerToken = "X-Sxb-Token"
-	headerGen   = "X-Sxb-Gen"
-	headerPID   = "X-Sxb-Pid"
+	headerToken    = "X-Sxb-Token"
+	headerGen      = "X-Sxb-Gen"
+	headerPID      = "X-Sxb-Pid"
+	headerPIDStart = "X-Sxb-Pid-Start"
+	headerParent   = "X-Sxb-Pid-Parent"
+	headerRecord   = "X-Sxb-Main"
 )
 
 // backgroundWaitMax bounds how long an agent stays WAITING on background work
@@ -183,9 +199,9 @@ type claudeSettings struct {
 // Each hook also sends the agent's hook token and generation from its
 // environment (SXB_HOOK_TOKEN, SXB_AGENT_GEN; SWI-17, research R13) and $PPID,
 // the claude process that fired it (hooks run as its `sh -c` children,
-// verified on Claude Code 2.1.312). The settings only name the variables, so
-// they carry no secret, and rewriting them (RefreshHooks) changes no agent's
-// token.
+// verified on Claude Code 2.1.312), with that process's start time and parent,
+// and the launch record (hookIdentify). The settings only name the variables, so they
+// carry no secret, and rewriting them (RefreshHooks) changes no agent's token.
 //
 // It also sets permissions.defaultMode to "bypassPermissions" so the agent runs
 // non-interactively inside the sandbox — no permission prompt can block a detached
@@ -198,11 +214,19 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 		// hook's stdout into Claude's context), and `|| true` guarantees exit 0 so
 		// a failed ping is never surfaced as a hook error. The URL is quoted: it
 		// carries `&`. Claude Code writes the hook input to stdin and closes it.
-		cmd := fmt.Sprintf(
-			"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' "+
-				`-H "%s: $%s" -H "%s: $%s" -H "%s: $PPID" `+
-				"--data-binary @- '%s?event=%s&sandbox_id=%s' || true",
-			headerToken, envHookToken, headerGen, envAgentGen, headerPID, callbackURL, event, sandboxID)
+		//
+		// The headers reach curl as a config on fd 3, so the token is never in
+		// its argv, which any user can read (/proc/<pid>/cmdline; SWI-27). As
+		// observed on Claude Code 2.1.312-316, hooks run under dash (no `<(…)`)
+		// with a socket on stdin (`@/dev/fd/N` cannot open one), so the body
+		// stays on stdin and the config is the here-document.
+		cmd := hookIdentify + fmt.Sprintf(
+			"curl -s -m 2 -K /dev/fd/3 -o /dev/null -X POST -H 'Content-Type: application/json' "+
+				"--data-binary @- '%s?event=%s&sandbox_id=%s' 3<<SXB || true\n"+
+				`header = "%s: $%s"`+"\n"+`header = "%s: $%s"`+"\n"+`header = "%s: $PPID"`+"\n"+
+				`header = "%s: $x"`+"\n"+`header = "%s: $q"`+"\n"+`header = "%s: $g $p $s"`+"\n"+"SXB\n",
+			callbackURL, event, sandboxID,
+			headerToken, envHookToken, headerGen, envAgentGen, headerPID, headerPIDStart, headerParent, headerRecord)
 		return []hookMatcher{{Matcher: "", Hooks: []hookEntry{{Type: "command", Command: cmd}}}}
 	}
 	return claudeSettings{
@@ -223,6 +247,15 @@ func BuildSettings(sandboxID, callbackURL string) claudeSettings {
 		},
 	}
 }
+
+// hookIdentify is the start of every hook command: POSIX sh with no forks (it
+// runs on every PreToolUse). It reads the launch record into g, p and s, blanked
+// unless all digits (the file is writable inside the sandbox and goes into a curl
+// config; only a regular file is opened, as a FIFO would block the hook before
+// curl's -m 2 applies), and the parent and start time of the process that fired the hook into x: field
+// 22 of its stat, read after the last ")" so a comm with spaces shifts nothing.
+const hookIdentify = `g= p= s=; [ -f "$HOME/.sxb/agent.pid" ] && read -r g p s _ 2>/dev/null <"$HOME/.sxb/agent.pid"; case "$g$p$s" in *[!0-9]*) g= p= s= ;; esac` + "\n" +
+	`x=; read -r x 2>/dev/null </proc/$PPID/stat; x=${x##*) }; set -- $x; q=${2:-}; x=${20:-}` + "\n"
 
 // InjectHooks writes the hook settings into <workspace>/.claude/settings.local.json
 // (highest-precedence project settings, gitignored). An existing file keeps
@@ -272,6 +305,11 @@ type hookPayload struct {
 	PendingBackground int    `json:"-"`
 	SessionID         string `json:"-"` // Claude Code's session_id (forwarded input)
 	PID               int    `json:"-"` // X-Sxb-Pid: the claude process that fired the hook
+	PIDStart          string `json:"-"` // X-Sxb-Pid-Start: that process's start time (empty when unknown)
+	PIDParent         int    `json:"-"` // X-Sxb-Pid-Parent: that process's parent (0 when unknown)
+	// Record is the launch record the hook read (X-Sxb-Main); nil when it had
+	// none, or is a hook command from before SWI-27.
+	Record *launchRecord `json:"-"`
 	// Tokened is a call whose hook token checked out (HookTokens.Verify); Gen
 	// is then its generation. A tokenless call counts for status display only.
 	Tokened bool  `json:"-"`
@@ -282,6 +320,52 @@ type hookPayload struct {
 	Foreign bool `json:"-"`
 }
 
+// launchRecord is what ~/.sxb/agent.pid says about a generation's main agent.
+type launchRecord struct {
+	gen   int64
+	pid   int
+	start string
+}
+
+// parseLaunchRecord reads an X-Sxb-Main value; nil unless it is complete.
+func parseLaunchRecord(v string) *launchRecord {
+	f := strings.Fields(v)
+	if len(f) != 3 {
+		return nil
+	}
+	gen, gerr := strconv.ParseInt(f[0], 10, 64)
+	pid, perr := strconv.Atoi(f[1])
+	_, serr := strconv.ParseUint(f[2], 10, 64) // it is persisted: a start time, nothing else
+	if gerr != nil || perr != nil || serr != nil {
+		return nil
+	}
+	return &launchRecord{gen: gen, pid: pid, start: f[2]}
+}
+
+// hasRecord reports whether the hook read a launch record of its own generation.
+// The launch writes the file best effort, so one of another generation says
+// nothing about this agent: a failed write leaves the previous agent's.
+func (p hookPayload) hasRecord() bool { return p.Record != nil && p.Record.gen == p.Gen }
+
+// recordedMain reports whether the launch record names the process that fired
+// this hook: a nested `claude -p` reads the same record, but its own PID is
+// another. Like every header this is a filter, not a boundary (research R13).
+func (p hookPayload) recordedMain() bool {
+	return p.hasRecord() && p.Record.pid == p.PID && !startsDiffer(p.PIDStart, p.Record.start)
+}
+
+// wrappedMain reports whether the process that fired this hook is a direct child
+// of the recorded one: the launch `exec`s the `claude` on PATH, and a wrapper
+// there that forks leaves the agent one process below the record. A nested
+// session is not one, as the agent runs its tools under a shell.
+func (p hookPayload) wrappedMain() bool {
+	return p.hasRecord() && p.PIDParent > 0 && p.PIDParent == p.Record.pid
+}
+
+// startsDiffer reports whether two process start times are both known and
+// differ: the same PID, reused by another process.
+func startsDiffer(a, b string) bool { return a != "" && b != "" && a != b }
+
 // hookInput is the part of Claude Code's own hook input the daemon reads.
 type hookInput struct {
 	HookEventName    string           `json:"hook_event_name"`
@@ -289,6 +373,10 @@ type hookInput struct {
 	NotificationType string           `json:"notification_type"`
 	Source           string           `json:"source"`           // SessionStart
 	BackgroundTasks  []backgroundTask `json:"background_tasks"` // Stop / SubagentStop
+	// Unread is a body readHookInput stopped reading before its end; CutOff one
+	// that reached the read cap with no background_tasks seen.
+	Unread bool `json:"-"`
+	CutOff bool `json:"-"`
 }
 
 // backgroundTask is one entry of a Stop's background_tasks: a background Bash
@@ -331,6 +419,7 @@ type HookServer struct {
 	backstop map[string]backstopTimer // sandbox id -> its WAITING backstop
 	seq      uint64
 	taps     map[string]map[uint64]chan HookEvent // sandbox id -> open taps
+	sampled  map[string]time.Time                 // sandbox id -> its last hook-driven input-idle sample
 }
 
 // backstopTimer is one armed WAITING backstop; gen tells a fired timer apart
@@ -347,6 +436,7 @@ func NewHookServer(hub *Hub, status StatusUpdater) *HookServer {
 		afterFunc: func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
 		backstop:  map[string]backstopTimer{},
 		taps:      map[string]map[uint64]chan HookEvent{},
+		sampled:   map[string]time.Time{},
 	}
 }
 
@@ -444,9 +534,23 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 	if ev := q.Get("event"); ev != "" {
 		p.Event, p.SandboxID = ev, q.Get("sandbox_id")
 		in := readHookInput(r.Body)
+		if in.Unread {
+			// The rest of the body is not wanted: close instead of letting the
+			// server drain it, and curl stops sending at the response.
+			w.Header().Set("Connection", "close")
+		}
+		if in.CutOff && p.Event == "Stop" {
+			// Cut off before its background_tasks: as with a list too long to
+			// read, assume work is still running. Claiming the turn over would
+			// be the worse mistake, and the WAITING backstop bounds this one.
+			in.BackgroundTasks = []backgroundTask{{Status: "running"}}
+		}
 		p.NotificationType, p.Source, p.SessionID = in.NotificationType, in.Source, in.SessionID
 		p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		p.PID, _ = strconv.Atoi(r.Header.Get(headerPID))
+		p.PIDStart = r.Header.Get(headerPIDStart)
+		p.PIDParent, _ = strconv.Atoi(r.Header.Get(headerParent))
+		p.Record = parseLaunchRecord(r.Header.Get(headerRecord))
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
@@ -470,14 +574,11 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 
 // handle processes one hook event: its status (dispatch), then, for the main
 // agent's events (research R13), the end of a hold, the recorded evidence and
-// the taps, and finally an input-idle sample (SWI-17). A generation's first
-// non-compact SessionStart binds its main agent first, so that event is the
-// main agent's already.
+// the taps, and finally an input-idle sample (SWI-17). The main agent is bound
+// first (bindMain), so that event is the main agent's already.
 func (s *HookServer) handle(p hookPayload) {
 	now := s.now()
-	if p.Tokened && s.tokens != nil && p.Event == "SessionStart" && p.Source != "compact" {
-		s.tokens.BindMain(p.SandboxID, p.Gen, p.PID)
-	}
+	s.bindMain(p)
 	main := s.mainEvent(p)
 	p.Foreign = p.Tokened && !main
 	needsInput := false
@@ -497,7 +598,34 @@ func (s *HookServer) handle(p hookPayload) {
 			s.onEnd(p.SandboxID)
 		}
 	}
-	s.sampleIdle(p.SandboxID)
+	s.sampleAfterHook(p.SandboxID, main && statusEvents[p.Event], now)
+}
+
+// bindMain binds the generation's main agent from a hook (SWI-27). A hook that
+// read the launch record binds only when the record names the process that fired
+// it, on any event, so a lost SessionStart cannot hand the binding to a nested
+// `claude -p`: the main agent's next event takes it, or takes it back. With no
+// record of this generation (a hook command from before SWI-27, kept until its
+// agent restarts, or a launch that could not write the file) nothing can tell
+// them apart, and the generation's first non-compact SessionStart binds as before.
+// So does one from a direct child of the recorded process (wrappedMain). Any other
+// SessionStart is logged while nothing is bound: if it was the agent's after all
+// (a deeper wrapper), that line says why its events are not counted.
+func (s *HookServer) bindMain(p hookPayload) {
+	if !p.Tokened || s.tokens == nil {
+		return
+	}
+	start := p.Event == "SessionStart" && p.Source != "compact"
+	switch {
+	case p.recordedMain():
+		s.tokens.BindRecorded(p.SandboxID, p.Gen, p.PID, p.Record.start)
+	case start && (!p.hasRecord() || p.wrappedMain()):
+		s.tokens.BindMain(p.SandboxID, p.Gen, p.PID)
+	case start:
+		if _, _, bound := s.tokens.MainPID(p.SandboxID, p.Gen); !bound {
+			s.log("[hook] %s: SessionStart from process %d not bound: generation %d's launch record names %d", p.SandboxID, p.PID, p.Gen, p.Record.pid)
+		}
+	}
 }
 
 // mainEvent reports whether a hook event comes from the sandbox's main agent,
@@ -505,20 +633,23 @@ func (s *HookServer) handle(p hookPayload) {
 // R13): it carries the current generation's token and comes from that
 // generation's main PID. Until the PID is bound, nothing is.
 func (s *HookServer) mainEvent(p hookPayload) bool {
-	return p.Tokened && s.tokens != nil && s.tokens.IsMain(p.SandboxID, p.Gen, p.PID)
+	return p.Tokened && s.tokens != nil && s.tokens.IsMain(p.SandboxID, p.Gen, p.PID, p.PIDStart)
 }
 
 // nestedEvent reports whether a hook event comes from a session nested in an
 // agent (a `claude -p` it ran): its generation's main PID is bound and the
 // event names another process. Such a session's start, turns and Stop say
 // nothing of the agent's own status, so they change none and notify nothing.
-// With no PID bound (a lost SessionStart) every event still drives the status.
+// With no PID bound (a lost SessionStart), the launch record tells; without one
+// either, every event still drives the status.
 func (s *HookServer) nestedEvent(p hookPayload) bool {
 	if !p.Foreign || p.PID <= 0 {
 		return false
 	}
-	pid, _, ok := s.tokens.MainPID(p.SandboxID, p.Gen)
-	return ok && pid != p.PID
+	if pid, start, ok := s.tokens.MainPID(p.SandboxID, p.Gen); ok {
+		return pid != p.PID || startsDiffer(p.PIDStart, start)
+	}
+	return p.hasRecord() && !p.recordedMain() && !p.wrappedMain()
 }
 
 // dispatch maps a hook event to a status transition and (for terminal/await
@@ -686,23 +817,11 @@ func (s *HookServer) releaseAfterClear(sandboxID, runID string, g sandboxGetter,
 	}
 }
 
-// sampleIdle keeps input_idle_since current for a sandbox with a run recorded
+// sampleIdleOf keeps input_idle_since current for a sandbox with a run recorded
 // (the idle-nudge fallback, research R1): set to when the input box became
 // empty and ready with the agent not WORKING, unset otherwise. It is written
 // only when it changes. An unreadable or stale screen tells nothing and
 // changes nothing; a sandbox with no run has the field unset.
-func (s *HookServer) sampleIdle(sandboxID string) {
-	g, ok := s.status.(sandboxGetter)
-	if !ok {
-		return
-	}
-	sb, err := g.Get(sandboxID)
-	if err != nil {
-		return
-	}
-	s.sampleIdleOf(sb)
-}
-
 func (s *HookServer) sampleIdleOf(sb *pb.Sandbox) {
 	idle := false
 	if sb.GetController().GetRun() != nil {
@@ -728,6 +847,33 @@ func (s *HookServer) sampleIdleOf(sb *pb.Sandbox) {
 			a.InputIdleSince = since
 		}
 	})
+}
+
+// sampleAfterHook samples input_idle_since for a hook event: at most once per
+// sandbox every idleSampleGap, unless always, or the value is set: a run's step
+// reads it, and the event may just have made it stale (a PreToolUse sets WORKING).
+// A hook names its sandbox in the query, unchecked, so only a sandbox that exists
+// is recorded.
+func (s *HookServer) sampleAfterHook(sandboxID string, always bool, now time.Time) {
+	g, ok := s.status.(sandboxGetter)
+	if !ok {
+		return
+	}
+	sb, err := g.Get(sandboxID)
+	if err != nil {
+		return
+	}
+	always = always || sb.GetAgent().GetInputIdleSince() != nil
+	s.mu.Lock()
+	last, seen := s.sampled[sandboxID]
+	skip := seen && !always && now.Sub(last) < idleSampleGap
+	if !skip {
+		s.sampled[sandboxID] = now
+	}
+	s.mu.Unlock()
+	if !skip {
+		s.sampleIdleOf(sb)
+	}
 }
 
 // SampleIdle samples input_idle_since every idleSampleEvery for every sandbox
