@@ -628,8 +628,11 @@ placed on, so "the orchestrator restarts" means that daemon restarts.
   from, within 5 seconds of the need arising, and MUST leave them again once the need is gone
   (the agent is no longer awaiting input; the run has been closed). Every tab MUST order sandboxes
   that need the developer above all others, whether or not they are workers; among sandboxes with
-  the same need, the existing order is kept. A surfaced worker MUST be marked as a worker, say
-  which need it has, and name its controller.
+  the same need, the existing order is kept. **Exception (SWI-31):** every tab MUST order
+  **stopped** sandboxes below all non-stopped sandboxes, and a stopped sandbox that needs the
+  developer sinks with the other stopped rows (it still surfaces on the tabs it is otherwise
+  hidden from, and leads the stopped rows only because the ordering is stable). A surfaced worker
+  MUST be marked as a worker, say which need it has, and name its controller.
 - **FR-115** [1.d.ii]: The sandbox list MUST have an **Orchestrator Sandboxes** tab that is absent
   from the tab bar by default, is shown and selected by a single documented key combination on the
   sandbox list, and leaves the tab bar when the developer switches to any other tab. It MUST list

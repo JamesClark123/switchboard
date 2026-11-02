@@ -251,6 +251,23 @@ func surfaceFirst(rows []sandboxRow) []sandboxRow {
 	return out
 }
 
+// stoppedLast stable-partitions rows so stopped sandboxes come last, even those
+// that need the developer (SWI-31); the existing order is kept within each half.
+func stoppedLast(rows []sandboxRow) []sandboxRow {
+	out := make([]sandboxRow, 0, len(rows))
+	for _, r := range rows {
+		if r.sb.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED {
+			out = append(out, r)
+		}
+	}
+	for _, r := range rows {
+		if r.sb.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // withoutHiddenWorkers drops hidden workers from an everyday tab's rows.
 func withoutHiddenWorkers(rows []sandboxRow) []sandboxRow {
 	out := rows[:0:0]
@@ -265,9 +282,12 @@ func withoutHiddenWorkers(rows []sandboxRow) []sandboxRow {
 // currentTabRows filters allRows down to the selected tab: hidden workers leave
 // the All, host and group tabs (their group memberships are untouched), the
 // Orchestrator Sandboxes tab lists every controlled sandbox, and every tab
-// surfaces the rows that need the developer first.
+// surfaces the rows that need the developer first and sinks stopped sandboxes
+// last (SWI-31). Stopped wins: a stopped sandbox that needs the developer sits
+// at the bottom with the other stopped rows, ahead of them only because the
+// partition is stable.
 func (m Model) currentTabRows() []sandboxRow {
-	return surfaceFirst(m.tabRowsUnordered())
+	return stoppedLast(surfaceFirst(m.tabRowsUnordered()))
 }
 
 func (m Model) tabRowsUnordered() []sandboxRow {
