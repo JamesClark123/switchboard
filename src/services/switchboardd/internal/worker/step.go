@@ -97,6 +97,14 @@ type OrphanReaper interface {
 // (SWI-17, research R14).
 func (s *Service) SetOrphanReaper(r OrphanReaper) { s.reaper = r }
 
+// SetRuntimeLock registers the sandbox runtime read try-lock the gateway's
+// `sbx mcp load` takes (SWI-26, sandbox.Manager.TryRLockRuntime): refused
+// while a stop, restart, refresh or kit attach holds the sandbox, which
+// leaves the load to that operation's bring-up.
+func (s *Service) SetRuntimeLock(fn func(sandboxID string) (unlock func(), ok bool)) {
+	s.gw.tryRuntime = fn
+}
+
 // restartAgent serves a restart halt's R (DeliverWorkerStep.restart, research
 // R14): the detached agent is stopped (sandbox.ReapRestart: no EXITED, the
 // fresh agent's STARTING follows), then a fresh agent is started, and the

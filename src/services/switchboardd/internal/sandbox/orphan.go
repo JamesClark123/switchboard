@@ -126,7 +126,7 @@ type orphanState struct {
 	retry     *time.Timer
 	refusedAt time.Time
 	// epoch counts drops (a reap, a confirmed stop, a clear): a probe records
-	// its result only if none happened since it took the runtime lock, so a
+	// its result only if none happened since it took the orphan gate, so a
 	// stale "alive" never lands over a reap or stop that slipped in after it.
 	epoch uint64
 }
@@ -409,13 +409,20 @@ func (o *orphans) probe(id string) {
 // against a sandbox that is RUNNING in both, since `sbx exec` would start a
 // stopped one. A listing that says stopped under a RUNNING record fails the
 // probe (never "gone", which would warm-start into the stopped sandbox): the
-// sandbox stays unknown until a reconcile publishes the stop.
-func (o *orphans) running(ctx context.Context, id string) (*pb.Sandbox, probeOutcome, error) {
+// sandbox stays unknown until a reconcile publishes the stop. A probe reads
+// the shared listing (listShared, at most listSharedMaxAge old); with fresh
+// (a reap: the developer's stop, rare, and the one that signals processes) the
+// runtime is listed anew.
+func (o *orphans) running(ctx context.Context, id string, fresh bool) (*pb.Sandbox, probeOutcome, error) {
 	sb, err := o.m.store.Get(id)
 	if err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return nil, probeDropped, nil
 	}
-	statuses, err := o.m.runner.ListStatuses(ctx)
+	list := o.m.listShared
+	if fresh {
+		list = o.m.runner.ListStatuses
+	}
+	statuses, err := list(ctx)
 	if err != nil {
 		return nil, probeFailed, fmt.Errorf("list sandboxes: %w", err)
 	}
@@ -447,10 +454,10 @@ func (o *orphans) execScript(ctx context.Context, sb *pb.Sandbox, script string)
 	return string(out), err
 }
 
-// probeOnce runs one probe under the runtime lock (try-lock: dropped while an
-// operation holds it, and retried after orphanRetryBase while the sandbox is
-// pending, since a service start or stop, or a spawn, settles nothing). It
-// returns the sandbox's epoch as of taking the lock.
+// probeOnce runs one probe under the orphan gate (try-lock: dropped while an
+// operation holds the runtime lock, and retried after orphanRetryBase while
+// the sandbox is pending, since a reap or a spawn holding the gate settles
+// nothing). It returns the sandbox's epoch as of taking the gate.
 func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult, error) {
 	o.mu.Lock()
 	if st := o.st[id]; st != nil && st.firstTry.IsZero() {
@@ -460,7 +467,7 @@ func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult,
 	if sb, err := o.m.store.Get(id); err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return probeDropped, 0, agent.ProbeResult{}, nil
 	}
-	unlock, ok := o.m.TryLockRuntime(id)
+	unlock, ok := o.m.orphanGate(id)
 	if !ok {
 		o.mu.Lock()
 		if st := o.st[id]; st != nil && (st.unknown || st.record != nil) {
@@ -478,7 +485,7 @@ func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult,
 	o.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), orphanProbeTimeout)
 	defer cancel()
-	sb, out, err := o.running(ctx, id)
+	sb, out, err := o.running(ctx, id, false)
 	if out != probeAlive {
 		return out, epoch, agent.ProbeResult{}, err
 	}
@@ -497,7 +504,7 @@ func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult,
 }
 
 // apply records a probe's outcome, unless the sandbox was dropped (reaped,
-// stopped or cleared) since the probe took the runtime lock: the result is
+// stopped or cleared) since the probe took the orphan gate: the result is
 // stale, and whatever dropped it has settled the sandbox.
 func (o *orphans) apply(id string, epoch uint64, out probeOutcome, res agent.ProbeResult, perr error) {
 	switch out {
@@ -688,24 +695,35 @@ func (m *Manager) MarkOrphanCandidates() {
 }
 
 // CheckOrphansAtStart classifies every sandbox at daemon start (research
-// R14), before any agent can spawn: a successful listing's stopped or absent
-// sandboxes have no agent (EXITED by the gone rule, tokens retired, never
-// probed); a running one that may have a surviving agent is marked unknown
-// synchronously and probed asynchronously; every other one is clear at once.
-// A listing that errs (or a status it doesn't know) retires nothing and writes
-// no EXITED: those sandboxes that may have an agent are unknown, and their
-// probes retry the listing.
+// R14): a successful listing's stopped or absent sandboxes have no agent
+// (EXITED by the gone rule, tokens retired, never probed); a running one that
+// may have a surviving agent is marked unknown and probed asynchronously;
+// every other one is clear at once. A listing that errs (or a status it
+// doesn't know) retires nothing and writes no EXITED: those sandboxes that may
+// have an agent are unknown, and their probes retry the listing.
+//
+// It runs alongside the gRPC server (SWI-26): MarkOrphanCandidates already
+// has the gate refuse every candidate, and the token generations are read
+// before the listing, so an agent spawned since (a newer generation, e.g. into
+// a sandbox that was not a candidate) is never retired or marked EXITED from
+// the older listing: that sandbox is left to its own observers.
 func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 	all, err := m.store.List()
 	if err != nil {
 		log.Printf("[warn] detached-agent check skipped: %v", err)
 		return
 	}
+	o := m.orphans
+	d := o.getDeps()
+	snap := map[string]int64{}
+	if d.Tokens != nil {
+		for _, sb := range all {
+			snap[sb.GetId()] = d.Tokens.Generation(sb.GetId())
+		}
+	}
 	lctx, cancel := context.WithTimeout(ctx, orphanProbeTimeout)
 	statuses, lerr := m.runner.ListStatuses(lctx)
 	cancel()
-	o := m.orphans
-	d := o.getDeps()
 	var probe []string
 	for _, sb := range all {
 		id := sb.GetId()
@@ -718,8 +736,13 @@ func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 		switch {
 		case readable && state != pb.SandboxState_SANDBOX_STATE_RUNNING:
 			if d.Tokens != nil {
+				if d.Tokens.Generation(id) > snap[id] {
+					continue // an agent spawned since the listing was taken
+				}
 				for _, g := range d.Tokens.Unretired(id) {
-					d.Tokens.Retire(id, g)
+					if g <= snap[id] {
+						d.Tokens.Retire(id, g)
+					}
 				}
 			}
 			o.drop(id)
@@ -798,9 +821,10 @@ func (o *orphans) pendingIDs() []string {
 // called only by AttachAgent with replace_orphan and DeliverWorkerStep's
 // restart; the daemon never calls it on its own. A sandbox with no orphan
 // record and no unknown check has nothing to stop. Otherwise, on a RUNNING
-// sandbox, under the runtime lock (try-lock: agent.ErrBusy while an operation
-// holds it), one script re-probes and stops each live matched process (TERM,
-// then KILL after orphanKillWait). A failed exec stops nothing and returns its
+// sandbox, under the orphan gate (try-lock: agent.ErrBusy while an operation
+// holds the runtime lock, or a probe or spawn holds the gate), one script
+// re-probes and stops each live matched process (TERM, then KILL after
+// orphanKillWait). A failed exec stops nothing and returns its
 // error. After a stop the generation's tokens are retired, the record dropped
 // and, for a Replace, EXITED written (with replacedNote on an ACTION run, in
 // the same update).
@@ -816,12 +840,12 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return fmt.Errorf("sandbox is %s", stateWord(sb.GetState()))
 	}
-	unlock, ok := m.TryLockRuntime(id)
+	unlock, ok := m.orphanGate(id)
 	if !ok {
 		return agent.ErrBusy
 	}
 	defer unlock()
-	// Again under the lock: a probe may have cleared the sandbox since, and
+	// Again under the gate: a probe may have cleared the sandbox since, and
 	// the daemon's own fresh agent (a live session) is never stopped.
 	if !o.pending(id) {
 		return nil
@@ -833,7 +857,7 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, orphanKillWait+orphanProbeTimeout)
 	defer cancel()
-	sb, out, err := o.running(ctx, id)
+	sb, out, err := o.running(ctx, id, true)
 	n := 0
 	switch out {
 	case probeDropped:

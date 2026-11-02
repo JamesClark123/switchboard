@@ -751,11 +751,14 @@ safety core without:
 - operation-specific `ErrBusy` messages: a generic `sandbox is busy; try again` (this includes the ~20 s hold during
   a developer's service stop);
 - detailed orphan notes: no last-seen state or time in notes;
-- the PID-1/subreaper first-bind refusal, a shared rate-limited `ListStatuses`, and `runtimeMu` gating of
-  `sbx mcp`/`sbx ports` (pending quickstart Scenario 0 step 5);
-- the best-effort drain's guarantees: no ordering against `sbx stop`, nothing promised after a failed stop.
+- the PID-1/subreaper first-bind refusal;
+- ~~a shared rate-limited `ListStatuses`, and `runtimeMu` gating of `sbx mcp`/`sbx ports`~~ (done in SWI-26, see
+  *Amendment: `runtimeMu` read/write split* at the end of this section);
+- ~~the best-effort drain's guarantees~~ (SWI-26: ordering closed by the read/write split; what survives a failed
+  stop is a recorded decision, see the amendment).
 
-Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence.
+Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence. Where it
+describes `runtimeMu` as a plain mutex, the SWI-26 amendment at the end of this section takes precedence.
 
 
 **Context, verified against the code.**
@@ -1155,3 +1158,81 @@ stop as an exit during setup (FR-212).
 **What is not claimed.** Nothing is read back from a screen that no longer exists: `check_only` answers `no live
 agent`. R8's evidence-based resolution still applies to steps whose evidence arrives by hook, which keeps working
 from an orphan.
+
+### Amendment: `runtimeMu` read/write split (SWI-26, 2026-11-02)
+
+Supersedes the single exclusive `runtimeMu` above (the developer's grooming decision on SWI-19, 2026-10-31). With
+one exclusive lock, operations that don't conflict refused each other: a developer's service start or stop failed
+`sandbox is busy` during a 10 s probe or a 15 s reap, and a probe backed off for the whole 20–30 s of a service stop.
+
+**The lock.** `runtimeMu` is a per-sandbox `sync.RWMutex` (`sandbox/runtime.go`, `sandboxLocks.rw`).
+- **Write, blocking:** the lifecycle operations, exactly as before (`runtimeOp`: Stop, Restart, Refresh, AddKit,
+  Destroy). The outcome rule still runs only on the write release.
+- **Read, try-lock (`TryRLockRuntime`), never waiting:** every other call that may start a stopped sandbox:
+  - probes and reaps, and every spawn (`Admit`), through the orphan gate (below);
+  - the service supervisor's own in-sandbox execs: the developer's launch and stop (as before), and now also each
+    readiness check (`lockedListenState`; refused reads as *not listening*), the failed-start kill (`stopProc`;
+    refused leaves the group to the operation's drain, since the instance is still STARTING) and
+    `sbx ports --publish`, held until the handle records the published port so the drain can always unpublish it;
+  - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
+    `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
+    load (`worker.gateway.load`; refused at attach, the load is left to the operation's bring-up; refused at a
+    bring-up, a stop is pending and the next bring-up loads it).
+
+  A waiting writer blocks new readers (`sync.RWMutex`), so once a lifecycle operation asks for the lock no new read
+  holder starts, and it waits only for the ones in flight.
+
+**Pairs that still exclude each other, and where.**
+| Pair | Why | Lock |
+|---|---|---|
+| lifecycle op × any exec | `sbx exec` (and, conservatively, `sbx ports`/`sbx mcp`) starts a stopped sandbox | `rw` write vs read |
+| reap × spawn | the reap script would stop the agent being spawned (its session isn't registered yet, so the `LiveGen` re-check can't see it) | orphan gate |
+| probe × spawn | the probe would find the spawning agent alive with no live session and record it as an orphan | orphan gate |
+| probe × reap | already safe through `epoch` (a probe's result is dropped if a reap dropped the sandbox since it took the gate); kept on the gate anyway, so a probe never execs beside a kill | orphan gate |
+| service start × stop (same instance) | the supervisor's per-instance state (`insts`, `handles`) already serialises them | none new |
+
+The orphan gate is a second per-sandbox mutex (`sandboxLocks.orphan`), only ever try-locked while holding `rw` for
+reading (`Manager.orphanGate`), so it adds no wait and no lock cycle. The single-flight `probing` flag only stops
+two probes of one sandbox; it doesn't exclude a reap or a spawn, so it isn't enough by itself. A busy gate keeps
+the old behaviour: a probe is retried after `orphanRetryBase`, a Replace or a spawn is refused `ErrBusy`.
+
+**Drain ordering (closes deferred gap 1).** Every `sbx exec` path the daemon starts on its own initiative now holds
+the read lock: agent spawn (`Admit`), service launch, readiness checks, port publish, failed-start kill, MCP
+load/unload and the worker gateway load. A stop holds the write lock from before its drain until it has written
+the result. So an exec asked for during the drain, or after it, is refused and never run. The execs a lifecycle
+operation runs itself, and its on-change teardown (`StopAll`), stay ungated, as before. Tests:
+`TestRuntimeLockOrdersOperations` (read lock and `AttachMcp` refused during each operation),
+`TestStartRunsNoExecUnderALifecycleOperation`.
+
+**What survives a failed `sbx stop` (deferred gap 2): a decision, not a reconcile.** Agents are re-probed as before
+(`stopFailed`). Interrupted services are **not** re-checked to read RUNNING again:
+- the drain sends KILL to every interrupted service's process group whatever its client did (`KillGroups`), so one
+  survives only if that `sbx exec kill` itself failed;
+- its handle, exec client and published port were already released when it was recorded FAILED, so reading
+  RUNNING again would mean re-adopting a process the daemon has no client for, and re-publishing its port;
+- the FAILED record already says *may still be running in the sandbox*, and the developer can start it again; a
+  fresh start fails visibly if a survivor still holds the port.
+The cost of a reconcile (a listing plus one `/proc` exec per interrupted service, then re-adoption) isn't justified
+for that case.
+
+**Shared listing for probes (B3).** `orphans.running` reads `Manager.listShared`: one `sbx ls` in flight at a time,
+its successful result reused for `listSharedMaxAge` (1.5 s), the call made on its own context bounded by
+`orphanProbeTimeout` so a caller that gives up never fails it for the others. A failure is shared with the callers
+waiting on that call but never cached. A lifecycle operation invalidates it as it releases the write lock, so the
+outcome rule's probe never reads a listing from before the operation. A reap reads the runtime fresh (it signals
+processes, and is rare), as do `CheckOrphansAtStart`, `listedRunningStrict` and `Reconcile`. Trade-off: a sandbox
+stopped *outside* the daemon less than 1.5 s before a probe may be probed on a stale "running" (before, the window
+was the time between the listing and the exec).
+
+**Start-up check off the serving path (B2).** `CheckOrphansAtStart` now runs in a goroutine beside the gRPC server.
+`MarkOrphanCandidates` still marks every candidate unknown before the hook server serves, so the gate refuses
+those spawns meanwhile. The check reads every sandbox's token generation **before** listing the runtime. In the
+"listed stopped" branch it skips a sandbox whose generation has moved since (an agent spawned after the snapshot,
+e.g. into a sandbox that was not a candidate), and otherwise retires only generations at or below the snapshot.
+Test: `TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot`.
+
+**`sbx mcp`/`sbx ports` and a stopped sandbox (quickstart Scenario 0 step 5).** Not re-verified on a real host
+for SWI-26: `sbx` isn't available in the development sandbox. `AttachMcp`'s own contract already says the runtime
+starts a stopped sandbox on `mcp load`. Both calls are gated anyway: the read lock costs nothing beside probes,
+and only refuses during a lifecycle operation.
+

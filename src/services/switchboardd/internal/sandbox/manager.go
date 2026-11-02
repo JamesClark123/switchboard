@@ -99,8 +99,10 @@ type Manager struct {
 	// runtime is the per-sandbox runtimeMu (runtime.go); orphans the
 	// detached-agent check (orphan.go); stopDrain the best-effort drain a stop
 	// runs before `sbx stop` (MAY be nil).
-	runtime   runtimeLocks
-	orphans   *orphans
+	runtime runtimeLocks
+	orphans *orphans
+	// lists is the shared runtime listing probes and reaps read (SWI-26).
+	lists     sharedList
 	stopDrain func(sb *pb.Sandbox, wait time.Duration) bool
 }
 

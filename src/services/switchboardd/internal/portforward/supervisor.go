@@ -87,8 +87,9 @@ type Supervisor struct {
 	mu      sync.Mutex
 	handles map[string]*procHandle // instance id -> handle
 
-	// tryRuntime try-locks a sandbox's runtime lock (SWI-17, research R14:
-	// sandbox.Manager.TryLockRuntime); nil = never gated. It never waits.
+	// tryRuntime try-locks a sandbox's runtime lock for reading (SWI-17,
+	// research R14; SWI-26: sandbox.Manager.TryRLockRuntime); nil = never
+	// gated. It never waits.
 	tryRuntime func(sandboxID string) (unlock func(), ok bool)
 }
 
@@ -106,9 +107,12 @@ func NewSupervisor(sandboxes SandboxLookup, runner Runner, emitter Emitter) *Sup
 	}
 }
 
-// SetRuntimeLock registers the sandbox runtime try-lock the developer's
-// requests take (SWI-17, research R14): an in-sandbox launch and a service
-// stop are refused while a lifecycle operation holds it.
+// SetRuntimeLock registers the sandbox runtime read try-lock every in-sandbox
+// `sbx exec` of the supervisor's own takes (SWI-17, research R14; SWI-26): a
+// developer's launch and stop, the readiness checks and the port publish are
+// refused while a lifecycle operation holds the lock, and don't exclude a
+// probe, a reap or each other. The read lock is shared, so a developer's start
+// or stop goes ahead while a probe or reap is in flight.
 func (s *Supervisor) SetRuntimeLock(fn func(sandboxID string) (unlock func(), ok bool)) {
 	s.tryRuntime = fn
 }

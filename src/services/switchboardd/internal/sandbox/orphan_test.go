@@ -34,6 +34,7 @@ type probeRunner struct {
 	kitErr   error
 	calls    []string
 	hook     func(kind, ref string)
+	listHook func() // may block; runs on each ListStatuses
 }
 
 func newProbeRunner() *probeRunner {
@@ -101,6 +102,16 @@ func (p *probeRunner) Exec(ctx context.Context, ref string, argv []string) *exec
 		return exec.CommandContext(ctx, "false")
 	}
 	return exec.CommandContext(ctx, "printf", "%s", out)
+}
+
+func (p *probeRunner) ListStatuses(ctx context.Context) (map[string]string, error) {
+	p.pmu.Lock()
+	hook := p.listHook
+	p.pmu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return p.fakeRunner.ListStatuses(ctx)
 }
 
 func (p *probeRunner) Stop(ctx context.Context, ref string) error {
@@ -650,6 +661,24 @@ func TestRuntimeLockOrdersOperations(t *testing.T) {
 				rel()
 				t.Errorf("%s does not hold the runtime lock", name)
 			}
+			// Every other `sbx exec` is refused, not run, while the operation
+			// holds the lock (SWI-26 B5): the read lock of a service and an
+			// MCP load or unload.
+			if rel, ok := e.m.TryRLockRuntime(id); ok {
+				rel()
+				t.Errorf("a read lock was granted during %s", name)
+			}
+			e.run.mu.Lock()
+			loads := len(e.run.mcpLoads)
+			e.run.mu.Unlock()
+			if _, err := e.m.AttachMcp(context.Background(), id, "srv", nil); !errors.Is(err, ErrBusy) && !errors.Is(err, ErrIneligibleState) {
+				t.Errorf("AttachMcp during %s = %v", name, err)
+			}
+			e.run.mu.Lock()
+			if len(e.run.mcpLoads) != loads {
+				t.Errorf("`sbx mcp load` ran during %s", name)
+			}
+			e.run.mu.Unlock()
 			e.m.orphans.setUnknown(id)
 			before := e.run.count("probe")
 			e.m.orphans.probe(id)

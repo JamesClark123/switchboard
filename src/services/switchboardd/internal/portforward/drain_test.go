@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,4 +144,80 @@ func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {
 	if _, err := s.Stop("sb1", "web"); err != nil {
 		t.Errorf("stop once free = %v", err)
 	}
+}
+
+// rwRuntimeLock wires the supervisor to a real read/write lock, as
+// sandbox.Manager.TryRLockRuntime does (SWI-26).
+func rwRuntimeLock(s *Supervisor) *sync.RWMutex {
+	var rw sync.RWMutex
+	s.SetRuntimeLock(func(string) (func(), bool) {
+		if !rw.TryRLock() {
+			return nil, false
+		}
+		return rw.RUnlock, true
+	})
+	return &rw
+}
+
+// SWI-26 B1: a probe or reap in flight holds the runtime lock only for
+// reading, so a developer's service start and stop go ahead beside it.
+func TestServiceStartAndStopBesideAProbe(t *testing.T) {
+	ln, port := listenAllInterfaces(t)
+	defer func() { _ = ln.Close() }()
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, _, _ := newTestSupervisor(t, sb)
+	rw := rwRuntimeLock(s)
+	rw.RLock() // the probe
+	defer rw.RUnlock()
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	if _, err := s.Stop("sb1", "web"); err != nil {
+		t.Errorf("stop beside a probe = %v", err)
+	}
+}
+
+// SWI-26 B4/B5: once a lifecycle operation holds the runtime lock, a start
+// already past its launch runs no further `sbx exec` (readiness check) and
+// no `sbx ports --publish`, and leaves its group to the operation's drain.
+func TestStartRunsNoExecUnderALifecycleOperation(t *testing.T) {
+	ln, port := listenAllInterfaces(t)
+	defer func() { _ = ln.Close() }()
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	s.SetReadinessTimeout(200 * time.Millisecond)
+	var rw sync.RWMutex
+	var calls atomic.Int32
+	s.SetRuntimeLock(func(string) (func(), bool) {
+		if calls.Add(1) == 2 {
+			rw.Lock() // the stop takes the lock right after the launch
+		}
+		if !rw.TryRLock() {
+			return nil, false
+		}
+		return rw.RUnlock, true
+	})
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	id := instanceIDOf(t, s, "sb1", "web")
+	var pgid int
+	waitFor(t, "the service's pgid", 5*time.Second, func() bool {
+		s.mu.Lock()
+		if h := s.handles[id]; h != nil && h.pgid > 0 {
+			pgid = h.pgid
+		}
+		s.mu.Unlock()
+		return pgid > 0
+	})
+	t.Cleanup(func() { killPGID(pgid, true) })
+	inst := waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_FAILED, 5*time.Second)
+	if inst.GetFailureReason() != pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING {
+		t.Errorf("failed = %v", inst)
+	}
+	if runner.execed("/proc/net/tcp") || runner.execed("kill -") || len(runner.publishes()) != 0 {
+		t.Errorf("an exec or publish ran under the lifecycle operation: %v, %v", runner.execArgv, runner.publishes())
+	}
+	rw.Unlock()
 }

@@ -119,14 +119,24 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		// before publishing. Publishing first and dialling the published port would
 		// prove nothing: the publish binds that host port itself and accepts
 		// connections whether or not anything is behind it (research R5).
-		if _, err := s.awaitSandboxListening(ctx, sb.GetContainerRef(), effPort, window, proc.exited); err != nil {
+		if _, err := s.awaitSandboxListening(ctx, sb.GetId(), sb.GetContainerRef(), effPort, window, proc.exited); err != nil {
 			s.readinessFailed(ctx, sb, declared, instID, proc, err, inSandbox, effPort)
+			return
+		}
+		// `sbx ports --publish` may start a stopped sandbox like `sbx exec`: it
+		// runs under the runtime lock too, held until the handle records the
+		// published port, so a stop's drain (which needs the lock) always finds
+		// it to unpublish (SWI-26).
+		unlock, ok := s.lockRuntime(sb.GetId())
+		if !ok {
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, ErrSandboxBusy.Error())
 			return
 		}
 		hostPort, err = s.publishSandboxPort(ctx, sb.GetContainerRef(), effPort)
 		if err != nil {
+			unlock()
 			if ctx.Err() == nil {
-				s.stopProc(proc, sb.GetContainerRef(), inSandbox)
+				s.stopProc(proc, sb.GetId(), sb.GetContainerRef(), inSandbox)
 			}
 			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
 				"could not publish the sandbox port: "+err.Error())
@@ -137,6 +147,7 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 			h.hostPort = hostPort
 		}
 		s.mu.Unlock()
+		unlock()
 	}
 
 	s.transitionStarting(instID, func(i *pb.ServiceInstance) {
@@ -187,7 +198,7 @@ func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declar
 		}
 	})
 	if ctx.Err() == nil {
-		s.stopProc(proc, sb.GetContainerRef(), inSandbox)
+		s.stopProc(proc, sb.GetId(), sb.GetContainerRef(), inSandbox)
 	}
 
 	switch {
@@ -204,7 +215,7 @@ func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declar
 		// The window elapsed with the process still alive. Inside a sandbox that is
 		// most often a loopback-only bind — diagnosable, and with a concrete fix —
 		// so look before reporting a bare "never listened" (research R5).
-		if inSandbox && s.sandboxListenState(ctx, sb.GetContainerRef(), effPort) == listenLoopbackOnly {
+		if inSandbox && s.lockedListenState(ctx, sb.GetId(), sb.GetContainerRef(), effPort) == listenLoopbackOnly {
 			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_NOT_LISTENING_LOOPBACK,
 				fmt.Sprintf("%q is listening on 127.0.0.1:%d inside the sandbox, which is unreachable from outside it — bind all interfaces instead (e.g. --host 0.0.0.0)",
 					declared.GetName(), effPort))

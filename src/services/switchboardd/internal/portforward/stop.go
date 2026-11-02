@@ -175,10 +175,20 @@ func (s *Supervisor) procFor(instID string) *runningProc {
 
 // stopProc kills a process that never made it to RUNNING (a failed start). It is
 // the abbreviated form of terminate: there is no instance state to keep in step,
-// only a tree that must not be left behind.
-func (s *Supervisor) stopProc(proc *runningProc, ref string, inSbx bool) {
+// only a tree that must not be left behind. An in-sandbox tree is signalled
+// through `sbx exec`, under the sandbox's runtime lock (SWI-26); while a
+// lifecycle operation holds it nothing is signalled here: the instance is still
+// STARTING, so that operation's drain (InterruptStarting) signals the group.
+func (s *Supervisor) stopProc(proc *runningProc, sandboxID, ref string, inSbx bool) {
 	if proc == nil {
 		return
+	}
+	if inSbx {
+		unlock, ok := s.lockRuntime(sandboxID)
+		if !ok {
+			return
+		}
+		defer unlock()
 	}
 	h := &procHandle{proc: proc, pgid: proc.pgid, inSbx: inSbx, ref: ref}
 	s.signalGroup(h, false, false)
