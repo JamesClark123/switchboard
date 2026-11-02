@@ -234,38 +234,35 @@ func hiddenWorker(sb *pb.Sandbox) bool {
 	return sb.GetController() != nil && !needsDeveloper(sb)
 }
 
-// surfaceFirst stable-partitions rows so those that need the developer come
-// first (FR-114); the existing order is kept within each half.
-func surfaceFirst(rows []sandboxRow) []sandboxRow {
+// stablePartition returns rows with those matching first come first, then the
+// rest; the existing order is kept within each half.
+func stablePartition(rows []sandboxRow, first func(*pb.Sandbox) bool) []sandboxRow {
 	out := make([]sandboxRow, 0, len(rows))
 	for _, r := range rows {
-		if needsDeveloper(r.sb) {
+		if first(r.sb) {
 			out = append(out, r)
 		}
 	}
 	for _, r := range rows {
-		if !needsDeveloper(r.sb) {
+		if !first(r.sb) {
 			out = append(out, r)
 		}
 	}
 	return out
 }
 
+// surfaceFirst stable-partitions rows so those that need the developer come
+// first (FR-114); the existing order is kept within each half.
+func surfaceFirst(rows []sandboxRow) []sandboxRow {
+	return stablePartition(rows, needsDeveloper)
+}
+
 // stoppedLast stable-partitions rows so stopped sandboxes come last, even those
 // that need the developer (SWI-31); the existing order is kept within each half.
 func stoppedLast(rows []sandboxRow) []sandboxRow {
-	out := make([]sandboxRow, 0, len(rows))
-	for _, r := range rows {
-		if r.sb.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED {
-			out = append(out, r)
-		}
-	}
-	for _, r := range rows {
-		if r.sb.GetState() == pb.SandboxState_SANDBOX_STATE_STOPPED {
-			out = append(out, r)
-		}
-	}
-	return out
+	return stablePartition(rows, func(sb *pb.Sandbox) bool {
+		return sb.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED
+	})
 }
 
 // withoutHiddenWorkers drops hidden workers from an everyday tab's rows.
@@ -570,7 +567,9 @@ func (m Model) agentBadge(sb *pb.Sandbox) string {
 // agent, so the spinner-tick handler knows to keep re-rendering the list (the
 // "working" indicator animates via the shared spinner).
 func (m Model) anyAgentWorking() bool {
-	for _, row := range m.currentTabRows() {
+	// Order is irrelevant here, and this runs on every spinner tick, so skip
+	// the two partition passes currentTabRows adds.
+	for _, row := range m.tabRowsUnordered() {
 		if row.sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING &&
 			row.sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_WORKING {
 			return true

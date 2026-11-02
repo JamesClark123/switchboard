@@ -372,8 +372,9 @@ func TestStoppedSandboxesSortLast(t *testing.T) {
 	m.tabIndex = 0
 	m.refreshListItems()
 
-	// A live stop sinks the selected row without a reload; the cursor keeps
-	// its row number, so the next sandbox takes the selection.
+	// A live stop sinks the selected row without a reload. By the SWI-31
+	// decision the cursor keeps its row number (no selection-follow, as with
+	// surfaceFirst today), so the next sandbox takes the selection.
 	m.sub = nil
 	m.list.Select(0)
 	if cur := m.current(); cur.GetId() != "r-a1" {
