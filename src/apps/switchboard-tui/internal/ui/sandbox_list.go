@@ -257,8 +257,8 @@ func surfaceFirst(rows []sandboxRow) []sandboxRow {
 
 // stoppedLast stable-partitions rows so stopped sandboxes come last, even those
 // that need the developer (SWI-31); the existing order is kept within each half.
-// It goes purely on state, so a Refresh, which passes through STOPPED while it
-// re-copies the sources, sinks the row until the sandbox is running again.
+// It goes purely on state, so a Refresh, which usually passes through STOPPED
+// while it re-copies the sources, sinks the row until it is RUNNING or ERROR.
 func stoppedLast(rows []sandboxRow) []sandboxRow {
 	return stablePartition(rows, func(sb *pb.Sandbox) bool {
 		return sb.GetState() != pb.SandboxState_SANDBOX_STATE_STOPPED
