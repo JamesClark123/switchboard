@@ -108,6 +108,9 @@ func thirdLine(sb *pb.Sandbox) string {
 		default:
 			parts = append(parts, "open lane")
 		}
+		if c.GetPaused() {
+			parts = append(parts, "paused")
+		}
 	}
 	// Daemon-supplied names (FR-309).
 	return sanitizeLine(strings.Join(parts, " · "), 0)

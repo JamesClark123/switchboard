@@ -555,6 +555,63 @@ func TestTUILanesE2E(t *testing.T) {
 	p.send("q")
 }
 
+// SWI-23: a paused worker is passed over, the queued run says why, and resuming
+// hands the run to it.
+func TestTUIPauseWorkerE2E(t *testing.T) {
+	requireLocalTarget(t)
+	tui, daemon := buildBinaries(t)
+	sock := startDaemon(t, daemon, stubSbx(t))
+	p := spawnTUI(t, tui, sock, seedSource(t))
+	launchOne(t, p)
+	createOrchestrator(t, p)
+	addPingAction(t, p)
+
+	// Back to the list (shift+→ wraps from Jobs); attach, then P on the row.
+	m := p.mark()
+	p.send("\x1b[1;2C")
+	p.expectNew(t, m, "All Sandboxes", 10*time.Second)
+	m = p.mark()
+	p.send("o")
+	p.expectNew(t, m, "to an orchestrator", 10*time.Second)
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "attached", 15*time.Second)
+	m = p.mark()
+	p.send("O")
+	p.expectNew(t, m, "orchestrator: review-bot", 10*time.Second)
+	m = p.mark()
+	p.send("P")
+	p.expectNew(t, m, "paused (current run will finish)", 15*time.Second)
+	p.expectNew(t, m, "· paused", 15*time.Second)
+
+	// A call stays queued on the paused worker and says why.
+	m = p.mark()
+	p.send("\x1b[1;2D") // shift+←: jobs
+	p.expectNew(t, m, "Overview", 10*time.Second)
+	p.gotoView(t, "Ping the worker")
+	m = p.mark()
+	p.send("\r")
+	p.expectNew(t, m, "ctrl+s calls ping", 10*time.Second)
+	m = p.mark()
+	p.send("\x13")
+	p.expectNew(t, m, "queued run-", 15*time.Second)
+	m = p.mark()
+	p.send("\x1b[D") // ← Overview
+	p.expectNew(t, m, "waiting for paused sandbox-", 20*time.Second)
+
+	// Resuming dispatches it, with no other trigger.
+	m = p.mark()
+	p.send("\x1b[1;2C") // shift+→: the list
+	p.expectNew(t, m, "· paused", 10*time.Second)
+	m = p.mark()
+	p.send("P")
+	p.expectNew(t, m, "resumed", 15*time.Second)
+	m = p.mark()
+	p.send("\x1b[1;2D") // shift+←: jobs
+	p.expectRow(t, m, `ping +running +review-bot @.* on sandbox`, 20*time.Second)
+	p.send("q")
+}
+
 func TestTUIHiddenWorkersE2E(t *testing.T) {
 	requireLocalTarget(t)
 	tui, daemon := buildBinaries(t)

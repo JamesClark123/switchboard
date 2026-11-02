@@ -829,6 +829,11 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.markFreeKey(sb, m.currentHostID())
 		}
 		return m, nil
+	case keyIs(msg, m.keys.PauseWorker):
+		if sb := m.actionable(); sb != nil {
+			return m.pauseWorkerKey(sb)
+		}
+		return m, nil
 	}
 
 	// Everything else (navigation, filter start, pagination) goes to the list.

@@ -429,6 +429,80 @@ func (m Model) freeParkedWorker(sandboxID, name, host, orchID string) (tea.Model
 	}
 }
 
+// pauseWorkerKey is `P` on a sandbox row (SWI-23): it toggles the worker's
+// pause on the orchestrator's daemon.
+func (m Model) pauseWorkerKey(sb *pb.Sandbox) (tea.Model, tea.Cmd) {
+	c := sb.GetController()
+	switch {
+	case c == nil:
+		m.status = "not an orchestrator worker"
+		return m, nil
+	case c.GetReasoning():
+		m.status = "reasoning sandbox — not pausable"
+		return m, nil
+	}
+	orchHost, ok := m.entryForDaemonHost(c.GetHostId())
+	if !ok {
+		m.status = c.GetName() + "'s machine is not connected — pause needs the orchestrator's daemon"
+		return m, nil
+	}
+	md, err := m.connectedDaemon(orchHost)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m, nil
+	}
+	return m, toggleWorkerPausedCmd(md, c.GetOrchestratorId(), sb.GetId(), sb.GetDisplayName())
+}
+
+// pauseWorkerFromView is `P` in the Workers view (SWI-23).
+func (m Model) pauseWorkerFromView(w *pb.WorkerView) (tea.Model, tea.Cmd) {
+	d := &m.orchDetail
+	if w.GetReasoning() {
+		d.status = "reasoning sandbox — not pausable"
+		return m, nil
+	}
+	md, err := m.connectedDaemon(d.host)
+	if err != nil {
+		d.status = err.Error()
+		return m, nil
+	}
+	d.status = ""
+	return m, toggleWorkerPausedCmd(md, d.id, w.GetSandboxId(), w.GetDisplayName())
+}
+
+// toggleWorkerPausedCmd flips a worker's pause through its orchestrator's
+// daemon. The direction comes from the roster read fresh, not the row: a sandbox
+// row's flag is a pushed display copy that can lag (a host that is down or
+// older, or a press before the push lands), and a stale one would keep asking
+// for the state the worker is already in.
+func toggleWorkerPausedCmd(md Daemon, orchID, sandboxID, name string) tea.Cmd {
+	if name == "" {
+		name = sandboxID
+	}
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		detail, err := md.GetOrchestrator(ctx, orchID)
+		if err != nil {
+			return orchDoneMsg{err: err}
+		}
+		paused := true
+		for _, w := range detail.GetWorkers() {
+			if w.GetSandboxId() == sandboxID {
+				paused = !w.GetPaused()
+			}
+		}
+		if _, err := md.SetWorkerPaused(ctx, orchID, sandboxID, paused); err != nil {
+			return orchDoneMsg{err: err}
+		}
+		status := "worker " + sanitizeLine(name, 0) + " resumed"
+		if paused {
+			status = "worker " + sanitizeLine(name, 0) + " paused (current run will finish)"
+		}
+		return orchDoneMsg{status: status, reload: true}
+	}
+}
+
 // promptView renders the read-only prompt overlay of a run: its steps in order
 // when it has a sequence (SWI-17, FR-220), then the composed prompt.
 func (m Model) promptView(r *pb.Run) string {

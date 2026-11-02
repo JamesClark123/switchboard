@@ -10,29 +10,33 @@ import (
 
 // Waiting reasons (FR-315, research R9): derived for QUEUED prompt runs on
 // every read, never stored. A run says why it waits only when no live worker
-// could take it, or every one that could is stopped or unreachable; a run
-// that merely waits for a busy worker says nothing.
+// could take it, or every one that could is paused, stopped or unreachable; a
+// run that merely waits for a busy worker says nothing.
 
 // maxWaitingNames bounds the worker names in a reason.
 const maxWaitingNames = 5
 
 // laneCounts indexes the roster once per read: per lane id, and "" for the
 // open lane, the live workers and how many of them are available (RUNNING,
-// host up). Detaching workers are live, and available while RUNNING (spec
+// host up, not paused). A paused worker stays live, busy or not. Detaching workers are live, and available while RUNNING (spec
 // Clarifications: they stay on the live roster until the detach completes).
 type laneCounts struct {
 	rec     *pb.Orchestrator
 	live    map[string]int
 	avail   map[string]int
-	names   map[string][]string // live workers' display names, roster order
+	names   map[string][]string // live unpaused workers' display names, roster order
+	paused  map[string][]string // live paused workers' display names, roster order
 	pending int                 // workers awaiting a lane assignment
+	// pausedReady holds paused workers (by sandbox id) that are otherwise
+	// available (RUNNING, host up).
+	pausedReady map[string]bool
 }
 
 // laneCounts builds the index from the record, the cached sandbox records and
 // host reachability.
 func (rt *runtime) laneCounts() *laneCounts {
 	rec := rt.record()
-	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}}
+	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, paused: map[string][]string{}, pausedReady: map[string]bool{}}
 	ups := map[string]bool{}
 	for _, w := range rec.GetWorkers() {
 		if w.GetReasoning() {
@@ -52,15 +56,22 @@ func (rt *runtime) laneCounts() *laneCounts {
 		if sb.GetDisplayName() != "" {
 			name = sb.GetDisplayName()
 		}
-		available := up && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
+		ready := up && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
+		if w.GetPaused() && ready {
+			c.pausedReady[w.GetSandboxId()] = true
+		}
 		keys := w.GetLaneIds()
 		if len(keys) == 0 {
 			keys = []string{""}
 		}
 		for _, k := range keys {
 			c.live[k]++
+			if w.GetPaused() {
+				c.paused[k] = append(c.paused[k], name)
+				continue
+			}
 			c.names[k] = append(c.names[k], name)
-			if available {
+			if ready {
 				c.avail[k]++
 			}
 		}
@@ -72,6 +83,11 @@ func (rt *runtime) laneCounts() *laneCounts {
 // forAgent names no workers (the run's agent-facing check, R9).
 func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 	if run.GetState() != pb.RunState_RUN_STATE_QUEUED || run.GetType() != pb.ActionType_ACTION_TYPE_PROMPT {
+		return ""
+	}
+	// A run claimed by a worker paused since is on it already, not waiting
+	// (unless that worker has stopped or its host is down).
+	if c.pausedReady[run.GetSandboxId()] {
 		return ""
 	}
 	ids, mode, ok := effectiveLanes(c.rec, run)
@@ -87,10 +103,11 @@ func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 	default:
 		keys = ids
 	}
-	live, avail := 0, 0
+	live, avail, paused := 0, 0, 0
 	for _, k := range keys {
 		live += c.live[k]
 		avail += c.avail[k]
+		paused += len(c.paused[k])
 	}
 	var reason string
 	switch {
@@ -104,26 +121,37 @@ func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 		default:
 			reason = "waiting for a worker in " + lanes
 		}
+	case avail == 0 && forAgent && paused == live:
+		reason = "waiting: every worker that could take it is paused"
+	case avail == 0 && forAgent && paused > 0:
+		reason = "waiting: every worker that could take it is paused, stopped or unreachable"
 	case avail == 0 && forAgent:
 		reason = "waiting: every worker that could take it is stopped or unreachable"
 	case avail == 0:
-		var names []string
+		var pausedNames, others []string
 		for _, k := range keys {
+			for _, n := range c.paused[k] {
+				if !slices.Contains(pausedNames, n) {
+					pausedNames = append(pausedNames, n)
+				}
+			}
 			for _, n := range c.names[k] {
-				if !slices.Contains(names, n) {
-					names = append(names, n)
+				if !slices.Contains(others, n) {
+					others = append(others, n)
 				}
 			}
 		}
-		shown := names
-		if len(names) > maxWaitingNames {
-			shown = names[:maxWaitingNames]
+		// The name limit covers both lists, paused workers first.
+		room := maxWaitingNames
+		var parts []string
+		if len(pausedNames) > 0 {
+			// "paused" first: a queue row cuts the end of the reason.
+			parts = append(parts, "paused "+waitingNames(pausedNames, &room))
 		}
-		reason = "waiting for " + strings.Join(shown, ", ")
-		if more := len(names) - len(shown); more > 0 {
-			reason += fmt.Sprintf(" +%d more", more)
+		if len(others) > 0 {
+			parts = append(parts, waitingNames(others, &room)+", stopped or unreachable")
 		}
-		reason += ", stopped or unreachable"
+		reason = "waiting for " + strings.Join(parts, "; ")
 	default:
 		return ""
 	}
@@ -134,4 +162,19 @@ func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 		reason += fmt.Sprintf("; %d workers awaiting lane assignment", c.pending)
 	}
 	return reason
+}
+
+// waitingNames joins as many names as room allows, taking them from room, and
+// counts the rest as "+N more".
+func waitingNames(names []string, room *int) string {
+	shown := names[:min(len(names), *room)]
+	*room -= len(shown)
+	out := strings.Join(shown, ", ")
+	if more := len(names) - len(shown); more > 0 {
+		if out != "" {
+			out += " "
+		}
+		out += fmt.Sprintf("+%d more", more)
+	}
+	return out
 }

@@ -16,6 +16,7 @@ func TestThirdLine(t *testing.T) {
 		"mcp: a, b (exclusive)":                {McpServers: []string{"a", "b"}, McpAttachMode: pb.McpAttachMode_MCP_ATTACH_MODE_EXCLUSIVE},
 		"orchestrator: review-bot":             {Controller: &pb.SandboxController{Name: "review-bot"}},
 		"orchestrator: review-bot (reasoning)": {Controller: &pb.SandboxController{Name: "review-bot", Reasoning: true}},
+		"orchestrator: review-bot · paused":    {Controller: &pb.SandboxController{Name: "review-bot", Paused: true}},
 		"orchestrator: deadbeef":               {Controller: &pb.SandboxController{OrchestratorId: "deadbeef-1234"}},
 		"":                                     {},
 	}

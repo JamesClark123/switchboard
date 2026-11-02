@@ -168,7 +168,7 @@ func (rt *runtime) workerViews() []*pb.WorkerView {
 		up, _ := rt.reachability(w.GetHostId())
 		v := &pb.WorkerView{
 			SandboxId: w.GetSandboxId(), HostId: w.GetHostId(), Reasoning: w.GetReasoning(), HostReachable: up,
-			LaneIds: slices.Clone(w.GetLaneIds()), LanesPending: w.GetLanesPending(), Detaching: rt.isDetaching(w.GetSandboxId()),
+			LaneIds: slices.Clone(w.GetLaneIds()), LanesPending: w.GetLanesPending(), Detaching: rt.isDetaching(w.GetSandboxId()), Paused: w.GetPaused(),
 		}
 		if sb := rt.sandboxRecord(w.GetSandboxId()); sb != nil {
 			v.DisplayName = sb.GetDisplayName()

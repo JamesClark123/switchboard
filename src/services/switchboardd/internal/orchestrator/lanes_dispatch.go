@@ -69,8 +69,8 @@ type lanePlan struct {
 }
 
 // buildPlan indexes the roster's free workers. isFree says whether a worker
-// is free for this pass (sandbox, host and detaching checks); reasoning and
-// lanes-pending workers never are. Lists are ordered by bucketing on lane
+// is free for this pass (sandbox, host and detaching checks); reasoning,
+// lanes-pending and paused workers never are. Lists are ordered by bucketing on lane
 // count in roster order, with no comparison sort.
 func buildPlan(rec *pb.Orchestrator, isFree func(*pb.Worker) bool) *lanePlan {
 	p := &lanePlan{bit: map[string]uint32{}, byLane: map[string][]*planWorker{}, unres: map[string]int{}, resvd: map[string]int{}, resv: map[int]*planWorker{}}
@@ -81,7 +81,7 @@ func buildPlan(rec *pb.Orchestrator, isFree func(*pb.Worker) bool) *lanePlan {
 	}
 	var buckets [maxLanes + 1][]*planWorker
 	for i, w := range rec.GetWorkers() {
-		if w.GetReasoning() || w.GetLanesPending() || !isFree(w) {
+		if w.GetReasoning() || w.GetLanesPending() || w.GetPaused() || !isFree(w) {
 			continue
 		}
 		pw := &planWorker{w: w, order: i, open: len(w.GetLaneIds()) == 0, mask: p.maskOf(w.GetLaneIds())}

@@ -165,6 +165,7 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 			next.Run = cur.GetRun()
 			// A same-orchestrator re-attach keeps the lane display (R11).
 			next.LaneNames, next.LanesPending, next.LanesKnown = cur.GetLaneNames(), cur.GetLanesPending(), cur.GetLanesKnown()
+			next.Paused = cur.GetPaused() // SWI-23: the same display copy
 		}
 		next.AttachedAt = attachedAt
 		x.Controller = next
@@ -297,6 +298,9 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 				}
 			}
 			cur.LaneNames, cur.LanesPending, cur.LanesKnown = names, l.GetPending(), true
+		}
+		if req.Paused != nil {
+			cur.Paused = req.GetPaused() // SWI-23: a display copy only
 		}
 		if req.GetClearNeedsInput() {
 			// The developer's "mark free" on a worker parked NEEDS_INPUT with
