@@ -50,6 +50,18 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 		return nil, ErrSandboxBusy
 	}
 	defer unlock()
+	// A launch in flight is waited for (at most pgidWait), so its PGID is known
+	// and the tree can be signalled; a launch not begun yet finds its context
+	// cancelled and never runs (SWI-26, procHandle.launch).
+	if h, ok := s.handleFor(inst.GetId()); ok {
+		h.launch.Lock()
+		defer h.launch.Unlock()
+	}
+	// Again under the locks: the start may have failed, or an operation settled
+	// it, since the read above. That outcome stands.
+	if cur, ok := s.insts.Get(inst.GetId()); !ok || IsTerminal(cur.GetState()) {
+		return cur, nil
+	}
 	s.stopInstance(inst.GetId(), false)
 	stopped, _ := s.insts.Get(inst.GetId())
 	return stopped, nil
@@ -61,6 +73,9 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 func (s *Supervisor) stopInstance(instID string, sandboxDown bool) {
 	h, hadHandle := s.handleFor(instID)
 	if hadHandle {
+		s.mu.Lock()
+		h.stopping = true
+		s.mu.Unlock()
 		s.terminate(h, sandboxDown)
 	}
 	if proc := s.procFor(instID); proc != nil {

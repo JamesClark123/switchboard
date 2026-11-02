@@ -35,6 +35,7 @@ type probeRunner struct {
 	calls    []string
 	hook     func(kind, ref string)
 	listHook func() // may block; runs on each ListStatuses
+	mcpHang  bool   // an `sbx mcp` call hangs until its context ends
 }
 
 func newProbeRunner() *probeRunner {
@@ -133,6 +134,33 @@ func (p *probeRunner) Start(ctx context.Context, ref string) error {
 func (p *probeRunner) Destroy(ctx context.Context, ref string) error {
 	p.record("destroy", ref)
 	return p.fakeRunner.Destroy(ctx, ref)
+}
+
+// mcpCall records an `sbx mcp` call and reports how a hanging one ended.
+func (p *probeRunner) mcpCall(ctx context.Context, kind, ref string) (hung bool, err error) {
+	p.record(kind, ref)
+	p.pmu.Lock()
+	hung = p.mcpHang
+	p.pmu.Unlock()
+	if hung {
+		<-ctx.Done()
+		err = ctx.Err()
+	}
+	return hung, err
+}
+
+func (p *probeRunner) LoadMcp(ctx context.Context, ref, name string, log func(string)) error {
+	if hung, err := p.mcpCall(ctx, "load", ref); hung {
+		return err
+	}
+	return p.fakeRunner.LoadMcp(ctx, ref, name, log)
+}
+
+func (p *probeRunner) UnloadMcp(ctx context.Context, ref, name string, log func(string)) error {
+	if hung, err := p.mcpCall(ctx, "unload", ref); hung {
+		return err
+	}
+	return p.fakeRunner.UnloadMcp(ctx, ref, name, log)
 }
 
 func (p *probeRunner) AddKit(ctx context.Context, ref, src string, log func(string)) error {
@@ -383,7 +411,7 @@ func TestOrphansAtStart(t *testing.T) {
 			<-release
 		}
 	})
-	e.m.CheckOrphansAtStart(context.Background())
+	e.m.PrepareOrphanCheck()(context.Background())
 	for id, want := range map[string]pb.AgentCheck_State{
 		"orphan": pb.AgentCheck_STATE_UNKNOWN, "gone": pb.AgentCheck_STATE_UNKNOWN, "upgrade": pb.AgentCheck_STATE_UNKNOWN,
 		"clear": pb.AgentCheck_STATE_CLEAR, "upgrade-exited": pb.AgentCheck_STATE_CLEAR, "stopped": pb.AgentCheck_STATE_CLEAR,
@@ -497,7 +525,7 @@ func TestOrphansAtStartListingError(t *testing.T) {
 	e.run.mu.Lock()
 	e.run.listErr = errors.New("runtime down")
 	e.run.mu.Unlock()
-	e.m.CheckOrphansAtStart(context.Background())
+	e.m.PrepareOrphanCheck()(context.Background())
 	if len(e.tokens.Unretired("a")) != 1 || e.get(t, "a").GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_EXITED {
 		t.Error("an unreadable listing retired a token or wrote EXITED")
 	}
@@ -528,7 +556,7 @@ func TestOrphanProbeTimeout(t *testing.T) {
 	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
 	e.tokens.issue("s", 1)
 	e.run.slow["s"] = true
-	e.m.CheckOrphansAtStart(context.Background())
+	e.m.PrepareOrphanCheck()(context.Background())
 	waitUntil(t, func() bool { return e.run.count("probe") >= 2 })
 	if _, err := e.m.Admit("s"); !errors.Is(err, agent.ErrChecking) {
 		t.Errorf("Admit = %v", err)
@@ -565,7 +593,7 @@ func TestOrphanProbesBounded(t *testing.T) {
 		e.tokens.issue(id, 1)
 		e.run.setOut(id, goneOut)
 	}
-	e.m.CheckOrphansAtStart(context.Background())
+	e.m.PrepareOrphanCheck()(context.Background())
 	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return in == orphanProbeConcurrency })
 	time.Sleep(20 * time.Millisecond)
 	close(release)
@@ -1067,8 +1095,14 @@ func TestReplaceClearsAFailingProbe(t *testing.T) {
 	e.run.pmu.Lock()
 	e.run.reapOut = "agent\t\nref\t0\t\nnofile\nreaped\t0\n"
 	e.run.pmu.Unlock()
-	if err := e.m.ReapOrphan(context.Background(), "s", ReapReplace); err != nil {
-		t.Fatalf("Replace = %v", err)
+	// A failing probe's retry may hold the orphan gate, which refuses it busy.
+	var rerr error
+	waitUntil(t, func() bool {
+		rerr = e.m.ReapOrphan(context.Background(), "s", ReapReplace)
+		return !errors.Is(rerr, agent.ErrBusy)
+	})
+	if rerr != nil {
+		t.Fatalf("Replace = %v", rerr)
 	}
 	if e.state("s") != pb.AgentCheck_STATE_CLEAR {
 		t.Errorf("after Replace: %v", e.state("s"))

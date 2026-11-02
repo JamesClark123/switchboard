@@ -234,10 +234,13 @@ func runServe(cfg *config.Config, debug bool) error {
 	hookServer.SetOnSessionEnd(mgr.RecheckOrphan)
 	// Before the hook server serves (an orphan's escape-hatch result would
 	// spawn an agent), every sandbox that may still have the previous
-	// daemon's agent is unknown; CheckOrphansAtStart settles each below. The
-	// deps are completed once the worker service exists.
+	// daemon's agent is unknown; the start-up check settles each below. Its
+	// snapshot is taken here too, so every token generation above it is this
+	// daemon's own (SWI-26). The deps are completed once the worker service
+	// exists.
 	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub})
 	mgr.MarkOrphanCandidates()
+	checkOrphans := mgr.PrepareOrphanCheck()
 
 	// Sandboxes reach the daemon's hook endpoint via host.docker.internal:<port>.
 	_, port, _ := net.SplitHostPort(cfg.HookAddr)
@@ -352,7 +355,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	// stops the detached agent first.
 	mgr.SetOrphanDeps(sandbox.OrphanDeps{Agents: agents, Tokens: hookTokens, Notify: hub, OnClear: workerSvc.WarmStart})
 	workerSvc.SetOrphanReaper(mgr)
-	workerSvc.SetRuntimeLock(mgr.TryRLockRuntime)
+	workerSvc.SetRuntimeLock(mgr.HoldRuntimeRead)
 	// The per-worker MCP endpoint (research R5) rides the hook HTTP server at
 	// /orchestrator/w/<token>/mcp. The gateway reaches it on 127.0.0.1:<port>
 	// from the host, so the `localhost:<port>` policy allow above already
@@ -424,7 +427,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	// refuses it) until this check lists the runtime and probes it in the
 	// background; the rest are clear. It doesn't hold up serving (SWI-26): a
 	// slow listing would otherwise delay the gRPC server by up to its timeout.
-	go mgr.CheckOrphansAtStart(ctx)
+	go checkOrphans(ctx)
 	go mgr.RunOrphanBackstop(ctx)
 	if readoptErr == nil {
 		// Workers re-adopted RUNNING at startup were moved before the bring-up

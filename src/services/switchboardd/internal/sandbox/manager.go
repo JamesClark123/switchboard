@@ -72,7 +72,7 @@ type Manager struct {
 	// (Destroy, or the vanished-workspace prune in List) so the worker service
 	// can revoke the sandbox's gateway token and registration. MAY be nil.
 	onDestroy func(sb *pb.Sandbox)
-	// onBringUp, when set, is called after Restart/Refresh bring a sandbox back
+	// onBringUp, when set, is called after Restart/Refresh/AddKit bring a sandbox back
 	// to RUNNING, so a controlled sandbox's gateway registration can be
 	// re-loaded (the attach-time load is skipped while it is not running). MAY be nil.
 	onBringUp func(sb *pb.Sandbox)
@@ -101,7 +101,7 @@ type Manager struct {
 	// runs before `sbx stop` (MAY be nil).
 	runtime runtimeLocks
 	orphans *orphans
-	// lists is the shared runtime listing probes and reaps read (SWI-26).
+	// lists is the shared runtime listing probes read (SWI-26).
 	lists     sharedList
 	stopDrain func(sb *pb.Sandbox, wait time.Duration) bool
 }
@@ -828,9 +828,14 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // are merged into the sandbox's resolved set with later-kit-wins on name collision.
 // newServices carries the attached kit's declared services (feature 006); they are
 // merged into the sandbox's resolved set with the same later-kit-wins rule.
+//
+// Its CREATING closes a worker's agent and leaves any gateway load to a bring-up
+// (an attach that overlaps it defers its load), so a successful attach ends in
+// one, as Restart and Refresh do, after the runtime lock is released.
 func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, newServices []*pb.KitService, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
-	defer m.runtimeOp(id)()
+	release := sync.OnceFunc(m.runtimeOp(id))
+	defer release()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -889,6 +894,8 @@ func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands 
 	// rule block from the merged set.
 	m.injectEscapeHatchInto(out, onLog)
 	m.emit(out)
+	release()
+	m.broughtUp(out)
 	return out, nil
 }
 

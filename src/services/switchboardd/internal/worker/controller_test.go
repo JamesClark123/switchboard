@@ -271,7 +271,13 @@ func TestNotRunningDefersLoadUntilBringUpAndDestroyRevokes(t *testing.T) {
 	if len(log) != 1 || !strings.HasPrefix(log[0], "mcp add sxb-orch-66666666 ") {
 		t.Fatalf("a stopped sandbox is registered but not loaded: %q", log)
 	}
-	stored, _ := e.reg.Get(sb.GetId())
+	stored, err := e.reg.Update(sb.GetId(), func(x *pb.Sandbox) error {
+		x.State = pb.SandboxState_SANDBOX_STATE_RUNNING // a bring-up finds it running
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.svc.OnBringUp(stored)
 	log = readLog(t, e.log)
 	if len(log) != 2 || log[1] != "mcp load sxb-orch-66666666 --sandbox stopped-one" {
@@ -337,7 +343,8 @@ func TestTokenIndexLoadedAtStart(t *testing.T) {
 	}
 	// A nil gateway (no CLI) is a no-op everywhere.
 	var g *gateway
-	if err := g.register(bg, "a", "b", true, "t"); err != nil || g.load(bg, "a", "b") != nil {
+	resolve := func() (string, error) { return "b", nil }
+	if err := g.register(bg, "a", "t", resolve); err != nil || g.load(bg, "a", resolve) != nil {
 		t.Error("nil gateway should be a no-op")
 	}
 	g.unregister(bg, "a")

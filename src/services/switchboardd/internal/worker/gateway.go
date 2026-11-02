@@ -47,17 +47,19 @@ type gateway struct {
 	hookPort string
 	logf     func(string, ...any)
 
-	// tryRuntime try-locks a sandbox's runtime lock for reading (SWI-26,
-	// sandbox.Manager.TryRLockRuntime): `sbx mcp load` starts a stopped
-	// sandbox, so it never runs inside a lifecycle operation. nil = ungated.
-	tryRuntime func(sandboxID string) (unlock func(), ok bool)
+	// holdRuntime takes a sandbox's runtime lock for reading, with a context that
+	// a lifecycle operation cancels when it asks for the lock (SWI-26,
+	// sandbox.Manager.HoldRuntimeRead): `sbx mcp load` starts a stopped sandbox,
+	// so it never runs inside an operation, and a load may take a minute, so no
+	// operation waits one out. nil = ungated.
+	holdRuntime func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), ok bool)
 }
 
 // register adds the per-worker server and, when the sandbox is running, loads
 // it live. An SSRF warning line the runtime prints for a loopback URL is logged,
 // never treated as failure; a non-zero `add` is. `load` is skipped (and left to
-// the bring-up hook) when the sandbox is not running.
-func (g *gateway) register(ctx context.Context, sandboxID, ref string, running bool, token string) error {
+// the bring-up hook) when the sandbox is not running by then.
+func (g *gateway) register(ctx context.Context, sandboxID, token string, resolve func() (string, error)) error {
 	if g == nil || g.cli == nil {
 		return nil
 	}
@@ -71,32 +73,45 @@ func (g *gateway) register(ctx context.Context, sandboxID, ref string, running b
 			g.logf("[worker] %s: %s", name, l)
 		}
 	}
-	if !running {
+	err = g.load(ctx, sandboxID, resolve)
+	if errors.Is(err, errNotRunning) {
 		g.logf("[worker] %s registered; load deferred until sandbox %s is running", name, sandboxID)
 		return nil
 	}
-	return g.load(ctx, sandboxID, ref)
+	return err
 }
 
 // errLoadBusy refuses a load while a lifecycle operation holds the sandbox's
-// runtime lock; Service.loadWhen retries it.
+// runtime lock, or reports one that operation cancelled; Service.loadWhen
+// retries it.
 var errLoadBusy = errors.New("sandbox is busy")
 
-// load attaches the registration to the sandbox live, under the sandbox's
-// runtime lock (read, try-lock: errLoadBusy while an operation holds it).
-func (g *gateway) load(ctx context.Context, sandboxID, ref string) error {
+// load attaches the registration to the sandbox live, under the sandbox's runtime
+// lock (read, try-lock: errLoadBusy while an operation holds it). resolve runs under
+// that lock and names the sandbox to load into, or refuses (errNotRunning): a read
+// before the lock could be of a sandbox an operation has stopped since.
+func (g *gateway) load(ctx context.Context, sandboxID string, resolve func() (string, error)) error {
 	if g == nil || g.cli == nil {
 		return nil
 	}
-	if g.tryRuntime != nil {
-		unlock, ok := g.tryRuntime(sandboxID)
+	lctx := ctx
+	if g.holdRuntime != nil {
+		held, unlock, ok := g.holdRuntime(ctx, sandboxID)
 		if !ok {
 			return errLoadBusy
 		}
 		defer unlock()
+		lctx = held
+	}
+	ref, err := resolve()
+	if err != nil {
+		return err
 	}
 	name := ServerName(sandboxID)
-	if _, err := g.cli.Load(ctx, name, ref); err != nil {
+	if _, err := g.cli.Load(lctx, name, ref); err != nil {
+		if lctx.Err() != nil && ctx.Err() == nil {
+			return errLoadBusy
+		}
 		return fmt.Errorf("load gateway server %s into %s: %w", name, ref, err)
 	}
 	return nil

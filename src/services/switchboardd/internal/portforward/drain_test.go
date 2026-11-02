@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strconv"
@@ -189,7 +190,14 @@ func TestServiceStartAndStopBesideAProbe(t *testing.T) {
 // readiness window has passed.
 func startUnderOperation(t *testing.T) (*Supervisor, *fakeRunner, *sync.RWMutex, string) {
 	t.Helper()
-	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
+	return startUnderOperationOn(t, freePort(t))
+}
+
+// startUnderOperationOn is startUnderOperation for a service on port, which the
+// caller may have something listening on.
+func startUnderOperationOn(t *testing.T, port uint32) (*Supervisor, *fakeRunner, *sync.RWMutex, string) {
+	t.Helper()
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
 	s, _, runner, _ := newTestSupervisor(t, sb)
 	s.SetReadinessTimeout(200 * time.Millisecond)
 	var rw sync.RWMutex
@@ -306,5 +314,250 @@ func TestStartFinishesAfterAnOperationThatLeftItAlone(t *testing.T) {
 	}
 	if !runner.execed("kill -TERM") {
 		t.Error("the failed start's group was never signalled")
+	}
+}
+
+// SWI-26: an operation that leaves a start alone but spans its readiness deadline
+// doesn't cost a healthy service its start. The deadline's check waits for the lock
+// rather than reading a refusal as not listening.
+func TestAHealthyServiceSurvivesAnOperationAcrossItsDeadline(t *testing.T) {
+	_, port := listenAllInterfaces(t)
+	s, runner, rw, _ := startUnderOperationOn(t, port)
+	rw.Unlock()
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	if runner.execed("kill -") {
+		t.Error("a healthy service was signalled")
+	}
+	if failed := failedNotifications(s); failed != 0 {
+		t.Errorf("%d SERVICE_FAILED notifications, want 0", failed)
+	}
+}
+
+// SWI-26 (regression from the read/write split): a developer's stop during an
+// in-sandbox launch waits for its PGID and signals the tree. Stopping before the
+// marker arrives would read STOPPED with the tree still running in the sandbox.
+func TestStopDuringALaunchSignalsTheGroup(t *testing.T) {
+	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	runner.markerDelay = "0.6"
+	s.SetReadinessTimeout(30 * time.Second)
+	rwRuntimeLock(s)
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the launch", 5*time.Second, func() bool { return runner.launchCount() == 1 })
+	stopped, err := s.Stop("sb1", "web")
+	if err != nil {
+		t.Fatalf("stop during the launch = %v", err)
+	}
+	if stopped.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Errorf("after the stop: %v", stopped)
+	}
+	if !runner.execed("kill -TERM -") {
+		t.Error("the tree was never signalled")
+	}
+	if failed := failedNotifications(s); failed != 0 {
+		t.Errorf("%d SERVICE_FAILED notifications, want 0", failed)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if inst, _ := s.insts.GetByService("sb1", "web"); inst.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Errorf("the start overwrote the stop: %v", inst)
+	}
+}
+
+// SWI-26: that wait never stands in the way of a lifecycle operation. The launch
+// finishes, and the stop and the operation follow it.
+func TestStopDuringALaunchLetsALifecycleOperationThrough(t *testing.T) {
+	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	runner.markerDelay = "0.6"
+	s.SetReadinessTimeout(30 * time.Second)
+	rw := rwRuntimeLock(s)
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the launch", 5*time.Second, func() bool { return runner.launchCount() == 1 })
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := s.Stop("sb1", "web")
+		stopped <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // the stop is waiting for the launch
+	locked := make(chan struct{})
+	go func() {
+		rw.Lock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+		rw.Unlock()
+	case <-time.After(10 * time.Second):
+		t.Fatal("the operation never got the lock")
+	}
+	if err := <-stopped; err != nil {
+		t.Errorf("stop = %v", err)
+	}
+}
+
+// bareStart records a STARTING instance with its handle, without a bringUp.
+func bareStart(t *testing.T, s *Supervisor, sandboxID, name string) (string, *procHandle) {
+	t.Helper()
+	inst, created := s.insts.Create(sandboxID, name)
+	if !created {
+		t.Fatal("instance exists")
+	}
+	h := &procHandle{cancel: func() {}, inSbx: true, ref: sandboxID + "-ref"}
+	s.mu.Lock()
+	s.handles[inst.GetId()] = h
+	s.mu.Unlock()
+	return inst.GetId(), h
+}
+
+// SWI-26: a launch that fails while a stop waits for it keeps its failure.
+func TestStopKeepsAFailureRecordedWhileItWaited(t *testing.T) {
+	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
+	s, _, _, _ := newTestSupervisor(t, sb)
+	id, h := bareStart(t, s, "sb1", "web")
+	h.launch.Lock()
+	got := make(chan *pb.ServiceInstance, 1)
+	go func() {
+		inst, _ := s.Stop("sb1", "web")
+		got <- inst
+	}()
+	select {
+	case inst := <-got:
+		t.Fatalf("the stop didn't wait for the launch: %v", inst)
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.failStarting(id, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, "boom")
+	h.launch.Unlock()
+	if inst := <-got; inst.GetState() != pb.ServiceState_SERVICE_STATE_FAILED || inst.GetFailureDetail() != "boom" {
+		t.Errorf("after the stop: %v", inst)
+	}
+}
+
+// SWI-26: a stop that gets in before the launch leaves nothing to launch.
+func TestALaunchAfterAStopNeverRuns(t *testing.T) {
+	declared := listeningService("web", freePort(t), inSandbox)
+	sb := runningSandbox("sb1", declared)
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	id, h := bareStart(t, s, "sb1", "web")
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	cancel()
+	if proc, _ := s.launchExclusive(ctx, sb, declared, declared.GetCommand(), id, true, declared.GetListenPort()); proc != nil || runner.launchCount() != 0 {
+		t.Errorf("launched after a stop: %d launches", runner.launchCount())
+	}
+}
+
+// SWI-26: a sandbox that left RUNNING between Start's read and the runtime lock
+// gets no `sbx exec`, which would start it again.
+func TestStartIsRefusedIfTheSandboxStoppedSinceItsRead(t *testing.T) {
+	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
+	s, lookup, runner, _ := newTestSupervisor(t, sb)
+	s.SetRuntimeLock(func(string) (func(), bool) {
+		stopped := runningSandbox("sb1", sb.GetServices()...)
+		stopped.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+		lookup.set(stopped)
+		return func() {}, true
+	})
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	inst := waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_FAILED, 5*time.Second)
+	if inst.GetFailureReason() != pb.ServiceFailureReason_SERVICE_FAILURE_REASON_SANDBOX_NOT_RUNNING || runner.launchCount() != 0 {
+		t.Errorf("started into a stopped sandbox: %v (%d launches)", inst, runner.launchCount())
+	}
+}
+
+// shortPublishBound shortens publishAttemptTimeout for one test.
+func shortPublishBound(t *testing.T, d time.Duration) {
+	t.Helper()
+	saved := publishAttemptTimeout
+	publishAttemptTimeout = d
+	t.Cleanup(func() { publishAttemptTimeout = saved })
+}
+
+// SWI-26: the bound is per attempt, so a slow attempt that fails (a port lost to
+// the allocation race) doesn't use up the next one's.
+func TestPublishRetriesEachGetTheirOwnBound(t *testing.T) {
+	shortPublishBound(t, 300*time.Millisecond)
+	s, _, runner, _ := newTestSupervisor(t, runningSandbox("sb1"))
+	attempts := 0
+	runner.publishHook = func(context.Context, uint32) error {
+		if attempts++; attempts < 3 {
+			time.Sleep(200 * time.Millisecond)
+			return errors.New("port already allocated")
+		}
+		return nil
+	}
+	if _, err := s.publishSandboxPort(context.Background(), "sb1-ref", freePort(t)); err != nil {
+		t.Fatalf("publish = %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("%d attempts, want 3", attempts)
+	}
+}
+
+// SWI-26: a publish its bound ended isn't retried, and its port is given back in
+// case the mapping was applied before the call was killed.
+func TestPublishKilledByItsBoundGivesThePortBack(t *testing.T) {
+	shortPublishBound(t, 50*time.Millisecond)
+	s, _, runner, _ := newTestSupervisor(t, runningSandbox("sb1"))
+	listen := freePort(t)
+	var tried []uint32
+	runner.publishHook = func(ctx context.Context, hostPort uint32) error {
+		tried = append(tried, hostPort)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if _, err := s.publishSandboxPort(context.Background(), "sb1-ref", listen); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("publish = %v", err)
+	}
+	un := runner.unpublishes()
+	if len(tried) != 1 || len(un) != 1 || un[0] != [2]uint32{tried[0], listen} {
+		t.Errorf("tried %v, unpublished %v", tried, un)
+	}
+}
+
+// SWI-26: a developer's stop that lands during the publish finds no port on the
+// handle yet; the publish gives it back once it knows the handle is gone.
+func TestStopDuringAPublishGetsItsPortBack(t *testing.T) {
+	_, port := listenAllInterfaces(t)
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	var published uint32
+	runner.publishHook = func(_ context.Context, hostPort uint32) error {
+		published = hostPort
+		_, err := s.Stop("sb1", "web")
+		return err
+	}
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the unpublish", 5*time.Second, func() bool { return len(runner.unpublishes()) == 1 })
+	if un := runner.unpublishes(); un[0] != [2]uint32{published, port} {
+		t.Errorf("unpublished %v, want %d:%d", un, published, port)
+	}
+	if inst, _ := s.insts.GetByService("sb1", "web"); inst.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Errorf("after the stop: %v", inst)
+	}
+}
+
+// A developer's stop of a RUNNING service signals it, and its exit is not a crash.
+func TestStoppingARunningServiceReportsNoFailure(t *testing.T) {
+	_, port := listenAllInterfaces(t)
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, _, _ := newTestSupervisor(t, sb)
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	stopped, err := s.Stop("sb1", "web")
+	if err != nil || stopped.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Fatalf("stop = %v, %v", stopped, err)
+	}
+	if failed := failedNotifications(s); failed != 0 {
+		t.Errorf("%d SERVICE_FAILED notifications, want 0", failed)
 	}
 }

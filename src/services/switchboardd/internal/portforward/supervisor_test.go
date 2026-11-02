@@ -112,6 +112,11 @@ type fakeRunner struct {
 	execArgv    [][]string
 	publishErr  error
 	forwarders  map[uint32]net.Listener
+	// markerDelay holds back a launch's PGID marker, as a slow `sbx exec` would.
+	markerDelay string
+	// publishHook, when set, runs first in PublishPort; an error is returned as
+	// the publish's.
+	publishHook func(ctx context.Context, hostPort uint32) error
 }
 
 // PublishPort stands in for `sbx ports --publish` by actually forwarding hostPort
@@ -121,7 +126,15 @@ type fakeRunner struct {
 // nothing: the probe's whole job is to dial the PUBLISHED port. Since the fake
 // Runner already runs "in-sandbox" commands on the host, a real loopback forwarder
 // reproduces the mapping faithfully.
-func (r *fakeRunner) PublishPort(_ context.Context, _ string, hostPort, sandboxPort uint32) error {
+func (r *fakeRunner) PublishPort(ctx context.Context, _ string, hostPort, sandboxPort uint32) error {
+	r.mu.Lock()
+	hook := r.publishHook
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, hostPort); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	if r.publishErr != nil {
 		err := r.publishErr
@@ -180,6 +193,9 @@ func (r *fakeRunner) Exec(ctx context.Context, _ string, argv []string) *exec.Cm
 	r.mu.Unlock()
 	if len(argv) == 0 {
 		argv = []string{"true"}
+	}
+	if len(argv) > 2 && r.markerDelay != "" && strings.Contains(argv[2], pgidMarker) {
+		argv = []string{argv[0], argv[1], "sleep " + r.markerDelay + "; " + argv[2]}
 	}
 	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }

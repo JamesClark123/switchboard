@@ -213,6 +213,149 @@ func TestMcpLoadTakesTheRuntimeReadLock(t *testing.T) {
 	<-done
 }
 
+// A lifecycle operation doesn't wait out an MCP call holding the lock: it cancels
+// it, and the caller is told busy, as if it had been refused (SWI-26).
+func TestLifecycleOperationCancelsAnMcpCall(t *testing.T) {
+	calls := map[string]func(e *orphanEnv, id string) error{
+		"load": func(e *orphanEnv, id string) error {
+			_, err := e.m.AttachMcp(context.Background(), id, "other", nil)
+			return err
+		},
+		"unload": func(e *orphanEnv, id string) error {
+			_, err := e.m.DetachMcp(context.Background(), id, "srv", nil)
+			return err
+		},
+	}
+	for kind, call := range calls {
+		t.Run(kind, func(t *testing.T) {
+			e := newOrphanEnv(t)
+			sb := e.launched(t, "p")
+			id := sb.GetId()
+			if _, err := e.m.AttachMcp(context.Background(), id, "srv", nil); err != nil {
+				t.Fatal(err)
+			}
+			e.run.pmu.Lock()
+			e.run.mcpHang = true
+			e.run.pmu.Unlock()
+			done := make(chan error, 1)
+			go func() { done <- call(e, id) }()
+			waitUntil(t, func() bool { return e.run.count(kind) >= 1 })
+			stopped := make(chan error, 1)
+			go func() {
+				_, err := e.m.Stop(context.Background(), id)
+				stopped <- err
+			}()
+			select {
+			case err := <-stopped:
+				if err != nil {
+					t.Errorf("stop = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the stop waited out the MCP call")
+			}
+			if err := <-done; !errors.Is(err, ErrBusy) {
+				t.Errorf("the cancelled call = %v, want busy", err)
+			}
+			if got := e.get(t, id).GetMcpServers(); !slices.Equal(got, []string{"srv"}) {
+				t.Errorf("the record changed: %v", got)
+			}
+		})
+	}
+}
+
+// A caller's own cancellation isn't reported as busy, and a hold can't slip in
+// between an operation's cancelling the holds and its asking for the lock.
+func TestHoldRuntimeRead(t *testing.T) {
+	e := newOrphanEnv(t)
+	sb := e.launched(t, "p")
+	id := sb.GetId()
+	e.run.pmu.Lock()
+	e.run.mcpHang = true
+	e.run.pmu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.m.AttachMcp(ctx, id, "srv", nil)
+		done <- err
+	}()
+	waitUntil(t, func() bool { return e.run.count("load") >= 1 })
+	cancel()
+	if err := <-done; err == nil || errors.Is(err, ErrBusy) {
+		t.Errorf("the caller's own cancel = %v", err)
+	}
+
+	l := e.m.runtime.of(id)
+	held, unlock, ok := e.m.HoldRuntimeRead(context.Background(), id)
+	if !ok {
+		t.Fatal("no hold")
+	}
+	l.beginOp()
+	if held.Err() == nil {
+		t.Error("the operation didn't cancel the hold")
+	}
+	if _, _, ok := e.m.HoldRuntimeRead(context.Background(), id); ok {
+		t.Error("a hold slipped in ahead of the operation's Lock")
+	}
+	l.endOp()
+	unlock()
+	if len(l.holds) != 0 {
+		t.Errorf("%d holds left", len(l.holds))
+	}
+	_, unlock, ok = e.m.HoldRuntimeRead(context.Background(), id)
+	if !ok {
+		t.Fatal("no hold once the operation ended")
+	}
+	unlock()
+}
+
+// A kit attach ends in a bring-up, after it has released the lock, so a worker
+// gets its gateway load and warm start. One that fails has none (SWI-26).
+func TestAddKitBringsUpAfterReleasingTheLock(t *testing.T) {
+	e := newOrphanEnv(t)
+	sb := e.launched(t, "p")
+	id := sb.GetId()
+	if _, err := e.reg.Update(id, func(s *pb.Sandbox) error {
+		s.Controller = &pb.SandboxController{OrchestratorId: "o"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var ups []pb.SandboxState
+	e.m.SetOnBringUp(func(sb *pb.Sandbox) {
+		ups = append(ups, sb.GetState())
+		unlock, ok := e.m.TryLockRuntime(id)
+		if !ok {
+			t.Error("the bring-up ran under the runtime lock")
+			return
+		}
+		unlock()
+	})
+	e.run.pmu.Lock()
+	e.run.kitErr = errors.New("boom")
+	e.run.pmu.Unlock()
+	if _, err := e.m.AddKit(context.Background(), id, "/kits/k", nil, nil, nil); err == nil {
+		t.Fatal("the kit attach should fail")
+	}
+	if len(ups) != 0 {
+		t.Errorf("a failed kit attach brought up: %v", ups)
+	}
+	if _, err := e.reg.Update(id, func(s *pb.Sandbox) error {
+		s.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.run.pmu.Lock()
+	e.run.kitErr = nil
+	e.run.pmu.Unlock()
+	if _, err := e.m.AddKit(context.Background(), id, "/kits/k", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(ups) != 1 || ups[0] != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Errorf("bring-ups = %v, want one RUNNING", ups)
+	}
+}
+
 // --- the shared listing (SWI-26 B3) ---
 
 // N probes at once list the runtime once.
@@ -298,7 +441,103 @@ func TestSharedListing(t *testing.T) {
 	}
 }
 
+// A listing's age counts from when its call started: a slow call is neither joined
+// nor reused past listSharedMaxAge, and a later listing isn't replaced by an older
+// one that finishes after it.
+func TestSharedListingAgesFromItsStart(t *testing.T) {
+	e := newOrphanEnv(t)
+	saved := listSharedMaxAge
+	listSharedMaxAge = 100 * time.Millisecond
+	t.Cleanup(func() { listSharedMaxAge = saved })
+	lists := func() int {
+		e.run.mu.Lock()
+		defer e.run.mu.Unlock()
+		return e.run.lists
+	}
+	gate := make(chan struct{})
+	free := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(free)
+	var once sync.Once
+	e.run.pmu.Lock()
+	e.run.listHook = func() { // only the first call blocks
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			<-gate
+		}
+	}
+	e.run.pmu.Unlock()
+	slow := make(chan error, 1)
+	go func() { _, err := e.m.listShared(context.Background()); slow <- err }()
+	waitUntil(t, func() bool {
+		e.m.lists.mu.Lock()
+		defer e.m.lists.mu.Unlock()
+		return e.m.lists.flight != nil
+	})
+	time.Sleep(2 * listSharedMaxAge)
+	// Too old to join: a call of its own, which answers though the first hasn't.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := e.m.listShared(ctx); err != nil {
+		t.Fatalf("joined the old call: %v", err)
+	}
+	e.m.lists.mu.Lock()
+	newer := e.m.lists.last
+	e.m.lists.mu.Unlock()
+	if newer == nil {
+		t.Fatal("the newer listing isn't cached")
+	}
+	free()
+	if err := <-slow; err != nil {
+		t.Fatal(err)
+	}
+	if n := lists(); n != 2 {
+		t.Errorf("%d listings, want 2", n)
+	}
+	e.m.lists.mu.Lock()
+	last := e.m.lists.last
+	e.m.lists.mu.Unlock()
+	if last != newer {
+		t.Error("an older listing replaced a newer one")
+	}
+	// Too old to reuse.
+	time.Sleep(2 * listSharedMaxAge)
+	if _, err := e.m.listShared(context.Background()); err != nil || lists() != 3 {
+		t.Errorf("past its age = %v, %d listings", err, lists())
+	}
+}
+
 // --- the start-up check off the serving path (SWI-26 B2) ---
+
+// The snapshot is taken when the check is prepared, before anything can spawn, so
+// a generation minted before the check runs is the daemon's own however the two
+// goroutines interleave: whether the sandbox is listed running or stopped, its
+// agent is left alone.
+func TestStartupCheckSnapshotPrecedesAWarmStart(t *testing.T) {
+	e := newOrphanEnv(t)
+	for id, listed := range map[string]bool{"up": true, "down": false} {
+		e.put(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+		e.run.mu.Lock()
+		e.run.running[id] = listed
+		e.run.mu.Unlock()
+	}
+	check := e.m.PrepareOrphanCheck()
+	for _, id := range []string{"up", "down"} {
+		e.tokens.issue(id, 1)
+	}
+	check(context.Background())
+	for _, id := range []string{"up", "down"} {
+		if got := e.tokens.Unretired(id); !slices.Contains(got, 1) {
+			t.Errorf("%s: the warm start's generation was retired: unretired %v", id, got)
+		}
+		if e.m.orphans.pending(id) {
+			t.Errorf("%s: the daemon's own agent was made unknown", id)
+		}
+		if st := e.get(t, id).GetAgent().GetStatus(); st == pb.AgentStatus_AGENT_STATUS_EXITED {
+			t.Errorf("%s: EXITED written over the daemon's own agent", id)
+		}
+	}
+}
 
 // A generation minted between the start-up check's snapshot and its listing
 // (an agent spawned since) is neither retired nor marked EXITED from the
@@ -315,7 +554,7 @@ func TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot(t *testing.T) {
 	e.run.pmu.Lock()
 	e.run.listHook = func() { e.tokens.issue("minted", 3) }
 	e.run.pmu.Unlock()
-	e.m.CheckOrphansAtStart(context.Background())
+	e.m.PrepareOrphanCheck()(context.Background())
 	if got := e.tokens.Unretired("minted"); !slices.Contains(got, 3) {
 		t.Errorf("the new generation was retired: unretired %v", got)
 	}

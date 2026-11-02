@@ -25,12 +25,15 @@ import (
 //     readiness checks and port publish, and MCP load/unload. They never wait,
 //     and are dropped or refused while an operation holds it or waits for it
 //     (a waiting writer blocks new readers). Readers don't exclude each other.
+//     An MCP load or unload can take a minute, so an operation cancels the ones
+//     in flight rather than waiting them out (HoldRuntimeRead).
 //
 // The pairs of readers that must still exclude each other do so on narrower
 // locks: a probe, a reap and a spawn of the same sandbox on the orphan gate
-// (orphanGate, below); a service's start and stop on the supervisor's own
-// per-instance state. Rename, source edits and recording an MCP attach don't
-// touch the container's processes and don't take it.
+// (orphanGate, below); a service's launch and its developer stop on the
+// supervisor's per-instance launch lock (portforward.procHandle). Rename, source
+// edits and recording an MCP attach don't touch the container's processes and
+// don't take it.
 
 // runtimeLocks is the per-sandbox runtimeMu table. Entries are never removed:
 // one lock pair per sandbox ever seen is bounded and avoids racing a destroy.
@@ -44,9 +47,36 @@ type runtimeLocks struct {
 // reap and a spawn each try-lock it, so no two of them overlap (a reap's
 // script would stop a spawning agent; a probe would record a spawning agent
 // whose session isn't registered yet as an orphan).
+//
+// holds is the MCP calls in flight under a read hold of rw, which an operation
+// cancels before it waits for the write lock. opsWaiting refuses new ones from
+// that sweep until the operation's Lock call makes rw refuse them itself. Both
+// are guarded by holdsMu, a leaf (the TryRLock under it never waits).
 type sandboxLocks struct {
 	rw     sync.RWMutex
 	orphan sync.Mutex
+
+	holdsMu    sync.Mutex
+	holds      map[uint64]context.CancelFunc
+	holdSeq    uint64
+	opsWaiting int
+}
+
+// beginOp cancels the MCP calls in flight and refuses new ones, ahead of an
+// operation's rw.Lock; endOp undoes the refusal once that Lock has returned.
+func (l *sandboxLocks) beginOp() {
+	l.holdsMu.Lock()
+	defer l.holdsMu.Unlock()
+	l.opsWaiting++
+	for _, cancel := range l.holds {
+		cancel()
+	}
+}
+
+func (l *sandboxLocks) endOp() {
+	l.holdsMu.Lock()
+	defer l.holdsMu.Unlock()
+	l.opsWaiting--
 }
 
 func (r *runtimeLocks) of(id string) *sandboxLocks {
@@ -77,7 +107,7 @@ func (m *Manager) TryLockRuntime(id string) (unlock func(), ok bool) {
 // TryRLockRuntime try-locks the sandbox's runtime lock for reading, never
 // waiting: refused only while a lifecycle operation holds it or waits for it.
 // It is the hold of every `sbx exec` outside the orphan gate (the service
-// supervisor's, MCP load/unload).
+// supervisor's); an `sbx mcp` call takes HoldRuntimeRead.
 func (m *Manager) TryRLockRuntime(id string) (unlock func(), ok bool) {
 	l := m.runtime.of(id)
 	if !l.rw.TryRLock() {
@@ -86,20 +116,54 @@ func (m *Manager) TryRLockRuntime(id string) (unlock func(), ok bool) {
 	return l.rw.RUnlock, true
 }
 
+// HoldRuntimeRead is TryRLockRuntime for an `sbx mcp` call, which may run for a
+// minute where the supervisor's calls are bounded by seconds. The returned
+// context, derived from ctx, is cancelled when a lifecycle operation asks for
+// the lock, so the operation never waits out the call, and neither do the
+// readers it blocks meanwhile. A caller sees that as its context ending while
+// ctx has not. unlock releases the hold.
+func (m *Manager) HoldRuntimeRead(ctx context.Context, id string) (held context.Context, unlock func(), ok bool) {
+	l := m.runtime.of(id)
+	l.holdsMu.Lock()
+	defer l.holdsMu.Unlock()
+	if l.opsWaiting > 0 || !l.rw.TryRLock() {
+		return nil, nil, false
+	}
+	held, cancel := context.WithCancel(ctx)
+	if l.holds == nil {
+		l.holds = map[uint64]context.CancelFunc{}
+	}
+	l.holdSeq++
+	key := l.holdSeq
+	l.holds[key] = cancel
+	return held, func() {
+		l.holdsMu.Lock()
+		delete(l.holds, key)
+		l.holdsMu.Unlock()
+		cancel()
+		l.rw.RUnlock()
+	}, true
+}
+
 // errRuntimeBusy refuses a runner call into a sandbox while a lifecycle
-// operation holds its runtime lock. It wraps ErrBusy, so the gRPC layer maps
-// it like an operation-latch refusal.
+// operation holds its runtime lock, or reports one that operation cancelled. It
+// wraps ErrBusy, so the gRPC layer maps it like an operation-latch refusal.
 var errRuntimeBusy = &busyError{label: "a stop, restart, refresh or kit attach"}
 
-// withRuntimeRead runs fn under the sandbox's runtime lock, read, or refuses
-// with errRuntimeBusy while a lifecycle operation holds it.
-func (m *Manager) withRuntimeRead(id string, fn func() error) error {
-	unlock, ok := m.TryRLockRuntime(id)
+// withRuntimeRead runs fn under the sandbox's runtime lock, read (HoldRuntimeRead),
+// or refuses with errRuntimeBusy while a lifecycle operation holds it. A failure
+// because an operation cancelled fn is errRuntimeBusy too.
+func (m *Manager) withRuntimeRead(ctx context.Context, id string, fn func(ctx context.Context) error) error {
+	held, unlock, ok := m.HoldRuntimeRead(ctx, id)
 	if !ok {
 		return errRuntimeBusy
 	}
 	defer unlock()
-	return fn()
+	err := fn(held)
+	if err != nil && held.Err() != nil && ctx.Err() == nil {
+		return errRuntimeBusy
+	}
+	return err
 }
 
 // orphanGate try-locks the runtime lock for reading and then the sandbox's
@@ -122,13 +186,17 @@ func (m *Manager) orphanGate(id string) (unlock func(), ok bool) {
 }
 
 // runtimeOp takes the sandbox's runtime lock for a lifecycle operation,
-// waiting for it. The returned func releases it and then applies the outcome
-// rule (research R14) from the state the operation wrote: a sandbox RUNNING
-// with an orphan record or unknown is marked unknown and probed once. The
-// STOPPED and destroyed branch runs when that state is published (emit).
+// waiting for it, after cancelling the MCP calls holding it (HoldRuntimeRead):
+// what's left to wait for is bounded by seconds. The returned func releases it
+// and then applies the outcome rule (research R14) from the state the operation
+// wrote: a sandbox RUNNING with an orphan record or unknown is marked unknown
+// and probed once. The STOPPED and destroyed branch runs when that state is
+// published (emit).
 func (m *Manager) runtimeOp(id string) func() {
 	l := m.runtime.of(id)
+	l.beginOp()
 	l.rw.Lock()
+	l.endOp()
 	return func() {
 		// The operation may have started or stopped the container: a listing
 		// taken before now must not answer the outcome rule's probe.
@@ -197,16 +265,17 @@ var (
 )
 
 // sharedList is one `sbx ls` shared by the probes that need it at about the
-// same time (orphans.running): at most one call in flight, and its
-// successful result reused for listSharedMaxAge. At start-up up to
-// orphanProbeConcurrency probes would otherwise each list the runtime. A
-// lifecycle operation invalidates it as it releases the runtime lock. Callers
-// that need a strictly fresh read (a reap, CheckOrphansAtStart,
+// same time (orphans.running): a call is joined while in flight, and its
+// successful result reused, only until listSharedMaxAge after it STARTED, so no
+// probe acts on a listing begun longer ago than that however slow the call. At
+// start-up up to orphanProbeConcurrency probes would otherwise each list the
+// runtime. A lifecycle operation invalidates it as it releases the runtime lock.
+// Callers that need a strictly fresh read (a reap, the start-up check,
 // listedRunningStrict, Reconcile) call the runner directly.
 type sharedList struct {
 	mu     sync.Mutex
 	gen    uint64      // bumped by invalidate
-	flight *listFlight // the call in flight, if any
+	flight *listFlight // the newest call in flight, if any
 	last   *listFlight // the newest successful call
 }
 
@@ -214,7 +283,7 @@ type sharedList struct {
 type listFlight struct {
 	gen  uint64
 	done chan struct{}
-	at   time.Time
+	at   time.Time // when the call started
 	val  map[string]string
 	err  error
 }
@@ -240,8 +309,8 @@ func (m *Manager) listShared(ctx context.Context) (map[string]string, error) {
 		return l.val, nil
 	}
 	f := s.flight
-	if f == nil || f.gen != s.gen {
-		f = &listFlight{gen: s.gen, done: make(chan struct{})}
+	if f == nil || f.gen != s.gen || time.Since(f.at) >= listSharedMaxAge {
+		f = &listFlight{gen: s.gen, done: make(chan struct{}), at: time.Now()}
 		s.flight = f
 		go m.runList(f)
 	}
@@ -261,11 +330,11 @@ func (m *Manager) runList(f *listFlight) {
 	cancel()
 	s := &m.lists
 	s.mu.Lock()
-	f.val, f.err, f.at = val, err, time.Now()
+	f.val, f.err = val, err
 	if s.flight == f {
 		s.flight = nil
 	}
-	if err == nil && f.gen == s.gen {
+	if err == nil && f.gen == s.gen && (s.last == nil || f.at.After(s.last.at)) {
 		s.last = f
 	}
 	s.mu.Unlock()

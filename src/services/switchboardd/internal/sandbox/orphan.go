@@ -679,12 +679,12 @@ func (m *Manager) RecheckOrphan(id string) {
 // (mayHaveAgent) unknown, in memory only, so the gate refuses a spawn beside
 // it from the daemon's first request on (research R14). It runs before the
 // hook server serves: an orphan's escape-hatch result delivery must not start
-// a second agent before CheckOrphansAtStart (which needs the runtime's
-// listing) settles each one. Its deps' Tokens are read, so they are set first.
+// a second agent before the start-up check (PrepareOrphanCheck, which needs the
+// runtime's listing) settles each one. Its deps' Tokens are read, so they are set first.
 func (m *Manager) MarkOrphanCandidates() {
 	all, err := m.store.List()
 	if err != nil {
-		return // CheckOrphansAtStart logs it
+		return // PrepareOrphanCheck logs it
 	}
 	d := m.orphans.getDeps()
 	for _, sb := range all {
@@ -694,34 +694,42 @@ func (m *Manager) MarkOrphanCandidates() {
 	}
 }
 
-// CheckOrphansAtStart classifies every sandbox at daemon start (research
-// R14): a successful listing's stopped or absent sandboxes have no agent
-// (EXITED by the gone rule, tokens retired, never probed); a running one that
-// may have a surviving agent is marked unknown and probed asynchronously;
-// every other one is clear at once. A listing that errs (or a status it
-// doesn't know) retires nothing and writes no EXITED: those sandboxes that may
-// have an agent are unknown, and their probes retry the listing.
+// PrepareOrphanCheck snapshots the daemon's sandboxes and token generations and
+// returns the start-up check, which classifies each one (research R14): a
+// successful listing's stopped or absent sandboxes have no agent (EXITED by the
+// gone rule, tokens retired, never probed); a running one that may have a
+// surviving agent is marked unknown and probed asynchronously; every other one
+// is clear at once. A listing that errs (or a status it doesn't know) retires
+// nothing and writes no EXITED: those sandboxes that may have an agent are
+// unknown, and their probes retry the listing.
 //
-// It runs alongside the gRPC server (SWI-26): MarkOrphanCandidates already
-// has the gate refuse every candidate, and the token generations are read
-// before the listing, so a sandbox with an agent spawned since (a newer
-// generation, e.g. a worker warm-started that was not a candidate) is skipped:
-// that agent is the daemon's own, never retired, marked EXITED or made
-// unknown from the older listing. Each record is re-read as it is classified.
-func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
+// The check runs alongside the gRPC server (SWI-26), but this snapshot must be
+// taken before anything can spawn (the hook server serving, a warm start):
+// every generation above it is then this daemon's own. MarkOrphanCandidates has
+// the gate refuse every candidate meanwhile, and a sandbox with a newer
+// generation (e.g. a worker warm-started that was not a candidate) is skipped:
+// that agent is never retired, marked EXITED or made unknown from the listing.
+// Each record is re-read as it is classified. Only the listing is slow.
+func (m *Manager) PrepareOrphanCheck() func(ctx context.Context) {
 	all, err := m.store.List()
 	if err != nil {
-		log.Printf("[warn] detached-agent check skipped: %v", err)
-		return
+		return func(context.Context) { log.Printf("[warn] detached-agent check skipped: %v", err) }
 	}
-	o := m.orphans
-	d := o.getDeps()
 	snap := map[string]int64{}
-	if d.Tokens != nil {
+	if d := m.orphans.getDeps(); d.Tokens != nil {
 		for _, sb := range all {
 			snap[sb.GetId()] = d.Tokens.Generation(sb.GetId())
 		}
 	}
+	return func(ctx context.Context) { m.checkOrphansAtStart(ctx, all, snap) }
+}
+
+// checkOrphansAtStart is the check PrepareOrphanCheck returns: all and snap are
+// its snapshot. The deps are read here: the worker service completes them after
+// the snapshot.
+func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, snap map[string]int64) {
+	o := m.orphans
+	d := o.getDeps()
 	lctx, cancel := context.WithTimeout(ctx, orphanProbeTimeout)
 	statuses, lerr := m.runner.ListStatuses(lctx)
 	cancel()
@@ -729,7 +737,7 @@ func (m *Manager) CheckOrphansAtStart(ctx context.Context) {
 	for _, sb := range all {
 		id := sb.GetId()
 		if d.Tokens != nil && d.Tokens.Generation(id) > snap[id] {
-			continue // an agent spawned since the snapshot: the daemon's own
+			continue // an agent spawned since the snapshot: this daemon's own
 		}
 		if cur, err := m.store.Get(id); err == nil {
 			sb = cur // e.g. a Restart since the snapshot

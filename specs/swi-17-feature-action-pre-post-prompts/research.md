@@ -1175,19 +1175,28 @@ one exclusive lock, operations that don't conflict refused each other: a develop
     failed-start kill (`stopProc`), the failed start's loopback diagnosis and `sbx ports --publish`, held until the
     handle records the published port so the drain can always unpublish it. The last three **wait** for a refused
     lock (`awaitRuntime`, polling, holding nothing, and giving up if the start was cancelled meanwhile) with the
-    instance still STARTING: the operation's drain or
+    instance still STARTING, and so do the readiness window's last checks (`finalListenState`), so a refused check
+    never ends a start: the operation's drain or
     teardown cancels the start and owns its group (a Stop, Refresh or Destroy drain; AddKit's CREATING teardown),
     or the operation ends without touching it and the start carries on. A drain records FAILED **before** it cancels
     (`failStarting`), because a start woken by that cancel would otherwise record its own failure first; a start
-    cancelled mid-wait records no failure of its own. Each `sbx` call made under the read lock is
-    bounded by `runtimeHoldTimeout` (10 s), so a wedged one can't hold a waiting stop for long;
+    cancelled mid-wait records no failure of its own. A readiness check made under the read lock is
+    bounded by `runtimeHoldTimeout` (10 s) and each publish attempt by `publishAttemptTimeout` (30 s; a publish can
+    be slow on a busy host, and one that hits the bound isn't retried and has its port given back), so a wedged call
+    can't hold a waiting stop for long;
   - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
     `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
-    load (`worker.gateway.load`). A load refused at attach becomes a bring-up (`GoBringUp`), so the agent start
-    is held until the load, as after a Restart, and warm-started after it. A bring-up retries a refused load
-    (`Service.loadWhen`, up to 30 min, each attempt bounded), re-reading the record each time; if the operation
-    left the sandbox not RUNNING it neither loads nor warm-starts (`errNotRunning`): both would start it again, so
-    its next bring-up does them.
+    load (`worker.gateway.load`). These take `HoldRuntimeRead`, because an `sbx mcp` call may run for 60 s (120 s
+    for an unload trying two refs) and bounding it by seconds would break slow loads: a lifecycle operation cancels
+    the ones in flight just before it asks for the write lock, and the caller reports that as the same busy refusal.
+    So a stop waits only for readers bounded by seconds to tens of seconds (a wedged publish, a developer's service
+    stop), and a killed load leaves the record untouched for the developer to retry. A load refused or cancelled at
+    attach becomes a bring-up (`GoBringUp`), so the agent start is held until the load, as after a Restart, and
+    warm-started after it. A bring-up retries a refused load (`Service.loadWhen`, up to 30 min, each attempt
+    bounded); if the sandbox is not RUNNING, or gone, it neither loads nor warm-starts (`errNotRunning`): both would
+    start it again, or mint a hook token for a destroyed sandbox. The next Restart, Refresh or AddKit ends in the
+    bring-up that does them. AddKit gained that bring-up here: its CREATING closes the agent and defers any
+    overlapping attach's load, and nothing else would run them.
 
   A waiting writer blocks new readers (`sync.RWMutex`), so once a lifecycle operation asks for the lock no new read
   holder starts, and it waits only for the ones in flight.
@@ -1199,7 +1208,7 @@ one exclusive lock, operations that don't conflict refused each other: a develop
 | reap × spawn | the reap script would stop the agent being spawned (its session isn't registered yet, so the `LiveGen` re-check can't see it) | orphan gate |
 | probe × spawn | the probe would find the spawning agent alive with no live session and record it as an orphan | orphan gate |
 | probe × reap | already safe through `epoch` (a probe's result is dropped if a reap dropped the sandbox since it took the gate); kept on the gate anyway, so a probe never execs beside a kill | orphan gate |
-| service start × stop (same instance) | the supervisor's per-instance state (`insts`, `handles`) already serialises them | none new |
+| service launch × developer stop (same instance) | with the lock shared, a stop before the handle has its PGID would signal nothing and leave the tree running in the sandbox under a STOPPED instance (the old exclusive lock prevented this). The stop waits for the launch (at most `pgidWait`, 5 s), then signals the group; a launch not begun yet finds itself cancelled and never runs | `procHandle.launch` (a per-instance mutex, never held across a wait for `rw`) |
 
 The orphan gate is a second per-sandbox mutex (`sandboxLocks.orphan`), only ever try-locked while holding `rw` for
 reading (`Manager.orphanGate`), so it adds no wait and no lock cycle. The single-flight `probing` flag only stops
@@ -1209,10 +1218,18 @@ the old behaviour: a probe is retried after `orphanRetryBase`, a Replace or a sp
 **Drain ordering (closes deferred gap 1).** Every `sbx exec` path the daemon starts on its own initiative now holds
 the read lock: agent spawn (`Admit`), service launch, readiness checks, port publish, failed-start kill, MCP
 load/unload and the worker gateway load. A stop holds the write lock from before its drain until it has written
-the result. So an exec asked for during the drain, or after it, is refused and never run. The execs a lifecycle
-operation runs itself, and its on-change teardown (`StopAll`), stay ungated, as before. Tests:
+the result. So an exec asked for during the drain is refused and never run.
+
+An exec asked for *after* a stop has finished is refused where the caller re-reads the record under the lock: a
+service launch (`launchExclusive`), the gateway load (`gateway.load` with `runningRef`), and a start's later execs,
+which the drain has already cancelled. An attach's and a bring-up's warm start re-read just before they spawn. A
+spawn itself holds the lock but doesn't re-read: `Admit` runs under the agent registry's lock and never touches the
+store, so a caller's stale record can still start the sandbox in the moment between its read and the gate.
+`AttachMcp` and `DetachMcp` deliberately don't re-read either, since they allow a STOPPED sandbox. The execs a
+lifecycle operation runs itself, and its on-change teardown (`StopAll`), stay ungated, as before. Tests:
 `TestRuntimeLockOrdersOperations` (read lock and `AttachMcp` refused during each operation),
-`TestStartRunsNoExecUnderALifecycleOperation`.
+`TestStartRunsNoExecUnderALifecycleOperation`, `TestStartIsRefusedIfTheSandboxStoppedSinceItsRead`,
+`TestAttachReadsTheStateUnderTheRuntimeLock`.
 
 **What survives a failed `sbx stop` (deferred gap 2): a decision, not a reconcile.** Agents are re-probed as before
 (`stopFailed`). Interrupted services are **not** re-checked to read RUNNING again:
@@ -1225,26 +1242,29 @@ operation runs itself, and its on-change teardown (`StopAll`), stay ungated, as 
 The cost of a reconcile (a listing plus one `/proc` exec per interrupted service, then re-adoption) isn't justified
 for that case.
 
-**Shared listing for probes (B3).** `orphans.running` reads `Manager.listShared`: one `sbx ls` in flight at a time,
-its successful result reused for `listSharedMaxAge` (1.5 s), the call made on its own context bounded by
-`orphanProbeTimeout` so a caller that gives up never fails it for the others. A failure is shared with the callers
+**Shared listing for probes (B3).** `orphans.running` reads `Manager.listShared`: a call is joined while in flight,
+and its successful result reused, until `listSharedMaxAge` (1.5 s) after it **started**, however long it took; a
+caller after that starts its own. The call runs on its own context bounded by `orphanProbeTimeout` so a caller that
+gives up never fails it for the others. A failure is shared with the callers
 waiting on that call but never cached. A lifecycle operation invalidates it as it releases the write lock, so the
 outcome rule's probe never reads a listing from before the operation. A reap reads the runtime fresh (it signals
-processes, and is rare), as do `CheckOrphansAtStart`, `listedRunningStrict` and `Reconcile`. Trade-off: a sandbox
-stopped *outside* the daemon less than 1.5 s before a probe may be probed on a stale "running" (before, the window
-was the time between the listing and the exec).
+processes, and is rare), as do the start-up check, `listedRunningStrict` and `Reconcile`. Trade-off: a sandbox
+stopped *outside* the daemon may be probed on a stale "running" from a listing begun less than 1.5 s before the
+probe asked (before, the window was the time between the listing and the exec).
 
-**Start-up check off the serving path (B2).** `CheckOrphansAtStart` now runs in a goroutine beside the gRPC server.
+**Start-up check off the serving path (B2).** The check now runs in a goroutine beside the gRPC server.
 `MarkOrphanCandidates` still marks every candidate unknown before the hook server serves, so the gate refuses
-those spawns meanwhile. The check reads every sandbox's token generation **before** listing the runtime, and skips
-a sandbox whose generation has moved since (an agent spawned after the snapshot, e.g. a worker warm-started that
-was not a candidate): that agent is the daemon's own, so it is never retired, marked EXITED or made unknown from
-the older listing. Otherwise it retires only generations at or below the snapshot, and classifies each sandbox
-from its record re-read at that moment.
-Test: `TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot`.
+those spawns meanwhile. `PrepareOrphanCheck` reads every sandbox's token generation synchronously at the same
+point, before the hook server serves and before any warm start, and returns the check; only the listing is slow.
+So every generation above the snapshot is this daemon's own, whichever way the goroutines interleave. The check
+skips a sandbox whose generation has moved (e.g. a worker warm-started that was not a candidate): that agent is
+never retired, marked EXITED or made unknown from the listing. Otherwise it retires only generations at or below
+the snapshot, and classifies each sandbox from its record re-read at that moment.
+Tests: `TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot`, `TestStartupCheckSnapshotPrecedesAWarmStart`.
 
 **`sbx mcp`/`sbx ports` and a stopped sandbox (quickstart Scenario 0 step 5).** Not re-verified on a real host
 for SWI-26: `sbx` isn't available in the development sandbox. `AttachMcp`'s own contract already says the runtime
-starts a stopped sandbox on `mcp load`. Both calls are gated anyway: the read lock costs nothing beside probes,
-and only refuses during a lifecycle operation.
+starts a stopped sandbox on `mcp load`. Both calls are gated anyway: the read lock doesn't conflict with probes, and
+only refuses during a lifecycle operation. The cost is that an operation kills an `sbx mcp` call in flight, which
+the developer retries.
 

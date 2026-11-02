@@ -54,7 +54,8 @@ var ErrMcpAlreadyAttached = errors.New("MCP server already attached to this sand
 // unregistered name is the runtime's "is not registered" failure — the gRPC
 // layer maps it. The load runs under the sandbox's runtime lock, read: while a
 // stop, restart, refresh or kit attach holds it the attach is refused with an
-// error wrapping ErrBusy (SWI-26). The sandbox's attach mode is recorded as additive when the
+// error wrapping ErrBusy, and one that starts meanwhile cancels the load, with the
+// same error (SWI-26). The sandbox's attach mode is recorded as additive when the
 // launch pre-dates feature 008 and left no mode behind.
 func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(string)) (*pb.Sandbox, error) {
 	name = strings.TrimSpace(name)
@@ -90,10 +91,10 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	var hint string
 	// `sbx mcp load` starts a stopped sandbox: it runs under the runtime lock,
 	// read (SWI-26), so never inside a stop, restart, refresh or kit attach.
-	err = m.withRuntimeRead(id, func() error {
+	err = m.withRuntimeRead(lctx, id, func(hctx context.Context) error {
 		return tryRefs(sbxRefs(sb), func(r string) error {
 			captured.Reset()
-			err := m.runner.LoadMcp(lctx, r, name, logLine)
+			err := m.runner.LoadMcp(hctx, r, name, logLine)
 			if err == nil {
 				return nil
 			}
@@ -192,11 +193,11 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		logDetach(onLog, "mcp: %q cannot be passed to sbx safely; dropping it from the record only (unload it from the sandbox with the sbx CLI if it is still loaded)", name)
 	} else if sb.GetContainerRef() == "" {
 		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
-	} else if err := m.withRuntimeRead(id, func() error {
+	} else if err := m.withRuntimeRead(ctx, id, func(hctx context.Context) error {
 		// `sbx mcp unload` runs under the runtime lock like load (SWI-26).
 		return tryRefs(sbxRefs(sb), func(r string) error {
 			// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
-			uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
+			uctx, cancel := context.WithTimeout(hctx, mcpLoadTimeout)
 			defer cancel()
 			captured.Reset()
 			e := m.runner.UnloadMcp(uctx, r, name, logLine)

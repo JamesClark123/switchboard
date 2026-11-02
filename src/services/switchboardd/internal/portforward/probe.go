@@ -112,14 +112,14 @@ func (s *Supervisor) awaitSandboxListening(ctx context.Context, sandboxID, ref s
 		case <-ctx.Done():
 			return last, ctx.Err()
 		case <-exited:
-			if st := s.lockedListenState(ctx, sandboxID, ref, port); st == listenAll {
+			if st := s.finalListenState(ctx, sandboxID, ref, port); st == listenAll {
 				return st, nil
 			}
 			return last, errProcessExited
 		case <-time.After(backoff):
 		}
 		if time.Now().After(deadline) {
-			if st := s.lockedListenState(ctx, sandboxID, ref, port); st == listenAll {
+			if st := s.finalListenState(ctx, sandboxID, ref, port); st == listenAll {
 				return st, nil
 			} else if st != listenNone {
 				last = st
@@ -135,7 +135,8 @@ func (s *Supervisor) awaitSandboxListening(ctx context.Context, sandboxID, ref s
 // lockedListenState is sandboxListenState under the sandbox's runtime lock
 // (SWI-26): each check is an `sbx exec`, which would start a stopped sandbox.
 // While a lifecycle operation holds the lock nothing runs and it reads as not
-// listening; that operation's drain ends the start anyway.
+// listening, and the loop looks again; a check that ends the loop is
+// finalListenState.
 func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
 	if ctx.Err() != nil {
 		return listenNone
@@ -148,10 +149,13 @@ func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref strin
 	return s.boundedListenState(ctx, ref, port)
 }
 
-// diagnoseListenState is lockedListenState for the one check that classifies
-// a failed start: it waits for the lock (awaitRuntime) rather than reading a
-// busy sandbox as not listening, so a loopback-only bind is still named.
-func (s *Supervisor) diagnoseListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
+// finalListenState is lockedListenState for a check that decides a start's
+// outcome (the readiness window's last look, and classifying a failed start): it
+// waits for the lock (awaitRuntime) rather than reading a busy sandbox as not
+// listening. Otherwise an operation that leaves the start alone would get a healthy
+// service killed as never having listened, and a loopback-only bind would go
+// unnamed. The operation's drain or teardown cancels ctx if it settles the start.
+func (s *Supervisor) finalListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
 	unlock, ok := s.awaitRuntime(ctx, sandboxID)
 	if !ok {
 		return listenNone

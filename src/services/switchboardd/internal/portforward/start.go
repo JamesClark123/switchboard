@@ -80,33 +80,11 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		return
 	}
 
-	// An in-sandbox launch is a developer request that starts a new `sbx exec`
-	// client: refused while a lifecycle operation holds the sandbox's runtime
-	// lock, held from the launch until the handle has its process (SWI-17,
-	// research R14). No port is kept (FR-046).
-	unlock := func() {}
-	if inSandbox {
-		var ok bool
-		if unlock, ok = s.lockRuntime(sb.GetId()); !ok {
-			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, ErrSandboxBusy.Error())
-			return
-		}
-	}
-	proc, err := s.launch(ctx, sb, declared, command, inSandbox, effPort)
-	if err != nil {
-		unlock()
-		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
-			"failed to launch command: "+err.Error())
+	proc, cur := s.launchExclusive(ctx, sb, declared, command, instID, inSandbox, effPort)
+	if proc == nil {
 		return
 	}
-	s.setProc(instID, proc)
-	s.mu.Lock()
-	if h, ok := s.handles[instID]; ok {
-		h.pgid = proc.pgid
-		h.sbxPort = effPort
-	}
-	s.mu.Unlock()
-	unlock()
+	sb = cur
 
 	window := time.Duration(declared.GetReadinessTimeoutSeconds()) * time.Second
 	if window <= 0 {
@@ -126,15 +104,13 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 		// `sbx ports --publish` may start a stopped sandbox like `sbx exec`: it
 		// runs under the runtime lock too, held until the handle records the
 		// published port, so a stop's drain (which needs the lock) always finds
-		// it to unpublish (SWI-26). Bounded, so a wedged publish never holds a
-		// waiting stop for long.
+		// it to unpublish (SWI-26). Each attempt is bounded, so a wedged publish
+		// never holds a waiting stop for long.
 		unlock, ok := s.awaitRuntime(ctx, sb.GetId())
 		if !ok {
 			return // cancelled while waiting: whoever cancelled it owns the outcome
 		}
-		pctx, cancel := context.WithTimeout(ctx, runtimeHoldTimeout)
-		hostPort, err = s.publishSandboxPort(pctx, sb.GetContainerRef(), effPort)
-		cancel()
+		hostPort, err = s.publishSandboxPort(ctx, sb.GetContainerRef(), effPort)
 		if err != nil {
 			unlock()
 			if ctx.Err() == nil {
@@ -148,11 +124,18 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 			return
 		}
 		s.mu.Lock()
-		if h, ok := s.handles[instID]; ok {
+		h, live := s.handles[instID]
+		if live {
 			h.hostPort = hostPort
 		}
 		s.mu.Unlock()
 		unlock()
+		if !live {
+			// A developer's stop released the handle during the publish, before
+			// there was a port to give back: it falls to this attempt.
+			s.unpublish(sb.GetContainerRef(), hostPort, effPort)
+			return
+		}
 	}
 
 	s.transitionStarting(instID, func(i *pb.ServiceInstance) {
@@ -181,6 +164,53 @@ func (s *Supervisor) bringUp(ctx context.Context, sb *pb.Sandbox, declared *pb.K
 
 	// From here the only thing that ends the service is a stop or its own death.
 	go s.watchExit(ctx, instID, proc)
+}
+
+// launchExclusive runs the launch and records its process on the handle, excluding
+// a developer's Stop of this instance throughout (procHandle.launch). An in-sandbox
+// launch is a developer request that starts a new `sbx exec` client: refused while
+// a lifecycle operation holds the sandbox's runtime lock, held from the launch until
+// the handle has its process (SWI-17, research R14), and refused if the sandbox
+// left RUNNING since Start read it (SWI-26). No port is kept (FR-046). It returns
+// the process and the record the launch ran against, or nil with the outcome
+// settled.
+func (s *Supervisor) launchExclusive(ctx context.Context, sb *pb.Sandbox, declared *pb.KitService, command, instID string, inSandbox bool, effPort uint32) (*runningProc, *pb.Sandbox) {
+	h, ok := s.handleFor(instID)
+	if !ok {
+		return nil, nil // stopped before it got here
+	}
+	h.launch.Lock()
+	defer h.launch.Unlock()
+	if ctx.Err() != nil {
+		return nil, nil // a stop got here first: it owns the outcome
+	}
+	if inSandbox {
+		unlock, ok := s.lockRuntime(sb.GetId())
+		if !ok {
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, ErrSandboxBusy.Error())
+			return nil, nil
+		}
+		defer unlock()
+		cur, err := s.sandboxes.Get(sb.GetId())
+		if err != nil || cur == nil || cur.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_SANDBOX_NOT_RUNNING,
+				"the sandbox must be running before an in-sandbox service can start")
+			return nil, nil
+		}
+		sb = cur
+	}
+	proc, err := s.launch(ctx, sb, declared, command, inSandbox, effPort)
+	if err != nil {
+		s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED,
+			"failed to launch command: "+err.Error())
+		return nil, nil
+	}
+	s.setProc(instID, proc)
+	s.mu.Lock()
+	h.pgid = proc.pgid
+	h.sbxPort = effPort
+	s.mu.Unlock()
+	return proc, sb
 }
 
 // launch dispatches to the right launcher for the service's execution location.
@@ -225,7 +255,7 @@ func (s *Supervisor) readinessFailed(ctx context.Context, sb *pb.Sandbox, declar
 		// so look before reporting a bare "never listened" (research R5).
 		state := listenNone
 		if inSandbox {
-			state = s.diagnoseListenState(ctx, sb.GetId(), sb.GetContainerRef(), effPort)
+			state = s.finalListenState(ctx, sb.GetId(), sb.GetContainerRef(), effPort)
 		}
 		if ctx.Err() != nil {
 			return // cancelled during the diagnosis: whoever cancelled it owns the outcome
@@ -248,6 +278,9 @@ func (s *Supervisor) watchExit(ctx context.Context, instID string, proc *running
 	case <-proc.exited:
 	case <-ctx.Done():
 		return // a deliberate stop; Stop owns the transition
+	}
+	if s.isStopping(instID) {
+		return // a stop's own signal; Stop owns the transition
 	}
 	if inst, ok := s.insts.Get(instID); !ok || inst.GetState() != pb.ServiceState_SERVICE_STATE_RUNNING {
 		return // already terminal
