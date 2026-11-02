@@ -150,6 +150,8 @@ func TestStepKeysHelpAndAvailability(t *testing.T) {
 	detached := halted(seqRun("run-d", pb.RunState_RUN_STATE_RUNNING, 1, 0), "agent detached by a daemon restart")
 	heldClear := seqRun("run-hc", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_DONE)
 	heldClear.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	clearRetry := seqRun("run-cr", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_PENDING)
+	clearRetry.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 	running := seqRun("run-r", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	m := Model{}
 	for _, c := range []struct {
@@ -162,6 +164,7 @@ func TestStepKeysHelpAndAvailability(t *testing.T) {
 		{before, "S skip step • R retry step • X fail run"},
 		{detached, "R restart setup • X fail run"},
 		{heldClear, "R retry Clear"},
+		{clearRetry, "X stop Clear retries"},
 	} {
 		h := strings.ReplaceAll(ansi.Strip(m.renderHelp(stepKeysHelp(c.run))), "\n", " • ")
 		if !strings.Contains(h, c.want) {
@@ -204,6 +207,38 @@ func TestStepKeysConfirmDefaultNoAndCall(t *testing.T) {
 		if !strings.Contains(d.orchCallsJoined(), c.call) || !strings.Contains(m.status, "requested for run-p") {
 			t.Errorf("%s: calls %q status %q", c.key, d.orchCallsJoined(), m.status)
 		}
+	}
+}
+
+// SWI-28: X stops a held Clear's retry that keeps being refused, while it waits
+// and while it is being sent; R is not for it, and a Clear not retrying has no X.
+func TestStopClearRetriesKey(t *testing.T) {
+	for _, st := range []pb.StepStatus{pb.StepStatus_STEP_STATUS_PENDING, pb.StepStatus_STEP_STATUS_SENDING} {
+		run := seqRun("run-cr", pb.RunState_RUN_STATE_COMPLETED, 5, st)
+		run.Hold, run.EndedAt = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, at(0)
+		m, d := stepJobs(t, run)
+		m = overviewAt(t, m, "run-cr")
+		mm, cmd := update(m, press("R"))
+		if cmd != nil || mm.screen != screenJobs {
+			t.Errorf("%v: R on a retrying Clear opened %v", st, mm.screen)
+		}
+		m, _ = update(m, press("X"))
+		v := plainView(m)
+		if m.screen != screenConfirm || !strings.Contains(v, "Stop retrying Clear of run-cr?") || strings.Contains(v, "The run fails") {
+			t.Fatalf("%v: confirm:\n%s", st, v)
+		}
+		m, cmd = update(m, press("y"))
+		m = feed2(m, cmd)
+		if !strings.Contains(d.orchCallsJoined(), "ResolveRunStep o-a run-cr 5 STEP_RESOLUTION_FAIL") || !strings.Contains(m.status, "stop retries requested for run-cr") {
+			t.Errorf("%v: calls %q status %q", st, d.orchCallsJoined(), m.status)
+		}
+	}
+	held := seqRun("run-hc", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	held.Hold, held.EndedAt = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, at(0)
+	m, _ := stepJobs(t, held)
+	m = overviewAt(t, m, "run-hc")
+	if mm, cmd := update(m, press("X")); cmd != nil || mm.screen != screenJobs {
+		t.Errorf("X on a held Clear with no retry opened %v", mm.screen)
 	}
 }
 
@@ -321,6 +356,51 @@ func TestPromptOverlayListsSteps(t *testing.T) {
 	}
 	if v := ansi.Strip(m.promptView(&pb.Run{Id: "p", Prompt: "just the prompt"})); strings.Contains(v, "pre") || !strings.Contains(v, "just the prompt") {
 		t.Errorf("no steps:\n%s", v)
+	}
+}
+
+// SWI-28: recorded results mark skipped and dropped steps –, failed ones ✗; with
+// none (an older daemon) the marks are inferred as before.
+func TestHeldRunRowShowsItsNote(t *testing.T) {
+	r := seqRun("h", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	r.Hold, r.StepNote = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, "clear retry stopped by developer"
+	if d := runStepDetail(r); !strings.Contains(d, "needing the developer") || !strings.HasSuffix(d, ": clear retry stopped by developer") {
+		t.Errorf("detail = %q", d)
+	}
+	r.StepNote = ""
+	if d := runStepDetail(r); strings.Contains(d, ":") {
+		t.Errorf("no note = %q", d)
+	}
+}
+
+func TestPromptOverlayMarksStepResults(t *testing.T) {
+	m, _ := stepJobs(t)
+	res := func(i int32, o pb.StepResultOutcome) *pb.StepResult {
+		return &pb.StepResult{Index: i, Outcome: o}
+	}
+	r := seqRun("d", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	r.StepResults = []*pb.StepResult{
+		res(0, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE),
+		res(1, pb.StepResultOutcome_STEP_RESULT_OUTCOME_SKIPPED),
+		res(2, pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED),
+		res(4, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED),
+		res(5, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE),
+	}
+	v := ansi.Strip(m.promptView(r))
+	for _, want := range []string{"✓ /model opus", "– /effort medium", "✗ /pre-setupskill", "– /tear-down-skill", "✓ /clear"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("results overlay missing %q:\n%s", want, v)
+		}
+	}
+	// A hold after dropping the posts: Clear keeps no result, ✗ as it stopped there.
+	h := seqRun("h", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	h.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	h.StepResults = []*pb.StepResult{res(4, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)}
+	v = ansi.Strip(m.promptView(h))
+	for _, want := range []string{"✓ /model opus", "– /tear-down-skill", "✗ /clear"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("held overlay missing %q:\n%s", want, v)
+		}
 	}
 }
 

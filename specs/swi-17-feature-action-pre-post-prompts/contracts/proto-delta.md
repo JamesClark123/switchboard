@@ -106,8 +106,24 @@ message RunStep {
   string expect = 4;                     // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
 }
 
+// SWI-28: how a run left each step, for the prompt overlay. A held Clear, which R may retry, has none.
+enum StepResultOutcome {
+  STEP_RESULT_OUTCOME_UNSPECIFIED = 0;
+  STEP_RESULT_OUTCOME_DONE = 1;
+  STEP_RESULT_OUTCOME_SKIPPED = 2;
+  STEP_RESULT_OUTCOME_DROPPED = 3;
+  STEP_RESULT_OUTCOME_FAILED = 4;
+}
+
+message StepResult {
+  int32 index = 1;
+  StepResultOutcome outcome = 2;
+  StepObserved kind_seen = 3;
+}
+
 message Run {
   // … fields 1..19 unchanged …
+  repeated StepResult step_results = 33; // SWI-28 (31..32 are SWI-18's)
   repeated RunStep steps = 20;           // empty => no sequence; delivered exactly as before (FR-208)
   int32 step = 21;
   StepStatus step_status = 22;
@@ -274,7 +290,7 @@ enum StepResolution {
   STEP_RESOLUTION_UNSPECIFIED = 0;
   STEP_RESOLUTION_RETRY = 1;
   STEP_RESOLUTION_SKIP = 2;              // refused for CLEAR
-  STEP_RESOLUTION_FAIL = 3;
+  STEP_RESOLUTION_FAIL = 3;              // also stops a held Clear's retries (SWI-28)
 }
 
 message ResolveRunStepRequest {

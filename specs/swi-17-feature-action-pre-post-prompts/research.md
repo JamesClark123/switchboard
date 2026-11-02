@@ -124,7 +124,9 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
    developer's terminal flicker. Recovery is **lazy**: when the guard or the submit check reads a stale screen, it
    requests a resize nudge (debounced, at most one per second per sandbox), the agent repaints, and the screen is
    fresh again. While stale, the guard refuses (`screen resyncing`; the stepper retries) and the submit check treats
-   the screen as **unknown**: it extends its window by at most 1 s (contracts/worker-step.md §6).
+   the screen as **unknown**: it extends its window by at most 1 s (contracts/worker-step.md §6). A **size change**
+   marks the screen stale too (SWI-28): termview only truncates or pads, so it is wrong until the agent repaints. The
+   resize counts as the nudge, and the repaint it causes clears the flag; a resize to the same size changes nothing.
    - **Still stale when the extension ends:** the check returns **UNCONFIRMED** (`screen resyncing`): the step was
      typed, but nothing confirms it was accepted. The orchestrator treats it like a lost response: SENT, resolved by
      R8's evidence rules (a turn-start or turn-end hook finishes it; a built-in is read back with `check_only` once
@@ -212,7 +214,8 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
      `SessionStart`/`SessionEnd` never count (R1: `/clear` raises them).
    - **AGENT_LOCAL**: the window ended with no turn-start report, the status is still IDLE, and the box is empty and
      ready. For a built-in, its read-back must also pass: the R1 confirmation line for Model and Effort, or a
-     `SessionStart` with `source: "clear"` after the submit for Clear.
+     `SessionStart` with `source: "clear"` after the submit for Clear. The action prompt needs evidence of a turn
+     whose hooks were lost, or it is UNCONFIRMED instead (SWI-28, contracts/worker-step.md §3).
    - **NOT_ACCEPTED** with a reason, one of:
      - `text_in_box`;
      - `picker` (a modal appeared before any report, which also ends the check at once with no Enter);
@@ -463,9 +466,11 @@ it; rule 3 (screen read-back) does not.
 1. **A step already `TURN`** was classified before the restart, so the turn-start test is skipped: it is finished
    when the agent is IDLE with `last_turn_end_at > step_sent_at` (or, for MODEL_TURN_INPUT_ONLY, by the input-only
    rule, FR-206b), and otherwise awaited as usual.
-2. **A step `SENT`** (typed, not yet classified) is a model turn if `last_submit_at > step_sent_at`, **or** the
+2. **A step `SENT`** (typed, not yet classified: this includes an action prompt the submit check saw no evidence of
+   a turn for, SWI-28, contracts/worker-step.md §3) is a model turn if `last_submit_at > step_sent_at`, **or** the
    main session reported needs-input after the send, `last_needs_input_at > step_sent_at` (FR-217). That field is
-   session-filtered (R13); status and `last_event_at` are not, so a nested `claude -p` can't satisfy the rule. It is
+   session-filtered (R13); status and `last_event_at` are not, so a nested `claude -p` can't satisfy the rule. For
+   a step that isn't a built-in, `last_turn_end_at > step_sent_at` is one too, its start report lost (SWI-28). It is
    then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
 3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`

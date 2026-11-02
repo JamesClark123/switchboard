@@ -32,9 +32,9 @@ type StepTap interface {
 // StepScreen is the agent screen as the step path reads it (terminal.Registry):
 // it never starts an agent.
 type StepScreen interface {
-	// Screen returns the sandbox's screen, whether it is stale, and ok = false
-	// when there is none. It creates nothing.
-	Screen(sandboxID string) (lines []termview.Line, stale, ok bool)
+	// Screen returns the sandbox's screen, its Position (read with the rows),
+	// whether it is stale, and ok = false when there is none. It creates nothing.
+	Screen(sandboxID string) (lines []termview.Line, pos termview.Position, stale, ok bool)
 	// EnsureScreen gives a live agent a broadcaster with a screen, creating the
 	// broadcaster only over the live session (BroadcasterExisting).
 	EnsureScreen(sandboxID string) error
@@ -75,8 +75,10 @@ var defaultStepTiming = stepTiming{
 // termScreen adapts the terminal registry to StepScreen.
 type termScreen struct{ t *terminal.Registry }
 
-func (a termScreen) Screen(id string) ([]termview.Line, bool, bool) { return a.t.Screen(id) }
-func (a termScreen) RequestRepaint(id string) bool                  { return a.t.RequestRepaint(id) }
+func (a termScreen) Screen(id string) ([]termview.Line, termview.Position, bool, bool) {
+	return a.t.ScreenAt(id)
+}
+func (a termScreen) RequestRepaint(id string) bool { return a.t.RequestRepaint(id) }
 func (a termScreen) EnsureScreen(id string) error {
 	if _, err := a.t.BroadcasterExisting(id); err != nil {
 		return err
@@ -179,12 +181,33 @@ func builtinText(step *pb.RunStep) (string, error) {
 	return "", fmt.Errorf("%w: unknown step kind %s", ErrInvalid, step.GetKind())
 }
 
+// screenResyncing is the note of a step left unknown by a stale screen.
+const screenResyncing = "screen resyncing"
+
 // readSpec is the expected read-back of a built-in.
 type readSpec struct {
 	kind   pb.StepKind
 	text   string // what was typed (the echo to look for)
 	expect string // MODEL: family ("opus"); EFFORT: level
-	before int    // echoes of text on screen before typing
+	// echoFrom and replyFrom are the first rows below the last echo of text and
+	// the last assistant reply on screen before typing, as positions that
+	// survive scrolling (below). Zero: any echo or reply counts. They only hold
+	// while the screen's redraws stay at redraws.
+	echoFrom, replyFrom uint64
+	redraws             uint64
+}
+
+// rowBelow is the position of the row under row at, or 0 for no row (-1).
+func rowBelow(pos termview.Position, at int) uint64 {
+	if at < 0 {
+		return 0
+	}
+	return pos.Scrolled + uint64(at) + 1
+}
+
+// atOrBelow reports whether row at (-1: none) is at position from or lower.
+func atOrBelow(pos termview.Position, at int, from uint64) bool {
+	return at >= 0 && pos.Scrolled+uint64(at) >= from
 }
 
 // stepCheck is one step's submit check.
@@ -213,7 +236,7 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 	// 1. The screen, read without creating anything: only a live agent's
 	// broadcaster is ensured (and given a screen).
 	live, ready := s.agents.Live(id), s.agents.Ready(id)
-	lines, stale, screenOK := s.readScreen(id, live)
+	lines, pos, stale, screenOK := s.readScreen(id, live)
 
 	var (
 		name, priorSess string
@@ -307,7 +330,15 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 	}
 	tap, cancel := s.openTap(id)
 	defer cancel()
-	read := readSpec{kind: kind, text: text, expect: strings.ToLower(strings.TrimSpace(req.GetStep().GetExpect())), before: agent.Echoes(lines, text)}
+	// The positions come from a read just before typing where it can be had, not
+	// the guard's: a reply drawn since then belongs to an earlier turn.
+	if l, p, st, ok := s.stepScreen().Screen(id); ok && !st {
+		lines, pos = l, p
+	}
+	read := readSpec{
+		kind: kind, text: text, expect: strings.ToLower(strings.TrimSpace(req.GetStep().GetExpect())),
+		echoFrom: rowBelow(pos, agent.LastEcho(lines, text)), replyFrom: rowBelow(pos, agent.LastReply(lines)), redraws: pos.Redraws,
+	}
 	sentAt, err := s.stepTyper().TypeStep(id, sb.GetAgent().GetSpec(), text)
 	if err != nil {
 		s.rollbackStep(id, req.GetRunId(), req.GetStepIndex(), recordedFirst, prev)
@@ -321,10 +352,10 @@ func (s *Service) DeliverStep(ctx context.Context, req *pb.DeliverWorkerStepRequ
 // broadcaster and a screen if it has none (a screen just enabled reads as no
 // box until the agent repaints, and the orchestrator retries); nothing is
 // created for a sandbox with no live agent.
-func (s *Service) readScreen(id string, live bool) ([]termview.Line, bool, bool) {
+func (s *Service) readScreen(id string, live bool) ([]termview.Line, termview.Position, bool, bool) {
 	scr := s.stepScreen()
 	if scr == nil {
-		return nil, false, false
+		return nil, termview.Position{}, false, false
 	}
 	if live {
 		if err := scr.EnsureScreen(id); err != nil {
@@ -477,10 +508,13 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 			return r
 		}
 		now := clock.Now()
-		var lines []termview.Line
+		var (
+			lines []termview.Line
+			pos   termview.Position
+		)
 		stale, ok := false, false
 		if scr != nil {
-			lines, stale, ok = scr.Screen(c.id)
+			lines, pos, stale, ok = scr.Screen(c.id)
 		}
 		if stale {
 			scr.RequestRepaint(c.id)
@@ -501,7 +535,7 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 			// Unknown, never a halt on its own (research R2).
 			if extension <= 0 {
 				r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
-				r.Note = "screen resyncing"
+				r.Note = screenResyncing
 				return r
 			}
 			deadline, extension = now.Add(extension), 0
@@ -522,7 +556,19 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 				presses++
 				deadline = now.Add(t.window)
 			case present && ready && strings.TrimSpace(text) == "" && s.agentIdle(c.id):
-				if note, passed := s.readBack(c, lines, clearEv, extension); !passed {
+				if c.read.kind == pb.StepKind_STEP_KIND_ACTION_PROMPT && !s.actionTurnSeen(c, lines, pos) {
+					// The turn hook may be lost: typed, not classified, and the
+					// orchestrator resolves it by evidence (research R8).
+					r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
+					r.Note = "no turn evidence"
+					return r
+				}
+				if note, passed := s.readBack(c, lines, pos, clearEv, extension); !passed {
+					if note == screenResyncing {
+						r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
+						r.Note = note
+						return r
+					}
 					return notAccepted(note, c.recorded)
 				}
 				return resp(pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL)
@@ -545,26 +591,45 @@ func (s *Service) agentIdle(id string) bool {
 	return err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE
 }
 
+// actionTurnSeen reports positive evidence that the action prompt started a turn
+// whose hooks never arrived (contracts/worker-step.md §3): a turn end recorded
+// since the Enter, or an assistant reply on screen added since it was typed
+// (below the prompt's echo, which a long prompt may have scrolled off), unless a
+// redraw voids that position. An empty box alone never finishes the action prompt.
+func (s *Service) actionTurnSeen(c stepCheck, lines []termview.Line, pos termview.Position) bool {
+	if pos.Redraws == c.read.redraws && atOrBelow(pos, agent.LastReply(lines), c.read.replyFrom) {
+		return true
+	}
+	sb, err := s.reg.Get(c.id)
+	return err == nil && sb.GetAgent().GetLastTurnEndAt() != nil && sb.GetAgent().GetLastTurnEndAt().AsTime().After(c.sentAt)
+}
+
 // readBack checks a step that ended agent-local (contracts/worker-step.md §3):
 // Model and Effort by the confirmation under an echo of the command added
-// since it was typed, Clear by a new session; a custom step or the action
-// prompt needs nothing more. note is what was seen when it fails. budget is
-// what is left of the check's one extension, which Clear's screen poll shares.
-func (s *Service) readBack(c stepCheck, lines []termview.Line, clearEv *agent.HookEvent, budget time.Duration) (note string, ok bool) {
+// since it was typed, Clear by a new session; a custom step needs nothing more,
+// and the action prompt has shown its turn (actionTurnSeen). note is what was
+// seen when it fails. budget is what is left of the check's one extension, which
+// Clear's screen poll shares.
+func (s *Service) readBack(c stepCheck, lines []termview.Line, pos termview.Position, clearEv *agent.HookEvent, budget time.Duration) (note string, ok bool) {
 	switch c.read.kind {
 	case pb.StepKind_STEP_KIND_MODEL, pb.StepKind_STEP_KIND_EFFORT:
-		return confirmed(c.read, lines)
+		read := c.read
+		if pos.Redraws != read.redraws {
+			read.echoFrom = 0 // the send's echo can't be told any more: as check_only
+		}
+		return confirmed(read, lines, pos)
 	case pb.StepKind_STEP_KIND_CLEAR:
-		if clearEv == nil || !s.clearCorroborated(c, *clearEv, budget) {
+		if clearEv == nil {
 			return "no new session after /clear", false
 		}
+		return s.clearCorroborated(c, *clearEv, budget)
 	}
 	return "", true
 }
 
 // confirmed reads a Model or Effort confirmation under a new echo.
-func confirmed(r readSpec, lines []termview.Line) (string, bool) {
-	if agent.Echoes(lines, r.text) <= r.before {
+func confirmed(r readSpec, lines []termview.Line, pos termview.Position) (string, bool) {
+	if !atOrBelow(pos, agent.LastEcho(lines, r.text), r.echoFrom) {
 		return "no confirmation", false
 	}
 	line, ok := agent.ConfirmationAfter(lines, r.text)
@@ -589,21 +654,25 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 // name a session other than the one recorded before typing (c.priorSessID),
 // and the daemon's own screen must show the post-clear state (PostClear),
 // polled for up to clearSettle, within what is left of the check's extension.
-func (s *Service) clearCorroborated(c stepCheck, ev agent.HookEvent, budget time.Duration) bool {
+// A screen still stale then is unknown, never a failed read-back (research R2).
+func (s *Service) clearCorroborated(c stepCheck, ev agent.HookEvent, budget time.Duration) (note string, ok bool) {
+	const noSession = "no new session after /clear"
 	scr := s.stepScreen()
 	if ev.SessionID == "" || ev.SessionID == c.priorSessID || scr == nil {
-		return false
+		return noSession, false
 	}
 	until := s.clock.Now().Add(max(min(clearSettle, budget), 0))
 	for {
-		switch lines, stale, ok := scr.Screen(c.id); {
+		note = noSession
+		switch lines, _, stale, ok := scr.Screen(c.id); {
 		case stale:
 			scr.RequestRepaint(c.id)
+			note = screenResyncing
 		case ok && agent.PostClear(lines):
-			return true
+			return "", true
 		}
 		if !s.clock.Now().Before(until) {
-			return false
+			return note, false
 		}
 		<-s.clock.After(s.timing.poll)
 	}
@@ -643,31 +712,31 @@ func (s *Service) checkOnly(_ context.Context, req *pb.DeliverWorkerStepRequest,
 		}
 		// The recorded evidence came from the main agent's hook; the
 		// daemon's own screen corroborates it (research R13).
-		lines, stale, ok := s.readScreen(id, true)
+		lines, _, stale, ok := s.readScreen(id, true)
 		if stale {
-			lines, stale, ok = s.awaitFresh(id)
+			lines, _, stale, ok = s.awaitFresh(id)
 		}
 		switch {
 		case stale:
-			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: "screen resyncing"}, nil
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: screenResyncing}, nil
 		case !ok || !agent.PostClear(lines):
 			return notAccepted("no new session after /clear", time.Time{}), nil
 		}
 		return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}, nil
 	}
-	lines, stale, ok := s.readScreen(id, true)
+	lines, pos, stale, ok := s.readScreen(id, true)
 	if stale {
-		lines, stale, ok = s.awaitFresh(id)
+		lines, pos, stale, ok = s.awaitFresh(id)
 	}
 	if stale {
-		return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: "screen resyncing"}, nil
+		return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: screenResyncing}, nil
 	}
 	if !ok {
 		return notAccepted("no confirmation", time.Time{}), nil
 	}
 	// The send's echo cannot be told from an older one here: any echo counts.
 	read := readSpec{kind: kind, text: text, expect: strings.ToLower(strings.TrimSpace(req.GetStep().GetExpect()))}
-	if note, passed := confirmed(read, lines); !passed {
+	if note, passed := confirmed(read, lines, pos); !passed {
 		return notAccepted(note, time.Time{}), nil
 	}
 	return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}, nil
@@ -675,15 +744,15 @@ func (s *Service) checkOnly(_ context.Context, req *pb.DeliverWorkerStepRequest,
 
 // awaitFresh requests the lazy repaint of a stale screen and polls for a fresh
 // one for up to the check's extension.
-func (s *Service) awaitFresh(id string) ([]termview.Line, bool, bool) {
+func (s *Service) awaitFresh(id string) ([]termview.Line, termview.Position, bool, bool) {
 	scr := s.stepScreen()
 	scr.RequestRepaint(id)
 	until := s.clock.Now().Add(s.timing.extension)
 	for {
 		<-s.clock.After(s.timing.poll)
-		lines, stale, ok := scr.Screen(id)
+		lines, pos, stale, ok := scr.Screen(id)
 		if !stale || !s.clock.Now().Before(until) {
-			return lines, stale, ok
+			return lines, pos, stale, ok
 		}
 	}
 }

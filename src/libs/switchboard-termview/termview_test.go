@@ -782,3 +782,52 @@ func TestResetForgetsAHalfReadSequence(t *testing.T) {
 		t.Fatalf("row after reset = %q, want %q", got, "fresh")
 	}
 }
+
+func TestScrolledLinesCountsRowsOffTheTop(t *testing.T) {
+	for name, s := range map[string]*Screen{"scrollback": New(10, 3), "no scrollback": New(10, 3, WithoutScrollback())} {
+		_, _ = s.Write([]byte("a\r\nb\r\nc"))
+		if n := s.ScrolledLines(); n != 0 {
+			t.Fatalf("%s: scrolled = %d before the screen filled", name, n)
+		}
+		_, _ = s.Write([]byte("\r\nd\r\ne"))
+		lines, pos := s.LinesAt()
+		if pos.Scrolled != 2 || s.ScrolledLines() != 2 || !strings.HasPrefix(lines[0].Text, "c") {
+			t.Fatalf("%s: scrolled = %d, top row %q; want 2 and c", name, pos.Scrolled, lines[0].Text)
+		}
+		// It never goes back.
+		s.Reset()
+		if n := s.ScrolledLines(); n != 2 {
+			t.Fatalf("%s: scrolled after a reset = %d, want 2", name, n)
+		}
+	}
+}
+
+func TestPositionCountsRedraws(t *testing.T) {
+	s := New(10, 3, WithoutScrollback())
+	redraws := func() uint64 { _, p := s.LinesAt(); return p.Redraws }
+	for _, c := range []struct {
+		name string
+		do   func()
+		want uint64
+	}{
+		{"scrolling", func() { _, _ = s.Write([]byte("a\r\nb\r\nc\r\nd")) }, 0},
+		{"erase below the cursor", func() { _, _ = s.Write([]byte("\x1b[2;1H\x1b[J")) }, 0},
+		{"erase line", func() { _, _ = s.Write([]byte("\x1b[2K")) }, 0},
+		{"same-size resize", func() { s.Resize(10, 3) }, 0},
+		{"erase screen", func() { _, _ = s.Write([]byte("\x1b[2J")) }, 1},
+		{"erase scrollback", func() { _, _ = s.Write([]byte("\x1b[3J")) }, 2},
+		{"home then erase", func() { _, _ = s.Write([]byte("\x1b[H\x1b[J")) }, 3},
+		{"resize", func() { s.Resize(8, 3) }, 4},
+		{"reset", s.Reset, 5},
+		{"erase above the cursor", func() { _, _ = s.Write([]byte("\x1b[1J")) }, 6},
+		{"insert line", func() { _, _ = s.Write([]byte("\x1b[L")) }, 7},
+		{"delete line", func() { _, _ = s.Write([]byte("\x1b[M")) }, 8},
+		{"reverse index at the top", func() { _, _ = s.Write([]byte("\x1b[H\x1bM")) }, 9},
+		{"full reset", func() { _, _ = s.Write([]byte("\x1bc")) }, 10},
+	} {
+		c.do()
+		if got := redraws(); got != c.want {
+			t.Fatalf("after %s: redraws = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

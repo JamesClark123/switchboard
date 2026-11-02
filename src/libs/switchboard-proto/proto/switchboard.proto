@@ -649,7 +649,16 @@ enum StepResolution {
   STEP_RESOLUTION_UNSPECIFIED = 0;
   STEP_RESOLUTION_RETRY       = 1;
   STEP_RESOLUTION_SKIP        = 2;       // refused for CLEAR and ACTION_PROMPT
-  STEP_RESOLUTION_FAIL        = 3;
+  STEP_RESOLUTION_FAIL        = 3;       // also stops a held Clear's retries (SWI-28)
+}
+
+// How a step of a run ended (SWI-28), for the prompt overlay.
+enum StepResultOutcome {
+  STEP_RESULT_OUTCOME_UNSPECIFIED = 0;
+  STEP_RESULT_OUTCOME_DONE        = 1;
+  STEP_RESULT_OUTCOME_SKIPPED     = 2;   // the developer skipped it
+  STEP_RESULT_OUTCOME_DROPPED     = 3;   // never sent: a hold, a failure or a free dropped it
+  STEP_RESULT_OUTCOME_FAILED      = 4;
 }
 
 // ---------- Core messages ----------
@@ -1731,6 +1740,14 @@ message RunStep {
   string expect = 4;                     // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
 }
 
+// A finished step of a run (SWI-28): one per index, for the steps the run has
+// left. A held Clear, which R may retry, has none.
+message StepResult {
+  int32 index = 1;                       // into Run.steps
+  StepResultOutcome outcome = 2;
+  StepObserved kind_seen = 3;            // Run.step_kind_seen when it ended
+}
+
 // One call of an action (FR-125). `prompt` is the composed prompt, frozen at
 // call time; delivery wraps it in the documented run frame (R12), which is not
 // recorded. `position` is derived (1-based) for QUEUED runs.
@@ -1774,6 +1791,7 @@ message Run {
   // --- SWI-18 --- (20..30 are SWI-17's)
   KeptLaneSetting kept_lanes = 31;       // set when the run's action was deleted (FR-314b)
   string waiting_reason = 32;            // derived on read, never stored (FR-315)
+  repeated StepResult step_results = 33; // SWI-28; empty on an older daemon's run
 }
 
 // OrchestratorLinkFrame is one message on the call relay (research R6). One

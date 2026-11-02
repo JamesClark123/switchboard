@@ -128,6 +128,16 @@ func (r *Registry) Screen(sandboxID string) (lines []termview.Line, stale, ok bo
 	return lines, stale, lines != nil
 }
 
+// ScreenAt is Screen with the rows' termview Position (Broadcaster.ScreenAt).
+func (r *Registry) ScreenAt(sandboxID string) (lines []termview.Line, pos termview.Position, stale, ok bool) {
+	b := r.live(sandboxID)
+	if b == nil {
+		return nil, termview.Position{}, false, false
+	}
+	lines, pos, stale = b.ScreenAt()
+	return lines, pos, stale, lines != nil
+}
+
 // EnableScreen gives the sandbox's open broadcaster an agent screen (see
 // Broadcaster.EnableScreen), reporting whether it has one now. It never
 // creates a broadcaster.

@@ -88,6 +88,7 @@ const textLeft = "please summarise the open pull requests" // text-left-in-box's
 type fakeScreen struct {
 	mu        sync.Mutex
 	lines     []termview.Line
+	pos       termview.Position
 	stale     bool
 	ok        bool
 	ensured   int
@@ -97,10 +98,10 @@ type fakeScreen struct {
 	freshAfter int
 }
 
-func (f *fakeScreen) Screen(string) ([]termview.Line, bool, bool) {
+func (f *fakeScreen) Screen(string) ([]termview.Line, termview.Position, bool, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.lines, f.stale, f.ok
+	return f.lines, f.pos, f.stale, f.ok
 }
 func (f *fakeScreen) EnsureScreen(string) error {
 	f.mu.Lock()
@@ -1059,5 +1060,146 @@ func TestRemoteDeliverWorkerStepMapsCodes(t *testing.T) {
 	}
 	if resp, err := Remote(stepClient{}).DeliverWorkerStep(bg, &pb.DeliverWorkerStepRequest{}); err != nil || resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
 		t.Errorf("ok = %+v / %v", resp, err)
+	}
+}
+
+// SWI-28 D1: on a full screen the echo being typed pushes an older identical one
+// off the top. The echoes' count stays the same; the position tells them apart.
+func TestStepReadBackOldEchoScrolledOff(t *testing.T) {
+	empty := blankBox(t)
+	echo := []string{"❯ /model opus", "  ⎿  Set model to Opus 5.5"}
+	before := withRows(empty, echo...) // the older echo, on the top row
+	h := newStepHarness(t)
+	h.scr.set(before, false, true)
+	h.typer.onType = func(string) {
+		h.scr.mu.Lock()
+		h.scr.lines, h.scr.pos.Scrolled = withRows(empty, "older output", "", echo[0], echo[1]), 7
+		h.scr.mu.Unlock()
+	}
+	resp := deliverStep(t, h, stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1))
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("new echo with the old one scrolled off = %+v", resp)
+	}
+	// The older echo only scrolled up: the same position, no new echo.
+	h = newStepHarness(t)
+	h.scr.set(withRows(empty, "older output", "", echo[0], echo[1]), false, true)
+	h.typer.onType = func(string) {
+		h.scr.mu.Lock()
+		h.scr.lines, h.scr.pos.Scrolled = before, 2
+		h.scr.mu.Unlock()
+	}
+	resp = deliverStep(t, h, stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1))
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED || resp.GetNote() != "no confirmation" {
+		t.Errorf("older echo scrolled up = %+v", resp)
+	}
+}
+
+// SWI-28 D2: an empty box alone never finishes the action prompt.
+func TestStepActionPromptNeedsATurn(t *testing.T) {
+	action := func(idx int32) *pb.DeliverWorkerStepRequest {
+		return stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", idx)
+	}
+	// No turn hook, an idle agent, no reply on screen.
+	h := newStepHarness(t)
+	resp := deliverStep(t, h, action(1))
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED || resp.GetNote() != "no turn evidence" || resp.GetSentAt() == nil {
+		t.Errorf("no evidence = %+v", resp)
+	}
+	// A reply from before typing is no evidence, wherever scrolling has moved it.
+	reply := withRows(blankBox(t), "❯ earlier", "⏺ an earlier reply")
+	h = newStepHarness(t)
+	h.scr.set(reply, false, true)
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED {
+		t.Errorf("old reply = %+v", resp)
+	}
+	// A reply added since typing is, its hooks lost.
+	h = newStepHarness(t)
+	h.scr.set(reply, false, true)
+	h.typer.onType = func(string) {
+		h.scr.set(withRows(blankBox(t), "⏺ an earlier reply", "❯ [switchboard orchestrator", "⏺ the reply"), false, true)
+	}
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("new reply = %+v", resp)
+	}
+	// So is a turn end recorded since the Enter; one from before it is not.
+	h = newStepHarness(t)
+	h.typer.onType = func(string) {
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+	}
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("turn end after the send = %+v", resp)
+	}
+	h = newStepHarness(t)
+	h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(-time.Minute)) })
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED {
+		t.Errorf("turn end before the send = %+v", resp)
+	}
+	// A custom step still finishes on the empty box (a local command).
+	h = newStepHarness(t)
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("custom = %+v", resp)
+	}
+}
+
+// SWI-28: a redraw during the check voids the positions. A built-in then reads
+// the last echo, as check_only does, so a refusal stays a refusal; the action
+// prompt can't take a reply on screen for its own.
+func TestStepRedrawnScreen(t *testing.T) {
+	empty := blankBox(t)
+	redrawn := termview.Position{Scrolled: 80, Redraws: 1}
+	model := func() *pb.DeliverWorkerStepRequest { return stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1) }
+	action := func() *pb.DeliverWorkerStepRequest {
+		return stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", 1)
+	}
+	for _, c := range []struct {
+		name    string
+		req     *pb.DeliverWorkerStepRequest
+		after   []termview.Line
+		outcome pb.StepOutcome
+		note    string
+	}{
+		{"model set", model(), withRows(empty, "❯ /model opus", "  ⎿  Set model to Opus 5.5"), pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL, ""},
+		{"model refused", model(), withRows(empty, "❯ /model opus", "  ⎿  Model 'opus' not found"), pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "Model 'opus' not found"},
+		{"model with no echo", model(), empty, pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "no confirmation"},
+		{"action with an old reply reprinted", action(), withRows(empty, "⏺ an old reply"), pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, "no turn evidence"},
+	} {
+		h := newStepHarness(t)
+		h.scr.set(withRows(empty, "⏺ an old reply"), false, true)
+		h.typer.onType = func(string) {
+			h.scr.mu.Lock()
+			h.scr.lines, h.scr.pos = c.after, redrawn
+			h.scr.mu.Unlock()
+		}
+		if resp := deliverStep(t, h, c.req); resp.GetOutcome() != c.outcome || resp.GetNote() != c.note {
+			t.Errorf("%s = %+v, want %v %q", c.name, resp, c.outcome, c.note)
+		}
+	}
+	// A turn end recorded since the Enter still counts for the action prompt.
+	h := newStepHarness(t)
+	h.typer.onType = func(string) {
+		h.scr.mu.Lock()
+		h.scr.pos = redrawn
+		h.scr.mu.Unlock()
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+	}
+	if resp := deliverStep(t, h, action()); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("action with a turn end = %+v", resp)
+	}
+}
+
+// A clear SessionStart with the screen still stale is unknown, not a failed
+// read-back (research R2).
+func TestStepClearOnAStaleScreenIsUnconfirmed(t *testing.T) {
+	h := newStepHarness(t)
+	clear := stepReq(pb.StepKind_STEP_KIND_CLEAR, "", "", 1)
+	h.scr.set(fixture(t, "empty-after-command"), false, true)
+	note, ok := h.e.svc.clearCorroborated(stepCheck{id: clear.GetSandboxId()}, agent.HookEvent{SessionID: "new"}, 0)
+	if ok || note == screenResyncing {
+		t.Fatalf("fresh screen with the box and no post-clear = %q, %v", note, ok)
+	}
+	h.scr.set(h.scr.lines, true, true)
+	note, ok = h.e.svc.clearCorroborated(stepCheck{id: clear.GetSandboxId()}, agent.HookEvent{SessionID: "new"}, 0)
+	if ok || note != screenResyncing {
+		t.Errorf("stale screen = %q, %v", note, ok)
 	}
 }

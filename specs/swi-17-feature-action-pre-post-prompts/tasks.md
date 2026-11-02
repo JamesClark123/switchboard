@@ -50,19 +50,19 @@ conflict; research R14 lists the same items as known limitations.
 - **`CheckOrphansAtStart` stays synchronous** before the gRPC server serves (at most 10 s on a slow runtime): async
   classification could retire a fresh agent's token on a stale listing.
 - **Model/Effort confirmation counts echoes**, so an identical echo scrolling off a full screen can halt a retried
-  setup step (R/S/X recover); termview exposes no scroll offset.
+  setup step (R/S/X recover); termview exposes no scroll offset. Done in SWI-28.
 - **Main-agent bind is the first tokened SessionStart**; a lost first hook can bind a nested `claude -p` (Replace
   recovers). Nested events no longer drive status once a main PID is bound.
 - **The hook token is expanded into curl's argv** in the hook command (it is already in `/proc/<pid>/environ`, R13).
 - **Hooks still forward their full body** (reading stops once the wanted fields are seen); `sampleIdle` is not
   rate-limited.
-- **ACTION_PROMPT may still be AGENT_LOCAL** when its turn hook is lost, as contracts/worker-step.md §3 says.
-- **A resize doesn't mark the daemon screen stale.**
+- **ACTION_PROMPT may still be AGENT_LOCAL** when its turn hook is lost, as contracts/worker-step.md §3 says. Done in SWI-28.
+- **A resize doesn't mark the daemon screen stale.** Done in SWI-28.
 - **A claimed queued run stays with its worker** while that worker refuses for a non-terminal reason (T019/R6).
 - **No in-memory sandbox→run index**, and the action step's text still duplicates `Run.Prompt`.
 - **Old daemons are shown the default sequence** in the TUI (no capability signal).
-- **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them.
-- **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step).
+- **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them. Done in SWI-28.
+- **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step). Done in SWI-28.
 
 **Also deferred from PR #25's re-review 5692052431 (run-746, addressed in run-749; follow-up SWI-19):**
 

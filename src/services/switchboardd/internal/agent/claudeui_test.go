@@ -146,11 +146,29 @@ func TestConfirmationAfterJoinsWrapsAndTakesTheLastEcho(t *testing.T) {
 	if line, _ := ConfirmationAfter(screen, "/model opus"); line != "Set model to Opus 5.5" {
 		t.Fatalf("ConfirmationAfter = %q, want the last echo's line", line)
 	}
-	if n := Echoes(screen, "/model opus"); n != 2 {
-		t.Fatalf("Echoes = %d, want 2", n)
+	if at := LastEcho(screen, "/model opus"); at != 3 {
+		t.Fatalf("LastEcho = %d, want the second echo's row", at)
 	}
-	if n := Echoes(loadFixture(t, "model-set-opus"), "/model opus"); n != 1 {
-		t.Fatalf("Echoes on model-set-opus = %d, want 1", n)
+	if at := LastEcho(screen, "/model haiku"); at != -1 {
+		t.Fatalf("LastEcho of no echo = %d, want -1", at)
+	}
+}
+
+func TestLastReply(t *testing.T) {
+	if at := LastReply(rows("❯ hi", "⏺ first", "", "⏺ second", "  ⎿  done", "")); at != 3 {
+		t.Fatalf("LastReply = %d, want the last reply's row", at)
+	}
+	if at := LastReply(rows("❯ hi", "● on linux", "")); at != 1 {
+		t.Fatalf("LastReply of the non-macOS glyph = %d, want its row", at)
+	}
+	// A row below the input box is no reply.
+	boxed := append(loadFixture(t, "empty-after-command"), rows("● a status row")...)
+	if at := LastReply(boxed); at != -1 {
+		t.Fatalf("LastReply below the box = %d, want -1", at)
+	}
+	// A prompt quoting a reply is indented under its echo: not a reply.
+	if at := LastReply(rows("❯ quoting:", "  ⏺ not a reply")); at != -1 {
+		t.Fatalf("LastReply of a quoted glyph = %d, want -1", at)
 	}
 }
 

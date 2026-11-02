@@ -2,6 +2,7 @@ package agent
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -210,17 +211,17 @@ func isEcho(s string) bool { return strings.HasPrefix(s, promptGlyph+" ") }
 // isResult reports whether a row is a command's result line (`  ⎿  …`).
 func isResult(s string) bool { return strings.HasPrefix(strings.TrimSpace(s), resultGlyph) }
 
-// Echoes counts the transcript's echoes of stepText (`❯ <stepText>` rows). The
-// submit check counts them before typing, so that only an echo added after the
-// step was sent is read back (contracts/worker-step.md §3).
-func Echoes(lines []termview.Line, stepText string) int {
-	n := 0
-	for _, l := range lines {
-		if isEchoOf(l.Text, stepText) {
-			n++
+// LastEcho is the row of the transcript's last echo of stepText (`❯ <stepText>`),
+// -1 when there is none. The submit check marks its position before typing, so
+// that only an echo added after the step was sent is read back, even once older
+// identical echoes have scrolled off (contracts/worker-step.md §3).
+func LastEcho(lines []termview.Line, stepText string) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isEchoOf(lines[i].Text, stepText) {
+			return i
 		}
 	}
-	return n
+	return -1
 }
 
 func isEchoOf(row, stepText string) bool {
@@ -232,13 +233,7 @@ func isEchoOf(row, stepText string) bool {
 // wrapped rows joined. ok is false when there is no such echo, or no result row
 // directly under it.
 func ConfirmationAfter(lines []termview.Line, stepText string) (string, bool) {
-	at := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if isEchoOf(lines[i].Text, stepText) {
-			at = i
-			break
-		}
-	}
+	at := LastEcho(lines, stepText)
 	if at < 0 || at+1 >= len(lines) || !isResult(lines[at+1].Text) {
 		return "", false
 	}
@@ -280,8 +275,29 @@ func EffortConfirmed(line, level string) bool {
 	return line == want || strings.HasPrefix(line, want+" ")
 }
 
-// assistantGlyph starts an assistant message or tool call in the transcript.
-const assistantGlyph = "⏺"
+// assistantGlyphs start an assistant message or tool call in the transcript, at
+// column 0: the UI draws `⏺` on macOS and `●` elsewhere. A right-aligned `●` is
+// the effort indicator.
+var assistantGlyphs = []string{"⏺", "●"}
+
+func isReply(row string) bool {
+	return slices.ContainsFunc(assistantGlyphs, func(g string) bool { return strings.HasPrefix(row, g) })
+}
+
+// LastReply is the row of the transcript's last assistant message or tool call,
+// -1 when there is none. The glyph must start the row (an echoed prompt quoting
+// one is indented under its `❯`), above the input box when it is on screen.
+func LastReply(lines []termview.Line) int {
+	if top, _, ok := boxBounds(lines); ok {
+		lines = lines[:top]
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isReply(lines[i].Text) {
+			return i
+		}
+	}
+	return -1
+}
 
 // PostClear reports whether the screen shows a session just cleared (research
 // R13, fixture clear-banner): the input box empty and ready, and nothing of a
@@ -296,7 +312,7 @@ func PostClear(lines []termview.Line) bool {
 	top, _, _ := boxBounds(lines)
 	for _, l := range lines[:top] {
 		switch s := l.Text; {
-		case isEcho(s) && !isEchoOf(s, "/clear"), isResult(s), strings.HasPrefix(strings.TrimSpace(s), assistantGlyph):
+		case isEcho(s) && !isEchoOf(s, "/clear"), isResult(s), isReply(s), strings.HasPrefix(strings.TrimSpace(s), "⏺"):
 			return false
 		}
 	}
