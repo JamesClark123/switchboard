@@ -1174,14 +1174,18 @@ one exclusive lock, operations that don't conflict refused each other: a develop
     readiness check (`lockedListenState`; refused reads as *not listening*, and the loop tries again), the
     failed-start kill (`stopProc`), the failed start's loopback diagnosis and `sbx ports --publish`, held until the
     handle records the published port so the drain can always unpublish it. The last three **wait** for a refused
-    lock (`awaitRuntime`, polling, holding nothing) with the instance still STARTING: the operation's drain or
+    lock (`awaitRuntime`, polling, holding nothing, and giving up if the start was cancelled meanwhile) with the
+    instance still STARTING: the operation's drain or
     teardown cancels the start and owns its group (a Stop, Refresh or Destroy drain; AddKit's CREATING teardown),
     or the operation ends without touching it and the start carries on. Each `sbx` call made under the read lock is
     bounded by `runtimeHoldTimeout` (10 s), so a wedged one can't hold a waiting stop for long;
   - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
     `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
-    load (`worker.gateway.load`; a refused load is retried in the background, `Service.loadWhen`, re-reading the
-    record each time and giving up if the operation left the sandbox not RUNNING, whose next bring-up loads it).
+    load (`worker.gateway.load`). A load refused at attach becomes a bring-up (`GoBringUp`), so the agent start
+    is held until the load, as after a Restart, and warm-started after it. A bring-up retries a refused load
+    (`Service.loadWhen`, up to 30 min, each attempt bounded), re-reading the record each time; if the operation
+    left the sandbox not RUNNING it neither loads nor warm-starts (`errNotRunning`): both would start it again, so
+    its next bring-up does them.
 
   A waiting writer blocks new readers (`sync.RWMutex`), so once a lifecycle operation asks for the lock no new read
   holder starts, and it waits only for the ones in flight.

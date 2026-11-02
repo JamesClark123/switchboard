@@ -189,8 +189,9 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 	running := live.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
 	if err := s.gw.register(ctx, sb.GetId(), sandboxRef(live), running, token); errors.Is(err, errLoadBusy) {
 		// Registered; a lifecycle operation holds the sandbox, so the load
-		// waits it out (SWI-26).
-		go s.loadWhenFree(sb.GetId())
+		// waits it out as a bring-up (SWI-26): the agent's start is held until
+		// it, and warm-started after it.
+		s.GoBringUp(sb)
 	} else if err != nil {
 		// The controller stands; the registration is retried at the next bring-up.
 		s.logf("[worker] attach %s: gateway registration failed (retried at bring-up): %v", sb.GetId(), err)
@@ -434,56 +435,60 @@ func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
 	}
 	s.markBringUp(sb.GetId(), 1)
 	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		err := s.loadWhen(ctx, sb)
-		cancel()
+		cur, err := s.loadWhen(sb)
 		s.markBringUp(sb.GetId(), -1)
+		if errors.Is(err, errNotRunning) {
+			return // a lifecycle operation stopped it meanwhile: no agent start
+		}
 		if err != nil {
 			s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
 		}
 		// After the gateway load, so the agent starts with the orchestrator's tools.
-		s.WarmStart(sb)
+		s.WarmStart(cur)
 	}
 }
 
-// loadWhenFree is a gateway load refused busy at attach, retried in the
-// background (loadWhen).
-func (s *Service) loadWhenFree(sandboxID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	sb, err := s.mgr.Get(sandboxID)
-	if err == nil {
-		err = s.loadWhen(ctx, sb)
-	}
-	if err != nil {
-		s.logf("[worker] gateway load %s: %v", sandboxID, err)
-	}
-}
+// errNotRunning ends a bring-up whose sandbox a lifecycle operation left not
+// RUNNING while its load waited: the load and the agent start would both
+// start it again (`sbx mcp load`, `sbx exec`), so its next bring-up does them.
+var errNotRunning = errors.New("sandbox is no longer running")
 
 // loadWhen loads the sandbox's gateway registration, retrying while a
-// lifecycle operation holds its runtime lock (errLoadBusy) until ctx ends.
-// Each retry re-reads the record: a sandbox that operation left not RUNNING
-// is left to its next bring-up, since the load would start it again (SWI-26).
-func (s *Service) loadWhen(ctx context.Context, sb *pb.Sandbox) error {
+// lifecycle operation holds its runtime lock (errLoadBusy), for up to
+// loadWaitLimit; each attempt is bounded by loadTimeout. Each retry re-reads
+// the record (errNotRunning once it is not RUNNING). It returns the record the
+// load ran against (SWI-26).
+func (s *Service) loadWhen(sb *pb.Sandbox) (*pb.Sandbox, error) {
+	deadline := time.Now().Add(loadWaitLimit)
 	for {
-		if err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb)); !errors.Is(err, errLoadBusy) {
-			return err
+		ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
+		err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
+		cancel()
+		if !errors.Is(err, errLoadBusy) {
+			return sb, err
 		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("load gateway server %s: %w", ServerName(sb.GetId()), errLoadBusy)
-		case <-time.After(loadRetryStep):
+		if time.Now().After(deadline) {
+			return sb, fmt.Errorf("load gateway server %s: %w", ServerName(sb.GetId()), errLoadBusy)
 		}
+		time.Sleep(loadRetryStep)
 		cur, err := s.mgr.Get(sb.GetId())
 		if err != nil {
-			return err
+			return sb, err
 		}
 		if cur.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
-			return nil
+			return cur, errNotRunning
 		}
 		sb = cur
 	}
 }
+
+// loadTimeout bounds one gateway load; loadWaitLimit how long a bring-up waits
+// out the lifecycle operations holding its sandbox (a kit attach may take
+// minutes).
+const (
+	loadTimeout   = 2 * time.Minute
+	loadWaitLimit = 30 * time.Minute
+)
 
 // loadRetryStep is how often loadWhen retries a busy sandbox.
 var loadRetryStep = 100 * time.Millisecond

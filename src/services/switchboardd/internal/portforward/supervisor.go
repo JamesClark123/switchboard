@@ -142,6 +142,10 @@ const runtimeRetryStep = 50 * time.Millisecond
 func (s *Supervisor) awaitRuntime(ctx context.Context, sandboxID string) (func(), bool) {
 	for {
 		if unlock, ok := s.lockRuntime(sandboxID); ok {
+			if ctx.Err() != nil { // cancelled meanwhile: the canceller owns it
+				unlock()
+				return nil, false
+			}
 			return unlock, true
 		}
 		select {

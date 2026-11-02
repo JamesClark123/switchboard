@@ -79,7 +79,7 @@ func (g *gateway) register(ctx context.Context, sandboxID, ref string, running b
 }
 
 // errLoadBusy refuses a load while a lifecycle operation holds the sandbox's
-// runtime lock; Service.loadWhenFree retries it.
+// runtime lock; Service.loadWhen retries it.
 var errLoadBusy = errors.New("sandbox is busy")
 
 // load attaches the registration to the sandbox live, under the sandbox's

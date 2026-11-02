@@ -695,6 +695,10 @@ func TestRuntimeLockOrdersOperations(t *testing.T) {
 			if op.start == pb.SandboxState_SANDBOX_STATE_STOPPED {
 				close(probeGo) // the restart's own probe
 			}
+			// The outcome rule's probe (or its retry) settles before the
+			// subtest ends, so it never reads the bounds fastOrphans restores.
+			e.run.setOut("p", goneOut)
+			waitUntil(t, func() bool { return !e.m.orphans.pending(id) && !e.probing(id) })
 			// No `sbx exec` follows a stop.
 			log := e.run.callLog()
 			if i := slices.Index(log, "stop p"); i >= 0 && name == "stop" {
