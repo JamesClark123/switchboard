@@ -143,7 +143,7 @@ func (rt *runtime) dispatch() {
 		},
 		missing: rt.failIfMissing,
 		claim: func(w *pb.Worker, r planRun) claimResult {
-			if sequenced(r.run) && (rt.stepsUnsupported(w.GetSandboxId()) || rt.avoided(w.GetSandboxId())) {
+			if sequenced(r.run) && (rt.stepsUnsupported(w.GetSandboxId()) || rt.passesOver(r.run, w.GetSandboxId())) {
 				return claimLaneFail // not this run's worker; it stays free for others
 			}
 			return rt.recheckAndClaim(w, r, gen0)

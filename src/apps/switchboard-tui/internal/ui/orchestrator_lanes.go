@@ -112,10 +112,16 @@ const stepsSince = "v0.0.40"
 // predate sequences whatever its number says.
 var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
+// daemonFacts is what a handshake told of a daemon.
+type daemonFacts interface {
+	HasCapability(name string) bool
+	DaemonVersion() string
+}
+
 // daemonHasSteps reports whether d keeps action sequences (SWI-29 E4): it
 // advertises "steps", or is a release from stepsSince on. Any other version
 // (dev, suffixed, unparseable) relies on the capability alone.
-func daemonHasSteps(d Daemon) bool {
+func daemonHasSteps(d daemonFacts) bool {
 	if d == nil {
 		return false
 	}
@@ -126,33 +132,35 @@ func daemonHasSteps(d Daemon) bool {
 	return releaseVersion.MatchString(v) && !upd.SemverNewer(stepsSince, v)
 }
 
-// knownDaemon is host's daemon as last connected: a lost link (R3) keeps its
-// handshake info, so what it serves outlives the drop; nil when never
-// connected.
-func (m Model) knownDaemon(host string) Daemon {
+// knownDaemon is host's daemon as last connected: a lost link (R3), a redial or
+// a failed one keeps its handshake info, so what it serves outlives the drop;
+// nil when never connected.
+func (m Model) knownDaemon(host string) daemonFacts {
 	if m.manager == nil {
 		return m.daemon
 	}
-	hc, _ := m.manager.Get(host)
-	return m.connOf(hc)
+	hc, ok := m.manager.Get(host)
+	if !ok {
+		return nil
+	}
+	if d := m.connOf(hc); d != nil {
+		return d
+	}
+	if hc.Known != nil {
+		return hc.Known
+	}
+	return nil
 }
 
-// hostSteps is whether host's daemon, as last known, keeps action sequences;
-// known is false when nothing is known of it (never connected).
+// hostSteps is whether host's daemon, as last known, keeps action sequences (an
+// older one drops them, so the TUI neither shows nor sends one, E4); known is
+// false when nothing is known of it (never connected).
 func (m Model) hostSteps(host string) (has, known bool) {
 	d := m.knownDaemon(host)
 	if d == nil {
 		return false, false
 	}
 	return daemonHasSteps(d), true
-}
-
-// hostHasSteps reports whether host's daemon, as last known, keeps action
-// sequences (E4): an older one drops them, so the TUI neither shows the
-// default sequence nor sends one. A lost link keeps the answer (no flicker).
-func (m Model) hostHasSteps(host string) bool {
-	has, _ := m.hostSteps(host)
-	return has
 }
 
 // tooOldForSteps is the local refusal of a sequence edit against a daemon

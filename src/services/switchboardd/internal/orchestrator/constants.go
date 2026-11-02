@@ -53,7 +53,7 @@ const (
 	// refused, nothing typed, before the run goes back to the queue (SWI-29).
 	claimRefuseLimit = 30 * time.Second
 	// claimAvoidFor is how long dispatch then passes over the refusing worker
-	// for runs with steps, so the next pass hands the run to another one.
+	// for that run, so the next pass hands it to another one.
 	claimAvoidFor = 30 * time.Second
 	// inputOnlyIdle is how long the input box must stay empty and ready after a
 	// step classified only by a needs-input report before it is finished (the

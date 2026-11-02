@@ -378,6 +378,9 @@ func (rt *runtime) putRun(run *pb.Run) error {
 		return err
 	}
 	rt.runs.idx.note(run, false)
+	if run.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		rt.forgetRefusals(run.GetId()) // typed or closed: no more hand-backs
+	}
 	rt.svc.emitChanged(rt.id)
 	return nil
 }

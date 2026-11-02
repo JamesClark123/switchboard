@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
 // Waiting reasons (FR-315, research R9): derived for QUEUED prompt runs on
 // every read, never stored. A run says why it waits only when no live worker
-// could take it, or every one that could is stopped or unreachable; a run
-// that merely waits for a busy worker says nothing.
+// could take it, or every one that could is stopped or unreachable, or a worker
+// is being passed over for it (it refused the run, SWI-29); a run that merely
+// waits for a busy worker says nothing.
 
 // maxWaitingNames bounds the worker names in a reason.
 const maxWaitingNames = 5
@@ -26,13 +28,20 @@ type laneCounts struct {
 	avail   map[string]int
 	names   map[string][]string // live workers' display names, roster order
 	pending int                 // workers awaiting a lane assignment
+	passed  map[string]passOver // run id → the worker dispatch passes over for it longest
+}
+
+// passOver is a worker being passed over for a run, and for how long yet.
+type passOver struct {
+	name string
+	left time.Duration
 }
 
 // laneCounts builds the index from the record, the cached sandbox records and
 // host reachability.
 func (rt *runtime) laneCounts() *laneCounts {
 	rec := rt.record()
-	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}}
+	c := &laneCounts{rec: rec, live: map[string]int{}, avail: map[string]int{}, names: map[string][]string{}, passed: rt.passedOver()}
 	ups := map[string]bool{}
 	for _, w := range rec.GetWorkers() {
 		if w.GetReasoning() {
@@ -66,6 +75,28 @@ func (rt *runtime) laneCounts() *laneCounts {
 		}
 	}
 	return c
+}
+
+// passedOver is, per run, the worker dispatch passes over for it longest.
+func (rt *runtime) passedOver() map[string]passOver {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	now := rt.svc.clock.Now()
+	out := map[string]passOver{}
+	for runID, workers := range rt.seq.refusedBy {
+		for id, until := range workers {
+			left := until.Sub(now)
+			if left <= 0 || left <= out[runID].left {
+				continue
+			}
+			name := id
+			if n := rt.sbs[id].GetDisplayName(); n != "" {
+				name = n
+			}
+			out[runID] = passOver{name: name, left: left}
+		}
+	}
+	return out
 }
 
 // waitingReason is a queued prompt run's reason, or "" when it has none.
@@ -124,6 +155,14 @@ func waitingReason(run *pb.Run, c *laneCounts, forAgent bool) string {
 			reason += fmt.Sprintf(" +%d more", more)
 		}
 		reason += ", stopped or unreachable"
+	case run.GetSandboxId() == "" && c.passed[run.GetId()].left > 0:
+		p := c.passed[run.GetId()]
+		who := p.name
+		if forAgent {
+			who = "a worker"
+		}
+		// "up to": a client may show this for a while without reading it again.
+		reason = fmt.Sprintf("waiting: %s refused this run and is passed over for up to %s", who, p.left.Round(time.Second))
 	default:
 		return ""
 	}

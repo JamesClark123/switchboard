@@ -54,9 +54,12 @@ type seqState struct {
 	steppers map[string]*stepper   // sandbox id → its stepper
 	marks    map[string]*stepMarks // run id → timings of its current step
 	noSteps  map[string]bool       // sandbox id → its daemon has no DeliverWorkerStep, until its link reconnects
-	avoid    map[string]time.Time  // sandbox id → until when dispatch passes it over for runs with steps (a claim it refused went back)
 	retry    Timer                 // the retry ticker, armed while a step waits
 	unavoid  Timer                 // a dispatch pass when the earliest avoid ends
+	// refusedBy is, per queued run, the workers it was handed back from, each
+	// with when dispatch stops passing it over for that run. Kept after that
+	// time so each worker gets one try, until the run leaves the queue.
+	refusedBy map[string]map[string]time.Time
 }
 
 // stepMarks times the current step of a run (in-memory: after an orchestrator
@@ -71,7 +74,7 @@ type stepMarks struct {
 }
 
 func newSeqState() seqState {
-	return seqState{steppers: map[string]*stepper{}, marks: map[string]*stepMarks{}, noSteps: map[string]bool{}, avoid: map[string]time.Time{}}
+	return seqState{steppers: map[string]*stepper{}, marks: map[string]*stepMarks{}, noSteps: map[string]bool{}, refusedBy: map[string]map[string]time.Time{}}
 }
 
 // stopTimers stops the retry ticker and every wake-up (caller holds mu).
@@ -989,28 +992,24 @@ func handBackable(run *pb.Run) bool {
 }
 
 // handBack returns a claim its worker kept refusing to the queue (SWI-29) when
-// another free worker could take it; with none the run keeps waiting where it
-// is (a hand-back would only delay it). The worker is passed over for runs
-// with steps for claimAvoidFor, so the pass the unclaim triggers picks the
-// other one; once the avoid ends another pass runs. It reports whether the run
-// went back.
+// another free worker that has not refused this run could take it; with none
+// the run keeps waiting where it is (a hand-back would only delay it). Dispatch
+// passes the worker over for this run for claimAvoidFor, so the pass the unclaim
+// triggers picks the other one; once the avoid ends another pass runs. It
+// reports whether the run went back.
 func (rt *runtime) handBack(run *pb.Run, reason string) bool {
 	id := run.GetSandboxId()
 	if !rt.otherFreeWorker(run) {
 		return false
 	}
 	rt.mu.Lock()
-	prev, had := rt.seq.avoid[id]
-	rt.seq.avoid[id] = rt.svc.clock.Now().Add(claimAvoidFor)
+	if rt.seq.refusedBy[run.GetId()] == nil {
+		rt.seq.refusedBy[run.GetId()] = map[string]time.Time{}
+	}
+	rt.seq.refusedBy[run.GetId()][id] = rt.svc.clock.Now().Add(claimAvoidFor)
 	rt.mu.Unlock()
 	if !rt.unclaimRun(run) {
-		rt.mu.Lock() // the run moved on meanwhile: the worker is not to blame
-		if had {
-			rt.seq.avoid[id] = prev
-		} else {
-			delete(rt.seq.avoid, id)
-		}
-		rt.mu.Unlock()
+		rt.forgetRefusals(run.GetId()) // the run moved on: its claim is over
 		return false
 	}
 	rt.mu.Lock()
@@ -1021,8 +1020,8 @@ func (rt *runtime) handBack(run *pb.Run, reason string) bool {
 }
 
 // otherFreeWorker reports whether a worker other than the run's could take it
-// now: allowed by its lanes, free, steps-capable, not passed over or being
-// detached, and claimed or held by no other run.
+// now: allowed by its lanes, free, steps-capable, one that has not refused this
+// run, not being detached or delivered to, and claimed or held by no other run.
 func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	rec := rt.record()
 	ids, mode, ok := effectiveLanes(rec, run)
@@ -1032,7 +1031,7 @@ func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	for _, w := range rec.GetWorkers() {
 		id := w.GetSandboxId()
 		if id == run.GetSandboxId() || w.GetReasoning() || w.GetLanesPending() || !allowed(w.GetLaneIds(), ids, mode) ||
-			rt.stepsUnsupported(id) || rt.avoided(id) || rt.isDetaching(id) {
+			rt.stepsUnsupported(id) || rt.refused(run.GetId(), id) || rt.isDetaching(id) || rt.isDelivering(id) {
 			continue
 		}
 		if up, _ := rt.reachability(w.GetHostId()); !free(rt.sandboxRecord(id), up) {
@@ -1048,30 +1047,48 @@ func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	return false
 }
 
-// avoided reports whether dispatch passes a worker over for runs with steps.
-func (rt *runtime) avoided(sandboxID string) bool {
+// refused reports whether a worker has refused this run and had it handed back.
+func (rt *runtime) refused(runID, sandboxID string) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	until, ok := rt.seq.avoid[sandboxID]
+	_, ok := rt.seq.refusedBy[runID][sandboxID]
+	return ok
+}
+
+// avoided reports whether dispatch passes a worker over for this run.
+func (rt *runtime) avoided(runID, sandboxID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	until, ok := rt.seq.refusedBy[runID][sandboxID]
 	return ok && rt.svc.clock.Now().Before(until)
 }
 
-// armUnavoidLocked arms a dispatch pass for when the earliest avoid ends,
-// forgetting the ended ones (caller holds mu).
+// passesOver reports whether dispatch skips a worker for this run: it refused
+// the run and its avoid is on, or a worker that has not refused it is free.
+func (rt *runtime) passesOver(run *pb.Run, sandboxID string) bool {
+	return rt.avoided(run.GetId(), sandboxID) || (rt.refused(run.GetId(), sandboxID) && rt.otherFreeWorker(run))
+}
+
+// forgetRefusals drops what a run's hand-backs left behind.
+func (rt *runtime) forgetRefusals(runID string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	delete(rt.seq.refusedBy, runID)
+}
+
+// armUnavoidLocked arms a dispatch pass for when the earliest avoid still
+// running ends (caller holds mu).
 func (rt *runtime) armUnavoidLocked() {
 	if rt.seq.unavoid != nil || rt.ctx.Err() != nil {
 		return
 	}
 	now := rt.svc.clock.Now()
 	var next time.Duration
-	for id, until := range rt.seq.avoid {
-		d := until.Sub(now)
-		if d <= 0 {
-			delete(rt.seq.avoid, id)
-			continue
-		}
-		if next == 0 || d < next {
-			next = d
+	for _, workers := range rt.seq.refusedBy {
+		for _, until := range workers {
+			if d := until.Sub(now); d > 0 && (next == 0 || d < next) {
+				next = d
+			}
 		}
 	}
 	if next == 0 {
@@ -1083,6 +1100,7 @@ func (rt *runtime) armUnavoidLocked() {
 		rt.armUnavoidLocked()
 		rt.mu.Unlock()
 		if rt.ctx.Err() == nil {
+			rt.svc.emitChanged(rt.id) // the run's waiting reason just ended
 			rt.triggerDispatch()
 		}
 	})

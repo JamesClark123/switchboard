@@ -215,6 +215,13 @@ func (rt *runtime) isDetaching(sandboxID string) bool {
 	return ok
 }
 
+func (rt *runtime) isDelivering(sandboxID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	_, ok := rt.delivering[sandboxID]
+	return ok
+}
+
 // endDelivery drops a worker from the delivering set once deliver returned.
 func (rt *runtime) endDelivery(sandboxID string) {
 	rt.mu.Lock()

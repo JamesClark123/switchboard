@@ -185,7 +185,8 @@ func (m Model) renderGroups(t jobsTab) (lines []string, focus int) {
 				ev := o.target.rec.GetTimedEvents()[pos[p].item]
 				line = eventLine(ev, waiting[ev.GetId()])
 			default:
-				line = actionLine(o.target.rec.GetActions()[pos[p].item], o.target.rec, m.hostHasSteps(o.target.host))
+				steps, known := m.hostSteps(o.target.host)
+				line = actionLine(o.target.rec.GetActions()[pos[p].item], o.target.rec, steps, known)
 			}
 			lines = append(lines, cursorMark(p == cur)+m.jobsRowStyle(o.target.host, line))
 		}

@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -216,20 +218,20 @@ func wideView(m Model) string {
 
 func TestActionLineSequenceSummary(t *testing.T) {
 	a := reviewAction()
-	if got := sequenceSummary(a, true); got != "pre: /model opus · /effort medium — post: /clear" {
+	if got := sequenceSummary(a, true, true); got != "pre: /model opus · /effort medium — post: /clear" {
 		t.Errorf("legacy summary = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_OPUS, EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true,
 		PrePrompts: []string{"/a"}, PostPrompts: []string{"/b"}}
-	if got := sequenceSummary(a, true); got != "pre: /model opus · /effort medium · 1 custom — post: 1 custom · /clear" {
+	if got := sequenceSummary(a, true, true); got != "pre: /model opus · /effort medium · 1 custom — post: 1 custom · /clear" {
 		t.Errorf("summary = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{PostPrompts: []string{"/b"}}
-	if got := sequenceSummary(a, true); got != "post: 1 custom" {
+	if got := sequenceSummary(a, true, true); got != "post: 1 custom" {
 		t.Errorf("post only = %q", got)
 	}
 	a.Sequence = &pb.ActionSequence{}
-	if got := sequenceSummary(a, true); got != "" || strings.Contains(actionLine(a, nil, true), "pre:") {
+	if got := sequenceSummary(a, true, true); got != "" || strings.Contains(actionLine(a, nil, true, true), "pre:") {
 		t.Errorf("no steps = %q", got)
 	}
 	m, _ := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
@@ -272,11 +274,18 @@ func TestActionFormOldDaemonHasNoSequence(t *testing.T) {
 	if a.Sequence != nil {
 		t.Errorf("sent a sequence to an old daemon: %v", a.GetSequence())
 	}
-	// A recorded sequence is the daemon's own: still summarised.
+	// A sequence an old daemon stored unread from a newer TUI won't run: no
+	// summary. With nothing known of the daemon, a stored one is still shown.
 	withSeq := reviewAction()
 	withSeq.Sequence = &pb.ActionSequence{PostPrompts: []string{"/b"}}
-	if got := sequenceSummary(withSeq, false); got != "post: 1 custom" {
-		t.Errorf("recorded sequence = %q", got)
+	if got := sequenceSummary(withSeq, false, true); got != "" {
+		t.Errorf("stored sequence, old daemon = %q", got)
+	}
+	if got := sequenceSummary(withSeq, false, false); got != "post: 1 custom" {
+		t.Errorf("stored sequence, unknown daemon = %q", got)
+	}
+	if got := sequenceSummary(reviewAction(), false, false); got != "" {
+		t.Errorf("no sequence, unknown daemon = %q", got)
 	}
 }
 
@@ -469,7 +478,7 @@ func TestActionFormLostHostKeepsSequence(t *testing.T) {
 	if _, err := m.connectedDaemon("hostb"); err == nil {
 		t.Fatal("hostb should read as lost")
 	}
-	if !m.hostHasSteps("hostb") || sequenceSummary(reviewAction(), m.hostHasSteps("hostb")) == "" {
+	if has, known := m.hostSteps("hostb"); !has || !known || sequenceSummary(reviewAction(), has, known) == "" {
 		t.Error("a lost host keeps its last-known steps and the default summary")
 	}
 	if has, known := m.hostSteps("hostc"); has || known {
@@ -494,6 +503,52 @@ func TestActionFormLostHostKeepsSequence(t *testing.T) {
 	}
 }
 
+// A redial, failed or not, keeps a host's last-known "steps": the form and the
+// list summary stay. A new connect replaces the answer.
+func TestActionFormRedialKeepsSequence(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	sum := orchSummary("o-b", "beta-bot")
+	sum.Orchestrator.Actions = []*pb.Action{reviewAction()}
+	b := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{sum}}
+	m, mgr, _ := twoFakeHosts(t, a, b)
+	mgr.SetDialFunc(func(context.Context, client.HostEntry) (*client.Conn, error) { return nil, errBoom{} })
+	if err := mgr.Connect(context.Background(), "hostb"); err == nil {
+		t.Fatal("the redial should fail")
+	}
+	if hc, _ := mgr.Get("hostb"); hc.State != client.HostDisconnected {
+		t.Fatalf("state = %v", hc.State)
+	}
+	has, known := m.hostSteps("hostb")
+	if !has || !known {
+		t.Fatalf("after a failed redial: has %v known %v", has, known)
+	}
+	if sequenceSummary(reviewAction(), has, known) == "" {
+		t.Error("the default summary went away")
+	}
+	mm, _ := m.openActionForm(surfaceJobs, targetOf("hostb", "beta", sum.Orchestrator), sum.Orchestrator.Actions[0])
+	m = mm.(Model)
+	if v := m.jobs.formVals.(*actionFormVals); !v.steps || !v.stepsKnown {
+		t.Fatalf("form after a failed redial: steps %v known %v", v.steps, v.stepsKnown)
+	}
+	walkFocus(t, m.jobs.form, "pre")
+
+	// The host comes back as an older daemon: the new connect decides.
+	b.noSteps = true
+	mgr.SetDialFunc(func(ctx context.Context, _ client.HostEntry) (*client.Conn, error) {
+		return client.DialLocal(ctx, serveFake(t, b))
+	})
+	if err := mgr.Connect(context.Background(), "hostb"); err != nil {
+		t.Fatal(err)
+	}
+	if has, known := m.hostSteps("hostb"); has || !known {
+		t.Errorf("after connecting to an older daemon: has %v known %v", has, known)
+	}
+	mgr.Remove("hostb")
+	if has, known := m.hostSteps("hostb"); has || known {
+		t.Errorf("after removing the host: has %v known %v", has, known)
+	}
+}
+
 // Opened with nothing known of the daemon, the hidden sequence is not blamed
 // on its age, and the save still sends it once a steps daemon answers.
 func TestActionFormUnknownDaemonHint(t *testing.T) {
@@ -504,7 +559,7 @@ func TestActionFormUnknownDaemonHint(t *testing.T) {
 	cmd := m.rebuildActionForm(surfaceJobs, v)
 	m = feed(m, cmd)
 	walkFocus(t, m.jobs.form, "args")
-	if view := ansi.Strip(m.View()); strings.Contains(view, "need a") || !strings.Contains(view, "pre/post prompts show once") {
+	if view := ansi.Strip(m.View()); strings.Contains(view, "need a") || !strings.Contains(view, "reopen this form once") {
 		t.Errorf("unknown daemon hint:\n%s", view)
 	}
 	_, a := saveAction(t, m, d)

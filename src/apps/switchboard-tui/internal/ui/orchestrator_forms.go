@@ -217,7 +217,7 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 	argsDesc := "one per line: name [*] [description] [= default]  — * marks required"
 	switch {
 	case !v.stepsKnown:
-		argsDesc += " · pre/post prompts show once the daemon has connected"
+		argsDesc += " · to edit pre/post prompts, reopen this form once the daemon has connected"
 	case !v.steps:
 		// E4: an older daemon would drop a sequence, so none is offered.
 		argsDesc += " · pre/post prompts need a newer daemon (update with u)"
@@ -1231,7 +1231,7 @@ type orchFormErrMsg struct {
 //
 // steps is whether the action's daemon serves sequences (E4): without, the
 // sequence segment is left out rather than showing defaults it would drop.
-func actionLine(a *pb.Action, rec *pb.Orchestrator, steps bool) string {
+func actionLine(a *pb.Action, rec *pb.Orchestrator, steps, known bool) string {
 	kind := "prompt"
 	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON {
 		kind = "reason"
@@ -1254,7 +1254,7 @@ func actionLine(a *pb.Action, rec *pb.Orchestrator, steps bool) string {
 	if len(args) > 0 {
 		line += dimStyle.Render("  {" + strings.Join(args, ", ") + "}")
 	}
-	if seq := sequenceSummary(a, steps); seq != "" {
+	if seq := sequenceSummary(a, steps, known); seq != "" {
 		line += dimStyle.Render("   " + seq)
 	}
 	return line
@@ -1262,11 +1262,11 @@ func actionLine(a *pb.Action, rec *pb.Orchestrator, steps bool) string {
 
 // sequenceSummary is the action line's sequence segment (FR-219): `pre:
 // /model opus · /effort medium · 1 custom — post: 1 custom · /clear`, either
-// side left out when empty; "" when no step is enabled. A sequence-less action
-// shows the defaults only when its daemon serves "steps" (E4): an older one,
-// or one never connected, would not run them.
-func sequenceSummary(a *pb.Action, steps bool) string {
-	if !steps && a.GetSequence() == nil {
+// side left out when empty; "" when no step is enabled. A daemon known to lack
+// "steps" shows nothing (E4), even for a sequence it stored unread from a newer
+// TUI: it would not run it. One never connected shows only a stored sequence.
+func sequenceSummary(a *pb.Action, steps, known bool) string {
+	if !steps && (known || a.GetSequence() == nil) {
 		return ""
 	}
 	seq := effectiveSequence(a)
