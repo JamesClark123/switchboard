@@ -216,6 +216,18 @@ func (r *Registry) UpdateOrchestratorRuns(id string, fn func(rec *pb.Orchestrato
 // ViewOrchestratorRuns hands fn the record and its QUEUED runs (receipt order)
 // read in one bolt View, so both come from the same commit (SWI-18 research R7).
 func (r *Registry) ViewOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, queued []*pb.Run) error) error {
+	return r.viewRecordRuns(id, func(r *pb.Run) bool { return r.GetState() == pb.RunState_RUN_STATE_QUEUED }, fn)
+}
+
+// ViewOrchestratorAllRuns is ViewOrchestratorRuns with every run of the
+// orchestrator (receipt order), for a caller that needs more than the queued
+// ones from the same commit (a dispatch pass: the queued runs and the
+// sandboxes other runs claim or hold, in one read).
+func (r *Registry) ViewOrchestratorAllRuns(id string, fn func(rec *pb.Orchestrator, runs []*pb.Run) error) error {
+	return r.viewRecordRuns(id, func(*pb.Run) bool { return true }, fn)
+}
+
+func (r *Registry) viewRecordRuns(id string, keep func(*pb.Run) bool, fn func(*pb.Orchestrator, []*pb.Run) error) error {
 	return r.db.View(func(tx *bolt.Tx) error {
 		blob := tx.Bucket(orchestratorsBucket).Get([]byte(id))
 		if blob == nil {
@@ -225,11 +237,11 @@ func (r *Registry) ViewOrchestratorRuns(id string, fn func(rec *pb.Orchestrator,
 		if e := proto.Unmarshal(blob, o); e != nil {
 			return e
 		}
-		queued, e := queuedRuns(tx.Bucket(runsBucket), id)
+		runs, e := scanRuns(tx.Bucket(runsBucket), id, keep)
 		if e != nil {
 			return e
 		}
-		return fn(o, queued)
+		return fn(o, runs)
 	})
 }
 

@@ -377,6 +377,20 @@ existing `WorkerAPI`, so it is the same path for local and remote hosts:
 - The orchestrator tries again on every `sandbox_changed` for that sandbox, plus a `stepRetryEvery = 2s` ticker that
   runs only while some run has a pending step on a reachable host. The ticker covers a box the developer empties
   without any hook firing.
+- **Hand-back (SWI-29).** A claim whose **first** step keeps being refused — the run still QUEUED, nothing typed (no
+  `step_sent_at`, not a retry or restart), not a `reason` run — goes back to the queue once refusals have lasted
+  `claimRefuseLimit` (30 s) **and** another worker could take it now (lanes allow it, free, steps-capable, not paused, not
+  being detached or delivered to, nothing claimed or held on it, and it has not refused this run): the claim is dropped
+  exactly as `unclaim` does, and dispatch passes the refusing worker over **for this run only** for `claimAvoidFor`
+  (30 s, in memory), so the next pass hands the run to the other worker; when the avoid ends a pass runs again. Other
+  runs may still take that worker, so one that has recovered doesn't sit idle; if it still refuses, such a run spends
+  up to `claimRefuseLimit` on it. Each worker gets one try per run: the refusals are remembered in memory until the
+  run leaves the queue. Dispatch gives a run back to a worker that refused it only when its avoid is over and no
+  untried worker is free. Once every candidate has refused, the run stays on the last one and waits, even if an
+  earlier one clears first. With no other worker free the run keeps waiting on its claim (handing it back would only
+  delay it) and is checked again on each refusal. A claim's refusals are timed afresh on every claim. A halted step, a
+  retry and a RUNNING run are never handed back. While a worker is passed over and the run has no claim, its waiting
+  reason says so: `waiting: <worker> refused this run and is passed over for up to <time>`.
 - **Mixed versions.** `Unimplemented` (an older daemon) on the first step **unclaims** the run (back to QUEUED, no
   sandbox, no daemon record, since the old daemon recorded nothing) and marks that worker, in memory, as unable to
   take sequenced runs until its host's link reconnects. Dispatch then picks another worker. Only when **no**

@@ -144,3 +144,44 @@ func TestManagerDisconnectClearsErr(t *testing.T) {
 		t.Errorf("after Disconnect: state %v err %v", hc.State, hc.Err)
 	}
 }
+
+// Known keeps a host's handshake through a failed redial and a disconnect, and
+// is gone with the host.
+func TestManagerKnownOutlivesTheConnection(t *testing.T) {
+	sock := startFakeOnSocket(t)
+	mgr := client.NewManager()
+	fail := false
+	mgr.SetDialFunc(func(ctx context.Context, _ client.HostEntry) (*client.Conn, error) {
+		if fail {
+			return nil, errors.New("refused")
+		}
+		return client.DialCommand(ctx, bridgeCmd(ctx, sock))
+	})
+	mgr.Upsert(client.HostEntry{ID: "a", Kind: "ssh", SSHTarget: "a"})
+	if hc, _ := mgr.Get("a"); hc.Known != nil {
+		t.Error("nothing is known before the first connect")
+	}
+	if err := mgr.Connect(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	hc, _ := mgr.Get("a")
+	want := hc.Conn.Info
+	if hc.Known == nil || hc.Known.Info != want {
+		t.Fatalf("after connect: known %+v", hc.Known)
+	}
+	fail = true
+	if err := mgr.Connect(context.Background(), "a"); err == nil {
+		t.Fatal("the redial fails")
+	}
+	if hc, _ := mgr.Get("a"); hc.Conn != nil || hc.Known == nil || hc.Known.Info != want {
+		t.Errorf("after a failed redial: %+v", hc)
+	}
+	mgr.Disconnect("a")
+	if hc, _ := mgr.Get("a"); hc.Known == nil {
+		t.Error("a disconnect forgets the daemon")
+	}
+	mgr.Remove("a")
+	if _, ok := mgr.Get("a"); ok {
+		t.Error("the host is still there")
+	}
+}

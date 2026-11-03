@@ -378,7 +378,9 @@ Each QUEUED `prompt` run gets `Run.waiting_reason` (32), a string set only on th
 When `pending > 0`, each reason gets `; N workers awaiting lane assignment`. Worker names in the second column are
 the live workers that could take the run, by display name, at most 5 then `+N more`. Busy but available workers
 give no reason: the run is simply queued. A run whose effective setting is *missing* gets no reason (dispatch fails
-it). The reason is a separate field from `Run.reason` (failure/cancel reason).
+it). An unclaimed run whose worker is being passed over after refusing it (SWI-29, SWI-17 research R6) says so:
+`waiting: <worker> refused this run and is passed over for up to <time>`, with `a worker` in place of the name for
+agents. The reason is a separate field from `Run.reason` (failure/cancel reason).
 
 **Agents get a lane-only reason** (revised in review run-593). FR-315 shows the reason "to an agent checking the
 run", and `orchestrator_check_run` returns any run of the orchestrator by id (`O/tools.go:174-179`), which today

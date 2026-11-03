@@ -9,6 +9,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	sbgrpc "github.com/jamesclark123/switchboard/services/switchboardd/internal/grpc"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/orchestrator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -27,7 +28,7 @@ func TestSaveMcpServerRPCs(t *testing.T) {
 	env := startMcpServer(t, available)
 	ctx := context.Background()
 	info, err := env.client.GetDaemonInfo(ctx, &pb.GetDaemonInfoRequest{})
-	if err != nil || !hasString(info.GetCapabilities(), sbgrpc.CapabilityMcpEdit) {
+	if err != nil || !hasString(info.GetCapabilities(), sbgrpc.CapabilityMcpEdit) || !hasString(info.GetCapabilities(), orchestrator.CapabilitySteps) {
 		t.Fatalf("capabilities = %v, %v", info.GetCapabilities(), err)
 	}
 
