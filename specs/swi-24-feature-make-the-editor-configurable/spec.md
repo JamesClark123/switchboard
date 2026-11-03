@@ -1017,8 +1017,9 @@ These follow from the requirements above and from how the code works today. They
     failure at `:306` also reaches) also copy it into a field, such as `m.termFailStatus`, and `attachTerminal` clears
     that field. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
     (`broadcaster.go:156`) and `t` attaches in-TUI, but it's treated the same in case that changes. At a release, if the
-    status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text. Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer`
-    shows all of it in red. With nothing held, the error stays as it is today, uncut and in today's style, and that
+    status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text.
+    Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer` shows all of it
+    in red. With nothing held, the error stays as it is today, uncut and in today's style, and that
     includes a retried `t` that fails after a release. Text-wrap estimates of draft wording at 80 columns, with a
     120-column error, give 3 lines for a one-line refusal, 4 for FR-523's report and 5 for FR-518's longest case. The
     sandbox list has 5 lines at 80×24, or 4 with the banner, so only the longest cases lose the end of the held message.
