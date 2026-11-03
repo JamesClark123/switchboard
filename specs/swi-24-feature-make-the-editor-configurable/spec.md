@@ -124,6 +124,33 @@ Settled in the spec:
   variable, or an empty one, doesn't trigger it. (FR-517, SC-002, SC-005)
 - **FR-526's filesystem checks run off the UI thread.** This is a note for planning.
 
+### PR review 2026-11-03 (re-review run `run-c275c8f2-1530`, resolved in pr-response run `run-c275c8f2-1535`)
+
+Fixed before planning, as the review asked:
+
+- **The embedded terminal screen is an exception to FR-533.** The PTY's size never depends on the status line, so
+  a status change can't resize it or signal the agent. The status there is cut at the 2 lines that fit, so the
+  header and its `ctrl+q` hint stay. A message that arrives while the terminal is open can lose its end, which is
+  accepted. (FR-533, SC-008)
+
+Settled in the spec:
+
+- **FR-533 now states a height.** A message is cut to what's left after the header, help footer and the screen's
+  smallest usable body, and everything this spec defines fits in full at 80×24. A terminal too short for even a
+  one-line message loses its top lines, as it does today. (FR-533, SC-004)
+- **Body resizing has one choke point.** The `Update` wrapper compares the status line count after each message and
+  resizes the active surface. This is a note for planning.
+- **The settings screen wraps too.** Rows, notices and the note wrap, so `(not saved)` and "fix the file" can't be
+  cut. The list and the command input replace the rows while open, so the note fits at 80×24. If the screen is too
+  short, the note gives way first. (FR-534, SC-008)
+- **`(not saved)` describes what the row shows.** Confirming a built-in editor clears the mark, because the row now
+  shows a saved value. A session-only custom command stays in the session to fill the input again, and it's lost at
+  the next start unless it's confirmed. That's accepted, because the developer has moved away from it. (FR-530)
+- **A toggle takes two presses to keep its value.** Pressing it flips the value first, as it always has, so the
+  first press saves the opposite value and the second saves the original. (FR-530)
+- **FR-526's no-blocking rule covers only the executable search.** The host lookup and the settings re-read and
+  write stay on the update loop, because this feature doesn't change the kind of work they do. (FR-526)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -300,7 +327,17 @@ sandbox. Check that a clear message appears and nothing is started.
   (FR-528).
 - **A session-only change after the file is fixed.** The developer toggles a setting while the file is broken,
   fixes the file, then saves something else. The save writes only that other setting, so the toggle's row keeps
-  showing `(not saved)` and it warns that the value won't be there at the next start (FR-530).
+  showing `(not saved)` and it warns that the value won't be there at the next start. Keeping the toggle's value
+  takes two presses, because the first saves the opposite value (FR-530).
+- **A session-only custom command, then a built-in editor.** The developer confirms Custom while the file is
+  broken, fixes the file, then confirms Zed. Zed is saved and the row's mark clears. The command stays in the session
+  and fills the input if Custom is chosen again, but it's gone at the next start unless it's confirmed (FR-530).
+- **A message while the embedded terminal is open.** For example, a late failure report (FR-523) arrives after the
+  developer pressed `v` and then opened the terminal. The status is cut at 2 lines, and the PTY isn't resized. If the
+  end is cut, pressing `v` again from the sandbox list shows the whole message (FR-533).
+- **A short terminal.** A message is cut to the room that's left, and never below 1 line. A terminal too short for
+  even that loses its top lines, as it does today. At 80 columns the sandbox list needs 20 rows for a one-line
+  message (FR-533).
 - **The editor exits at once.** Some editor commands hand the work to an already running window and exit
   straight away. An exit with status 0 counts as success. A non-zero exit soon after starting counts as a
   failure (FR-523). The TUI does not wait for the editor to close.
@@ -509,7 +546,10 @@ sandbox. Check that a clear message appears and nothing is started.
   (FR-517), a target Zed can't use (FR-513), a home directory that can't be determined when the command needs
   it (FR-531), and an executable that can't be found (FR-518). The launch error stays the final authority,
   because the executable can change between the check and the start. The path checks in FR-517 run after the
-  daemon replies. A check that touches the filesystem MUST NOT block the TUI (see Notes for Planning).
+  daemon replies. The search for the executable MUST NOT block the TUI (see Notes for Planning). The host lookup
+  and FR-530's settings re-read and write stay on the update loop, as the host lookup and the settings write do
+  today, because they're small local reads and writes that only happen on a key press. So a config directory on a
+  stale mount can still freeze the TUI, as it can today.
 - **FR-527**: The settings file MUST be written with owner-only permissions (`0600`), including any
   temporary file used to write it, because a custom command can hold a token or a licence key. The temporary
   file MUST be created fresh with a unique name, so a leftover from a crash can't pass on wider permissions
@@ -568,9 +608,16 @@ sandbox. Check that a clear message appears and nothing is started.
     settings screen at the next start.
   - A change that applied to the session only (FR-525, no settings store, or a failed write from a toggle or
     the Editor list) isn't written by a later save, because a hand fix may have changed that key. Its row MUST
-    show `(not saved)` on the settings screen until a save writes that row's own key or keys, which pressing the
-    toggle or confirming an Editor entry again does. So the session's value can't silently disappear at the next
-    start. In the unreadable-at-startup state nothing is written, so the marks stay for the session.
+    show `(not saved)` on the settings screen until a save writes what the row shows: the toggle's key, or for the
+    Editor row the keys listed above for the entry confirmed. So the value a row shows can't silently disappear at
+    the next start. In the unreadable-at-startup state nothing is written, so the marks stay for the session.
+  - To keep the Editor row's value, the developer confirms the same entry again, which writes it. A toggle can't
+    re-save its value, because pressing it flips the value first (FR-509). The first press saves the opposite value
+    and clears the mark, and a second press saves the original value, so keeping the value takes two presses.
+  - Confirming a built-in editor writes only the editor key, so it clears the Editor row's mark even when the session
+    holds a custom command that was never saved. That command stays in the session and fills the input if Custom is
+    chosen again (FR-506), but it's gone at the next start unless it's confirmed. This loss is accepted, because the
+    developer has moved away from it and the row no longer shows it.
   - Comments in the file aren't kept, nor are keys this version doesn't know (see Downgrade).
   - There is no lock. If two TUIs save at the same instant the last write wins, which is accepted.
 - **FR-531**: A Custom command MUST be split by these rules, which follow POSIX shell word splitting with no
@@ -601,9 +648,29 @@ sandbox. Check that a clear message appears and nothing is started.
   can, so the end of a message stays readable, including FR-529's notices and FR-523's "where to fix it". The
   lines it adds MUST come out of the body, so the header and help footer stay on screen. To keep one message
   from filling the screen, a value taken from the settings file or an override variable (an unknown editor
-  value, an executable) MUST be cut to 60 columns with `…`, and a message MAY be cut after 6 lines with `…`.
-  At 80 columns or wider, every message this spec defines MUST fit within those 6 lines, so nothing it requires
-  is lost.
+  value, an executable) MUST be cut to 60 columns with `…`. A message MUST be cut with `…` at 6 lines, or sooner
+  if that's what's left after the header, the help footer and the screen's smallest usable body, and never below
+  1 line. On a terminal of 80×24 or larger, every message this spec defines MUST fit in full, so nothing it
+  requires is lost. A terminal too short for even a one-line message loses its top lines, as it does today.
+  - **The embedded terminal screen is the exception.** Its body is the agent's PTY grid, so the size of the PTY
+    MUST NOT depend on the status line, and a status change MUST NOT resize it or signal the agent. Only a window
+    resize does, as today. The status there MUST be cut with `…` at the 2 lines that fit below the grid, so the
+    header and its `ctrl+q` hint stay on screen. A message that arrives while the terminal is open, such as a late
+    FR-523 report, can lose its end there. That's accepted, because pressing `v` again from the sandbox list shows
+    the whole message.
+- **FR-534**: The settings screen MUST wrap everything it shows to the terminal's width, at spaces where it can, so
+  nothing is cut at the edge. That covers the rows and their descriptions, FR-508's and FR-525's notices, and
+  FR-521's note.
+  - The Editor row's executable MUST be cut to 60 columns (FR-533), with one `…` covering both the cut and FR-532's
+    other arguments. `(not saved)` follows it and wraps with the row, so the mark is never what gets cut.
+  - A notice MUST say what to do before it gives any error detail, so a long parse error can't push the instruction
+    out of view.
+  - While the Editor list or the command input is open, it replaces the rows and notices, and they come back when it
+    closes. FR-506's rejection reason appears in the status line only.
+  - The list MUST scroll to keep its cursor visible when it doesn't fit. A long command MUST scroll sideways within
+    the input instead of running off the edge.
+  - With the input open and a rejection showing, the whole note MUST be visible at 80×24 or larger. On a shorter
+    terminal the note gives way first: its last lines are replaced with `…`, so the input stays on screen.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -640,8 +707,9 @@ sandbox. Check that a clear message appears and nothing is started.
   determined (FR-531), and a failed host lookup. For the path and target causes, "where to fix it" is the
   daemon or the host entry. A rejected custom command on
   the settings screen (FR-506) also says why it was rejected. Failures inside the editor after it has started
-  can't be detected and aren't covered. An automated test at 80 columns checks that the whole message is on
-  screen, including every notice and where to fix it (FR-533).
+  can't be detected and aren't covered. An automated test at 80×24 on the sandbox list, with the update banner
+  showing, checks that the header and the whole message are on screen, including every notice and where to fix it
+  (FR-533). The embedded terminal screen is excluded (SC-008).
 - **SC-005**: For a local sandbox, or a remote path that FR-517 accepts, a custom command whose programs
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
@@ -653,6 +721,11 @@ sandbox. Check that a clear message appears and nothing is started.
   editor and custom command are still there once the developer fixes the file.
 - **SC-007**: A hand edit made to any setting while the TUI runs is still in the file after the TUI saves a
   different setting.
+- **SC-008**: Automated tests at 80×24 check that the header stays on screen and no line is cut at the edge on the
+  settings screen in three states: the rows with two notices and a `(not saved)` mark on a long executable, the open
+  Editor list, and the open command input with a rejection and the whole note (FR-534). On the embedded terminal
+  screen, tests check that a long status sends no resize and leaves the header on screen, and that a terminal opened
+  while a wrapped message is showing gets the same PTY size as one opened with no message (FR-533).
 
 ## Notes for Planning
 
@@ -677,13 +750,37 @@ These follow from the requirements above and from how the code works today. They
   and closes after.
 - **Filesystem checks (FR-526):** today `openVSCodeCmd` does its host lookup on the update loop, and only the daemon
   call runs inside the returned command. `exec.LookPath` belongs inside that command, before the daemon call,
-  because it stats a file in each `PATH` directory and a stale network mount can block it for a long time. The
+  because it stats a file in each `PATH` directory and a stale network mount can block it for a long time. The host
+  lookup stays where it is, although `hostStore.Get` re-reads the hosts file through `LoadTOML` on every call. The
   other new work on `v` is small parsing and character checks, and the settings re-read happens only on a save.
 - **Status line (FR-533):** `footer` calls `sanitizeLine` with width 0, and Bubble Tea cuts wider lines with no
-  ellipsis. `renderHelp` already wraps at `m.width`. `bodyHeight` assumes one status line and `m.list.SetSize` runs
-  only on a resize, while Bubble Tea drops the **top** lines of a view taller than the terminal, so body heights
-  must take the status line's height into account whenever it changes. The change reaches every screen using
-  `chrome`, not only `v`.
+  ellipsis. `renderHelp` already wraps at `m.width`. Bubble Tea drops the **top** lines of a view taller than the
+  terminal, and `bodyHeight` assumes one status line. The change reaches every screen using `chrome`, not only `v`.
+  - **Where to resize:** 14 call sites read `bodyHeight` once as a surface is built (7 `newItemList`, 7 huh
+    `WithHeight`), and only `m.list` is resized after startup, on a window resize. There are 107 non-test
+    `m.status =` assignments and no setter, so resizing where the status is set isn't practical. The `Update` wrapper
+    already reconciles guard layers after each message, so it can also compare the wrapped status line count with the
+    last one (a width change alters it too) and resize the active surface. `chrome` can then drop any excess from the
+    bottom of the body, so a surface the resize misses still keeps its header and footer.
+  - **Room at 80 columns (measured on today's code):** the sandbox list's help footer is 5 lines, and its bubbles
+    list draws at least 9 rows even when given fewer. So the screen needs 19 rows plus the status lines, or 20 plus
+    them with the update banner. That leaves 4 lines for a message at 80×24 with the banner, so the longest `v`
+    messages have to stay within 4 lines at 80 columns, even with two values cut to 60 columns. A wordy draft of FR-518's
+    longest case came to 5 lines and a tighter one to 4, so its wording matters. The cap of 6 lines is reached only
+    on a taller terminal.
+- **Terminal screen (FR-533):** `viewTerminal`'s grid is `termRows()`, which is `m.height - 8`, and `resizeTerminal`
+  runs only on a window resize. Measured with a one-line help footer, the view is `m.height - 2` lines plus the status
+  lines, so 2 lines fit and a third pushes out the top line. Below 11 rows the grid is at its floor of 3 rows and the
+  screen can already overflow. `termRows` has to keep its fixed one-line assumption if `bodyHeight` becomes aware of the
+  status line, because `attachTerminal` reads it before it replaces the status, so a terminal opened during a wrapped
+  message would start too short and stay that way until the next resize. `footer` needs a per-screen line limit.
+  `escHoldHint` is 101 columns, so it takes 2 lines at 80 columns.
+- **Settings screen (FR-534):** `viewSettings` joins its rows with no width limit. Today's sign-in description is
+  already over 100 columns, and the notice embeds `err.Error()` before its instruction. The budget at 80×24 with the
+  input open is 2 header + 1 title + 1 input + 1 blank + 2 rewrite notice + 10 note + 1 blank + 3 status + 2 help = 23
+  lines, so FR-521's note has about 10 lines. A draft of its five points came to 10. The input needs `Width` set,
+  because `m.rename` leaves it at 0 and doesn't scroll sideways. `windowRange` in `jobs.go` suits the Editor list on a
+  short terminal.
 - **Input cleaning (FR-528):** `textinput.SetValue` and paste both sanitise (`runeutil` in Bubbles v1.0.0). Take the
   starting value after `SetValue`, as `enterRename` does, and compare with the saved text to decide on the notice
   (`normalizeSuffix`).
