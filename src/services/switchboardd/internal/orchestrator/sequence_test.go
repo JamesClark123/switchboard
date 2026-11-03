@@ -587,7 +587,7 @@ func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
 		t.Errorf("after the developer's prompt = %+v", r)
 	}
 	env.clock.Advance(sentGrace)
-	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() || r.GetStepNote() != typedButNote(otherPromptNote) {
+	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() || r.GetStepNote() != otherPromptNote {
 		t.Errorf("halted = %+v", r)
 	}
 }
@@ -596,18 +596,14 @@ func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
 // waits, and in its halt. Another prompt on record says so whatever the daemon
 // answered, since that answer may predate it.
 func TestUnconfirmedNoteReachesTheHalt(t *testing.T) {
-	longest := typedButNote(otherPromptNote)
-	if n := len([]rune(longest)); n > 60 {
-		t.Errorf("%q is %d columns: the row cuts its note at 60", longest, n)
-	}
 	for _, c := range []struct {
 		name, answered, row, halted string
 		other                       bool
 	}{
 		{name: "no reason", halted: unconfirmedNote},
-		{name: "no turn evidence", answered: "no turn evidence", row: "no turn evidence", halted: "typed, but no turn evidence; it may have run"},
-		{name: "another prompt", answered: otherPromptNote, row: otherPromptNote, halted: longest},
-		{name: "another prompt after the answer", answered: "no turn evidence", row: "no turn evidence", halted: longest, other: true},
+		{name: "no turn evidence", answered: "no turn evidence", row: "no turn evidence", halted: "no turn evidence"},
+		{name: "another prompt", answered: otherPromptNote, row: otherPromptNote, halted: otherPromptNote},
+		{name: "another prompt after the answer", answered: "no turn evidence", row: "no turn evidence", halted: otherPromptNote, other: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env, w, o, rt, d := seqEnv(t, 1, nil)
@@ -653,6 +649,67 @@ func TestUnconfirmedNoteReachesTheHalt(t *testing.T) {
 			t.Errorf("note after the turn start = %q", r.GetStepNote())
 		}
 	})
+}
+
+// SWI-28: a built-in's read-back doesn't replace another prompt as the reason for
+// its halt, whether the record or only the daemon's answer says so. The reason goes
+// first, as a row may cut the rest short, and the longest note fits the row's 60
+// columns. The notification keeps the row's "may have run".
+func TestReadBackHaltSaysAnotherPromptWasSubmitted(t *testing.T) {
+	const noClear = "no new session after /clear"
+	if longest := otherPromptNote + "; " + noClear; len(longest) > 60 {
+		t.Errorf("%q is %d columns: the row cuts its note at 60", longest, len(longest))
+	}
+	for _, c := range []struct {
+		name, answered, readBack, halted string
+		other                            bool
+	}{
+		{name: "no other prompt", readBack: "no confirmation", halted: "no confirmation"},
+		{name: "on record", readBack: "no confirmation", halted: otherPromptNote + "; no confirmation", other: true},
+		{name: "in the answer", answered: otherPromptNote, readBack: noClear, halted: otherPromptNote + "; " + noClear},
+		{name: "a read-back with no note", answered: otherPromptNote, halted: otherPromptNote},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) {
+				d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+					if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_MODEL {
+						return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: c.answered}, nil
+					}
+					return nil, nil
+				}
+				d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}
+				}
+			})
+			run := callSeq(t, env, o, "1")
+			waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_SENT)
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			d.set(func(d *fakeDaemon) {
+				d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: c.readBack}
+				}
+			})
+			waitFor(t, func() bool {
+				env.clock.Advance(stepRetryEvery)
+				return runNow(env, o, run.GetId()).GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED
+			})
+			r := runNow(env, o, run.GetId())
+			if !r.GetStepUnconfirmed() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want note %q", r, c.halted)
+			}
+			waitFor(t, func() bool {
+				for _, n := range env.hub.notifications() {
+					if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+						return strings.Contains(n.GetMessage(), "not accepted (may have run) — "+c.halted)
+					}
+				}
+				return false
+			})
+		})
+	}
 }
 
 // SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
@@ -1011,7 +1068,7 @@ func TestUnconfirmedResolution(t *testing.T) {
 	waitSentSeen(t, rt, run.GetId())
 	env.clock.Advance(sentGrace)
 	r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
-	if !r.GetStepUnconfirmed() || r.GetStepNote() != "typed, but screen resyncing; it may have run" {
+	if !r.GetStepUnconfirmed() || r.GetStepNote() != "screen resyncing" {
 		t.Errorf("halted unconfirmed = %+v", r)
 	}
 	// Both built-ins were confirmed by check_only (steps 0 and 1 passed).

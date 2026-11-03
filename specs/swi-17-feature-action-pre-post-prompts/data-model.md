@@ -42,7 +42,7 @@ action has no enabled built-in and no custom prompts gets **no steps**, and is d
 | `step_status` | `StepStatus` (see below) | Where the current step is. |
 | `step_sent_at` | Timestamp | When the current step was typed (FR-217 evidence baseline). |
 | `step_kind_seen` | `StepObserved` (UNKNOWN, MODEL_TURN, MODEL_TURN_INPUT_ONLY, AGENT_LOCAL) | The kind the submit check observed (FR-206b). `MODEL_TURN_INPUT_ONLY`: classified only by a needs-input report. |
-| `step_note` | string | The *not accepted* reason as shown, e.g. `text still in the input box`, `picker opened`, `Model 'bogus' not found`. A step typed but not confirmed keeps the daemon's reason here while it waits, e.g. `another prompt was submitted`, and its halt reads `typed, but <reason>; it may have run`. |
+| `step_note` | string | The *not accepted* reason as shown, e.g. `text still in the input box`, `picker opened`, `Model 'bogus' not found`. A step typed but not confirmed keeps the daemon's reason here while it waits, e.g. `another prompt was submitted`, and its halt keeps it, with `(may have run)` in the row's marker. |
 | `step_sent_before_restart` | bool | FR-217 marker (FR-213, FR-222). Cleared whenever the run leaves HALTED or `step` changes. |
 | `hold` | `WorkerHold` | Mirrors `WorkerRun.hold` while this run holds its sandbox (FR-213). |
 | `hold_since` | Timestamp | When the current hold began (display only; the daemon ends the hold, research R7). |

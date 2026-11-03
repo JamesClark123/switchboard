@@ -93,18 +93,20 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 | ACTION_PROMPT | positive evidence of a turn whose hooks never arrived: the turn running on screen (`claudeui.TurnRunning`), an assistant reply (`●` at column 0 on Linux, fixture `reply-row`; `⏺` on macOS, from memory) in `claudeui.Added` (not when the transcript can't be matched), or `last_turn_end_at` after the Enter (SWI-28) | **UNCONFIRMED** `no turn evidence` (not NOT_ACCEPTED: it was typed and may be running) |
 
 **A prompt that isn't the step's (SWI-28).** The daemon compares each main-session `UserPromptSubmit`'s `prompt`
-with the text last typed as a step, by containment on letters and digits only, after removing terminal escapes and
-composing accents (NFC) on both sides. The agent doesn't report a paste as typed (observed on 2.1.316 and 2.1.317): a
-long paste comes wrapped in a `<pasted_content>` tag with its tabs turned to spaces, a literal tag in the text gets a
-backslash, terminal escapes, zero-width and other control characters are removed, and a short paste's accents are
-composed. A step with no letters or digits compares without whitespace instead. A mismatch writes
-`last_other_submit_at`, and neither the submit check nor the orchestrator then takes anything after it as the step's
-evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one too. A
-mismatch writes nothing once a turn is on record for this send (a turn start, or a turn end or a request for input
-with the start lost), so a later prompt can't erase it, and a match clears the field, so a step that runs after another prompt still counts. With nothing to compare (a prompt
-over `maxHookField`, an older agent, or a daemon restarted since the typing) the submit counts as before and leaves
-the field as it is. The answer's note says why a step wasn't confirmed: the orchestrator keeps it in `step_note`, for
-the row while the step waits and for its halt (`typed, but <note>; it may have run`).
+with the text last typed as a step, by containment on letters and digits only, after removing terminal escapes, then
+control and format characters, and composing accents (NFC) on both sides. The agent doesn't report a paste as typed
+(observed on 2.1.316 and 2.1.317): a long paste comes wrapped in a `<pasted_content>` tag with its tabs turned to
+spaces, a literal tag in the text gets a backslash, terminal escapes (including a CSI cut off before its final byte,
+and a string sequence with no terminator, which ends with its row), zero-width and other control characters are
+removed, and a short paste's accents are composed. A step with no letters or digits compares the same cleaned text
+without whitespace instead, and a step with nothing left can't be submitted, so no prompt is its own. A mismatch
+writes `last_other_submit_at`, and neither the submit check nor the orchestrator then takes anything after it as the
+step's evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one
+too. A mismatch writes nothing once a turn is on record for this send (a turn start, or a turn end or a request for
+input with the start lost), so a later prompt can't erase it, and a match clears the field, so a step that runs after
+another prompt still counts. With nothing to compare (a prompt over `maxHookField`, an older agent, or a daemon
+restarted since the typing) the submit counts as before and leaves the field as it is. The answer's note says why a
+step wasn't confirmed: the orchestrator keeps it in `step_note`, for the row while the step waits and for its halt.
 
 Enter is **never** pressed on an empty box or while a modal is shown. A step whose text was replaced in the box by
 developer typing reads as "box not empty". Under the guard that cannot happen before typing; after typing it ends

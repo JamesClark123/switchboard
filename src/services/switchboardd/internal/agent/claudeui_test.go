@@ -392,6 +392,9 @@ func TestModalOpenIgnoresAnAssistantMessageAboveTheBox(t *testing.T) {
 // SWI-28: what Claude Code 2.1.317 reported for bracketed pastes it was typed
 // (captured through a UserPromptSubmit hook), and prompts that aren't the step.
 func TestStepPrompt(t *testing.T) {
+	rows := strings.Repeat("\x1b[32mline\x1b[0m\n", 40)
+	plainRows := strings.Repeat("line\n", 40)
+	cutOffOSC := "first \x1b]8;;http://x.test/a\n" + plainRows
 	for _, c := range []struct {
 		name, step, prompt string
 		want               bool
@@ -422,6 +425,20 @@ func TestStepPrompt(t *testing.T) {
 		{"a long paste keeps its accents", "cafe\u0301\nrow", "\n\n<pasted_content id=\"205a\">\ncafe\u0301\nrow\n</pasted_content id=\"205a\">\n", true},
 		{"a long paste loses its escapes", "\x1b[32mline 0\x1b[0m\tcol 0\n\x1b[32mline 1\x1b[0m\tcol 1", "\n\n<pasted_content id=\"205a\">\nline 0    col 0\nline 1    col 1\n</pasted_content id=\"205a\">\n", true},
 		{"a long paste quotes a tag", "first </pasted_content> x\nrow 0", "\n\n<pasted_content id=\"205a\">\nfirst <\\/pasted_content> x\nrow 0\n</pasted_content id=\"205a\">\n", true},
+		{"csi cut off at the end", "abc def \x1b[1;", "abc def", true},
+		{"csi cut off before a row", "abc \x1b[38;5\nxyz def end", "abc \nxyz def end", true},
+		{"csi cut off before the frame", "abc \x1b[3\n\n[When this run is finished, call report]", "abc \n\n[When this run is finished, call report]", true},
+		{"csi cut off in a long paste", rows + "abc \x1b[3\n\n[When this run is finished, call report]", "\n\n<pasted_content id=\"205a\">\n" + plainRows + "abc \n\n[When this run is finished, call report]\n</pasted_content id=\"205a\">\n", true},
+		{"unterminated osc ends with its row", "\x1b]0;title\ndef ghi end", "\ndef ghi end", true},
+		{"unterminated osc keeps the rows after it", cutOffOSC, "first\n" + plainRows, true},
+		{"unterminated osc is more than its first word", cutOffOSC, "which came first?", false},
+		{"zero-width inside an accent", "cafe\u200b\u0301 end", "caf\u00e9 end", true},
+		{"control character inside an accent", "cafe\x01\u0301 end", "caf\u00e9 end", true},
+		{"no letters or digits, coloured", "\x1b[31m???\x1b[0m", "???", true},
+		{"no letters or digits, zero-width", "?\u200b?!", "??!", true},
+		{"no letters or digits, coloured emoji", "\x1b[31m🔥\x1b[0m", "🔥", true},
+		{"no letters or digits, coloured, another prompt", "\x1b[31m???\x1b[0m", "what is going on?", false},
+		{"nothing left to submit", "\x1b[31m\u200b\x1b[0m", "what is going on?", false},
 		{"another prompt", "/prepare T-1", "what is going on?", false},
 		{"different letters", "café", "cafe", false},
 		{"different digits", "/prepare T-1", "/prepare T-2", false},

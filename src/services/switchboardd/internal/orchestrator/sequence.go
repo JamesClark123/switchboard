@@ -40,7 +40,7 @@ const (
 	droppedPostNote  = "post-prompts dropped"
 	clearStoppedNote = "clear retries stopped"
 	restartingNote   = "restarting setup with a fresh agent"
-	unconfirmedNote  = "typed, but not confirmed; it may have run"
+	unconfirmedNote  = "typed, but not confirmed"
 	otherPromptNote  = "another prompt was submitted"
 	noEvidenceNote   = "typed, but no report says it was accepted"
 	resumedNote      = "resumed: its turn was seen after the halt"
@@ -983,7 +983,11 @@ func typedLocked(l *pb.Run, res stepResult, resp *pb.DeliverWorkerStepResponse, 
 func haltLocked(l *pb.Run, note string) stepFx {
 	l.StepStatus = pb.StepStatus_STEP_STATUS_HALTED
 	l.StepNote = note
-	return stepFx{sync: true, halted: "halted: " + stepLabel(l) + " not accepted — " + note}
+	marker := "" // the row's (may have run): the notification has no other place for it
+	if l.GetStepUnconfirmed() {
+		marker = " (may have run)"
+	}
+	return stepFx{sync: true, halted: "halted: " + stepLabel(l) + " not accepted" + marker + " — " + note}
 }
 
 // advanceLocked finishes the current step (caller holds runs.mu): after the
@@ -1123,6 +1127,9 @@ func (rt *runtime) stopHeldClear(run *pb.Run) bool {
 func withNote(note, rest string) string {
 	if rest == "" {
 		return note
+	}
+	if note == "" {
+		return rest
 	}
 	return rest + "; " + note
 }
@@ -1265,7 +1272,12 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		case resp.GetOutcome() == pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL:
 			return rt.finishStep(run)
 		}
-		return rt.haltSent(run, resp.GetNote())
+		note := resp.GetNote()
+		if after(sb.GetAgent().GetLastOtherSubmitAt(), run.GetStepSentAt()) || run.GetStepNote() == otherPromptNote {
+			// It's why the read-back failed, or may be: a row may cut the rest short.
+			note = withNote(note, otherPromptNote)
+		}
+		return rt.haltSent(run, note)
 	}
 	now := rt.svc.clock.Now()
 	rt.mu.Lock()
@@ -1281,7 +1293,7 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 	}
 	if after(sb.GetAgent().GetLastOtherSubmitAt(), run.GetStepSentAt()) {
 		// The daemon's answer may predate it, or be lost.
-		return rt.haltSent(run, typedButNote(otherPromptNote))
+		return rt.haltSent(run, otherPromptNote)
 	}
 	return rt.haltSent(run, "")
 }
@@ -1322,7 +1334,7 @@ func (rt *runtime) haltSent(run *pb.Run, note string) bool {
 			if l.GetStepUnconfirmed() {
 				note = unconfirmedNote
 				if why := l.GetStepNote(); why != "" {
-					note = typedButNote(why)
+					note = why
 				}
 			}
 		}
@@ -1334,12 +1346,6 @@ func (rt *runtime) haltSent(run *pb.Run, note string) bool {
 		rt.applyFx(live, fx)
 	}
 	return true
-}
-
-// typedButNote is the note of a may-have-run halt whose cause is known. It fits
-// the row's 60 columns with the longest cause, otherPromptNote.
-func typedButNote(why string) string {
-	return "typed, but " + why + "; it may have run"
 }
 
 // finishStep finishes the current step and advances.

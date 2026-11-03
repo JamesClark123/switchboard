@@ -188,6 +188,16 @@ func stepSkippable(r *pb.Run) bool {
 // listed first and R asks first.
 func mayHaveRun(r *pb.Run) bool { return r.GetStepSentBeforeRestart() || r.GetStepUnconfirmed() }
 
+// haltReason is the confirm's line saying why a may-have-run step wasn't confirmed:
+// it decides between R and S, and a row may cut it short, so here it's whole.
+func haltReason(r *pb.Run) []string {
+	note := sanitizeLine(r.GetStepNote(), 0)
+	if note == "" {
+		return nil
+	}
+	return []string{"Reason: " + note}
+}
+
 // stepKeysHelp is the R/S/X help of a run row, offered only on a halted run
 // (R also on a held Clear, X on its retry). S comes first for a step that may
 // have run.
@@ -243,7 +253,7 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 			st.warning = "Anything it was doing is lost."
 		case mayHaveRun(run):
 			st.title = "Retry " + name + " of " + id + "?"
-			st.body = []string{"This step may already have run — check the worker's terminal."}
+			st.body = append([]string{"This step may already have run — check the worker's terminal."}, haltReason(run)...)
 			st.warning = "Retry anyway? It may run twice."
 		default:
 			st.title = "Retry " + name + " of " + id + "?"
@@ -261,6 +271,9 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 		res = pb.StepResolution_STEP_RESOLUTION_SKIP
 		st.title = "Skip " + name + " of " + id + "?"
 		st.body = []string{"The run goes on with the next step."}
+		if mayHaveRun(run) {
+			st.body = append(st.body, haltReason(run)...)
+		}
 		st.warning = "The skipped step is not sent."
 	case "X":
 		res = pb.StepResolution_STEP_RESOLUTION_FAIL

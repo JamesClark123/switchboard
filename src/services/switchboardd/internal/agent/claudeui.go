@@ -55,9 +55,10 @@ var (
 	// pastePlaceholder is how the box shows a multi-line paste.
 	pastePlaceholder = regexp.MustCompile(`^\[Pasted text #\d+[^\]]*\]$`)
 	// terminalEscape is what the agent removes from a paste as one escape, as
-	// observed (2.1.317): a CSI sequence, a string sequence (OSC, DCS and the like)
-	// up to its terminator, or ESC with its intermediates and final character.
-	terminalEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]*(?:\x07|\x1b\\)?|[ -/]*[0-~])`)
+	// observed (2.1.316, 2.1.317): a CSI sequence, even with its final byte cut off,
+	// a string sequence (OSC, DCS and the like) up to its terminator or the end of
+	// its row, or ESC with its intermediates and final character.
+	terminalEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]?|[\]PX^_][^\x07\x1b\n]*(?:\x07|\x1b\\)?|[ -/]*[0-~])`)
 )
 
 // InputBox reads the input box: every row between the last two horizontal rules,
@@ -169,26 +170,40 @@ func StepInBox(text, stepText string) bool {
 // paste comes wrapped in a <pasted_content> tag with its tabs turned to spaces, a
 // literal tag in the text gets a backslash, terminal escapes, zero-width and other
 // control characters are removed, and a short paste's accents are composed. So both
-// sides lose their terminal escapes and are composed, and the rest compares by
-// containment on letters and digits only. A step with neither compares without
-// whitespace instead, since every prompt would contain nothing.
+// sides are cleaned the same way (asReported), and the rest compares by containment
+// on letters and digits only. A step with neither compares without whitespace
+// instead, since every prompt would contain nothing. A step with nothing left at all
+// can't be submitted, so no prompt is its own.
 func StepPrompt(prompt, stepText string) bool {
+	prompt, stepText = asReported(prompt), asReported(stepText)
 	step := lettersAndDigits(stepText)
 	if step == "" {
-		return strings.Contains(squash(prompt), squash(stepText))
+		rest := squash(stepText)
+		return rest != "" && strings.Contains(squash(prompt), rest)
 	}
 	return strings.Contains(lettersAndDigits(prompt), step)
 }
 
-// lettersAndDigits keeps only the letters and digits outside terminal escapes,
-// composed (NFC).
+// asReported removes terminal escapes, then control and format characters other
+// than whitespace, and composes what's left (NFC), in that order: a removed
+// character may sit between a letter and its accent.
+func asReported(s string) string {
+	return norm.NFC.String(strings.Map(func(r rune) rune {
+		if unicode.In(r, unicode.Cc, unicode.Cf) && !unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, terminalEscape.ReplaceAllString(s, "")))
+}
+
+// lettersAndDigits keeps only the letters and digits.
 func lettersAndDigits(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsNumber(r) {
 			return r
 		}
 		return -1
-	}, norm.NFC.String(terminalEscape.ReplaceAllString(s, "")))
+	}, s)
 }
 
 // squash removes every whitespace rune (including the no-break space).

@@ -138,9 +138,10 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
      alone. `check_only` requests the lazy nudge too, so its read-back gets a fresh screen.
    - **A step that halts after UNCONFIRMED may have run** (a custom local command has no turn hook, and `check_only`
      never finishes a CUSTOM step). It is marked `step_unconfirmed` (Run field 30), shown as `… not accepted (may
-     have run)`, with the reason it wasn't confirmed in its note (`typed, but <reason>; it may have run`, and
-     `another prompt was submitted` whenever one is on record since the send), with `S` listed first and `R` asking the same "may already have run" confirm as a step sent before a
-     restart (contracts/jobs-ui.md).
+     have run)`, with the reason it wasn't confirmed in its note, and `another prompt was submitted` whenever one is
+     on record since the send or in the daemon's answer, first and ahead of a built-in's failed read-back. `S` is
+     listed first, and `R` asks the same "may already have run" confirm as a step sent before a restart. The `R` and
+     `S` confirms repeat the note in full, since a row may cut it (contracts/jobs-ui.md).
    - **A screen is enabled lazily.** Broadcasters persist across detach, so a sandbox whose terminal was opened before
      it became a worker already has one without a screen. When a sandbox becomes controlled (attach) or first gets a
      step, `EnableScreen` adds the screen to the existing broadcaster and nudges a repaint. The daemon's screen uses termview with

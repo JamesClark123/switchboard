@@ -11,6 +11,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // SWI-17: a run's sequence on its row, the R/S/X controls of a halted step and
@@ -62,7 +63,7 @@ func TestRunRowsShowTheStep(t *testing.T) {
 	restart.StepSentBeforeRestart = true
 	unconfirmed := halted(seqRun("run-unc", pb.RunState_RUN_STATE_RUNNING, 2, 0), "")
 	unconfirmed.StepUnconfirmed = true
-	otherPrompt := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "typed, but another prompt was submitted; it may have run")
+	otherPrompt := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "another prompt was submitted")
 	otherPrompt.StepUnconfirmed = true
 	unconfirmedSent := seqRun("run-uns", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	unconfirmedSent.StepNote = "another prompt was submitted"
@@ -79,7 +80,7 @@ func TestRunRowsShowTheStep(t *testing.T) {
 		halted(seqRun("run-bog", pb.RunState_RUN_STATE_RUNNING, 0, 0), "Model 'bogus' not found"): "setting up 1/3 not accepted: Model 'bogus' not found",
 		restart:         "setting up 3/3 not accepted (sent before a restart)",
 		unconfirmed:     "setting up 3/3 not accepted (may have run)",
-		otherPrompt:     "setting up 3/3 not accepted (may have run): typed, but another prompt was submitted; it may have run",
+		otherPrompt:     "setting up 3/3 not accepted (may have run): another prompt was submitted",
 		unconfirmedSent: "setting up 2/3 another prompt was submitted",
 		waiting:         "setting up 2/3 waiting: input box not empty",
 		clearHalt:       "Clear not accepted: picker opened",
@@ -245,6 +246,55 @@ func TestStopClearRetriesKey(t *testing.T) {
 	m = overviewAt(t, m, "run-hc")
 	if mm, cmd := update(m, press("X")); cmd != nil || mm.screen != screenJobs {
 		t.Errorf("X on a held Clear with no retry opened %v", mm.screen)
+	}
+}
+
+// SWI-28: a halt's reason shows whole on the row from 140 columns, or 160 when the
+// row also keeps 24 for a timed or triggered run's origin. Narrower, the row cuts it,
+// so the R and S confirms say it at any width.
+func TestHaltReasonAtNormalWidths(t *testing.T) {
+	run := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "another prompt was submitted")
+	run.StepUnconfirmed = true
+	const reason = "not accepted (may have run): another prompt was submitted"
+	row := func(r *pb.Run, width int) string {
+		m, _ := stepJobs(t, r)
+		m, _ = update(m, tea.WindowSizeMsg{Width: width, Height: 40})
+		return plainView(m)
+	}
+	triggered := proto.Clone(run).(*pb.Run)
+	triggered.EventKind, triggered.OriginLabel = pb.EventKind_EVENT_KIND_TRIGGERED, "a long enough event name"
+	if v := row(run, 140); !strings.Contains(v, reason) {
+		t.Errorf("140 columns: row cuts the reason:\n%s", v)
+	}
+	if v := row(triggered, 160); !strings.Contains(v, reason) {
+		t.Errorf("160 columns with an origin: row cuts the reason:\n%s", v)
+	}
+	if v := row(run, 100); strings.Contains(v, reason) {
+		t.Errorf("100 columns: the row is expected to cut the reason:\n%s", v)
+	}
+	m, _ := stepJobs(t, run)
+	m, _ = update(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	for _, key := range []string{"R", "S"} {
+		mm, _ := update(overviewAt(t, m, "run-oth"), press(key))
+		if v := plainView(mm); !strings.Contains(v, "Reason: another prompt was submitted") {
+			t.Errorf("%s confirm has no reason:\n%s", key, v)
+		}
+	}
+	// A step with no kept reason has no such line.
+	run.StepNote = ""
+	m, _ = stepJobs(t, run)
+	m, _ = update(overviewAt(t, m, "run-oth"), press("R"))
+	if v := plainView(m); strings.Contains(v, "Reason:") {
+		t.Errorf("confirm with no reason:\n%s", v)
+	}
+	// Nor does a step that isn't marked as maybe run: its note is on its row.
+	plain := halted(seqRun("run-bog", pb.RunState_RUN_STATE_RUNNING, 2, 0), "picker opened")
+	m, _ = stepJobs(t, plain)
+	for _, key := range []string{"R", "S"} {
+		mm, _ := update(overviewAt(t, m, "run-bog"), press(key))
+		if v := plainView(mm); strings.Contains(v, "Reason:") {
+			t.Errorf("%s confirm of a plain halt:\n%s", key, v)
+		}
 	}
 }
 
