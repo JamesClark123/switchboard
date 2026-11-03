@@ -61,7 +61,18 @@ type Emitter interface {
 // procHandle is the supervisor's grip on one running service: the cancel func for
 // its context, and (for an in-sandbox service) the process-group id announced by
 // the setsid wrapper, which is what lets the tree be killed from outside.
+//
+// launch serialises the launch with a developer's Stop (SWI-26): the runtime lock
+// is shared, and a Stop that ran before the handle had its PGID would have nothing
+// to signal, leaving the tree running in the sandbox under a STOPPED instance.
+// Never held across a wait for the runtime lock: a Stop waiting on it holds that
+// lock for reading, and a launch only try-locks it.
+//
+// stopping, guarded by Supervisor.mu, says a stop has claimed the instance and is
+// about to signal it: the exit that causes is not a failure (SWI-26).
 type procHandle struct {
+	launch   sync.Mutex
+	stopping bool
 	cancel   context.CancelFunc
 	pgid     int
 	inSbx    bool
@@ -87,8 +98,9 @@ type Supervisor struct {
 	mu      sync.Mutex
 	handles map[string]*procHandle // instance id -> handle
 
-	// tryRuntime try-locks a sandbox's runtime lock (SWI-17, research R14:
-	// sandbox.Manager.TryLockRuntime); nil = never gated. It never waits.
+	// tryRuntime try-locks a sandbox's runtime lock for reading (SWI-17,
+	// research R14; SWI-26: sandbox.Manager.TryRLockRuntime); nil = never
+	// gated. It never waits.
 	tryRuntime func(sandboxID string) (unlock func(), ok bool)
 }
 
@@ -106,9 +118,13 @@ func NewSupervisor(sandboxes SandboxLookup, runner Runner, emitter Emitter) *Sup
 	}
 }
 
-// SetRuntimeLock registers the sandbox runtime try-lock the developer's
-// requests take (SWI-17, research R14): an in-sandbox launch and a service
-// stop are refused while a lifecycle operation holds it.
+// SetRuntimeLock registers the sandbox runtime read try-lock every in-sandbox
+// `sbx exec` of the supervisor's own takes (SWI-17, research R14; SWI-26): a
+// developer's launch and stop, the readiness checks and the port publish are
+// refused while a lifecycle operation holds the lock, and don't exclude a
+// probe, a reap or each other. The read lock is shared, so a developer's start
+// or stop goes ahead while a probe or reap is in flight; a stop and its own
+// instance's launch exclude each other on the handle (procHandle.launch).
 func (s *Supervisor) SetRuntimeLock(fn func(sandboxID string) (unlock func(), ok bool)) {
 	s.tryRuntime = fn
 }
@@ -120,6 +136,36 @@ func (s *Supervisor) lockRuntime(sandboxID string) (func(), bool) {
 		return func() {}, true
 	}
 	return s.tryRuntime(sandboxID)
+}
+
+// runtimeHoldTimeout bounds a readiness check, which is a cheap read of /proc
+// made under a sandbox's runtime lock: a lifecycle operation waits for every
+// holder, and its drain is what would otherwise cancel a wedged call (SWI-26).
+// publishAttemptTimeout is the same bound for a port publish.
+const runtimeHoldTimeout = 10 * time.Second
+
+// runtimeRetryStep is how often awaitRuntime retries a refused lock.
+const runtimeRetryStep = 50 * time.Millisecond
+
+// awaitRuntime takes the sandbox's runtime lock, retrying while a lifecycle
+// operation holds it, until ctx ends (ok false). It holds nothing while it
+// waits, so it never stands in that operation's way; the operation's drain or
+// teardown cancels ctx when it settles the instance itself.
+func (s *Supervisor) awaitRuntime(ctx context.Context, sandboxID string) (func(), bool) {
+	for {
+		if unlock, ok := s.lockRuntime(sandboxID); ok {
+			if ctx.Err() != nil { // cancelled meanwhile: the canceller owns it
+				unlock()
+				return nil, false
+			}
+			return unlock, true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(runtimeRetryStep):
+		}
+	}
 }
 
 // SetClock overrides the supervisor clock; used in tests for deterministic stamps.
@@ -201,20 +247,9 @@ func (s *Supervisor) markFailed(id string, reason pb.ServiceFailureReason, detai
 	})
 }
 
-// transitionStarting is transition for a start attempt (bringUp): mutate
-// applies only while the instance is still STARTING, checked inside the store
-// update, and a skipped write is not published. Whoever moved it on (a stop's
-// drain, a developer's stop) owns the outcome (SWI-17, research R14).
-func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
-	inst, applied := s.updateStarting(id, mutate)
-	if applied {
-		s.publish(inst)
-	}
-	return applied
-}
-
-// updateStarting is the store half of transitionStarting: it reports whether
-// mutate applied, and leaves publishing to the caller.
+// updateStarting applies mutate only while the instance is still STARTING,
+// checked inside the store update, and reports whether it did. Whoever moved it
+// on (a stop's drain, a developer's stop) owns the outcome (SWI-17, research R14).
 func (s *Supervisor) updateStarting(id string, mutate func(*pb.ServiceInstance)) (*pb.ServiceInstance, bool) {
 	applied := false
 	inst, _ := s.insts.Update(id, func(i *pb.ServiceInstance) {
@@ -226,15 +261,26 @@ func (s *Supervisor) updateStarting(id string, mutate func(*pb.ServiceInstance))
 	return inst, applied
 }
 
-// failStarting is markFailed for a start attempt: the instance is FAILED only
-// while it is still STARTING, and the resources are released either way.
-//
-// The store write comes before the release because release cancels the
-// attempt's context: a bringUp woken by that cancel would otherwise still find
-// STARTING and write its own outcome (STOPPED for a cancelled probe, EXITED_EARLY
-// for its killed client) over this one. The publish still follows the release,
-// so nobody hears FAILED while the port is held.
+// transitionStarting is transition for a start attempt (bringUp): a write
+// updateStarting skipped is not published.
+func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
+	inst, applied := s.updateStarting(id, mutate)
+	if applied {
+		s.publish(inst)
+	}
+	return applied
+}
+
+// failStarting is markFailed for a start attempt, applied only while the
+// instance is still STARTING. The state is claimed BEFORE the release: the
+// release cancels the attempt's context, and a bringUp woken by that must find
+// the outcome already decided, or it records its own over the caller's. The
+// failure is published after the release, as markFailed does. A skipped write
+// releases nothing: whoever moved the instance on owns its resources (SWI-26).
 func (s *Supervisor) failStarting(id string, reason pb.ServiceFailureReason, detail string) {
+	if s.isStopping(id) {
+		return // the stop owns the outcome, and this is most likely its own signal
+	}
 	inst, applied := s.updateStarting(id, func(i *pb.ServiceInstance) {
 		i.State = pb.ServiceState_SERVICE_STATE_FAILED
 		i.FailureReason = reason
@@ -242,10 +288,11 @@ func (s *Supervisor) failStarting(id string, reason pb.ServiceFailureReason, det
 		i.LocalPort = 0
 		i.EndedAt = timestamppb.New(s.now())
 	})
-	s.release(id)
-	if applied {
-		s.publish(inst)
+	if !applied {
+		return
 	}
+	s.release(id)
+	s.publish(inst)
 }
 
 // release drops the supervisor's grip on an instance and gives back the host-side
@@ -266,13 +313,25 @@ func (s *Supervisor) release(id string) {
 		h.cancel()
 	}
 	if h.hostPort != 0 && h.ref != "" {
-		// Best-effort and deliberately not on the caller's context: a cancelled
-		// start must still give the port back. Unpublish replays the exact triple
-		// that was published.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.runner.UnpublishPort(ctx, h.ref, h.hostPort, h.sbxPort)
+		s.unpublish(h.ref, h.hostPort, h.sbxPort)
 	}
+}
+
+// unpublish gives a published port back. Best-effort and deliberately not on the
+// caller's context: a cancelled start must still give the port back. It replays
+// the exact triple that was published.
+func (s *Supervisor) unpublish(ref string, hostPort, sbxPort uint32) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = s.runner.UnpublishPort(ctx, ref, hostPort, sbxPort)
+}
+
+// isStopping reports whether a stop has claimed the instance.
+func (s *Supervisor) isStopping(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.handles[id]
+	return ok && h.stopping
 }
 
 // handleFor returns the live handle for an instance, if any.

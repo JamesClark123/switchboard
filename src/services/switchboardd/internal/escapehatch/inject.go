@@ -42,7 +42,8 @@ func Inject(workspacePath, sandboxID, callbackURL string, commands []*pb.EscapeH
 // The daemon resolves the name against this sandbox's allowlist and validates the
 // workspace/args against that command's declared constraints. It also sends the
 // agent's hook token from the environment it inherits (SWI-17, research R13):
-// only the agent's own process tree can run a hatch command.
+// only the agent's own process tree can run a hatch command. The token reaches
+// curl as a config on stdin, never argv, which any user can read (SWI-27).
 func writeWrapper(workspacePath, sandboxID, callbackURL string) error {
 	path := filepath.Join(workspacePath, wrapperRelPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -76,10 +77,12 @@ esc() { printf '%%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 # The agent's hook token and generation (inherited from its environment, SWI-17)
 # say the call comes from the agent's own process tree; without them the daemon
 # refuses it.
-curl -s -X POST -H 'Content-Type: application/json' \
-  -H "X-Sxb-Token: ${SXB_HOOK_TOKEN:-}" -H "X-Sxb-Gen: ${SXB_AGENT_GEN:-}" \
+curl -s -K - -X POST -H 'Content-Type: application/json' \
   -d "{\"sandbox_id\":\"%s\",\"name\":\"$(esc "$name")\",\"workspace\":\"$(esc "$workspace")\",\"args\":\"$(esc "$args")\"}" \
-  %s
+  %s <<SXB
+header = "X-Sxb-Token: ${SXB_HOOK_TOKEN:-}"
+header = "X-Sxb-Gen: ${SXB_AGENT_GEN:-}"
+SXB
 `, sandboxID, callbackURL)
 	return os.WriteFile(path, []byte(script), 0o755)
 }

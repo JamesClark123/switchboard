@@ -711,6 +711,44 @@ gets typed or what counts as evidence, and each needs a boundary.
        the sandbox can send any header. The token and the screen corroboration above are the boundary.
      - The submit check, the evidence fields (incl. `last_needs_input_at`) and hold release use main-session events
        only. Status display keeps today's behaviour.
+   - **Amended by SWI-27 (hook & bind hardening).** Where this conflicts with the text above, this wins.
+     - **Observed on Docker Sandboxes** (a worker sandbox, Claude Code 2.1.312-316; Scenario 0 step 4): the agent's
+       parent is **0**, PID 1 is `tini`, and hooks run under **dash** (`/bin/sh`) with a **socket** on stdin. The fresh
+       `sbx exec` reference side needs the host and is still to be recorded.
+     - **The token is not in curl's argv.** `sh -c` expanded `-H "X-Sxb-Token: $SXB_HOOK_TOKEN"` into
+       `/proc/<curl>/cmdline`, readable by any user. Hook commands now pass the headers as a curl config in a
+       here-document on fd 3 (`-K /dev/fd/3 … 3<<SXB`); the wrapper uses one on stdin (`-K -`). dash rules out `<(…)`,
+       and a socket can't be opened through `/dev/fd`, which rules out moving the body off stdin to `@/dev/fd/N`.
+     - **The launch record binds the main PID.** Every hook also sends `~/.sxb/agent.pid` (`X-Sxb-Main: <gen> <pid>
+       <start>`) and the start time of `$PPID` (`X-Sxb-Pid-Start`), read with shell builtins, no forks. A hook binds
+       only when the record names the process that fired it (same generation, PID and start time), on **any** event,
+       so a lost first SessionStart can't hand the binding to a nested `claude -p`: the main agent's next event takes
+       it. This replaces "bound by the first non-`compact` SessionStart", which stays only for a hook with no record (a
+       command from before SWI-27, kept until its agent restarts, or a launch that couldn't write the file, which can
+       leave the previous generation's record: a record of another generation counts as none). A SessionStart from a
+       direct child of the recorded process also binds, for a `claude` on PATH that is a wrapper that forks (hooks send
+       `X-Sxb-Pid-Parent`). A nested session usually runs under the agent's tool shell, so it isn't one, but a shell can
+       exec its last command (`bash -c 'claude -p …'`), which leaves it a direct child. Any other unbound SessionStart
+       is logged and doesn't bind.
+     - **A proven hook may replace a binding with no start time** (revising run-590 for hooks; a probe still never
+       replaces one), which corrects one made with no record. It may also replace one made for a direct child, which
+       stores the child's start time so a reused PID is caught: a hook from the recorded process proves that process is
+       the agent and the child a nested session, and a real wrapper fires no hooks. That mark is in memory only, so
+       after a daemon restart the child's binding is final. Any other binding with a start time is final: `exec` keeps
+       the main PID for the generation's life. This does not widen anything: a process in the sandbox could already forge
+       `X-Sxb-Pid`, and the PID match remains a filter, **not** a security boundary.
+     - **The start time is recorded when binding**, and an event whose start time differs from the bound one is not
+       main: its PID was reused.
+     - **A first probe bind is refused when the exec path's parent is PID 1 or a known subreaper** (`subreaperExes`, by
+       executable name, since `/proc` doesn't expose subreaper status): any orphan is reparented there and would look
+       like an exec child. The sandbox falls back to the hook bind or Replace. Parent 0 still binds: it is outside the
+       sandbox's PID namespace, and nothing is reparented to it. The list can't catch an unlisted subreaper that isn't
+       PID 1, or one run by an interpreter (supervisord), whose executable is the interpreter's.
+     - **Bounded hook work.** The hard read cap is **1 MiB** (was 16 MiB); a request read no further than its fields
+       is answered `Connection: close` rather than drained. A Stop cut off before its `background_tasks` counts as
+       still having work running; a body that ends exactly at the cap was read whole and is not cut off. Hook-driven input-idle samples are limited to one per sandbox per second
+       (`idleSampleGap`), except for the main agent's SessionStart, UserPromptSubmit, Stop and Notification. That
+       exemption rests on the forgeable PID, so a process holding the token can still avoid the limit.
 3. **The step RPC can't type arbitrary commands.** `DeliverWorkerStep` is served on the same authenticated surface as
    `DeliverWorkerPrompt`: the local daemon socket, and the orchestrator's SSH-dialled link. On top of that:
    - **Built-ins are derived and checked.** For MODEL, EFFORT and CLEAR the daemon types the text it derives from
@@ -751,11 +789,14 @@ safety core without:
 - operation-specific `ErrBusy` messages: a generic `sandbox is busy; try again` (this includes the ~20 s hold during
   a developer's service stop);
 - detailed orphan notes: no last-seen state or time in notes;
-- the PID-1/subreaper first-bind refusal, a shared rate-limited `ListStatuses`, and `runtimeMu` gating of
-  `sbx mcp`/`sbx ports` (pending quickstart Scenario 0 step 5);
-- the best-effort drain's guarantees: no ordering against `sbx stop`, nothing promised after a failed stop.
+- the PID-1/subreaper first-bind refusal;
+- ~~a shared rate-limited `ListStatuses`, and `runtimeMu` gating of `sbx mcp`/`sbx ports`~~ (done in SWI-26, see
+  *Amendment: `runtimeMu` read/write split* at the end of this section);
+- ~~the best-effort drain's guarantees~~ (SWI-26: ordering closed by the read/write split; what survives a failed
+  stop is a recorded decision, see the amendment).
 
-Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence.
+Where the text below describes one of these, tasks.md's *Deferred items* section takes precedence. Where it
+describes `runtimeMu` as a plain mutex, the SWI-26 amendment at the end of this section takes precedence.
 
 
 **Context, verified against the code.**
@@ -1155,3 +1196,124 @@ stop as an exit during setup (FR-212).
 **What is not claimed.** Nothing is read back from a screen that no longer exists: `check_only` answers `no live
 agent`. R8's evidence-based resolution still applies to steps whose evidence arrives by hook, which keeps working
 from an orphan.
+
+### Amendment: `runtimeMu` read/write split (SWI-26, 2026-11-02)
+
+Supersedes the single exclusive `runtimeMu` above (the developer's grooming decision on SWI-19, 2026-10-31). With
+one exclusive lock, operations that don't conflict refused each other: a developer's service start or stop failed
+`sandbox is busy` during a 10 s probe or a 15 s reap, and a probe backed off for the whole 20–30 s of a service stop.
+
+**The lock.** `runtimeMu` is a per-sandbox `sync.RWMutex` (`sandbox/runtime.go`, `sandboxLocks.rw`).
+- **Write, blocking:** the lifecycle operations, exactly as before (`runtimeOp`: Stop, Restart, Refresh, AddKit,
+  Destroy). The outcome rule still runs only on the write release.
+- **Read, try-lock (`TryRLockRuntime`), never waiting:** every other call that may start a stopped sandbox:
+  - probes and reaps, and every spawn (`Admit`), through the orphan gate (below);
+  - the service supervisor's own in-sandbox execs: the developer's launch and stop (as before), and now also each
+    readiness check (`lockedListenState`; refused reads as *not listening*, and the loop tries again), the
+    failed-start kill (`stopProc`), the failed start's loopback diagnosis and `sbx ports --publish`, held until the
+    handle records the published port so the drain can always unpublish it. The last three **wait** for a refused
+    lock (`awaitRuntime`, polling, holding nothing, and giving up if the start was cancelled meanwhile) with the
+    instance still STARTING, and so do the readiness window's last checks (`finalListenState`), so a refused check
+    never ends a start: the operation's drain or
+    teardown cancels the start and owns its group (a Stop, Refresh or Destroy drain; AddKit's CREATING teardown),
+    or the operation ends without touching it and the start carries on. A drain records FAILED **before** it cancels
+    (`failStarting`), because a start woken by that cancel would otherwise record its own failure first; a start
+    cancelled mid-wait records no failure of its own. A readiness check made under the read lock is
+    bounded by `runtimeHoldTimeout` (10 s) and each publish attempt by `publishAttemptTimeout` (30 s; a publish can
+    be slow on a busy host, and one that hits the bound isn't retried and has its port given back), so a wedged call
+    can't hold a waiting stop for long;
+  - `sbx mcp load|unload --sandbox` from the `M` overlay (`AttachMcp`/`DetachMcp`; refused with an error wrapping
+    `ErrBusy`, so the gRPC layer answers FAILED_PRECONDITION as for the operation latch) and the worker gateway's
+    load (`worker.gateway.load`). These take `HoldRuntimeRead`, because an `sbx mcp` call may run for 60 s (120 s
+    for an unload trying two refs) and bounding it by seconds would break slow loads: a lifecycle operation cancels
+    the ones in flight just before it asks for the write lock, and the caller reports that as the same busy refusal.
+    The cancel kills `sbx`'s whole process group, and a `WaitDelay` of 2 s bounds whatever escapes the group and still
+    holds the output (`SbxRunner.runHeld`, `mcp.CLI.runBounded`): the cancel alone would kill only `sbx`, and the call
+    would then wait for the pipes to close, with the stop behind it unable to give up. An `sbx` that exits 0 has
+    succeeded even if a helper it left outlasts the delay, and even if the context ends during that wait
+    (`exec.ErrWaitDelay` only ever means exit 0: both `Cancel` funcs return nil, so a cancel before the exit reports
+    the context's error or an `ExitError`).
+    So a stop waits only for readers with their own bounds, seconds to tens of seconds (about 50 s for a developer's
+    service stop, about 90 s for a wedged publish), and a killed load leaves the record untouched for the developer
+    to retry. A load refused or cancelled at attach becomes a bring-up (`GoBringUp`), so the agent start is held until
+    the load, as after a Restart, and warm-started after it. At a launch-attach the persisted record is still CREATING
+    and a bring-up would give up on it, so the load is recorded as owed, which holds the agent start the same way, and
+    the end of the launch runs the bring-up instead of a warm start (`Service.OnLaunched`). The debt is settled only
+    once a bring-up's load has run; one that gave up on the record (still CREATING, or stopped) leaves it owed for the
+    next. A Detach settles it, and so does the end of the launch if the controller has gone by then, because a Detach
+    during the attach's `mcp add` runs before the load is refused. A bring-up retries a refused load (`Service.loadWhen`, up to 30 min, each attempt
+    bounded); if the sandbox is not RUNNING, or gone, it neither loads nor warm-starts (`errNotRunning`): both would
+    start it again, or mint a hook token for a destroyed sandbox. The next Restart, Refresh or AddKit ends in the
+    bring-up that does them. AddKit gained that bring-up here: its CREATING closes the agent and defers any
+    overlapping attach's load, and nothing else would run them.
+
+  A waiting writer blocks new readers (`sync.RWMutex`), so once a lifecycle operation asks for the lock no new read
+  holder starts, and it waits only for the ones in flight.
+
+**Pairs that still exclude each other, and where.**
+| Pair | Why | Lock |
+|---|---|---|
+| lifecycle op × any exec | `sbx exec` (and, conservatively, `sbx ports`/`sbx mcp`) starts a stopped sandbox | `rw` write vs read |
+| reap × spawn | the reap script would stop the agent being spawned (its session isn't registered yet, so the `LiveGen` re-check can't see it) | orphan gate |
+| probe × spawn | the probe would find the spawning agent alive with no live session and record it as an orphan | orphan gate |
+| probe × reap | already safe through `epoch` (a probe's result is dropped if a reap dropped the sandbox since it took the gate); kept on the gate anyway, so a probe never execs beside a kill | orphan gate |
+| service launch × developer stop (same instance) | with the lock shared, a stop before the handle has its PGID would signal nothing and leave the tree running in the sandbox under a STOPPED instance (the old exclusive lock prevented this). The stop waits for the launch (at most `pgidWait`, 5 s), then signals the group; a launch not begun yet finds itself cancelled and never runs | `procHandle.launch` (a per-instance mutex, never held across a wait for `rw`) |
+
+The orphan gate is a second per-sandbox mutex (`sandboxLocks.orphan`), only ever try-locked while holding `rw` for
+reading (`Manager.orphanGate`), so it adds no wait and no lock cycle. The single-flight `probing` flag only stops
+two probes of one sandbox; it doesn't exclude a reap or a spawn, so it isn't enough by itself. A busy gate keeps
+the old behaviour: a probe is retried after `orphanRetryBase`, a Replace or a spawn is refused `ErrBusy`.
+
+**Drain ordering (closes deferred gap 1).** Every `sbx exec` path the daemon starts on its own initiative now holds
+the read lock: agent spawn (`Admit`), service launch, readiness checks, port publish, failed-start kill, MCP
+load/unload and the worker gateway load. A stop holds the write lock from before its drain until it has written
+the result. So an exec asked for during the drain is refused and never run.
+
+An exec asked for *after* a stop has finished is refused where the caller re-reads the record under the lock: a
+service launch (`launchExclusive`), the gateway load (`gateway.load` with `runningRef`), and a start's later execs,
+which the drain has already cancelled. An attach's and a bring-up's warm start re-read just before they spawn. A
+spawn itself holds the lock but doesn't re-read: `Admit` runs under the agent registry's lock and never touches the
+store, so a caller's stale record can still start the sandbox in the moment between its read and the gate.
+`AttachMcp` and `DetachMcp` deliberately don't re-read either, since they allow a STOPPED sandbox. The execs a
+lifecycle operation runs itself, and its on-change teardown (`StopAll`), stay ungated, as before. Tests:
+`TestRuntimeLockOrdersOperations` (read lock and `AttachMcp` refused during each operation),
+`TestStartRunsNoExecUnderALifecycleOperation`, `TestStartIsRefusedIfTheSandboxStoppedSinceItsRead`,
+`TestAttachReadsTheStateUnderTheRuntimeLock`.
+
+**What survives a failed `sbx stop` (deferred gap 2): a decision, not a reconcile.** Agents are re-probed as before
+(`stopFailed`). Interrupted services are **not** re-checked to read RUNNING again:
+- the drain sends KILL to every interrupted service's process group whatever its client did (`KillGroups`), so one
+  survives only if that `sbx exec kill` itself failed;
+- its handle, exec client and published port were already released when it was recorded FAILED, so reading
+  RUNNING again would mean re-adopting a process the daemon has no client for, and re-publishing its port;
+- the FAILED record already says *may still be running in the sandbox*, and the developer can start it again; a
+  fresh start fails visibly if a survivor still holds the port.
+The cost of a reconcile (a listing plus one `/proc` exec per interrupted service, then re-adoption) isn't justified
+for that case.
+
+**Shared listing for probes (B3).** `orphans.running` reads `Manager.listShared`: a call is joined while in flight,
+and its successful result reused, until `listSharedMaxAge` (1.5 s) after it **started**, however long it took; a
+caller after that starts its own. The call runs on its own context bounded by `orphanProbeTimeout` so a caller that
+gives up never fails it for the others. A failure is shared with the callers
+waiting on that call but never cached. A lifecycle operation invalidates it as it releases the write lock, so the
+outcome rule's probe never reads a listing from before the operation. A reap reads the runtime fresh (it signals
+processes, and is rare), as do the start-up check, `listedRunningStrict` and `Reconcile`. Trade-off: a sandbox
+stopped *outside* the daemon may be probed on a stale "running" from a listing begun less than 1.5 s before the
+probe asked (before, the window was the time between the listing and the exec).
+
+**Start-up check off the serving path (B2).** The check now runs in a goroutine beside the gRPC server.
+`MarkOrphanCandidates` still marks every candidate unknown before the hook server serves, so the gate refuses
+those spawns meanwhile. `PrepareOrphanCheck` reads every sandbox's token generation synchronously at the same
+point, before the hook server serves and before any warm start, and returns the check; only the listing is slow.
+So every generation above the snapshot is this daemon's own, whichever way the goroutines interleave. The check
+skips a sandbox whose generation has moved (e.g. a worker warm-started that was not a candidate): that agent is
+never retired, marked EXITED or made unknown from the listing. Otherwise it retires only generations at or below
+the snapshot, and classifies each sandbox from its record re-read at that moment.
+Tests: `TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot`, `TestStartupCheckSnapshotPrecedesAWarmStart`.
+
+**`sbx mcp`/`sbx ports` and a stopped sandbox (quickstart Scenario 0 step 5).** Not re-verified on a real host
+for SWI-26: `sbx` isn't available in the development sandbox. `AttachMcp`'s own contract already says the runtime
+starts a stopped sandbox on `mcp load`. Both calls are gated anyway: the read lock doesn't conflict with probes, and
+only refuses during a lifecycle operation. The cost is that an operation kills an `sbx mcp` call in flight, which
+the developer retries.
+

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,9 +110,15 @@ type fakeRunner struct {
 	mu          sync.Mutex
 	published   [][2]uint32
 	unpublished [][2]uint32
+	unpubRefs   []string
 	execArgv    [][]string
 	publishErr  error
 	forwarders  map[uint32]net.Listener
+	// markerDelay holds back a launch's PGID marker, as a slow `sbx exec` would.
+	markerDelay string
+	// publishHook, when set, runs first in PublishPort; an error is returned as
+	// the publish's.
+	publishHook func(ctx context.Context, hostPort uint32) error
 }
 
 // PublishPort stands in for `sbx ports --publish` by actually forwarding hostPort
@@ -121,7 +128,15 @@ type fakeRunner struct {
 // nothing: the probe's whole job is to dial the PUBLISHED port. Since the fake
 // Runner already runs "in-sandbox" commands on the host, a real loopback forwarder
 // reproduces the mapping faithfully.
-func (r *fakeRunner) PublishPort(_ context.Context, _ string, hostPort, sandboxPort uint32) error {
+func (r *fakeRunner) PublishPort(ctx context.Context, _ string, hostPort, sandboxPort uint32) error {
+	r.mu.Lock()
+	hook := r.publishHook
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, hostPort); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	if r.publishErr != nil {
 		err := r.publishErr
@@ -163,9 +178,10 @@ func (r *fakeRunner) PublishPort(_ context.Context, _ string, hostPort, sandboxP
 	return nil
 }
 
-func (r *fakeRunner) UnpublishPort(_ context.Context, _ string, hostPort, sandboxPort uint32) error {
+func (r *fakeRunner) UnpublishPort(_ context.Context, ref string, hostPort, sandboxPort uint32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.unpubRefs = append(r.unpubRefs, ref)
 	if ln, ok := r.forwarders[hostPort]; ok {
 		_ = ln.Close()
 		delete(r.forwarders, hostPort)
@@ -180,6 +196,9 @@ func (r *fakeRunner) Exec(ctx context.Context, _ string, argv []string) *exec.Cm
 	r.mu.Unlock()
 	if len(argv) == 0 {
 		argv = []string{"true"}
+	}
+	if len(argv) > 2 && r.markerDelay != "" && strings.Contains(argv[2], pgidMarker) {
+		argv = []string{argv[0], argv[1], "sleep " + r.markerDelay + "; " + argv[2]}
 	}
 	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
@@ -198,6 +217,12 @@ func (r *fakeRunner) unpublishes() [][2]uint32 {
 	out := make([][2]uint32, len(r.unpublished))
 	copy(out, r.unpublished)
 	return out
+}
+
+func (r *fakeRunner) unpublishRefs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.unpubRefs)
 }
 
 // launchCount counts only the exec calls that started a service, ignoring the

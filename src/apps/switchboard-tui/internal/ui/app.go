@@ -139,6 +139,7 @@ type Daemon interface {
 	DetachWorker(ctx context.Context, id, sandboxID string, guard *pb.LaneGuardConfirm) error
 	DetachController(ctx context.Context, sandboxID, orchestratorID string, force bool) (*pb.Sandbox, error)
 	MarkWorkerFree(ctx context.Context, id, sandboxID string, failed bool, note string) (*pb.Run, error)
+	SetWorkerPaused(ctx context.Context, id, sandboxID string, paused bool) (*pb.WorkerView, error)
 	PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error)
 	DeleteAction(ctx context.Context, id, name string) ([]string, error)
 	PutTimedEvent(ctx context.Context, id string, ev *pb.TimedEvent) (*pb.TimedEvent, error)
