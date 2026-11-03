@@ -62,7 +62,10 @@ editor on `PATH`. Gates: `make fmt-check vet lint test cover` (≥ 90 % per modu
 **Project Type**: TUI client change inside the existing three-module layout (one module touched, one e2e).
 
 **Performance Goals**: `v` adds a few microseconds of parsing on the update loop and one `exec.LookPath` inside
-its command. The size check runs on every message but computes its target only when its key changes (status,
+its command. An empty or one-line status adds no help render per frame: `statusLineCount` returns before it
+computes a limit, and `chrome` renders the help once from its own `hb` and reuses the count (the help calculation is
+≈ 295 µs and 453 KB at 80×24 with 8 sandboxes, measured in review, so `BenchmarkViewList` keeps this visible; R9). The
+size check runs on every message but computes its target only when its key changes (status,
 size, banner, surface, tabs, mark-free); wrapping a 280-column status is ≈ 7 µs, the list target ≈ 300 µs (spec
 Notes). No new polling; per launch, one goroutine waits for the editor to exit (reaping it, FR-511) and one
 decides the report within 3 s.
@@ -77,8 +80,8 @@ decides the report within 3 s.
   built-in case is on the edge and its wording is measured and shortened per `contracts/editor-launch.md` §4.
 - Limits are package constants: 3 s exit grace, 6 status lines, 2 on the terminal screen, 60/120/40 columns.
 
-**Scale/Scope**: 11 catalogue rows, 2 settings keys, 9 new env vars. About 7 new files in `internal/editor`, 3
-new and ~8 edited files in `internal/ui`, 2 in `internal/store`, 1 in `internal/config`, `main.go`, README,
+**Scale/Scope**: 11 catalogue rows, 2 settings keys, 9 new env vars. About 8 new files in `internal/editor`, 3
+new and ~11 edited files in `internal/ui`, 2 in `internal/store`, 1 in `internal/config`, `main.go`, README,
 `.env.example`, and 3 e2e tests.
 
 ## Constitution Check
@@ -127,27 +130,31 @@ src/apps/switchboard-tui/
 ├── .env.example                       # + 9 SWITCHBOARD_<EDITOR>_BIN rows
 ├── cmd/sxb/main.go                    # WithEditor(editor.NewLauncher(), cfg.EditorBins) replaces the vscode opener
 └── internal/
-    ├── config/config.go               # schema rows from editor.Catalogue(); EditorBins (raw); EditorBin(id)
+    ├── config/config.go               # schema rows from editor.Catalogue(); EditorBins (raw)
     ├── editor/                        # NEW (replaces internal/vscode)
     │   ├── catalog.go                 # Editor, RemoteKind, Catalogue, Lookup, Command
+    │   ├── refusal.go                 # Refusal (the typed result every check returns)
     │   ├── shellwords.go              # Split (FR-531), Word.TildeOK, rule errors
     │   ├── check.go                   # Check, Expand, Substitute (FR-506, FR-515, FR-516)
     │   ├── pathcheck.go               # path checks and the remote limit (FR-517)
     │   ├── zed.go                     # ZedAddress (FR-513)
-    │   ├── resolve.go                 # Request, Plan, Refusal, Precheck, Resolve (FR-510–FR-526)
+    │   ├── resolve.go                 # Request, Plan, Precheck, Resolve (FR-510–FR-526)
     │   └── launch.go                  # Launch, Started, ExitReport, exitGrace (FR-511, FR-523)
     ├── store/
     │   ├── store.go                   # + SaveTOMLPrivate (0600, CreateTemp, chmod)
     │   └── settings.go                # Editor, EditorCustomCommand; Update(SettingsChange); SettingsUnreadableError
     └── ui/
-        ├── app.go                     # Model fields; wrapper order (release, size check); bodyHeight; footer; chrome
+        ├── app.go                     # Model fields; wrapper order (release, size check); bodyHeight; footer; chrome; activeHelp; forwardScreen and resize for the input
         ├── status.go                  # NEW: statusLines, limits, cutMiddle, sizeKey/activeSurface check, hold + release
         ├── editor_open.go             # NEW: openEditorCmd, editorOutcomeMsg/editorExitMsg, message assembly, notices
         ├── settings.go                # Editor row, list mode, notices, wrapping, Update-based saves, (not saved)
         ├── settings_command.go        # NEW: command input, gEditorCommand submit/discard, note
         ├── formguard.go               # gEditorCommand in activeGuard/guardDirty/guardSave/guardDiscard
         ├── terminal.go                # termRows fixed; vHold.seq; termFail; 2-line status
-        ├── orphan.go                  # confirmReplaceOrphan: dialog flag, onAccept seq, onCancel
+        ├── orphan.go                  # confirmReplaceOrphan: holdsV, onAccept seq
+        ├── confirm.go                 # confirmState.holdsV
+        ├── jobs.go                    # jobsFixedLines, shared with viewJobs and the status limit
+        ├── orchestrator_lanes.go      # lanesFixedLines, shared with lanesView and the status limit
         ├── keys.go                    # listHelp: v label = editor id
         ├── groups.go                  # openVSCodeCmd removed; sshTargetForHost returns the lookup error
         └── sandbox_list.go            # v → openEditorCmd

@@ -52,7 +52,7 @@ what was chosen, why, and what was rejected.
   kit picker, notifications, runs, services) and 7 huh `WithHeight` (config editor, orchestrator forms, MCP
   form ×2, kit editor, run actions, secrets). The sandbox list's own `newItemList` (`sandbox_list.go:45`) takes
   its size from `mainListHeight` and is the one surface resized after startup, on `tea.WindowSizeMsg`. Jobs
-  (`jobs.go:440`) and the lanes picker read `bodyHeight` as they render and window their rows; Daemons and
+  (`jobs.go:440`) and the lanes list read `bodyHeight` as they render and window their rows; Daemons and
   Settings render their rows with no height at all.
 - The `Update` wrapper (`app.go:671`) runs `reconcileGuardLayers`, `openParkedOverride` and
   `openDeferredMcpFollowups` after every message; `sources.go:421` and `mcp.go:845` can set `m.status`.
@@ -134,7 +134,7 @@ produces exactly this (probe): `ssh://user@box/srv/ws/my%20proj`, `ssh://[2001:d
 
 The spec's Notes measured today's layout: the sandbox list's help footer is 5 lines at 80 columns and the bubbles
 list draws at least 9 rows, so a one-line message needs 20 rows (21 with the banner), leaving 4 lines for a
-message at 80×24 with the banner. These are inputs to R9's limits, not re-measured here; T051's SC-004 test
+message at 80×24 with the banner. These are inputs to R9's limits, not re-measured here; T040's SC-004 test
 measures the real text.
 
 ## Decisions
@@ -164,9 +164,10 @@ carry the editor); rules inside `ui` (untestable without a model; duplicated by 
 `SWITCHBOARD_GOLAND_BIN`, `SWITCHBOARD_SUBLIME_BIN`, each `def` = the default command and `doc` naming the
 editor (FR-503). `SWITCHBOARD_CODE_BIN` keeps its row. `Config.CodeBin` is replaced by
 `Config.EditorBins map[string]string` (identifier → the **raw** value, `""` when unset or blank after trimming,
-FR-502) and `Config.EditorBin(id) (bin string, set bool)`. `Load` reads these keys raw instead of substituting
-the default, because the default is applied by `editor.Command(id, bins)` and FR-517 needs to know whether the
-variable is set. `.env.example` lists each with its default (env-check lockstep).
+FR-502). `Load` reads these keys raw instead of substituting the default, because the default is applied by
+`editor.Command(e, bins)`, the one place that decides whether the variable counts as an override (FR-517).
+`.env.example` lists each with its default (env-check lockstep). A value equal to the default isn't an override, so
+exporting that file as it stands changes nothing (R13).
 
 **Rationale**: FR-503 wants the vars in the one declared list the env check and docs read; deriving them from the
 catalogue means adding an editor is one row. Keeping the raw value preserves "used as one executable, exactly as
@@ -187,7 +188,9 @@ re-reads the file into `settingsFile` (a missing file is the zero value; a read 
 `*store.SettingsUnreadableError` without writing), copies each non-nil change over the corresponding pointer
 field, so only the changed keys are written and an absent, unchanged key stays absent, and writes through a new
 `Store.SaveTOMLPrivate(name, v)`: `os.CreateTemp(dir, ".settings.toml-*.tmp")` (fresh, unique, `0600`), write,
-close, `os.Rename`, then `os.Chmod(full, 0600)` so an existing wider file is corrected (FR-527). Unknown keys and
+close, `os.Rename`, then `os.Chmod(full, 0600)` so an existing wider file is corrected (FR-527). A failure after
+`CreateTemp` removes the temp file: each name is unique, so nothing else would, and it can hold the Custom command
+after the developer has cleared it from settings. Unknown keys and
 comments are dropped, as FR-530 states. The callers are: toggle → `{AutoConnectHosts: &v}`; built-in editor →
 `{Editor: &id}`; Custom → `{Editor: &"custom", EditorCustomCommand: &text}`.
 
@@ -225,8 +228,11 @@ error, no remote support, FR-522's custom checks, `-` on the target as given and
 text, failed: true}`. Otherwise the command: `exec.LookPath(exe)` (FR-518's not-found refusal, in the command so
 the UI never blocks), `d.VSCodeTarget`, `editor.Resolve(req with path)` (FR-517 path checks, argv), then
 `editor.Launch(argv)`. It returns `editorOutcomeMsg` with the opened text, or the failure text, and for a launch
-the `wait <-chan editor.ExitReport` from the reaper. The handler for a successful outcome sets the status,
-deletes **only this row's** `busy` entry, doesn't reload, and returns a command that waits on `wait`; a report
+the `wait <-chan editor.ExitReport` from the reaper. The handler for any outcome deletes **only this row's** `busy`
+entry and calls `refreshListItems` (a row's text is built into its list item, and the spinner tick only rebuilds while
+something else is animating, so the row would keep showing `opening`), and doesn't reload. A successful outcome
+also sets the status, clears `m.err` as `statusMsg` does today (or an earlier `errMsg` would show it in red, FR-529,
+SC-002) and returns a command that waits on `wait`; a report
 arrives as `editorExitMsg` (FR-523) and sets only the status fields. Message text is assembled in `ui` from
 typed parts (`editor.Refusal{Rule, Detail, Where}`), with the notices appended per FR-529 and outside text cut
 per FR-533 (R9), so the daemon error and the OS reason are cut before the notices are added.
@@ -297,28 +303,40 @@ answer for the rest.
 **Decision**: a new `ui/status.go`:
 
 - `statusLines(width, limit) []string`: `sanitizeTerminalText` (newlines to spaces) → `ansi.Wrap(s, width, "")`
-  → cut to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "…")`). `Wrap`, not `Wordwrap`:
+  → cut to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "") + "…"`: `Truncate` adds its tail
+  only to text that's too long, and a line wrapped at a space usually isn't, so passing `…` as the tail would often
+  cut the message with no sign of it). `Wrap`, not `Wordwrap`:
   `Wordwrap` never breaks a token longer than the width, so a 120-column daemon error would stay on one line and
   Bubble Tea would cut it with no ellipsis; `Wrap` still prefers spaces and hyphens and breaks a long token only
   when it must. No cache: wrap and cut on each use.
 - `m.statusLimit()`, computed **without rendering**: `min(statusMaxLines (6), max(1, m.height - headerLines (2)
-  - 1 - helpLines - minBody))`, where `minBody` is the active surface's smallest usable body: the sandbox list
+  - 1 - helpLines - minBody))`, where `helpLines` comes from `m.activeHelp()` (the one screen → help map, which
+  `viewScreen` also reads, since today only `viewScreen` knows it and assigns it together with the body) and `minBody`
+  is the active surface's smallest usable body: the sandbox list
   `9 + 2 + banner`; a resizable item list or huh form `3` (`bodyHeight`'s floor); a view that reads `bodyHeight`
-  as it renders and windows its rows (Jobs, the lanes picker in `orchestrator_lanes.go`, and the settings
+  as it renders and windows its rows (Jobs, the lanes list in `orchestrator_lanes.go`, and the settings
   screen's list and input modes, which this feature makes read `bodyHeight` the same way: the list windows its
   entries with `windowRange` and the input gives its note the room left) its fixed top and bottom lines plus
   `windowRange`'s minimum 3 (for the input: title + input + blank + the rewrite notice when shown, plus 1 note
-  line, so the note gives way before the status, FR-534); a static view with nothing to shrink (Daemons, the
+  line, so the note gives way before the status, FR-534; for Jobs, `jobsFixedLines`, shared with `viewJobs`, because
+  those lines vary; for the lanes list, `lanesFixedLines` + the 8 lines it reserves + 6, shared with `lanesView`,
+  because it windows two-line entries); a static view with nothing to shrink (Daemons, the
   settings rows, Hosts, Groups, …) `0`, so the limit is the 6-line cap and `chrome` does the real cut (next
   bullet). The terminal screen's limit is the constant 2.
 - `bodyHeight()` becomes `m.height - 6 - (lines - 1)` where `lines` is the wrapped status's line count after the
-  limit (at least 1), so a one-line or empty status gives today's value. Nothing in this computation renders a
+  limit (at least 1), so a one-line or empty status gives today's value. `statusLineCount` returns 1 before it
+  computes a limit when the status is empty or fits on one line: the limit can't matter there, and working out the
+  help costs ≈ 295 µs and 453 KB at 80×24 with 8 sandboxes (measured in review), against ≈ 332 µs and 704 KB for a
+  whole `View` today, so paying it twice more per frame would make the usual frame 2–3× as expensive for no benefit.
+  Nothing in this computation renders a
   body, so a view that reads `bodyHeight` while rendering (Jobs) sees a stable value. `termRows()` stops using
   `bodyHeight` and uses the fixed `m.height - 8` (floor 3), so a terminal opened during a wrapped message gets the
   same PTY size as one opened with none (SC-008), and a status change never resizes the PTY.
-- `chrome(body, hb)` measures the room actually left by the rendered body (`m.height - 2 - lipgloss.Height(body)
-  - 1 - helpLines`, at least 1) and passes `min(limit, room)` to `footer`, so a static view cuts the message to
-  fit with the header on screen; `chrome` never drops lines from the bottom of the body.
+- `chrome(body, hb)` renders the help once from `hb` and keeps its line count. Only when the status doesn't fit on
+  one line does it compute `statusLimitFor(helpLines)` and measure the room actually left by the rendered body
+  (`m.height - 2 - lipgloss.Height(body) - 1 - helpLines`, at least 1), passing `min(limit, room)` to `footer`, so a
+  static view cuts the message to fit with the header on screen; `chrome` never drops lines from the bottom of the
+  body. `BenchmarkViewList` keeps the frame cost visible.
 - **Size check** in the `Update` wrapper, after the release (R10) and skipped on the terminal screen: a small
   `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, markFree bool}` is compared
   with the one stored; on a change the active surface's height is compared with its target and set only if they
@@ -344,23 +362,26 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
 
 - `vFail struct{text string; at time.Time}`: the last `v` failure or refusal and when it arrived. `footer` uses
   the error style when `m.status != "" && m.status == m.vFail.text` (and keeps today's `m.err`/`error` prefix
-  rule). A completion message never sets it. `editorOutcomeMsg` with `failed` and `editorExitMsg` set
-  `m.status`, `m.vFail` and don't touch `m.err`.
-- `vHold struct{text string; seq uint64; dialog bool}`: a held message, the attach number it waits on (0 = none
-  pending) and whether a Replace dialog for an in-place attach is open.
+  rule). A completion message never sets it, and clears `m.err` as `statusMsg` does today. `editorOutcomeMsg` with
+  `failed` and `editorExitMsg` set `m.status`, `m.vFail` and don't touch `m.err`.
+- `vHold struct{text string; seq uint64}`: a held message and the attach number it waits on (0 = none pending).
+- `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
+  Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
+  the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),
+  and the dialog can sit over the orchestrator detail. A stored flag would stay true and swallow every later failure.
 - `termFail string`: the last attach or terminal error text, set at `terminal.go:150`, `:190`, `:199` (which
   covers `:306`) and cleared by `attachTerminal`.
 
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
-`confirmReplaceOrphan` for a non-external attach sets `vHold.dialog = true` with the same copy rule and sets
+`confirmReplaceOrphan` for a non-external attach sets `holdsV` with the same copy rule and sets
 `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
-`replaceOrphanMsg`) **and** `vHold.dialog = false` in the same message, so the hold passes from the dialog to
-the attach with no gap; `onCancel` clears `dialog` and nothing else, so the release follows at once. A `v` failure or refusal arriving while `vHold.seq != 0`
-or `vHold.dialog` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
+`replaceOrphanMsg`) in the same message, so the hold passes from the dialog to
+the attach with no gap; a decline or a dropped dialog needs nothing, so the release follows at once. A `v` failure or refusal arriving while `vHold.seq != 0`
+or `m.vHoldDialog()` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
 the terminal screen). `handleTermOpened` and `handleTermClosed` clear `vHold.seq` only for `msg.seq ==
 vHold.seq`. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and
-`openDeferredMcpFollowups`, before the size check): if `vHold.text != ""` and `vHold.seq == 0` and `!vHold.dialog`
+`openDeferredMcpFollowups`, before the size check): if `vHold.text != ""` and `vHold.seq == 0` and `!m.vHoldDialog()`
 and `m.screen != screenTerminal`, then the message is `sanitizeLine(m.status, 120) + "; " + vHold.text` when
 `m.status != "" && m.status == m.termFail`, else `vHold.text`; it's written to `m.status` and `vFail.text`,
 `vFail.at` is zeroed (so it can't be held again), `vHold` is cleared. With nothing held, a terminal error stays
@@ -382,7 +403,14 @@ returns to the list. On open, `SetValue(session command)`, `inputInitial = TrimS
 differs from the session text `inputRewrite` is set and the view draws `normalizeNotice([]string{"Custom
 command"})` as two body lines under the input (the spec's 23-line budget counts it there, separate from the
 status), cleared when the input closes. `esc` in the list
-returns to the rows with no dialog; `q` and `,` are text in the input and ignored in the list.
+returns to the rows with no dialog; `q` and `,` are text in the input and ignored in the list. Opening focuses the
+input and returns `Focus()`'s command, as `enterRename` does (`textinput.Update` returns early when unfocused).
+`forwardScreen` gains a `screenSettings` case that sends non-key messages to the input while `mode == settingsInput`;
+without it they fall to `m.list`, which loses a `ctrl+v` paste (a command returning `pasteMsg`) and the cursor blink.
+The `tea.WindowSizeMsg` handler resets `Width` while `mode == settingsInput`, or a narrowed terminal cuts a long
+command at the edge (FR-534). `Width` alone doesn't move the visible window until the next key, and
+`SetCursor(Position())` moves it only when the cursor is outside the old window (probed), so the reset is
+`pos := Position()`, set `Width`, `CursorEnd()`, `SetCursor(pos)`.
 
 **Rationale**: the Notes rule out `gRename`'s screen-only selection and the close-then-act submits; the
 textinput's own sanitising gives FR-528's cleaning for free.
@@ -399,10 +427,12 @@ byte-identical to today's when no notice applies. `VS Code opener not configured
 
 **Decision**: `editor.Resolve` applies the character limit only when `req.SSHTarget != ""` and either the editor
 is Custom or `Command(editor, req.Bins)` reports `overridden` (the selected editor's own variable set, with
-FR-502's meaning: a blank value doesn't count). The check is on the path's runes:
+FR-502's meaning: a blank value doesn't count; nor does a value equal to the default command, which starts the same
+program as leaving it unset, so exporting `.env.example` as it stands can't switch the limit on). The check is on the path's runes:
 valid UTF-8, `unicode.IsLetter`, `unicode.IsMark`, `unicode.IsDigit`, ASCII space, or one of `/ . _ - + = @ , :`.
-The refusal names the first rejected rune as `'x'`, or `U+00XX` when `unicode.IsPrint` is false, and says the
-daemon or the host entry is where to fix it (SC-004).
+The refusal names the first rejected rune as `'x'`, or `U+00XX` when `unicode.IsPrint` is false, and says where to
+fix it (SC-004): move the workspace on the daemon, or, for a built-in editor, unset the variable, or, for Custom,
+which has no variable, switch editors on the settings screen.
 
 ### R14 — Tests and the e2e stand-ins
 

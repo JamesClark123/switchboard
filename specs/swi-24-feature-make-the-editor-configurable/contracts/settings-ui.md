@@ -68,7 +68,9 @@ on screen. The list mode windows its entries the same way (`windowRange(len, cur
 minimum 3 rows). `enter` confirms (FR-528 flow in data-model §3); `esc` with a changed trimmed value opens the SWI-9
 unsaved-changes dialog (Save = enter, Cancel = back to the input, Discard = the list); `esc` unchanged → the list.
 Every printable key, including `q`, `,`, `j`, `k`, space, is text; `ctrl+e` end of line; `ctrl+c` as on the rename
-input. A rejection shows in the status line only (red), the input stays open. Help: `enter save · esc back`.
+input. `ctrl+v` and bracketed paste both insert text, and the cursor blinks (the input is focused and `forwardScreen`
+sends it non-key messages). A resize resets `Width` and the visible window, keeping the cursor, so a long command never
+runs off the edge. A rejection shows in the status line only (red), the input stays open. Help: `enter save · esc back`.
 
 ## 2. Status line (`footer`) — FR-533
 
@@ -77,15 +79,18 @@ input. A rejection shows in the status line only (red), the input stays open. He
   limit with `…` on the last line. Lines come out of the body (`bodyHeight` shrinks by `lines - 1`).
 - Limit, computed before anything renders: `min(6, room)` where `room = height - 2 (header) - 1 (blank) - help
   lines - smallest usable body`, never below 1. Smallest usable body: sandbox list `9 + 2 (+1 banner)`; a
-  resizable list or form `3`; a windowed view that reads `bodyHeight` as it renders (Jobs, the lanes picker, the
-  settings screen's list and input modes) its fixed lines plus 3 (the input: plus 1 note line); a static view
+  resizable list or form `3`; a windowed view that reads `bodyHeight` as it renders (Jobs, the lanes list, the
+  settings screen's list and input modes) its fixed lines plus 3 (the input: plus 1 note line; the lanes list: its
+  fixed lines, the 8 it reserves and 6 for three two-line entries); a static view
   (Daemons, the settings rows, Hosts, Groups) `0`. `chrome` then measures
   the room the rendered body really left and cuts the status to `min(limit, room)`, so a static view keeps its
   header. The terminal screen's limit is 2 and its PTY size is `height - 8` (floor 3), independent of the status.
 - Every `v` message defined in `editor-launch.md` §4, with outside text at its limits, fits in full at 80×24 on
   the sandbox list with the update banner showing (≤ 4 lines at 80 columns). A joined message (§3) and a view that
   can't shrink are outside this promise and are cut.
-- Error style: `m.err != nil`, a status starting with `error`, or `status == vFail.text`.
+- A status that's empty or fits on one line computes no limit and renders the help once per frame, in `chrome`.
+- Error style: `m.err != nil`, a status starting with `error`, or `status == vFail.text`. A `v` completion clears
+  `m.err`, as `statusMsg` does today, so it's never red.
 
 ### Size check (Update wrapper, after the release, skipped on the terminal screen)
 
@@ -101,11 +106,11 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | `v` failure/refusal arrives, no attach pending, terminal not showing | `status = text`, `vFail = {text, now}`, red |
 | `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen |
 | in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
-| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `vHold.dialog = true`; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1` **and** `vHold.dialog = false`; `onCancel` sets `vHold.dialog = false` |
+| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
 | attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`) | `termFail = status` |
-| **release** (wrapper: `vHold.text != ""`, `seq == 0`, `!dialog`, screen ≠ terminal) | `status = (status != "" && status == termFail ? cut120(status) + "; " : "") + vHold.text`; `vFail = {status, zero}`; `vHold = {}`; red |
+| **release** (wrapper: `vHold.text != ""`, `seq == 0`, `!m.vHoldDialog()`, screen ≠ terminal) | `status = (status != "" && status == termFail ? cut120(status) + "; " : "") + vHold.text`; `vFail = {status, zero}`; `vHold = {}`; red |
 | a `v` failure arrives when an error is already showing and nothing is held | replaces the error (not joined) |
 
 A released message (zero `vFail.at`) is never held again. `detached from <name>` is replaced, not joined.

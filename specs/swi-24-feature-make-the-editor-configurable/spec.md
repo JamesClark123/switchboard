@@ -247,6 +247,16 @@ The review offered two options for this, and the first was taken. It changes no 
   reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
   arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
 
+### PR review 2026-11-03 (plan review run `run-c275c8f2-1599`, resolved in pr-response run `run-c275c8f2-1602`)
+
+Found while reviewing the plan, and changed here because they change what the spec says:
+
+- **A variable set to its default isn't an override.** Sourcing `.env.example` as it stands exports every variable at its
+  default. The command is the same either way, so the remote path limit stays off, and SC-002 holds for a developer who
+  did that. (FR-517, SC-002)
+- **A `v` completion clears `m.err`.** It no longer goes through `statusMsg`, which clears it today, so the plan has to
+  do it, and the note saying an `errMsg` stays set now says so. (FR-529, SC-002)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -582,7 +592,8 @@ sandbox. Check that a clear message appears and nothing is started.
   contain control characters, including newlines. The SSH target MUST NOT start with `-`, checked on the
   target as given and again after any normalisation (FR-513). For a **remote sandbox with Custom, or with the
   selected editor's override variable set** (FR-502's meaning of set, so an empty or spaces-only value
-  doesn't count), the path comes from the remote daemon and the program may re-parse it (FR-516; a wrapper
+  doesn't count, and neither does a value equal to the editor's default command, which starts the same program), the
+  path comes from the remote daemon and the program may re-parse it (FR-516; a wrapper
   script recommended by FR-502 is that kind of program), so the path MUST also be valid UTF-8 and contain only
   Unicode letters, marks and digits, the ASCII space, and the characters `/ . _ - + = @ , :`. None of those
   letters, marks or digits is shell syntax, so a home such as `/home/josé` works. Anything else is refused,
@@ -1005,7 +1016,8 @@ These follow from the requirements above and from how the code works today. They
     the status is non-empty and equals it. The style then ends when the message does. A release sets both the status and
     this field, doesn't touch `m.err`, and clears the arrival time, so a later `t` finds nothing recent and can't hold
     the message again. A zero time counts as not recent. Use `nowFunc` (`unsaved.go:16`) so tests can step past the 3
-    seconds. An `errMsg` can still leave `m.err` set and turn later messages red, as it can today.
+    seconds. An `errMsg` can still leave `m.err` set and turn later messages red, as it can today, but a `v` completion
+    must clear it as `statusMsg` does today, or a success after an `errMsg` would show in red.
   - **A message already showing:** the refused case returns before the daemon call, so it's on the screen when `t` arrives,
     and `attachTerminal` replaces it. So `attachTerminal` and `confirmReplaceOrphan` (not for `T`) both check for a
     recent one, and copy it into the held field if the status still equals it. It stays on the status line behind the

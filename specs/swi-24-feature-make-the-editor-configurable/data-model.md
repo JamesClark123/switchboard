@@ -15,7 +15,8 @@ in the TUI's `settings.toml` or in the Bubble Tea model. Field names are the one
 
 `editor.Catalogue()` returns the rows in FR-501's order; `editor.Lookup(id) (Editor, bool)`; `editor.Default` is
 `vscode`. `editor.Command(e, bins map[string]string) (bin string, overridden bool)` returns the raw variable
-value when `strings.TrimSpace(bins[e.ID]) != ""`, else `e.Command`.
+value when `strings.TrimSpace(bins[e.ID]) != ""`, else `e.Command`. `overridden` is true only for a set value that
+differs from `e.Command` (FR-517).
 
 ## 2. Settings — `store.Settings` and the file
 
@@ -52,7 +53,7 @@ Rules:
 | `returnTo`         | `screen`             | Screen to return to (existing). |
 | `mode`             | `settingsMode`       | `settingsRows` · `settingsList` · `settingsInput`. |
 | `listCursor`       | `int`                | Cursor in the Editor list; starts on the session's editor. |
-| `input`            | `textinput.Model`    | The Custom command input (`Width` set, sideways scrolling). |
+| `input`            | `textinput.Model`    | The Custom command input (`Width` set on open and on every resize, sideways scrolling; focused, with its non-key messages forwarded). |
 | `inputInitial`     | `string`             | Cleaned, trimmed starting value (SWI-9 baseline). |
 | `inputRewrite`     | `bool`               | Cleaning changed the saved command when the input opened: the rewrite notice is drawn under the input (2 body lines) until it closes (FR-528). |
 | `fileUnreadable`   | `error`              | Non-nil = unreadable at startup (FR-525 state 1): nothing is written this session. |
@@ -133,7 +134,8 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | Field        | Type                                     | Meaning |
 |--------------|------------------------------------------|---------|
 | `vFail`      | `struct{ text string; at time.Time }`    | Last `v` failure/refusal and arrival time; error style while `status == text`. |
-| `vHold`      | `struct{ text string; seq uint64; dialog bool }` | Held message; pending in-place attach number (0 = none); Replace dialog open. |
+| `vHold`      | `struct{ text string; seq uint64 }`      | Held message; pending in-place attach number (0 = none). |
+| `confirm.holdsV` | `bool` on `confirmState`             | This confirm is a Replace dialog for an in-place attach. `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`, derived so that no way of closing the dialog can leave it stale. |
 | `termFail`   | `string`                                 | Last attach/terminal error text (joined on release); cleared by `attachTerminal`. |
 | `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, markFree}` last checked. |
 | per form     | `lastHeight int`                         | Last `WithHeight` applied (huh has no getter); stored beside each form pointer. |
@@ -147,8 +149,8 @@ Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 1
 none ──v failure/refusal arrives──▶ showing(vFail.at = now)
 showing ──in-place attach starts or Replace dialog opens, age < 3 s──▶ held(seq | dialog)
 none/showing ──failure arrives while terminal open/opening or dialog open──▶ held (replaces any held text)
-held(dialog) ──decline (onCancel: dialog = false)──▶ release
-held(dialog) ──accept (onAccept: seq = termSeq+1, dialog = false)──▶ held(seq)
+held(dialog) ──decline, or the dialog dropped unanswered (closeOrchAdminOnDrop)──▶ release
+held(dialog) ──accept (onAccept: seq = termSeq+1)──▶ held(seq)
 held(seq) ──termOpened/termClosed with that seq, terminal not showing──▶ release
 held(seq) ──terminal closes (ctrl+q / closed)──▶ release
 release: status = (termFail showing ? cut120(termFail) + "; " : "") + text; vFail = {text, zero time}; vHold = {}
@@ -160,7 +162,7 @@ A message with a zero `vFail.at` is never held again.
 
 | Message            | Fields                                                   | Handler effect |
 |--------------------|----------------------------------------------------------|----------------|
-| `editorOutcomeMsg` | `sandboxID, text string; failed bool; wait <-chan editor.ExitReport; exe, where string` | `delete(busy, id)`; status (+ `vFail` when failed, held per §6); when `wait != nil` returns `waitExitCmd(wait, id, exe, where, vNotices())`. No reload. `exe` is `Plan.Executable` already cut to 60 columns; `where` is the override variable or `the Custom command on the settings screen (,)`. |
+| `editorOutcomeMsg` | `sandboxID, text string; failed bool; wait <-chan editor.ExitReport; exe, where string` | `delete(busy, id)` and `refreshListItems()` (rebuilds the row, not a reload); status (+ `vFail` when failed, held per §6; `m.err = nil` when not failed); when `wait != nil` returns `waitExitCmd(wait, id, exe, where, vNotices())`. No reload. `exe` is `Plan.Executable` already cut to 60 columns; `where` is the override variable or `the Custom command on the settings screen (,)`. |
 | `editorExitMsg`    | `sandboxID, text string`                                 | Status + `vFail` only (FR-523): no `busy`, no reload. |
 
 Both carry already-assembled, sanitised text, so the message is self-contained. The outcome's text is built

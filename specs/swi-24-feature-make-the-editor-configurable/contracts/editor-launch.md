@@ -6,7 +6,8 @@ What `v` starts for each editor, the Custom command grammar, every check and its
 
 ## 1. Argv per editor
 
-`<bin>` is the override variable's raw value when set (non-blank), else the default command. `<target>` is the
+`<bin>` is the override variable's raw value when set (non-blank), else the default command. A value equal to the
+default starts the same command and isn't an override (§3 step 7). `<target>` is the
 host's SSH target as recorded; `<path>` the workspace folder from `GetVSCodeTarget`.
 
 | ID              | Local argv              | Remote argv                                   | Verified |
@@ -32,7 +33,8 @@ With no settings and no new variables, `vscode` is selected and its argv is byte
 1. Strip one leading `ssh://` from `target`.
 2. Split the user at the **last** `@` (`user@host[:port]` → user, hostport); no `@` → no user.
 3. If hostport has more than one `:` and doesn't start with `[`, wrap it in brackets (bare IPv6, no port).
-4. Build `url.URL{Scheme: "ssh", User: url.User(user), Host: hostport, Path: path}` and take `String()`.
+4. Build `url.URL{Scheme: "ssh", Host: hostport, Path: path}`, set `User: url.User(user)` only when step 2 found a
+   non-empty user (`url.User("")` prints `ssh://@box/x`), and take `String()`.
 5. Parse the string back; require the same user, host and path. Otherwise refuse `zed-target` (a target with
    `/`, `?`, `#`, or that can't be an authority).
 6. The `-` check (FR-517) runs on `target` as given and on the normalised user and host.
@@ -97,7 +99,7 @@ the session's command every time; a failure refuses with the rule and `Where = "
 
 6. Path not absolute, or contains a control character (including newline) → `path-unsafe`.
 7. Remote **and** (Custom or `Command(editor, req.Bins)` reports `overridden`, i.e. the selected editor's own
-   variable is non-blank) → every rune must be valid UTF-8 and one of:
+   variable is non-blank and differs from the default command) → every rune must be valid UTF-8 and one of:
    Unicode letter, mark, digit, ASCII space, `/ . _ - + = @ , :`. First failure → `path-limited` with
    `Detail = 'x'` or `U+XXXX` when not printable.
 8. Build argv per §1/§2.
@@ -131,7 +133,8 @@ Every `v` failure or refusal shows in the error style. Notices (FR-529) are appe
 | `target-dash`          | `the host's SSH target starts with '-' and can't be passed to an editor — fix the host entry` | host entry |
 | `zed-target`           | `the host's SSH target can't be used in an ssh:// address — fix the host entry` | host entry |
 | `path-unsafe`          | `the workspace path from the daemon isn't absolute or contains control characters — fix it on the daemon` | daemon |
-| `path-limited`         | `the workspace path contains '<c>', which isn't allowed when <Custom \| <var> is set> opens a remote sandbox — move the workspace or unset the override` | daemon / env |
+| `path-limited` (built-in) | `the workspace path contains '<c>', which isn't allowed on a remote sandbox while <var> is set — move the workspace on the daemon or unset <var>` | daemon / env var |
+| `path-limited` (Custom) | `the workspace path contains '<c>', which isn't allowed when Custom opens a remote sandbox — move the workspace on the daemon or switch editors on the settings screen (,)` | daemon / settings |
 | exit report (FR-523)   | `<exe> exited with status <s> (<signal>) after opening <n> — check <var> \| the Custom command on the settings screen (,)` | env var / settings |
 
 On the settings screen the same rule names map to the input's rejection text (no `(,)` suffix, no `fix it on the
@@ -163,7 +166,8 @@ message.
 | `SWITCHBOARD_GOLAND_BIN`         | `goland`        | GoLand |
 | `SWITCHBOARD_SUBLIME_BIN`        | `subl`          | Sublime Text |
 
-A set value is one executable, used as given (no splitting, no `~`/`$VAR` expansion); blank counts as unset.
+A set value is one executable, used as given (no splitting, no `~`/`$VAR` expansion); blank counts as unset, and a
+value equal to the default isn't an override, so exporting `.env.example` as it stands changes nothing.
 Declared in `config.schema` from the catalogue, listed in `.env.example` and the README (env-check lockstep).
 
 ## 6. Launch (FR-511, FR-523)

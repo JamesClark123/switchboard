@@ -34,25 +34,28 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
   order (`vscode` … `sublime`, `custom`; `sublime`'s command is `subl`), `Catalogue() []Editor`,
   `Lookup(id) (Editor, bool)`, `Default = "vscode"`, `Custom = "custom"`, and `Command(e Editor, bins
   map[string]string) (bin string, overridden bool)` (FR-502: blank after `TrimSpace` = unset; a set value is
-  returned raw). The package imports only the standard library (research R1).
-  Tests in `ED/catalog_test.go`: every row's fields against the contract's §1/§5, `Command` with unset, blank
-  and set values.
+  returned raw; FR-517: `overridden` is false for a blank value and for one equal to `e.Command`). Add
+  `ED/refusal.go`: `Refusal{Rule, Detail, Where string}` (data-model §4), which T007–T009 return. The package imports
+  only the standard library (research R1).
+  Tests in `ED/catalog_test.go`: every row's fields against the contract's §1/§5, `Command` with unset, blank, set
+  and equal-to-default values.
 - [ ] T002 [P] `CF/config.go`: replace the `SWITCHBOARD_CODE_BIN` row's handling and add one schema row per
   built-in editor other than VS Code, generated at init from `editor.Catalogue()` (`EnvVar`, `def` = `Command`,
   `doc` = `"<Name> CLI used to open sandboxes."`); keep `SWITCHBOARD_CODE_BIN` first among them with its
   existing doc. Add `EditorBins map[string]string` (editor ID → the **raw** env value, `""` when unset or blank;
-  research R2) and `func (c *Config) EditorBin(id string) (bin string, set bool)`; keep `Config.CodeBin` (set to
+  research R2); keep `Config.CodeBin` (set to
   `EditorBins["vscode"]` or `code`) until T026 deletes it with the old opener, so the module keeps building;
   `Load` reads the editor rows raw (no default substitution) and every other row as today. Add tests (and in T026 update `CF/config_extra_test.go` and `CF/envexample_test.go`, where
   `TestLoadDefaults` asserts `cfg.CodeBin`, for the removed field): each variable present in `SchemaKeys()`, raw
   value kept, blank = unset, `SWITCHBOARD_CODE_BIN` unchanged.
 - [ ] T003 [P] `TUI/.env.example`: add the nine variables from contracts/editor-launch.md §5 with their defaults
   and a comment naming the editor and that a value is one executable (a wrapper script or Custom for a command
-  with arguments). `make env-check` must pass (`TestEnvExampleLockstep`).
+  with arguments). Using the file as it stands changes nothing: a value equal to the default isn't an override
+  (T001, FR-517). `make env-check` must pass (`TestEnvExampleLockstep`).
 - [ ] T004 [P] `README.md`: the TUI env table gains the nine rows (contracts/editor-launch.md §5), the
   `SWITCHBOARD_CODE_BIN` row says "VS Code CLI (the default editor)", the Prerequisites bullet about VS Code
   becomes "one of the supported editors (VS Code by default)", and the `v` key row reads "Open the selected
-  sandbox in the configured editor (VS Code by default; `,` to change)". The Editor section is T055.
+  sandbox in the configured editor (VS Code by default; `,` to change)". The Editor section is T047.
 
 **Checkpoint**: `go build ./...` and `go test ./...` in the TUI module (`main.go` still uses the old opener
 through `cfg.CodeBin`; T026 switches it).
@@ -74,7 +77,7 @@ through `cfg.CodeBin`; T026 switches it).
   `"/Applications/My Editor.app/bin/edit" {path}`, `/My\ Editor/edit`, `\$`, `\&`, `'$HOME'` accepted, `"$HOME"`
   rejected, `` `x` `` rejected, `a|b` rejected, `'a|b'` accepted, `""`/`''` empty words, `~`, `~/x`, `'~/x'`,
   `--dir=~/x` (not expandable), `~user`, a tab separator, a trailing `\`, a stray `"`.
-- [ ] T006 [P] `ED/check.go`: `Check(words []Word) error` (`empty`, `empty-executable`, `marker-in-executable`,
+- [ ] T006 `ED/check.go` (depends on T005's `Word`): `Check(words []Word) error` (`empty`, `empty-executable`, `marker-in-executable`,
   `assignment` with `^[A-Za-z_][A-Za-z0-9_]*=` on the split first word); `Expand(words, home string) ([]string,
   error)` (`no-home` when a `TildeOK` word meets `home == ""`); `Substitute(args []string, path, host string)
   (argv []string, hadPath bool)` (single pass over the original args; `{path}`/`{host}` replaced inside each
@@ -89,20 +92,22 @@ through `cfg.CodeBin`; T026 switches it).
   (`unicode.IsPrint` false). Tests: `/home/josé`, `/a b/c`, `/x:y,z` accepted; `~`, `(`, `#`, `$`, `` ` ``, a
   zero-width space (`U+200B` in the detail), invalid UTF-8, a newline, a relative path.
 - [ ] T008 [P] `ED/zed.go`: `ZedAddress(target, path string) (string, *Refusal)` per contracts/editor-launch.md
-  §1 (strip `ssh://`, user at the last `@`, bracket a bare IPv6, `url.URL` build, round-trip check; `target-dash`
-  on the normalised user or host, `zed-target` otherwise). Tests: the six examples in the contract, `ssh://-oX`,
-  a port, an IPv6 with a port already bracketed, a path with `%`.
-- [ ] T009 `ED/resolve.go`: `Request`, `Plan`, `Refusal` (data-model §4), `Precheck(req) (exe string, *Refusal)`
+  §1 (strip `ssh://`, user at the last `@`, bracket a bare IPv6, `url.URL` build with `User` set only when there is a
+  user, round-trip check; `target-dash` on the normalised user or host, `zed-target` otherwise). Tests: the six
+  examples in the contract, `box` + `/x` → `ssh://box/x` (no `@`), `ssh://-oX`, a port, an IPv6 with a port already
+  bracketed, a path with `%`.
+- [ ] T009 `ED/resolve.go`: `Request`, `Plan` (data-model §4), `Precheck(req) (exe string, *Refusal)`
   (contract §3 steps 1–5: host error; `RemoteNone` on a remote; Custom `Split`+`Check`+`Expand`; `-` on the target
   as given; Zed address; the resolved executable) and `Resolve(req) (Plan, *Refusal)` (steps 6–8: path checks
   with `limited = remote && (custom || overridden)` where `overridden` comes from `Command(editor, req.Bins)`,
-  so a blank value doesn't count; argv per §1/§2; `RemoteNoHost`; `EnvVar`). Depends on
+  so a blank value or one equal to the default doesn't count; argv per §1/§2; `RemoteNoHost`; `EnvVar`). Depends on
   T001, T005–T008. Tests in `ED/resolve_test.go`: **SC-003** — a table with every catalogue editor × {local,
   remote} asserting the exact argv (VS Code local/remote byte-identical to today's `codeArgs`); the refusal order
   (`host-lookup` beats everything; `no-remote` beats `target-dash`, so WebStorm with a `-oX` target refuses
   `no-remote`; for Custom a bad command beats `target-dash`); the override variable used raw with
   spaces; the limit applied only for Custom or when `Command` reports the selected editor's own variable as
-  `overridden` (another editor's variable set → no limit; a spaces-only value → no limit, FR-517/FR-502); `{host}`
+  `overridden` (another editor's variable set → no limit; a spaces-only value → no limit; a value equal to the
+  default → no limit, FR-517/FR-502); `{host}`
   empty on local; `RemoteNoHost`.
 - [ ] T010 [P] `ED/launch.go`: `Launcher interface{ Launch(argv []string) (*Started, error) }`, `NewLauncher()`,
   `Started{Report <-chan ExitReport}`, `ExitReport{Status int; Signal string}`; `exec.Command` with
@@ -119,16 +124,20 @@ through `cfg.CodeBin`; T026 switches it).
 
 - [ ] T011 [P] `ST/store.go`: add `SaveTOMLPrivate(name string, v any) error`: marshal, `os.CreateTemp(dir,
   "."+name+"-*.tmp")` (so `.settings.toml-<random>.tmp`, mode `0600`), write, close, `os.Rename`, then
-  `os.Chmod(full, 0o600)`. `SaveTOML` is unchanged. Tests in `ST/store_test.go`: the final mode is `0600`; a
-  pre-existing `0644` file becomes `0600`; a leftover `0644` `.settings.toml-stale.tmp` is not used and the result
-  is still `0600` (the review's case, spec Notes); no temp file remains after the save.
-- [ ] T012 `ST/settings.go`: `Settings` gains `Editor`, `EditorCustomCommand` (raw strings); `settingsFile` gains
+  `os.Chmod(full, 0o600)`. A write, close or rename failure removes the temp file before returning, because it can
+  hold the Custom command (FR-527) and each name is unique. `SaveTOML` is unchanged. Tests in `ST/store_test.go`: the
+  final mode is `0600`; a pre-existing `0644` file becomes `0600`; a leftover `0644` `.settings.toml-stale.tmp` is
+  not used and the result is still `0600` (the review's case, spec Notes); no temp file remains after the save; a
+  failing rename (a directory at the target path) returns the error and leaves no temp file.
+- [ ] T012 `ST/settings.go` + `UI/settings.go`: `Settings` gains `Editor`, `EditorCustomCommand` (raw strings); `settingsFile` gains
   the two pointer fields (`editor`, `editor_custom_command`); `Load` copies them when present; replace
   `Save(Settings)` with `Update(c SettingsChange) error` where `SettingsChange{AutoConnectHosts *bool; Editor
   *string; EditorCustomCommand *string}` (research R3, contracts/settings-file.md): re-read into `settingsFile`;
   a read or parse error → `*SettingsUnreadableError{Err}` and no write; copy each non-nil change over the file's
   pointer field, so only those keys change and an absent, unchanged key stays absent; write via
-  `SaveTOMLPrivate`. Depends on T011. Update `ST/settings_test.go`: absent keys stay absent
+  `SaveTOMLPrivate`. Move the one caller (`ui/settings.go:82`) to `v := it.get(m.prefs)` and
+  `Update(store.SettingsChange{AutoConnectHosts: &v})` in this task, so the `ui` package builds at the Phase 2
+  checkpoint (T019 then replaces the call with `saveSetting`). Depends on T011. Update `ST/settings_test.go`: absent keys stay absent
   after a toggle save; `editor = 'future-ide'` survives a toggle save and `Load` returns it raw; a Custom save
   writes both keys; hand-edited `editor` written between `Load` and `Update` survives (SC-007); a broken file
   → `SettingsUnreadableError` and the bytes unchanged (SC-006); `editor = 5` is a parse error; comments dropped.
@@ -139,28 +148,47 @@ through `cfg.CodeBin`; T026 switches it).
   120`, `osReasonCols = 40`, `valueCols = 60`, `vHoldRecent = 3 * time.Second`; `statusLines(text string,
   width, limit int) []string` (`sanitizeTerminalText`, newlines to spaces, `ansi.Wrap(s, width, "")` — not
   `Wordwrap`, which leaves a token longer than the width unbroken — cut to `limit` with the last line
-  `ansi.Truncate(line, width-1, "…")`, never below 1 line); `cutMiddle(s string, cols
+  `ansi.Truncate(line, width-1, "") + "…"`, because `Truncate` adds its tail only to text that's too long and a
+  wrapped line usually isn't; never below 1 line); `cutMiddle(s string, cols
   int) string` (`sanitizeLine(s, 0)` then `Truncate(20, "")` + `…` + `TruncateLeft(w-39, "")`, dropping one
   column when the result exceeds `cols`); `cutEnd(s, cols)` = `sanitizeLine`. Tests in `UI/status_test.go`:
-  wrap at spaces, a 120-column token with no spaces broken so no line exceeds the width, the cut marker, a
+  wrap at spaces, a 120-column token with no spaces broken so no line exceeds the width, the cut marker on a kept
+  line shorter than the width (so it can't pass by luck), a
   10-tab string cut to 120 **after** sanitising, the spec's 60-column executable example, a wide rune on the
   cut, an empty status → no lines.
-- [ ] T014 `UI/app.go` + `UI/status.go`: `activeSurface()` enum (`surfaceList`, `surfaceItemList{which}`,
-  `surfaceForm{which}`, `surfaceWindowed` (Jobs, the lanes picker, the settings screen's list and input modes
-  once T020/T034 make them read `bodyHeight`), `surfaceStatic`, `surfaceTerminal`) derived like `activeGuard`;
-  `m.statusLimit()` and `m.statusLineCount()` computed **without rendering** (contracts/settings-ui.md §2:
+- [ ] T014 `UI/app.go` + `UI/status.go` + `UI/jobs.go` + `UI/orchestrator_lanes.go`: `activeSurface()` enum
+  (`surfaceList`, `surfaceItemList{which}`, `surfaceForm{which}`, `surfaceWindowed` (Jobs, the lanes list, the
+  settings screen's list and input modes once T020/T034 make them read `bodyHeight`), `surfaceStatic`,
+  `surfaceTerminal`) derived like `activeGuard`.
+  The inputs that exist only inside the views today get one source each, shared with the view so they can't drift:
+  `m.activeHelp() helpBindings` is the one screen → help map (the launch, confirm and other overlay branches, every
+  case of `viewScreen`'s switch, `withEnlargeHint`), and `viewScreen` reads it instead of assigning body and help
+  together; `m.jobsFixedLines() (top, bottom []string)` holds what `viewJobs` builds around its window (tab bar,
+  `could not read`, `connecting`, `loading`, `j.status`); `m.lanesFixedLines(s orchSurface) int` counts the lines
+  `lanesView` puts above its rows.
+  `m.statusLimit()` and `m.statusLineCount()` are computed **without rendering** (contracts/settings-ui.md §2:
   `min(6, max(1, height - 2 - 1 - helpLines - minBody))`, min body `9 + 2 + banner` for the list, `3` for a
-  resizable surface, the fixed lines + 3 for a windowed view (the settings input: fixed lines + 1 note line), `0`
-  for a static view, constant 2 on the terminal screen); `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor
-  3) and must never call a view function; `footer(hb, limit)` renders `statusLines`, red when `m.err != nil`, the
-  status starts with `error`, or `m.status == m.vFail.text`; `chrome` measures the room left by the rendered body
-  (`height - 2 - lipgloss.Height(body) - 1 - helpLines`, at least 1) and passes `min(limit, room)`, so a static
-  view cuts the message to fit. `termRows()` becomes `m.height - 8` (floor 3), independent of the status.
+  resizable surface, the fixed lines + 3 for a windowed view (the settings input: fixed lines + 1 note line; the
+  lanes list: `lanesFixedLines` + its 8 reserved lines + 6, because it windows two-line entries), `0` for a static
+  view, constant 2 on the terminal screen). `statusLineCount` returns 1 **before** it computes a limit when the
+  status is empty or fits on one line (`ansi.StringWidth(sanitizeTerminalText(status)) <= bodyWidth`), so the common
+  case never renders the help. `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor 3) and must never
+  call a view function.
+  `footer(help string, limit int)` renders `statusLines`, red when `m.err != nil`, the status starts with `error`, or
+  `m.status == m.vFail.text`. `chrome` renders the help **once** from the `hb` it was given and takes the line count
+  from that; only when the status doesn't fit on one line does it call `statusLimitFor(helpLines)` (which
+  `statusLimit` wraps) and measure the room left by the rendered body (`height - 2 - lipgloss.Height(body) - 1 -
+  helpLines`, at least 1), passing `min(limit, room)`, so a static view cuts the message to fit. `termRows()` becomes
+  `m.height - 8` (floor 3), independent of the status.
   Depends on T013. Tests in `UI/status_test.go`: at 80×24 a 4-line status on the
   list keeps the header on screen; Daemons with 8 rows cuts to 1 line with the header on screen and the list
   shows the whole message afterwards; the terminal screen cuts at 2 lines and `termRows` equals the value with
   no status; a 1-line status gives today's `bodyHeight`; Jobs during a 4-line status keeps its header and its
-  windowed rows at their minimum.
+  windowed rows at their minimum, and with `could not read` and `connecting` lines showing the limit shrinks by
+  those lines; every screen's `activeHelp()` matches what its render passes to `chrome` (table over the screens,
+  including the confirm, an overlay and the enlarge hint). Cost: with an empty or one-line status `bodyHeight` renders
+  the help zero times and `chrome` once (counted through a test hook); `BenchmarkViewList` at 80×24 with 8 sandboxes
+  (empty and one-line status) keeps the frame cost visible (research R9).
 - [ ] T015 `UI/status.go` + `UI/app.go`: the size check. `sizeKey{status, banner string; width, height, tabs int;
   surface activeSurface; markFree bool}` stored on `Model`; `(m *Model) checkSizes() tea.Cmd` run in the `Update`
   wrapper **last** (after the release, T017), skipped on `surfaceTerminal`; on a key change: list →
@@ -168,31 +196,36 @@ through `cfg.CodeBin`; T026 switches it).
   hosts, configs picker, kit picker, notifications, runs, services) → `SetSize(bodyWidth, bodyHeight)` when it
   differs; the open huh form → `WithHeight(bodyHeight)` only when the stored `lastHeight` differs (add
   `lastHeight int` beside each of the 7 form pointers, set where they're built), then `form.Update(nil)` in the
-  same pass with its command returned. Depends on T014. Tests: each key field changed in turn resizes (status
+  same pass with its command returned. Depends on T014, T017 (same files, and the check runs after the release).
+  Tests: each key field changed in turn resizes (status
   grows, banner arrives via `applyUpdateAvailable`, help footer changes height via `MarkFree`, tabs change,
   returning to the list from Settings during a long message); an unchanged key doesn't call the target (count
   via a test hook); a form shrunk then restored keeps the last field drawn (`Update(nil)` effect).
-- [ ] T016 `UI/status.go` + `UI/terminal.go` + `UI/orphan.go` + `UI/app.go`: hold fields `vFail{text; at}`,
-  `vHold{text; seq; dialog}`, `termFail` on `Model` (data-model §6); `attachTerminal` (in-place only, i.e. the
+- [ ] T016 `UI/status.go` + `UI/terminal.go` + `UI/orphan.go` + `UI/confirm.go` + `UI/app.go`: hold fields
+  `vFail{text; at}`, `vHold{text; seq}`, `termFail` on `Model` (data-model §6), and `confirmState.holdsV bool` with
+  `(m Model) vHoldDialog() bool` = `m.screen == screenConfirm && m.confirm.holdsV`, so the dialog's state is derived and
+  no way of closing it can leave it stale (`closeOrchAdminOnDrop` drops a confirm unanswered, running neither
+  callback); `attachTerminal` (in-place only, i.e. the
   caller isn't `T`'s replace path) sets `vHold.seq = m.termSeq`, clears `termFail`, and copies a recent
   (`nowFunc().Sub(vFail.at) < vHoldRecent`, non-zero `at`) status equal to `vFail.text` into `vHold.text` when
-  empty; `confirmReplaceOrphan` with `!external` sets `vHold.dialog = true` with the same copy, `onAccept` sets
-  `vHold.seq = m.termSeq + 1` **and** `vHold.dialog = false` (otherwise an accepted dialog never releases),
-  `onCancel` sets `vHold.dialog = false`; `handleTermOpened`/`handleTermClosed` clear `vHold.seq` only when
+  empty; `confirmReplaceOrphan` with `!external` sets `holdsV: true` with the same copy and an `onAccept` that sets
+  `vHold.seq = m.termSeq + 1`, so the hold passes to the attach in the accepting message (it needs no `onCancel`);
+  `handleTermOpened`/`handleTermClosed` clear `vHold.seq` only when
   `msg.seq == vHold.seq`; the three error assignments (`not opened — you moved on`, `external terminal already
   attached`, `terminal: …`) also set `termFail`. `(m *Model) setVFail(text string)` used by T024/T038: it always
   sets `vFail = {text, nowFunc()}` (the error style applies wherever the text is shown, FR-529); when
-  `vHold.seq != 0 || vHold.dialog || m.screen == screenTerminal` it also sets `vHold.text` (and `m.status` on the
+  `vHold.seq != 0 || m.vHoldDialog() || m.screen == screenTerminal` it also sets `vHold.text` (and `m.status` on the
   terminal screen, where it's drawn cut to 2 lines), else `m.status`.
 - [ ] T017 `UI/status.go` + `UI/app.go`: `(m *Model) releaseHeld()` run in the `Update` wrapper in the order
   `reconcileGuardLayers`, `openParkedOverride`, `openDeferredMcpFollowups`, release, size check: when
-  `vHold.text != ""`, `vHold.seq == 0`, `!vHold.dialog` and `m.screen != screenTerminal`: `status = (status != ""
+  `vHold.text != ""`, `vHold.seq == 0`, `!m.vHoldDialog()` and `m.screen != screenTerminal`: `status = (status != ""
   && status == termFail ? sanitizeLine(status, 120) + "; " : "") + vHold.text`; `vFail = {status, time.Time{}}`;
   `vHold = {}`. Depends on T016. Tests in `UI/hold_test.go` (step `nowFunc`; use the `fakeDaemon` attach hooks):
   **SC-008** — a failure arriving while the terminal is open is shown in full and red on `ctrl+q`, replacing
   `detached from`; one arriving while opening; a first attach superseded by a second (only the second's message
-  clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); a refusal then `t`
-  held; a refusal older than 3 s not held; `terminal: <reason>; <refusal>` joined, red, error first; a second
+  clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); a Replace dialog
+  opened from the orchestrator detail and dropped unanswered by `closeOrchAdminOnDrop` (a held failure is released,
+  and a later `v` failure shows at once); a refusal then `t` held; a refusal older than 3 s not held; `terminal: <reason>; <refusal>` joined, red, error first; a second
   `t` within 3 s after a release shows only its own error; `moved on` and `external already attached` joined; an
   accepted Replace whose attach fails joined the same way; an open terminal whose session dies (`SendData`
   failure through `handleTermClosed` while showing) joined with the held failure; a released message's next
@@ -261,9 +294,9 @@ one-line statuses).
   known only inside the `v` command) and `editorExitMsg{sandboxID, text string}` (data-model §7). Depends on
   T009, T010, T016.
 - [ ] T023 [US1] `UI/editor_open.go`: `openEditorCmd(hostID, sandboxID string) tea.Cmd` — on the update loop:
-  `launcher == nil` → `editorOutcomeMsg{text: "<Name> opener not configured"}`; build `editor.Request{Editor:
+  `launcher == nil` → `editorOutcomeMsg{sandboxID, text: "<Name> opener not configured"}`; build `editor.Request{Editor:
   sessionEditor(), Bins: editorBins, Custom: prefs.EditorCustomCommand, SSHTarget, HostErr, Home:
-  os.UserHomeDir()}`; `exe, ref := editor.Precheck(req)`; a refusal → `editorOutcomeMsg{failed: true, text:
+  os.UserHomeDir()}`; `exe, ref := editor.Precheck(req)`; a refusal → `editorOutcomeMsg{sandboxID, failed: true, text:
   assemble(ref)}` returned as an immediate command. Otherwise the command: `exec.LookPath(exe)` → `not-found`
   text with the reason cut to 40; `d.VSCodeTarget` → the error cut to 120 then the notices; `editor.Resolve` →
   refusal text; `launcher.Launch(plan.Argv)` → `not-found`/`launch-failed`; success → `opened <id8> in <Name>`
@@ -272,15 +305,19 @@ one-line statuses).
   `cutMiddle` before assembly (FR-533). `sandbox_list.go` calls it for `v`; `groups.go`'s `openVSCodeCmd` and the
   `vscode` import are removed. Depends on T022.
 - [ ] T024 [US1] `UI/editor_open.go` + `UI/app.go`: handlers — `editorOutcomeMsg`: `delete(m.busy, id)` (only this
-  row), no reload; `failed` → `setVFail(text)` else `m.status = text` (and `m.vFail.text` cleared if it equalled
-  the old status, so the style ends); when `wait != nil` return `waitExitCmd(wait, id, msg.exe, msg.where, vNotices())`, which
+  row) and `m.refreshListItems()` (a row's text is built into its list item, so the spinner would otherwise stay on
+  screen; this rebuilds rows without a reload, FR-523); `failed` → `setVFail(text)` else `m.status = text`, `m.err =
+  nil` (as `statusMsg` does today, or an earlier `errMsg` shows the completion in red, FR-529, SC-002) and
+  `m.vFail.text` cleared if it equalled the old status, so the style ends; when `wait != nil` return `waitExitCmd(wait, id, msg.exe, msg.where, vNotices())`, which
   takes the executable and the "where" from the message and captures `vNotices()` at that moment, blocks on the
   channel and returns `editorExitMsg{id, text}` with FR-523's text assembled per
   contracts/editor-launch.md §4, or `nil` when the channel closes. `editorExitMsg`: `setVFail(msg.text)` only
   (FR-523: no `busy`, no reload). Depends on T023. Tests in `UI/editor_open_test.go` with a recording `fakeLauncher` (argv, a
   controllable `Report` channel): `v` with VS Code and no settings produces `[code <path>]` and
   `opened <id8> in VS Code` byte-identical to the old test (SC-002); `v` with WebStorm selected produces
-  `[webstorm <path>]`; only the pressed row's `busy` entry is cleared and no reload command is returned; a
+  `[webstorm <path>]`; only the pressed row's `busy` entry is cleared and no reload command is returned; the
+  rendered row stops showing `opening` with no other busy row and no working agent; both of T023's early returns
+  clear the pressed row; an `errMsg` followed by a successful `v` leaves `m.err` nil, so the completion isn't red; a
   daemon error is cut to 120 and followed by the notice; the exit report replaces the status, is red, leaves
   another row's spinner, and a completion arriving after it doesn't overwrite it; the unknown-editor and
   unreadable notices appear on every outcome kind; `VS Code opener not configured` → `<Name> opener not
@@ -317,8 +354,8 @@ executable with the folder.
   `SWITCHBOARD_CODE_INSIDERS_BIN`, the 60-column unknown-editor notice) wraps to ≤ 4 lines at 80 columns with
   `ansi.Wrap`; if it doesn't, shorten the wording in the order the contract gives and update the contract.
 - [ ] T029 [P] [US2] `ED/resolve_test.go`: the FR-517 limit is applied with VS Code selected and `bins["vscode"]`
-  set on a remote path containing `(`; not applied with `bins["zed"]` set and VS Code selected; not applied on a
-  local sandbox. (Extends T009's table.)
+  set on a remote path containing `(`; not applied with `bins["vscode"] = "code"` (the default); not applied with
+  `bins["zed"]` set and VS Code selected; not applied on a local sandbox. (Extends T009's table.)
 - [ ] T030 [P] [US2] `CF/config.go` doc strings and `README.md` env rows: each variable's doc names its editor and
   default and says a value is one executable (FR-503). `make env-check` passes.
 
@@ -339,7 +376,9 @@ for a failed host lookup.
   ssh://user@box/srv/ws/my%20proj]`; WebStorm → `no-remote` text, red, the launcher never called, and the
   refusal returned **before** `VSCodeTarget` is called (the fake daemon counts calls); a `hostStore.Get` error
   → `host-lookup` text for VS Code too (FR-520); a target `-oProxyCommand=x` → `target-dash`; a target
-  `user@box/evil` with Zed → `zed-target`.
+  `user@box/evil` with Zed → `zed-target`; a remote path containing `(` with `editorBins["cursor"]` set → `path-limited`
+  naming `'('` and telling the developer to unset that variable; the same path with Custom → `path-limited` pointing
+  to the settings screen, with no mention of unsetting anything.
 - [ ] T032 [US4] `UI/editor_open.go`: the remote-only notice `the path is on the remote host` appended last for a
   Custom command with no `{host}` (FR-515, FR-529): test the three-notice message
   `opened abc in Custom (settings couldn't be read at startup, changes aren't saved; the path is on the remote
@@ -364,7 +403,12 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - [ ] T034 [US3] `UI/settings_command.go` (new): `settingsState` gains `input textinput.Model`, `inputInitial
   string`, `inputRewrite bool`; `enterEditorCommand()` (from the list's Custom entry): `textinput.New()` with `Prompt = "› "`, `Width
   = bodyWidth - 4`, `SetValue(prefs.EditorCustomCommand)`, `CursorEnd`, `inputInitial = TrimSpace(Value())`,
-  `mode = settingsInput`; `inputRewrite = inputInitial != TrimSpace(prefs.EditorCustomCommand)` (cleaning
+  `mode = settingsInput`, returning `input.Focus()`'s command as `enterRename` does (an unfocused input ignores every
+  message); `forwardScreen` gains a `screenSettings` case: `mode == settingsInput` → `input.Update(msg)`, so `ctrl+v`
+  paste (a command that returns a non-key message) and the cursor blink reach it, any other mode → `m.list.Update(msg)`
+  as today; the `tea.WindowSizeMsg` handler, when `mode == settingsInput`, resets the width with `pos := Position()`,
+  `Width = bodyWidth - 4`, `CursorEnd()`, `SetCursor(pos)` (`Width` alone doesn't move the visible window until the
+  next key, FR-534); `inputRewrite = inputInitial != TrimSpace(prefs.EditorCustomCommand)` (cleaning
   changed it), drawn as `normalizeNotice([]string{"Custom command"})` under the input (2 body lines, FR-528),
   cleared when the input closes. `updateSettingsInputKey`: `esc` → `requestExit(
   gEditorCommand)`; `enter` → `submitEditorCommand`; everything else to the input. `submitEditorCommand()`:
@@ -389,14 +433,18 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
   && nvim .` → the shell-syntax rejection mentioning `sh -c` and a wrapper script, no command text in the
   status; `esc` with a change opens the dialog, `s` acts like `enter` (a rejection keeps it open), `c` returns to
   the input, `d` returns to the list with nothing saved; `esc` unchanged → the list, `esc` in the list → rows,
-  never closing the screen; `q`, `,`, `j`, `k`, space typed as text; a saved command with a tab opens with the
+  never closing the screen; `q`, `,`, `j`, `k`, space typed as text; the blink message from the
+  command `enterEditorCommand` returned, fed back through `Update`, toggles the input's cursor (the non-key route a
+  `ctrl+v` paste takes; no clipboard in CI); a saved command with a tab opens with the
   rewrite notice and `enter` saves the cleaned text; a write error keeps the input open and `v` keeps the old
   editor; a nil store closes the input with `(not saved)`; after a successful save the row shows `Custom:
   <exe>…` and the file has both keys; a session-only Custom then Zed confirmed → Zed saved, mark cleared,
   Custom again pre-fills the command (FR-530).
 - [ ] T037 [US3] `UI/settings_test.go`: **SC-008 (input)** at 80×24 — the open input with a rejection showing:
   the header, the whole note and the input on screen, no line wider than 80; at 80×18 the note ends in `…` and
-  the input is still on screen (FR-534). Depends on T034.
+  the input is still on screen (FR-534); narrowing the terminal with a long command, the cursor at the end and in
+  the middle, leaves no line wider than the terminal and the cursor where it was, and widening shows more of the
+  command. Depends on T034.
 - [ ] T038 [US3] `UI/editor_open.go` + tests: Custom on `v` — FR-522's re-check (`Split` + `Check` on the session
   command every press; a hand-edited `API_TOKEN=abc123 x {path}` refuses with the `assignment` rule and the row
   shows `Custom (invalid command)`, `abc123` nowhere in the view or status); `~/bin/edit {path}` expands `~` at
@@ -423,7 +471,7 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
   list with the banner is cut with `…` on its last line, the header and the whole error are on screen, and
   `m.status` still holds the full text. A separate test: Daemons with 8 daemons cuts the message with `…` and
   keeps the header; back on the list the whole message shows.
-- [ ] T041 [P] `UI/status_test.go`: **SC-008 (terminal)** — a long status while the terminal is open sends no
+- [ ] T041 [P] `UI/status_terminal_test.go` (new): **SC-008 (terminal)** — a long status while the terminal is open sends no
   resize (`fakeDaemon`'s session records `SendResize`) and keeps the header; a terminal opened during a wrapped
   message gets the same PTY size as one opened with none. (The hold cases are T017.)
 - [ ] T042 [P] `UI/settings_test.go`: the startup notices are set in `m.status` by `WithSettings` and shown by
@@ -460,21 +508,23 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 ## Dependencies
 
 - Phase 1 (T001–T004) → Phase 2. T002 needs T001. T003/T004 are independent.
-- Phase 2: T005–T008, T010, T011 are parallel; T009 needs T001, T005–T008; T012 needs T011; T013 → T014 → T015;
-  T016 needs T014 (fields) and T017 needs T016.
+- Phase 2: T005, T007, T008, T010, T011 are parallel; T006 needs T005; T009 needs T001, T005–T008; T012 needs T011;
+  T013 → T014 → T016 → T017 → T015, one at a time, because they share `UI/status.go` and `UI/app.go` and the size
+  check runs after the release.
 - US1 (T018–T026): T018 needs T012, T013; T019 needs T018; T020 needs T019; T022 needs T009, T010, T016; T023
   needs T022, T018; T024 needs T023, T017; T025 needs T018; T026 needs T002, T022–T024. **MVP = Phase 1 + Phase 2 +
   US1.**
-- US2 (T027–T030) needs US1. US4 (T031–T033) needs US1. US2 and US4 are independent of each other. T026 is
+- US2 (T027–T030) needs US1. US4 (T031–T033) needs US1. Neither needs the other, but both edit
+  `UI/editor_open.go` and its test, so T027/T028 and T031/T032 don't run together. T026 is
   the last US1 task: it deletes the old opener and `CodeBin` only once T022–T024 have replaced every use.
 - US3 (T034–T039) needs US1 and T005/T006; T035 needs T034; T036/T037 need T035; T038 needs T034 and T023.
 - Polish: T040–T043, T045, T047, T048 after their phases; T044 after T026 and T034; T046 last before T049.
 
 ## Parallel execution examples
 
-- After T001: T002, T003, T004, T005, T006, T007, T008, T010, T011 together (nine files).
-- After T014: T015 and T016 in parallel (T017 after T016).
-- After US1: US2 (T027–T030) and US4 (T031–T033) in parallel.
+- After T001: T002, T003, T004, T005, T007, T008, T010, T011 together (eight files); T006 once T005 is done.
+- After T014: nothing in parallel; T016, T017 and T015 share files, in that order.
+- After US1: T029, T030 and T033 alongside either story; T027/T028 and T031/T032 one pair at a time.
 - Polish: T040, T041, T042, T043, T045, T047, T048 together.
 
 ## Implementation strategy

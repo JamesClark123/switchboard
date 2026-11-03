@@ -78,8 +78,8 @@ Expected: each opens the workspace folder on the remote host, or the row is corr
    with remote support (VS Code family, Zed, Custom); WebStorm still refuses with `no-remote`, which runs first.
 6. Corrupt `hosts.toml` (or remove the entry) while the TUI runs. **Expect** `host entry unavailable` for every
    editor; the sandbox isn't treated as local.
-7. `SWITCHBOARD_CODE_BIN` set, VS Code, a remote workspace path containing `(`. **Expect** the `path-limited`
-   refusal naming `'('`; unset the variable → opens as today.
+7. `SWITCHBOARD_CODE_BIN=~/bin/logedit`, VS Code, a remote workspace path containing `(`. **Expect** the
+   `path-limited` refusal naming `'('` and the variable; unset it, or set it to `code` (the default) → opens as today.
 
 ## Scenario 5 — The settings file (FR-525, FR-527, FR-530)
 

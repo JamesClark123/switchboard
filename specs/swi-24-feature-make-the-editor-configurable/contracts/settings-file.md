@@ -40,7 +40,8 @@ editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''
 2. Apply only the changed key(s): a toggle → `auto_connect_hosts`; a built-in editor → `editor`; Custom →
    `editor` and `editor_custom_command`. Other keys are written as just read; an absent key stays absent.
 3. Encode and write to a fresh `os.CreateTemp` file in the same directory (mode `0600`, unique name
-   `.settings.toml-*.tmp`), rename over `settings.toml`, then `chmod 0600` the result (FR-527).
+   `.settings.toml-*.tmp`), rename over `settings.toml`, then `chmod 0600` the result (FR-527). A failed write,
+   close or rename removes the temp file, so no copy of a Custom command is left behind.
 
 Failure modes:
 
