@@ -201,6 +201,26 @@ Settled in the spec:
 - **`chrome` doesn't drop lines from the bottom of the body**, but that's no promise the selected row stays visible. On a
   very short terminal it can scroll off the top, as it does today. FR-534's rule for its own note still stands. (FR-533)
 
+### PR review 2026-11-03 (re-review run `run-c275c8f2-1555`, resolved in pr-response run `run-c275c8f2-1560`)
+
+The review asked for the first one to be settled first, because it changes what FR-533 requires:
+
+- **The hold also covers a recent `v` failure or refusal that's already showing.** Most refusals are immediate, so `v`
+  then `t` would otherwise lose them when the attach replaces the status, while a slower refusal would be held. One that
+  arrived in the last 3 seconds is now held, and an older one isn't, so an old failure can't come back after a long
+  session. The 3 seconds are checked when the attach starts or its Replace dialog opens, because the dialog can stay open
+  for longer than that. (FR-533, SC-008)
+
+Settled in the spec:
+
+- **`v` failures and refusals have a defined style.** Each one shows in the error style whenever it's shown, and it can't
+  change the style of a later message. It's kept in a field of its own rather than `m.err`, which would stay set and turn
+  later messages red. (FR-529, SC-008, Notes for Planning)
+- **A huh field shrunk during a long message doesn't grow back, and that's accepted until the form closes.** Rebuilding
+  an open form would risk the developer's input. A shrink can also leave the focused field undrawn until the form handles
+  a message, so a no-op message follows each `WithHeight`. This settles the open item from the last review, and it's a
+  note for planning.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -660,6 +680,9 @@ sandbox. Check that a clear message appears and nothing is started.
     such as the sign-in summary, may replace them, and that's accepted because `v` and the settings screen
     always show them, and FR-533 keeps them from being cut off.
   - Text from the settings file MUST be shown with control characters removed.
+  - A `v` failure or refusal (FR-533) MUST show in the error style whenever it's shown, both when it arrives and when
+    it's released from a hold. A completion message MUST NOT, even with a notice. A failure or refusal MUST NOT change
+    the style of any later message.
 - **FR-530**: Every save MUST re-read the settings file, apply only the setting that changed to the values
   just read, and write the result. A toggle changes its own key, confirming a built-in editor changes the
   editor key, and confirming Custom changes the editor key and the custom command. So a hand edit or another
@@ -742,7 +765,10 @@ sandbox. Check that a clear message appears and nothing is started.
     opening and no attach can follow. So a Replace dialog keeps the hold until it's declined, and accepting it starts an
     attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
     the held message MUST replace whatever the status line shows on the screen the developer lands on, such as
-    `detached from <name>`, and MUST keep its error styling. A later `v` failure or refusal replaces a held one.
+    `detached from <name>`, and MUST show in the error style (FR-529). A later `v` failure or refusal replaces a held
+    one. A `v` failure or refusal that's already showing when an in-place attach starts, or when a Replace dialog for one
+    opens, MUST be held in the same way if it arrived in the last 3 seconds. An older one isn't held, and a release
+    doesn't restart its 3 seconds.
 - **FR-534**: The settings screen MUST wrap everything it shows to the terminal's width, at spaces where it can, so
   nothing is cut at the edge. That covers the rows and their descriptions, FR-508's and FR-525's notices, and
   FR-521's note.
@@ -818,7 +844,10 @@ sandbox. Check that a clear message appears and nothing is started.
   while a wrapped message is showing gets the same PTY size as one opened with no message, and that a `v` failure or
   refusal arriving while the terminal is open or opening is shown in full, in the error style, once it closes. That
   includes a first attach superseded by a second, and an attach that ends in the Replace dialog, both declined and
-  accepted (FR-533).
+  accepted. Tests also check that a `v` refused at the key press and followed by `t` is shown the same way, including
+  when `t` opens the Replace dialog and it's accepted more than 3 seconds later, and that a message over 3 seconds old
+  isn't held (FR-533). A `v` failure or refusal shows in the error style when it arrives and when it's released, and the
+  next plain message isn't in that style (FR-529).
 
 ## Notes for Planning
 
@@ -874,8 +903,18 @@ These follow from the requirements above and from how the code works today. They
       state with the same row selected. A test should change each of these and check the size.
     - huh's `Form` v1.0.0 has `WithHeight` but no way to read the height back, and `Group.WithHeight` renders each field
       to measure it. So store the last height applied beside each form, and call `WithHeight` only when the target
-      differs. It calls `field.WithHeight` only for a field that's too tall, so a field shrunk during a long message
-      may not grow back. Planning should check this.
+      differs.
+    - A field shrunk during a long message doesn't grow back on huh v1.0.0. `Group.WithHeight` calls `field.WithHeight`
+      only for a field that's too tall. Measured with the form at 18, shrunk to 13 and restored: a 30-option `Select` or
+      `MultiSelect` stays at 13 lines once the form has handled a message, and a `Note` returns to 18. A check that
+      doesn't call `Update` after restoring sees all the lines again, which is misleading. The cursor stays on screen,
+      and `down` still scrolls, so the field is only shorter than it needs to be. Accept this until the form closes,
+      because rebuilding an open form would risk the developer's input.
+    - A shrink can also leave the focused field undrawn. With 8 `Input`s in one group and focus on the last, shrinking
+      from 18 to 16 or less doesn't draw that field until the form handles a message. `spinner.TickMsg` returns before
+      `forward` (`app.go:720`), so ticks don't help. After each `WithHeight`, pass a no-op message through the form's
+      `Update` in the same pass, and keep any command it returns. That brought the field back with its typed text in the
+      same measurement. Test that the last field stays drawn after a shrink.
   - **No fallback in `chrome`:** the review rendered today's list at 80×15. The view is 20 lines with the selected row at
     lines 8–10, so at that size Bubble Tea's top-line drop keeps that row, and dropping from the bottom of the body would
     remove it. This isn't a guarantee: with a one-line status and the first row selected, the row's name is gone at 80×11
@@ -912,8 +951,22 @@ These follow from the requirements above and from how the code works today. They
   or `handleTermClosed`, including when the developer has moved on. These details are easy to get wrong:
   - **Error state:** `footer` shows red only when `m.err != nil` or the status starts with `error` (`app.go:1454`), and
     `statusMsg` sets `m.err = nil` (`app.go:763`), so a background action finishing while the terminal is open clears it.
-    FR-518's and FR-523's messages don't start with `error`, so the field has to hold the error state as well as the
-    text.
+    FR-518's and FR-523's messages don't start with `error`, and today's refusals only set `m.status`, such as
+    `start the sandbox before opening its terminal` (`terminal.go:98`). A `v` outcome can't use `m.err` for its style
+    either, because `attachTerminal` and `handleTermOpened` don't clear it, so `opening terminal…` would show in red. Keep
+    the failing text in its own field, such as `m.vFailStatus`, with the time it arrived, and have `footer` use red when
+    the status is non-empty and equals it. The style then ends when the message does, and no `m.status =` assignment has
+    to change. A release sets both the status and this field, and doesn't touch `m.err` or the arrival time. Use
+    `nowFunc` (`unsaved.go:16`) so tests can step past the 3 seconds. An `errMsg` can still leave `m.err` set and turn
+    later messages red, as it can today.
+  - **A message already showing:** the refused case returns before the daemon call, so it's on the screen when `t` arrives,
+    and `attachTerminal` replaces it. So `attachTerminal` and `confirmReplaceOrphan` (not for `T`) both check for a
+    recent one, and copy it into the held field if the status still equals it. It stays on the status line behind the
+    dialog. The check belongs in those two rather than in `enterTerminalFrom`, because `t`'s own refusals, such as
+    `start the sandbox…` and the wait notice, start no attach. They replace the message on a screen that's still showing,
+    like any other message. The 3 seconds can't be checked only in `attachTerminal`, because an accepted Replace dialog
+    reaches it after the developer has read the dialog. Skip the copy when the held field already has a message, which
+    is the same one or a newer one, so an older status can't overwrite a failure that arrived while the dialog was open.
   - **Superseded attach:** an attach in flight is only a `termSeq` value today, and `t` can be pressed again during one.
     So the marker has to hold the pending attach's number, set in `attachTerminal`, and only a message with that number
     clears it. With a plain flag, the older attach would clear it while the newer one runs, and the newer
