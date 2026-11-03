@@ -36,10 +36,11 @@ Rules:
 
 - `Load() (Settings, error)`: a missing file is the defaults; an unreadable or unparseable file (including a
   wrong type) returns the defaults **and** the error (unchanged contract).
-- `Update(apply func(*Settings)) error`: re-read → `apply` → write only the keys present after `apply` (a key
-  absent in the file and untouched by `apply` stays absent). A read or parse failure returns
-  `*SettingsUnreadableError{Err}` and writes nothing (FR-525, SC-006). Written with `SaveTOMLPrivate` (`0600`,
-  fresh unique temp, final chmod; FR-527).
+- `Update(c SettingsChange) error` with `SettingsChange{AutoConnectHosts *bool; Editor *string;
+  EditorCustomCommand *string}`: re-read → copy each non-nil change over the file's pointer field → write. A key
+  absent in the file and nil in the change stays absent; a key present stays as read. A read or parse failure
+  returns `*SettingsUnreadableError{Err}` and writes nothing (FR-525, SC-006). Written with `SaveTOMLPrivate`
+  (`0600`, fresh unique temp `.settings.toml-*.tmp`, final chmod; FR-527).
 - Validation of `Editor` and `EditorCustomCommand` is **not** done in the store: the session decides what an
   unknown or invalid value means (FR-508, FR-522).
 
@@ -71,13 +72,13 @@ Row rendering (FR-504, FR-532, FR-534): Editor row value = `Name`, or `Custom: <
 ### State transitions (settings screen)
 
 ```
-rows ──space/enter on Editor──▶ list ──enter on built-in──▶ rows (Update{Editor})
-                                 │  ──enter on Custom──▶ input ──enter (checks pass, Update{Editor,Command})──▶ rows
+rows ──space/enter on Editor──▶ list ──enter on built-in──▶ rows (Update{Editor: &id})
+                                 │  ──enter on Custom──▶ input ──enter (checks pass, Update{Editor: &custom, EditorCustomCommand: &text})──▶ rows
                                  │                         │   ──enter (rejected / write failed)──▶ input (reason)
                                  │                         │   ──esc clean──▶ list
                                  │                         └──esc dirty──▶ unsaved dialog: Save=enter · Cancel=input · Discard=list
                                  └──esc──▶ rows (nothing saved)
-rows ──space/enter on toggle──▶ rows (Update{AutoConnectHosts})
+rows ──space/enter on toggle──▶ rows (Update{AutoConnectHosts: &flipped})
 rows ──esc/q/,──▶ returnTo
 ```
 
@@ -143,8 +144,8 @@ Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 1
 none ──v failure/refusal arrives──▶ showing(vFail.at = now)
 showing ──in-place attach starts or Replace dialog opens, age < 3 s──▶ held(seq | dialog)
 none/showing ──failure arrives while terminal open/opening or dialog open──▶ held (replaces any held text)
-held(dialog) ──decline──▶ release
-held(dialog) ──accept (onAccept: seq = termSeq+1)──▶ held(seq)
+held(dialog) ──decline (onCancel: dialog = false)──▶ release
+held(dialog) ──accept (onAccept: seq = termSeq+1, dialog = false)──▶ held(seq)
 held(seq) ──termOpened/termClosed with that seq, terminal not showing──▶ release
 held(seq) ──terminal closes (ctrl+q / closed)──▶ release
 release: status = (termFail showing ? cut120(termFail) + "; " : "") + text; vFail = {text, zero time}; vHold = {}
@@ -157,7 +158,9 @@ A message with a zero `vFail.at` is never held again.
 | Message            | Fields                                                   | Handler effect |
 |--------------------|----------------------------------------------------------|----------------|
 | `editorOutcomeMsg` | `sandboxID, text string; failed bool; wait <-chan editor.ExitReport` | `delete(busy, id)`; status (+ `vFail` when failed, held per §6); returns the wait command when `wait != nil`. No reload. |
-| `editorExitMsg`    | `sandboxID, executable, where string; status int; signal string` | Status + `vFail` only (FR-523): no `busy`, no reload. |
+| `editorExitMsg`    | `sandboxID, text string`                                 | Status + `vFail` only (FR-523): no `busy`, no reload. |
 
-Both carry already-assembled, sanitised text; the notices are added by the sender from the session at send time
-(FR-529), so the message is self-contained.
+Both carry already-assembled, sanitised text, so the message is self-contained. The outcome's text is built
+in the `v` command; the exit report's text (executable, status or signal, where to fix it) is built by
+`waitExitCmd`, which captures the executable, the "where" and `vNotices()` when the outcome is handled (FR-529),
+so a later settings change doesn't alter a report already in flight.

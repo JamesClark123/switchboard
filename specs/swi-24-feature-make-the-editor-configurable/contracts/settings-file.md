@@ -27,8 +27,9 @@ editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''
   `⚠ settings couldn't be read at startup, changes aren't saved — fix the file and restart (<error>)`, and
   every `v` outcome carries `settings couldn't be read at startup, changes aren't saved` (FR-525, FR-529).
 - `editor` unknown → VS Code for the session; the value stays in the file until an Editor list entry is
-  confirmed; notice `unknown editor '<value>' — using VS Code; other settings loaded` (value cut to 60 columns,
-  control characters removed) on the settings screen and in every `v` outcome (FR-508, FR-529).
+  confirmed. The settings screen shows `unknown editor '<value>' — using VS Code; other settings loaded`, and every
+  `v` outcome carries `unknown editor '<value>' in settings` (value cut to 60 columns, control characters removed
+  in both) (FR-508, FR-529).
 - `editor = 'custom'` with a missing, empty or invalid `editor_custom_command` → Custom stays selected; `v`
   refuses (FR-522); the Editor row shows `Custom (invalid command)` (FR-532).
 - Hand edits made while the TUI runs reach the session at the **next start** (FR-530).
@@ -38,8 +39,8 @@ editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''
 1. Re-read the file (missing = empty).
 2. Apply only the changed key(s): a toggle → `auto_connect_hosts`; a built-in editor → `editor`; Custom →
    `editor` and `editor_custom_command`. Other keys are written as just read; an absent key stays absent.
-3. Encode and write to a fresh `os.CreateTemp` file in the same directory (mode `0600`, unique name), rename over
-   `settings.toml`, then `chmod 0600` the result (FR-527).
+3. Encode and write to a fresh `os.CreateTemp` file in the same directory (mode `0600`, unique name
+   `.settings.toml-*.tmp`), rename over `settings.toml`, then `chmod 0600` the result (FR-527).
 
 Failure modes:
 

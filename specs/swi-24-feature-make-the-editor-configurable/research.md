@@ -49,9 +49,11 @@ what was chosen, why, and what was rejected.
 - `bodyHeight` (`app.go:1296`) is `m.height - 6` (floor 3): header 2 + blank + one status line + help ≈ 1, with
   one status line assumed. `mainListHeight` subtracts the tab bar (2), extra help lines and the banner (1).
 - 14 call sites read `bodyHeight` once when a surface is built: 7 `newItemList` (groups, configs picker, hosts,
-  sandbox list, kit picker, notifications, runs, services) and 7 huh `WithHeight` (config editor, orchestrator
-  forms, MCP form ×2, kit editor, run actions, secrets). Only `m.list` is resized after startup, on
-  `tea.WindowSizeMsg`. Views such as Jobs and Daemons read `bodyHeight` as they render.
+  kit picker, notifications, runs, services) and 7 huh `WithHeight` (config editor, orchestrator forms, MCP
+  form ×2, kit editor, run actions, secrets). The sandbox list's own `newItemList` (`sandbox_list.go:45`) takes
+  its size from `mainListHeight` and is the one surface resized after startup, on `tea.WindowSizeMsg`. Jobs
+  (`jobs.go:440`) and the lanes picker read `bodyHeight` as they render and window their rows; Daemons and
+  Settings render their rows with no height at all.
 - The `Update` wrapper (`app.go:671`) runs `reconcileGuardLayers`, `openParkedOverride` and
   `openDeferredMcpFollowups` after every message; `sources.go:421` and `mcp.go:845` can set `m.status`.
 - `applyUpdateAvailable` (`update_ui.go:107`) sets `m.updateBanner` with no `SetSize`.
@@ -59,9 +61,9 @@ what was chosen, why, and what was rejected.
   resize; `attachTerminal` reads `termRows()` before it sets `opening terminal…`; `viewTerminal` is header +
   blank + grid. `escHoldHint` is 101 columns.
 - Hold-relevant assignments: `attachTerminal` sets `opening terminal…` / `replacingText` (`terminal.go:114`);
-  `handleTermOpened` sets `m.status = ""` (`:163`) or `terminal for <name> not opened — you moved on; press t again`
+  `handleTermOpened` sets `m.status = ""` (`:161`) or `terminal for <name> not opened — you moved on; press t again`
   (`:150`); `handleTermClosed` sets `an external terminal is already attached to <name>` (`:190`),
-  `terminal: <reason>` (`:199`) or `detached from <name>` (`:204`); `ctrl+q` sets `detached from <name>` (`:285`);
+  `terminal: <reason>` (`:199`) or `detached from <name>` (`:203`); `ctrl+q` sets `detached from <name>` (`:283`);
   `SendData` failure routes through `handleTermClosed` (`:306`). `termSeq` numbers attaches; a stale
   `termOpenedMsg` closes its session. `confirmReplaceOrphan` (`orphan.go:100`) opens the Replace dialog with
   `onConfirm` returning `replaceOrphanMsg`, handled in a **later** `Update` (`app.go:707` → `startReplaceOrphan` →
@@ -120,7 +122,7 @@ produces exactly this (probe): `ssh://user@box/srv/ws/my%20proj`, `ssh://[2001:d
 
 - Go's `exec.Cmd` with `SysProcAttr{Setsid: true}` starts the child in a new session (own process group, no
   controlling terminal) on Linux and macOS; nil `Stdin`/`Stdout`/`Stderr` connect to `/dev/null`. The release
-  targets are `darwin` and `linux` only (`.goreleaser.yml`), so no build tags are needed. `cmd.Wait()` in a
+  targets are `darwin` and `linux` only (`.goreleaser.yaml`), so no build tags are needed. `cmd.Wait()` in a
   goroutine reaps the child; `ProcessState.ExitCode()` is `-1` for a signal.
 - `exec.LookPath(name)` stats a file in each `PATH` directory, or the given path when the name contains `/`; a
   stale network mount in `PATH` can block it, which is why the spec puts it inside the command.
@@ -176,14 +178,15 @@ given" and the set/unset distinction.
 raw text). `store.Settings` becomes `{AutoConnectHosts bool; Editor string; EditorCustomCommand string}` where
 `Editor` is the **raw** saved string (`""` = absent → VS Code; an unknown value is kept so the session can show
 FR-508's notice and never writes the fallback). `settingsFile` gains the two pointer fields. The whole-struct
-`Save` is replaced by `SettingsStore.Update(apply func(*Settings)) error`, which: re-reads the file into
-`settingsFile` (a missing file is the zero value; a read or parse error returns `*store.SettingsUnreadableError`
-without writing), applies `apply` to the values just read (a nil pointer stays nil unless `apply` sets that
-field, so only the changed keys are written and an absent key stays absent), and writes through a new
-`Store.SaveTOMLPrivate(name, v)`: `os.CreateTemp(dir, ".settings-*.toml")` (fresh, unique, `0600`), write,
+`Save` is replaced by `SettingsStore.Update(c SettingsChange) error`, where `SettingsChange{AutoConnectHosts
+*bool; Editor *string; EditorCustomCommand *string}` names the keys to write (a non-nil field). `Update`
+re-reads the file into `settingsFile` (a missing file is the zero value; a read or parse error returns
+`*store.SettingsUnreadableError` without writing), copies each non-nil change over the corresponding pointer
+field, so only the changed keys are written and an absent, unchanged key stays absent, and writes through a new
+`Store.SaveTOMLPrivate(name, v)`: `os.CreateTemp(dir, ".settings.toml-*.tmp")` (fresh, unique, `0600`), write,
 close, `os.Rename`, then `os.Chmod(full, 0600)` so an existing wider file is corrected (FR-527). Unknown keys and
-comments are dropped, as FR-530 states. The callers are: toggle → `apply` sets `AutoConnectHosts`; built-in
-editor → sets `Editor`; Custom → sets `Editor = "custom"` and `EditorCustomCommand`.
+comments are dropped, as FR-530 states. The callers are: toggle → `{AutoConnectHosts: &v}`; built-in editor →
+`{Editor: &id}`; Custom → `{Editor: &"custom", EditorCustomCommand: &text}`.
 
 **Rationale**: the typed merge gives FR-530's "apply only the changed setting to the values just read" and SC-007
 with no map handling, and go-toml's typed decode is what makes `editor = 5` a parse error (F2). A new private
@@ -258,9 +261,11 @@ libraries (no quoting information; a new dependency).
 
 **Decision**: `editor.Launch(argv []string) (*Started, error)` builds `exec.Command(argv[0], argv[1:]...)` with
 `SysProcAttr{Setsid: true}`, nil stdio and the TUI's environment, calls `Start`, then runs `Wait` in a
-goroutine. `Started.Report <-chan ExitReport` receives at most one value: a non-zero exit or signal within
-`exitGrace` (a package constant, 3 s) sends `{Status, Signal}`; a zero exit or the grace elapsing sends nothing
-and closes the channel. The `Started` keeps nothing else, so the TUI never waits for the editor. Tests use
+goroutine that lives until the editor exits, however long that is, so the child is always reaped (FR-511).
+`Started.Report <-chan ExitReport` receives at most one value: a second goroutine selects on the `Wait` result
+and a `time.After(exitGrace)` (a package variable, 3 s): a non-zero exit or signal before the grace sends
+`{Status, Signal}`; a zero exit, or the grace elapsing first, closes the channel with nothing sent. The `Started`
+keeps nothing else, so the TUI never waits for the editor. Tests use
 stand-in scripts (`sh -c 'exit 3'`, `sleep 10`, `kill -TERM $$`) with a shortened grace through a package
 variable.
 
@@ -290,18 +295,21 @@ answer for the rest.
 
 - `statusLines(width, limit) []string`: `sanitizeTerminalText` (newlines to spaces) → `ansi.Wordwrap(width)` → cut
   to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "…")`). No cache: wrap and cut on each use.
-- `m.statusLimit()`: `min(statusMaxLines (6), max(1, m.height - headerLines (2) - 1 - helpLines - minBody))`, where
-  `minBody` is the active surface's smallest usable body: the sandbox list `9 + 2 + banner`, an item list or
-  form `3` (`bodyHeight`'s floor), a view with nothing to resize (Daemons, Jobs, Settings, Hosts list screen,
-  Groups, …) its rendered height, measured by `lipgloss.Height(body)` in `chrome`. The terminal screen's limit is
-  the constant 2.
+- `m.statusLimit()`, computed **without rendering**: `min(statusMaxLines (6), max(1, m.height - headerLines (2)
+  - 1 - helpLines - minBody))`, where `minBody` is the active surface's smallest usable body: the sandbox list
+  `9 + 2 + banner`; a resizable item list or huh form `3` (`bodyHeight`'s floor); a view that reads `bodyHeight`
+  as it renders and windows its rows (Jobs, the lanes picker in `orchestrator_lanes.go`) its fixed top and bottom
+  lines plus `windowRange`'s minimum 3; a static view with nothing to shrink (Daemons, Settings, Hosts, Groups,
+  …) `0`, so the limit is the 6-line cap and `chrome` does the real cut (next bullet). The terminal screen's
+  limit is the constant 2.
 - `bodyHeight()` becomes `m.height - 6 - (lines - 1)` where `lines` is the wrapped status's line count after the
-  limit (at least 1), so a one-line or empty status gives today's value. `termRows()` stops using `bodyHeight`
-  and uses the fixed `m.height - 8` (floor 3), so a terminal opened during a wrapped message gets the same PTY
-  size as one opened with none (SC-008), and a status change never resizes the PTY.
-- `chrome(body, hb)` computes the room actually left by the rendered body and passes it to `footer`, so a
-  non-shrinkable view cuts the message to fit with the header on screen; `chrome` never drops lines from the
-  bottom of the body.
+  limit (at least 1), so a one-line or empty status gives today's value. Nothing in this computation renders a
+  body, so a view that reads `bodyHeight` while rendering (Jobs) sees a stable value. `termRows()` stops using
+  `bodyHeight` and uses the fixed `m.height - 8` (floor 3), so a terminal opened during a wrapped message gets the
+  same PTY size as one opened with none (SC-008), and a status change never resizes the PTY.
+- `chrome(body, hb)` measures the room actually left by the rendered body (`m.height - 2 - lipgloss.Height(body)
+  - 1 - helpLines`, at least 1) and passes `min(limit, room)` to `footer`, so a static view cuts the message to
+  fit with the header on screen; `chrome` never drops lines from the bottom of the body.
 - **Size check** in the `Update` wrapper, after the release (R10) and skipped on the terminal screen: a small
   `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, markFree bool}` is compared
   with the one stored; on a change the active surface's height is compared with its target and set only if they
@@ -338,7 +346,8 @@ Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
 `confirmReplaceOrphan` for a non-external attach sets `vHold.dialog = true` with the same copy rule and sets
 `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
-`replaceOrphanMsg`), and `onCancel` to clear `dialog`. A `v` failure or refusal arriving while `vHold.seq != 0`
+`replaceOrphanMsg`) **and** `vHold.dialog = false` in the same message, so the hold passes from the dialog to
+the attach with no gap; `onCancel` clears `dialog` and nothing else, so the release follows at once. A `v` failure or refusal arriving while `vHold.seq != 0`
 or `vHold.dialog` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
 the terminal screen). `handleTermOpened` and `handleTermClosed` clear `vHold.seq` only for `msg.seq ==
 vHold.seq`. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and

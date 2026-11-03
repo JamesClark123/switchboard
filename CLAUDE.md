@@ -162,7 +162,7 @@ reaper that reports a non-zero exit or signal within 3 s on `Started.Report`). E
 per built-in editor declared in `config.schema` from the catalogue, kept **raw** in `Config.EditorBins` (blank =
 unset) so FR-517 knows "set"; `SWITCHBOARD_CODE_BIN` unchanged. Settings: `settings.toml` gains `editor`
 (identifier, raw, unknown values kept) and `editor_custom_command`; `SettingsStore.Save` becomes
-`Update(apply)` (re-read → apply only the changed keys → `SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename +
+`Update(SettingsChange)` (re-read → write only the non-nil change fields → `SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename +
 chmod; a read/parse failure is `*SettingsUnreadableError` and writes nothing). Session state: `fileUnreadable`
 (startup, nothing written all session, "restart"), `lastSaveFailed` (mid-session, "fix the file"), `notSaved[key]`
 → `(not saved)`; notices derived at render. Settings screen: Editor row, list mode (`enter` always saves, `esc`
@@ -174,7 +174,7 @@ with outside text cut (120 / 40 cols) before FR-529's notices. Status line (`ui/
 keyed size check (`status, width, height, banner, surface, tabs, markFree`) in the `Update` wrapper resizes the
 active surface (list / item list / huh form with stored `lastHeight` + `Update(nil)`); a `v` failure or refusal has
 its own style (`vFail{text, at}`), is held (`vHold{text, seq, dialog}`) through an in-place attach or its Replace
-dialog (`onAccept` sets `seq = termSeq+1`), released in the wrapper (order: guard layers, parked override, MCP
+dialog (`onAccept` sets `seq = termSeq+1` and clears `dialog`), released in the wrapper (order: guard layers, parked override, MCP
 follow-ups, release, size check) joined to a showing terminal error (`termFail`) as `<error>; <held>`, and never
 held again. Windsurf's/Cursor's `--remote` rows are documentation-derived (quickstart Scenario 0). See
 `research.md` (F1–F8, R1–R16), `data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`,

@@ -74,7 +74,8 @@ Expected: each opens the workspace folder on the remote host, or the row is corr
    it arrives before any daemon call (stop the remote daemon first: the refusal is still immediate).
 4. Custom `logedit --host {host} {path}`. **Expect** both substituted; with no `{host}` the completion ends with
    `(the path is on the remote host)`. On a local sandbox a bare `{host}` argument is dropped.
-5. Rename the host entry's target to `-oProxyCommand=…`. **Expect** the `target-dash` refusal for every editor.
+5. Rename the host entry's target to `-oProxyCommand=…`. **Expect** the `target-dash` refusal for every editor
+   with remote support (VS Code family, Zed, Custom); WebStorm still refuses with `no-remote`, which runs first.
 6. Corrupt `hosts.toml` (or remove the entry) while the TUI runs. **Expect** `host entry unavailable` for every
    editor; the sandbox isn't treated as local.
 7. `SWITCHBOARD_CODE_BIN` set, VS Code, a remote workspace path containing `(`. **Expect** the `path-limited`
@@ -83,7 +84,8 @@ Expected: each opens the workspace folder on the remote host, or the row is corr
 ## Scenario 5 — The settings file (FR-525, FR-527, FR-530)
 
 1. `ls -l settings.toml` after any save. **Expect** `-rw-------`; no leftover temp file. Pre-create
-   `settings.toml` as `0644` and `.settings-x.toml` as `0644`; save. **Expect** `0600`, the leftover untouched.
+   `settings.toml` as `0644` and `.settings.toml-stale.tmp` as `0644`; save. **Expect** `0600`, the leftover
+   untouched.
 2. While the TUI runs, hand-edit `editor = 'goland'`, then toggle sign-in. **Expect** the file keeps `goland` and
    the new toggle; the session still uses the old editor until restart.
 3. Write `editor = 'future-ide'`, start. **Expect** the unknown-editor notice on the settings screen and in every

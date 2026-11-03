@@ -70,10 +70,12 @@ input. A rejection shows in the status line only (red), the input stays open. He
 
 - The status is sanitised, then word-wrapped at the terminal width, then cut to its line limit with `…` on the
   last line. Lines come out of the body (`bodyHeight` shrinks by `lines - 1`).
-- Limit: `min(6, room)` where `room = height - 2 (header) - 1 (blank) - help lines - smallest usable body`, never
-  below 1. Smallest usable body: sandbox list `9 + 2 (+1 banner)`; a resizable list or form `3`; a view that
-  can't shrink: its rendered height. The terminal screen's limit is 2 and its PTY size is `height - 8` (floor 3),
-  independent of the status.
+- Limit, computed before anything renders: `min(6, room)` where `room = height - 2 (header) - 1 (blank) - help
+  lines - smallest usable body`, never below 1. Smallest usable body: sandbox list `9 + 2 (+1 banner)`; a
+  resizable list or form `3`; Jobs and the lanes picker (they read `bodyHeight` as they render and window their
+  rows) their fixed lines plus 3; a static view (Daemons, Settings, Hosts, Groups) `0`. `chrome` then measures
+  the room the rendered body really left and cuts the status to `min(limit, room)`, so a static view keeps its
+  header. The terminal screen's limit is 2 and its PTY size is `height - 8` (floor 3), independent of the status.
 - Every `v` message defined in `editor-launch.md` §4, with outside text at its limits, fits in full at 80×24 on
   the sandbox list with the update banner showing (≤ 4 lines at 80 columns). A joined message (§3) and a view that
   can't shrink are outside this promise and are cut.
@@ -93,7 +95,7 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | `v` failure/refusal arrives, no attach pending, terminal not showing | `status = text`, `vFail = {text, now}`, red |
 | `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen |
 | in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
-| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `vHold.dialog = true`; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; `onCancel` clears `dialog` |
+| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `vHold.dialog = true`; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1` **and** `vHold.dialog = false`; `onCancel` sets `vHold.dialog = false` |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
 | attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`) | `termFail = status` |

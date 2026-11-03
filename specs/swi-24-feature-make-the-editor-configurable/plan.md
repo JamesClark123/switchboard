@@ -64,7 +64,8 @@ editor on `PATH`. Gates: `make fmt-check vet lint test cover` (≥ 90 % per modu
 **Performance Goals**: `v` adds a few microseconds of parsing on the update loop and one `exec.LookPath` inside
 its command. The size check runs on every message but computes its target only when its key changes (status,
 size, banner, surface, tabs, mark-free); wrapping a 280-column status is ≈ 7 µs, the list target ≈ 300 µs (spec
-Notes). No new polling; one goroutine per launch, gone after 3 s or exit.
+Notes). No new polling; per launch, one goroutine waits for the editor to exit (reaping it, FR-511) and one
+decides the report within 3 s.
 
 **Constraints**:
 - No shell: Custom commands run through `exec.Command` with the split argv; markers are replaced inside words.
@@ -72,7 +73,8 @@ Notes). No new polling; one goroutine per launch, gone after 3 s or exit.
 - `settings.toml` is `0600` and never overwritten when it can't be read (FR-525, FR-527).
 - Backwards compatibility: with no settings and no new variables, `v`'s argv, footer text and completion
   message are byte-identical to today's (SC-002); `SWITCHBOARD_CODE_BIN` keeps its name and meaning.
-- Every spec-defined `v` message fits in 4 lines at 80 columns with values at their limits (SC-004).
+- Every spec-defined `v` message fits in 4 lines at 80 columns with values at their limits (SC-004); FR-518's
+  built-in case is on the edge and its wording is measured and shortened per `contracts/editor-launch.md` §4.
 - Limits are package constants: 3 s exit grace, 6 status lines, 2 on the terminal screen, 60/120/40 columns.
 
 **Scale/Scope**: 11 catalogue rows, 2 settings keys, 9 new env vars. About 7 new files in `internal/editor`, 3
@@ -136,7 +138,7 @@ src/apps/switchboard-tui/
     │   └── launch.go                  # Launch, Started, ExitReport, exitGrace (FR-511, FR-523)
     ├── store/
     │   ├── store.go                   # + SaveTOMLPrivate (0600, CreateTemp, chmod)
-    │   └── settings.go                # Editor, EditorCustomCommand; Update(apply); SettingsUnreadableError
+    │   └── settings.go                # Editor, EditorCustomCommand; Update(SettingsChange); SettingsUnreadableError
     └── ui/
         ├── app.go                     # Model fields; wrapper order (release, size check); bodyHeight; footer; chrome
         ├── status.go                  # NEW: statusLines, limits, cutMiddle, sizeKey/activeSurface check, hold + release
