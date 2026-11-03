@@ -275,6 +275,17 @@ func TestLaunchAttachAppliesControllerBeforeRunning(t *testing.T) {
 	if len(launched) != 1 || launched[0] != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		t.Errorf("onLaunched calls = %v, want one RUNNING", launched)
 	}
+	// SWI-26 (review run-1545): a launch whose controller a Detach cleared is
+	// still reported, so the worker service can settle what that launch owed.
+	var seenController []*pb.SandboxController
+	m.SetOnLaunched(func(sb *pb.Sandbox) { seenController = append(seenController, sb.GetController()) })
+	m.SetControllerApplier(func(context.Context, *pb.Sandbox, *pb.SandboxController, string) error { return nil })
+	if _, err := m.Launch(ctx, LaunchRequest{Config: &pb.ConfigSnapshot{Name: "worker4"}, Sources: []*pb.SourceRef{src}, Controller: ctl}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(seenController) != 1 || seenController[0] != nil {
+		t.Errorf("onLaunched for a detached launch = %v, want one with no controller", seenController)
+	}
 	_ = filepath.Join
 }
 

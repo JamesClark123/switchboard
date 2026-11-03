@@ -450,6 +450,8 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.detachThroughOrch(surfaceDetail, m.detailTarget(), od, w.GetSandboxId(), w.GetDisplayName(), screenOrchDetail)
 	case "m":
 		return m.markFreeFromView(w)
+	case "P":
+		return m.pauseWorkerFromView(w)
 	case "l":
 		if !m.hostHasLanes(d.host) {
 			d.status = m.tooOldForLanes(d.host)
@@ -583,6 +585,9 @@ func (m Model) renderWorkersView(cursor func(int) string) []string {
 		}
 		if w.GetReasoning() {
 			line += "  " + tagBadgeStyle.Render("reasoning")
+		}
+		if w.GetPaused() {
+			line += "  " + agentWaitStyle.Render("paused")
 		}
 		if !w.GetHostReachable() {
 			line += "  " + statusErrStyle.Render("host unreachable")

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -256,5 +257,56 @@ func TestWorkersViewDetach(t *testing.T) {
 	}
 	if got := availabilityBadge(busy, pb.AgentStatus_AGENT_STATUS_WORKING); !strings.Contains(got, "busy") {
 		t.Errorf("working worker badge = %q", got)
+	}
+}
+
+// SWI-23: `P` in the Workers view toggles from the roster's flag, shows the
+// badge, and refuses the reasoning sandbox.
+func TestWorkersViewPause(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
+		{SandboxId: "w1", HostId: "h", DisplayName: "worker-one", State: pb.SandboxState_SANDBOX_STATE_RUNNING, HostReachable: true},
+		{SandboxId: "w2", HostId: "h", DisplayName: "worker-two", State: pb.SandboxState_SANDBOX_STATE_RUNNING, HostReachable: true, Paused: true},
+		{SandboxId: "r1", HostId: "h", DisplayName: "reasoning-abc", Reasoning: true, HostReachable: true},
+	}}
+	m := sized(New(a, "/work"))
+	m = openDetail(t, m)
+	var one, two string
+	for line := range strings.SplitSeq(ansi.Strip(m.View()), "\n") {
+		switch {
+		case strings.Contains(line, "worker-one"):
+			one = line
+		case strings.Contains(line, "worker-two"):
+			two = line
+		}
+	}
+	if strings.Contains(one, "paused") || !strings.Contains(two, "paused") {
+		t.Errorf("badges: %q / %q", one, two)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "pause/resume") {
+		t.Error("the help should offer P")
+	}
+	m, cmd := update(m, press("P"))
+	m = feed2(m, cmd)
+	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a w1 true") || m.status != "worker worker-one paused" {
+		t.Errorf("pause: calls %q status %q", a.orchCallsJoined(), m.status)
+	}
+	m, _ = update(m, press("j"))
+	m, cmd = update(m, press("P"))
+	m = feed2(m, cmd)
+	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a w2 false") || !strings.Contains(m.status, "worker worker-two resumed") {
+		t.Errorf("resume: calls %q status %q", a.orchCallsJoined(), m.status)
+	}
+	before := a.orchCallsJoined()
+	m, _ = update(m, press("j"))
+	m, cmd = update(m, press("P"))
+	if cmd != nil || !strings.Contains(m.orchDetail.status, "not pausable") || a.orchCallsJoined() != before {
+		t.Errorf("reasoning: status %q calls %q", m.orchDetail.status, a.orchCallsJoined())
+	}
+	// A later success clears the refusal.
+	m, _ = update(m, press("k"))
+	m, cmd = update(m, press("P"))
+	if cmd == nil || m.orchDetail.status != "" {
+		t.Errorf("refusal stayed: %q", m.orchDetail.status)
 	}
 }

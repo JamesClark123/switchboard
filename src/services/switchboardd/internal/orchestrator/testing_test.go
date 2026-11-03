@@ -477,6 +477,9 @@ func (w *fakeWorker) UpdateWorker(_ context.Context, req *pb.UpdateWorkerRequest
 		sb.Controller.LanesPending = req.GetLanes().GetPending()
 		sb.Controller.LanesKnown = true
 	}
+	if req.Paused != nil {
+		sb.Controller.Paused = req.GetPaused()
+	}
 	w.stamp(sb, sb.GetRevision())
 	return proto.Clone(sb).(*pb.Sandbox), nil
 }

@@ -91,3 +91,31 @@ func TestWrapperCallCarriesTheAgentToken(t *testing.T) {
 		t.Error("the wrapper must not embed a token")
 	}
 }
+
+// The token reaches curl as a config on stdin, never in its argv, which any user
+// can read (SWI-27).
+func TestWrapperKeepsTheTokenOutOfArgv(t *testing.T) {
+	ws := t.TempDir()
+	if err := Inject(ws, "sb1", "http://h/run", []*pb.EscapeHatchCommand{shCmd("ok", "true")}); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	rec := filepath.Join(t.TempDir(), "rec")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + rec + ".argv\ncat > " + rec + ".config\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(ws, wrapperRelPath), "ok")
+	cmd.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "SXB_HOOK_TOKEN=s3cret-token", "SXB_AGENT_GEN=1"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("wrapper: %v: %s", err, out)
+	}
+	argv, _ := os.ReadFile(rec + ".argv")
+	if len(argv) == 0 || strings.Contains(string(argv), "s3cret-token") {
+		t.Errorf("curl's argv = %q", argv)
+	}
+	cfg, _ := os.ReadFile(rec + ".config")
+	if !strings.Contains(string(cfg), `header = "X-Sxb-Token: s3cret-token"`) {
+		t.Errorf("curl's config = %q", cfg)
+	}
+}
