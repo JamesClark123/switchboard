@@ -221,6 +221,22 @@ Settled in the spec:
   a message, so a no-op message follows each `WithHeight`. This settles the open item from the last review, and it's a
   note for planning.
 
+### PR review 2026-11-03 (re-review run `run-c275c8f2-1567`, resolved in pr-response run `run-c275c8f2-1571`)
+
+The review asked for this to be settled before planning, because it changes what FR-533 requires and what SC-008 tests:
+
+- **A released `v` message no longer hides a terminal error.** `v` refused and then `t` is a common path, and if the
+  attach failed, the only thing on screen was a message about the editor, which read as the reason `t` failed. An
+  attach or terminal error and the held message now show together, with the error first. Letting the terminal error win
+  was the other option. It was rejected because a held FR-518 or FR-523 failure only comes back by launching the editor
+  again. `detached from <name>` is still replaced, because nothing is lost. (FR-533, SC-008, Notes for Planning)
+- **A released message can't be held again.** It used to stay recent for the rest of its 3 seconds, so a quick retry of
+  `t` would have hidden the same failed attach a second time. Once released, it's an ordinary message that the next
+  attach replaces. (FR-533, SC-008)
+- **A joined message is outside the 80×24 promise.** The two parts together can be longer than the room on the sandbox
+  list, so the end of the held message can be cut with `…`. The error comes first, so it's never what's lost, and the
+  status keeps the whole message. (FR-533, SC-004, SC-008)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -411,6 +427,12 @@ sandbox. Check that a clear message appears and nothing is started.
   and the attach is refused because of a detached agent. The failure stays held behind the dialog. Declining shows it.
   Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed
   (FR-533).
+- **A failed `t` after a `v` refusal.** A remote sandbox has WebStorm selected. The developer presses `v`, which
+  refuses, then `t`, and the attach fails because the daemon can't be reached. The status shows
+  `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
+  Replace whose attach fails, an open terminal whose session dies, and an attach the developer moved on from all show
+  the same way. If the developer presses `t` again straight away, the refusal isn't held again, so a second failure
+  shows only its own error (FR-533).
 - **A screen with less room.** A view that can't shrink, such as Daemons with many rows, can leave fewer lines than a
   message needs, even at 80×24. For example, the developer presses `v` and moves to Daemons, and a late report arrives
   with 7 daemons listed. The message is cut with `…` to fit, and the whole of it shows on a screen with room, unless
@@ -751,9 +773,11 @@ sandbox. Check that a clear message appears and nothing is started.
   full on a screen whose body can shrink to make room, such as the sandbox list, so nothing it requires is lost. A
   screen whose own content can't shrink, such as Daemons with many rows, can leave less room. The message is then cut
   with `…` to fit, and the status keeps the whole of it, so it shows in full on a screen with room unless something has
-  replaced it. These views don't gain scrolling for this feature. A view that's still taller than the terminal loses
-  its top lines, as it does today. `chrome` MUST NOT drop lines from the bottom of the body. On a very short terminal
-  the selected row can still scroll off the top, as it does today. FR-534 has its own rule for its note.
+  replaced it. A held message joined to an error (below) is also outside this promise, because the two can be longer
+  than the room at 80×24, and it's cut the same way. These views don't gain scrolling for this feature. A view that's
+  still taller than the terminal loses its top lines, as it does today. `chrome` MUST NOT drop lines from the bottom
+  of the body. On a very short terminal the selected row can still scroll off the top, as it does today. FR-534 has
+  its own rule for its note.
   - **The embedded terminal screen is the exception.** Its body is the agent's PTY grid, so the size of the PTY
     MUST NOT depend on the status line, and a status change MUST NOT resize it or signal the agent. Only a window
     resize does, as today. The status there MUST be cut with `…` at the 2 lines that fit below the grid, so the
@@ -765,10 +789,14 @@ sandbox. Check that a clear message appears and nothing is started.
     opening and no attach can follow. So a Replace dialog keeps the hold until it's declined, and accepting it starts an
     attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
     the held message MUST replace whatever the status line shows on the screen the developer lands on, such as
-    `detached from <name>`, and MUST show in the error style (FR-529). A later `v` failure or refusal replaces a held
-    one. A `v` failure or refusal that's already showing when an in-place attach starts, or when a Replace dialog for one
-    opens, MUST be held in the same way if it arrived in the last 3 seconds. An older one isn't held, and a release
-    doesn't restart its 3 seconds.
+    `detached from <name>`, and MUST show in the error style (FR-529). The exception is an attach or terminal error,
+    meaning `terminal: <reason>`, `an external terminal is already attached to <name>` or
+    `terminal for <name> not opened — you moved on; press t again`. The status MUST then show both in one message, with
+    the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
+    message MUST show in the error style. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
+    that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
+    same way if it arrived in the last 3 seconds. An older one isn't held. A message that's been released MUST NOT be
+    held again, even within its 3 seconds, so the next attach replaces it like any other message.
 - **FR-534**: The settings screen MUST wrap everything it shows to the terminal's width, at spaces where it can, so
   nothing is cut at the edge. That covers the rows and their descriptions, FR-508's and FR-525's notices, and
   FR-521's note.
@@ -824,8 +852,9 @@ sandbox. Check that a clear message appears and nothing is started.
   showing, checks that the header and the whole message are on screen, including every notice and where to fix it
   (FR-533). The cases include a long daemon error with a notice, a long daemon error containing tabs, the list opened
   after a 3-line status was set on the settings screen, and a banner arriving during a 4-line message. The embedded
-  terminal screen is excluded (SC-008). A view that can't shrink is also excluded, and a separate test checks that it
-  cuts the message to fit with the header on screen, and that the whole message shows on returning to the list.
+  terminal screen is excluded (SC-008), and so is a held message joined to an attach or terminal error (SC-008). A view
+  that can't shrink is also excluded, and a separate test checks that it cuts the message to fit with the header on
+  screen, and that the whole message shows on returning to the list.
 - **SC-005**: For a local sandbox, or a remote path that FR-517 accepts, a custom command whose programs
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
@@ -846,8 +875,14 @@ sandbox. Check that a clear message appears and nothing is started.
   includes a first attach superseded by a second, and an attach that ends in the Replace dialog, both declined and
   accepted. Tests also check that a `v` refused at the key press and followed by `t` is shown the same way, including
   when `t` opens the Replace dialog and it's accepted more than 3 seconds later, and that a message over 3 seconds old
-  isn't held (FR-533). A `v` failure or refusal shows in the error style when it arrives and when it's released, and the
-  next plain message isn't in that style (FR-529).
+  isn't held. When a `v` is refused and the `t` that follows fails to attach, tests check that the status shows both in
+  one message, with the error first and in the error style, and that a second `t` within 3 seconds doesn't hold the
+  refusal again, so a second failure shows only its own error. The same checks cover an accepted Replace whose attach
+  fails. Tests also check that both show when a terminal session dies or the developer moves on during the attach, and
+  that `detached from <name>` is replaced. A joined message too long for the sandbox list at 80×24
+  with the update banner is cut with `…`, with the header and the whole error on screen, and the status keeps all of it
+  (FR-533). A `v` failure or refusal shows in the error style when it arrives and when it's released, and the next plain
+  message isn't in that style (FR-529).
 
 ## Notes for Planning
 
@@ -955,10 +990,10 @@ These follow from the requirements above and from how the code works today. They
     `start the sandbox before opening its terminal` (`terminal.go:98`). A `v` outcome can't use `m.err` for its style
     either, because `attachTerminal` and `handleTermOpened` don't clear it, so `opening terminal…` would show in red. Keep
     the failing text in its own field, such as `m.vFailStatus`, with the time it arrived, and have `footer` use red when
-    the status is non-empty and equals it. The style then ends when the message does, and no `m.status =` assignment has
-    to change. A release sets both the status and this field, and doesn't touch `m.err` or the arrival time. Use
-    `nowFunc` (`unsaved.go:16`) so tests can step past the 3 seconds. An `errMsg` can still leave `m.err` set and turn
-    later messages red, as it can today.
+    the status is non-empty and equals it. The style then ends when the message does. A release sets both the status and
+    this field, doesn't touch `m.err`, and clears the arrival time, so a later `t` finds nothing recent and can't hold
+    the message again. A zero time counts as not recent. Use `nowFunc` (`unsaved.go:16`) so tests can step past the 3
+    seconds. An `errMsg` can still leave `m.err` set and turn later messages red, as it can today.
   - **A message already showing:** the refused case returns before the daemon call, so it's on the screen when `t` arrives,
     and `attachTerminal` replaces it. So `attachTerminal` and `confirmReplaceOrphan` (not for `T`) both check for a
     recent one, and copy it into the held field if the status still equals it. It stays on the status line behind the
@@ -977,6 +1012,17 @@ These follow from the requirements above and from how the code works today. They
     attach pending and releases. Accepting is the trap: `updateConfirmKey` closes the dialog and `replaceOrphanMsg` only
     arrives in a later `Update`, so the wrapper would release in the gap, and `attachTerminal` and `handleTermOpened`
     would then replace the message. So the accept must set the marker in the same message, through `onAccept`.
+  - **Joining an error:** the wrapper can't tell an attach or terminal error from `detached from <name>` or a background
+    message by its text. So the assignments that set one (`terminal.go:150`, `:190` and `:199`, which `SendData`'s
+    failure at `:306` also reaches) also copy it into a field, such as `m.termFailStatus`, and `attachTerminal` clears
+    that field. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
+    (`broadcaster.go:156`) and `t` attaches in-TUI, but it's treated the same in case that changes. At a release, if the
+    status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text. Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer`
+    shows all of it in red. With nothing held, the error stays as it is today, uncut and in today's style, and that
+    includes a retried `t` that fails after a release. Text-wrap estimates of draft wording at 80 columns, with a
+    120-column error, give 3 lines for a one-line refusal, 4 for FR-523's report and 5 for FR-518's longest case. The
+    sandbox list has 5 lines at 80×24, or 4 with the banner, so only the longest cases lose the end of the held message.
+    Two full-length parts can reach the 6-line cap on a taller terminal.
   - **Order in the wrapper:** `reconcileGuardLayers`, `openParkedOverride`, `openDeferredMcpFollowups`, the release, then
     the size check. The two `open…` calls can set the status (`sources.go:421`, `mcp.go:845`), so a release before them
     could be overwritten, and the size check has to see the final status or the surface stays the wrong size until the
