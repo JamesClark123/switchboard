@@ -991,7 +991,7 @@ func TestStepSentResolvesByEvidence(t *testing.T) {
 func TestUnconfirmedResolution(t *testing.T) {
 	a := withSequence([]string{"/prepare {ticket}"}, nil)
 	a.Name = "review-pr"
-	env, _, o, _, d := seqEnv(t, 1, a)
+	env, _, o, rt, d := seqEnv(t, 1, a)
 	d.set(func(d *fakeDaemon) {
 		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
 			if req.GetStep().GetKind() != pb.StepKind_STEP_KIND_ACTION_PROMPT {
@@ -1008,7 +1008,7 @@ func TestUnconfirmedResolution(t *testing.T) {
 	if !r.GetStepUnconfirmed() {
 		t.Fatalf("unconfirmed custom step = %+v", r)
 	}
-	waitFor(t, func() bool { return env.clock.pending() > 0 })
+	waitSentSeen(t, rt, run.GetId())
 	env.clock.Advance(sentGrace)
 	r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
 	if !r.GetStepUnconfirmed() || r.GetStepNote() != "typed, but screen resyncing; it may have run" {
