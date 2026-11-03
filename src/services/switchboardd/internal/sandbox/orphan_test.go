@@ -692,14 +692,14 @@ func TestRuntimeLockOrdersOperations(t *testing.T) {
 			if _, err := e.m.Admit(id); !errors.Is(err, agent.ErrBusy) && !errors.Is(err, agent.ErrOrphan) {
 				t.Errorf("Admit during %s = %v", name, err)
 			}
-			if rel, ok := e.m.TryLockRuntime(id); ok {
+			if rel, ok := e.m.TryLockRuntime(id, "testing"); ok {
 				rel()
 				t.Errorf("%s does not hold the runtime lock", name)
 			}
 			// Every other `sbx exec` is refused, not run, while the operation
 			// holds the lock (SWI-26 B5): the read lock of a service and an
 			// MCP load or unload.
-			if rel, ok := e.m.TryRLockRuntime(id); ok {
+			if rel, err := e.m.TryRLockRuntime(id); err == nil {
 				rel()
 				t.Errorf("a read lock was granted during %s", name)
 			}
@@ -857,7 +857,7 @@ func TestRenameIgnoresTheRuntimeLock(t *testing.T) {
 	if _, err := e.m.Stop(context.Background(), sb.GetId()); err != nil {
 		t.Fatal(err)
 	}
-	unlock, ok := e.m.TryLockRuntime(sb.GetId())
+	unlock, ok := e.m.TryLockRuntime(sb.GetId(), "testing")
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -989,7 +989,7 @@ func TestBusyProbeRetried(t *testing.T) {
 	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
 	e.tokens.issue("s", 2)
 	e.run.setOut("s", aliveOut(2))
-	unlock, ok := e.m.TryLockRuntime("s")
+	unlock, ok := e.m.TryLockRuntime("s", "testing")
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -1032,7 +1032,7 @@ func TestReapOrphan(t *testing.T) {
 	e.m.AgentClientExited("s", 4)
 	e.waitState(t, "s", pb.AgentCheck_STATE_DETACHED)
 
-	unlock, _ := e.m.TryLockRuntime("s")
+	unlock, _ := e.m.TryLockRuntime("s", "testing")
 	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, agent.ErrBusy) {
 		t.Errorf("busy: %v", err)
 	}

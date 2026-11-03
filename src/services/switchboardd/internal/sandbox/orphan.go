@@ -467,8 +467,8 @@ func (o *orphans) probeOnce(id string) (probeOutcome, uint64, agent.ProbeResult,
 	if sb, err := o.m.store.Get(id); err != nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return probeDropped, 0, agent.ProbeResult{}, nil
 	}
-	unlock, ok := o.m.orphanGate(id)
-	if !ok {
+	unlock, err := o.m.orphanGate(id, gateProbing)
+	if err != nil {
 		o.mu.Lock()
 		if st := o.st[id]; st != nil && (st.unknown || st.record != nil) {
 			if st.retry != nil {
@@ -835,8 +835,9 @@ func (o *orphans) pendingIDs() []string {
 // called only by AttachAgent with replace_orphan and DeliverWorkerStep's
 // restart; the daemon never calls it on its own. A sandbox with no orphan
 // record and no unknown check has nothing to stop. Otherwise, on a RUNNING
-// sandbox, under the orphan gate (try-lock: agent.ErrBusy while an operation
-// holds the runtime lock, or a probe or spawn holds the gate), one script
+// sandbox, under the orphan gate (try-lock: a RuntimeBusyError, agent.ErrBusy,
+// naming the holder while an operation holds the runtime lock, or a probe or
+// spawn holds the gate), one script
 // re-probes and stops each live matched process (TERM, then KILL after
 // orphanKillWait). A failed exec stops nothing and returns its
 // error. After a stop the generation's tokens are retired, the record dropped
@@ -854,9 +855,9 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	if sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
 		return fmt.Errorf("sandbox is %s", stateWord(sb.GetState()))
 	}
-	unlock, ok := m.orphanGate(id)
-	if !ok {
-		return agent.ErrBusy
+	unlock, err := m.orphanGate(id, gateReaping)
+	if err != nil {
+		return err
 	}
 	defer unlock()
 	// Again under the gate: a probe may have cleared the sandbox since, and

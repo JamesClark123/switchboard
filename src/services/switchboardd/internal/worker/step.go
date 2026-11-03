@@ -101,7 +101,7 @@ func (s *Service) SetOrphanReaper(r OrphanReaper) { s.reaper = r }
 // `sbx mcp load` takes (SWI-26, sandbox.Manager.HoldRuntimeRead): refused
 // while a stop, restart, refresh or kit attach holds the sandbox, and cancelled
 // when one asks for it, which leaves the load to that operation's bring-up.
-func (s *Service) SetRuntimeLock(fn func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), ok bool)) {
+func (s *Service) SetRuntimeLock(fn func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), err error)) {
 	s.gw.holdRuntime = fn
 }
 

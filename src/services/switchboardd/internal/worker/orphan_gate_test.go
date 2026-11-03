@@ -180,7 +180,7 @@ func (g *gateEnv) setGate(t *testing.T, state string) func() {
 		g.mgr.MarkAgentUnknown(gateID)
 		gateWait(t, func() bool { return g.check() == pb.AgentCheck_STATE_UNKNOWN })
 	case "busy":
-		unlock, ok := g.mgr.TryLockRuntime(gateID)
+		unlock, ok := g.mgr.TryLockRuntime(gateID, "testing")
 		if !ok {
 			t.Fatal("lock")
 		}

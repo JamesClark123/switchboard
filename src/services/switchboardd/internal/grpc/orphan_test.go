@@ -139,7 +139,7 @@ func (o *orphanServer) check() pb.AgentCheck_State {
 
 // idle reports whether no probe or operation holds the runtime lock.
 func (o *orphanServer) idle() bool {
-	unlock, ok := o.mgr.TryLockRuntime(o.id)
+	unlock, ok := o.mgr.TryLockRuntime(o.id, "testing")
 	if ok {
 		unlock()
 	}
@@ -186,11 +186,12 @@ func refused(err error, text string) bool {
 // TUI matches; replace_orphan stops the orphan first, then spawns.
 func TestAttachAgentBesideAnOrphan(t *testing.T) {
 	o := newOrphanServer(t)
-	unlock, _ := o.mgr.TryLockRuntime(o.id)
-	if err := o.attach(t, false); !refused(err, "sandbox is busy; try again") {
+	// SWI-25 A5: the refusal names the operation holding the lock.
+	unlock, _ := o.mgr.TryLockRuntime(o.id, "stopping")
+	if err := o.attach(t, false); !refused(err, "sandbox is stopping; try again") {
 		t.Errorf("busy: %v", err)
 	}
-	if err := o.attach(t, true); !refused(err, "sandbox is busy; try again") {
+	if err := o.attach(t, true); !refused(err, "sandbox is stopping; try again") {
 		t.Errorf("replace while busy: %v", err)
 	}
 	unlock()

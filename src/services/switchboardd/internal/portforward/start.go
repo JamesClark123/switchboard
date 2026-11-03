@@ -185,9 +185,9 @@ func (s *Supervisor) launchExclusive(ctx context.Context, sb *pb.Sandbox, declar
 		return nil, nil // a stop got here first: it owns the outcome
 	}
 	if inSandbox {
-		unlock, ok := s.lockRuntime(sb.GetId())
-		if !ok {
-			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, ErrSandboxBusy.Error())
+		unlock, err := s.lockRuntime(sb.GetId())
+		if err != nil {
+			s.failStarting(instID, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, err.Error())
 			return nil, nil
 		}
 		defer unlock()

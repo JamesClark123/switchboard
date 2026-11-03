@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// errTestBusy is the fake runtime lock's refusal (SWI-25 A5: the lock names
+// the operation holding it).
+var errTestBusy = errors.New("sandbox is stopping; try again")
+
 // SWI-26 B4: the gateway's `sbx mcp load` takes the sandbox's runtime read
 // lock. While a lifecycle operation holds it the attach still registers, and
 // the load waits it out in the background; one the operation left stopped
@@ -24,11 +29,11 @@ func TestGatewayLoadWaitsOutALifecycleOperation(t *testing.T) {
   "mcp load "*) echo "loaded (live)" ;;`)
 	var busy atomic.Bool
 	busy.Store(true)
-	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), bool) {
+	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), error) {
 		if busy.Load() {
-			return nil, nil, false
+			return nil, nil, errTestBusy
 		}
-		return ctx, func() {}, true
+		return ctx, func() {}, nil
 	})
 	sb := e.sandbox(t, "77777777-aaaa", "busy-one", pb.SandboxState_SANDBOX_STATE_RUNNING)
 	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")}); err != nil {
@@ -85,11 +90,11 @@ func (e *env) setState(t *testing.T, id string, state pb.SandboxState) *pb.Sandb
 // busyLock wires a runtime lock that is refused while busy is set.
 func (e *env) busyLock() *atomic.Bool {
 	var busy atomic.Bool
-	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), bool) {
+	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), error) {
 		if busy.Load() {
-			return nil, nil, false
+			return nil, nil, errTestBusy
 		}
-		return ctx, func() {}, true
+		return ctx, func() {}, nil
 	})
 	return &busy
 }
@@ -126,13 +131,13 @@ func TestGatewayLoadCancelledByAnOperationIsRetried(t *testing.T) {
 	sb := e.sandbox(t, "77777777-aaaa", "cancelled", pb.SandboxState_SANDBOX_STATE_RUNNING)
 	var calls atomic.Int32
 	cancelled := make(chan context.CancelFunc, 1)
-	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), bool) {
+	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), error) {
 		if calls.Add(1) == 1 {
 			held, cancel := context.WithCancel(ctx)
 			cancelled <- cancel
-			return held, cancel, true
+			return held, cancel, nil
 		}
-		return ctx, func() {}, true
+		return ctx, func() {}, nil
 	})
 	attached := make(chan error, 1)
 	go func() {
@@ -210,14 +215,14 @@ func TestBringUpOfADestroyedSandboxStartsNothing(t *testing.T) {
 // take minutes, and the sandbox may have stopped, or come back, meanwhile.
 func TestAttachReadsTheStateUnderTheRuntimeLock(t *testing.T) {
 	flip := func(e *env, to pb.SandboxState) {
-		e.svc.SetRuntimeLock(func(ctx context.Context, id string) (context.Context, func(), bool) {
+		e.svc.SetRuntimeLock(func(ctx context.Context, id string) (context.Context, func(), error) {
 			if _, err := e.reg.Update(id, func(s *pb.Sandbox) error {
 				s.State = to
 				return nil
 			}); err != nil {
 				panic(err)
 			}
-			return ctx, func() {}, true
+			return ctx, func() {}, nil
 		})
 	}
 	t.Run("stopped since", func(t *testing.T) {
@@ -435,14 +440,14 @@ func TestDetachBeforeTheLoadIsRefusedIsSettledAtTheEndOfTheLaunch(t *testing.T) 
 	stored := e.sandbox(t, "77777777-aaaa", "detached", pb.SandboxState_SANDBOX_STATE_CREATING)
 	id := stored.GetId()
 	var free atomic.Bool
-	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), bool) {
+	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), error) {
 		if free.Load() {
-			return ctx, func() {}, true
+			return ctx, func() {}, nil
 		}
 		if _, err := e.svc.Detach(bg, id, "orch-1", false); err != nil {
 			t.Error(err)
 		}
-		return nil, nil, false
+		return nil, nil, errTestBusy
 	})
 	view := proto.Clone(stored).(*pb.Sandbox)
 	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
