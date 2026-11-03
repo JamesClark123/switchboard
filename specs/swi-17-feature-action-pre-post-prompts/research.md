@@ -780,15 +780,19 @@ gets typed or what counts as evidence, and each needs a boundary.
 
 **Known limitations (deferred, accepted 2026-10-28; follow-up SWI-19).** The implementation ships this section's
 safety core without:
-- bulk Replace (`ReplaceDetachedAgent`, `R` on the Workers view): detached workers are replaced one at a time with
-  `t` → Replace;
-- the aggregated start-up notification: one *agent detached* notification per orphan;
-- `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and the run-note overlay: a failing check shows only on the row and in the
-  `t` dialog;
-- the probe priority order: start-up probes run in list order;
-- operation-specific `ErrBusy` messages: a generic `sandbox is busy; try again` (this includes the ~20 s hold during
-  a developer's service stop);
-- detailed orphan notes: no last-seen state or time in notes;
+- ~~bulk Replace (`ReplaceDetachedAgent`, `R` on the Workers view)~~ (done in SWI-25 A1: one RPC with an outcome per
+  sandbox; workers with a run and sandboxes with a live session are skipped; see tasks.md *Deferred items*);
+- ~~the aggregated start-up notification~~ (SWI-25 A2: one `AGENTS_DETACHED_AT_START` for the orphans the start-up
+  batch finds, listing them with their orchestrators; a lone orphan, or one found later, is notified alone);
+- ~~`NOTIFICATION_KIND_AGENT_CHECK_FAILED` and the run-note overlay~~ (SWI-25 A3: raised once as the check flips;
+  the failure overlays `controller.run.step_note` until the check clears or finds the agent, then the earlier note
+  is restored; the orchestrator mirrors the daemon's note and never pushes its own over it);
+- ~~the probe priority order~~ (SWI-25 A4: idle workers, workers with a run, then the rest);
+- ~~operation-specific `ErrBusy` messages~~ (SWI-25 A5: every `runtimeMu` refusal names its holder, a lifecycle
+  operation or the probe, reap or spawn on the orphan gate; `errors.Is(err, agent.ErrBusy)` still holds, so the
+  gRPC codes are unchanged. Since the read/write split a developer's service stop blocks no one, so it has no
+  message);
+- ~~detailed orphan notes~~ (SWI-25 A6: last state, time and process count after the unchanged prefix);
 - the PID-1/subreaper first-bind refusal;
 - ~~a shared rate-limited `ListStatuses`, and `runtimeMu` gating of `sbx mcp`/`sbx ports`~~ (done in SWI-26, see
   *Amendment: `runtimeMu` read/write split* at the end of this section);
