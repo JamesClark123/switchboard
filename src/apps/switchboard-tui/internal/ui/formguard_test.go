@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -220,5 +221,28 @@ func TestCtrlCNeverAbortsAForm(t *testing.T) {
 		if tf.form.State != huh.StateNormal {
 			t.Errorf("%s: ctrl+c moved the form to state %v", tf.name, tf.form.State)
 		}
+	}
+}
+
+// SWI-29 E5: an action form huh completed and revived (reviveCompleted →
+// reopenForm) keeps the field that had focus. The action form's last field is
+// a Text, whose submit key is ctrl+s, so completion is set directly.
+func TestReopenedActionFormKeepsFocus(t *testing.T) {
+	m, _ := jobsWith(t, jobsActions, []*pb.Action{reviewAction()}, nil)
+	m = keys(m, press("e"))
+	for _, key := range []string{"post", "effort", "body"} {
+		walkFocus(t, m.jobs.form, key)
+		m.jobs.form.State = huh.StateCompleted
+		mm, cmd := reviveCompleted(gOpJobs)(m, nil)
+		m = feed(mm.(Model), cmd)
+		if m.jobs.form == nil || m.jobs.form.State != huh.StateNormal {
+			t.Fatal("the completed form should be revived")
+		}
+		if got := m.jobs.form.GetFocusedField().GetKey(); got != key {
+			t.Errorf("revived on %q, want %q", got, key)
+		}
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "page 1/2") {
+		t.Errorf("header:\n%s", ansi.Strip(m.View()))
 	}
 }

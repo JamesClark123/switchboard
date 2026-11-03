@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	upd "github.com/jamesclark123/switchboard/libs/switchboard-update"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -99,6 +101,72 @@ func (m Model) hostHasLanes(host string) bool {
 // tooOldForLanes is the local refusal against a daemon without lanes (FR-318a).
 func (m Model) tooOldForLanes(host string) string {
 	return "the daemon on " + sanitizeLine(m.hostLabel(host), 0) + " predates lanes — update with u"
+}
+
+// stepsSince is the first release whose daemon keeps action sequences: SWI-17
+// shipped in v0.0.40, before the "steps" capability was advertised.
+const stepsSince = "v0.0.40"
+
+// releaseVersion matches a released daemon version ("v0.0.40"). A suffixed one
+// ("0.1.0-dev" from an unstamped build, a snapshot) is not a release: it may
+// predate sequences whatever its number says.
+var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
+
+// daemonFacts is what a handshake told of a daemon.
+type daemonFacts interface {
+	HasCapability(name string) bool
+	DaemonVersion() string
+}
+
+// daemonHasSteps reports whether d keeps action sequences (SWI-29 E4): it
+// advertises "steps", or is a release from stepsSince on. Any other version
+// (dev, suffixed, unparseable) relies on the capability alone.
+func daemonHasSteps(d daemonFacts) bool {
+	if d == nil {
+		return false
+	}
+	if d.HasCapability("steps") {
+		return true
+	}
+	v := strings.TrimSpace(d.DaemonVersion())
+	return releaseVersion.MatchString(v) && !upd.SemverNewer(stepsSince, v)
+}
+
+// knownDaemon is host's daemon as last connected: a lost link (R3), a redial or
+// a failed one keeps its handshake info, so what it serves outlives the drop;
+// nil when never connected.
+func (m Model) knownDaemon(host string) daemonFacts {
+	if m.manager == nil {
+		return m.daemon
+	}
+	hc, ok := m.manager.Get(host)
+	if !ok {
+		return nil
+	}
+	if d := m.connOf(hc); d != nil {
+		return d
+	}
+	if hc.Known != nil {
+		return hc.Known
+	}
+	return nil
+}
+
+// hostSteps is whether host's daemon, as last known, keeps action sequences (an
+// older one drops them, so the TUI neither shows nor sends one, E4); known is
+// false when nothing is known of it (never connected).
+func (m Model) hostSteps(host string) (has, known bool) {
+	d := m.knownDaemon(host)
+	if d == nil {
+		return false, false
+	}
+	return daemonHasSteps(d), true
+}
+
+// tooOldForSteps is the local refusal of a sequence edit against a daemon
+// without "steps", mirroring tooOldForLanes.
+func (m Model) tooOldForSteps(host string) string {
+	return "the daemon on " + sanitizeLine(m.hostLabel(host), 0) + " predates pre/post prompts — update with u"
 }
 
 // hostLabel names a host entry: its display name, else its daemon's host id.
