@@ -45,7 +45,7 @@ Both spec open items are settled: Zed's address form, encoding and target normal
 `switchboardd` or `switchboard-proto` changes)
 
 **Primary Dependencies**: Bubble Tea v1.3.10, Bubbles v1.0.0 (`textinput`, `list`), huh v1.0.0, Lip Gloss,
-`charmbracelet/x/ansi v0.11.6` (`Wordwrap`, `Truncate`, `TruncateLeft`), `pelletier/go-toml/v2 v2.2.3`, the
+`charmbracelet/x/ansi v0.11.6` (`Wrap`, `Truncate`, `TruncateLeft`), `pelletier/go-toml/v2 v2.2.3`, the
 standard library (`os/exec`, `syscall.SysProcAttr`, `net/url`, `unicode`). **No new dependencies.**
 
 **Storage**: `settings.toml` under the client config dir (two new keys, contract `settings-file.md`). No daemon

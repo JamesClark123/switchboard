@@ -95,7 +95,8 @@ through `cfg.CodeBin`; T026 switches it).
 - [ ] T009 `ED/resolve.go`: `Request`, `Plan`, `Refusal` (data-model §4), `Precheck(req) (exe string, *Refusal)`
   (contract §3 steps 1–5: host error; `RemoteNone` on a remote; Custom `Split`+`Check`+`Expand`; `-` on the target
   as given; Zed address; the resolved executable) and `Resolve(req) (Plan, *Refusal)` (steps 6–8: path checks
-  with `limited = remote && (custom || bins[id] != "")`; argv per §1/§2; `RemoteNoHost`; `EnvVar`). Depends on
+  with `limited = remote && (custom || overridden)` where `overridden` comes from `Command(editor, req.Bins)`,
+  so a blank value doesn't count; argv per §1/§2; `RemoteNoHost`; `EnvVar`). Depends on
   T001, T005–T008. Tests in `ED/resolve_test.go`: **SC-003** — a table with every catalogue editor × {local,
   remote} asserting the exact argv (VS Code local/remote byte-identical to today's `codeArgs`); the refusal order
   (`host-lookup` beats everything; `no-remote` beats `target-dash`, so WebStorm with a `-oX` target refuses
@@ -361,7 +362,7 @@ split without a shell, with markers substituted.
 argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 
 - [ ] T034 [US3] `UI/settings_command.go` (new): `settingsState` gains `input textinput.Model`, `inputInitial
-  string`; `enterEditorCommand()` (from the list's Custom entry): `textinput.New()` with `Prompt = "› "`, `Width
+  string`, `inputRewrite bool`; `enterEditorCommand()` (from the list's Custom entry): `textinput.New()` with `Prompt = "› "`, `Width
   = bodyWidth - 4`, `SetValue(prefs.EditorCustomCommand)`, `CursorEnd`, `inputInitial = TrimSpace(Value())`,
   `mode = settingsInput`; `inputRewrite = inputInitial != TrimSpace(prefs.EditorCustomCommand)` (cleaning
   changed it), drawn as `normalizeNotice([]string{"Custom command"})` under the input (2 body lines, FR-528),

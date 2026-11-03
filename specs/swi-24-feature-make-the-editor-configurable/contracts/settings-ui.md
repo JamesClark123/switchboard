@@ -62,7 +62,7 @@ argument only works on remote sandboxes.
 
 The note is ≤ 10 lines at 80 columns. The rewrite notice is part of the body (2 lines, drawn only while
 `inputRewrite` is set), not the status. The input view reads `bodyHeight()` as it renders, like Jobs: the room
-for the note is `bodyHeight() - fixed lines` (title, input, blank, the notice when shown, blank), never below 1,
+for the note is `bodyHeight() - fixed lines` (title, input, blank, the notice when shown), never below 1,
 so on a shorter terminal the note's last lines give way to `…` **before** the status is cut and the input stays
 on screen. The list mode windows its entries the same way (`windowRange(len, cursor, bodyHeight() - 1)`,
 minimum 3 rows). `enter` confirms (FR-528 flow in data-model §3); `esc` with a changed trimmed value opens the SWI-9
