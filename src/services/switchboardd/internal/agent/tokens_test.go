@@ -63,7 +63,7 @@ func TestHookTokensIssueVerifyAndRetire(t *testing.T) {
 	// A daemon restart: tokens, main PID and counter come back from the store.
 	tokens, reg = openTokens(t, dir)
 	defer func() { _ = reg.Close() }()
-	if _, ok := tokens.Verify("sb", "2", b.Token); !ok || !tokens.IsMain("sb", 2, 77) {
+	if _, ok := tokens.Verify("sb", "2", b.Token); !ok || !tokens.IsMain("sb", 2, 77, "") {
 		t.Error("a surviving agent's token and main PID must survive a restart")
 	}
 	if pid, _, ok := tokens.MainPID("sb", 2); !ok || pid != 77 {
@@ -77,7 +77,7 @@ func TestHookTokensIssueVerifyAndRetire(t *testing.T) {
 	if _, ok := tokens.Verify("sb", "3", c.Token); ok {
 		t.Error("a retired token is refused")
 	}
-	if !tokens.IsMain("sb", 2, 77) {
+	if !tokens.IsMain("sb", 2, 77, "") {
 		t.Error("with 3 retired, 2 is current again")
 	}
 	if got := tokens.Unretired("sb"); len(got) != 2 {
@@ -178,6 +178,19 @@ func TestCheckProbed(t *testing.T) {
 		"different exec":  func(p *ProbedAgent) { p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/a", 12, "/b" },
 		"script -qc claude": func(p *ProbedAgent) { // inside the sandbox, on a new pty
 			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/usr/bin/script", 12, "/usr/bin/script"
+		},
+		"PID 1 as the exec path's parent": func(p *ProbedAgent) {
+			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 1, "/usr/libexec/sbx-exec-agent", 1, "/usr/libexec/sbx-exec-agent"
+		},
+		"an orphan under PID 1, exec parent 0": func(p *ProbedAgent) { p.PPID, p.PPIDExe = 1, "/usr/bin/tini" },
+		"a listed subreaper": func(p *ProbedAgent) {
+			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/usr/bin/dumb-init", 40, "/usr/bin/dumb-init"
+		},
+		"a listed subreaper, upgraded since": func(p *ProbedAgent) {
+			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/usr/bin/tini (deleted)", 40, "/usr/bin/tini (deleted)"
+		},
+		"a shell parent, upgraded since": func(p *ProbedAgent) {
+			p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/bin/bash (deleted)", 12, "/bin/bash (deleted)"
 		},
 		"a shell parent": func(p *ProbedAgent) { p.PPID, p.PPIDExe, p.RefPPID, p.RefPPIDExe = 40, "/bin/bash", 12, "/bin/bash" },
 		"the agent's child": func(p *ProbedAgent) {
