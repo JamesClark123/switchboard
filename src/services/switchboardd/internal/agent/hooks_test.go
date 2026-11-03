@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -266,6 +267,49 @@ func TestHookOtherPrompt(t *testing.T) {
 			t.Error("with no typed text to compare, a submit is not marked")
 		}
 	})
+}
+
+// SWI-28, SWI-27: the prompt in a hook's body reaches the comparison, and the read
+// stops there: the rest of the body is left unread, and the connection closed.
+func TestHookOtherPromptOverHTTP(t *testing.T) {
+	const step = "do the thing"
+	for _, c := range []struct {
+		name   string
+		prompt string
+		other  bool
+	}{
+		{"the step", step, false},
+		{"the developer's", "what is going on?", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: &pb.SandboxController{
+				Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(time.Unix(1, 0))},
+			}})
+			s, sp := tokenServer(t, st)
+			s.tokens.BindMain("sb", 1, mainPID)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			srv := httptest.NewServer(http.HandlerFunc(s.Handle))
+			defer srv.Close()
+
+			body := `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"` + c.prompt + `","rest":"not read"}`
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"?event=UserPromptSubmit&sandbox_id=sb", strings.NewReader(body))
+			req.Header.Set(headerToken, sp.Token)
+			req.Header.Set(headerGen, "1")
+			req.Header.Set(headerPID, strconv.Itoa(mainPID))
+			resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent || !resp.Close {
+				t.Errorf("status %d, close %v", resp.StatusCode, resp.Close)
+			}
+			if got := st.agent("sb").GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
 }
 
 // SWI-28: what a submit does to last_other_submit_at depends on what this send
