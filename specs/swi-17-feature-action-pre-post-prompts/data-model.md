@@ -27,7 +27,7 @@ reader. The editor shows these defaults, and saving writes them explicitly.
 |---|---|---|
 | `role` | `StepRole` (SETUP, ACTION, CLEANUP) | Its place in the sequence; used for display, FR-211/FR-209 and notifications (FR-223). |
 | `kind` | `StepKind` (MODEL, EFFORT, CLEAR, CUSTOM, ACTION_PROMPT) | MODEL, EFFORT and CLEAR are built-ins, agent-local by definition, with a read-back. |
-| `text` | string | Exactly what is typed. Placeholders are already filled. The ACTION_PROMPT step's text is `Run.prompt` (the frame is added at delivery, as today). |
+| `text` | string | Exactly what is typed. Placeholders are already filled. The ACTION_PROMPT step is stored with no text (SWI-29): `Run.prompt` is filled into the copy sent to the worker (the frame is added at delivery, as today); a run stored earlier keeps its copy. |
 | `expect` | string | The read-back for MODEL (the family name, e.g. `Opus`) and EFFORT (the level). Empty otherwise. |
 
 **Order (FR-205):** MODEL?, EFFORT?, custom pre in order, ACTION_PROMPT, custom post in order, CLEAR?. A run whose

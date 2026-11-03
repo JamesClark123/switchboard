@@ -394,7 +394,7 @@ func (m Model) viewJobs() string {
 		return m.viewManageLanes()
 	}
 	if j.form != nil {
-		parts := []string{sectionStyle.Render(sanitizeLine(j.formTarget.label()+" › "+j.formKind, 0)), "", j.form.View()}
+		parts := []string{sectionStyle.Render(sanitizeLine(j.formTarget.label()+" › "+j.formKind, 0)) + opFormPage(&j.orchOpState), "", j.form.View()}
 		if j.status != "" {
 			// A daemon refusal stays visible under the open form (verbatim).
 			parts = append(parts, "", statusErrStyle.Render(sanitizeTerminalText(j.status)))

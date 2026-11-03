@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -286,6 +287,9 @@ func TestSequenceDefaultOrderAndCleanup(t *testing.T) {
 	want := []string{"wa: /model opus", "wa: /effort medium", "wa: Review pull request 1 in acme/web and leave review comments."}
 	if got := d.typedTexts(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("typed = %q, want %q", got, want)
+	}
+	if txt := r.GetSteps()[2].GetText(); txt != "" {
+		t.Errorf("the action prompt is stored on its step too: %q", txt) // only on Run.prompt (SWI-29)
 	}
 	reqs := stepReqs(w)
 	for i, req := range reqs {
@@ -951,6 +955,338 @@ func TestClaimRefusalsAndCancel(t *testing.T) {
 	for _, txt := range d.typedTexts() {
 		if strings.Contains(txt, "pull request 1 ") {
 			t.Errorf("the cancelled run was typed: %q", txt)
+		}
+	}
+}
+
+// A claim whose first step one worker keeps refusing goes back to the queue
+// after claimRefuseLimit and, that worker passed over for claimAvoidFor, to the
+// other free worker on the next pass (SWI-29).
+func TestRefusedClaimMovesToAnotherWorker(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string {
+			if req.GetSandboxId() == "wa" {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if r.GetSandboxId() != "wa" {
+		t.Fatalf("claimed by %q, want wa first", r.GetSandboxId())
+	}
+	// Short of the limit the run stays with wa.
+	refuseFor(t, env, rt, w, claimRefuseLimit-stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("before the limit = %+v", got)
+	}
+	waitFor(t, func() bool { return retryArmed(rt) })
+	env.clock.Advance(stepRetryEvery)
+	got := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if got.GetSandboxId() != "wb" {
+		t.Errorf("handed to %q, want wb", got.GetSandboxId())
+	}
+	for _, req := range stepReqs(w) {
+		if req.GetSandboxId() == "wa" && req.GetStep().GetKind() != pb.StepKind_STEP_KIND_MODEL {
+			t.Errorf("wa was sent more than the refused first step: %v", req.GetStep())
+		}
+	}
+	if rt.refused(run.GetId(), "wa") {
+		t.Error("a typed run should forget who refused it")
+	}
+}
+
+// Every worker refusing: each gets one try, then the run settles on the last
+// one and waits there, naming its reason, until the box clears.
+func TestRefusedClaimTriesEachWorkerOnce(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 3, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if r.GetSandboxId() != "wa" {
+		t.Fatalf("claimed by %q, want wa first", r.GetSandboxId())
+	}
+	seen := []string{"wa"}
+	for len(seen) < 3 {
+		last := seen[len(seen)-1]
+		waitFor(t, func() bool {
+			if got := runNow(env, o, run.GetId()).GetSandboxId(); got != "" && got != last {
+				seen = append(seen, got)
+				return true
+			}
+			if retryArmed(rt) {
+				env.clock.Advance(stepRetryEvery)
+			}
+			return false
+		})
+	}
+	if sorted := slices.Sorted(slices.Values(seen)); !slices.Equal(sorted, []string{"wa", "wb", "wc"}) {
+		t.Fatalf("moves = %v, want each worker once", seen)
+	}
+	last := seen[2]
+	// Two more limits and avoids later it has not moved, and its reason stays.
+	refuseFor(t, env, rt, w, 2*(claimRefuseLimit+claimAvoidFor))
+	got := runNow(env, o, run.GetId())
+	if got.GetSandboxId() != last || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("after every worker refused = %+v", got)
+	}
+	if got.GetStepNote() != waitingPrefix+"input box not empty" {
+		t.Errorf("note = %q", got.GetStepNote())
+	}
+	d.set(func(d *fakeDaemon) { d.refuse = nil })
+	env.clock.Advance(stepRetryEvery)
+	if got := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN); got.GetSandboxId() != last {
+		t.Errorf("typed on %q, want %q", got.GetSandboxId(), last)
+	}
+}
+
+// A worker is passed over only for the run it refused: another run takes it at
+// once, so a worker that has recovered does not sit idle next to a queued run.
+func TestPassOverIsPerRun(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string {
+			if req.GetSandboxId() == "wa" {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit)
+	if got := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN); got.GetSandboxId() != "wb" {
+		t.Fatalf("handed to %q, want wb", got.GetSandboxId())
+	}
+	d.set(func(d *fakeDaemon) { d.refuse = nil }) // wa recovers
+	other := callSeq(t, env, o, "2")
+	if got := waitStep(t, env, o, other.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN); got.GetSandboxId() != "wa" {
+		t.Errorf("the other run went to %q, want wa", got.GetSandboxId())
+	}
+}
+
+// A handed-back run the other worker did not take waits out the avoid, saying
+// why, then its worker may take it again. Cancelling forgets the refusals.
+func TestHandedBackRunSaysWhyItWaits(t *testing.T) {
+	env, _, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	seen := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	// As handBack leaves it when another pass won the other worker.
+	rt.mu.Lock()
+	rt.seq.refusedBy[run.GetId()] = map[string]time.Time{"wa": env.clock.Now().Add(claimAvoidFor)}
+	rt.armUnavoidLocked()
+	rt.mu.Unlock()
+	if !rt.unclaimRun(seen) {
+		t.Fatal("unclaim failed")
+	}
+	settle(t, rt)
+	got, err := env.svc.GetRun(o.GetId(), run.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSandboxId() != "" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("while passed over = %+v", got)
+	}
+	if want := "waiting: worker-wa refused this run and is passed over for up to 30s"; got.GetWaitingReason() != want {
+		t.Errorf("reason = %q, want %q", got.GetWaitingReason(), want)
+	}
+	out, err := rt.toolCheckRun(checkRunIn{RunID: run.GetId()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "waiting: a worker refused this run and is passed over for up to 30s"; out.WaitingReason != want {
+		t.Errorf("agent reason = %q, want %q", out.WaitingReason, want)
+	}
+	env.clock.Advance(claimAvoidFor)
+	again := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if again.GetSandboxId() != "wa" {
+		t.Fatalf("after the avoid = %+v", again)
+	}
+	if got, _ := env.svc.GetRun(o.GetId(), run.GetId()); got.GetWaitingReason() != "" {
+		t.Errorf("reason after the avoid = %q", got.GetWaitingReason())
+	}
+	if !rt.refused(run.GetId(), "wa") {
+		t.Error("the refusal outlives the avoid")
+	}
+	if _, err := env.svc.CancelRun(o.GetId(), run.GetId()); err != nil {
+		t.Fatal(err)
+	}
+	if rt.refused(run.GetId(), "wa") {
+		t.Error("a cancelled run should forget who refused it")
+	}
+}
+
+// otherFreeWorker skips a worker that refused the run or is being delivered to.
+func TestOtherFreeWorkerSkips(t *testing.T) {
+	env, _, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	seen := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	if !rt.otherFreeWorker(seen) {
+		t.Fatal("wb is free")
+	}
+	rt.mu.Lock()
+	rt.delivering["wb"] = struct{}{}
+	rt.mu.Unlock()
+	if rt.otherFreeWorker(seen) {
+		t.Error("wb is being delivered to")
+	}
+	rt.endDelivery("wb")
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	if rt.otherFreeWorker(seen) {
+		t.Error("wb is paused")
+	}
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", false); err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	rt.seq.refusedBy[run.GetId()] = map[string]time.Time{"wb": env.clock.Now()} // its avoid over
+	rt.mu.Unlock()
+	if rt.otherFreeWorker(seen) {
+		t.Error("wb refused this run")
+	}
+}
+
+// A paused worker is no reason to hand a claim back: dispatch would never give
+// it the run. The run stays on the worker that refused it.
+func TestRefusedClaimStaysWhenTheOtherWorkerIsPaused(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit+2*stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("past the limit = %+v", got)
+	}
+	if rt.refused(run.GetId(), "wa") {
+		t.Error("wa should not be marked as handed back from")
+	}
+}
+
+// Pausing the worker a run was handed to must not strand the run: once the
+// avoid ends, the worker that refused it may take it again, because the paused
+// one doesn't count as free.
+func TestHandedBackRunReturnsWhenItsWorkerIsPaused(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit)
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetSandboxId() == "wb" })
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	// A first step in flight on wb is released on the next retry, so keep the
+	// clock moving: that, then wa's avoid ending.
+	waitFor(t, func() bool {
+		env.clock.Advance(stepRetryEvery)
+		return runNow(env, o, run.GetId()).GetSandboxId() == "wa"
+	})
+}
+
+// With no other worker free, a refused claim is never handed back (that would
+// only delay it): it waits on its worker and is typed once the box clears. A
+// claim taken back by unclaimOn times its next refusals afresh.
+func TestRefusedClaimStaysWithTheOnlyWorker(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit+2*stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("past the limit = %+v", got)
+	}
+	if rt.avoided(run.GetId(), "wa") {
+		t.Error("the only worker is never passed over")
+	}
+	waitSince := func() time.Time {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		if m := rt.seq.marks[run.GetId()]; m != nil {
+			return m.waitSince
+		}
+		return time.Time{}
+	}
+	first := waitSince()
+	if first.IsZero() {
+		t.Fatal("the refusals should be timed")
+	}
+	// The re-claim that follows may be refused again at once: its wait must
+	// start now, not at the first claim's first refusal.
+	env.clock.Advance(time.Second)
+	rt.unclaimOn("wa")
+	settle(t, rt)
+	if got := waitSince(); got.Equal(first) {
+		t.Error("unclaimOn keeps the refusal timing for the next claim")
+	}
+	d.set(func(d *fakeDaemon) { d.refuse = nil })
+	env.clock.Advance(stepRetryEvery)
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || handBackable(got) {
+		t.Errorf("typed run = %+v", got)
+	}
+}
+
+func retryArmed(rt *runtime) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.seq.retry != nil
+}
+
+// refuseFor advances the clock a retry tick at a time for d, each time once
+// the retry ticker is armed and waiting for the refused send it triggers.
+func refuseFor(t *testing.T, env *testEnv, rt *runtime, w *fakeWorker, d time.Duration) {
+	t.Helper()
+	waitFor(t, func() bool { return len(stepReqs(w)) >= 1 })
+	for elapsed := time.Duration(0); elapsed < d; elapsed += stepRetryEvery {
+		n := len(stepReqs(w))
+		waitFor(t, func() bool { return retryArmed(rt) })
+		env.clock.Advance(stepRetryEvery)
+		waitFor(t, func() bool { return len(stepReqs(w)) > n })
+	}
+}
+
+// Only a queued, untyped claim of a prompt run is handed back.
+func TestHandBackable(t *testing.T) {
+	pending := func(mut func(*pb.Run)) *pb.Run {
+		r := &pb.Run{State: pb.RunState_RUN_STATE_QUEUED, StepStatus: pb.StepStatus_STEP_STATUS_PENDING, Steps: []*pb.RunStep{{}}, SandboxId: "wa"}
+		if mut != nil {
+			mut(r)
+		}
+		return r
+	}
+	if !handBackable(pending(nil)) {
+		t.Error("a pending claim is handed back")
+	}
+	for name, mut := range map[string]func(*pb.Run){
+		"running":    func(r *pb.Run) { r.State = pb.RunState_RUN_STATE_RUNNING },
+		"retry":      func(r *pb.Run) { r.StepSentAt = timestamppb.Now() },
+		"restart":    func(r *pb.Run) { r.StepNote = restartingNote },
+		"halted":     func(r *pb.Run) { r.StepStatus = pb.StepStatus_STEP_STATUS_HALTED },
+		"reason run": func(r *pb.Run) { r.Type = pb.ActionType_ACTION_TYPE_REASON },
+	} {
+		if handBackable(pending(mut)) {
+			t.Errorf("%s: handed back", name)
 		}
 	}
 }
@@ -2079,14 +2415,15 @@ func lostAnswer(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse
 }
 
 // waitSentSeen waits until a runtime's stepper started timing a SENT step's
-// grace (the restarted stepper saw it with no evidence).
+// grace (the restarted stepper saw it with no evidence) and armed the wake-up
+// that ends it, so the test's clock can't advance before the timer exists.
 func waitSentSeen(t *testing.T, rt *runtime, runID string) {
 	t.Helper()
 	waitFor(t, func() bool {
 		rt.mu.Lock()
 		defer rt.mu.Unlock()
 		m := rt.seq.marks[runID]
-		return m != nil && !m.sentSeen.IsZero()
+		return m != nil && !m.sentSeen.IsZero() && m.wake != nil
 	})
 }
 

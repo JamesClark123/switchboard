@@ -59,6 +59,11 @@ type seqState struct {
 	marks    map[string]*stepMarks // run id → timings of its current step
 	noSteps  map[string]bool       // sandbox id → its daemon has no DeliverWorkerStep, until its link reconnects
 	retry    Timer                 // the retry ticker, armed while a step waits
+	unavoid  Timer                 // a dispatch pass when the earliest avoid ends
+	// refusedBy is, per queued run, the workers it was handed back from, each
+	// with when dispatch stops passing it over for that run. Kept after that
+	// time so each worker gets one try, until the run leaves the queue.
+	refusedBy map[string]map[string]time.Time
 }
 
 // stepMarks times the current step of a run (in-memory: after an orchestrator
@@ -74,7 +79,7 @@ type stepMarks struct {
 }
 
 func newSeqState() seqState {
-	return seqState{steppers: map[string]*stepper{}, marks: map[string]*stepMarks{}, noSteps: map[string]bool{}}
+	return seqState{steppers: map[string]*stepper{}, marks: map[string]*stepMarks{}, noSteps: map[string]bool{}, refusedBy: map[string]map[string]time.Time{}}
 }
 
 // stopTimers stops the retry ticker and every wake-up (caller holds mu).
@@ -82,6 +87,10 @@ func (s *seqState) stopTimers() {
 	if s.retry != nil {
 		s.retry.Stop()
 		s.retry = nil
+	}
+	if s.unavoid != nil {
+		s.unavoid.Stop()
+		s.unavoid = nil
 	}
 	for _, m := range s.marks {
 		if m.wake != nil {
@@ -558,16 +567,13 @@ func (rt *runtime) runStepper(sandboxID string, st *stepper) {
 
 // seqRunOn returns the run with step work on a sandbox (nil when none).
 func (rt *runtime) seqRunOn(sandboxID string) *pb.Run {
-	rt.runs.mu.Lock()
-	defer rt.runs.mu.Unlock()
-	runs, err := rt.svc.reg.ListRuns(rt.id)
-	if err != nil {
+	if sandboxID == "" {
 		return nil
 	}
-	for _, r := range runs {
-		if r.GetSandboxId() == sandboxID && stepActive(r) {
-			return r
-		}
+	rt.runs.mu.Lock()
+	defer rt.runs.mu.Unlock()
+	if runs := rt.indexedLocked(sandboxID, stepActive); len(runs) > 0 {
+		return runs[0]
 	}
 	return nil
 }
@@ -710,8 +716,16 @@ func (rt *runtime) orphanHalt(run *pb.Run, sb *pb.Sandbox) bool {
 	return true
 }
 
-// unclaim puts a claimed, untyped run back in the queue.
+// unclaim puts a claimed, untyped run back in the queue. It reports that the
+// stepper should look again.
 func (rt *runtime) unclaim(run *pb.Run) bool {
+	rt.unclaimRun(run)
+	return true
+}
+
+// unclaimRun is unclaim, reporting whether the run went back (false: it moved
+// on meanwhile).
+func (rt *runtime) unclaimRun(run *pb.Run) bool {
 	_, ok := rt.stepTx(run, func(l *pb.Run) bool {
 		unclaimLocked(l)
 		return true
@@ -720,7 +734,7 @@ func (rt *runtime) unclaim(run *pb.Run) bool {
 		rt.dropMarks(run.GetId())
 		rt.triggerDispatch()
 	}
-	return true
+	return ok
 }
 
 func unclaimLocked(l *pb.Run) {
@@ -734,16 +748,15 @@ func unclaimLocked(l *pb.Run) {
 // step.
 func (rt *runtime) unclaimOn(sandboxID string) {
 	rt.runs.mu.Lock()
-	runs, _ := rt.svc.reg.ListRuns(rt.id)
 	n := 0
-	for _, r := range runs {
+	for _, r := range rt.indexedLocked(sandboxID, func(r *pb.Run) bool {
 		st := r.GetStepStatus()
-		if r.GetState() == pb.RunState_RUN_STATE_QUEUED && r.GetSandboxId() == sandboxID && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_HALTED) {
-			unclaimLocked(r)
-			if rt.putRun(r) == nil {
-				rt.dropMarks(r.GetId())
-				n++
-			}
+		return r.GetState() == pb.RunState_RUN_STATE_QUEUED && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_HALTED)
+	}) {
+		unclaimLocked(r)
+		if rt.putRun(r) == nil {
+			rt.dropMarks(r.GetId()) // the next claim's refusals are timed afresh
+			n++
 		}
 	}
 	rt.runs.mu.Unlock()
@@ -758,15 +771,12 @@ func (rt *runtime) unclaimOn(sandboxID string) {
 func (rt *runtime) endHoldingOn(sandboxID string) {
 	rt.runs.mu.Lock()
 	defer rt.runs.mu.Unlock()
-	runs, _ := rt.svc.reg.ListRuns(rt.id)
-	for _, r := range runs {
-		if finished(r) && r.GetSandboxId() == sandboxID && stepActive(r) {
-			r.Hold = pb.WorkerHold_WORKER_HOLD_NONE
-			settleSteps(r, len(r.GetSteps()), pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)
-			moveTo(r, int(r.GetStep()), pb.StepStatus_STEP_STATUS_DONE)
-			_ = rt.putRun(r)
-			rt.dropMarks(r.GetId())
-		}
+	for _, r := range rt.indexedLocked(sandboxID, func(r *pb.Run) bool { return finished(r) && stepActive(r) }) {
+		r.Hold = pb.WorkerHold_WORKER_HOLD_NONE
+		settleSteps(r, len(r.GetSteps()), pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)
+		moveTo(r, int(r.GetStep()), pb.StepStatus_STEP_STATUS_DONE)
+		_ = rt.putRun(r)
+		rt.dropMarks(r.GetId())
 	}
 }
 
@@ -798,8 +808,7 @@ func (rt *runtime) sendStep(run *pb.Run, sb *pb.Sandbox) bool {
 	}
 	restart := run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED
 	if reason := notReady(sb); reason != "" && !restart {
-		rt.stepRefused(run, sb, reason)
-		return false
+		return rt.stepRefused(run, sb, reason)
 	}
 	// A step typed before (a retry) keeps its send number, which the worker
 	// accepts once while the run is halted; any other send takes a new one.
@@ -818,11 +827,23 @@ func (rt *runtime) sendStep(run *pb.Run, sb *pb.Sandbox) bool {
 	ctx, cancel := rt.callCtx(deliverTimeout)
 	resp, err := api.DeliverWorkerStep(ctx, &pb.DeliverWorkerStepRequest{
 		SandboxId: sending.GetSandboxId(), OrchestratorId: rt.id, RunId: sending.GetId(), Action: sending.GetAction(),
-		Step: st, First: sending.GetState() == pb.RunState_RUN_STATE_QUEUED, StepIndex: sending.GetStepSend(),
+		Step: wireStep(sending, st), First: sending.GetState() == pb.RunState_RUN_STATE_QUEUED, StepIndex: sending.GetStepSend(),
 		Retry: retry, Restart: restart,
 	})
 	cancel()
 	return rt.applyOutcome(sending, resp, err)
+}
+
+// wireStep is a step as the worker is sent it: the action step's text is the
+// run's prompt, stored once on the run (SWI-29) and filled in on a copy. A run
+// persisted before that still carries it on the step, and keeps it.
+func wireStep(run *pb.Run, st *pb.RunStep) *pb.RunStep {
+	if st.GetKind() != pb.StepKind_STEP_KIND_ACTION_PROMPT || st.GetText() != "" {
+		return st
+	}
+	out := proto.Clone(st).(*pb.RunStep)
+	out.Text = run.GetPrompt()
+	return out
 }
 
 // stepResult classifies a DeliverWorkerStep answer.
@@ -926,7 +947,7 @@ func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse
 			if rt.clearStopRequested(live) {
 				return true // the stepper applies the stop now
 			}
-			rt.stepRefused(live, sb, refusalReason(err))
+			return rt.stepRefused(live, sb, refusalReason(err))
 		}
 		return false
 	case resUnsupported:
@@ -1022,8 +1043,10 @@ func advanceLocked(l *pb.Run) stepFx {
 }
 
 // stepRefused records a refusal: once refusals have lasted stepWaitNote the
-// step's note says why (research R6), and the retry ticker runs.
-func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) {
+// step's note says why (research R6), and the retry ticker runs. A claim whose
+// first step was refused for claimRefuseLimit goes back to the queue when
+// another worker could take it; it reports whether the run was handed back.
+func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) bool {
 	now := rt.svc.clock.Now()
 	rt.mu.Lock()
 	m := rt.seq.marksFor(run)
@@ -1032,11 +1055,14 @@ func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) {
 	}
 	since := m.waitSince
 	rt.mu.Unlock()
+	if handBackable(run) && now.Sub(since) >= claimRefuseLimit && rt.handBack(run, reason) {
+		return true
+	}
 	rt.armStepRetry()
 	note := waitingPrefix + reason
 	if now.Sub(since) < stepWaitNote || run.GetStepNote() == note ||
 		(run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED) {
-		return
+		return false
 	}
 	if live, ok := rt.stepTx(run, func(l *pb.Run) bool {
 		l.StepNote = note
@@ -1044,6 +1070,132 @@ func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) {
 	}); ok {
 		rt.syncWorkerRun(live.GetId())
 	}
+	return false
+}
+
+// handBackable reports whether a claimed run may go back to the queue for
+// another worker: still queued, nothing typed (not a retry or a restart, which
+// only this worker may take), and not a reason run, whose one target would
+// claim it again.
+func handBackable(run *pb.Run) bool {
+	return run.GetState() == pb.RunState_RUN_STATE_QUEUED && run.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING &&
+		!haltedOnWorker(run) && run.GetType() != pb.ActionType_ACTION_TYPE_REASON
+}
+
+// handBack returns a claim its worker kept refusing to the queue (SWI-29) when
+// another free worker that has not refused this run could take it; with none
+// the run keeps waiting where it is (a hand-back would only delay it). Dispatch
+// passes the worker over for this run for claimAvoidFor, so the pass the unclaim
+// triggers picks the other one; once the avoid ends another pass runs. It
+// reports whether the run went back.
+func (rt *runtime) handBack(run *pb.Run, reason string) bool {
+	id := run.GetSandboxId()
+	if !rt.otherFreeWorker(run) {
+		return false
+	}
+	rt.mu.Lock()
+	if rt.seq.refusedBy[run.GetId()] == nil {
+		rt.seq.refusedBy[run.GetId()] = map[string]time.Time{}
+	}
+	rt.seq.refusedBy[run.GetId()][id] = rt.svc.clock.Now().Add(claimAvoidFor)
+	rt.mu.Unlock()
+	if !rt.unclaimRun(run) {
+		rt.forgetRefusals(run.GetId()) // the run moved on: its claim is over
+		return false
+	}
+	rt.mu.Lock()
+	rt.armUnavoidLocked()
+	rt.mu.Unlock()
+	rt.svc.logf("[orchestrator %s] %s refused %s for %s (%s); it goes back to the queue", rt.name(), id, run.GetId(), claimRefuseLimit, reason)
+	return true
+}
+
+// otherFreeWorker reports whether a worker other than the run's could take it
+// now: allowed by its lanes, free, steps-capable, one that has not refused this
+// run, not paused, not being detached or delivered to, and claimed or held by no
+// other run.
+func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
+	rec := rt.record()
+	ids, mode, ok := effectiveLanes(rec, run)
+	if !ok {
+		return false
+	}
+	for _, w := range rec.GetWorkers() {
+		id := w.GetSandboxId()
+		if id == run.GetSandboxId() || w.GetReasoning() || w.GetLanesPending() || w.GetPaused() || !allowed(w.GetLaneIds(), ids, mode) ||
+			rt.stepsUnsupported(id) || rt.refused(run.GetId(), id) || rt.isDetaching(id) || rt.isDelivering(id) {
+			continue
+		}
+		if up, _ := rt.reachability(w.GetHostId()); !free(rt.sandboxRecord(id), up) {
+			continue
+		}
+		rt.runs.mu.Lock()
+		taken := len(rt.indexedLocked(id, func(*pb.Run) bool { return true })) > 0
+		rt.runs.mu.Unlock()
+		if !taken {
+			return true
+		}
+	}
+	return false
+}
+
+// refused reports whether a worker has refused this run and had it handed back.
+func (rt *runtime) refused(runID, sandboxID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	_, ok := rt.seq.refusedBy[runID][sandboxID]
+	return ok
+}
+
+// avoided reports whether dispatch passes a worker over for this run.
+func (rt *runtime) avoided(runID, sandboxID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	until, ok := rt.seq.refusedBy[runID][sandboxID]
+	return ok && rt.svc.clock.Now().Before(until)
+}
+
+// passesOver reports whether dispatch skips a worker for this run: it refused
+// the run and its avoid is on, or a worker that has not refused it is free.
+func (rt *runtime) passesOver(run *pb.Run, sandboxID string) bool {
+	return rt.avoided(run.GetId(), sandboxID) || (rt.refused(run.GetId(), sandboxID) && rt.otherFreeWorker(run))
+}
+
+// forgetRefusals drops what a run's hand-backs left behind.
+func (rt *runtime) forgetRefusals(runID string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	delete(rt.seq.refusedBy, runID)
+}
+
+// armUnavoidLocked arms a dispatch pass for when the earliest avoid still
+// running ends (caller holds mu).
+func (rt *runtime) armUnavoidLocked() {
+	if rt.seq.unavoid != nil || rt.ctx.Err() != nil {
+		return
+	}
+	now := rt.svc.clock.Now()
+	var next time.Duration
+	for _, workers := range rt.seq.refusedBy {
+		for _, until := range workers {
+			if d := until.Sub(now); d > 0 && (next == 0 || d < next) {
+				next = d
+			}
+		}
+	}
+	if next == 0 {
+		return
+	}
+	rt.seq.unavoid = rt.svc.clock.AfterFunc(next, func() {
+		rt.mu.Lock()
+		rt.seq.unavoid = nil
+		rt.armUnavoidLocked()
+		rt.mu.Unlock()
+		if rt.ctx.Err() == nil {
+			rt.svc.emitChanged(rt.id) // the run's waiting reason just ended
+			rt.triggerDispatch()
+		}
+	})
 }
 
 // armStepRetry arms the retry ticker (research R6) unless it is armed.
@@ -1066,14 +1218,13 @@ func (rt *runtime) stepRetryTick() {
 		return
 	}
 	rt.runs.mu.Lock()
-	runs, _ := rt.svc.reg.ListRuns(rt.id)
+	runs := rt.indexedLocked("", func(r *pb.Run) bool {
+		st := r.GetStepStatus()
+		return stepActive(r) && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_SENDING)
+	})
 	rt.runs.mu.Unlock()
 	waiting := false
 	for _, r := range runs {
-		st := r.GetStepStatus()
-		if !stepActive(r) || (st != pb.StepStatus_STEP_STATUS_PENDING && st != pb.StepStatus_STEP_STATUS_SENDING) {
-			continue
-		}
 		if up, _ := rt.reachability(r.GetSandboxHostId()); up {
 			waiting = true
 			rt.kickStepper(r.GetSandboxId())
@@ -1270,7 +1421,7 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		ctx, cancel := rt.callCtx(deliverTimeout)
 		resp, err := api.DeliverWorkerStep(ctx, &pb.DeliverWorkerStepRequest{
 			SandboxId: run.GetSandboxId(), OrchestratorId: rt.id, RunId: run.GetId(), Action: run.GetAction(),
-			Step: st, CheckOnly: true, StepIndex: run.GetStepSend(),
+			Step: wireStep(run, st), CheckOnly: true, StepIndex: run.GetStepSend(),
 		})
 		cancel()
 		switch {
@@ -1802,6 +1953,7 @@ func (rt *runtime) claim(run *pb.Run, w *pb.Worker) bool {
 	if err != nil {
 		return false
 	}
+	rt.dropMarks(live.GetId()) // each claim's refusals are timed afresh
 	rt.kickStepper(w.GetSandboxId())
 	return true
 }

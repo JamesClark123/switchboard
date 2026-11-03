@@ -169,10 +169,12 @@ func effectiveSequence(a *pb.Action) *pb.ActionSequence {
 }
 
 // buildSteps snapshots a run's sequence at call time (FR-205, FR-207): Model?,
-// Effort?, the custom pre-prompts, the action prompt (prompt, already composed;
-// the frame is added at delivery), the custom post-prompts, Clear?. An action
-// with no enabled built-in and no custom prompt gets no steps (FR-208).
-func buildSteps(a *pb.Action, args map[string]string, prompt string) ([]*pb.RunStep, error) {
+// Effort?, the custom pre-prompts, the action prompt, the custom post-prompts,
+// Clear?. The action step carries no text: it is Run.prompt, stored once and
+// filled in when the step is sent (wireStep; the frame is added at delivery).
+// An action with no enabled built-in and no custom prompt gets no steps
+// (FR-208).
+func buildSteps(a *pb.Action, args map[string]string) ([]*pb.RunStep, error) {
 	seq := effectiveSequence(a)
 	if !seq.GetModelEnabled() && !seq.GetEffortEnabled() && !seq.GetClearEnabled() &&
 		len(seq.GetPrePrompts()) == 0 && len(seq.GetPostPrompts()) == 0 {
@@ -202,7 +204,7 @@ func buildSteps(a *pb.Action, args map[string]string, prompt string) ([]*pb.RunS
 	if err := custom(pb.StepRole_STEP_ROLE_SETUP, "pre-prompt", seq.GetPrePrompts()); err != nil {
 		return nil, err
 	}
-	steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT, Text: prompt})
+	steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT})
 	if err := custom(pb.StepRole_STEP_ROLE_CLEANUP, "post-prompt", seq.GetPostPrompts()); err != nil {
 		return nil, err
 	}

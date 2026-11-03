@@ -82,25 +82,26 @@ func (rt *runtime) dispatch() {
 		detaching[id] = struct{}{}
 	}
 	rt.mu.Unlock()
+	// One read per pass (the record and every run, one commit): the queued
+	// runs, and the sandboxes claimed by a queued run with steps or held by a
+	// closed one, which are not free (T019, T021) whatever their records say.
 	var rec *pb.Orchestrator
 	var queued []*pb.Run
-	if err := rt.svc.reg.ViewOrchestratorRuns(rt.id, func(o *pb.Orchestrator, q []*pb.Run) error {
-		rec, queued = o, q
+	claimed := map[string]bool{}
+	if err := rt.svc.reg.ViewOrchestratorAllRuns(rt.id, func(o *pb.Orchestrator, all []*pb.Run) error {
+		rec = o
+		for _, r := range all {
+			queuedRun := r.GetState() == pb.RunState_RUN_STATE_QUEUED
+			if queuedRun {
+				queued = append(queued, r)
+			}
+			if r.GetSandboxId() != "" && (queuedRun || stepActive(r)) {
+				claimed[r.GetSandboxId()] = true
+			}
+		}
 		return nil
 	}); err != nil {
 		return
-	}
-	// A sandbox claimed by a queued run with steps, or held by a closed one,
-	// is not free (T019, T021), whatever its record says meanwhile.
-	all, err := rt.svc.reg.ListRuns(rt.id)
-	if err != nil {
-		return
-	}
-	claimed := map[string]bool{}
-	for _, r := range all {
-		if r.GetSandboxId() != "" && (r.GetState() == pb.RunState_RUN_STATE_QUEUED || stepActive(r)) {
-			claimed[r.GetSandboxId()] = true
-		}
 	}
 	// Candidates come from one view of the roster per pass: were a record
 	// re-read per run, a worker freed mid-pass could take a later run while an
@@ -142,7 +143,7 @@ func (rt *runtime) dispatch() {
 		},
 		missing: rt.failIfMissing,
 		claim: func(w *pb.Worker, r planRun) claimResult {
-			if sequenced(r.run) && rt.stepsUnsupported(w.GetSandboxId()) {
+			if sequenced(r.run) && (rt.stepsUnsupported(w.GetSandboxId()) || rt.passesOver(r.run, w.GetSandboxId())) {
 				return claimLaneFail // not this run's worker; it stays free for others
 			}
 			return rt.recheckAndClaim(w, r, gen0)

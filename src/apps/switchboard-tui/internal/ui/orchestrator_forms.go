@@ -46,6 +46,63 @@ type actionFormVals struct {
 	modelKept, effortKept string
 	clearAfter            bool
 	pre, post             string
+	// steps: the daemon, as last known when the form opened, keeps sequences
+	// (SWI-29 E4); without, the sequence fields are not built (the values still
+	// load). stepsKnown: anything was known of it, else the hint names no age.
+	// A save decides from the live daemon either way.
+	steps, stepsKnown bool
+}
+
+// noLanes hides the Lanes group: a reason action, or an orchestrator with none.
+func (v *actionFormVals) noLanes() bool { return v.kind == "reason" || len(v.options) == 0 }
+
+// noMode hides the Mode group: no lanes, or none ticked.
+func (v *actionFormVals) noMode() bool { return v.noLanes() || len(v.lanes) == 0 }
+
+// groupKeys are the action form's groups by field key, in build order; the
+// sequence keys only when the form has them (E4).
+func (v *actionFormVals) groupKeys() [][]string {
+	last := []string{"args"}
+	if v.steps {
+		last = append(last, "model", "effort", "clear", "pre", "post")
+	}
+	return [][]string{{"name", "description", "kind", "body"}, {"lanes"}, {"mode"}, last}
+}
+
+// groupShown mirrors the groups' hide funcs.
+func (v *actionFormVals) groupShown(g int) bool {
+	switch g {
+	case 1:
+		return !v.noLanes()
+	case 2:
+		return !v.noMode()
+	}
+	return true
+}
+
+// locate is the group and in-group index of a field key; -1, -1 when absent.
+func (v *actionFormVals) locate(key string) (int, int) {
+	for g, keys := range v.groupKeys() {
+		if i := slices.Index(keys, key); i >= 0 {
+			return g, i
+		}
+	}
+	return -1, -1
+}
+
+// page is the visible page holding key and the visible page count (SWI-29
+// E5); n is 0 when key is on no visible page.
+func (v *actionFormVals) page(key string) (n, total int) {
+	g, _ := v.locate(key)
+	for i := range v.groupKeys() {
+		if v.groupShown(i) {
+			total++
+			if i == g {
+				n = total
+			}
+		}
+	}
+	return n, total
 }
 
 // keepLanes follows the orchestrator's lanes (FR-316a, FR-317): options are
@@ -100,9 +157,11 @@ func actionKindOptions() []huh.Option[string] {
 // openActionForm opens the editor for a new action (a == nil) or an existing one
 // on the target orchestrator. A new action starts with the default sequence
 // (FR-203); an existing one with its effective sequence, which for an action
-// saved before SWI-17 is the defaults too (FR-210).
+// saved before SWI-17 is the defaults too (FR-210). Against a daemon without
+// "steps" the values load the same but are not shown (E4).
 func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Model, tea.Cmd) {
 	v := &actionFormVals{kind: "prompt", mode: "exclusive"}
+	v.steps, v.stepsKnown = m.hostSteps(t.host)
 	sequenceToForm(v, effectiveSequence(a))
 	if a != nil {
 		v.name, v.description, v.body, v.original = a.GetName(), a.GetDescription(), a.GetBody(), a.GetName()
@@ -136,7 +195,6 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 	for _, l := range v.options {
 		laneOpts = append(laneOpts, huh.NewOption(sanitizeLine(l.GetName(), 0), l.GetId()).Selected(slices.Contains(v.lanes, l.GetId())))
 	}
-	noLanes := func() bool { return v.kind == "reason" || len(v.options) == 0 }
 	head := []huh.Field{
 		spec.input("name", "Name").Description("lowercase letters, digits and hyphens; saving an existing name replaces it").Value(&v.name),
 		spec.input("description", "Description").Value(&v.description),
@@ -148,22 +206,33 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 		huh.NewGroup(head...),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Key("lanes").Title("Lanes (prompt only)").Description("none = open-lane workers only · ctrl+l manage lanes").Options(laneOpts...).Value(&v.lanes),
-		).WithHideFunc(noLanes),
+		).WithHideFunc(v.noLanes),
 		huh.NewGroup(
 			huh.NewSelect[string]().Key("mode").Title("Mode").Options(
 				huh.NewOption("exclusive — only these lanes", "exclusive"),
 				huh.NewOption("inclusive — these lanes, else open-lane workers", "inclusive"),
 			).Value(&v.mode),
-		).WithHideFunc(func() bool { return noLanes() || len(v.lanes) == 0 }),
-		huh.NewGroup(
-			spec.text(&v.args, "Arguments").Key("args").Lines(4).Description("one per line: name [*] [description] [= default]  — * marks required"),
+		).WithHideFunc(v.noMode),
+	}
+	argsDesc := "one per line: name [*] [description] [= default]  — * marks required"
+	switch {
+	case !v.stepsKnown:
+		argsDesc += " · to edit pre/post prompts, reopen this form once the daemon has connected"
+	case !v.steps:
+		// E4: an older daemon would drop a sequence, so none is offered.
+		argsDesc += " · pre/post prompts need a newer daemon (update with u)"
+	}
+	last := []huh.Field{spec.text(&v.args, "Arguments").Key("args").Lines(4).Description(argsDesc)}
+	if v.steps {
+		last = append(last,
 			huh.NewSelect[string]().Key("model").Title("Model").Description("typed as /model before each run; off skips it").Options(stringOptions(modelOptions)...).Value(&v.model),
 			huh.NewSelect[string]().Key("effort").Title("Effort").Description("typed as /effort before each run; off skips it").Options(stringOptions(effortOptions)...).Value(&v.effort),
 			huh.NewConfirm().Key("clear").Title("Clear after run").Description("/clear once the run closes, so the next run starts fresh").Value(&v.clearAfter),
 			spec.text(&v.pre, "Pre-prompts").Key("pre").Lines(4).Description("one prompt per line, sent in order before the action prompt; a prompt can't span lines"),
 			spec.text(&v.post, "Post-prompts").Key("post").Lines(4).Description("one prompt per line, sent in order after the run closes; a prompt can't span lines"),
-		),
+		)
 	}
+	groups = append(groups, huh.NewGroup(last...))
 	return huh.NewForm(groups...).WithTheme(huhTheme()).WithShowHelp(false).WithShowErrors(false).
 		WithWidth(m.bodyWidth()).WithHeight(m.bodyHeight()).WithKeyMap(formKeyMap())
 }
@@ -186,9 +255,11 @@ func (v *actionFormVals) action(args []*pb.ActionArgument) *pb.Action {
 }
 
 // rebuildActionForm rebuilds a surface's open action form over its values
-// (lane options changed, or a refusal kept it open), with a fresh Text registry.
+// (lane options changed, or a refusal kept it open), with a fresh Text registry,
+// focus back on the field that had it (E5).
 func (m *Model) rebuildActionForm(s orchSurface, v *actionFormVals) tea.Cmd {
 	op := m.opState(s)
+	focus := formFocusKey(op.form)
 	op.formSpec = newFormSpec()
 	op.form = m.actionForm(op.formSpec, v)
 	if e := &m.enlarge; e.open && e.surface == opGuard(s) {
@@ -200,7 +271,65 @@ func (m *Model) rebuildActionForm(s orchSurface, v *actionFormVals) tea.Cmd {
 			}
 		}
 	}
-	return op.form.Init()
+	init := op.form.Init()
+	return tea.Batch(init, restoreActionFocus(op.form, v, focus))
+}
+
+// opFormPage is an open action form's header suffix "  page n/m" (E5),
+// counting only the pages shown; "" for other forms.
+func opFormPage(op *orchOpState) string {
+	v, ok := op.formVals.(*actionFormVals)
+	if !ok || op.form == nil {
+		return ""
+	}
+	n, total := v.page(formFocusKey(op.form))
+	if n == 0 {
+		return ""
+	}
+	return dimStyle.Render(fmt.Sprintf("  page %d/%d", n, total))
+}
+
+// formFocusKey is the key of f's focused field, "" without a form.
+func formFocusKey(f *huh.Form) string {
+	if f == nil {
+		return ""
+	}
+	return f.GetFocusedField().GetKey()
+}
+
+// restoreActionFocus steps a freshly Init'ed action form to the field keyed
+// key (SWI-29 E5): huh v1 keeps the group index private, so focus is walked
+// with NextGroup/NextField. It stops on no progress (a validation error holds
+// the group) and never steps past the last group, which would submit.
+func restoreActionFocus(f *huh.Form, v *actionFormVals, key string) tea.Cmd {
+	tg, ti := v.locate(key)
+	if f == nil || tg < 0 || !v.groupShown(tg) {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for range 16 {
+		cur := formFocusKey(f)
+		g, i := v.locate(cur)
+		switch {
+		case cur == key || g < 0 || g > tg || (g == tg && i >= ti):
+			return tea.Batch(cmds...)
+		case g < tg:
+			// A later group (tg) is shown, so huh moves to one, never submits.
+			if len(f.Errors()) > 0 {
+				return tea.Batch(cmds...)
+			}
+			cmds = append(cmds, f.GetFocusedField().Blur(), f.NextGroup())
+		default:
+			// i < ti: not the group's last field, so no nextGroup follows.
+			cmds = append(cmds, f.NextField())
+		}
+		if formFocusKey(f) == cur {
+			// No progress: a validator (none today) held the group; keep the
+			// field focused where it stopped rather than loop.
+			return tea.Batch(append(cmds, f.GetFocusedField().Focus())...)
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // pruneActionLanes follows an open action form to rec's lanes. A deleted
@@ -966,20 +1095,34 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 			op.status = m.tooOldForLanes(t.host)
 			return m, nil
 		}
-		// The sequence is always sent, so an action saved before SWI-17 is
-		// written with the defaults it showed (FR-210).
-		seq := sequenceFromForm(v)
-		for _, l := range []struct {
-			what    string
-			prompts []string
-		}{{"pre-prompt", seq.GetPrePrompts()}, {"post-prompt", seq.GetPostPrompts()}} {
-			if err := checkStepPrompts(l.what, l.prompts, args); err != nil {
-				op.status = err.Error()
-				return m, nil
-			}
-		}
 		a := v.action(args)
-		a.Sequence = seq
+		// The live daemon decides (E4), not what the form showed: values load
+		// even when hidden, so a rename never swaps a sequence for defaults.
+		if daemonHasSteps(od) {
+			// The sequence is always sent, so an action saved before SWI-17 is
+			// written with the defaults it showed (FR-210).
+			seq := sequenceFromForm(v)
+			for _, l := range []struct {
+				what    string
+				prompts []string
+			}{{"pre-prompt", seq.GetPrePrompts()}, {"post-prompt", seq.GetPostPrompts()}} {
+				if err := checkStepPrompts(l.what, l.prompts, args); err != nil {
+					op.status = err.Error()
+					if !v.steps {
+						// The prompts are not on this form: it opened before
+						// the daemon was known.
+						op.status += " (close and reopen the form to edit pre/post prompts)"
+					}
+					return m, nil
+				}
+			}
+			a.Sequence = seq
+		} else if b, ok := op.formBaseline.(actionFormVals); !ok || !proto.Equal(sequenceFromForm(&b), sequenceFromForm(v)) {
+			// E4: an older daemon would drop the sequence: an edited one is
+			// refused, an untouched one not sent.
+			op.status = m.tooOldForSteps(t.host)
+			return m, nil
+		}
 		w := laneWrite{sink: s, target: t, done: "saved action " + a.GetName(), closeForm: true, owner: v,
 			save: func(ctx context.Context, g *pb.LaneGuardConfirm) error {
 				_, err := od.PutAction(ctx, id, a, g)
@@ -1085,7 +1228,10 @@ type orchFormErrMsg struct {
 
 // actionLine renders one action: name (type) description ⇢ lanes · mode {args}
 // (SWI-18, FR-315: lane names from rec; no lanes, no lane cell).
-func actionLine(a *pb.Action, rec *pb.Orchestrator) string {
+//
+// steps is whether the action's daemon serves sequences (E4): without, the
+// sequence segment is left out rather than showing defaults it would drop.
+func actionLine(a *pb.Action, rec *pb.Orchestrator, steps, known bool) string {
 	kind := "prompt"
 	if a.GetType() == pb.ActionType_ACTION_TYPE_REASON {
 		kind = "reason"
@@ -1108,7 +1254,7 @@ func actionLine(a *pb.Action, rec *pb.Orchestrator) string {
 	if len(args) > 0 {
 		line += dimStyle.Render("  {" + strings.Join(args, ", ") + "}")
 	}
-	if seq := sequenceSummary(a); seq != "" {
+	if seq := sequenceSummary(a, steps, known); seq != "" {
 		line += dimStyle.Render("   " + seq)
 	}
 	return line
@@ -1116,8 +1262,13 @@ func actionLine(a *pb.Action, rec *pb.Orchestrator) string {
 
 // sequenceSummary is the action line's sequence segment (FR-219): `pre:
 // /model opus · /effort medium · 1 custom — post: 1 custom · /clear`, either
-// side left out when empty; "" when no step is enabled.
-func sequenceSummary(a *pb.Action) string {
+// side left out when empty; "" when no step is enabled. A daemon known to lack
+// "steps" shows nothing (E4), even for a sequence it stored unread from a newer
+// TUI: it would not run it. One never connected shows only a stored sequence.
+func sequenceSummary(a *pb.Action, steps, known bool) string {
+	if !steps && (known || a.GetSequence() == nil) {
+		return ""
+	}
 	seq := effectiveSequence(a)
 	var pre, post []string
 	if seq.GetModelEnabled() {

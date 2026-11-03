@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 
+	dial "github.com/jamesclark123/switchboard/libs/switchboard-dial"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -55,6 +56,18 @@ type HostConn struct {
 	State HostState
 	Conn  *Conn
 	Err   error
+	// Known is the daemon as of the last successful connect, kept through a
+	// redial, a failed one or a disconnect until the host is removed. It holds
+	// only the handshake info: read its capabilities and version, never call it.
+	Known *dial.Conn
+}
+
+// handshakeOf is the part of a connection HostConn.Known keeps.
+func handshakeOf(conn *Conn) *dial.Conn {
+	if conn == nil || conn.Conn == nil {
+		return nil
+	}
+	return &dial.Conn{Info: conn.Info}
 }
 
 // DialFunc dials a host entry. Overridable in tests.
@@ -113,6 +126,7 @@ func (m *Manager) Adopt(id string, conn *Conn) {
 		m.order = append(m.order, id)
 	}
 	hc.Conn = conn
+	hc.Known = handshakeOf(conn)
 	hc.State = HostConnected
 	hc.Err = nil
 }
@@ -155,6 +169,7 @@ func (m *Manager) ConnectWithPassword(ctx context.Context, id, password string) 
 		return err
 	}
 	hc.Conn = conn
+	hc.Known = handshakeOf(conn)
 	hc.State = HostConnected
 	return nil
 }

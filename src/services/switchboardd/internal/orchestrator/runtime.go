@@ -95,8 +95,9 @@ func newRuntime(ctx context.Context, svc *Service, rec *pb.Orchestrator) *runtim
 	return rt
 }
 
-// start opens the host links and the scheduler.
+// start indexes the runs and opens the host links and the scheduler.
 func (rt *runtime) start() {
+	rt.seedRunIndex()
 	rt.syncLinks()
 	rt.startScheduler()
 }
@@ -211,6 +212,13 @@ func (rt *runtime) isDetaching(sandboxID string) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	_, ok := rt.detaching[sandboxID]
+	return ok
+}
+
+func (rt *runtime) isDelivering(sandboxID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	_, ok := rt.delivering[sandboxID]
 	return ok
 }
 

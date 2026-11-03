@@ -301,7 +301,7 @@ func TestBuildSteps(t *testing.T) {
 			"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort medium|medium",
 			"STEP_ROLE_SETUP STEP_KIND_CUSTOM /review SWI-1|",
 			"STEP_ROLE_SETUP STEP_KIND_CUSTOM Use review twice: review|",
-			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",
 			"STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|",
 			"STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|",
 		}},
@@ -310,16 +310,16 @@ func TestBuildSteps(t *testing.T) {
 		}, nil},
 		"only clear": {func(s *pb.ActionSequence) {
 			s.ModelEnabled, s.EffortEnabled, s.PrePrompts, s.PostPrompts = false, false, nil, nil
-		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|", "STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|"}},
+		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |", "STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|"}},
 		"only a post-prompt": {func(s *pb.ActionSequence) {
 			s.ModelEnabled, s.EffortEnabled, s.ClearEnabled, s.PrePrompts = false, false, false, nil
-		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|", "STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|"}},
+		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |", "STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|"}},
 		"fable, auto": {func(s *pb.ActionSequence) {
 			s.Model, s.Effort, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, pb.EffortChoice_EFFORT_CHOICE_AUTO, false, nil, nil
 		}, []string{
 			"STEP_ROLE_SETUP STEP_KIND_MODEL /model fable|Fable",
 			"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort auto|auto",
-			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT PROMPT|",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",
 		}},
 	}
 	for name, c := range cases {
@@ -327,7 +327,7 @@ func TestBuildSteps(t *testing.T) {
 		if c.mutate != nil {
 			c.mutate(a.Sequence)
 		}
-		steps, err := buildSteps(a, args, "PROMPT")
+		steps, err := buildSteps(a, args)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -336,7 +336,7 @@ func TestBuildSteps(t *testing.T) {
 		}
 	}
 	// A legacy action gets the default built-ins around its prompt (FR-210).
-	steps, _ := buildSteps(reviewPR(), args, "P")
+	steps, _ := buildSteps(reviewPR(), args)
 	if len(steps) != 4 || steps[0].GetExpect() != "Opus" || steps[1].GetExpect() != "medium" || steps[3].GetKind() != pb.StepKind_STEP_KIND_CLEAR {
 		t.Errorf("legacy steps = %q", stepsOf(steps))
 	}
@@ -350,7 +350,7 @@ func TestBuildStepsComposeFailure(t *testing.T) {
 		"pre-prompt 1":  withSequence([]string{"Look at {ticket}"}, nil),
 		"post-prompt 1": withSequence(nil, []string{"Look at {ticket}"}),
 	} {
-		if _, err := buildSteps(a, bad, "P"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), name+": ") {
+		if _, err := buildSteps(a, bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), name+": ") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -390,8 +390,27 @@ func TestArgumentOnlyInPrePromptIsAppended(t *testing.T) {
 	if err != nil || !strings.HasSuffix(prompt, "\n\nticket: SWI-9") {
 		t.Fatalf("prompt = %q / %v", prompt, err)
 	}
-	steps, _ := buildSteps(a, args, prompt)
-	if steps[2].GetText() != "Open SWI-9" || steps[3].GetText() != prompt {
+	steps, _ := buildSteps(a, args)
+	run := &pb.Run{Prompt: prompt, Steps: steps}
+	if steps[2].GetText() != "Open SWI-9" || wireStep(run, steps[3]).GetText() != prompt {
 		t.Errorf("steps = %q", stepsOf(steps))
+	}
+}
+
+// The action step's text is stored once, on Run.prompt (SWI-29): the step sent
+// is a copy carrying it, and a run persisted with the text on its step keeps it.
+func TestWireStepFillsActionPrompt(t *testing.T) {
+	action := &pb.RunStep{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT}
+	run := &pb.Run{Prompt: "P", Steps: []*pb.RunStep{action}}
+	if got := wireStep(run, action); got.GetText() != "P" || got == action || action.GetText() != "" {
+		t.Errorf("filled = %v (stored %q)", got, action.GetText())
+	}
+	legacy := &pb.RunStep{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT, Text: "old"}
+	if got := wireStep(run, legacy); got != legacy {
+		t.Errorf("legacy = %v", got)
+	}
+	custom := &pb.RunStep{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_CUSTOM, Text: "x"}
+	if got := wireStep(run, custom); got != custom {
+		t.Errorf("custom = %v", got)
 	}
 }

@@ -165,7 +165,8 @@ The review asked for the first two to be settled first, because they decide how 
 Settled in the spec:
 
 - **Text from outside the spec is cut before the notices are added.** In a `v` outcome message it's cut to 120 columns,
-  and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. (FR-533, FR-518, SC-004)
+  and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. FR-520's lookup error is cut
+  to 78, in the middle, since later reviews. (FR-533, FR-518, SC-004)
 - **A `v` failure on the terminal screen is held, not lost.** One that arrives while a terminal is open or opening is
   shown in full when the terminal closes, in place of `detached from …`. Pressing `v` again is no longer the way to get
   it back, because that repeats the launch. Other messages aren't held. The next review added refusals. (FR-533, SC-008)
@@ -246,6 +247,47 @@ The review offered two options for this, and the first was taken. It changes no 
   accepted, because recovery is one key press and the report names the editor, so it's less likely to be read as the
   reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
   arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
+
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1616`, resolved in pr-response run `run-c275c8f2-1618`)
+
+Found while re-reviewing the plan, and changed here because it changes what the spec says:
+
+- **FR-520's lookup error is cut in the middle.** These errors put the path first and the reason last, so at 78 columns
+  an end cut can remove `permission denied` or the name of the bad field. It keeps the first 38 and last 39 columns, so
+  the 78-column limit and the 4-line fit still hold. A daemon error is still cut at its end. (FR-533, SC-004)
+
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1611`, resolved in pr-response run `run-c275c8f2-1613`)
+
+Found while re-reviewing the plan, and changed here because they change what the spec says:
+
+- **An older error isn't joined to a held failure.** `t` can open a Replace dialog with no attach, so an old
+  `disconnected` or `terminal: …` message can still be showing. It has nothing to do with a failure held behind that
+  dialog, so the failure replaces it. A daemon drop while the dialog is open still joins. (FR-533, SC-008)
+- **FR-520's lookup error is cut to 78 columns, not 120.** With the unknown-editor notice, a longer error can reach
+  5 lines, depending on where its spaces fall, and the end of the notice is then lost on the sandbox list. At 78,
+  `(<err>)` fits on one line, so the message stays at 4. The next review moved the cut to the middle. (FR-533, SC-004)
+- **SC-008 names the daemon drop.** Its sentence about what shows in one message now covers it, matching FR-533.
+  (SC-008)
+
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1605`, resolved in pr-response run `run-c275c8f2-1608`)
+
+Found while re-reviewing the plan, and changed here because they change what the spec says:
+
+- **A held failure joins a daemon drop's message.** When a daemon drop closes a Replace dialog, `<name> disconnected —
+  orchestrators closed` is the only message explaining why the screen changed, so a failure held behind the dialog joins
+  it instead of replacing it. (FR-533, SC-008)
+- **SC-002 and SC-005 use FR-517's meaning of an override.** The remote path limit needs the variable set to something
+  other than its default, so those two now say so. (FR-517, SC-002, SC-005)
+
+### PR review 2026-11-03 (plan review run `run-c275c8f2-1599`, resolved in pr-response run `run-c275c8f2-1602`)
+
+Found while reviewing the plan, and changed here because they change what the spec says:
+
+- **A variable set to its default isn't an override.** Sourcing `.env.example` as it stands exports every variable at its
+  default. The command is the same either way, so the remote path limit stays off, and SC-002 holds for a developer who
+  did that. (FR-517, SC-002)
+- **A `v` completion clears `m.err`.** It no longer goes through `statusMsg`, which clears it today, so the plan has to
+  do it, and the note saying an `errMsg` stays set now says so. (FR-529, SC-002)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -435,8 +477,9 @@ sandbox. Check that a clear message appears and nothing is started.
   messages aren't held, so they can lose their end or be replaced.
 - **A `v` failure while the attach ends in the Replace dialog.** The developer presses `v`, then `t`, a failure arrives,
   and the attach is refused because of a detached agent. The failure stays held behind the dialog. Declining shows it.
-  Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed
-  (FR-533).
+  Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed.
+  If the daemon behind the screen under the dialog disconnects, the dialog closes unanswered and the status shows
+  `<name> disconnected — orchestrators closed; <failure>` (FR-533).
 - **A failed `t` after a `v` refusal.** A remote sandbox has WebStorm selected. The developer presses `v`, which
   refuses, then `t`, and the attach fails because the daemon can't be reached. The status shows
   `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
@@ -582,7 +625,8 @@ sandbox. Check that a clear message appears and nothing is started.
   contain control characters, including newlines. The SSH target MUST NOT start with `-`, checked on the
   target as given and again after any normalisation (FR-513). For a **remote sandbox with Custom, or with the
   selected editor's override variable set** (FR-502's meaning of set, so an empty or spaces-only value
-  doesn't count), the path comes from the remote daemon and the program may re-parse it (FR-516; a wrapper
+  doesn't count, and neither does a value equal to the editor's default command, which starts the same program), the
+  path comes from the remote daemon and the program may re-parse it (FR-516; a wrapper
   script recommended by FR-502 is that kind of program), so the path MUST also be valid UTF-8 and contain only
   Unicode letters, marks and digits, the ASCII space, and the characters `/ . _ - + = @ , :`. None of those
   letters, marks or digits is shell syntax, so a home such as `/home/josé` works. Anything else is refused,
@@ -772,9 +816,11 @@ sandbox. Check that a clear message appears and nothing is started.
   - An executable MUST be cut to at most 60 columns in the middle, keeping its first 20 and last 39 columns (one fewer
     if a wide character falls on the cut), so its name stays readable:
     `/Users/developer/Lib…port/JetBrains/Toolbox/scripts/webstorm`.
-  - In a `v` outcome message, text from outside this spec (a daemon error, or FR-520's lookup error) MUST be cut to 120
-    columns with `…`, and FR-518's reason to 40, before the rest of the message is added. So the text after it,
-    FR-529's notices and where to fix it, is never what's lost.
+  - In a `v` outcome message, text from outside this spec MUST be cut with `…` before the rest of the message is added:
+    a daemon error to 120 columns and FR-520's lookup error to 78. FR-518's reason MUST be cut to 40 the same way. So the text after it,
+    FR-529's notices and where to fix it, is never what's lost. FR-520's lookup error MUST be cut in the middle, keeping its first 38 and
+    last 39 columns (one fewer if a wide character falls on the cut), because it names the path first and the reason last; one that
+    already fits MUST NOT be changed.
   - A message MUST be cut with `…` at 6 lines, or sooner if that's what's left after the header, the help footer and
     the screen's smallest usable body, and never below 1 line.
   - Every value MUST be sanitised before it's cut, and the status MUST be sanitised before it's wrapped, so these limits
@@ -798,14 +844,16 @@ sandbox. Check that a clear message appears and nothing is started.
     failure or refusal, meaning any `v` outcome message that isn't a completion, including FR-523's report and FR-517's
     path refusals. One that arrives while an in-place terminal is open or opening, or while a Replace dialog for an
     in-place attach is open, MUST be held. The hold ends when the terminal closes, or when its attach ends without
-    opening and no attach can follow. So a Replace dialog keeps the hold until it's declined, and accepting it starts an
-    attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
+    opening and no attach can follow. So a Replace dialog keeps the hold until it's declined or dropped because its daemon
+    disconnected, and accepting it starts an attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
     the held message MUST replace whatever the status line shows on the screen the developer lands on, such as
     `detached from <name>`, and MUST show in the error style (FR-529). The exception is an attach or terminal error,
     meaning `terminal: <reason>`, `an external terminal is already attached to <name>` or
-    `terminal for <name> not opened — you moved on; press t again`. The status MUST then show both in one message, with
+    `terminal for <name> not opened — you moved on; press t again`, and a daemon drop's
+    `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
-    message MUST show in the error style. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
+    message MUST show in the error style. An error or daemon-drop message that was already showing when that attach
+    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
     that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
     same way if it arrived in the last 3 seconds. An older one isn't held. A message that's been released MUST NOT be
     held again, even within its 3 seconds, so the next attach replaces it like any other message.
@@ -849,7 +897,7 @@ sandbox. Check that a clear message appears and nothing is started.
   checks (FR-517, FR-526), the error texts and refusals in FR-518 and FR-520, the failure report in FR-523,
   FR-529's notices when the settings file names an unknown editor or can't be parsed, and long status messages
   wrapping or being cut (FR-533). FR-517's remote path limit can apply only when the selected editor's override
-  variable is set, and that includes an existing `SWITCHBOARD_CODE_BIN` with VS Code selected.
+  variable is set to something other than its default, and that includes an existing `SWITCHBOARD_CODE_BIN` with VS Code selected.
 - **SC-003**: For every editor in the catalogue, the command and arguments started for a local sandbox,
   and for a remote sandbox where supported, match the editor's documented form. This is checked by an
   automated test for each editor.
@@ -871,7 +919,7 @@ sandbox. Check that a clear message appears and nothing is started.
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
   positional `sh -c` form in FR-521. For a command with a marker inside a script it re-parses, the TUI can't
-  give this guarantee. On a remote sandbox with Custom, or with the selected editor's override variable set, a
+  give this guarantee. On a remote sandbox with Custom, or with the selected editor's override variable set to something other than its default, a
   path outside FR-517's limit is refused before anything starts, and the note beside the input and the README
   warn about the rest.
 - **SC-006**: After a settings file becomes unparseable, no action in the TUI changes its contents. The saved
@@ -887,10 +935,11 @@ sandbox. Check that a clear message appears and nothing is started.
   includes a first attach superseded by a second, and an attach that ends in the Replace dialog, both declined and
   accepted. Tests also check that a `v` refused at the key press and followed by `t` is shown the same way, including
   when `t` opens the Replace dialog and it's accepted more than 3 seconds later, and that a message over 3 seconds old
-  isn't held. When a `v` is refused and the `t` that follows fails to attach, tests check that the status shows both in
+  isn't held. When a `v` is refused and the `t` that follows fails to attach, or a daemon drop closes the Replace dialog, tests check that the status shows both in
   one message, with the error first and in the error style, and that a second `t` within 3 seconds doesn't hold the
   refusal again, so a second failure shows only its own error. The same checks cover an accepted Replace whose attach
-  fails. Tests also check that both show when a terminal session dies or the developer moves on during the attach, and
+  fails. An old error or `disconnected` message still showing when `t` opens the Replace dialog isn't joined to a failure
+  held behind it. Tests also check that both show when a terminal session dies or the developer moves on during the attach, and
   that `detached from <name>` is replaced. A joined message too long for the sandbox list at 80×24
   with the update banner is cut with `…`, with the header and the whole error on screen, and the status keeps all of it
   (FR-533). A `v` failure or refusal shows in the error style when it arrives and when it's released, and the next plain
@@ -975,7 +1024,7 @@ These follow from the requirements above and from how the code works today. They
     Text with 10 tabs cut by `ansi.Truncate` first came to 156 columns in the review's test and 130 in another, against
     120 with `sanitizeLine`. The middle cut has no helper, and slicing raw text can split an escape sequence. Start from
     `sanitizeLine(text, 0)`, then join `ansi.Truncate(s, 20, "")`, `…` and `ansi.TruncateLeft(s, width-39, "")`. That
-    came to 61 columns when a wide character fell on the cut, so test this and drop a column when it does. `footer`
+    came to 61 columns when a wide character fell on the cut, so test this and drop a column when it does. FR-520's lookup error uses the same cut with a head of 38. `footer`
     keeps calling `sanitizeLine` at render, and the wrap has to come after it, because FR-529 asks for sanitising only
     for text from the settings file, and other callers set `m.status` with raw text.
   - **Room at 80 columns (measured on today's code):** the sandbox list's help footer is 5 lines, and its bubbles
@@ -1005,7 +1054,8 @@ These follow from the requirements above and from how the code works today. They
     the status is non-empty and equals it. The style then ends when the message does. A release sets both the status and
     this field, doesn't touch `m.err`, and clears the arrival time, so a later `t` finds nothing recent and can't hold
     the message again. A zero time counts as not recent. Use `nowFunc` (`unsaved.go:16`) so tests can step past the 3
-    seconds. An `errMsg` can still leave `m.err` set and turn later messages red, as it can today.
+    seconds. An `errMsg` can still leave `m.err` set and turn later messages red, as it can today, but a `v` completion
+    must clear it as `statusMsg` does today, or a success after an `errMsg` would show in red.
   - **A message already showing:** the refused case returns before the daemon call, so it's on the screen when `t` arrives,
     and `attachTerminal` replaces it. So `attachTerminal` and `confirmReplaceOrphan` (not for `T`) both check for a
     recent one, and copy it into the held field if the status still equals it. It stays on the status line behind the
@@ -1027,7 +1077,7 @@ These follow from the requirements above and from how the code works today. They
   - **Joining an error:** the wrapper can't tell an attach or terminal error from `detached from <name>` or a background
     message by its text. So the assignments that set one (`terminal.go:150`, `:190` and `:199`, which `SendData`'s
     failure at `:306` also reaches) also copy it into a field, such as `m.termFailStatus`, and `attachTerminal` clears
-    that field. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
+    that field. So does `confirmReplaceOrphan` (not for `T`), because `t` can open that dialog with no attach. `closeOrchAdminOnDrop`'s `disconnected` message (`hosts.go:489`) is copied the same way. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
     (`broadcaster.go:156`) and `t` attaches in-TUI, but it's treated the same in case that changes. At a release, if the
     status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text.
     Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer` shows all of it

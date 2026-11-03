@@ -26,6 +26,7 @@ type Store interface {
 	// SWI-18 (research R7): the record and its runs in one transaction.
 	UpdateOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, runs registry.RunTx) error) (*pb.Orchestrator, error)
 	ViewOrchestratorRuns(id string, fn func(rec *pb.Orchestrator, queued []*pb.Run) error) error
+	ViewOrchestratorAllRuns(id string, fn func(rec *pb.Orchestrator, runs []*pb.Run) error) error
 }
 
 // RunTx is the registry's in-transaction run bucket.
