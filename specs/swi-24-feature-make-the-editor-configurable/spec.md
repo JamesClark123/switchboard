@@ -237,6 +237,16 @@ The review asked for this to be settled before planning, because it changes what
   list, so the end of the held message can be cut with `…`. The error comes first, so it's never what's lost, and the
   status keeps the whole message. (FR-533, SC-004, SC-008)
 
+### PR review 2026-11-03 (re-review run `run-c275c8f2-1575`, resolved in pr-response run `run-c275c8f2-1578`)
+
+The review offered two options for this, and the first was taken. It changes no FR or SC:
+
+- **A `v` outcome arriving after the error isn't joined.** The join runs only when a hold ends, so a `v` failure or
+  refusal that arrives once an attach or terminal error is showing replaces the error, as FR-523 already says. That's
+  accepted, because recovery is one key press and the report names the editor, so it's less likely to be read as the
+  reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
+  arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -432,7 +442,9 @@ sandbox. Check that a clear message appears and nothing is started.
   `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
   Replace whose attach fails, an open terminal whose session dies, and an attach the developer moved on from all show
   the same way. If the developer presses `t` again straight away, the refusal isn't held again, so a second failure
-  shows only its own error (FR-533).
+  shows only its own error (FR-533). A `v` failure or refusal that arrives once one of these errors is already showing
+  isn't joined, because nothing is held by then, so it replaces the error (FR-523). That's accepted, because pressing
+  `t` again shows the error if the attach still fails, and a `v` message under 3 seconds old is held, so both show.
 - **A screen with less room.** A view that can't shrink, such as Daemons with many rows, can leave fewer lines than a
   message needs, even at 80×24. For example, the developer presses `v` and moves to Daemons, and a late report arrives
   with 7 daemons listed. The message is cut with `…` to fit, and the whole of it shows on a screen with room, unless
