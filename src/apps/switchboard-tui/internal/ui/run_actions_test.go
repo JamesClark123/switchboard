@@ -62,6 +62,10 @@ func TestRunRowsShowTheStep(t *testing.T) {
 	restart.StepSentBeforeRestart = true
 	unconfirmed := halted(seqRun("run-unc", pb.RunState_RUN_STATE_RUNNING, 2, 0), "")
 	unconfirmed.StepUnconfirmed = true
+	otherPrompt := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "typed, but another prompt was submitted; it may have run")
+	otherPrompt.StepUnconfirmed = true
+	unconfirmedSent := seqRun("run-uns", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
+	unconfirmedSent.StepNote = "another prompt was submitted"
 	waiting := seqRun("run-wait", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_PENDING)
 	waiting.StepNote = "waiting: input box not empty"
 	clearHalt := halted(closedHold("run-clr", pb.WorkerHold_WORKER_HOLD_CLEANING_UP), "picker opened")
@@ -73,10 +77,12 @@ func TestRunRowsShowTheStep(t *testing.T) {
 		closedHold("run-dev", pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER):                          "needing the developer on worker-w-run",
 		closedHold("run-frg", pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING):                      "needs input (freeing) on worker-w-run",
 		halted(seqRun("run-bog", pb.RunState_RUN_STATE_RUNNING, 0, 0), "Model 'bogus' not found"): "setting up 1/3 not accepted: Model 'bogus' not found",
-		restart:     "setting up 3/3 not accepted (sent before a restart)",
-		unconfirmed: "setting up 3/3 not accepted (may have run)",
-		waiting:     "setting up 2/3 waiting: input box not empty",
-		clearHalt:   "Clear not accepted: picker opened",
+		restart:         "setting up 3/3 not accepted (sent before a restart)",
+		unconfirmed:     "setting up 3/3 not accepted (may have run)",
+		otherPrompt:     "setting up 3/3 not accepted (may have run): typed, but another prompt was submitted; it may have run",
+		unconfirmedSent: "setting up 2/3 another prompt was submitted",
+		waiting:         "setting up 2/3 waiting: input box not empty",
+		clearHalt:       "Clear not accepted: picker opened",
 	}
 	var runs []*pb.Run
 	for r := range cases {

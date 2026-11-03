@@ -622,7 +622,7 @@ func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Tim
 // comparePrompt compares a submit with the step last typed on a run (SWI-28). own
 // means it is that step, which outweighs any other prompt before it. other means
 // it isn't: the developer's, an escape-hatch result or a background wake-up. A
-// turn start already on record for this send stays, so a later prompt isn't other.
+// turn already on record for this send stays, so a later prompt isn't other.
 // With no way to tell (no prompt or typed text to compare, or no run) both are false.
 func (s *HookServer) comparePrompt(p hookPayload) (own, other bool) {
 	g, ok := s.status.(sandboxGetter)
@@ -641,9 +641,18 @@ func (s *HookServer) comparePrompt(p hookPayload) (own, other bool) {
 		return true, false
 	}
 	sent, a := sb.GetController().GetRun().GetStepSentAt().AsTime(), sb.GetAgent()
-	started := a.GetLastSubmitAt() != nil && a.GetLastSubmitAt().AsTime().After(sent) &&
-		(a.GetLastOtherSubmitAt() == nil || !a.GetLastOtherSubmitAt().AsTime().After(sent))
-	return false, !started
+	return false, !turnSeenSince(a, sent)
+}
+
+// turnSeenSince reports whether the record shows a turn since sent that nothing
+// says is another prompt's: a turn start, or a turn end or a request for input
+// whose start was lost. The hook server doesn't know the step's kind, so a turn end
+// counts for a built-in too, though only another prompt with its own submit lost
+// could leave one there.
+func turnSeenSince(a *pb.AgentSession, sent time.Time) bool {
+	since := func(t *timestamppb.Timestamp) bool { return t != nil && t.AsTime().After(sent) }
+	return !since(a.GetLastOtherSubmitAt()) &&
+		(since(a.GetLastSubmitAt()) || since(a.GetLastTurnEndAt()) || since(a.GetLastNeedsInputAt()))
 }
 
 // turnStartRecorded reports whether the record has a turn start since the last

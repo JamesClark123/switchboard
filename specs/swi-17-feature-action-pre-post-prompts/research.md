@@ -138,7 +138,8 @@ only VT renderer in the repo is the TUI's `internal/termview` (a `charmbracelet/
      alone. `check_only` requests the lazy nudge too, so its read-back gets a fresh screen.
    - **A step that halts after UNCONFIRMED may have run** (a custom local command has no turn hook, and `check_only`
      never finishes a CUSTOM step). It is marked `step_unconfirmed` (Run field 30), shown as `… not accepted (may
-     have run)`, with `S` listed first and `R` asking the same "may already have run" confirm as a step sent before a
+     have run)`, with the reason it wasn't confirmed in its note (`typed, but <reason>; it may have run`, and
+     `another prompt was submitted` whenever one is on record since the send), with `S` listed first and `R` asking the same "may already have run" confirm as a step sent before a
      restart (contracts/jobs-ui.md).
    - **A screen is enabled lazily.** Broadcasters persist across detach, so a sandbox whose terminal was opened before
      it became a worker already has one without a screen. When a sandbox becomes controlled (attach) or first gets a
@@ -480,8 +481,8 @@ it; rule 3 (screen read-back) does not.
    IDLE, and otherwise awaited. Once `last_other_submit_at > step_sent_at` none of this counts, for any kind of step
    and also after a halt: a prompt other than the step's was submitted (the developer's, an escape-hatch result or a
    background wake-up), and a tool call or turn end doesn't say whose turn it is. The daemon doesn't write that field
-   once the step's turn start is on record for this send, so a later prompt can't erase it, and the step's own
-   matching submit clears it (SWI-28).
+   once a turn is on record for this send (a turn start, or a turn end or a request for input with the start lost),
+   so a later prompt can't erase it, and the step's own matching submit clears it (SWI-28).
 3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`
    after `step_sent_at` finishes it.

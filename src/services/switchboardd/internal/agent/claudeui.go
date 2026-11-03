@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/unicode/norm"
+
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 )
 
@@ -52,6 +54,10 @@ var (
 	numberedOption = regexp.MustCompile(`^\s+❯\s*\d+\.`)
 	// pastePlaceholder is how the box shows a multi-line paste.
 	pastePlaceholder = regexp.MustCompile(`^\[Pasted text #\d+[^\]]*\]$`)
+	// terminalEscape is what the agent removes from a paste as one escape, as
+	// observed (2.1.317): a CSI sequence, a string sequence (OSC, DCS and the like)
+	// up to its terminator, or ESC with its intermediates and final character.
+	terminalEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]*(?:\x07|\x1b\\)?|[ -/]*[0-~])`)
 )
 
 // InputBox reads the input box: every row between the last two horizontal rules,
@@ -158,12 +164,31 @@ func StepInBox(text, stepText string) bool {
 	return box != "" && strings.HasPrefix(squash(stepText), box)
 }
 
-// StepPrompt reports whether a UserPromptSubmit's prompt is a step's text. Compared
-// without whitespace and by containment, because the agent doesn't report a paste
-// as typed: as observed (2.1.316), a long paste comes wrapped in a
-// <pasted_content> tag, with its tabs turned to spaces.
+// StepPrompt reports whether a UserPromptSubmit's prompt is a step's text. The
+// agent doesn't report a paste as typed: as observed (2.1.316, 2.1.317), a long
+// paste comes wrapped in a <pasted_content> tag with its tabs turned to spaces, a
+// literal tag in the text gets a backslash, terminal escapes, zero-width and other
+// control characters are removed, and a short paste's accents are composed. So both
+// sides lose their terminal escapes and are composed, and the rest compares by
+// containment on letters and digits only. A step with neither compares without
+// whitespace instead, since every prompt would contain nothing.
 func StepPrompt(prompt, stepText string) bool {
-	return strings.Contains(squash(prompt), squash(stepText))
+	step := lettersAndDigits(stepText)
+	if step == "" {
+		return strings.Contains(squash(prompt), squash(stepText))
+	}
+	return strings.Contains(lettersAndDigits(prompt), step)
+}
+
+// lettersAndDigits keeps only the letters and digits outside terminal escapes,
+// composed (NFC).
+func lettersAndDigits(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return r
+		}
+		return -1
+	}, norm.NFC.String(terminalEscape.ReplaceAllString(s, "")))
 }
 
 // squash removes every whitespace rune (including the no-break space).

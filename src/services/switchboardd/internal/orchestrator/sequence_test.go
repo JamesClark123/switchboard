@@ -555,6 +555,18 @@ func stepWithEvidence(t *testing.T, rt *runtime) {
 	rt.stepOnce("wa")
 }
 
+// otherPromptSubmitted records a prompt that isn't the step's, after the step's
+// send, and waits for the orchestrator to have seen it.
+func otherPromptSubmitted(t *testing.T, w *fakeWorker, rt *runtime, id string) {
+	t.Helper()
+	waitFor(t, func() bool { return w.get(id).GetController().GetRun().GetStepSentAt() != nil })
+	emit(w, id, func(sb *pb.Sandbox) {
+		at := sentAfter(sb, time.Second)
+		sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
+	})
+	waitFor(t, func() bool { return rt.sandboxRecord(id).GetAgent().GetLastOtherSubmitAt() != nil })
+}
+
 // SWI-28: a step not yet classified takes no evidence from the developer's prompt
 // either: it halts at sentGrace, may have run.
 func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
@@ -569,18 +581,78 @@ func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
 	})
 	run := callSeq(t, env, o, "1")
 	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
-	emit(w, "wa", func(sb *pb.Sandbox) {
-		at := sentAfter(sb, time.Second)
-		sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
-	})
+	otherPromptSubmitted(t, w, rt, "wa")
 	waitSentSeen(t, rt, run.GetId())
 	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENT {
 		t.Errorf("after the developer's prompt = %+v", r)
 	}
 	env.clock.Advance(sentGrace)
-	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() {
+	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() || r.GetStepNote() != typedButNote(otherPromptNote) {
 		t.Errorf("halted = %+v", r)
 	}
+}
+
+// SWI-28: why a step wasn't confirmed reaches the developer: on its row while it
+// waits, and in its halt. Another prompt on record says so whatever the daemon
+// answered, since that answer may predate it.
+func TestUnconfirmedNoteReachesTheHalt(t *testing.T) {
+	longest := typedButNote(otherPromptNote)
+	if n := len([]rune(longest)); n > 60 {
+		t.Errorf("%q is %d columns: the row cuts its note at 60", longest, n)
+	}
+	for _, c := range []struct {
+		name, answered, row, halted string
+		other                       bool
+	}{
+		{name: "no reason", halted: unconfirmedNote},
+		{name: "no turn evidence", answered: "no turn evidence", row: "no turn evidence", halted: "typed, but no turn evidence; it may have run"},
+		{name: "another prompt", answered: otherPromptNote, row: otherPromptNote, halted: longest},
+		{name: "another prompt after the answer", answered: "no turn evidence", row: "no turn evidence", halted: longest, other: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) {
+				d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+					if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+						return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: c.answered}, nil
+					}
+					return nil, nil
+				}
+			})
+			run := callSeq(t, env, o, "1")
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			if r.GetStepNote() != c.row {
+				t.Errorf("row note = %q, want %q", r.GetStepNote(), c.row)
+			}
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			waitSentSeen(t, rt, run.GetId())
+			env.clock.Advance(sentGrace)
+			r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			if !r.GetStepUnconfirmed() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want note %q", r, c.halted)
+			}
+		})
+	}
+	// The reason goes once the turn is seen: the row no longer waits on it.
+	t.Run("the turn is seen", func(t *testing.T) {
+		env, w, o, _, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: otherPromptNote}, nil
+				}
+				return nil, nil
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN); r.GetStepNote() != "" {
+			t.Errorf("note after the turn start = %q", r.GetStepNote())
+		}
+	})
 }
 
 // SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
@@ -939,7 +1011,7 @@ func TestUnconfirmedResolution(t *testing.T) {
 	waitFor(t, func() bool { return env.clock.pending() > 0 })
 	env.clock.Advance(sentGrace)
 	r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
-	if !r.GetStepUnconfirmed() || r.GetStepNote() != unconfirmedNote {
+	if !r.GetStepUnconfirmed() || r.GetStepNote() != "typed, but screen resyncing; it may have run" {
 		t.Errorf("halted unconfirmed = %+v", r)
 	}
 	// Both built-ins were confirmed by check_only (steps 0 and 1 passed).

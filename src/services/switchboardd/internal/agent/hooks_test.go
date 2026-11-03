@@ -237,6 +237,7 @@ func TestHookOtherPrompt(t *testing.T) {
 	}{
 		{"the step", sent, step, step, false},
 		{"the step as reported", sent, step, "\n\n<pasted_content id=\"614b\">\n[frame]\n  do  the  thing\n</pasted_content id=\"614b\">\n", false},
+		{"the step with its text altered", sent, "run \x1b[1;31mTestFoo\x1b[0m\u200b </pasted_content> cafe\u0301", "run TestFoo <\\/pasted_content> caf\u00e9", false},
 		{"the developer's", sent, step, "what is going on?", true},
 		{"no prompt", sent, step, "", false},
 		{"nothing typed", sent, "", "what is going on?", false},
@@ -276,6 +277,8 @@ func TestHookOtherPromptOrder(t *testing.T) {
 		return hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: prompt}
 	}
 	tool := hookPayload{Event: "PreToolUse", SandboxID: "sb"}
+	turnEnd := hookPayload{Event: "Stop", SandboxID: "sb"}
+	question := hookPayload{Event: "Notification", NotificationType: "permission_prompt", SandboxID: "sb"}
 	sent := time.Unix(1, 0)
 	ctrl := &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(sent)}}
 	for _, c := range []struct {
@@ -285,11 +288,15 @@ func TestHookOtherPromptOrder(t *testing.T) {
 	}{
 		{"the step, then another", []hookPayload{submit(step), submit(other), submit(other)}, false},
 		{"a tool call with the submit lost, then another", []hookPayload{tool, submit(other)}, false},
+		{"a turn end with the submit lost, then another", []hookPayload{turnEnd, submit(other)}, false},
+		{"a question with the submit lost, then another", []hookPayload{question, submit(other)}, false},
 		{"can't tell, then another", []hookPayload{submit(""), submit(other)}, false},
 		{"another, then the step", []hookPayload{submit(other), submit(step)}, false},
 		{"another, the step, another", []hookPayload{submit(other), submit(step), submit(other)}, false},
 		{"another", []hookPayload{submit(other)}, true},
 		{"another, then a tool call", []hookPayload{submit(other), tool}, true},
+		{"another, its turn end, another", []hookPayload{submit(other), turnEnd, submit(other)}, true},
+		{"another, its question, another", []hookPayload{submit(other), question, submit(other)}, true},
 		{"another, then can't tell", []hookPayload{submit(other), submit("")}, true},
 		{"another, can't tell, another", []hookPayload{submit(other), submit(""), submit(other)}, true},
 	} {
@@ -310,17 +317,24 @@ func TestHookOtherPromptOrder(t *testing.T) {
 			}
 		})
 	}
-	// A start from before this send is no start of this step's.
-	t.Run("a start before the send", func(t *testing.T) {
-		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl, Agent: &pb.AgentSession{LastSubmitAt: timestamppb.New(sent.Add(-time.Second))}})
-		s := mainServer(t, st)
-		s.now = tickingNow()
-		s.SetTypedStep(func(string) string { return step })
-		s.handle(m(submit(other)))
-		if st.agent("sb").GetLastOtherSubmitAt() == nil {
-			t.Error("a start before the send must not hide another prompt")
-		}
-	})
+	// A turn from before this send is no turn of this step's.
+	before := timestamppb.New(sent.Add(-time.Second))
+	for name, a := range map[string]*pb.AgentSession{
+		"a start before the send":    {LastSubmitAt: before},
+		"a turn end before the send": {LastTurnEndAt: before},
+		"a question before the send": {LastNeedsInputAt: before},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl, Agent: a})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			s.handle(m(submit(other)))
+			if st.agent("sb").GetLastOtherSubmitAt() == nil {
+				t.Error("a turn before the send must not hide another prompt")
+			}
+		})
+	}
 }
 
 func TestHookEvidencePerEvent(t *testing.T) {

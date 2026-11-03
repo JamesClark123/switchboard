@@ -41,6 +41,7 @@ const (
 	clearStoppedNote = "clear retries stopped"
 	restartingNote   = "restarting setup with a fresh agent"
 	unconfirmedNote  = "typed, but not confirmed; it may have run"
+	otherPromptNote  = "another prompt was submitted"
 	noEvidenceNote   = "typed, but no report says it was accepted"
 	resumedNote      = "resumed: its turn was seen after the halt"
 	unsupportedNote  = "the worker's daemon does not support pre/post prompts"
@@ -962,11 +963,12 @@ func typedLocked(l *pb.Run, res stepResult, resp *pb.DeliverWorkerStepResponse, 
 		l.StepKindSeen = pb.StepObserved_STEP_OBSERVED_AGENT_LOCAL
 		return advanceLocked(l)
 	case pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED:
-		// Typed, not classified (a stale or redrawn screen, or an action prompt
-		// with no sign of its turn). Hook evidence or a read-back resolves it
-		// (resolveSent).
+		// Typed, not classified (a stale or redrawn screen, another prompt, or an
+		// action prompt with no sign of its turn). Hook evidence or a read-back
+		// resolves it (resolveSent). The note keeps why, for its row and its halt.
 		l.StepStatus = pb.StepStatus_STEP_STATUS_SENT
 		l.StepUnconfirmed = true
+		l.StepNote = resp.GetNote()
 	default:
 		note := resp.GetNote()
 		if note == "" {
@@ -1193,8 +1195,8 @@ func (rt *runtime) resolveSending(run *pb.Run) bool {
 // isn't a built-in a turn end (its start report lost; finishTurn then finishes
 // it). A built-in starts no turn: it reads back instead. Once a prompt other than
 // the step's is on record since the send, none of it counts: tool calls and turn
-// ends don't say whose turn they are. The daemon doesn't record one after this
-// step's turn start, and clears it when the step's own submit follows.
+// ends don't say whose turn they are. The daemon doesn't record one after a turn
+// of this send, and clears it when the step's own submit follows.
 func turnEvidence(run *pb.Run, sb *pb.Sandbox) pb.StepObserved {
 	sent, a := run.GetStepSentAt(), sb.GetAgent()
 	switch {
@@ -1231,6 +1233,7 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 	if kind := turnEvidence(run, sb); kind != pb.StepObserved_STEP_OBSERVED_UNKNOWN {
 		live, ok := rt.stepTx(run, func(l *pb.Run) bool {
 			l.StepStatus, l.StepKindSeen = pb.StepStatus_STEP_STATUS_TURN, kind
+			l.StepNote = ""
 			l.StepUnconfirmed = false
 			return true
 		})
@@ -1276,6 +1279,10 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		rt.wakeAfter(run, sentGrace-waited)
 		return false
 	}
+	if after(sb.GetAgent().GetLastOtherSubmitAt(), run.GetStepSentAt()) {
+		// The daemon's answer may predate it, or be lost.
+		return rt.haltSent(run, typedButNote(otherPromptNote))
+	}
 	return rt.haltSent(run, "")
 }
 
@@ -1314,6 +1321,9 @@ func (rt *runtime) haltSent(run *pb.Run, note string) bool {
 			note = noEvidenceNote
 			if l.GetStepUnconfirmed() {
 				note = unconfirmedNote
+				if why := l.GetStepNote(); why != "" {
+					note = typedButNote(why)
+				}
 			}
 		}
 		l.StepSentBeforeRestart = !l.GetStepUnconfirmed()
@@ -1324,6 +1334,12 @@ func (rt *runtime) haltSent(run *pb.Run, note string) bool {
 		rt.applyFx(live, fx)
 	}
 	return true
+}
+
+// typedButNote is the note of a may-have-run halt whose cause is known. It fits
+// the row's 60 columns with the longest cause, otherPromptNote.
+func typedButNote(why string) string {
+	return "typed, but " + why + "; it may have run"
 }
 
 // finishStep finishes the current step and advances.

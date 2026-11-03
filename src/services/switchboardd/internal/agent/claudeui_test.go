@@ -389,6 +389,53 @@ func TestModalOpenIgnoresAnAssistantMessageAboveTheBox(t *testing.T) {
 	}
 }
 
+// SWI-28: what Claude Code 2.1.317 reported for bracketed pastes it was typed
+// (captured through a UserPromptSubmit hook), and prompts that aren't the step.
+func TestStepPrompt(t *testing.T) {
+	for _, c := range []struct {
+		name, step, prompt string
+		want               bool
+	}{
+		{"as typed", "/model opus", "/model opus", true},
+		{"csi colours", "\x1b[1;31mTestFoo\x1b[0m bar", "TestFoo bar", true},
+		{"csi 256 colours", "a \x1b[38;5;196mred\x1b[0m z", "a red z", true},
+		{"csi private mode", "a \x1b[?25lhidden\x1b[?25h z", "a hidden z", true},
+		{"csi erase and move", "a \x1b[2Kline\x1b[1A z", "a line z", true},
+		{"osc link, bel", "see \x1b]8;;http://x.test/a1\x07link\x1b]8;;\x07 end", "see link end", true},
+		{"osc link, st", "see \x1b]8;;http://x.test/b2\x1b\\link\x1b]8;;\x1b\\ end", "see link end", true},
+		{"osc title", "a \x1b]0;mytitle\x07body z", "a body z", true},
+		{"esc and a letter", "abc\x1bxyz end", "abcyz end", true},
+		{"esc and a digit", "abc\x1b7xyz\x1b8 end", "abcxyz end", true},
+		{"esc, space and a letter", "abc\x1b xyz end", "abcyz end", true},
+		{"esc charset", "abc\x1b(Bxyz end", "abcxyz end", true},
+		{"dcs", "abc\x1bPpayload9\x1b\\xyz end", "abcxyz end", true},
+		{"esc at the end", "abc xyz\x1b", "abc xyz", true},
+		{"c1 csi", "abc\u009b1mxyz end", "abc1mxyz end", true},
+		{"closing tag", "quote </pasted_content> end", "quote <\\/pasted_content> end", true},
+		{"opening tag", "quote <pasted_content> end", "quote <\\pasted_content> end", true},
+		{"zero-width", "ab\u200bcd\u200ce\u200df\u2060g\ufeffh\u00adi end", "abcdefghi end", true},
+		{"control characters", "ab\x01cd\x08ef\x1fgh\x7fij end", "abcdefghij end", true},
+		{"emoji and no-break space", "warn ⚠️ fam 👨‍👩‍👧 nb\u00a0sp end", "warn ⚠️ fam 👨‍👩‍👧 nb\u00a0sp end", true},
+		{"composed accents", "cafe\u0301 ñandú 日本語 end", "caf\u00e9 ñandú 日本語 end", true},
+		{"composed hangul", "\u1112\u1161\u11ab end", "\ud55c end", true},
+		{"composed marks", "o\u0308 a\u030a e\u0301\u0323 end", "\u00f6 \u00e5 \u1eb9\u0301 end", true},
+		{"a long paste keeps its accents", "cafe\u0301\nrow", "\n\n<pasted_content id=\"205a\">\ncafe\u0301\nrow\n</pasted_content id=\"205a\">\n", true},
+		{"a long paste loses its escapes", "\x1b[32mline 0\x1b[0m\tcol 0\n\x1b[32mline 1\x1b[0m\tcol 1", "\n\n<pasted_content id=\"205a\">\nline 0    col 0\nline 1    col 1\n</pasted_content id=\"205a\">\n", true},
+		{"a long paste quotes a tag", "first </pasted_content> x\nrow 0", "\n\n<pasted_content id=\"205a\">\nfirst <\\/pasted_content> x\nrow 0\n</pasted_content id=\"205a\">\n", true},
+		{"another prompt", "/prepare T-1", "what is going on?", false},
+		{"different letters", "café", "cafe", false},
+		{"different digits", "/prepare T-1", "/prepare T-2", false},
+		{"no letters or digits, the same", "? ?", "??", true},
+		{"no letters or digits, another prompt", "???", "what is going on?", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := StepPrompt(c.prompt, c.step); got != c.want {
+				t.Errorf("StepPrompt(%q, %q) = %v, want %v", c.prompt, c.step, got, c.want)
+			}
+		})
+	}
+}
+
 func TestStepInBox(t *testing.T) {
 	tests := []struct {
 		name string
