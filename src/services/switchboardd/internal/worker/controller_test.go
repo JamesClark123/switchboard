@@ -227,6 +227,25 @@ func TestUpdateWorker(t *testing.T) {
 	if out.GetController().GetRun() != nil {
 		t.Error("set_run without run should clear it")
 	}
+	// SWI-23: the paused display copy is set when present, kept when absent, and
+	// survives a same-orchestrator re-attach.
+	paused := true
+	out, _ = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", Paused: &paused})
+	if !out.GetController().GetPaused() {
+		t.Error("paused should be set")
+	}
+	out, _ = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1"})
+	if !out.GetController().GetPaused() {
+		t.Error("paused should stay when absent")
+	}
+	if out, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")}); err != nil || !out.GetController().GetPaused() {
+		t.Errorf("re-attach = %+v / %v", out.GetController(), err)
+	}
+	paused = false
+	out, _ = e.svc.Update(bg, &pb.UpdateWorkerRequest{SandboxId: sb.GetId(), OrchestratorId: "orch-1", Paused: &paused})
+	if out.GetController().GetPaused() {
+		t.Error("paused should clear")
+	}
 	// clear_needs_input (the developer's mark free on a parked worker) sets a
 	// NEEDS_INPUT agent back to IDLE, leaves any other status alone, and is
 	// refused while a run is on the sandbox.

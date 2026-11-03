@@ -581,6 +581,13 @@ func (f *fakeDaemon) DeleteLane(_ context.Context, id, laneID string, guard *pb.
 	return &pb.LaneChangeImpact{}, nil
 }
 
+func (f *fakeDaemon) SetWorkerPaused(_ context.Context, id, sandboxID string, paused bool) (*pb.WorkerView, error) {
+	if err := f.orchCall("SetWorkerPaused %s %s %v", id, sandboxID, paused); err != nil {
+		return nil, err
+	}
+	return &pb.WorkerView{SandboxId: sandboxID, Paused: paused}, nil
+}
+
 func (f *fakeDaemon) SetWorkerLanes(_ context.Context, req *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
 	if err := f.orchCall("SetWorkerLanes %s %s lanes=%s expected=%s%s", req.GetOrchestratorId(), req.GetSandboxId(),
 		strings.Join(req.GetLaneIds(), ","), strings.Join(req.GetExpectedLaneIds(), ","), guardSuffix(req.GetGuard())); err != nil {

@@ -107,6 +107,12 @@ func (c *Conn) MarkWorkerFree(ctx context.Context, id, sandboxID string, failed 
 	return out, c.orchErr(err)
 }
 
+// SetWorkerPaused pauses or resumes a prompt worker (SWI-23).
+func (c *Conn) SetWorkerPaused(ctx context.Context, id, sandboxID string, paused bool) (*pb.WorkerView, error) {
+	out, err := c.API().SetWorkerPaused(ctx, &pb.SetWorkerPausedRequest{OrchestratorId: id, SandboxId: sandboxID, Paused: paused})
+	return out, c.orchErr(err)
+}
+
 // PutAction saves an action as a lanes-aware client (sets_lanes, SWI-18
 // FR-318a), with guard confirming the open-lane guard's list.
 func (c *Conn) PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error) {

@@ -5,6 +5,7 @@ import (
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // Small helpers shared by the runtime's host-facing paths.
@@ -17,7 +18,7 @@ func statusOf(err error) (error, bool) {
 	return nil, false
 }
 
-// pushWorkerStateTo sends UpdateWorker{name, briefing, lanes} to this
+// pushWorkerStateTo sends UpdateWorker{name, briefing, lanes, paused} to this
 // orchestrator's workers on one host (a reconnect, or a briefing refresh).
 // Each push holds the worker's pushMu and reads the record while holding it,
 // so of racing pushes the last to land carries the latest value (R12).
@@ -32,7 +33,7 @@ func (rt *runtime) pushWorkerStateTo(ctx context.Context, hostID string, api Wor
 	}
 }
 
-// pushWorker pushes one worker's display state: its lanes, and with full also
+// pushWorker pushes one worker's display state: its lanes and paused flag, and with full also
 // its orchestrator name and briefing. It reports whether the push failed.
 func (rt *runtime) pushWorker(ctx context.Context, api WorkerAPI, sandboxID string, full bool) error {
 	l := rt.workerPushLock(sandboxID)
@@ -56,6 +57,7 @@ func (rt *runtime) pushWorker(ctx context.Context, api WorkerAPI, sandboxID stri
 	}
 	if !w.GetReasoning() {
 		req.Lanes = &pb.WorkerLaneDisplay{Names: laneNames(rec, w.GetLaneIds()), Pending: w.GetLanesPending()}
+		req.Paused = proto.Bool(w.GetPaused())
 	} else if !full {
 		return nil
 	}

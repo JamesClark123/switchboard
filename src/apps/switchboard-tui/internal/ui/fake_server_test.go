@@ -205,6 +205,10 @@ func (s *fakeDaemonServer) DeleteLane(ctx context.Context, r *pb.DeleteLaneReque
 	return &pb.DeleteLaneResponse{Applied: applied}, nil
 }
 
+func (s *fakeDaemonServer) SetWorkerPaused(ctx context.Context, r *pb.SetWorkerPausedRequest) (*pb.WorkerView, error) {
+	return s.d.SetWorkerPaused(ctx, r.GetOrchestratorId(), r.GetSandboxId(), r.GetPaused())
+}
+
 func (s *fakeDaemonServer) SetWorkerLanes(ctx context.Context, r *pb.SetWorkerLanesRequest) (*pb.WorkerView, error) {
 	return s.d.SetWorkerLanes(ctx, r)
 }
