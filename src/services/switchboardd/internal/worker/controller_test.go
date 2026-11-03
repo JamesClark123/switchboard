@@ -594,12 +594,15 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 func TestNextRunKeepsARestoredNoteOverAStaleFailure(t *testing.T) {
 	failed := swb.CheckFailedNote("boom")
 	cur := &pb.WorkerRun{Id: "r", StepNote: "waiting: x"}
-	req := &pb.UpdateWorkerRequest{SetRun: true, Run: &pb.WorkerRun{Id: "r", StepNote: failed}}
-	next, err := nextRun(cur, req, 0, pb.AgentCheck_STATE_CLEAR)
+	// nextRun returns the request's own run, so each push is a fresh request.
+	push := func() *pb.UpdateWorkerRequest {
+		return &pb.UpdateWorkerRequest{SetRun: true, Run: &pb.WorkerRun{Id: "r", StepNote: failed}}
+	}
+	next, err := nextRun(cur, push(), 0, pb.AgentCheck_STATE_CLEAR)
 	if err != nil || next.GetStepNote() != "waiting: x" {
 		t.Errorf("stale failure over a restored note = %q, %v", next.GetStepNote(), err)
 	}
-	next, err = nextRun(cur, req, 0, pb.AgentCheck_STATE_CHECK_FAILED)
+	next, err = nextRun(cur, push(), 0, pb.AgentCheck_STATE_CHECK_FAILED)
 	if err != nil || next.GetStepNote() != failed {
 		t.Errorf("while failing = %q, %v", next.GetStepNote(), err)
 	}
