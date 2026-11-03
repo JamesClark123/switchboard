@@ -336,9 +336,14 @@ func replaceBody(names, tooOld []string) []string {
 	return body
 }
 
-// replaceDetachedCmd calls every daemon at once, each on its own timeout (a
-// daemon stops its agents a few at a time, up to ~15 s each), and gathers the
-// outcomes in host order.
+// replaceTimeout is how long a daemon gets to replace n agents: it stops four
+// at a time, each TERM then KILL within about 15 s, plus the usual allowance.
+func replaceTimeout(n int) time.Duration {
+	return 60*time.Second + time.Duration((n+3)/4)*15*time.Second
+}
+
+// replaceDetachedCmd calls every daemon at once, each on a timeout sized to
+// its share, and gathers the outcomes in host order.
 func replaceDetachedCmd(targets []replaceTarget) tea.Cmd {
 	return func() tea.Msg {
 		type reply struct {
@@ -351,7 +356,7 @@ func replaceDetachedCmd(targets []replaceTarget) tea.Cmd {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ctx, cancel := ctxTimeout()
+				ctx, cancel := context.WithTimeout(context.Background(), replaceTimeout(len(t.ids)))
 				defer cancel()
 				out, err := t.d.ReplaceDetachedAgents(ctx, t.ids)
 				replies[i] = reply{out: out, err: err}

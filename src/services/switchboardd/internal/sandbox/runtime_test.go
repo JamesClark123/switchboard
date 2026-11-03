@@ -318,7 +318,7 @@ func TestHoldRuntimeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no hold: %v", err)
 	}
-	l.beginOp(opStopping)
+	l.holdsOp(l.beginOp(opStopping))
 	if held.Err() == nil {
 		t.Error("the operation didn't cancel the hold")
 	}

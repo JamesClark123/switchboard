@@ -351,6 +351,9 @@ func (o *orphans) noteOverlay(id string, s *pb.Sandbox, want *pb.AgentCheck) {
 		ov := st.overlay
 		if ov == nil || ov.runID != run.GetId() {
 			ov = &noteOverlay{runID: run.GetId(), saved: run.GetStepNote()}
+			if swb.IsCheckFailedNote(ov.saved) {
+				ov.saved = "" // a stale overlay (before a daemon restart) is not a note to bring back
+			}
 			st.overlay = ov
 		} else if cur := run.GetStepNote(); cur != ov.shown && !swb.IsCheckFailedNote(cur) {
 			ov.saved = cur
@@ -360,6 +363,12 @@ func (o *orphans) noteOverlay(id string, s *pb.Sandbox, want *pb.AgentCheck) {
 		return
 	}
 	if st == nil || st.overlay == nil {
+		// No overlay owns a check-failed note still on the run (the daemon
+		// restarted with it, or a push raced the restore): the check says
+		// otherwise, so it goes.
+		if run != nil && swb.IsCheckFailedNote(run.GetStepNote()) {
+			run.StepNote = ""
+		}
 		return
 	}
 	ov := st.overlay

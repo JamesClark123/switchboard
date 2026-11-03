@@ -67,21 +67,30 @@ type sandboxLocks struct {
 	opsWaiting int
 
 	holderMu sync.Mutex
-	ops      []string
+	ops      []*opRecord
 	gateOp   string
 }
 
+// opRecord is one lifecycle operation on the lock: waiting for it, or holding
+// it (holds). The RWMutex grants waiters in no particular order, so the holder
+// is marked once its Lock returns rather than inferred from arrival.
+type opRecord struct {
+	op    string
+	holds bool
+}
+
 // beginOp cancels the MCP calls in flight and refuses new ones, ahead of an
-// operation's rw.Lock, and records the operation's name among the lock's
-// holders; endOp undoes the refusal once that Lock has returned.
-func (l *sandboxLocks) beginOp(op string) {
-	l.addOp(op)
+// operation's rw.Lock, and records the operation as waiting for the lock;
+// endOp undoes the refusal once that Lock has returned.
+func (l *sandboxLocks) beginOp(op string) *opRecord {
+	r := l.addOp(op, false)
 	l.holdsMu.Lock()
 	defer l.holdsMu.Unlock()
 	l.opsWaiting++
 	for _, cancel := range l.holds {
 		cancel()
 	}
+	return r
 }
 
 func (l *sandboxLocks) endOp() {
@@ -90,20 +99,29 @@ func (l *sandboxLocks) endOp() {
 	l.opsWaiting--
 }
 
-func (l *sandboxLocks) addOp(op string) {
+// addOp records an operation waiting for (or, with holds, holding) the lock.
+func (l *sandboxLocks) addOp(op string, holds bool) *opRecord {
+	r := &opRecord{op: op, holds: holds}
 	l.holderMu.Lock()
-	l.ops = append(l.ops, op)
+	l.ops = append(l.ops, r)
+	l.holderMu.Unlock()
+	return r
+}
+
+// holdsOp marks r as the operation holding the lock (its Lock returned).
+func (l *sandboxLocks) holdsOp(r *opRecord) {
+	l.holderMu.Lock()
+	r.holds = true
 	l.holderMu.Unlock()
 }
 
-// removeOp forgets one record of op: the operation released the lock. A
-// waiter's record stays, so a refusal keeps naming the operation that holds
-// or is next for the lock.
-func (l *sandboxLocks) removeOp(op string) {
+// removeOp forgets r: the operation released the lock. The waiters' records
+// stay, so a refusal keeps naming the operation that holds or waits.
+func (l *sandboxLocks) removeOp(r *opRecord) {
 	l.holderMu.Lock()
 	defer l.holderMu.Unlock()
 	for i, o := range l.ops {
-		if o == op {
+		if o == r {
 			l.ops = append(l.ops[:i], l.ops[i+1:]...)
 			return
 		}
@@ -116,16 +134,22 @@ func (l *sandboxLocks) setGateOp(op string) {
 	l.holderMu.Unlock()
 }
 
-// busy is the refusal of a try-lock of rw: the holder's operation, or the
+// busy is the refusal of a try-lock of rw: the operation holding it, else the
+// first waiting for it (the try-lock is refused while one waits), or the
 // generic text if it released between the try and this read (still a
 // RuntimeBusyError, so both sentinels match).
 func (l *sandboxLocks) busy() error {
 	l.holderMu.Lock()
 	defer l.holderMu.Unlock()
 	if len(l.ops) == 0 {
-		return &RuntimeBusyError{Op: "sandbox is busy"} // released between the try and this read
+		return &RuntimeBusyError{Op: "sandbox is busy"}
 	}
-	return &RuntimeBusyError{Op: "sandbox is " + l.ops[0]}
+	for _, r := range l.ops {
+		if r.holds {
+			return &RuntimeBusyError{Op: "sandbox is " + r.op}
+		}
+	}
+	return &RuntimeBusyError{Op: "sandbox is " + l.ops[0].op}
 }
 
 // gateBusy is the refusal of a try-lock of the orphan gate.
@@ -187,10 +211,10 @@ func (m *Manager) TryLockRuntime(id, op string) (unlock func(), ok bool) {
 	if !l.rw.TryLock() {
 		return nil, false
 	}
-	l.addOp(op)
+	r := l.addOp(op, true)
 	return func() {
 		l.rw.Unlock()
-		l.removeOp(op)
+		l.removeOp(r)
 	}, true
 }
 
@@ -290,15 +314,16 @@ func (m *Manager) orphanGate(id, op string) (unlock func(), err error) {
 // when that state is published (emit).
 func (m *Manager) runtimeOp(id, op string) func() {
 	l := m.runtime.of(id)
-	l.beginOp(op)
+	r := l.beginOp(op)
 	l.rw.Lock()
+	l.holdsOp(r)
 	l.endOp()
 	return func() {
 		// The operation may have started or stopped the container: a listing
 		// taken before now must not answer the outcome rule's probe.
 		m.lists.invalidate()
 		l.rw.Unlock()
-		l.removeOp(op)
+		l.removeOp(r)
 		sb, err := m.store.Get(id)
 		if err == nil && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && m.orphans.pending(id) {
 			m.orphans.markUnknown(id)

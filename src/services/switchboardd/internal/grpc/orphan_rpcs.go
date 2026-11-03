@@ -46,6 +46,10 @@ func (s *Server) ReplaceDetachedAgent(ctx context.Context, req *pb.ReplaceDetach
 		}
 	}
 	out := make([]*pb.ReplaceDetachedAgentResponse_Outcome, len(todo))
+	// Each reap is the developer's stop of an agent, TERM then KILL, bounded by
+	// its own timeout (ReapOrphan): a client that gives up mid-batch must not cut
+	// one short, nor fail the ones still queued (as SaveMcpServer does).
+	rctx := context.WithoutCancel(ctx)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, replaceConcurrency)
 	for i, id := range todo {
@@ -54,7 +58,7 @@ func (s *Server) ReplaceDetachedAgent(ctx context.Context, req *pb.ReplaceDetach
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			out[i] = s.replaceDetached(ctx, id)
+			out[i] = s.replaceDetached(rctx, id)
 		}()
 	}
 	wg.Wait()
@@ -103,22 +107,19 @@ func (s *Server) replaceDetached(ctx context.Context, id string) *pb.ReplaceDeta
 	return o
 }
 
-// startAgent starts a sandbox's agent as AttachAgent does after its Replace:
-// through the worker side when there is one (worker.Service.StartAgent, which
-// leaves a sandbox mid bring-up to that bring-up, so a worker's fresh agent
-// always has its gateway tools), else the terminal registry's broadcaster
-// spawns the session (and keeps draining its output with no client attached);
-// without either the agent registry spawns it directly.
+// startAgent starts a sandbox's agent through the worker side
+// (worker.Service.StartAgent: the terminal registry's broadcaster spawns the
+// session and drains its output with no client attached, and a sandbox mid
+// bring-up is left to that bring-up, so a worker's fresh agent has its gateway
+// tools). A server without a worker side (tests) spawns through the agent
+// registry alone.
 func (s *Server) startAgent(id string) error {
 	switch {
 	case s.worker != nil:
 		return s.worker.StartAgent(id)
-	case s.terms != nil:
-		_, err := s.terms.Broadcaster(id)
-		return err
 	case s.agents != nil:
 		_, err := s.agents.Session(id, s.agentSpecFor(id))
 		return err
 	}
-	return nil
+	return errors.New("no agent registry")
 }

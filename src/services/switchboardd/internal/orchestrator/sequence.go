@@ -261,6 +261,10 @@ func agentCheck(sb *pb.Sandbox) pb.AgentCheck_State {
 	return sb.GetAgent().GetAgentCheck().GetState()
 }
 
+// checkFailing reports a sandbox whose check keeps failing: its daemon owns
+// the run's note meanwhile (SWI-25 A3).
+func checkFailing(sb *pb.Sandbox) bool { return agentCheck(sb) == pb.AgentCheck_STATE_CHECK_FAILED }
+
 // The restart-halt notes (SWI-25 A6): orphanNote, the agent's last state, time
 // and process count from the sandbox's check (swb.DetachedDetail), then what
 // R or t does. restartHalt and the TUI prefix-match on orphanNote.
@@ -354,11 +358,12 @@ func (rt *runtime) syncWorkerRun(runID string) {
 	if err != nil || live.GetSandboxId() == "" {
 		return
 	}
-	cur := rt.sandboxRecord(live.GetSandboxId()).GetController().GetRun()
+	sb := rt.sandboxRecord(live.GetSandboxId())
+	cur := sb.GetController().GetRun()
 	if cur.GetId() != live.GetId() {
 		return
 	}
-	if want := workerRunFor(live, cur); !proto.Equal(want, cur) {
+	if want := workerRunFor(live, cur, checkFailing(sb)); !proto.Equal(want, cur) {
 		rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), want, live.GetId())
 	}
 }
@@ -605,7 +610,7 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 	}
 	if wr.GetId() == run.GetId() && run.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING {
 		// A halt, hold or note push lost on a down link (T022 halted repair).
-		if want := workerRunFor(run, wr); !proto.Equal(want, wr) {
+		if want := workerRunFor(run, wr, checkFailing(sb)); !proto.Equal(want, wr) {
 			rt.syncWorkerRun(run.GetId())
 		}
 	}
@@ -635,14 +640,16 @@ func (rt *runtime) mirrorCheckNote(run *pb.Run, wr *pb.WorkerRun) bool {
 		return false
 	}
 	note := wr.GetStepNote()
-	_, ok := rt.stepTx(run, func(l *pb.Run) bool {
+	changed := false
+	rt.stepTx(run, func(l *pb.Run) bool {
 		if l.GetStepNote() == note {
 			return false
 		}
 		l.StepNote = note
+		changed = true
 		return true
 	})
-	return ok
+	return changed
 }
 
 // orphanHalt halts a run in setup whose agent a daemon restart detached

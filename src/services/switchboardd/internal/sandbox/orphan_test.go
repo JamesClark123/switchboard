@@ -1354,13 +1354,33 @@ func TestCheckFailedNotifiesAndOverlaysTheNote(t *testing.T) {
 		t.Errorf("notifications %v", e.notes.msgs)
 	}
 
+	// A stale check-failed note nobody overlaid (the daemon restarted with it)
+	// goes at the next write whose check isn't CHECK_FAILED; and when the check
+	// fails again it is not what comes back afterwards.
+	e.put(t, "z", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r3", StepNote: swb.CheckFailedNote("old")})
+	e.tokens.issue("z", 5)
+	e.m.MarkAgentUnknown("z")
+	waitUntil(t, func() bool { return e.get(t, "z").GetController().GetRun().GetStepNote() == "" })
+	e.put(t, "y", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r4", StepNote: swb.CheckFailedNote("old")})
+	e.tokens.issue("y", 6)
+	e.m.lists.invalidate()
+	e.m.AgentClientExited("y", 6)
+	e.waitState(t, "y", pb.AgentCheck_STATE_CHECK_FAILED)
+	e.run.setOut("y", goneOut)
+	e.m.RecheckOrphan("y")
+	e.waitState(t, "y", pb.AgentCheck_STATE_CLEAR)
+	if note := e.get(t, "y").GetController().GetRun().GetStepNote(); note != "" {
+		t.Errorf("a stale failure came back: %q", note)
+	}
+	waitUntil(t, func() bool { return e.notes.n() == 4 }) // y's own CHECK_FAILED notice
+
 	// A sandbox without a run: the notification, no note.
 	e.put(t, "p", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
 	e.tokens.issue("p", 4)
 	e.m.AgentClientExited("p", 4)
 	e.waitState(t, "p", pb.AgentCheck_STATE_CHECK_FAILED)
-	waitUntil(t, func() bool { return e.notes.n() == 4 })
-	if e.notes.n() != 4 || strings.Contains(e.notes.msgs[3], "(run ") {
+	waitUntil(t, func() bool { return e.notes.n() == 5 })
+	if e.notes.n() != 5 || strings.Contains(e.notes.msgs[4], "(run ") {
 		t.Errorf("notifications %v", e.notes.msgs)
 	}
 }

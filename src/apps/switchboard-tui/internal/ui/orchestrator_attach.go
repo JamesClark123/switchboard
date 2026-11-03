@@ -92,6 +92,20 @@ func (m Model) entryForDaemonHost(hostID string) (string, bool) {
 	return "", false
 }
 
+// entryForDaemonHostOrActive is entryForDaemonHost, falling back to the active
+// host entry when hostID is the active daemon's: entryForDaemonHost skips a
+// host without a connection object, which is how a manager can hold the
+// adopted active host (connOf).
+func (m Model) entryForDaemonHostOrActive(hostID string) (string, bool) {
+	if entry, ok := m.entryForDaemonHost(hostID); ok {
+		return entry, true
+	}
+	if m.daemon.HostID() == hostID {
+		return m.activeHost, true
+	}
+	return "", false
+}
+
 func (m Model) attachPickHelp() helpBindings {
 	if m.attach.lanes != nil {
 		return helpBindings{hkey("space", "toggle"), hkey("enter", "attach"), hkey("esc", "cancel")}

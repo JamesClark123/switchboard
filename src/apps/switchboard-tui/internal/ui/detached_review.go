@@ -80,10 +80,7 @@ func (m Model) reviewDetached(n *pb.NotificationEvent) (tea.Model, tea.Cmd) {
 // notice names the orchestrator's daemon by host id; the detail needs the TUI
 // host entry that is connected to it.
 func (m Model) openDetachedWorkers(o detachedOrch) (tea.Model, tea.Cmd) {
-	entry, ok := m.entryForDaemonHost(o.hostID)
-	if !ok && m.daemon.HostID() == o.hostID {
-		entry, ok = m.activeHost, true // the adopted active host has no connection object (runSandbox does the same)
-	}
+	entry, ok := m.entryForDaemonHostOrActive(o.hostID)
 	if !ok {
 		m.status = "orchestrator " + sanitizeLine(o.name, 0) + "'s daemon is not connected"
 		m.screen = screenNotifications

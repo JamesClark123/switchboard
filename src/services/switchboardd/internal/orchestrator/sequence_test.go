@@ -1171,18 +1171,18 @@ func TestWorkerRunForKeepsHoldAndSteps(t *testing.T) {
 		Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 3}
 	run := &pb.Run{Id: "r", Action: "a", State: pb.RunState_RUN_STATE_COMPLETED, Steps: []*pb.RunStep{{}}, Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP,
 		StepStatus: pb.StepStatus_STEP_STATUS_HALTED, StepNote: "picker opened"}
-	got := workerRunFor(run, live)
+	got := workerRunFor(run, live, false)
 	if got.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || !got.GetHalted() || got.GetStepIndex() != 4 ||
 		got.GetStepRole() != pb.StepRole_STEP_ROLE_CLEANUP || got.GetHoldGen() != 3 || got.GetStepNote() != "picker opened" {
 		t.Errorf("workerRunFor = %+v", got)
 	}
 	// A retry pending keeps the record halted, so the worker accepts it.
 	run.StepStatus, run.StepSentAt = pb.StepStatus_STEP_STATUS_PENDING, sent
-	if !workerRunFor(run, live).GetHalted() {
+	if !workerRunFor(run, live, false).GetHalted() {
 		t.Error("a pending retry stays halted on the worker")
 	}
 	run.StepSentAt = nil
-	if workerRunFor(run, live).GetHalted() {
+	if workerRunFor(run, live, false).GetHalted() {
 		t.Error("a new step is not halted")
 	}
 }
@@ -2163,12 +2163,17 @@ func TestCheckFailedNoteMirrored(t *testing.T) {
 		sb.Controller.Run.StepNote = ""
 	})
 	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == "" })
-	// A live check-failed note is kept by workerRunFor; any other note is the run's.
+	// A live check-failed note is kept by workerRunFor while the check fails;
+	// once it doesn't, a stale one is pushed over like any other note.
 	live := &pb.WorkerRun{Id: "x", StepNote: failed}
-	if got := workerRunFor(&pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}, live).GetStepNote(); got != failed {
+	seq := &pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}
+	if got := workerRunFor(seq, live, true).GetStepNote(); got != failed {
 		t.Errorf("workerRunFor over an overlay = %q", got)
 	}
-	if got := workerRunFor(&pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}, &pb.WorkerRun{Id: "x"}).GetStepNote(); got != "waiting: y" {
+	if got := workerRunFor(seq, live, false).GetStepNote(); got != "waiting: y" {
+		t.Errorf("workerRunFor over a stale overlay = %q", got)
+	}
+	if got := workerRunFor(seq, &pb.WorkerRun{Id: "x"}, true).GetStepNote(); got != "waiting: y" {
 		t.Errorf("workerRunFor = %q", got)
 	}
 }

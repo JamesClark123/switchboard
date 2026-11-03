@@ -282,7 +282,7 @@ func (rt *runtime) deliver(run *pb.Run, w *pb.Worker) deliverResult {
 			if rev := resp.GetRevision(); rev == 0 || rev > sb.GetRevision() {
 				// Copy on write: the event reader may still hold the cached one.
 				sb = proto.Clone(sb).(*pb.Sandbox)
-				sb.Controller.Run = workerRunFor(run, sb.GetController().GetRun())
+				sb.Controller.Run = workerRunFor(run, sb.GetController().GetRun(), checkFailing(sb))
 				sb.Revision = max(sb.GetRevision(), rev)
 				rt.sbs[w.GetSandboxId()] = sb
 			}
