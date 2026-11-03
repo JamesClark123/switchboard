@@ -247,6 +247,16 @@ The review offered two options for this, and the first was taken. It changes no 
   reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
   arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
 
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1605`, resolved in pr-response run `run-c275c8f2-1608`)
+
+Found while re-reviewing the plan, and changed here because they change what the spec says:
+
+- **A held failure joins a daemon drop's message.** When a daemon drop closes a Replace dialog, `<name> disconnected —
+  orchestrators closed` is the only message explaining why the screen changed, so a failure held behind the dialog joins
+  it instead of replacing it. (FR-533, SC-008)
+- **SC-002 and SC-005 use FR-517's meaning of an override.** The remote path limit needs the variable set to something
+  other than its default, so those two now say so. (FR-517, SC-002, SC-005)
+
 ### PR review 2026-11-03 (plan review run `run-c275c8f2-1599`, resolved in pr-response run `run-c275c8f2-1602`)
 
 Found while reviewing the plan, and changed here because they change what the spec says:
@@ -445,8 +455,9 @@ sandbox. Check that a clear message appears and nothing is started.
   messages aren't held, so they can lose their end or be replaced.
 - **A `v` failure while the attach ends in the Replace dialog.** The developer presses `v`, then `t`, a failure arrives,
   and the attach is refused because of a detached agent. The failure stays held behind the dialog. Declining shows it.
-  Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed
-  (FR-533).
+  Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed.
+  If the daemon behind the screen under the dialog disconnects, the dialog closes unanswered and the status shows
+  `<name> disconnected — orchestrators closed; <failure>` (FR-533).
 - **A failed `t` after a `v` refusal.** A remote sandbox has WebStorm selected. The developer presses `v`, which
   refuses, then `t`, and the attach fails because the daemon can't be reached. The status shows
   `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
@@ -809,12 +820,13 @@ sandbox. Check that a clear message appears and nothing is started.
     failure or refusal, meaning any `v` outcome message that isn't a completion, including FR-523's report and FR-517's
     path refusals. One that arrives while an in-place terminal is open or opening, or while a Replace dialog for an
     in-place attach is open, MUST be held. The hold ends when the terminal closes, or when its attach ends without
-    opening and no attach can follow. So a Replace dialog keeps the hold until it's declined, and accepting it starts an
-    attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
+    opening and no attach can follow. So a Replace dialog keeps the hold until it's declined or dropped because its daemon
+    disconnected, and accepting it starts an attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
     the held message MUST replace whatever the status line shows on the screen the developer lands on, such as
     `detached from <name>`, and MUST show in the error style (FR-529). The exception is an attach or terminal error,
     meaning `terminal: <reason>`, `an external terminal is already attached to <name>` or
-    `terminal for <name> not opened — you moved on; press t again`. The status MUST then show both in one message, with
+    `terminal for <name> not opened — you moved on; press t again`, and a daemon drop's
+    `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
     message MUST show in the error style. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
     that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
@@ -860,7 +872,7 @@ sandbox. Check that a clear message appears and nothing is started.
   checks (FR-517, FR-526), the error texts and refusals in FR-518 and FR-520, the failure report in FR-523,
   FR-529's notices when the settings file names an unknown editor or can't be parsed, and long status messages
   wrapping or being cut (FR-533). FR-517's remote path limit can apply only when the selected editor's override
-  variable is set, and that includes an existing `SWITCHBOARD_CODE_BIN` with VS Code selected.
+  variable is set to something other than its default, and that includes an existing `SWITCHBOARD_CODE_BIN` with VS Code selected.
 - **SC-003**: For every editor in the catalogue, the command and arguments started for a local sandbox,
   and for a remote sandbox where supported, match the editor's documented form. This is checked by an
   automated test for each editor.
@@ -882,7 +894,7 @@ sandbox. Check that a clear message appears and nothing is started.
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
   positional `sh -c` form in FR-521. For a command with a marker inside a script it re-parses, the TUI can't
-  give this guarantee. On a remote sandbox with Custom, or with the selected editor's override variable set, a
+  give this guarantee. On a remote sandbox with Custom, or with the selected editor's override variable set to something other than its default, a
   path outside FR-517's limit is refused before anything starts, and the note beside the input and the README
   warn about the rest.
 - **SC-006**: After a settings file becomes unparseable, no action in the TUI changes its contents. The saved
@@ -1039,7 +1051,7 @@ These follow from the requirements above and from how the code works today. They
   - **Joining an error:** the wrapper can't tell an attach or terminal error from `detached from <name>` or a background
     message by its text. So the assignments that set one (`terminal.go:150`, `:190` and `:199`, which `SendData`'s
     failure at `:306` also reaches) also copy it into a field, such as `m.termFailStatus`, and `attachTerminal` clears
-    that field. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
+    that field. `closeOrchAdminOnDrop`'s `disconnected` message (`hosts.go:489`) is copied the same way. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
     (`broadcaster.go:156`) and `t` attaches in-TUI, but it's treated the same in case that changes. At a release, if the
     status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text.
     Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer` shows all of it

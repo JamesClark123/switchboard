@@ -146,7 +146,7 @@ through `cfg.CodeBin`; T026 switches it).
 
 - [ ] T013 `UI/status.go` (new): constants `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols =
   120`, `osReasonCols = 40`, `valueCols = 60`, `vHoldRecent = 3 * time.Second`; `statusLines(text string,
-  width, limit int) []string` (`sanitizeTerminalText`, newlines to spaces, `ansi.Wrap(s, width, "")` — not
+  width, limit int) []string` (`sanitizeLine(s, 0)`, which sanitises and turns newlines into spaces, then `ansi.Wrap(s, width, "")` — not
   `Wordwrap`, which leaves a token longer than the width unbroken — cut to `limit` with the last line
   `ansi.Truncate(line, width-1, "") + "…"`, because `Truncate` adds its tail only to text that's too long and a
   wrapped line usually isn't; never below 1 line); `cutMiddle(s string, cols
@@ -171,21 +171,28 @@ through `cfg.CodeBin`; T026 switches it).
   resizable surface, the fixed lines + 3 for a windowed view (the settings input: fixed lines + 1 note line; the
   lanes list: `lanesFixedLines` + its 8 reserved lines + 6, because it windows two-line entries), `0` for a static
   view, constant 2 on the terminal screen). `statusLineCount` returns 1 **before** it computes a limit when the
-  status is empty or fits on one line (`ansi.StringWidth(sanitizeTerminalText(status)) <= bodyWidth`), so the common
-  case never renders the help. `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor 3) and must never
+  status is empty or fits on one line, so the common case never renders the help. That check is one helper that
+  `statusLineCount` and `chrome` both call: `m.statusFitsOneLine()` = `ansi.StringWidth(sanitizeLine(m.status, 0)) <=
+  bodyWidth`, the same text `statusLines` wraps, because a newline has no width until it becomes a space.
+  `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor 3) and must never
   call a view function.
-  `footer(help string, limit int)` renders `statusLines`, red when `m.err != nil`, the status starts with `error`, or
-  `m.status == m.vFail.text`. `chrome` renders the help **once** from the `hb` it was given and takes the line count
-  from that; only when the status doesn't fit on one line does it call `statusLimitFor(helpLines)` (which
+  `footer(help string, limit int)` renders `statusLines`, red when `m.err != nil` or the status starts with `error`
+  (T016 adds the `v` failure style). `chrome` renders the help **once** from the `hb` it was given and takes the line count
+  from that; only when `!m.statusFitsOneLine()` does it call `statusLimitFor(helpLines)` (which
   `statusLimit` wraps) and measure the room left by the rendered body (`height - 2 - lipgloss.Height(body) - 1 -
   helpLines`, at least 1), passing `min(limit, room)`, so a static view cuts the message to fit. `termRows()` becomes
   `m.height - 8` (floor 3), independent of the status.
   Depends on T013. Tests in `UI/status_test.go`: at 80×24 a 4-line status on the
   list keeps the header on screen; Daemons with 8 rows cuts to 1 line with the header on screen and the list
   shows the whole message afterwards; the terminal screen cuts at 2 lines and `termRows` equals the value with
-  no status; a 1-line status gives today's `bodyHeight`; Jobs during a 4-line status keeps its header and its
-  windowed rows at their minimum, and with `could not read` and `connecting` lines showing the limit shrinks by
-  those lines; every screen's `activeHelp()` matches what its render passes to `chrome` (table over the screens,
+  no status; a 1-line status gives today's `bodyHeight`; a status of 40 `a`s, a newline, 39 `b`s, a newline and `c` at width 80
+  (80 columns as `sanitizeTerminalText` leaves it, 82 once its newlines are spaces) has `statusLineCount` 2 and shows
+  whole with no `…`. Jobs at **80×14** with a two-line help (assert `helpLineCount` first, because the numbers depend
+  on it) and more than 3 rows: `m.statusLimit()` is 4, and a 4-line status keeps the header with the window at its
+  minimum 3 rows; with `could not read` and `connecting` lines showing, `m.statusLimit()` is 2. These can't run at
+  80×24, where the limit stays at the 6-line cap either way and a 4-line status leaves the window 12 rows. They assert
+  on `m.statusLimit()` directly, because `chrome`'s `min(limit, room)` can hide a wrong limit in the rendered output.
+  Every screen's `activeHelp()` matches what its render passes to `chrome` (table over the screens,
   including the confirm, an overlay and the enlarge hint). Cost: with an empty or one-line status `bodyHeight` renders
   the help zero times and `chrome` once (counted through a test hook); `BenchmarkViewList` at 80×24 with 8 sandboxes
   (empty and one-line status) keeps the frame cost visible (research R9).
@@ -201,8 +208,9 @@ through `cfg.CodeBin`; T026 switches it).
   grows, banner arrives via `applyUpdateAvailable`, help footer changes height via `MarkFree`, tabs change,
   returning to the list from Settings during a long message); an unchanged key doesn't call the target (count
   via a test hook); a form shrunk then restored keeps the last field drawn (`Update(nil)` effect).
-- [ ] T016 `UI/status.go` + `UI/terminal.go` + `UI/orphan.go` + `UI/confirm.go` + `UI/app.go`: hold fields
-  `vFail{text; at}`, `vHold{text; seq}`, `termFail` on `Model` (data-model §6), and `confirmState.holdsV bool` with
+- [ ] T016 `UI/status.go` + `UI/terminal.go` + `UI/orphan.go` + `UI/confirm.go` + `UI/hosts.go` + `UI/app.go`: hold fields
+  `vFail{text; at}`, `vHold{text; seq}`, `termFail` on `Model` (data-model §6); `footer` is also red when
+  `m.status != "" && m.status == m.vFail.text`; and `confirmState.holdsV bool` with
   `(m Model) vHoldDialog() bool` = `m.screen == screenConfirm && m.confirm.holdsV`, so the dialog's state is derived and
   no way of closing it can leave it stale (`closeOrchAdminOnDrop` drops a confirm unanswered, running neither
   callback); `attachTerminal` (in-place only, i.e. the
@@ -212,7 +220,8 @@ through `cfg.CodeBin`; T026 switches it).
   `vHold.seq = m.termSeq + 1`, so the hold passes to the attach in the accepting message (it needs no `onCancel`);
   `handleTermOpened`/`handleTermClosed` clear `vHold.seq` only when
   `msg.seq == vHold.seq`; the three error assignments (`not opened — you moved on`, `external terminal already
-  attached`, `terminal: …`) also set `termFail`. `(m *Model) setVFail(text string)` used by T024/T038: it always
+  attached`, `terminal: …`) and `closeOrchAdminOnDrop`'s `<name> disconnected — orchestrators closed` (`hosts.go:489`)
+  also set `termFail`, so a release joins them. `(m *Model) setVFail(text string)` used by T024/T038: it always
   sets `vFail = {text, nowFunc()}` (the error style applies wherever the text is shown, FR-529); when
   `vHold.seq != 0 || m.vHoldDialog() || m.screen == screenTerminal` it also sets `vHold.text` (and `m.status` on the
   terminal screen, where it's drawn cut to 2 lines), else `m.status`.
@@ -224,8 +233,10 @@ through `cfg.CodeBin`; T026 switches it).
   **SC-008** — a failure arriving while the terminal is open is shown in full and red on `ctrl+q`, replacing
   `detached from`; one arriving while opening; a first attach superseded by a second (only the second's message
   clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); a Replace dialog
-  opened from the orchestrator detail and dropped unanswered by `closeOrchAdminOnDrop` (a held failure is released,
-  and a later `v` failure shows at once); a refusal then `t` held; a refusal older than 3 s not held; `terminal: <reason>; <refusal>` joined, red, error first; a second
+  opened from the orchestrator detail and dropped unanswered by `closeOrchAdminOnDrop` (a held failure is released
+  as `<name> disconnected — orchestrators closed; <held>`, red, on the screen the drop lands on, and a later `v` failure
+  shows at once, alone; with nothing held the disconnect message stays as it is today, not red; a failure arriving just
+  after the drop finds nothing held and replaces it, like any failure that follows an error); a refusal then `t` held; a refusal older than 3 s not held; `terminal: <reason>; <refusal>` joined, red, error first; a second
   `t` within 3 s after a release shows only its own error; `moved on` and `external already attached` joined; an
   accepted Replace whose attach fails joined the same way; an open terminal whose session dies (`SendData`
   failure through `handleTermClosed` while showing) joined with the held failure; a released message's next
@@ -337,7 +348,7 @@ one-line statuses).
 ## Phase 4: User Story 2 — Point an editor at a different command (Priority: P2)
 
 **Goal**: the override variables work for every editor, the not-found message names the variable, and the
-remote path limit applies when the selected editor's variable is set.
+remote path limit applies when the selected editor's variable is set to something other than its default.
 
 **Independent Test**: `SWITCHBOARD_WEBSTORM_BIN` = a stand-in script path; select WebStorm; `v` starts that
 executable with the folder.
@@ -464,7 +475,9 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - [ ] T040 [P] `UI/status_test.go`: **SC-004** at `tea.WindowSizeMsg{80, 24}` on the sandbox list with the update
   banner (`applyUpdateAvailable`): for each of — a 120-column daemon error with the unknown-editor notice; a
   daemon error containing 10 tabs; FR-518's longest case (60-column executable, 40-column reason, the variable);
-  FR-520's lookup error; FR-523's report; the list opened after a 3-line status was set on the settings screen;
+  FR-520's lookup error; FR-523's report; the built-in `path-limited` refusal with `SWITCHBOARD_CODE_INSIDERS_BIN`, the
+  rejected character at its longest form (`U+10FFFF`) and the unknown-editor notice; the Custom `path-limited` refusal
+  with the same character and the unreadable notice; `shell-syntax` with the unreadable notice; the list opened after a 3-line status was set on the settings screen;
   a banner arriving during a 4-line message — assert the header line and the whole message (every notice and
   "where to fix it") appear in `m.View()`, no line wider than 80, and the list's `Height()` equals
   `mainListHeight()`. The joined case (SC-008): `terminal: <120-column reason>; <FR-518 at its limits>` on the
@@ -493,7 +506,7 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
   floor (expect `editor` near 100 %, `ui` touched files covered by T019–T041).
 - [ ] T047 [P] `README.md`: the Editor section under *Settings & startup sign-in* per research R15 and FR-524: the
   list and each editor's remote support, the override variables with the re-parsing warning and the remote
-  path limit, the Custom command rules (FR-506, FR-511, FR-516, FR-521, FR-531) with the positional `kitty -e sh
+  path limit (on while the selected editor's variable is set to something other than its default), the Custom command rules (FR-506, FR-511, FR-516, FR-521, FR-531) with the positional `kitty -e sh
   -c 'cd "$1" && nvim .' sh {path}` example and the one-command-for-every-host limitation, plain-text storage and
   `ps` visibility, the settings screen as the recommended way to set a command with quotes with the TOML
   literal forms, and that hand edits take effect at the next start and comments aren't kept.

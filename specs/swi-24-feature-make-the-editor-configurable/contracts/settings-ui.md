@@ -89,6 +89,7 @@ runs off the edge. A rejection shows in the status line only (red), the input st
   the sandbox list with the update banner showing (≤ 4 lines at 80 columns). A joined message (§3) and a view that
   can't shrink are outside this promise and are cut.
 - A status that's empty or fits on one line computes no limit and renders the help once per frame, in `chrome`.
+  "Fits" is measured on the text that gets wrapped, with newlines already turned into spaces.
 - Error style: `m.err != nil`, a status starting with `error`, or `status == vFail.text`. A `v` completion clears
   `m.err`, as `statusMsg` does today, so it's never red.
 
@@ -109,11 +110,14 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
-| attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`) | `termFail = status` |
+| attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`), or a daemon drop closes the orchestrator screens (`<name> disconnected — orchestrators closed`) | `termFail = status` |
 | **release** (wrapper: `vHold.text != ""`, `seq == 0`, `!m.vHoldDialog()`, screen ≠ terminal) | `status = (status != "" && status == termFail ? cut120(status) + "; " : "") + vHold.text`; `vFail = {status, zero}`; `vHold = {}`; red |
 | a `v` failure arrives when an error is already showing and nothing is held | replaces the error (not joined) |
 
-A released message (zero `vFail.at`) is never held again. `detached from <name>` is replaced, not joined.
+A released message (zero `vFail.at`) is never held again. `detached from <name>` is replaced, not joined. A daemon
+drop's `<name> disconnected — orchestrators closed` is joined, because it's the only message explaining why the screen
+changed. That covers a failure held when the drop arrives; one arriving after the drop finds nothing held and replaces
+the message (last row above).
 
 ## 4. Settings notices on `v` (FR-529)
 

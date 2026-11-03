@@ -176,7 +176,7 @@ keyed size check (`status, width, height, banner, surface, tabs, markFree`) in t
 active surface (list / item list / huh form with stored `lastHeight` + `Update(nil)`); a `v` failure or refusal has
 its own style (`vFail{text, at}`), is held (`vHold{text, seq}`) through an in-place attach or its Replace
 dialog (`confirmState.holdsV`, read from the showing confirm so no close path can leave it stale; `onAccept` sets `seq = termSeq+1`), released in the wrapper (order: guard layers, parked override, MCP
-follow-ups, release, size check) joined to a showing terminal error (`termFail`) as `<error>; <held>`, and never
+follow-ups, release, size check) joined to a showing terminal error or daemon-drop message (`termFail`) as `<error>; <held>`, and never
 held again. Windsurf's/Cursor's `--remote` rows are documentation-derived (quickstart Scenario 0). See
 `research.md` (F1–F8, R1–R16), `data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`,
 `settings-ui.md`), `quickstart.md`, `tasks.md` (T001–T049).

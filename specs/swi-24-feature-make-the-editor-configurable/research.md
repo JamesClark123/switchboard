@@ -302,7 +302,7 @@ answer for the rest.
 
 **Decision**: a new `ui/status.go`:
 
-- `statusLines(width, limit) []string`: `sanitizeTerminalText` (newlines to spaces) → `ansi.Wrap(s, width, "")`
+- `statusLines(width, limit) []string`: `sanitizeLine(s, 0)` (sanitised, newlines to spaces) → `ansi.Wrap(s, width, "")`
   → cut to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "") + "…"`: `Truncate` adds its tail
   only to text that's too long, and a line wrapped at a space usually isn't, so passing `…` as the tail would often
   cut the message with no sign of it). `Wrap`, not `Wordwrap`:
@@ -325,7 +325,9 @@ answer for the rest.
   bullet). The terminal screen's limit is the constant 2.
 - `bodyHeight()` becomes `m.height - 6 - (lines - 1)` where `lines` is the wrapped status's line count after the
   limit (at least 1), so a one-line or empty status gives today's value. `statusLineCount` returns 1 before it
-  computes a limit when the status is empty or fits on one line: the limit can't matter there, and working out the
+  computes a limit when the status is empty or fits on one line (`m.statusFitsOneLine()`, shared with `chrome`, measures
+  `sanitizeLine(status, 0)`, the text `statusLines` wraps, because a newline has no width until it becomes a space): the
+  limit can't matter there, and working out the
   help costs ≈ 295 µs and 453 KB at 80×24 with 8 sandboxes (measured in review), against ≈ 332 µs and 704 KB for a
   whole `View` today, so paying it twice more per frame would make the usual frame 2–3× as expensive for no benefit.
   Nothing in this computation renders a
@@ -369,8 +371,9 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),
   and the dialog can sit over the orchestrator detail. A stored flag would stay true and swallow every later failure.
-- `termFail string`: the last attach or terminal error text, set at `terminal.go:150`, `:190`, `:199` (which
-  covers `:306`) and cleared by `attachTerminal`.
+- `termFail string`: the text a release joins instead of replacing. That's the last attach or terminal error, set at
+  `terminal.go:150`, `:190`, `:199` (which covers `:306`), and `closeOrchAdminOnDrop`'s `<name> disconnected —
+  orchestrators closed` (`hosts.go:489`), the only message explaining why the screen changed. `attachTerminal` clears it.
 
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
@@ -449,7 +452,8 @@ stub that exits 3 and checks the FR-523 report. Coverage stays at the 90 % floor
 
 **Decision**: README: the TUI env table gains the nine rows; the `v` key row says "in the selected editor"; a new
 **Editor** subsection under *Settings & startup sign-in* covers the list, the override variables with the
-re-parsing warning and the remote path limit, the Custom command rules with the positional `kitty -e sh -c 'cd "$1"
+re-parsing warning and the remote path limit (on while the selected editor's variable is set to something other than
+its default), the Custom command rules with the positional `kitty -e sh -c 'cd "$1"
 && nvim .' sh {path}` example, the plain-text storage and `ps` visibility, the settings screen as the way to set a
 command with quotes, the TOML literal forms, and that hand edits take effect at the next start and comments
 aren't kept (FR-524). The Prerequisites line about VS Code becomes "an editor from the list".

@@ -153,6 +153,7 @@ src/apps/switchboard-tui/
         ├── terminal.go                # termRows fixed; vHold.seq; termFail; 2-line status
         ├── orphan.go                  # confirmReplaceOrphan: holdsV, onAccept seq
         ├── confirm.go                 # confirmState.holdsV
+        ├── hosts.go                   # closeOrchAdminOnDrop: its disconnected message sets termFail
         ├── jobs.go                    # jobsFixedLines, shared with viewJobs and the status limit
         ├── orchestrator_lanes.go      # lanesFixedLines, shared with lanesView and the status limit
         ├── keys.go                    # listHelp: v label = editor id

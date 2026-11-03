@@ -148,7 +148,7 @@ editor with a 60-column executable, a 40-column reason, `SWITCHBOARD_CODE_INSIDE
 unknown-editor notice: about 310 characters, and a 60-column executable can't break at a space, so it sits on the
 edge. T028 measures it; if it exceeds 4 lines the reminder shortens first (`(or use Custom)`), then the lead
 (`<n>: <exe>: <reason>`). The FR-523 report, `host-lookup`, `path-limited` and `shell-syntax` are near 4 lines
-too, and the same rule applies. The parts named above (cause, where to fix it, the notices) must stay in every
+too, and the same rule applies; T040 measures each of them with its longest notice. The parts named above (cause, where to fix it, the notices) must stay in every
 message.
 
 ## 5. Environment variables (FR-502, FR-503)
