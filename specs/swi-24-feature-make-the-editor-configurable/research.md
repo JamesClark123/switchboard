@@ -350,6 +350,11 @@ answer for the rest.
 - `viewSettings` wraps every row, description and notice with `ansi.Wrap(s, m.width, "")`; the executable gets the
   middle cut (`cutMiddle(s, 60)` = `sanitizeLine(s, 0)` then `Truncate(20) + "…" + TruncateLeft(width-39)`,
   dropping one column when a wide rune lands on the cut, F3); notices put the instruction before the detail.
+- `host-lookup`'s error uses the same cut at 78 (`cutMiddle(s, cols)` keeps `cols - 40` + 39, and text that fits is
+  unchanged). Lookup errors put the path first and the reason last, so an end cut loses the reason: at 78,
+  `open /home/firstname.lastname@corp.example.com/.config/switchboard/hosts.toml…` gives none. The middle cut gives
+  `open /home/firstname.lastname@corp.exa…itchboard/hosts.toml: permission denied`, and 300,000 random errors stayed
+  within 78 columns and 4 lines (probed with the real `sanitizeLine` and `ansi.Wrap`).
 
 **Rationale**: the Notes measured the costs (wrap ≈ 7 µs, target ≈ 300 µs) and ruled out a cache and a line-count
 comparison; a key makes the check run only when an input changed, and the size comparison catches a surface the

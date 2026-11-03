@@ -141,7 +141,7 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | per form     | `lastHeight int`                         | Last `WithHeight` applied (huh has no getter); stored beside each form pointer. |
 
 Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 120`, `hostErrCols = 78`, `osReasonCols = 40`,
-`valueCols = 60` (`cutMiddle` keeps 20 + 39), `vHoldRecent = 3 * time.Second`.
+`valueCols = 60` (`cutMiddle` keeps `cols - 40` + 39: 20 + 39 at 60, 38 + 39 at `hostErrCols`), `vHoldRecent = 3 * time.Second`.
 
 ### Hold state machine
 

@@ -150,12 +150,14 @@ through `cfg.CodeBin`; T026 switches it).
   `Wordwrap`, which leaves a token longer than the width unbroken — cut to `limit` with the last line
   `ansi.Truncate(line, width-1, "") + "…"`, because `Truncate` adds its tail only to text that's too long and a
   wrapped line usually isn't; never below 1 line); `cutMiddle(s string, cols
-  int) string` (`sanitizeLine(s, 0)` then `Truncate(20, "")` + `…` + `TruncateLeft(w-39, "")`, dropping one
-  column when the result exceeds `cols`); `cutEnd(s, cols)` = `sanitizeLine`. Tests in `UI/status_test.go`:
+  int) string` (`sanitizeLine(s, 0)`; text that already fits is returned as it is; otherwise `Truncate(cols-40, "")` + `…` +
+  `TruncateLeft(w-39, "")`, dropping one column from the tail when the result exceeds `cols`, so 60 keeps 20 + 39 and 78 keeps
+  38 + 39); `cutEnd(s, cols)` = `sanitizeLine`. Tests in `UI/status_test.go`:
   wrap at spaces, a 120-column token with no spaces broken so no line exceeds the width, the cut marker on a kept
   line shorter than the width (so it can't pass by luck), a
-  10-tab string cut to 120 **after** sanitising, the spec's 60-column executable example, a wide rune on the
-  cut, an empty status → no lines.
+  10-tab string cut to 120 **after** sanitising, the spec's 60-column executable example, `cutMiddle` at 78 keeping 38 + `…` + 39, text of
+  exactly `cols` and shorter returned unchanged, a wide rune on the
+  cut at both 60 and 78, an empty status → no lines.
 - [ ] T014 `UI/app.go` + `UI/status.go` + `UI/jobs.go` + `UI/orchestrator_lanes.go`: `activeSurface()` enum
   (`surfaceList`, `surfaceItemList{which}`, `surfaceForm{which}`, `surfaceWindowed` (Jobs, the lanes list, the
   settings screen's list and input modes once T020/T034 make them read `bodyHeight`), `surfaceStatic`,
@@ -311,7 +313,8 @@ one-line statuses).
   `launcher == nil` → `editorOutcomeMsg{sandboxID, text: "<Name> opener not configured"}`; build `editor.Request{Editor:
   sessionEditor(), Bins: editorBins, Custom: prefs.EditorCustomCommand, SSHTarget, HostErr, Home:
   os.UserHomeDir()}`; `exe, ref := editor.Precheck(req)`; a refusal → `editorOutcomeMsg{sandboxID, failed: true, text:
-  assemble(ref)}` returned as an immediate command (`host-lookup`'s error cut to `hostErrCols` first). Otherwise the command: `exec.LookPath(exe)` → `not-found`
+  assemble(ref)}` returned as an immediate command (`host-lookup`'s text from `hostLookupText(n, errText string)`, which cuts `errText` with `cutMiddle(errText,
+  hostErrCols)`, because these errors put the path first and the reason last). Otherwise the command: `exec.LookPath(exe)` → `not-found`
   text with the reason cut to 40; `d.VSCodeTarget` → the error cut to 120 then the notices; `editor.Resolve` →
   refusal text; `launcher.Launch(plan.Argv)` → `not-found`/`launch-failed`; success → `opened <id8> in <Name>`
   plus the notices (+ `the path is on the remote host` when `RemoteNoHost`) and `wait`. Message assembly per
@@ -389,7 +392,9 @@ for a failed host lookup.
   "user@box"}`) — Cursor → `[cursor --remote ssh-remote+user@box <path>]`; Zed with `/srv/ws/my proj` → `[zed
   ssh://user@box/srv/ws/my%20proj]`; WebStorm → `no-remote` text, red, the launcher never called, and the
   refusal returned **before** `VSCodeTarget` is called (the fake daemon counts calls); a `hostStore.Get` error
-  → `host-lookup` text for VS Code too (FR-520), and a 120-column error cut to 78 with `…`; a target `-oProxyCommand=x` → `target-dash`; a target
+  → `host-lookup` text for VS Code too (FR-520); `display_name = 5` in `hosts.toml` (a real 111-column error, since
+  `hostStore` is a concrete type and a made-up error can't be injected; the test checks it's over 78 columns, so it can't pass by
+  luck) → the message holds the error cut to 78 with one `…`, its first 38 and its last 39 columns; a target `-oProxyCommand=x` → `target-dash`; a target
   `user@box/evil` with Zed → `zed-target`; a remote path containing `(` with `editorBins["cursor"]` set → `path-limited`
   naming `'('` and telling the developer to unset that variable; the same path with Custom → `path-limited` pointing
   to the settings screen, with no mention of unsetting anything.
@@ -479,7 +484,8 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
   banner (`applyUpdateAvailable`): for each of — a 120-column daemon error with the unknown-editor notice; a
   daemon error containing 10 tabs; FR-518's longest case (60-column executable, 40-column reason, the variable);
   `host-lookup` with a 120-column error with no spaces and the unknown-editor notice; `host-lookup` with a 78-column error
-  with a space after column 40 and the same notice; `host-lookup` with the unreadable notice; the built-in FR-523 report with a 60-column executable,
+  with a space after column 40 and the same notice; `host-lookup` with the unreadable notice (these three build the text with
+  `hostLookupText` and a made-up error, add the notices and deliver it as an `editorOutcomeMsg`, because `hostStore` can't return a made-up error); the built-in FR-523 report with a 60-column executable,
   `SWITCHBOARD_CODE_INSIDERS_BIN` and the unknown-editor notice; the built-in `path-limited` refusal with `SWITCHBOARD_CODE_INSIDERS_BIN`, the
   rejected character at its longest form (`U+10FFFF`) and the unknown-editor notice; the Custom `path-limited` refusal
   with the same character and the unreadable notice; `shell-syntax` with the unreadable notice; the list opened after a 3-line status was set on the settings screen;

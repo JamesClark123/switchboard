@@ -166,7 +166,7 @@ Settled in the spec:
 
 - **Text from outside the spec is cut before the notices are added.** In a `v` outcome message it's cut to 120 columns,
   and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. FR-520's lookup error is cut
-  to 78 since a later review. (FR-533, FR-518, SC-004)
+  to 78, in the middle, since later reviews. (FR-533, FR-518, SC-004)
 - **A `v` failure on the terminal screen is held, not lost.** One that arrives while a terminal is open or opening is
   shown in full when the terminal closes, in place of `detached from …`. Pressing `v` again is no longer the way to get
   it back, because that repeats the launch. Other messages aren't held. The next review added refusals. (FR-533, SC-008)
@@ -248,6 +248,14 @@ The review offered two options for this, and the first was taken. It changes no 
   reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
   arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
 
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1616`, resolved in pr-response run `run-c275c8f2-1618`)
+
+Found while re-reviewing the plan, and changed here because it changes what the spec says:
+
+- **FR-520's lookup error is cut in the middle.** These errors put the path first and the reason last, so at 78 columns
+  an end cut can remove `permission denied` or the name of the bad field. It keeps the first 38 and last 39 columns, so
+  the 78-column limit and the 4-line fit still hold. A daemon error is still cut at its end. (FR-533, SC-004)
+
 ### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1611`, resolved in pr-response run `run-c275c8f2-1613`)
 
 Found while re-reviewing the plan, and changed here because they change what the spec says:
@@ -257,7 +265,7 @@ Found while re-reviewing the plan, and changed here because they change what the
   dialog, so the failure replaces it. A daemon drop while the dialog is open still joins. (FR-533, SC-008)
 - **FR-520's lookup error is cut to 78 columns, not 120.** With the unknown-editor notice, a longer error can reach
   5 lines, depending on where its spaces fall, and the end of the notice is then lost on the sandbox list. At 78,
-  `(<err>)` fits on one line, so the message stays at 4. (FR-533, SC-004)
+  `(<err>)` fits on one line, so the message stays at 4. The next review moved the cut to the middle. (FR-533, SC-004)
 - **SC-008 names the daemon drop.** Its sentence about what shows in one message now covers it, matching FR-533.
   (SC-008)
 
@@ -810,7 +818,9 @@ sandbox. Check that a clear message appears and nothing is started.
     `/Users/developer/Lib…port/JetBrains/Toolbox/scripts/webstorm`.
   - In a `v` outcome message, text from outside this spec MUST be cut with `…` before the rest of the message is added:
     a daemon error to 120 columns and FR-520's lookup error to 78. FR-518's reason MUST be cut to 40 the same way. So the text after it,
-    FR-529's notices and where to fix it, is never what's lost.
+    FR-529's notices and where to fix it, is never what's lost. FR-520's lookup error MUST be cut in the middle, keeping its first 38 and
+    last 39 columns (one fewer if a wide character falls on the cut), because it names the path first and the reason last; one that
+    already fits MUST NOT be changed.
   - A message MUST be cut with `…` at 6 lines, or sooner if that's what's left after the header, the help footer and
     the screen's smallest usable body, and never below 1 line.
   - Every value MUST be sanitised before it's cut, and the status MUST be sanitised before it's wrapped, so these limits
@@ -1014,7 +1024,7 @@ These follow from the requirements above and from how the code works today. They
     Text with 10 tabs cut by `ansi.Truncate` first came to 156 columns in the review's test and 130 in another, against
     120 with `sanitizeLine`. The middle cut has no helper, and slicing raw text can split an escape sequence. Start from
     `sanitizeLine(text, 0)`, then join `ansi.Truncate(s, 20, "")`, `…` and `ansi.TruncateLeft(s, width-39, "")`. That
-    came to 61 columns when a wide character fell on the cut, so test this and drop a column when it does. `footer`
+    came to 61 columns when a wide character fell on the cut, so test this and drop a column when it does. FR-520's lookup error uses the same cut with a head of 38. `footer`
     keeps calling `sanitizeLine` at render, and the wrap has to come after it, because FR-529 asks for sanitising only
     for text from the settings file, and other callers set `m.status` with raw text.
   - **Room at 80 columns (measured on today's code):** the sandbox list's help footer is 5 lines, and its bubbles
