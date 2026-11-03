@@ -482,9 +482,15 @@ func TestOrphansAtStart(t *testing.T) {
 	if g.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED || len(e.tokens.Unretired("gone")) != 0 || !e.wasCleared("gone") {
 		t.Error("a gone agent is EXITED, its token retired, and the worker re-kicked")
 	}
-	// One notification per orphan record, never per re-probe.
+	// One notification per orphan record, never per re-probe; each carries the
+	// agent's last state after the prefix the halt matchers rely on (SWI-25 A6).
 	if e.notes.n() != 2 {
 		t.Errorf("notifications %v", e.notes.msgs)
+	}
+	for _, msg := range e.notes.msgs {
+		if !strings.Contains(msg, detachedPrefix+" (last: ") || !strings.Contains(msg, " — t to Replace or Wait") {
+			t.Errorf("notification %q lacks the agent's last state", msg)
+		}
 	}
 	before := e.run.count("probe")
 	e.m.RecheckOrphan("orphan")

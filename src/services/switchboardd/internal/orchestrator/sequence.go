@@ -34,8 +34,8 @@ import (
 const (
 	waitingPrefix   = "waiting: "
 	orphanNote      = "agent detached by a daemon restart"
-	orphanSetupNote = orphanNote + "; R restarts setup with a fresh agent"
-	orphanCloseNote = orphanNote + "; t → Replace frees the worker"
+	orphanSetupTail = "; R restarts setup with a fresh agent"
+	orphanCloseTail = "; t → Replace frees the worker"
 	droppedPostNote = "custom post-prompts were dropped"
 	restartingNote  = "restarting setup with a fresh agent"
 	unconfirmedNote = "typed while the screen was resyncing; it may have run"
@@ -259,6 +259,17 @@ func duringStep(reason string, r *pb.Run) string {
 // agentCheck is the owning daemon's detached-agent check of a sandbox (R14).
 func agentCheck(sb *pb.Sandbox) pb.AgentCheck_State {
 	return sb.GetAgent().GetAgentCheck().GetState()
+}
+
+// The restart-halt notes (SWI-25 A6): orphanNote, the agent's last state, time
+// and process count from the sandbox's check (swb.DetachedDetail), then what
+// R or t does. restartHalt and the TUI prefix-match on orphanNote.
+func orphanSetupNote(sb *pb.Sandbox) string {
+	return orphanNote + swb.DetachedDetail(sb.GetAgent().GetAgentCheck(), time.Time{}) + orphanSetupTail
+}
+
+func orphanCloseNote(sb *pb.Sandbox) string {
+	return orphanNote + swb.DetachedDetail(sb.GetAgent().GetAgentCheck(), time.Time{}) + orphanCloseTail
 }
 
 // canType reports whether a sandbox's agent can be typed into: running, not
@@ -626,10 +637,10 @@ func (rt *runtime) orphanHalt(run *pb.Run, sb *pb.Sandbox) bool {
 	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
 		sent := l.GetStepSentAt() != nil
 		l.StepStatus = pb.StepStatus_STEP_STATUS_HALTED
-		l.StepNote = orphanSetupNote
+		l.StepNote = orphanSetupNote(sb)
 		l.StepSentBeforeRestart = sent
 		l.StepUnconfirmed = false
-		fx = stepFx{sync: true, halted: "halted at " + stepLabel(l) + ": " + orphanSetupNote}
+		fx = stepFx{sync: true, halted: "halted at " + stepLabel(l) + ": " + l.GetStepNote()}
 		return true
 	})
 	if ok {
@@ -1323,7 +1334,7 @@ func (rt *runtime) failCleanupLocked(l *pb.Run, sb *pb.Sandbox, typed bool) step
 func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
 	note := ""
 	if agentCheck(sb) == pb.AgentCheck_STATE_DETACHED {
-		note = orphanCloseNote
+		note = orphanCloseNote(sb)
 		from := int(l.GetStep())
 		for i, s := range l.GetSteps() {
 			if i >= from && s.GetRole() == pb.StepRole_STEP_ROLE_CLEANUP && s.GetKind() == pb.StepKind_STEP_KIND_CUSTOM {

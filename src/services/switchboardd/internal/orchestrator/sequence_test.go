@@ -1226,7 +1226,7 @@ func TestOrphanActionRunCloses(t *testing.T) {
 	}
 	r := runNow(env, o, run.GetId())
 	if r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER ||
-		r.GetStepNote() != orphanCloseNote+"; "+droppedPostNote {
+		r.GetStepNote() != orphanNote+" (last: working)"+orphanCloseTail+"; "+droppedPostNote {
 		t.Fatalf("orphan close = %+v", r)
 	}
 	waitFor(t, func() bool {
@@ -1289,7 +1289,7 @@ func TestOrphanSetupRestart(t *testing.T) {
 		sb.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_IDLE}
 	})
 	r := waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_HALTED)
-	if r.GetStepNote() != orphanSetupNote || r.GetStepSentBeforeRestart() {
+	if r.GetStepNote() != orphanNote+" (last: idle)"+orphanSetupTail || r.GetStepSentBeforeRestart() {
 		t.Fatalf("restart halt = %+v", r)
 	}
 	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 1, pb.StepResolution_STEP_RESOLUTION_SKIP); err == nil || !strings.Contains(err.Error(), "restart setup with R") {

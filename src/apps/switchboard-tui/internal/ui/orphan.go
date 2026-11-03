@@ -4,8 +4,10 @@ import (
 	"context"
 	"io"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -221,14 +223,16 @@ func attachErrText(err error) string {
 }
 
 // orphanNote is the sandbox row's note for its detached-agent check (empty when
-// clear), and whether it surfaces the row (contracts/jobs-ui.md).
+// clear), and whether it surfaces the row (contracts/jobs-ui.md). A detached
+// agent's note carries its last state, when it was last seen and its process
+// count (SWI-25 A6), after the prefix the restart-halt matchers rely on.
 func orphanNote(sb *pb.Sandbox) (string, bool) {
 	check := sb.GetAgent().GetAgentCheck()
 	switch check.GetState() {
 	case pb.AgentCheck_STATE_UNKNOWN:
 		return checkingRefusal + "…", false
 	case pb.AgentCheck_STATE_DETACHED:
-		return detachedRefusal + " — t to Replace or Wait", true
+		return detachedRefusal + swb.DetachedDetail(check, time.Now()) + " — t to Replace or Wait", true
 	case pb.AgentCheck_STATE_CHECK_FAILED:
 		return "can't check for a detached agent: " + sanitizeLine(check.GetError(), 60), true
 	}

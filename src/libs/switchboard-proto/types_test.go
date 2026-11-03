@@ -2,8 +2,10 @@ package switchboardproto
 
 import (
 	"testing"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestSandboxStateLabel(t *testing.T) {
@@ -144,5 +146,33 @@ func TestSequenceLabels(t *testing.T) {
 				t.Errorf("got %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDetachedDetail(t *testing.T) {
+	seen := time.Date(2026, 10, 28, 10, 42, 0, 0, time.Local)
+	check := &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_WORKING, LastSeenAt: timestamppb.New(seen), Processes: 4}
+	if got := DetachedDetail(check, time.Time{}); got != " (last: working, 10:42, 4 procs)" {
+		t.Errorf("persisted = %q", got)
+	}
+	for d, want := range map[time.Duration]string{30 * time.Second: "just now", 3 * time.Minute: "3m ago", 2 * time.Hour: "2h ago", 30 * time.Hour: "Oct 28 10:42"} {
+		if got := DetachedDetail(check, seen.Add(d)); got != " (last: working, "+want+", 4 procs)" {
+			t.Errorf("%s: %q", d, got)
+		}
+	}
+	one := &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_IDLE, Processes: 1}
+	if got := DetachedDetail(one, time.Time{}); got != " (last: idle, 1 proc)" {
+		t.Errorf("one proc, no time = %q", got)
+	}
+	if got := DetachedDetail(&pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED}, time.Now()); got != " (last: unknown state)" {
+		t.Errorf("bare = %q", got)
+	}
+	if DetachedDetail(&pb.AgentCheck{State: pb.AgentCheck_STATE_CHECK_FAILED, Processes: 2}, time.Time{}) != "" || DetachedDetail(nil, time.Time{}) != "" {
+		t.Error("only a DETACHED check has a detail")
+	}
+	for s, want := range map[pb.AgentStatus]string{pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT: "waiting for input", pb.AgentStatus_AGENT_STATUS_WAITING: "waiting", pb.AgentStatus_AGENT_STATUS_STARTING: "starting", pb.AgentStatus_AGENT_STATUS_EXITED: "unknown state"} {
+		if got := LastStateLabel(s); got != want {
+			t.Errorf("%v = %q", s, got)
+		}
 	}
 }

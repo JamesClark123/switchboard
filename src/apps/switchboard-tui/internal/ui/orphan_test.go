@@ -275,3 +275,22 @@ func TestDetachedAgentFromJobs(t *testing.T) {
 		t.Errorf("screen %v replaced %q", m.screen, d.replacedID)
 	}
 }
+
+// The row note carries the detached agent's last state, time and process
+// count after the prefix the restart-halt matcher relies on (SWI-25 A6).
+func TestOrphanNoteDetail(t *testing.T) {
+	sb := detachedSandbox("p1", pb.AgentStatus_AGENT_STATUS_WORKING, false)
+	sb.Agent.AgentCheck.Processes = 4
+	note, surfaced := orphanNote(sb)
+	if !surfaced || note != detachedRefusal+" (last: working, Oct 28 10:42, 4 procs) — t to Replace or Wait" {
+		t.Errorf("row note = %q (surfaced %v)", note, surfaced)
+	}
+	if !isRestartHalt(&pb.Run{Steps: []*pb.RunStep{{}}, StepStatus: pb.StepStatus_STEP_STATUS_HALTED, StepNote: note}) {
+		t.Error("the prefix matcher must still match a detailed note")
+	}
+	sb.Agent.AgentCheck.LastSeenAt = nil
+	sb.Agent.AgentCheck.Processes = 0
+	if note, _ := orphanNote(sb); note != detachedRefusal+" (last: working) — t to Replace or Wait" {
+		t.Errorf("bare row note = %q", note)
+	}
+}

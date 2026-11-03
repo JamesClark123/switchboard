@@ -216,7 +216,7 @@ func TestHoldsSurfaceOnTheList(t *testing.T) {
 		"⚑ worker · needing the developer — open its terminal and run /clear run-d",
 		"⚑ worker · needs input (freeing) run-f",
 		"⚑ worker · run-h halted: step not accepted",
-		"agent detached by a daemon restart — t to Replace or Wait",
+		"agent detached by a daemon restart (last: idle, Oct 28 10:42) — t to Replace or Wait",
 	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("list missing %q:\n%s", want, v)

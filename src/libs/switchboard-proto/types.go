@@ -8,6 +8,9 @@ package switchboardproto
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -262,4 +265,66 @@ func DecodeOptionValue(s string) (any, error) {
 		return nil, err
 	}
 	return v, nil
+}
+
+// --- SWI-25 A6: detached-agent notes ---
+
+// DetachedDetail is the detail every detached-agent note carries after its
+// fixed prefix (SWI-25 A6): the agent's last known state, when it was last
+// seen, and its live process count when known, e.g. " (last: working, 10:42,
+// 4 procs)". The time is relative to now ("3m ago") for a note rendered live,
+// or the clock time when now is zero for one that is persisted or emitted once
+// (a notification, a run's halt note). Only a DETACHED check has a detail.
+func DetachedDetail(check *pb.AgentCheck, now time.Time) string {
+	if check.GetState() != pb.AgentCheck_STATE_DETACHED {
+		return ""
+	}
+	parts := []string{"last: " + LastStateLabel(check.GetLastStatus())}
+	if ts := check.GetLastSeenAt(); ts != nil {
+		parts = append(parts, seenAt(ts.AsTime(), now))
+	}
+	switch n := check.GetProcesses(); {
+	case n == 1:
+		parts = append(parts, "1 proc")
+	case n > 1:
+		parts = append(parts, fmt.Sprintf("%d procs", n))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// LastStateLabel words an agent's last known status for a detached-agent note
+// ("working", "waiting for input", "idle", "unknown state").
+func LastStateLabel(s pb.AgentStatus) string {
+	switch s {
+	case pb.AgentStatus_AGENT_STATUS_WORKING:
+		return "working"
+	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+		return "waiting for input"
+	case pb.AgentStatus_AGENT_STATUS_IDLE:
+		return "idle"
+	case pb.AgentStatus_AGENT_STATUS_WAITING:
+		return "waiting"
+	case pb.AgentStatus_AGENT_STATUS_STARTING:
+		return "starting"
+	default:
+		return "unknown state"
+	}
+}
+
+// seenAt is when an agent was last seen: the clock time (local) when now is
+// zero, otherwise relative to now within a day and the date beyond it.
+func seenAt(t, now time.Time) string {
+	if now.IsZero() {
+		return t.Local().Format("15:04")
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return t.Local().Format("Jan 2 15:04")
 }

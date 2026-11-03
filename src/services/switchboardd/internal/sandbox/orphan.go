@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"google.golang.org/protobuf/proto"
@@ -61,9 +62,17 @@ const orphanMaxFailures = 3
 // of an ACTION run (research R14): the orchestrator fails the run with it.
 const replacedNote = "agent replaced by the developer after a daemon restart"
 
-// detachedMessage is the AGENT_DETACHED notification and the plain row note
-// (tasks.md Deferred items).
-const detachedMessage = "agent detached by a daemon restart — t to Replace or Wait"
+// detachedPrefix opens every detached-agent note; the orchestrator's halt
+// notes and the TUI's row note prefix-match on it (worker/step.go restartHalt,
+// orchestrator/sequence.go, T/run_steps.go), so only a suffix is ever added.
+const detachedPrefix = "agent detached by a daemon restart"
+
+// detachedNote is the AGENT_DETACHED notification: the prefix, the agent's
+// last state, time and process count (SWI-25 A6, swb.DetachedDetail), and
+// what to do.
+func detachedNote(check *pb.AgentCheck) string {
+	return detachedPrefix + swb.DetachedDetail(check, time.Time{}) + " — t to Replace or Wait"
+}
 
 // ReapMode is how ReapOrphan finishes: a Replace writes EXITED (and fails an
 // ACTION run with replacedNote); a restart (R on a restart halt) writes none,
@@ -647,7 +656,7 @@ func (o *orphans) alive(id string, epoch uint64, res agent.ProbeResult) {
 	}
 	log.Printf("[info] sandbox %s: agent of generation %d detached by a daemon restart (%d processes)", id, gen, len(res.Procs))
 	if d.Notify != nil {
-		msg := detachedMessage
+		msg := detachedNote(o.check(id))
 		if out == nil {
 			out = sb
 		}
