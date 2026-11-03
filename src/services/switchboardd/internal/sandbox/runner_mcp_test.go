@@ -96,9 +96,27 @@ func helperPid(pidFile string) int {
 	return pid
 }
 
+// cancelOnceStarted cancels once the stub has recorded its helper, so the cancel
+// can't land before the helper exists, and sends the time of the cancel.
+func cancelOnceStarted(pidFile string, cancel context.CancelFunc) <-chan time.Time {
+	cancelled := make(chan time.Time, 1)
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for helperPid(pidFile) == 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancelled <- time.Now()
+		cancel()
+	}()
+	return cancelled
+}
+
 // waitHelperGone fails unless the process is gone (or a zombie being reaped).
 func waitHelperGone(t *testing.T, pid int) {
 	t.Helper()
+	if pid == 0 {
+		t.Fatal("no helper pid") // Kill(0, 0) would test this test's own group
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -122,12 +140,11 @@ func TestSbxRunnerMcpCancelKillsItsChild(t *testing.T) {
 			bin, pidFile := holdingSbx(t, "sleep 60", "wait")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			time.AfterFunc(300*time.Millisecond, cancel)
-			start := time.Now()
+			cancelled := cancelOnceStarted(pidFile, cancel)
 			if err := call(&SbxRunner{Bin: bin}, ctx); err == nil {
 				t.Fatal("a cancelled call should fail")
 			}
-			if took := time.Since(start); took >= heldCallWaitDelay {
+			if took := time.Since(<-cancelled); took >= heldCallWaitDelay {
 				t.Errorf("the cancelled call took %v", took)
 			}
 			waitHelperGone(t, helperPid(pidFile))
@@ -137,15 +154,14 @@ func TestSbxRunnerMcpCancelKillsItsChild(t *testing.T) {
 
 // A helper outside the group can't hold a cancelled call past the wait delay.
 func TestSbxRunnerMcpCancelDoesNotWaitOnAnEscapedHelper(t *testing.T) {
-	bin, _ := holdingSbx(t, "setsid sleep 60", "wait")
+	bin, pidFile := holdingSbx(t, "setsid sleep 60", "wait")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	time.AfterFunc(300*time.Millisecond, cancel)
-	start := time.Now()
+	cancelled := cancelOnceStarted(pidFile, cancel)
 	if err := (&SbxRunner{Bin: bin}).LoadMcp(ctx, "sb", "srv", nil); err == nil {
 		t.Fatal("a cancelled call should fail")
 	}
-	if took := time.Since(start); took > heldCallWaitDelay+3*time.Second {
+	if took := time.Since(<-cancelled); took > heldCallWaitDelay+3*time.Second {
 		t.Errorf("the cancelled call took %v", took)
 	}
 }
@@ -165,5 +181,32 @@ func TestSbxRunnerMcpExitBesideAHelper(t *testing.T) {
 	var ee interface{ ExitCode() int }
 	if err := (&SbxRunner{Bin: bin}).LoadMcp(context.Background(), "sb", "srv", nil); !errors.As(err, &ee) || ee.ExitCode() != 3 {
 		t.Errorf("exit 3 = %v", err)
+	}
+}
+
+// SWI-26 (review run-1545): an exit 0 holds if the context ends during the wait on
+// the helper: nothing is left to cancel, and the load has happened.
+func TestSbxRunnerMcpExitThenCancelledSucceeds(t *testing.T) {
+	sbxPid := filepath.Join(t.TempDir(), "sbx.pid")
+	bin, _ := holdingSbx(t, "sleep 30", "echo $$ > "+sbxPid+".tmp\nmv "+sbxPid+".tmp "+sbxPid+"\nexit 0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		defer cancel()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if pid := helperPid(sbxPid); pid > 0 && syscall.Kill(pid, 0) != nil {
+				// Reaped: give Wait a moment to move on to the wait for the pipes.
+				time.Sleep(100 * time.Millisecond)
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if err := (&SbxRunner{Bin: bin}).LoadMcp(ctx, "sb", "srv", nil); err != nil {
+		t.Errorf("load = %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Error("the cancel should have landed during the wait")
 	}
 }

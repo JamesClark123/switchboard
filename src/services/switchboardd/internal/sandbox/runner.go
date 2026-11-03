@@ -118,14 +118,16 @@ const heldCallWaitDelay = 2 * time.Second
 // a lifecycle operation cancels and then waits for: `sbx` gets its own process
 // group, the cancel kills the group, and nothing it left holding the output can
 // keep the call alive past heldCallWaitDelay (SWI-26). An `sbx` that exited 0 has
-// succeeded, whatever it left behind.
+// succeeded, whatever it left behind, even if the context ends during that wait:
+// Cancel returns nil, so a cancel before the exit is reported as the context's
+// error or an ExitError, and ErrWaitDelay only ever means exit 0.
 func (r *SbxRunner) runHeld(ctx context.Context, log func(string), args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
 	setPgid(cmd)
 	cmd.Cancel = func() error { killPgid(cmd); return nil }
 	cmd.WaitDelay = heldCallWaitDelay
 	out, err := cmd.CombinedOutput()
-	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
+	if errors.Is(err, exec.ErrWaitDelay) {
 		err = nil
 	}
 	return r.result(out, err, log, args)

@@ -82,7 +82,9 @@ type Manager struct {
 	goBringUp func(sb *pb.Sandbox)
 	// onLaunched, when set, is called once a controlled sandbox's Launch has
 	// turned it RUNNING, so the worker service can warm-start its agent (SWI-15:
-	// applyController runs before RUNNING, when no agent may start). MAY be nil.
+	// applyController runs before RUNNING, when no agent may start). A launch whose
+	// applyController succeeded gets the call even if a Detach has since cleared
+	// the controller: the worker service may have an owed load to settle. MAY be nil.
 	onLaunched func(sb *pb.Sandbox)
 	// applyController, when set, is called by Launch after create and the MCP
 	// marks and BEFORE the record turns RUNNING (FR-110) with the launching
@@ -427,6 +429,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 	// agent starts — the controller, token, gateway registration + load and the
 	// briefing are applied here, at the same point additive marks were loaded,
 	// still before the record turns RUNNING. Never a failed launch.
+	applied := false
 	if req.Controller != nil && m.applyController != nil {
 		cur := proto.Clone(sb).(*pb.Sandbox)
 		cur.ContainerRef = ref
@@ -436,8 +439,11 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 				onLog("orchestrator: skipped — " + err.Error())
 			}
 			log.Printf("[warn] launch %s: orchestrator attach skipped: %v", id, err)
-		} else if onLog != nil {
-			onLog("orchestrator: attached to " + req.Controller.GetName())
+		} else {
+			applied = true
+			if onLog != nil {
+				onLog("orchestrator: attached to " + req.Controller.GetName())
+			}
 		}
 	}
 
@@ -454,7 +460,7 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest, onProgress func
 		return nil, err
 	}
 	m.emit(out)
-	if m.onLaunched != nil && out.GetController() != nil {
+	if m.onLaunched != nil && (out.GetController() != nil || applied) {
 		m.onLaunched(out)
 	}
 	return out, nil

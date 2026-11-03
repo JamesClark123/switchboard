@@ -175,9 +175,11 @@ var errNotStarted = errors.New("not started")
 // the child gets its own process group, which is killed when the context ends,
 // and the call returns only after the child has exited, so "the process has
 // exited" holds before any re-check. A child that exited 0 has succeeded, even if
-// a helper it left behind holds its output past WaitDelay. The combined output is
-// returned; the error never carries stdin (there is none). A failure to start
-// wraps errNotStarted.
+// a helper it left behind holds its output past WaitDelay and the context ends
+// meanwhile: Cancel returns nil, so a cancel before the exit is reported as the
+// context's error or an ExitError, and ErrWaitDelay only ever means exit 0. The
+// combined output is returned; the error never carries stdin (there is none). A
+// failure to start wraps errNotStarted.
 func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	setPgid(cmd)
@@ -188,7 +190,7 @@ func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("%s %s: %w (%w)", c.Bin, strings.Join(args, " "), err, errNotStarted)
 	}
-	if err := cmd.Wait(); err != nil && (!errors.Is(err, exec.ErrWaitDelay) || ctx.Err() != nil) {
+	if err := cmd.Wait(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return out.String(), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out.Bytes()))
 	}
 	return out.String(), nil

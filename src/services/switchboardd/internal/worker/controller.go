@@ -257,6 +257,7 @@ func (s *Service) Detach(ctx context.Context, sandboxID, orchID string, force bo
 	if cur.GetReasoning() && !force {
 		return nil, fmt.Errorf("%w: reasoning sandbox is not detachable", ErrPrecondition)
 	}
+	s.setLoadOwed(sandboxID, false)
 	s.revokeToken(sandboxID)
 	s.gw.unregister(ctx, sandboxID)
 	if err := StripBriefing(sb.GetWorkspacePath()); err != nil {
@@ -425,7 +426,10 @@ func (s *Service) OnDestroy(sb *pb.Sandbox) {
 // OnLaunched ends a controlled sandbox's launch, once its record is RUNNING
 // (sandbox.Manager's launched hook): the agent's warm start, or the bring-up that
 // loads the gateway first if the launch-attach couldn't (SWI-26). It never waits
-// for the load: a lifecycle operation may hold the sandbox for a while yet.
+// for the load: a lifecycle operation may hold the sandbox for a while yet. A
+// sandbox detached during its launch has no controller here, and this settles
+// what its launch owed: that load can be refused after the Detach, so the Detach
+// alone can't.
 func (s *Service) OnLaunched(sb *pb.Sandbox) {
 	if s.loadOwed(sb.GetId()) {
 		s.GoBringUp(sb)
@@ -453,19 +457,25 @@ func (s *Service) GoBringUp(sb *pb.Sandbox) {
 }
 
 // beginBringUp marks a controlled sandbox with a gateway token as bringing up
-// and returns the rest of its bring-up, or nil when there is none to do. It
-// settles any load a launch owes: the mark takes over that hold, with no gap.
+// and returns the rest of its bring-up, or nil when there is none to do. Any load
+// a launch owes is settled once the load has run, before the mark drops, so the
+// agent's start stays held with no gap. One that gave up on the record (still
+// CREATING, or stopped) leaves it owed: a later bring-up does the load.
 func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
-	defer s.setLoadOwed(sb.GetId(), false)
 	if sb.GetController() == nil {
+		s.setLoadOwed(sb.GetId(), false)
 		return nil
 	}
 	if _, err := s.reg.GetWorkerToken(sb.GetId()); err != nil {
+		s.setLoadOwed(sb.GetId(), false)
 		return nil
 	}
 	s.markBringUp(sb.GetId(), 1)
 	return func() {
 		err := s.loadWhen(sb.GetId())
+		if !errors.Is(err, errNotRunning) {
+			s.setLoadOwed(sb.GetId(), false)
+		}
 		s.markBringUp(sb.GetId(), -1)
 		if errors.Is(err, errNotRunning) {
 			return // no longer running: no agent start

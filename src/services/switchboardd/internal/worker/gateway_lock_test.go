@@ -292,8 +292,7 @@ func TestLaunchAttachBusyLoadRunsAtTheEndOfTheLaunch(t *testing.T) {
 	}
 }
 
-// A launch whose load went through only warm-starts, and the end of a launch that
-// was stopped before it ended starts nothing.
+// A launch whose load went through only warm-starts.
 func TestOnLaunchedWithNoOwedLoad(t *testing.T) {
 	e, _, created := deliverEnv(t, false)
 	sb := e.sandbox(t, "77777777-aaaa", "launched", pb.SandboxState_SANDBOX_STATE_RUNNING)
@@ -308,22 +307,155 @@ func TestOnLaunchedWithNoOwedLoad(t *testing.T) {
 	if e.loads(t) != 1 || *created != 1 {
 		t.Errorf("after the launch: %d loads, %d agents", e.loads(t), *created)
 	}
+}
 
-	e2, _, created2 := deliverEnv(t, false)
-	busy := e2.busyLock()
+// launchAttachBusy runs a launch-attach whose load a lifecycle operation refuses,
+// leaving the load owed and the operation still holding the sandbox.
+func (e *env) launchAttachBusy(t *testing.T, id, name string) (*pb.Sandbox, *atomic.Bool) {
+	t.Helper()
+	busy := e.busyLock()
 	busy.Store(true)
-	sb2 := e2.sandbox(t, "88888888-bbbb", "stopped", pb.SandboxState_SANDBOX_STATE_CREATING)
-	view := proto.Clone(sb2).(*pb.Sandbox)
+	stored := e.sandbox(t, id, name, pb.SandboxState_SANDBOX_STATE_CREATING)
+	view := proto.Clone(stored).(*pb.Sandbox)
 	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
-	if err := e2.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
+	if err := e.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
 		t.Fatal(err)
 	}
-	busy.Store(false)
-	e2.svc.OnLaunched(e2.setState(t, sb2.GetId(), pb.SandboxState_SANDBOX_STATE_STOPPED))
-	e2.waitBroughtUp(t, sb2.GetId())
-	if e2.loads(t) != 0 || *created2 != 0 {
-		t.Errorf("for a stopped sandbox: %d loads, %d agents", e2.loads(t), *created2)
+	if !e.svc.loadOwed(id) {
+		t.Fatal("the refused load should be owed")
 	}
+	return stored, busy
+}
+
+// waitBringUpsEnded waits out the bring-ups in progress, which an owed load may
+// outlive (waitBroughtUp waits for both).
+func (e *env) waitBringUpsEnded(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		e.svc.bringMu.Lock()
+		n := e.svc.bringing[id]
+		e.svc.bringMu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the bring-up never ended")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// SWI-26 (review run-1545): a sandbox stopped while the end of its launch's
+// bring-up waits gets no load and no agent, and the load stays owed. The next
+// bring-up does it, and the agent starts with the orchestrator's tools.
+func TestOwedLoadOutlivesAStopAndRunsAtTheNextBringUp(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	stored, busy := e.launchAttachBusy(t, "88888888-bbbb", "stopped")
+	id := stored.GetId()
+	e.svc.OnLaunched(e.setState(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING))
+	e.setState(t, id, pb.SandboxState_SANDBOX_STATE_STOPPED)
+	busy.Store(false)
+	e.waitBringUpsEnded(t, id)
+	if e.loads(t) != 0 || *created != 0 {
+		t.Errorf("for a stopped sandbox: %d loads, %d agents", e.loads(t), *created)
+	}
+	if !e.svc.loadOwed(id) {
+		t.Error("a bring-up that gave up should leave the load owed")
+	}
+	e.svc.OnBringUp(e.setState(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING))
+	if e.loads(t) != 1 || *created != 1 {
+		t.Errorf("after the restart: %d loads, %d agents", e.loads(t), *created)
+	}
+	if e.svc.bringingUp(id) {
+		t.Error("the load has run, so nothing should still be held")
+	}
+}
+
+// SWI-26 (review run-1545): an attach overlapping the launch starts a bring-up,
+// which gives up on the CREATING record. The launch's owed load survives it, or
+// the end of the launch would warm-start an agent without the orchestrator's tools.
+func TestBringUpOnACreatingRecordLeavesTheLoadOwed(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	stored, busy := e.launchAttachBusy(t, "77777777-aaaa", "overlap")
+	id := stored.GetId()
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: id, Controller: controller("orch-1", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	e.waitBringUpsEnded(t, id)
+	if !e.svc.loadOwed(id) {
+		t.Fatal("a bring-up that gave up on the CREATING record should leave the load owed")
+	}
+	out := e.setState(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	busy.Store(false)
+	e.svc.OnLaunched(out)
+	e.waitBroughtUp(t, id)
+	deadline := time.Now().Add(3 * time.Second)
+	for !e.svc.agents.Live(id) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e.loads(t) != 1 || *created != 1 {
+		t.Errorf("after the launch: %d loads, %d agents", e.loads(t), *created)
+	}
+}
+
+// reattach attaches the detached sandbox with the lock free and asserts it gets
+// its load and its agent, rather than being refused as starting for good.
+func (e *env) reattach(t *testing.T, id string, created *int) {
+	t.Helper()
+	if e.svc.bringingUp(id) {
+		t.Fatal("a detached sandbox should hold nothing")
+	}
+	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: id, Controller: controller("orch-1", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if e.loads(t) != 1 || *created != 1 {
+		t.Errorf("after the re-attach: %d loads, %d agents", e.loads(t), *created)
+	}
+}
+
+// SWI-26 (review run-1545): a Detach settles a load already owed.
+func TestDetachSettlesAnOwedLoad(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	stored, busy := e.launchAttachBusy(t, "77777777-aaaa", "detached")
+	id := stored.GetId()
+	if _, err := e.svc.Detach(bg, id, "orch-1", false); err != nil {
+		t.Fatal(err)
+	}
+	e.setState(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	busy.Store(false)
+	e.reattach(t, id, created)
+}
+
+// SWI-26 (review run-1545): a Detach during the launch-attach's `mcp add` runs
+// before its load is refused, so it can't settle that debt. The end of the launch
+// does, with the controller already gone.
+func TestDetachBeforeTheLoadIsRefusedIsSettledAtTheEndOfTheLaunch(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	stored := e.sandbox(t, "77777777-aaaa", "detached", pb.SandboxState_SANDBOX_STATE_CREATING)
+	id := stored.GetId()
+	var free atomic.Bool
+	e.svc.SetRuntimeLock(func(ctx context.Context, _ string) (context.Context, func(), bool) {
+		if free.Load() {
+			return ctx, func() {}, true
+		}
+		if _, err := e.svc.Detach(bg, id, "orch-1", false); err != nil {
+			t.Error(err)
+		}
+		return nil, nil, false
+	})
+	view := proto.Clone(stored).(*pb.Sandbox)
+	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+	if err := e.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
+		t.Fatal(err)
+	}
+	free.Store(true)
+	out := e.setState(t, id, pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if out.GetController() != nil {
+		t.Fatal("the Detach should have cleared the controller")
+	}
+	e.svc.OnLaunched(out)
+	e.reattach(t, id, created)
 }
 
 // A destroy settles the owed load, so nothing is held for an id that's gone.
