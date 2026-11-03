@@ -1852,6 +1852,9 @@ func TestRemovalEndsTheHold(t *testing.T) {
 	if r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || r.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		t.Errorf("removed hold = %+v", r)
 	}
+	if got := outcomesOf(r); got[3] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED {
+		t.Errorf("a Clear never sent = %v", got) // its overlay row shows it was dropped
+	}
 }
 
 // Retention never prunes a run holding its sandbox.
