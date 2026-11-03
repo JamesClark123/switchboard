@@ -31,7 +31,9 @@ func ZedAddress(target, path string) (string, *Refusal) {
 	if strings.HasPrefix(user, "-") || strings.HasPrefix(hostport, "-") {
 		return "", &Refusal{Rule: RuleTargetDash, Where: WhereHostEntry}
 	}
-	if hostport == "" {
+	// A ':' in the user would be URL userinfo with a password, which url.User
+	// would encode and Zed decode back into the user name.
+	if hostport == "" || strings.Contains(user, ":") {
 		return "", &Refusal{Rule: RuleZedTarget, Where: WhereHostEntry}
 	}
 	u := url.URL{Scheme: "ssh", Host: hostport, Path: path}
@@ -41,9 +43,6 @@ func ZedAddress(target, path string) (string, *Refusal) {
 	s := u.String()
 	back, err := url.Parse(s)
 	if err != nil || back.Scheme != "ssh" || back.Host != hostport || back.Path != path || back.User.Username() != user || back.RawQuery != "" || back.Fragment != "" {
-		return "", &Refusal{Rule: RuleZedTarget, Where: WhereHostEntry}
-	}
-	if _, hasPw := back.User.Password(); hasPw {
 		return "", &Refusal{Rule: RuleZedTarget, Where: WhereHostEntry}
 	}
 	return s, nil

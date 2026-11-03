@@ -63,6 +63,13 @@ func TestExpand(t *testing.T) {
 	if got, err := Expand(mustSplit(t, `edit '~/x'`), ""); err != nil || got[1] != "~/x" {
 		t.Errorf("Expand without a tilde word = %q, %v", got, err)
 	}
+	// A home ending in a slash doesn't double the separator.
+	if got, _ := Expand(mustSplit(t, `~/bin/edit ~`), "/home/me/"); got[0] != "/home/me/bin/edit" || got[1] != "/home/me/" {
+		t.Errorf("Expand with a trailing slash = %q", got)
+	}
+	if got, _ := Expand(mustSplit(t, `~/bin/edit`), "/"); got[0] != "/bin/edit" {
+		t.Errorf("Expand with HOME=/ = %q", got)
+	}
 }
 
 func TestSubstitute(t *testing.T) {

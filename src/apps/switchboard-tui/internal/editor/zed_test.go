@@ -28,6 +28,7 @@ func TestZedAddress(t *testing.T) {
 		{"ssh://-oX", "/x", "", RuleTargetDash},
 		{"-oProxyCommand=x@box", "/x", "", RuleTargetDash},
 		{"user@-box", "/x", "", RuleTargetDash},
+		{"alice:hunter2@box", "/x", "", RuleZedTarget},
 	}
 	for _, c := range cases {
 		got, ref := ZedAddress(c.target, c.path)

@@ -8,6 +8,15 @@ import (
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 )
 
+func schemaDoc(key string) string {
+	for _, f := range schema {
+		if f.key == key {
+			return f.doc
+		}
+	}
+	return ""
+}
+
 // TestEditorVariablesDeclared: every built-in editor's override variable is in
 // the declared schema with its default and the editor named (FR-503), and
 // SWITCHBOARD_CODE_BIN keeps its row.
@@ -20,7 +29,7 @@ func TestEditorVariablesDeclared(t *testing.T) {
 		if !slices.Contains(keys, e.EnvVar) {
 			t.Errorf("%s is not declared", e.EnvVar)
 		}
-		doc := SchemaDoc(e.EnvVar)
+		doc := schemaDoc(e.EnvVar)
 		if !strings.Contains(doc, e.Name) || !strings.Contains(doc, "One executable") {
 			t.Errorf("%s doc = %q; want the editor's name and the single-executable note", e.EnvVar, doc)
 		}
@@ -28,7 +37,7 @@ func TestEditorVariablesDeclared(t *testing.T) {
 			t.Errorf("%s doc = %q; want the default %q", e.EnvVar, doc, e.Command)
 		}
 	}
-	if SchemaDoc("NOPE") != "" {
+	if schemaDoc("NOPE") != "" {
 		t.Error("unknown key must have no doc")
 	}
 	// The variables are declared in catalogue order after SWITCHBOARD_CODE_BIN.

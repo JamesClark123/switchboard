@@ -72,16 +72,6 @@ func SchemaKeys() []string {
 	return keys
 }
 
-// SchemaDoc returns a key's documentation line ("" for an unknown key).
-func SchemaDoc(key string) string {
-	for _, f := range schema {
-		if f.key == key {
-			return f.doc
-		}
-	}
-	return ""
-}
-
 // Load parses environment via getenv into a Config. Defaults that reference
 // XDG_CONFIG_HOME fall back to ~/.config when that var is unset.
 func Load(getenv func(string) string) (*Config, error) {

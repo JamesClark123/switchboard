@@ -289,10 +289,23 @@ type sizeKey struct {
 	tabs           int
 	surface        activeSurface
 	markFree       bool
+	// enlargeHint: the help offers ctrl+e (a focused Text), which can wrap
+	// the footer to another line.
+	enlargeHint bool
 }
 
 // sizeChecks counts the targets computed, for tests.
 var sizeChecks int
+
+// offersEnlarge reports whether the help footer carries the enlarge hint.
+func (m Model) offersEnlarge() bool {
+	g, ok := m.activeGuard()
+	if !ok {
+		return false
+	}
+	_, _, ok = m.focusedText(g)
+	return ok
+}
 
 // listOffersMarkFree reports whether the list's help offers mark free, which
 // changes the help footer's height.
@@ -312,6 +325,7 @@ func (m *Model) checkSizes() tea.Cmd {
 	key := sizeKey{
 		status: m.status, banner: m.updateBanner, width: m.width, height: m.height,
 		tabs: len(m.tabs), surface: m.activeSurface(), markFree: m.listOffersMarkFree(),
+		enlargeHint: m.offersEnlarge(),
 	}
 	if key == m.sizeKey {
 		return nil

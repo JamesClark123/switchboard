@@ -45,7 +45,13 @@ func Expand(words []Word, home string) ([]string, error) {
 			if home == "" {
 				return nil, &CheckError{Rule: RuleNoHome}
 			}
-			out[i] = home + w.Text[1:]
+			// `~` is the home itself; `~/x` joins without doubling a slash
+			// when HOME ends in one.
+			if w.Text == "~" {
+				out[i] = home
+			} else {
+				out[i] = strings.TrimSuffix(home, "/") + w.Text[1:]
+			}
 			continue
 		}
 		out[i] = w.Text

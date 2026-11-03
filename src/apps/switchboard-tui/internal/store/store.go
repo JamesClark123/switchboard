@@ -96,7 +96,7 @@ func (s *Store) SaveTOMLPrivate(name string, v any) error {
 	}
 	tmp := f.Name()
 	fail := func(err error) error {
-		_ = f.Close()
+		_ = f.Close() // a second Close after a successful one is harmless
 		_ = os.Remove(tmp)
 		return err
 	}
@@ -104,12 +104,10 @@ func (s *Store) SaveTOMLPrivate(name string, v any) error {
 		return fail(err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
+		return fail(err)
 	}
 	if err := os.Rename(tmp, full); err != nil {
-		_ = os.Remove(tmp)
-		return err
+		return fail(err)
 	}
 	return os.Chmod(full, 0o600)
 }
