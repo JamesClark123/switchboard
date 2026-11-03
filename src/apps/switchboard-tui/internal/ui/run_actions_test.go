@@ -249,12 +249,12 @@ func TestStopClearRetriesKey(t *testing.T) {
 	}
 }
 
-// SWI-28: a halt's reason shows whole on the row from 140 columns, or 160 when the
+// SWI-28: a halt's reason shows whole on the row from 134 columns, or 160 when the
 // row also keeps 24 for a timed or triggered run's origin. Narrower, the row cuts it,
 // so the R and S confirms say it at any width.
 func TestHaltReasonAtNormalWidths(t *testing.T) {
 	run := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "another prompt was submitted")
-	run.StepUnconfirmed = true
+	run.StepUnconfirmed, run.EventKind = true, pb.EventKind_EVENT_KIND_USER
 	const reason = "not accepted (may have run): another prompt was submitted"
 	row := func(r *pb.Run, width int) string {
 		m, _ := stepJobs(t, r)
@@ -263,8 +263,8 @@ func TestHaltReasonAtNormalWidths(t *testing.T) {
 	}
 	triggered := proto.Clone(run).(*pb.Run)
 	triggered.EventKind, triggered.OriginLabel = pb.EventKind_EVENT_KIND_TRIGGERED, "a long enough event name"
-	if v := row(run, 140); !strings.Contains(v, reason) {
-		t.Errorf("140 columns: row cuts the reason:\n%s", v)
+	if v := row(run, 134); !strings.Contains(v, reason) {
+		t.Errorf("134 columns: row cuts the reason:\n%s", v)
 	}
 	if v := row(triggered, 160); !strings.Contains(v, reason) {
 		t.Errorf("160 columns with an origin: row cuts the reason:\n%s", v)
