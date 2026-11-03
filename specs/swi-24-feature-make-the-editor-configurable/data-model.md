@@ -54,6 +54,7 @@ Rules:
 | `listCursor`       | `int`                | Cursor in the Editor list; starts on the session's editor. |
 | `input`            | `textinput.Model`    | The Custom command input (`Width` set, sideways scrolling). |
 | `inputInitial`     | `string`             | Cleaned, trimmed starting value (SWI-9 baseline). |
+| `inputRewrite`     | `bool`               | Cleaning changed the saved command when the input opened: the rewrite notice is drawn under the input (2 body lines) until it closes (FR-528). |
 | `fileUnreadable`   | `error`              | Non-nil = unreadable at startup (FR-525 state 1): nothing is written this session. |
 | `lastSaveFailed`   | `error`              | Non-nil = broken mid-session (FR-525 state 2): cleared by the next successful `Update`. |
 | `notSaved`         | `map[string]bool`    | Row keys whose shown value was never written (`auto_connect_hosts`, `editor`); drawn as `(not saved)`. |
@@ -63,8 +64,10 @@ Plus on `Model`: `prefs store.Settings` (the session's values, existing), `edito
 
 Derived (never stored): `sessionEditor() (editor.Editor, unknown string)` — `prefs.Editor` looked up, falling
 back to VS Code with `unknown` = the raw value cut to 60 columns (FR-508, FR-533); `settingsNotices() []string` —
-the unknown-editor notice, the unreadable-at-startup notice, the mid-session notice, in that order (FR-508,
-FR-525); `vNotices() []string` — the first two only (FR-529).
+the screen's unknown-editor notice, the unreadable-at-startup notice, the mid-session notice, in that order
+(FR-508, FR-525); `vNotices() []string` — the `v` wordings for the first two conditions only (`unknown editor
+'<value>' in settings`, `settings couldn't be read at startup, changes aren't saved`; contracts/settings-ui.md
+§4, FR-529).
 
 Row rendering (FR-504, FR-532, FR-534): Editor row value = `Name`, or `Custom: <cutMiddle(executable, 60)>` plus
 `…` when more arguments, or `Custom (invalid command)`; then ` (not saved)` when `notSaved["editor"]`.
@@ -157,10 +160,11 @@ A message with a zero `vFail.at` is never held again.
 
 | Message            | Fields                                                   | Handler effect |
 |--------------------|----------------------------------------------------------|----------------|
-| `editorOutcomeMsg` | `sandboxID, text string; failed bool; wait <-chan editor.ExitReport` | `delete(busy, id)`; status (+ `vFail` when failed, held per §6); returns the wait command when `wait != nil`. No reload. |
+| `editorOutcomeMsg` | `sandboxID, text string; failed bool; wait <-chan editor.ExitReport; exe, where string` | `delete(busy, id)`; status (+ `vFail` when failed, held per §6); when `wait != nil` returns `waitExitCmd(wait, id, exe, where, vNotices())`. No reload. `exe` is `Plan.Executable` already cut to 60 columns; `where` is the override variable or `the Custom command on the settings screen (,)`. |
 | `editorExitMsg`    | `sandboxID, text string`                                 | Status + `vFail` only (FR-523): no `busy`, no reload. |
 
 Both carry already-assembled, sanitised text, so the message is self-contained. The outcome's text is built
 in the `v` command; the exit report's text (executable, status or signal, where to fix it) is built by
-`waitExitCmd`, which captures the executable, the "where" and `vNotices()` when the outcome is handled (FR-529),
+`waitExitCmd`, which takes the executable and the "where" from the outcome message and `vNotices()` from the
+session when the outcome is handled (FR-529),
 so a later settings change doesn't alter a report already in flight.

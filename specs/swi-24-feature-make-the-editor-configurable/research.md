@@ -31,11 +31,11 @@ what was chosen, why, and what was rejected.
   `viewSettings` joins rows with no width limit; the sign-in description is 103 columns.
 - `store/settings.go`: `Settings{AutoConnectHosts bool}`; `settingsFile` uses pointer fields so an absent key keeps
   its default; `Load` returns defaults **and** the error for an unreadable file; `Save` writes the whole file.
-- `store/store.go:58` `SaveTOML`: `os.WriteFile(full+".tmp", b, 0o644)` then `os.Rename`. `os.WriteFile` applies
+- `store/store.go:59` `SaveTOML`: `os.WriteFile(full+".tmp", b, 0o644)` then `os.Rename`. `os.WriteFile` applies
   the mode only when it creates the file, and the name is fixed, so a leftover temp file keeps its mode. The
   review confirmed that a leftover `0644` temp gives a final mode of `644`. `SaveTOML` also serves hosts, groups
   and configs.
-- `WithSettings` (`settings.go:38`) loads before `Init`; the startup sign-in reads `m.prefs.AutoConnectHosts`.
+- `WithSettings` (`settings.go:37`) loads before `Init`; the startup sign-in reads `m.prefs.AutoConnectHosts`.
 - go-toml v2 (`v2.2.3`, checked by a probe): decoding `editor = 5` into a `*string` field fails with
   `toml: cannot decode TOML integer into struct field … of type *string`, so a wrong type is a parse error, as
   the spec's Edge Cases assume. Marshalling a struct with nil pointer fields omits those keys. Comments are not
@@ -67,11 +67,13 @@ what was chosen, why, and what was rejected.
   `SendData` failure routes through `handleTermClosed` (`:306`). `termSeq` numbers attaches; a stale
   `termOpenedMsg` closes its session. `confirmReplaceOrphan` (`orphan.go:100`) opens the Replace dialog with
   `onConfirm` returning `replaceOrphanMsg`, handled in a **later** `Update` (`app.go:707` → `startReplaceOrphan` →
-  `attachTerminal`). `confirmState.onAccept` runs in the same message as the accept (`confirm.go:118`).
+  `attachTerminal`). `confirmState.onAccept` runs in the same message as the accept (`confirm.go:113`).
 - `nowFunc` (`unsaved.go:16`) is the test-steppable clock.
-- `x/ansi v0.11.6` has `Truncate`, `TruncateLeft`, `Wordwrap` and `StringWidth` (probe compiled). The middle cut
-  `Truncate(s, 20, "") + "…" + TruncateLeft(s, width-39, "")` gave exactly 60 columns for the spec's example.
-  `Wordwrap(msg, 80, "")` wraps the longest FR-529 example to 2 lines.
+- `x/ansi v0.11.6` has `Truncate`, `TruncateLeft`, `Wrap`, `Wordwrap` and `StringWidth` (probe compiled). The
+  middle cut `Truncate(s, 20, "") + "…" + TruncateLeft(s, width-39, "")` gave exactly 60 columns for the spec's
+  example. `Wordwrap(msg, 80, "")` wraps the longest FR-529 example to 2 lines, but leaves a token longer than
+  the width unbroken (`wrap.go`: "not breaking word boundaries"), so a 120-column unspaced daemon error would
+  overflow; `Wrap(msg, 80, "")` breaks such a token and still prefers spaces and hyphens (R9).
 
 ### F4 — Inputs and the guard
 
@@ -143,8 +145,9 @@ measures the real text.
 the launch, and `internal/vscode` is deleted. Its files: `catalog.go` (FR-501 rows, lookup by identifier,
 `Remote` kind), `shellwords.go` (FR-531 tokenizer), `check.go` (FR-506 checks and the markers, FR-515/516),
 `pathcheck.go` (FR-517), `zed.go` (FR-513 address), `resolve.go` (an open request → argv or a typed refusal,
-FR-510–FR-518), `launch.go` (FR-511 detached start, FR-523 reaper). It imports only the standard library and
-`switchboard-proto/gen`, never `ui`, `config` or `store`, so `config` can import it (R2).
+FR-510–FR-518), `launch.go` (FR-511 detached start, FR-523 reaper). It imports only the standard library (the workspace path
+arrives as a string; the `pb.VSCodeTarget` stays in `ui`), never `ui`, `config` or `store`, so `config` can
+import it (R2).
 
 **Rationale**: the rules run in two places (the settings screen on confirm, `v` on every press, FR-522) and must
 match; one package makes that structural. Everything but the launch is pure, so SC-003's per-editor argv test
@@ -293,15 +296,21 @@ answer for the rest.
 
 **Decision**: a new `ui/status.go`:
 
-- `statusLines(width, limit) []string`: `sanitizeTerminalText` (newlines to spaces) → `ansi.Wordwrap(width)` → cut
-  to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "…")`). No cache: wrap and cut on each use.
+- `statusLines(width, limit) []string`: `sanitizeTerminalText` (newlines to spaces) → `ansi.Wrap(s, width, "")`
+  → cut to `limit` lines, the last ending in `…` (`ansi.Truncate(last, width-1, "…")`). `Wrap`, not `Wordwrap`:
+  `Wordwrap` never breaks a token longer than the width, so a 120-column daemon error would stay on one line and
+  Bubble Tea would cut it with no ellipsis; `Wrap` still prefers spaces and hyphens and breaks a long token only
+  when it must. No cache: wrap and cut on each use.
 - `m.statusLimit()`, computed **without rendering**: `min(statusMaxLines (6), max(1, m.height - headerLines (2)
   - 1 - helpLines - minBody))`, where `minBody` is the active surface's smallest usable body: the sandbox list
   `9 + 2 + banner`; a resizable item list or huh form `3` (`bodyHeight`'s floor); a view that reads `bodyHeight`
-  as it renders and windows its rows (Jobs, the lanes picker in `orchestrator_lanes.go`) its fixed top and bottom
-  lines plus `windowRange`'s minimum 3; a static view with nothing to shrink (Daemons, Settings, Hosts, Groups,
-  …) `0`, so the limit is the 6-line cap and `chrome` does the real cut (next bullet). The terminal screen's
-  limit is the constant 2.
+  as it renders and windows its rows (Jobs, the lanes picker in `orchestrator_lanes.go`, and the settings
+  screen's list and input modes, which this feature makes read `bodyHeight` the same way: the list windows its
+  entries with `windowRange` and the input gives its note the room left) its fixed top and bottom lines plus
+  `windowRange`'s minimum 3 (for the input: title + input + blank + the rewrite notice when shown, plus 1 note
+  line, so the note gives way before the status, FR-534); a static view with nothing to shrink (Daemons, the
+  settings rows, Hosts, Groups, …) `0`, so the limit is the 6-line cap and `chrome` does the real cut (next
+  bullet). The terminal screen's limit is the constant 2.
 - `bodyHeight()` becomes `m.height - 6 - (lines - 1)` where `lines` is the wrapped status's line count after the
   limit (at least 1), so a one-line or empty status gives today's value. Nothing in this computation renders a
   body, so a view that reads `bodyHeight` while rendering (Jobs) sees a stable value. `termRows()` stops using
@@ -318,7 +327,7 @@ answer for the rest.
   only when the stored `lastHeight` differs, followed by `form.Update(nil)` in the same pass with its command
   kept (the undrawn-field fix). `activeSurface()` is a new enum over the surfaces that hold a size, derived like
   `activeGuard`. Forms don't grow back a field huh has shrunk; accepted until the form closes.
-- `viewSettings` wraps every row, description and notice with `ansi.Wordwrap(m.width)`; the executable gets the
+- `viewSettings` wraps every row, description and notice with `ansi.Wrap(s, m.width, "")`; the executable gets the
   middle cut (`cutMiddle(s, 60)` = `sanitizeLine(s, 0)` then `Truncate(20) + "…" + TruncateLeft(width-39)`,
   dropping one column when a wide rune lands on the cut, F3); notices put the instruction before the detail.
 
@@ -370,7 +379,9 @@ compares `TrimSpace(Value())` with `inputInitial`; Save calls `submitEditorComma
 a `SettingsUnreadableError` or a nil store applies for the session only, marks `(not saved)` and closes; any
 other error keeps the input open with the error; success closes to the rows and clears the mark); Discard
 returns to the list. On open, `SetValue(session command)`, `inputInitial = TrimSpace(Value())`, and if that
-differs from the session text the status shows `normalizeNotice([]string{"Custom command"})`. `esc` in the list
+differs from the session text `inputRewrite` is set and the view draws `normalizeNotice([]string{"Custom
+command"})` as two body lines under the input (the spec's 23-line budget counts it there, separate from the
+status), cleared when the input closes. `esc` in the list
 returns to the rows with no dialog; `q` and `,` are text in the input and ignored in the list.
 
 **Rationale**: the Notes rule out `gRename`'s screen-only selection and the close-then-act submits; the
@@ -387,7 +398,8 @@ byte-identical to today's when no notice applies. `VS Code opener not configured
 ### R13 — Where the remote path limit applies (FR-517)
 
 **Decision**: `editor.Resolve` applies the character limit only when `req.SSHTarget != ""` and either the editor
-is Custom or `req.Bins[editor] != ""` (the selected editor's own variable set). The check is on the path's runes:
+is Custom or `Command(editor, req.Bins)` reports `overridden` (the selected editor's own variable set, with
+FR-502's meaning: a blank value doesn't count). The check is on the path's runes:
 valid UTF-8, `unicode.IsLetter`, `unicode.IsMark`, `unicode.IsDigit`, ASCII space, or one of `/ . _ - + = @ , :`.
 The refusal names the first rejected rune as `'x'`, or `U+00XX` when `unicode.IsPrint` is false, and says the
 daemon or the host entry is where to fix it (SC-004).

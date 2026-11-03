@@ -60,20 +60,26 @@ path as an argument instead: kitty -e sh -c 'cd "$1" && nvim .' sh {path}. A {ho
 argument only works on remote sandboxes.
 ```
 
-The note is ≤ 10 lines at 80 columns; on a shorter terminal its last lines give way to `…` so the input stays on
-screen. `enter` confirms (FR-528 flow in data-model §3); `esc` with a changed trimmed value opens the SWI-9
+The note is ≤ 10 lines at 80 columns. The rewrite notice is part of the body (2 lines, drawn only while
+`inputRewrite` is set), not the status. The input view reads `bodyHeight()` as it renders, like Jobs: the room
+for the note is `bodyHeight() - fixed lines` (title, input, blank, the notice when shown, blank), never below 1,
+so on a shorter terminal the note's last lines give way to `…` **before** the status is cut and the input stays
+on screen. The list mode windows its entries the same way (`windowRange(len, cursor, bodyHeight() - 1)`,
+minimum 3 rows). `enter` confirms (FR-528 flow in data-model §3); `esc` with a changed trimmed value opens the SWI-9
 unsaved-changes dialog (Save = enter, Cancel = back to the input, Discard = the list); `esc` unchanged → the list.
 Every printable key, including `q`, `,`, `j`, `k`, space, is text; `ctrl+e` end of line; `ctrl+c` as on the rename
 input. A rejection shows in the status line only (red), the input stays open. Help: `enter save · esc back`.
 
 ## 2. Status line (`footer`) — FR-533
 
-- The status is sanitised, then word-wrapped at the terminal width, then cut to its line limit with `…` on the
-  last line. Lines come out of the body (`bodyHeight` shrinks by `lines - 1`).
+- The status is sanitised, then wrapped at the terminal width with `ansi.Wrap` (at spaces where it can; a token
+  longer than the width is broken, so a 120-column daemon error never leaves the screen), then cut to its line
+  limit with `…` on the last line. Lines come out of the body (`bodyHeight` shrinks by `lines - 1`).
 - Limit, computed before anything renders: `min(6, room)` where `room = height - 2 (header) - 1 (blank) - help
   lines - smallest usable body`, never below 1. Smallest usable body: sandbox list `9 + 2 (+1 banner)`; a
-  resizable list or form `3`; Jobs and the lanes picker (they read `bodyHeight` as they render and window their
-  rows) their fixed lines plus 3; a static view (Daemons, Settings, Hosts, Groups) `0`. `chrome` then measures
+  resizable list or form `3`; a windowed view that reads `bodyHeight` as it renders (Jobs, the lanes picker, the
+  settings screen's list and input modes) its fixed lines plus 3 (the input: plus 1 note line); a static view
+  (Daemons, the settings rows, Hosts, Groups) `0`. `chrome` then measures
   the room the rendered body really left and cuts the status to `min(limit, room)`, so a static view keeps its
   header. The terminal screen's limit is 2 and its PTY size is `height - 8` (floor 3), independent of the status.
 - Every `v` message defined in `editor-launch.md` §4, with outside text at its limits, fits in full at 80×24 on

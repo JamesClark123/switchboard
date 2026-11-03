@@ -96,7 +96,8 @@ the session's command every time; a failure refuses with the rule and `Where = "
 `Resolve(req)` (with path):
 
 6. Path not absolute, or contains a control character (including newline) → `path-unsafe`.
-7. Remote **and** (Custom or `req.Bins[editor.ID]` non-blank) → every rune must be valid UTF-8 and one of:
+7. Remote **and** (Custom or `Command(editor, req.Bins)` reports `overridden`, i.e. the selected editor's own
+   variable is non-blank) → every rune must be valid UTF-8 and one of:
    Unicode letter, mark, digit, ASCII space, `/ . _ - + = @ , :`. First failure → `path-limited` with
    `Detail = 'x'` or `U+XXXX` when not printable.
 8. Build argv per §1/§2.

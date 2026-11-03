@@ -34,17 +34,17 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
   order (`vscode` … `sublime`, `custom`; `sublime`'s command is `subl`), `Catalogue() []Editor`,
   `Lookup(id) (Editor, bool)`, `Default = "vscode"`, `Custom = "custom"`, and `Command(e Editor, bins
   map[string]string) (bin string, overridden bool)` (FR-502: blank after `TrimSpace` = unset; a set value is
-  returned raw). The package imports only the standard library and `switchboard-proto/gen` (research R1).
+  returned raw). The package imports only the standard library (research R1).
   Tests in `ED/catalog_test.go`: every row's fields against the contract's §1/§5, `Command` with unset, blank
   and set values.
 - [ ] T002 [P] `CF/config.go`: replace the `SWITCHBOARD_CODE_BIN` row's handling and add one schema row per
   built-in editor other than VS Code, generated at init from `editor.Catalogue()` (`EnvVar`, `def` = `Command`,
   `doc` = `"<Name> CLI used to open sandboxes."`); keep `SWITCHBOARD_CODE_BIN` first among them with its
-  existing doc. Replace `Config.CodeBin` with `EditorBins map[string]string` (editor ID → the **raw** env value,
-  `""` when unset or blank; research R2) and `func (c *Config) EditorBin(id string) (bin string, set bool)`;
-  `Load` reads the editor rows raw (no default substitution) and every other row as today. Update
-  `CF/config_extra_test.go` and `CF/envexample_test.go` (`TestLoadDefaults` asserts `cfg.CodeBin`) for the
-  removed field and add tests: each variable present in `SchemaKeys()`, raw
+  existing doc. Add `EditorBins map[string]string` (editor ID → the **raw** env value, `""` when unset or blank;
+  research R2) and `func (c *Config) EditorBin(id string) (bin string, set bool)`; keep `Config.CodeBin` (set to
+  `EditorBins["vscode"]` or `code`) until T026 deletes it with the old opener, so the module keeps building;
+  `Load` reads the editor rows raw (no default substitution) and every other row as today. Add tests (and in T026 update `CF/config_extra_test.go` and `CF/envexample_test.go`, where
+  `TestLoadDefaults` asserts `cfg.CodeBin`, for the removed field): each variable present in `SchemaKeys()`, raw
   value kept, blank = unset, `SWITCHBOARD_CODE_BIN` unchanged.
 - [ ] T003 [P] `TUI/.env.example`: add the nine variables from contracts/editor-launch.md §5 with their defaults
   and a comment naming the editor and that a value is one executable (a wrapper script or Custom for a command
@@ -54,7 +54,8 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
   becomes "one of the supported editors (VS Code by default)", and the `v` key row reads "Open the selected
   sandbox in the configured editor (VS Code by default; `,` to change)". The Editor section is T055.
 
-**Checkpoint**: `go build ./...` in the TUI module (with `main.go` still using the old opener, T026 switches it).
+**Checkpoint**: `go build ./...` and `go test ./...` in the TUI module (`main.go` still uses the old opener
+through `cfg.CodeBin`; T026 switches it).
 
 ---
 
@@ -99,8 +100,9 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
   remote} asserting the exact argv (VS Code local/remote byte-identical to today's `codeArgs`); the refusal order
   (`host-lookup` beats everything; `no-remote` beats `target-dash`, so WebStorm with a `-oX` target refuses
   `no-remote`; for Custom a bad command beats `target-dash`); the override variable used raw with
-  spaces; the limit applied only for Custom or the selected editor's own variable (another editor's variable set
-  → no limit, FR-517); `{host}` empty on local; `RemoteNoHost`.
+  spaces; the limit applied only for Custom or when `Command` reports the selected editor's own variable as
+  `overridden` (another editor's variable set → no limit; a spaces-only value → no limit, FR-517/FR-502); `{host}`
+  empty on local; `RemoteNoHost`.
 - [ ] T010 [P] `ED/launch.go`: `Launcher interface{ Launch(argv []string) (*Started, error) }`, `NewLauncher()`,
   `Started{Report <-chan ExitReport}`, `ExitReport{Status int; Signal string}`; `exec.Command` with
   `SysProcAttr{Setsid: true}`, nil stdio, `Start`, one goroutine that `Wait`s until the editor exits (always
@@ -134,18 +136,21 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
 
 - [ ] T013 `UI/status.go` (new): constants `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols =
   120`, `osReasonCols = 40`, `valueCols = 60`, `vHoldRecent = 3 * time.Second`; `statusLines(text string,
-  width, limit int) []string` (`sanitizeTerminalText`, newlines to spaces, `ansi.Wordwrap(width)`, cut to
-  `limit` with the last line `ansi.Truncate(line, width-1, "…")`, never below 1 line); `cutMiddle(s string, cols
+  width, limit int) []string` (`sanitizeTerminalText`, newlines to spaces, `ansi.Wrap(s, width, "")` — not
+  `Wordwrap`, which leaves a token longer than the width unbroken — cut to `limit` with the last line
+  `ansi.Truncate(line, width-1, "…")`, never below 1 line); `cutMiddle(s string, cols
   int) string` (`sanitizeLine(s, 0)` then `Truncate(20, "")` + `…` + `TruncateLeft(w-39, "")`, dropping one
   column when the result exceeds `cols`); `cutEnd(s, cols)` = `sanitizeLine`. Tests in `UI/status_test.go`:
-  wrap at spaces, the cut marker, a 10-tab string cut to 120 **after** sanitising, the spec's 60-column
-  executable example, a wide rune on the cut, an empty status → no lines.
+  wrap at spaces, a 120-column token with no spaces broken so no line exceeds the width, the cut marker, a
+  10-tab string cut to 120 **after** sanitising, the spec's 60-column executable example, a wide rune on the
+  cut, an empty status → no lines.
 - [ ] T014 `UI/app.go` + `UI/status.go`: `activeSurface()` enum (`surfaceList`, `surfaceItemList{which}`,
-  `surfaceForm{which}`, `surfaceWindowed` (Jobs, the lanes picker), `surfaceStatic`, `surfaceTerminal`) derived
-  like `activeGuard`; `m.statusLimit()` and `m.statusLineCount()` computed **without rendering**
-  (contracts/settings-ui.md §2: `min(6, max(1, height - 2 - 1 - helpLines - minBody))`, min body `9 + 2 +
-  banner` for the list, `3` for a resizable surface, the fixed lines + 3 for a windowed view, `0` for a static
-  view, constant 2 on the terminal screen); `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor
+  `surfaceForm{which}`, `surfaceWindowed` (Jobs, the lanes picker, the settings screen's list and input modes
+  once T020/T034 make them read `bodyHeight`), `surfaceStatic`, `surfaceTerminal`) derived like `activeGuard`;
+  `m.statusLimit()` and `m.statusLineCount()` computed **without rendering** (contracts/settings-ui.md §2:
+  `min(6, max(1, height - 2 - 1 - helpLines - minBody))`, min body `9 + 2 + banner` for the list, `3` for a
+  resizable surface, the fixed lines + 3 for a windowed view (the settings input: fixed lines + 1 note line), `0`
+  for a static view, constant 2 on the terminal screen); `bodyHeight()` becomes `m.height - 6 - (statusLineCount - 1)` (floor
   3) and must never call a view function; `footer(hb, limit)` renders `statusLines`, red when `m.err != nil`, the
   status starts with `error`, or `m.status == m.vFail.text`; `chrome` measures the room left by the rendered body
   (`height - 2 - lipgloss.Height(body) - 1 - helpLines`, at least 1) and passes `min(limit, room)`, so a static
@@ -187,8 +192,10 @@ Paths are relative to the repository root. `ED/` = `src/apps/switchboard-tui/int
   `detached from`; one arriving while opening; a first attach superseded by a second (only the second's message
   clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); a refusal then `t`
   held; a refusal older than 3 s not held; `terminal: <reason>; <refusal>` joined, red, error first; a second
-  `t` within 3 s after a release shows only its own error; `moved on` and `external already attached` joined; a
-  released message's next plain status not red; a `v` failure arriving after the error is showing replaces it.
+  `t` within 3 s after a release shows only its own error; `moved on` and `external already attached` joined; an
+  accepted Replace whose attach fails joined the same way; an open terminal whose session dies (`SendData`
+  failure through `handleTermClosed` while showing) joined with the held failure; a released message's next
+  plain status not red; a `v` failure arriving after the error is showing replaces it.
 
 **Checkpoint**: `go test ./...` passes in the TUI module with every existing test green (`footer` unchanged for
 one-line statuses).
@@ -203,9 +210,10 @@ one-line statuses).
 (recording launcher); restart the model from the same store and WebStorm is still selected.
 
 - [ ] T018 [US1] `UI/settings.go`: `settingsState` gains `mode`, `listCursor`, `fileUnreadable error`,
-  `lastSaveFailed error`, `notSaved map[string]bool` (data-model §3); `WithSettings` sets `fileUnreadable` on a
-  `Load` error, keeps `m.prefs` raw, and sets `m.status` to the startup notices joined by `; ` (FR-529, best
-  effort). Replace `settingItem` with a row kind (`rowToggle`, `rowEditor`) and add the Editor row after the
+  `lastSaveFailed error`, `notSaved map[string]bool` (data-model §3) and drops the existing `notice string`
+  field (the notices are derived now; `TestSettingsUnreadableFileShowsNoticeAndDefaults` reads the view instead);
+  `WithSettings` sets `fileUnreadable` on a `Load` error, keeps `m.prefs` raw, and sets `m.status` to the
+  startup notices joined by `; ` (FR-529, best effort). Replace `settingItem` with a row kind (`rowToggle`, `rowEditor`) and add the Editor row after the
   sign-in row (`label: "Editor"`, desc `Which editor v opens the sandbox's workspace folder in`). Add
   `sessionEditor() (editor.Editor, unknown string)` (unknown values → VS Code with the value cut to 60 columns
   via `cutEnd`, control characters removed), `settingsNotices()`, `vNotices()` (data-model §3). Depends on T012,
@@ -224,10 +232,13 @@ one-line statuses).
   opens the list with `listCursor` on the session's editor (unknown → VS Code); `↑/↓`/`j`/`k` move within
   `windowRange(len, cursor, avail)`; `enter` on a built-in entry calls `saveSetting("editor",
   store.SettingsChange{Editor: &id}, set Editor = id)`
-  (always, even on the marked entry, FR-505) and returns to rows; `enter` on Custom hands over to T034's input;
-  `esc` returns to rows; `space`, `q`, `,` ignored. `viewSettings` in list mode renders only the header's title
-  line `Editor` and the windowed entries with the current one marked; in rows mode it renders the notices
-  (instruction before detail), the rows and descriptions, each wrapped with `ansi.Wordwrap(m.width)`, the Editor
+  (always, even on the marked entry, FR-505) and returns to rows; `enter` on Custom calls
+  `enterEditorCommand()` (T034; until it lands, a stub that returns to rows with the status `Custom command
+  input: not implemented yet` and saves nothing, so this phase's tests run); `esc` returns to rows; `space`,
+  `q`, `,` ignored. `viewSettings` in list mode renders only the header's title line `Editor` and the entries
+  windowed by `windowRange(len, listCursor, m.bodyHeight()-1)` (so the view reads `bodyHeight` as it renders,
+  like Jobs) with the current one marked; in rows mode it renders the notices
+  (instruction before detail), the rows and descriptions, each wrapped with `ansi.Wrap(s, m.width, "")`, the Editor
   value per data-model §3 (`Name`, `Custom: <cutMiddle(exe, 60)>` + `…`, `Custom (invalid command)`, ` (not
   saved)`). `settingsHelp` names both row kinds and the list's keys. Depends on T018, T019. Tests: open the
   list, move, confirm → file has `editor = 'webstorm'`; `esc` saves nothing; confirming VS Code over
@@ -239,12 +250,15 @@ one-line statuses).
   case is T037). Depends on T020.
 - [ ] T022 [US1] `UI/app.go` + `UI/editor_open.go` (new): `Model` gains `launcher editor.Launcher` and
   `editorBins map[string]string`; `WithEditor(l editor.Launcher, bins map[string]string) Model` replaces the
-  opener argument of `WithGroups` (`WithGroups(gs)` keeps the store; update every `WithGroups(…, nil)` caller:
-  `guard_surfaces_test.go`, `coverage_test.go` (two sites), `sandbox_list_test.go`, `tabs_test.go`, and
-  `groups_test.go`); `sshTargetForHost(hostID) (target string,
+  opener argument of `WithGroups` (`WithGroups(gs)` keeps the store; update every caller: the `nil` sites in
+  `guard_surfaces_test.go`, `coverage_test.go` (two), `sandbox_list_test.go`, `tabs_test.go`, and the three
+  non-nil sites in `groups_test.go`, whose `recordingOpener` and `TestOpenVSCode*` are deleted here, replaced by
+  T024/T031; remove the `vscode` import from every test file); `sshTargetForHost(hostID) (target string,
   err error)` returns the lookup error (`hostStore.Get` failure) instead of `""` (FR-520). Message types
-  `editorOutcomeMsg{sandboxID, text string; failed bool; wait <-chan editor.ExitReport}` and
-  `editorExitMsg{sandboxID, text string}` (data-model §7). Depends on T009, T010, T016.
+  `editorOutcomeMsg{sandboxID, text string; failed bool; wait <-chan editor.ExitReport; exe, where string}` (`exe`
+  = `Plan.Executable` cut to 60 columns, `where` = the override variable or the settings-screen phrase, both
+  known only inside the `v` command) and `editorExitMsg{sandboxID, text string}` (data-model §7). Depends on
+  T009, T010, T016.
 - [ ] T023 [US1] `UI/editor_open.go`: `openEditorCmd(hostID, sandboxID string) tea.Cmd` — on the update loop:
   `launcher == nil` → `editorOutcomeMsg{text: "<Name> opener not configured"}`; build `editor.Request{Editor:
   sessionEditor(), Bins: editorBins, Custom: prefs.EditorCustomCommand, SSHTarget, HostErr, Home:
@@ -258,9 +272,9 @@ one-line statuses).
   `vscode` import are removed. Depends on T022.
 - [ ] T024 [US1] `UI/editor_open.go` + `UI/app.go`: handlers — `editorOutcomeMsg`: `delete(m.busy, id)` (only this
   row), no reload; `failed` → `setVFail(text)` else `m.status = text` (and `m.vFail.text` cleared if it equalled
-  the old status, so the style ends); when `wait != nil` return `waitExitCmd(wait, id, exe, where, notices)`, which
-  captures the executable (already cut), the "where" (the variable or the settings screen) and `vNotices()` at
-  that moment, blocks on the channel and returns `editorExitMsg{id, text}` with FR-523's text assembled per
+  the old status, so the style ends); when `wait != nil` return `waitExitCmd(wait, id, msg.exe, msg.where, vNotices())`, which
+  takes the executable and the "where" from the message and captures `vNotices()` at that moment, blocks on the
+  channel and returns `editorExitMsg{id, text}` with FR-523's text assembled per
   contracts/editor-launch.md §4, or `nil` when the channel closes. `editorExitMsg`: `setVFail(msg.text)` only
   (FR-523: no `busy`, no reload). Depends on T023. Tests in `UI/editor_open_test.go` with a recording `fakeLauncher` (argv, a
   controllable `Report` channel): `v` with VS Code and no settings produces `[code <path>]` and
@@ -274,8 +288,9 @@ one-line statuses).
   key.WithHelp("v", id))` with the session editor's identifier (`custom` for Custom), so the default still reads
   `vscode` (FR-519). Test: the footer contains `v webstorm` after selecting WebStorm and `v vscode` by default.
 - [ ] T026 [US1] `TUI/cmd/sxb/main.go`: `m.WithGroups(st.Groups()).WithEditor(editor.NewLauncher(),
-  cfg.EditorBins)`; delete `TUI/internal/vscode/` (its argv tests are covered by T009). Depends on T002, T022.
-  `go build ./...`, `go vet`, and the whole module's tests pass.
+  cfg.EditorBins)`; delete `TUI/internal/vscode/` (its argv tests are covered by T009); delete `Config.CodeBin`
+  and update `CF/config_extra_test.go` and `CF/envexample_test.go` (`TestLoadDefaults`). Depends on T002, T022,
+  T024. `go build ./...`, `go vet`, and the whole module's tests pass.
 
 **Checkpoint**: US1 complete — quickstart Scenario 1 passes with a stand-in `SWITCHBOARD_WEBSTORM_BIN`.
 
@@ -299,7 +314,7 @@ executable with the folder.
   (contracts/editor-launch.md §4). Tests: `exec.ErrNotFound` from `LookPath`, `EACCES` from `Launch`, a
   60-column executable; **the tightest case** (60-column executable, 40-column reason,
   `SWITCHBOARD_CODE_INSIDERS_BIN`, the 60-column unknown-editor notice) wraps to ≤ 4 lines at 80 columns with
-  `ansi.Wordwrap`; if it doesn't, shorten the wording in the order the contract gives and update the contract.
+  `ansi.Wrap`; if it doesn't, shorten the wording in the order the contract gives and update the contract.
 - [ ] T029 [P] [US2] `ED/resolve_test.go`: the FR-517 limit is applied with VS Code selected and `bins["vscode"]`
   set on a remote path containing `(`; not applied with `bins["zed"]` set and VS Code selected; not applied on a
   local sandbox. (Extends T009's table.)
@@ -328,9 +343,10 @@ for a failed host lookup.
   Custom command with no `{host}` (FR-515, FR-529): test the three-notice message
   `opened abc in Custom (settings couldn't be read at startup, changes aren't saved; the path is on the remote
   host)` and that it wraps to ≤ 3 lines at 80 columns.
-- [ ] T033 [P] [US4] `UI/groups_test.go`: delete `TestOpenVSCode*` (replaced by T024/T031) and `recordingOpener`;
-  keep the group tests; remove the `vscode` import from every test file that still has one. `sshTargetForHost`'s
-  new error return is covered by T031.
+- [ ] T033 [P] [US4] `UI/groups_test.go`: confirm nothing of the old opener remains (T022 deleted
+  `TestOpenVSCode*` and `recordingOpener`) and add a group-tab remote case: `v` from a group tab targets the
+  sandbox's own host's SSH target (`daemonForHost` + `sshTargetForHost(hostID)`), not the active host's.
+  `sshTargetForHost`'s new error return is covered by T031.
 
 **Checkpoint**: quickstart Scenario 4 passes against a real remote host (Scenario 0 rows still open).
 
@@ -347,8 +363,9 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - [ ] T034 [US3] `UI/settings_command.go` (new): `settingsState` gains `input textinput.Model`, `inputInitial
   string`; `enterEditorCommand()` (from the list's Custom entry): `textinput.New()` with `Prompt = "› "`, `Width
   = bodyWidth - 4`, `SetValue(prefs.EditorCustomCommand)`, `CursorEnd`, `inputInitial = TrimSpace(Value())`,
-  `mode = settingsInput`; when `inputInitial != prefs.EditorCustomCommand` (cleaning changed it) the status shows
-  `normalizeNotice([]string{"Custom command"})` (FR-528). `updateSettingsInputKey`: `esc` → `requestExit(
+  `mode = settingsInput`; `inputRewrite = inputInitial != TrimSpace(prefs.EditorCustomCommand)` (cleaning
+  changed it), drawn as `normalizeNotice([]string{"Custom command"})` under the input (2 body lines, FR-528),
+  cleared when the input closes. `updateSettingsInputKey`: `esc` → `requestExit(
   gEditorCommand)`; `enter` → `submitEditorCommand`; everything else to the input. `submitEditorCommand()`:
   `text = TrimSpace(Value())`; `editor.Split` + `Check` failure → status = the input rejection text for the rule
   (contracts/editor-launch.md §4, no command text), red, input open, session unchanged; otherwise write first
@@ -357,9 +374,10 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
   `SettingsUnreadableError` → same, `lastSaveFailed`; other write error →
   input stays open with `error: could not save settings: …`, session unchanged; success → session updated,
   `notSaved["editor"] = false`, close to rows, `saved settings`. `viewSettings` in input mode: the title line
-  `Custom command`, the input, a blank, the rewrite notice when set, the FR-521 note (≤ 10 lines at 80 columns,
-  wrapped; its last lines replaced by `…` when the room is short, the input never pushed off), help `enter save ·
-  esc back`. Depends on T020, T005, T006.
+  `Custom command`, the input, a blank, the rewrite notice when `inputRewrite`, the FR-521 note (≤ 10 lines at
+  80 columns, wrapped with `ansi.Wrap`; its room is `bodyHeight() - fixed lines`, never below 1, so the view reads
+  `bodyHeight` as it renders and its last lines are replaced by `…` when the room is short, the input never
+  pushed off), help `enter save · esc back`. Depends on T020, T005, T006.
 - [ ] T035 [US3] `UI/formguard.go`: add `gEditorCommand` to `guardSurface`; `activeGuard` returns it for
   `screenSettings` with `mode == settingsInput`; `guardDirty` → `TrimSpace(input.Value()) != inputInitial`;
   the Save branch → `submitEditorCommand` (**not** closing first); Discard → `mode = settingsList`, input
@@ -446,7 +464,8 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - US1 (T018–T026): T018 needs T012, T013; T019 needs T018; T020 needs T019; T022 needs T009, T010, T016; T023
   needs T022, T018; T024 needs T023, T017; T025 needs T018; T026 needs T002, T022–T024. **MVP = Phase 1 + Phase 2 +
   US1.**
-- US2 (T027–T030) needs US1. US4 (T031–T033) needs US1. US2 and US4 are independent of each other.
+- US2 (T027–T030) needs US1. US4 (T031–T033) needs US1. US2 and US4 are independent of each other. T026 is
+  the last US1 task: it deletes the old opener and `CodeBin` only once T022–T024 have replaced every use.
 - US3 (T034–T039) needs US1 and T005/T006; T035 needs T034; T036/T037 need T035; T038 needs T034 and T023.
 - Polish: T040–T043, T045, T047, T048 after their phases; T044 after T026 and T034; T046 last before T049.
 
