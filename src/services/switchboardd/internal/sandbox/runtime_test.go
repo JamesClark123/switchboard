@@ -674,6 +674,31 @@ func TestBusyRefusalsNameTheHolder(t *testing.T) {
 		}
 		rel()
 	}
+	// An operation waiting behind another is named once it holds the lock: the
+	// first one's release doesn't lose the waiter's name.
+	relStop := e.m.runtimeOp("c", opStopping)
+	restarting := make(chan func())
+	go func() { restarting <- e.m.runtimeOp("c", opRestarting) }()
+	waitUntil(t, func() bool {
+		l := e.m.runtime.of("c")
+		l.holderMu.Lock()
+		defer l.holderMu.Unlock()
+		return len(l.ops) == 2
+	})
+	if _, err := e.m.TryRLockRuntime("c"); err == nil || err.Error() != "sandbox is stopping; try again" {
+		t.Errorf("while the stop holds and a restart waits: %v", err)
+	}
+	relStop()
+	relRestart := <-restarting
+	if _, err := e.m.TryRLockRuntime("c"); err == nil || err.Error() != "sandbox is restarting; try again" {
+		t.Errorf("once the restart holds: %v", err)
+	}
+	relRestart()
+	if rel, err := e.m.TryRLockRuntime("c"); err != nil {
+		t.Errorf("after both: %v", err)
+	} else {
+		rel()
+	}
 	// The MCP RPCs map the operation latch's sentinel: a runtime refusal matches it too.
 	if !errors.Is(&RuntimeBusyError{Op: "x"}, ErrBusy) {
 		t.Error("a runtime refusal should match the latch sentinel")

@@ -53,9 +53,10 @@ type runtimeLocks struct {
 // that sweep until the operation's Lock call makes rw refuse them itself. Both
 // are guarded by holdsMu, a leaf (the TryRLock under it never waits).
 //
-// op names the lifecycle operation holding, or waiting for, rw ("stopping"),
-// and gateOp the probe, reap or spawn holding the orphan gate; a refused
-// try-lock reads them for its refusal (SWI-25 A5). Both under holderMu, a leaf.
+// ops names the lifecycle operations holding or waiting for rw ("stopping"),
+// in order (the first holds, the rest wait), and gateOp the probe, reap or
+// spawn holding the orphan gate; a refused try-lock reads them for its refusal
+// (SWI-25 A5). Both under holderMu, a leaf.
 type sandboxLocks struct {
 	rw     sync.RWMutex
 	orphan sync.Mutex
@@ -66,15 +67,15 @@ type sandboxLocks struct {
 	opsWaiting int
 
 	holderMu sync.Mutex
-	op       string
+	ops      []string
 	gateOp   string
 }
 
 // beginOp cancels the MCP calls in flight and refuses new ones, ahead of an
-// operation's rw.Lock, and records the operation's name as the lock's holder;
-// endOp undoes the refusal once that Lock has returned.
+// operation's rw.Lock, and records the operation's name among the lock's
+// holders; endOp undoes the refusal once that Lock has returned.
 func (l *sandboxLocks) beginOp(op string) {
-	l.setOp(op)
+	l.addOp(op)
 	l.holdsMu.Lock()
 	defer l.holdsMu.Unlock()
 	l.opsWaiting++
@@ -89,10 +90,24 @@ func (l *sandboxLocks) endOp() {
 	l.opsWaiting--
 }
 
-func (l *sandboxLocks) setOp(op string) {
+func (l *sandboxLocks) addOp(op string) {
 	l.holderMu.Lock()
-	l.op = op
+	l.ops = append(l.ops, op)
 	l.holderMu.Unlock()
+}
+
+// removeOp forgets one record of op: the operation released the lock. A
+// waiter's record stays, so a refusal keeps naming the operation that holds
+// or is next for the lock.
+func (l *sandboxLocks) removeOp(op string) {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	for i, o := range l.ops {
+		if o == op {
+			l.ops = append(l.ops[:i], l.ops[i+1:]...)
+			return
+		}
+	}
 }
 
 func (l *sandboxLocks) setGateOp(op string) {
@@ -106,10 +121,10 @@ func (l *sandboxLocks) setGateOp(op string) {
 func (l *sandboxLocks) busy() error {
 	l.holderMu.Lock()
 	defer l.holderMu.Unlock()
-	if l.op == "" {
+	if len(l.ops) == 0 {
 		return agent.ErrBusy
 	}
-	return &RuntimeBusyError{Op: "sandbox is " + l.op}
+	return &RuntimeBusyError{Op: "sandbox is " + l.ops[0]}
 }
 
 // gateBusy is the refusal of a try-lock of the orphan gate.
@@ -171,10 +186,10 @@ func (m *Manager) TryLockRuntime(id, op string) (unlock func(), ok bool) {
 	if !l.rw.TryLock() {
 		return nil, false
 	}
-	l.setOp(op)
+	l.addOp(op)
 	return func() {
-		l.setOp("")
 		l.rw.Unlock()
+		l.removeOp(op)
 	}, true
 }
 
@@ -282,7 +297,7 @@ func (m *Manager) runtimeOp(id, op string) func() {
 		// taken before now must not answer the outcome rule's probe.
 		m.lists.invalidate()
 		l.rw.Unlock()
-		l.setOp("")
+		l.removeOp(op)
 		sb, err := m.store.Get(id)
 		if err == nil && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && m.orphans.pending(id) {
 			m.orphans.markUnknown(id)
