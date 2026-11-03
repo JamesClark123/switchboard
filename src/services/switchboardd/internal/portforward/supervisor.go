@@ -206,30 +206,46 @@ func (s *Supervisor) markFailed(id string, reason pb.ServiceFailureReason, detai
 // update, and a skipped write is not published. Whoever moved it on (a stop's
 // drain, a developer's stop) owns the outcome (SWI-17, research R14).
 func (s *Supervisor) transitionStarting(id string, mutate func(*pb.ServiceInstance)) bool {
-	applied := false
-	inst, ok := s.insts.Update(id, func(i *pb.ServiceInstance) {
-		if i.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
-			applied = true
-			mutate(i)
-		}
-	})
-	if ok && applied {
+	inst, applied := s.updateStarting(id, mutate)
+	if applied {
 		s.publish(inst)
 	}
 	return applied
 }
 
-// failStarting is markFailed for a start attempt: the resources are released
-// and the instance FAILED only while it is still STARTING (transitionStarting).
+// updateStarting is the store half of transitionStarting: it reports whether
+// mutate applied, and leaves publishing to the caller.
+func (s *Supervisor) updateStarting(id string, mutate func(*pb.ServiceInstance)) (*pb.ServiceInstance, bool) {
+	applied := false
+	inst, _ := s.insts.Update(id, func(i *pb.ServiceInstance) {
+		if i.GetState() == pb.ServiceState_SERVICE_STATE_STARTING {
+			applied = true
+			mutate(i)
+		}
+	})
+	return inst, applied
+}
+
+// failStarting is markFailed for a start attempt: the instance is FAILED only
+// while it is still STARTING, and the resources are released either way.
+//
+// The store write comes before the release because release cancels the
+// attempt's context: a bringUp woken by that cancel would otherwise still find
+// STARTING and write its own outcome (STOPPED for a cancelled probe, EXITED_EARLY
+// for its killed client) over this one. The publish still follows the release,
+// so nobody hears FAILED while the port is held.
 func (s *Supervisor) failStarting(id string, reason pb.ServiceFailureReason, detail string) {
-	s.release(id)
-	s.transitionStarting(id, func(i *pb.ServiceInstance) {
+	inst, applied := s.updateStarting(id, func(i *pb.ServiceInstance) {
 		i.State = pb.ServiceState_SERVICE_STATE_FAILED
 		i.FailureReason = reason
 		i.FailureDetail = detail
 		i.LocalPort = 0
 		i.EndedAt = timestamppb.New(s.now())
 	})
+	s.release(id)
+	if applied {
+		s.publish(inst)
+	}
 }
 
 // release drops the supervisor's grip on an instance and gives back the host-side
