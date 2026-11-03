@@ -89,6 +89,7 @@ const (
 	Switchboard_AttachWorker_FullMethodName             = "/switchboard.v1.Switchboard/AttachWorker"
 	Switchboard_DetachWorker_FullMethodName             = "/switchboard.v1.Switchboard/DetachWorker"
 	Switchboard_MarkWorkerFree_FullMethodName           = "/switchboard.v1.Switchboard/MarkWorkerFree"
+	Switchboard_SetWorkerPaused_FullMethodName          = "/switchboard.v1.Switchboard/SetWorkerPaused"
 	Switchboard_PutAction_FullMethodName                = "/switchboard.v1.Switchboard/PutAction"
 	Switchboard_DeleteAction_FullMethodName             = "/switchboard.v1.Switchboard/DeleteAction"
 	Switchboard_PutTimedEvent_FullMethodName            = "/switchboard.v1.Switchboard/PutTimedEvent"
@@ -362,6 +363,10 @@ type SwitchboardClient interface {
 	// with the developer's note as its summary and closed_by_developer = true, and
 	// frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
 	MarkWorkerFree(ctx context.Context, in *MarkWorkerFreeRequest, opts ...grpc.CallOption) (*Run, error)
+	// Pauses or resumes a prompt worker (SWI-23): a paused worker is handed no new
+	// run; a run already on it finishes. Setting the current value is a no-op.
+	// INVALID_ARGUMENT for the reasoning sandbox, NOT_FOUND for a non-worker.
+	SetWorkerPaused(ctx context.Context, in *SetWorkerPausedRequest, opts ...grpc.CallOption) (*WorkerView, error)
 	// Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
 	// names the problem). Runs already created are untouched (FR-140).
 	PutAction(ctx context.Context, in *PutActionRequest, opts ...grpc.CallOption) (*Action, error)
@@ -1079,6 +1084,16 @@ func (c *switchboardClient) MarkWorkerFree(ctx context.Context, in *MarkWorkerFr
 	return out, nil
 }
 
+func (c *switchboardClient) SetWorkerPaused(ctx context.Context, in *SetWorkerPausedRequest, opts ...grpc.CallOption) (*WorkerView, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerView)
+	err := c.cc.Invoke(ctx, Switchboard_SetWorkerPaused_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *switchboardClient) PutAction(ctx context.Context, in *PutActionRequest, opts ...grpc.CallOption) (*Action, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Action)
@@ -1569,6 +1584,10 @@ type SwitchboardServer interface {
 	// with the developer's note as its summary and closed_by_developer = true, and
 	// frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
 	MarkWorkerFree(context.Context, *MarkWorkerFreeRequest) (*Run, error)
+	// Pauses or resumes a prompt worker (SWI-23): a paused worker is handed no new
+	// run; a run already on it finishes. Setting the current value is a no-op.
+	// INVALID_ARGUMENT for the reasoning sandbox, NOT_FOUND for a non-worker.
+	SetWorkerPaused(context.Context, *SetWorkerPausedRequest) (*WorkerView, error)
 	// Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
 	// names the problem). Runs already created are untouched (FR-140).
 	PutAction(context.Context, *PutActionRequest) (*Action, error)
@@ -1822,6 +1841,9 @@ func (UnimplementedSwitchboardServer) DetachWorker(context.Context, *DetachWorke
 }
 func (UnimplementedSwitchboardServer) MarkWorkerFree(context.Context, *MarkWorkerFreeRequest) (*Run, error) {
 	return nil, status.Error(codes.Unimplemented, "method MarkWorkerFree not implemented")
+}
+func (UnimplementedSwitchboardServer) SetWorkerPaused(context.Context, *SetWorkerPausedRequest) (*WorkerView, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetWorkerPaused not implemented")
 }
 func (UnimplementedSwitchboardServer) PutAction(context.Context, *PutActionRequest) (*Action, error) {
 	return nil, status.Error(codes.Unimplemented, "method PutAction not implemented")
@@ -2825,6 +2847,24 @@ func _Switchboard_MarkWorkerFree_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Switchboard_SetWorkerPaused_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetWorkerPausedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).SetWorkerPaused(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_SetWorkerPaused_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).SetWorkerPaused(ctx, req.(*SetWorkerPausedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Switchboard_PutAction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PutActionRequest)
 	if err := dec(in); err != nil {
@@ -3407,6 +3447,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkWorkerFree",
 			Handler:    _Switchboard_MarkWorkerFree_Handler,
+		},
+		{
+			MethodName: "SetWorkerPaused",
+			Handler:    _Switchboard_SetWorkerPaused_Handler,
 		},
 		{
 			MethodName: "PutAction",

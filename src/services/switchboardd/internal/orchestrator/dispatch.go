@@ -241,7 +241,7 @@ func (rt *runtime) recheckAndClaim(w *pb.Worker, r planRun, gen0 uint64) claimRe
 	}
 	if rt.recGen != gen0 {
 		cur := onRosterEntry(rt.rec, id)
-		if cur == nil || cur.GetReasoning() || cur.GetLanesPending() {
+		if cur == nil || cur.GetReasoning() || cur.GetLanesPending() || cur.GetPaused() {
 			return claimOut
 		}
 		// The run's kept copy is read from the snapshot run: claims never read

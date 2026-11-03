@@ -387,6 +387,40 @@ func (s *Service) SetWorkerLanes(req *pb.SetWorkerLanesRequest) (*pb.WorkerView,
 	return rt.workerView(req.GetSandboxId()), nil
 }
 
+// SetWorkerPaused pauses or resumes a prompt worker (SWI-23). A run already on
+// the worker finishes as normal; a claim it hasn't started goes back to the
+// queue. The write bumps recGen, so a pass mid-flight re-reads it before its
+// next claim. Setting the current value writes nothing and pushes nothing.
+func (s *Service) SetWorkerPaused(orchID, sandboxID string, paused bool) (*pb.WorkerView, error) {
+	rt, err := s.runtimeFor(orchID)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	if _, err := rt.update(func(o *pb.Orchestrator) error {
+		w := onRosterEntry(o, sandboxID)
+		switch {
+		case w == nil:
+			return fmt.Errorf("%w: sandbox %s is not a worker of %s", ErrNotFound, sandboxID, o.GetName())
+		case w.GetReasoning():
+			return fmt.Errorf("%w: the reasoning sandbox cannot be paused", ErrInvalid)
+		case w.GetPaused() == paused:
+			return errNoChange
+		}
+		w.Paused, changed = paused, true
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if changed {
+		if paused {
+			rt.unclaimOn(sandboxID)
+		}
+		rt.afterLaneChange(laneChange{marked: []string{sandboxID}})
+	}
+	return rt.workerView(sandboxID), nil
+}
+
 // setLaneMembersChange replaces one lane's members (FR-307) if they still
 // equal what the editor showed (FR-307a). A save covering a worker clears its
 // lanes-pending flag.

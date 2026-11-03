@@ -15,8 +15,12 @@ import (
 // and nothing past maxHookRead is read. A body that is not a JSON object, or
 // ends early, yields the fields found before that point.
 
-// maxHookRead is the hard cap on a hook body read.
-const maxHookRead = 16 << 20
+// maxHookRead is the hard cap on a hook body read (SWI-27, down from 16 MiB).
+// Every field the daemon keeps is small, and Claude Code sends them ahead of the
+// large values (tool_input) that make a body big. 1 MiB covers them with room for
+// a long prompt or last message before them. Past it the body is cut off, and
+// the fields found so far stand.
+const maxHookRead = 1 << 20
 
 // maxHookField bounds a kept field's value (a session id, a source, the
 // background task list); a larger one is skipped as if absent.
@@ -29,12 +33,14 @@ var errHookDone = errors.New("hook body read")
 
 // readHookInput reads the fields of hookInput from a hook body. It stops once
 // the session id, the event name and that event's own field (hookInputDone)
-// were seen: Claude Code sends them ahead of a PreToolUse's tool_input.
+// were seen: Claude Code sends them ahead of a PreToolUse's tool_input. Unread
+// is set when it stopped there or at the cap, with more of the body to come.
 func readHookInput(r io.Reader) hookInput {
-	sk := &skim{r: bufio.NewReader(io.LimitReader(r, maxHookRead))}
+	lim := &io.LimitedReader{R: r, N: maxHookRead}
+	sk := &skim{r: bufio.NewReader(lim)}
 	var in hookInput
 	seen := map[string]bool{}
-	_ = sk.object(func(key string) error {
+	err := sk.object(func(key string) error {
 		switch key {
 		case "hook_event_name":
 			in.HookEventName = sk.str()
@@ -69,6 +75,11 @@ func readHookInput(r io.Reader) hookInput {
 		}
 		return nil
 	})
+	// A body ending exactly at the cap was read whole: the read must also have
+	// failed for it to be cut off.
+	cut := err != nil && lim.N <= 0
+	in.Unread = errors.Is(err, errHookDone) || cut
+	in.CutOff = cut && !seen["background_tasks"]
 	return in
 }
 

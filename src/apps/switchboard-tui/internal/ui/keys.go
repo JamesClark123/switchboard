@@ -46,7 +46,10 @@ type keyMap struct {
 	// every other binding in this map.
 	OrchestratorAttach key.Binding
 	MarkFree           key.Binding
-	OrchestratedTab    key.Binding
+	// PauseWorker pauses or resumes a prompt worker (SWI-23). `P`, since `p` is
+	// Services; verified free against every other binding in this map.
+	PauseWorker     key.Binding
+	OrchestratedTab key.Binding
 	// Settings opens the TUI-persisted settings screen (feature 008, FR-101).
 	// `,` is free against every other binding and reachable from both top-level
 	// screens.
@@ -102,6 +105,7 @@ func newKeyMap() keyMap {
 		Settings:           key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		OrchestratorAttach: key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "attach/detach")),
 		MarkFree:           key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mark free")),
+		PauseWorker:        key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "pause/resume worker")),
 		OrchestratedTab:    key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "orchestrated")),
 		Launch:             key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "launch")),
 		NewConfig:          key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new config")),
@@ -153,6 +157,10 @@ func (m Model) listHelp() helpBindings {
 	// shown (FR-116).
 	if sb := m.current(); sb != nil && (sb.GetController().GetRun().GetNeedsReview() || cleanupNeedsInput(sb)) {
 		hb = append(hb, k.MarkFree)
+	}
+	// SWI-23: pause applies only to prompt workers.
+	if c := m.current().GetController(); c != nil && !c.GetReasoning() {
+		hb = append(hb, k.PauseWorker)
 	}
 	hb = append(hb, k.OrchestratedTab, m.screenNextKey(), k.Settings)
 	// Surface the update key only when a newer release is available.

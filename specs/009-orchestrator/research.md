@@ -406,7 +406,8 @@ the proven 005 carrier, and the run frame closes the live-session gap it leaves.
   survives `rebuildTabs()` and is cleared by `switchTab`; it lists every sandbox with a controller
   across hosts, the reasoning ones marked. `currentTabRows()` hides controlled sandboxes on All /
   host / group tabs unless they need the developer, and **stable-partitions** every tab's rows so
-  those that need the developer come first (FR-114). Launch wizard: `O` opens an orchestrator
+  those that need the developer come first (FR-114), then again so stopped sandboxes come last,
+  stopped winning over the need (SWI-31). Launch wizard: `O` opens an orchestrator
   pick sub-mode; the request carries the bundle from `GetWorkerBundle` as
   `LaunchSandboxRequest.controller` (FR-110).
 - **Third line.** The bubbles default delegate is fixed at two lines, so the list gets a custom

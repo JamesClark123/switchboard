@@ -53,6 +53,7 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 		"PutLane":             func() error { _, e := client.PutLane(ctx, &pb.PutLaneRequest{}); return e },
 		"DeleteLane":          func() error { _, e := client.DeleteLane(ctx, &pb.DeleteLaneRequest{}); return e },
 		"SetWorkerLanes":      func() error { _, e := client.SetWorkerLanes(ctx, &pb.SetWorkerLanesRequest{}); return e },
+		"SetWorkerPaused":     func() error { _, e := client.SetWorkerPaused(ctx, &pb.SetWorkerPausedRequest{}); return e },
 		"SetLaneMembers":      func() error { _, e := client.SetLaneMembers(ctx, &pb.SetLaneMembersRequest{}); return e },
 		"CheckLaneChange":     func() error { _, e := client.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{}); return e },
 		"DismissDroppedWorkerTags": func() error {
@@ -70,8 +71,8 @@ func TestOrchestratorRPCsUnavailableWithoutServices(t *testing.T) {
 			return e
 		},
 	}
-	if len(calls) != 33 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18) + DeliverWorkerStep, ResolveRunStep (SWI-17)
-		t.Fatalf("expected the 33 orchestrator RPCs, have %d", len(calls))
+	if len(calls) != 34 { // 24 from feature 009 + FireTimedEvent (SWI-4) + 6 lane RPCs (SWI-18) + DeliverWorkerStep, ResolveRunStep (SWI-17) + SetWorkerPaused (SWI-23)
+		t.Fatalf("expected the 34 orchestrator RPCs, have %d", len(calls))
 	}
 	for name, call := range calls {
 		err := call()

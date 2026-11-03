@@ -90,6 +90,14 @@ func TestDispatchLaneRace(t *testing.T) {
 			},
 			want: "wc",
 		},
+		"next candidate is paused": {
+			mutate: func(t *testing.T, s setup) {
+				if _, err := s.env.svc.SetWorkerPaused(s.o.GetId(), "wb", true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "wc",
+		},
 		"action switches from inclusive to exclusive": {
 			inclusive: true,
 			busyWC:    true,

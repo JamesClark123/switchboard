@@ -99,7 +99,7 @@ func nextBackoff(cur, lo, hi time.Duration) time.Duration {
 	return min(2*cur, hi)
 }
 
-// markLanes queues lane display pushes for workers (by sandbox id); workers
+// markLanes queues display pushes (lanes and paused flag) for workers (by sandbox id); workers
 // no longer on the roster are skipped, dropping any retry they had.
 func (rt *runtime) markLanes(sandboxIDs ...string) {
 	rec := rt.record()
@@ -188,7 +188,7 @@ func (rt *runtime) lanePushed(host, id string, again bool) {
 	if r.n > lanePushMaxAttempts {
 		p.dropRetry(id)
 		p.mu.Unlock()
-		rt.svc.logf("[orchestrator %s] gave up pushing lanes to %s on %s; its next lane change, briefing refresh or reconnect pushes them", rt.name(), id, host)
+		rt.svc.logf("[orchestrator %s] gave up pushing lanes and paused flag to %s on %s; its next lane or pause change, briefing refresh or reconnect pushes them", rt.name(), id, host)
 		return
 	}
 	r.host, r.queued = host, false

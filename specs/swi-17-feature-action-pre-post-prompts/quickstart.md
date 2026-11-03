@@ -26,9 +26,14 @@ This is a run guide. The behaviour each scenario proves is defined in [spec.md](
    - `sbx exec <N> sh -c 'cut -d" " -f4 /proc/$(cut -d" " -f2 ~/.sxb/agent.pid)/stat; readlink /proc/$(cut -d" " -f4 /proc/$(cut -d" " -f2 ~/.sxb/agent.pid)/stat)/exe'`
    - `sbx exec <N> sh -c 'echo $PPID; readlink /proc/$PPID/exe'`
 
-   They must match: both 0, or the same non-shell executable. Record the shape in T045's test fixture. If they
-   differ (a fresh parent process per exec with a different exe), stop and revise the R13 rule before relying on
-   main-PID recovery.
+   They must match: both 0, or the same non-shell executable. Record the observed parent (pid, exe) of both in the PR
+   and in T045's test fixture. If they differ (a fresh parent process per exec with a different exe), stop and revise
+   the R13 rule before relying on main-PID recovery. If the parent is PID 1 or a subreaper (`subreaperExes`,
+   `agent/tokens.go`), a probe refuses the bind (SWI-27): add any new name to that list, and expect the sandbox to rely
+   on the hook bind or Replace.
+
+   Recorded so far (SWI-27, from inside a worker sandbox): the agent's parent is 0, and PID 1 is `/usr/bin/tini`. The
+   second command, a fresh exec's parent, still needs running on the host.
 5. **Which `sbx` calls start a stopped sandbox (research R14, run-618).** Stop a scratch sandbox (`sbx stop <N>`),
    then run each of the following and check `sbx ls` after each, stopping the sandbox again in between:
    - `sbx mcp load <server> --sandbox <N>`, then `sbx mcp unload <server> --sandbox <N>`;

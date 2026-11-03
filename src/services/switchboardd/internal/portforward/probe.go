@@ -98,12 +98,12 @@ const (
 // would report "ready" for a service that never started. Asking the sandbox
 // directly is the only answer that means what it says — and it distinguishes the
 // three outcomes FR-047 needs to tell apart (research R5).
-func (s *Supervisor) awaitSandboxListening(ctx context.Context, ref string, port uint32, window time.Duration, exited <-chan struct{}) (listenState, error) {
+func (s *Supervisor) awaitSandboxListening(ctx context.Context, sandboxID, ref string, port uint32, window time.Duration, exited <-chan struct{}) (listenState, error) {
 	deadline := time.Now().Add(window)
 	backoff := probeInitialBackoff
 	last := listenNone
 	for {
-		if st := s.sandboxListenState(ctx, ref, port); st == listenAll {
+		if st := s.lockedListenState(ctx, sandboxID, ref, port); st == listenAll {
 			return st, nil
 		} else if st != listenNone {
 			last = st
@@ -112,14 +112,14 @@ func (s *Supervisor) awaitSandboxListening(ctx context.Context, ref string, port
 		case <-ctx.Done():
 			return last, ctx.Err()
 		case <-exited:
-			if st := s.sandboxListenState(ctx, ref, port); st == listenAll {
+			if st := s.finalListenState(ctx, sandboxID, ref, port); st == listenAll {
 				return st, nil
 			}
 			return last, errProcessExited
 		case <-time.After(backoff):
 		}
 		if time.Now().After(deadline) {
-			if st := s.sandboxListenState(ctx, ref, port); st == listenAll {
+			if st := s.finalListenState(ctx, sandboxID, ref, port); st == listenAll {
 				return st, nil
 			} else if st != listenNone {
 				last = st
@@ -130,6 +130,46 @@ func (s *Supervisor) awaitSandboxListening(ctx context.Context, ref string, port
 			backoff = probeMaxBackoff
 		}
 	}
+}
+
+// lockedListenState is sandboxListenState under the sandbox's runtime lock
+// (SWI-26): each check is an `sbx exec`, which would start a stopped sandbox.
+// While a lifecycle operation holds the lock nothing runs and it reads as not
+// listening, and the loop looks again; a check that ends the loop is
+// finalListenState.
+func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
+	if ctx.Err() != nil {
+		return listenNone
+	}
+	unlock, ok := s.lockRuntime(sandboxID)
+	if !ok {
+		return listenNone
+	}
+	defer unlock()
+	return s.boundedListenState(ctx, ref, port)
+}
+
+// finalListenState is lockedListenState for a check that decides a start's
+// outcome (the readiness window's last look, and classifying a failed start): it
+// waits for the lock (awaitRuntime) rather than reading a busy sandbox as not
+// listening. Otherwise an operation that leaves the start alone would get a healthy
+// service killed as never having listened, and a loopback-only bind would go
+// unnamed. The operation's drain or teardown cancels ctx if it settles the start.
+func (s *Supervisor) finalListenState(ctx context.Context, sandboxID, ref string, port uint32) listenState {
+	unlock, ok := s.awaitRuntime(ctx, sandboxID)
+	if !ok {
+		return listenNone
+	}
+	defer unlock()
+	return s.boundedListenState(ctx, ref, port)
+}
+
+// boundedListenState is sandboxListenState within runtimeHoldTimeout: it runs
+// under the runtime lock, and a wedged exec must not hold a waiting stop.
+func (s *Supervisor) boundedListenState(ctx context.Context, ref string, port uint32) listenState {
+	ctx, cancel := context.WithTimeout(ctx, runtimeHoldTimeout)
+	defer cancel()
+	return s.sandboxListenState(ctx, ref, port)
 }
 
 // sandboxListenState reads /proc/net/tcp and /proc/net/tcp6 IN the sandbox.

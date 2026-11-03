@@ -78,9 +78,13 @@ type Service struct {
 
 	// bringing counts the bring-ups reloading a sandbox's gateway server right
 	// now: WarmStart leaves those to OnBringUp, which starts the agent after
-	// the load so it comes up with the orchestrator's tools.
-	bringMu  sync.Mutex
-	bringing map[string]int
+	// the load so it comes up with the orchestrator's tools. owedLoads are the
+	// launches whose load a lifecycle operation refused or cancelled: held the
+	// same way, until a bring-up's load has run (OnLaunched starts the first)
+	// or a Detach or destroy settles it.
+	bringMu   sync.Mutex
+	bringing  map[string]int
+	owedLoads map[string]bool
 
 	// Step delivery (SWI-17, step.go): the hook tap, and the screen, typer
 	// and clock, which default to the terminal registry, the agent registry
@@ -165,6 +169,7 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 			next.Run = cur.GetRun()
 			// A same-orchestrator re-attach keeps the lane display (R11).
 			next.LaneNames, next.LanesPending, next.LanesKnown = cur.GetLaneNames(), cur.GetLanesPending(), cur.GetLanesKnown()
+			next.Paused = cur.GetPaused() // SWI-23: the same display copy
 		}
 		next.AttachedAt = attachedAt
 		x.Controller = next
@@ -182,12 +187,28 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 		return nil, err
 	}
 	s.indexToken(sb.GetId(), token)
-	live := sb
+	resolve := func() (string, error) { return s.runningRef(sb.GetId()) }
 	if launching != nil {
-		live = launching
+		resolve = func() (string, error) {
+			if launching.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+				return "", errNotRunning
+			}
+			return sandboxRef(launching), nil
+		}
 	}
-	running := live.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING
-	if err := s.gw.register(ctx, sb.GetId(), sandboxRef(live), running, token); err != nil {
+	if err := s.gw.register(ctx, sb.GetId(), token, resolve); errors.Is(err, errLoadBusy) {
+		// Registered; a lifecycle operation holds the sandbox, so the load
+		// waits it out as a bring-up (SWI-26): the agent's start is held until
+		// it, and warm-started after it. A launching record isn't RUNNING yet and
+		// a bring-up would give up on it, so that one waits for the end of the
+		// launch.
+		if launching != nil {
+			s.logf("[worker] attach %s: sandbox busy; gateway load deferred until the launch completes", sb.GetId())
+			s.setLoadOwed(sb.GetId(), true)
+		} else {
+			s.GoBringUp(sb)
+		}
+	} else if err != nil {
 		// The controller stands; the registration is retried at the next bring-up.
 		s.logf("[worker] attach %s: gateway registration failed (retried at bring-up): %v", sb.GetId(), err)
 	}
@@ -196,9 +217,10 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 	}
 	s.mgr.Emit(sb)
 	// A launch-attach is warm-started once the launch completes (the record is
-	// still CREATING here); a running sandbox is started now.
+	// still CREATING here); a running sandbox is started now. Registering may
+	// have taken minutes, so the record is read afresh.
 	if launching == nil {
-		s.WarmStart(sb)
+		s.warmStartCurrent(sb.GetId())
 	}
 	// A broadcaster created before the sandbox became a worker has no agent
 	// screen yet (SWI-17, research R2); one created from now on gets it.
@@ -237,6 +259,7 @@ func (s *Service) Detach(ctx context.Context, sandboxID, orchID string, force bo
 	if cur.GetReasoning() && !force {
 		return nil, fmt.Errorf("%w: reasoning sandbox is not detachable", ErrPrecondition)
 	}
+	s.setLoadOwed(sandboxID, false)
 	s.revokeToken(sandboxID)
 	s.gw.unregister(ctx, sandboxID)
 	if err := StripBriefing(sb.GetWorkspacePath()); err != nil {
@@ -297,6 +320,9 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 				}
 			}
 			cur.LaneNames, cur.LanesPending, cur.LanesKnown = names, l.GetPending(), true
+		}
+		if req.Paused != nil {
+			cur.Paused = req.GetPaused() // SWI-23: a display copy only
 		}
 		if req.GetClearNeedsInput() {
 			// The developer's "mark free" on a worker parked NEEDS_INPUT with
@@ -395,10 +421,26 @@ func (s *Service) OnDestroy(sb *pb.Sandbox) {
 			return
 		}
 	}
+	s.setLoadOwed(sb.GetId(), false)
 	s.revokeToken(sb.GetId())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s.gw.unregister(ctx, sb.GetId())
+}
+
+// OnLaunched ends a controlled sandbox's launch, once its record is RUNNING
+// (sandbox.Manager's launched hook): the agent's warm start, or the bring-up that
+// loads the gateway first if the launch-attach couldn't (SWI-26). It never waits
+// for the load: a lifecycle operation may hold the sandbox for a while yet. A
+// sandbox detached during its launch has no controller here, and this settles
+// what its launch owed: that load can be refused after the Detach, so the Detach
+// alone can't.
+func (s *Service) OnLaunched(sb *pb.Sandbox) {
+	if s.loadOwed(sb.GetId()) {
+		s.GoBringUp(sb)
+		return
+	}
+	s.WarmStart(sb)
 }
 
 // OnBringUp re-loads a controlled sandbox's registration after a restart or
@@ -420,27 +462,99 @@ func (s *Service) GoBringUp(sb *pb.Sandbox) {
 }
 
 // beginBringUp marks a controlled sandbox with a gateway token as bringing up
-// and returns the rest of its bring-up, or nil when there is none to do.
+// and returns the rest of its bring-up, or nil when there is none to do. Any load
+// a launch owes is settled once the load has run, before the mark drops, so the
+// agent's start stays held with no gap. One that gave up on the record (still
+// CREATING, or stopped) leaves it owed: a later bring-up does the load.
 func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
 	if sb.GetController() == nil {
+		s.setLoadOwed(sb.GetId(), false)
 		return nil
 	}
 	if _, err := s.reg.GetWorkerToken(sb.GetId()); err != nil {
+		s.setLoadOwed(sb.GetId(), false)
 		return nil
 	}
 	s.markBringUp(sb.GetId(), 1)
 	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		err := s.gw.load(ctx, sb.GetId(), sandboxRef(sb))
-		cancel()
+		err := s.loadWhen(sb.GetId())
+		if !errors.Is(err, errNotRunning) {
+			s.setLoadOwed(sb.GetId(), false)
+		}
 		s.markBringUp(sb.GetId(), -1)
+		if errors.Is(err, errNotRunning) {
+			return // no longer running: no agent start
+		}
 		if err != nil {
 			s.logf("[worker] bring-up %s: %v", sb.GetId(), err)
 		}
 		// After the gateway load, so the agent starts with the orchestrator's tools.
-		s.WarmStart(sb)
+		s.warmStartCurrent(sb.GetId())
 	}
 }
+
+// warmStartCurrent is WarmStart on the sandbox's record as it is now, for a caller
+// whose copy may be minutes old. A record that can't be read (a destroyed
+// sandbox) starts nothing: the spawn would mint a hook token for it.
+func (s *Service) warmStartCurrent(sandboxID string) {
+	if cur, err := s.mgr.Get(sandboxID); err == nil {
+		s.WarmStart(cur)
+	}
+}
+
+// errNotRunning ends a gateway load whose sandbox is not RUNNING (a lifecycle
+// operation left it so, or it is gone): the load and the agent start would both
+// start it again (`sbx mcp load`, `sbx exec`). The next Restart, Refresh or AddKit
+// ends in the bring-up that does them.
+var errNotRunning = errors.New("sandbox is no longer running")
+
+// runningRef reads the sandbox's record and returns its current handle, or
+// errNotRunning unless it is RUNNING. The gateway calls it under the runtime lock,
+// so nothing can stop the sandbox between this read and the load.
+func (s *Service) runningRef(sandboxID string) (string, error) {
+	cur, err := s.mgr.Get(sandboxID)
+	if err != nil || cur.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING {
+		return "", errNotRunning
+	}
+	return sandboxRef(cur), nil
+}
+
+// loadWhen loads the sandbox's gateway registration, retrying while a
+// lifecycle operation holds its runtime lock (errLoadBusy), for up to
+// loadWaitLimit; each attempt is bounded by loadTimeout. It ends with
+// errNotRunning once the record is not RUNNING (SWI-26).
+func (s *Service) loadWhen(sandboxID string) error {
+	resolve := func() (string, error) { return s.runningRef(sandboxID) }
+	deadline := time.Now().Add(loadWaitLimit)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
+		err := s.gw.load(ctx, sandboxID, resolve)
+		cancel()
+		if !errors.Is(err, errLoadBusy) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("load gateway server %s: %w", ServerName(sandboxID), errLoadBusy)
+		}
+		time.Sleep(loadRetryStep)
+		if _, err := resolve(); err != nil {
+			return err
+		}
+	}
+}
+
+// loadTimeout bounds one gateway load; loadWaitLimit how long a bring-up waits
+// out a lifecycle operation that holds its sandbox with the record still RUNNING
+// (a stop's drain, a restart of a running record). It is a backstop: an operation
+// that moves the record off RUNNING ends the wait at once, and brings the sandbox
+// up itself if it comes back.
+const (
+	loadTimeout   = 2 * time.Minute
+	loadWaitLimit = 30 * time.Minute
+)
+
+// loadRetryStep is how often loadWhen retries a busy sandbox.
+var loadRetryStep = 100 * time.Millisecond
 
 // markBringUp adds delta to the sandbox's count of bring-ups in progress.
 func (s *Service) markBringUp(sandboxID string, delta int) {
@@ -454,11 +568,33 @@ func (s *Service) markBringUp(sandboxID string, delta int) {
 	}
 }
 
-// bringingUp reports whether a bring-up is reloading the sandbox's gateway.
+// bringingUp reports whether a bring-up is reloading the sandbox's gateway, or a
+// launch still owes it the load.
 func (s *Service) bringingUp(sandboxID string) bool {
 	s.bringMu.Lock()
 	defer s.bringMu.Unlock()
-	return s.bringing[sandboxID] > 0
+	return s.bringing[sandboxID] > 0 || s.owedLoads[sandboxID]
+}
+
+// setLoadOwed records or settles the gateway load a launch owes the sandbox.
+func (s *Service) setLoadOwed(sandboxID string, owed bool) {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	if !owed {
+		delete(s.owedLoads, sandboxID)
+		return
+	}
+	if s.owedLoads == nil {
+		s.owedLoads = map[string]bool{}
+	}
+	s.owedLoads[sandboxID] = true
+}
+
+// loadOwed reports whether a launch owes the sandbox its gateway load.
+func (s *Service) loadOwed(sandboxID string) bool {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	return s.owedLoads[sandboxID]
 }
 
 // AcceptLink serves one OrchestratorLink stream (the gRPC handler and Local

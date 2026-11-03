@@ -294,6 +294,10 @@ service Switchboard {
   // with the developer's note as its summary and closed_by_developer = true, and
   // frees the worker (FR-156). FAILED_PRECONDITION when no run awaits review there.
   rpc MarkWorkerFree(MarkWorkerFreeRequest) returns (Run);
+  // Pauses or resumes a prompt worker (SWI-23): a paused worker is handed no new
+  // run; a run already on it finishes. Setting the current value is a no-op.
+  // INVALID_ARGUMENT for the reasoning sandbox, NOT_FOUND for a non-worker.
+  rpc SetWorkerPaused(SetWorkerPausedRequest) returns (WorkerView);
 
   // Creates or replaces an action (validated at save, FR-121/137/138; INVALID_ARGUMENT
   // names the problem). Runs already created are untouched (FR-140).
@@ -1498,6 +1502,8 @@ message SandboxController {
   bool lanes_pending = 8;                // display only
   string attach_ticket = 9;              // FR-306b; the orchestrator's token, not lane data
   bool lanes_known = 10;                 // set by the first UpdateWorker{lanes}; lane text shown only when set
+  // --- SWI-23 ---
+  bool paused = 11;                      // display only; the roster's Worker.paused decides
 }
 message WorkerRun {
   string id = 1;
@@ -1621,6 +1627,8 @@ message Worker {
   bool lanes_pending = 6;                // adopted through an invalid ticket (FR-306b)
   uint64 revision = 7;                   // sandbox revision this entry was written from (FR-308c)
   uint64 written_seq = 8;                // Orchestrator.roster_seq at the write
+  // --- SWI-23 ---
+  bool paused = 9;                       // handed no new run; never set on the reasoning sandbox
 }
 
 // Persisted in the registry's `orchestrators` bucket (R9).
@@ -1735,6 +1743,8 @@ message WorkerView {
   repeated string lane_ids = 15;
   bool lanes_pending = 16;
   bool detaching = 17;
+  // --- SWI-23 ---
+  bool paused = 18;
 }
 
 // One step of a run's sequence snapshot (SWI-17, FR-205).
@@ -1876,6 +1886,12 @@ message MarkWorkerFreeRequest {
   string note = 4;                       // optional; recorded as the run's summary
 }
 
+message SetWorkerPausedRequest {
+  string orchestrator_id = 1;
+  string sandbox_id = 2;
+  bool paused = 3;
+}
+
 message PutActionRequest {
   string orchestrator_id = 1;
   Action action = 2;
@@ -1938,6 +1954,8 @@ message UpdateWorkerRequest {
   string expect_run_id = 8;
   // --- SWI-18 --- (8 is SWI-17's)
   WorkerLaneDisplay lanes = 9;           // display copy of the worker's lanes (FR-309a); presence = set
+  // --- SWI-23 ---
+  optional bool paused = 10;             // display copy of Worker.paused; presence = set
 }
 message DeliverWorkerPromptRequest {
   string sandbox_id = 1;
