@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -240,6 +241,12 @@ func (m Model) sshTargetForHost(hostID string) (string, error) {
 		return "", nil
 	}
 	h, err := m.hostStore.Get(hostID)
+	if errors.Is(err, store.ErrHostNotFound) && hostID == m.activeHost && !m.managerSaysSSH(hostID) {
+		// The active daemon is connected by construction; its entry can be
+		// missing when EnsureLocal couldn't write the hosts file at startup,
+		// and that sandbox is local, as it was before SWI-24.
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -247,4 +254,13 @@ func (m Model) sshTargetForHost(hostID string) (string, error) {
 		return "", nil
 	}
 	return h.SSHTarget, nil
+}
+
+// managerSaysSSH reports a host the connection manager knows as an SSH host.
+func (m Model) managerSaysSSH(hostID string) bool {
+	if m.manager == nil {
+		return false
+	}
+	hc, ok := m.manager.Get(hostID)
+	return ok && hc.Entry.Kind == "ssh"
 }

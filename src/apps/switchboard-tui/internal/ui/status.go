@@ -338,14 +338,10 @@ func (m *Model) checkSizes() tea.Cmd {
 		if m.formHeights == nil {
 			m.formHeights = formHeights{}
 		}
-		last, known := m.formHeights[f]
-		if !known {
-			// Built with WithHeight(bodyHeight()) in this same message, so
-			// this is the height it has (huh has no getter).
-			m.formHeights[f] = h
-			return nil
-		}
-		if last == h {
+		// A form not seen before was built in this message, or rebuilt in
+		// place (a failed save, reviveCompleted) with the height of that
+		// moment; huh has no getter, so it is sized now and recorded.
+		if last, known := m.formHeights[f]; known && last == h {
 			return nil
 		}
 		m.formHeights[f] = h

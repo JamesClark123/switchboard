@@ -584,6 +584,10 @@ typed changes asks to save or discard, like other inputs). Rules:
   ```toml
   editor = 'custom'
   editor_custom_command = '"/Applications/My Editor.app/bin/edit" {path}'
+  ```
+
+  ```toml
+  editor = 'custom'
   editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''
   ```
 

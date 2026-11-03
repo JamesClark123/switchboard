@@ -160,6 +160,9 @@ func TestRefusalOrder(t *testing.T) {
 	if _, ref := Resolve(Request{Editor: vs, WorkspacePath: ""}); refRule(ref) != RulePathUnsafe {
 		t.Errorf("an empty path is unsafe: %+v", ref)
 	}
+	if _, ref := Resolve(Request{Editor: zed, SSHTarget: "user@box", WorkspacePath: "work/space"}); refRule(ref) != RulePathUnsafe {
+		t.Errorf("a relative path with Zed is path-unsafe, not zed-target: %+v", ref)
+	}
 }
 
 // TestOverrideVariables: the raw value is one executable (never split), and the

@@ -1222,6 +1222,10 @@ func (m Model) activeHelp() helpBindings {
 		if m.jobs.results != nil {
 			return m.runResultsHelp()
 		}
+	case screenMcp:
+		if m.mcpView.mcpModalOpen() {
+			return m.mcpHelp() // the overlay has focus: no enlarge hint
+		}
 	}
 	var hb helpBindings
 	switch m.screen {

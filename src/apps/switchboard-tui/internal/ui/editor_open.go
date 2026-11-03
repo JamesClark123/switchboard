@@ -141,7 +141,7 @@ func (m Model) openEditorCmd(hostID, sandboxID string) tea.Cmd {
 	n := short(sandboxID)
 	if m.launcher == nil {
 		text := withNotices(e.Name+" opener not configured", notices)
-		return func() tea.Msg { return editorOutcomeMsg{sandboxID: sandboxID, text: text} }
+		return func() tea.Msg { return editorOutcomeMsg{sandboxID: sandboxID, text: text, failed: true} }
 	}
 	target, hostErr := m.sshTargetForHost(hostID)
 	home, _ := os.UserHomeDir()

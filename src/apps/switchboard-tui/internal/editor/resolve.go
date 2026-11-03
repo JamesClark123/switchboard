@@ -1,6 +1,9 @@
 package editor
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // The rules Precheck reports besides the Custom command's and the target's.
 const (
@@ -69,16 +72,12 @@ func prepare(req Request) (prepared, *Refusal) {
 			args, err = Expand(words, req.Home)
 		}
 		if err != nil {
-			ce, _ := err.(*CheckError)
+			ce := err.(*CheckError) // Split, Check and Expand return nothing else
 			where := WhereSettings
-			if ce != nil && ce.Rule == RuleNoHome {
+			if ce.Rule == RuleNoHome {
 				where = WhereEnv
 			}
-			rule := "invalid"
-			if ce != nil {
-				rule = ce.Rule
-			}
-			return p, &Refusal{Rule: rule, Where: where}
+			return p, &Refusal{Rule: ce.Rule, Where: where}
 		}
 		p.custom = args
 		p.exe = args[0]
@@ -90,7 +89,14 @@ func prepare(req Request) (prepared, *Refusal) {
 			return p, &Refusal{Rule: RuleTargetDash, Where: WhereHostEntry}
 		}
 		if e.Remote == RemoteSSHAddress {
-			addr, ref := ZedAddress(req.SSHTarget, req.WorkspacePath)
+			// The path checks come after the target checks (§3): a path that
+			// isn't absolute is left out here, so Resolve reports path-unsafe
+			// rather than a bad host entry.
+			path := req.WorkspacePath
+			if !filepath.IsAbs(path) {
+				path = ""
+			}
+			addr, ref := ZedAddress(req.SSHTarget, path)
 			if ref != nil {
 				return p, ref
 			}

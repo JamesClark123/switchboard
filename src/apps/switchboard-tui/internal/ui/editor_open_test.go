@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -183,7 +184,7 @@ func TestOpenEditorEarlyReturnsClearRow(t *testing.T) {
 	m, _, _ := editorModel(t, d)
 	m.launcher = nil
 	m, msg, _ := pressV(t, m)
-	if msg.failed || m.status != "VS Code opener not configured" || m.busy["sb1"] != "" {
+	if !msg.failed || m.status != "VS Code opener not configured" || m.busy["sb1"] != "" || !m.statusIsErr() {
 		t.Errorf("no launcher: %+v busy %v", msg, m.busy)
 	}
 	m.prefs.Editor = "goland"
@@ -439,6 +440,22 @@ func TestOpenEditorRemote(t *testing.T) {
 	if d.vscodeCalls != calls {
 		t.Error("a failed lookup must not call the daemon")
 	}
+	// The active host missing from the hosts file is local (EnsureLocal
+	// couldn't write it), unless the manager knows it as an SSH host.
+	if err := os.Remove(filepath.Join(st.Dir(), "hosts.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if tgt, err := m.sshTargetForHost("remote"); tgt != "" || err != nil {
+		t.Errorf("active host absent from the store: %q, %v", tgt, err)
+	}
+	if _, err := m.sshTargetForHost("other"); err == nil {
+		t.Error("a non-active host that is gone refuses")
+	}
+	mgr := client.NewManager()
+	mgr.Upsert(client.HostEntry{ID: "remote", DisplayName: "box", Kind: "ssh", SSHTarget: "user@box"})
+	if _, err := m.WithHosts(mgr, st.Hosts(), "remote").sshTargetForHost("remote"); err == nil {
+		t.Error("an SSH host the manager knows refuses when its entry is gone")
+	}
 	// Target checks.
 	target := func(tgt string) {
 		t.Helper()
@@ -446,7 +463,7 @@ func TestOpenEditorRemote(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Remove(filepath.Join(st.Dir(), "hosts.toml")); err != nil {
+	if err := os.Remove(filepath.Join(st.Dir(), "hosts.toml")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	target("-oProxyCommand=x")
@@ -459,6 +476,13 @@ func TestOpenEditorRemote(t *testing.T) {
 	m, _, _ = pressV(t, m)
 	if !strings.HasPrefix(m.status, "the host's SSH target can't be used in an ssh:// address") {
 		t.Errorf("zed-target = %q", m.status)
+	}
+	// A relative daemon path with Zed is the daemon's fault, not the host entry's.
+	target("user@box")
+	d.vscodePath = "work/space"
+	m, _, _ = pressV(t, m)
+	if !strings.HasPrefix(m.status, "the workspace path from the daemon isn't absolute") {
+		t.Errorf("relative path with Zed = %q", m.status)
 	}
 	// The path limit (FR-517): on for the selected editor's own set variable.
 	target("user@box")
