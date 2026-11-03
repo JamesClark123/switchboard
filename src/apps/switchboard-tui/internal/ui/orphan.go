@@ -337,7 +337,9 @@ func replaceBody(names, tooOld []string) []string {
 }
 
 // replaceTimeout is how long a daemon gets to replace n agents: it stops four
-// at a time, each TERM then KILL within about 15 s, plus the usual allowance.
+// at a time (grpc.replaceConcurrency), each TERM then KILL within about 15 s
+// (sandbox.orphanKillWait + orphanProbeTimeout), plus the usual allowance. The
+// daemon's constants note this bound; change them together.
 func replaceTimeout(n int) time.Duration {
 	return 60*time.Second + time.Duration((n+3)/4)*15*time.Second
 }

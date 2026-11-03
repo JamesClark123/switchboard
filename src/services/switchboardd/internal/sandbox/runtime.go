@@ -213,8 +213,8 @@ func (m *Manager) TryLockRuntime(id, op string) (unlock func(), ok bool) {
 	}
 	r := l.addOp(op, true)
 	return func() {
+		l.removeOp(r) // before the release: a refusal never names a gone operation
 		l.rw.Unlock()
-		l.removeOp(r)
 	}, true
 }
 
@@ -322,8 +322,8 @@ func (m *Manager) runtimeOp(id, op string) func() {
 		// The operation may have started or stopped the container: a listing
 		// taken before now must not answer the outcome rule's probe.
 		m.lists.invalidate()
+		l.removeOp(r) // before the release: a refusal never names a gone operation
 		l.rw.Unlock()
-		l.removeOp(r)
 		sb, err := m.store.Get(id)
 		if err == nil && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && m.orphans.pending(id) {
 			m.orphans.markUnknown(id)

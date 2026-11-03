@@ -152,9 +152,15 @@ func TestSequenceLabels(t *testing.T) {
 func TestDetachedDetail(t *testing.T) {
 	seen := time.Date(2026, 10, 28, 10, 42, 0, 0, time.Local)
 	check := &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_WORKING, LastSeenAt: timestamppb.New(seen), Processes: 4}
-	if got := DetachedDetail(check, time.Time{}); got != " (last: working, 10:42, 4 procs)" {
-		t.Errorf("persisted = %q", got)
+	if got := DetachedDetail(check, time.Time{}); got != " (last: working, Oct 28 10:42, 4 procs)" {
+		t.Errorf("persisted, another day = %q", got)
 	}
+	today := time.Now().Truncate(time.Minute)
+	check.LastSeenAt = timestamppb.New(today)
+	if got := DetachedDetail(check, time.Time{}); got != " (last: working, "+today.Local().Format("15:04")+", 4 procs)" {
+		t.Errorf("persisted, today = %q", got)
+	}
+	check.LastSeenAt = timestamppb.New(seen)
 	for d, want := range map[time.Duration]string{30 * time.Second: "just now", 3 * time.Minute: "3m ago", 2 * time.Hour: "2h ago", 30 * time.Hour: "Oct 28 10:42"} {
 		if got := DetachedDetail(check, seen.Add(d)); got != " (last: working, "+want+", 4 procs)" {
 			t.Errorf("%s: %q", d, got)

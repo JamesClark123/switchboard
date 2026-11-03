@@ -50,7 +50,7 @@ var (
 	orphanProbeTimeout     = 10 * time.Second
 	orphanBackstop         = 60 * time.Second
 	orphanUnknownLimit     = 60 * time.Second
-	orphanKillWait         = 5 * time.Second
+	orphanKillWait         = 5 * time.Second // with orphanProbeTimeout, a reap's bound; the TUI's bulk-Replace deadline assumes ~15 s (ui.replaceTimeout)
 	orphanRefusalDebounce  = 10 * time.Second
 	orphanRetryBase        = time.Second
 	orphanRetryCap         = 60 * time.Second

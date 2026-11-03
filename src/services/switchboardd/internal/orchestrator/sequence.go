@@ -1182,12 +1182,12 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		return true
 	}
 	if builtin(st.GetKind()) && canType(sb) {
-		if c := agentCheck(sb); c == pb.AgentCheck_STATE_UNKNOWN || c == pb.AgentCheck_STATE_CHECK_FAILED {
-			// A probe is pending, or keeps failing: the daemon refuses every
-			// send meanwhile (the gate), and its answer (a check change) kicks
-			// again. A failing check's note is the daemon's (SWI-25 A3).
-			return false
+		if agentCheck(sb) == pb.AgentCheck_STATE_UNKNOWN {
+			return false // a probe is pending: its answer (a status change) kicks again
 		}
+		// A check that keeps failing (CHECK_FAILED) doesn't hold the read-back:
+		// it types nothing and takes no gate, and the agent may well be the
+		// daemon's own live one (the runtime's listing is what fails).
 		api, err := rt.apiFor(run.GetSandboxHostId())
 		if err != nil {
 			return false

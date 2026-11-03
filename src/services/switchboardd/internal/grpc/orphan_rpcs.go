@@ -13,7 +13,9 @@ import (
 )
 
 // replaceConcurrency bounds how many detached agents a bulk Replace stops at a
-// time: each reap is one `sbx exec` of up to orphanKillWait + a probe.
+// time: each reap is one `sbx exec` of up to orphanKillWait + orphanProbeTimeout
+// (about 15 s). The TUI sizes its deadline to this shape (ui.replaceTimeout:
+// 60 s + 15 s per four agents); change them together.
 const replaceConcurrency = 4
 
 // CapabilityReplaceDetached is the DaemonInfo capability that advertises

@@ -45,12 +45,20 @@ func detachedOrchestrators(n *pb.NotificationEvent) []detachedOrch {
 		for i := range out {
 			if out[i].id == a.GetOrchestratorId() && out[i].hostID == a.GetOrchestratorHostId() {
 				out[i].count++
+				if out[i].name == "" {
+					out[i].name = a.GetOrchestratorName() // a controller's name is last-known: any entry's will do
+				}
 				found = true
 				break
 			}
 		}
 		if !found {
 			out = append(out, detachedOrch{id: a.GetOrchestratorId(), name: a.GetOrchestratorName(), hostID: a.GetOrchestratorHostId(), count: 1})
+		}
+	}
+	for i := range out {
+		if out[i].name == "" {
+			out[i].name = short(out[i].id)
 		}
 	}
 	return out

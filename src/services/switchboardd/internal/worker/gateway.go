@@ -85,7 +85,7 @@ func (g *gateway) register(ctx context.Context, sandboxID, token string, resolve
 // errLoadBusy refuses a load while a lifecycle operation holds the sandbox's
 // runtime lock, or reports one that operation cancelled; Service.loadWhen
 // retries it.
-var errLoadBusy = errors.New("sandbox is busy")
+var errLoadBusy = errors.New("gateway load refused")
 
 // load attaches the registration to the sandbox live, under the sandbox's runtime
 // lock (read, try-lock: errLoadBusy while an operation holds it). resolve runs under

@@ -292,6 +292,13 @@ func DetachedDetail(check *pb.AgentCheck, now time.Time) string {
 	return " (" + strings.Join(parts, ", ") + ")"
 }
 
+// sameDay reports whether a and b fall on the same calendar day (local).
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
+}
+
 // LastStateLabel words an agent's last known status for a detached-agent note
 // ("working", "waiting for input", "idle", "unknown state").
 func LastStateLabel(s pb.AgentStatus) string {
@@ -312,9 +319,13 @@ func LastStateLabel(s pb.AgentStatus) string {
 }
 
 // seenAt is when an agent was last seen: the clock time (local) when now is
-// zero, otherwise relative to now within a day and the date beyond it.
+// zero, with the date unless it is today's; otherwise relative to now within a
+// day and the date beyond it.
 func seenAt(t, now time.Time) string {
 	if now.IsZero() {
+		if !sameDay(t.Local(), time.Now()) {
+			return t.Local().Format("Jan 2 15:04")
+		}
 		return t.Local().Format("15:04")
 	}
 	d := now.Sub(t)
