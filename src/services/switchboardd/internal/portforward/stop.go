@@ -50,6 +50,18 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 		return nil, ErrSandboxBusy
 	}
 	defer unlock()
+	// A launch in flight is waited for (at most pgidWait), so its PGID is known
+	// and the tree can be signalled; a launch not begun yet finds its context
+	// cancelled and never runs (SWI-26, procHandle.launch).
+	if h, ok := s.handleFor(inst.GetId()); ok {
+		h.launch.Lock()
+		defer h.launch.Unlock()
+	}
+	// Again under the locks: the start may have failed, or an operation settled
+	// it, since the read above. That outcome stands.
+	if cur, ok := s.insts.Get(inst.GetId()); !ok || IsTerminal(cur.GetState()) {
+		return cur, nil
+	}
 	s.stopInstance(inst.GetId(), false)
 	stopped, _ := s.insts.Get(inst.GetId())
 	return stopped, nil
@@ -61,6 +73,9 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 func (s *Supervisor) stopInstance(instID string, sandboxDown bool) {
 	h, hadHandle := s.handleFor(instID)
 	if hadHandle {
+		s.mu.Lock()
+		h.stopping = true
+		s.mu.Unlock()
 		s.terminate(h, sandboxDown)
 	}
 	if proc := s.procFor(instID); proc != nil {
@@ -101,12 +116,22 @@ func (s *Supervisor) terminate(h *procHandle, sandboxDown bool) {
 
 	// The port is only really released once nothing holds it. Bounded by the same
 	// grace period so a wedged kernel socket cannot hang the stop forever.
-	if h.sbxPort != 0 {
-		portDeadline := time.Now().Add(s.stopGrace)
-		for time.Now().Before(portDeadline) && !portFree(h.hostPortOrListen()) {
-			time.Sleep(portFreeWaitStep)
+	portDeadline := time.Now().Add(s.stopGrace)
+	for time.Now().Before(portDeadline) {
+		port := s.portToWatch(h)
+		if port == 0 || portFree(port) {
+			break
 		}
+		time.Sleep(portFreeWaitStep)
 	}
+}
+
+// portToWatch reads hostPortOrListen under the lock: a publish in flight beside
+// this stop records its port as it lands (bringUp).
+func (s *Supervisor) portToWatch(h *procHandle) uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return h.hostPortOrListen()
 }
 
 // signalGroup sends SIGTERM (or SIGKILL) to the service's process tree, by the
@@ -175,10 +200,22 @@ func (s *Supervisor) procFor(instID string) *runningProc {
 
 // stopProc kills a process that never made it to RUNNING (a failed start). It is
 // the abbreviated form of terminate: there is no instance state to keep in step,
-// only a tree that must not be left behind.
-func (s *Supervisor) stopProc(proc *runningProc, ref string, inSbx bool) {
+// only a tree that must not be left behind. An in-sandbox tree is signalled
+// through `sbx exec`, under the sandbox's runtime lock (SWI-26), waited for
+// (awaitRuntime): the instance is still STARTING, so a lifecycle operation
+// that holds the lock either settles it (its drain or teardown cancels ctx and
+// owns the tree, and nothing is signalled here) or ends without touching it,
+// and the signal goes out then.
+func (s *Supervisor) stopProc(ctx context.Context, proc *runningProc, sandboxID, ref string, inSbx bool) {
 	if proc == nil {
 		return
+	}
+	if inSbx {
+		unlock, ok := s.awaitRuntime(ctx, sandboxID)
+		if !ok {
+			return
+		}
+		defer unlock()
 	}
 	h := &procHandle{proc: proc, pgid: proc.pgid, inSbx: inSbx, ref: ref}
 	s.signalGroup(h, false, false)

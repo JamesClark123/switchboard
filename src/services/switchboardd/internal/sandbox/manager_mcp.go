@@ -52,7 +52,10 @@ var ErrMcpAlreadyAttached = errors.New("MCP server already attached to this sand
 // refused before any CLI call (ErrMcpAlreadyAttached). A failed load leaves the
 // record untouched and the runtime's own diagnostic travels back verbatim. An
 // unregistered name is the runtime's "is not registered" failure — the gRPC
-// layer maps it. The sandbox's attach mode is recorded as additive when the
+// layer maps it. The load runs under the sandbox's runtime lock, read: while a
+// stop, restart, refresh or kit attach holds it the attach is refused with an
+// error wrapping ErrBusy, and one that starts meanwhile cancels the load, with the
+// same error (SWI-26). The sandbox's attach mode is recorded as additive when the
 // launch pre-dates feature 008 and left no mode behind.
 func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(string)) (*pb.Sandbox, error) {
 	name = strings.TrimSpace(name)
@@ -86,19 +89,23 @@ func (m *Manager) AttachMcp(ctx context.Context, id, name string, onLog func(str
 	logLine, captured := captureOutput(onLog)
 	var collision error
 	var hint string
-	err = tryRefs(sbxRefs(sb), func(r string) error {
-		captured.Reset()
-		err := m.runner.LoadMcp(lctx, r, name, logLine)
-		if err == nil {
-			return nil
-		}
-		if hint = collisionHint(err, captured); hint != "" {
-			// A clash is about the server, not the handle: trying the next ref
-			// would only replace this diagnostic with an unrelated one.
-			collision = err
-			return nil
-		}
-		return err
+	// `sbx mcp load` starts a stopped sandbox: it runs under the runtime lock,
+	// read (SWI-26), so never inside a stop, restart, refresh or kit attach.
+	err = m.withRuntimeRead(lctx, id, func(hctx context.Context) error {
+		return tryRefs(sbxRefs(sb), func(r string) error {
+			captured.Reset()
+			err := m.runner.LoadMcp(hctx, r, name, logLine)
+			if err == nil {
+				return nil
+			}
+			if hint = collisionHint(err, captured); hint != "" {
+				// A clash is about the server, not the handle: trying the next ref
+				// would only replace this diagnostic with an unrelated one.
+				collision = err
+				return nil
+			}
+			return err
+		})
 	})
 	if collision != nil {
 		// For a sandbox that already has the clashing server attached there is a
@@ -186,31 +193,34 @@ func (m *Manager) DetachMcp(ctx context.Context, id, name string, onLog func(str
 		logDetach(onLog, "mcp: %q cannot be passed to sbx safely; dropping it from the record only (unload it from the sandbox with the sbx CLI if it is still loaded)", name)
 	} else if sb.GetContainerRef() == "" {
 		return nil, fmt.Errorf("sandbox %s has no container to detach an MCP server from", id)
-	} else if err := tryRefs(sbxRefs(sb), func(r string) error {
-		// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
-		uctx, cancel := context.WithTimeout(ctx, mcpLoadTimeout)
-		defer cancel()
-		captured.Reset()
-		e := m.runner.UnloadMcp(uctx, r, name, logLine)
-		if e == nil {
-			return nil
-		}
-		// Classify on what sbx PRINTED for this handle (its full streamed output),
-		// never on the error string: that starts with the command line — which
-		// always contains the server's name — and keeps only the last few lines of
-		// output, so a phrase printed earlier would be missed (same reason attach
-		// builds its collision hint from the captured output).
-		switch out := captured.String(); {
-		case mcp.LooksNotLoaded(out):
-			tolerated = fmt.Sprintf("mcp: %s was not loaded in the sandbox; dropping it from the record", name)
-			return nil
-		case mcp.LooksUnregistered(out, name):
-			// Removed from the host while still recorded: the only way to clean the
-			// record. The runtime may still hold the tools, so say so in the log.
-			tolerated = fmt.Sprintf("mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
-			return nil
-		}
-		return e
+	} else if err := m.withRuntimeRead(ctx, id, func(hctx context.Context) error {
+		// `sbx mcp unload` runs under the runtime lock like load (SWI-26).
+		return tryRefs(sbxRefs(sb), func(r string) error {
+			// Each handle gets its own bound, so a hung first attempt cannot starve the retry.
+			uctx, cancel := context.WithTimeout(hctx, mcpLoadTimeout)
+			defer cancel()
+			captured.Reset()
+			e := m.runner.UnloadMcp(uctx, r, name, logLine)
+			if e == nil {
+				return nil
+			}
+			// Classify on what sbx PRINTED for this handle (its full streamed output),
+			// never on the error string: that starts with the command line — which
+			// always contains the server's name — and keeps only the last few lines of
+			// output, so a phrase printed earlier would be missed (same reason attach
+			// builds its collision hint from the captured output).
+			switch out := captured.String(); {
+			case mcp.LooksNotLoaded(out):
+				tolerated = fmt.Sprintf("mcp: %s was not loaded in the sandbox; dropping it from the record", name)
+				return nil
+			case mcp.LooksUnregistered(out, name):
+				// Removed from the host while still recorded: the only way to clean the
+				// record. The runtime may still hold the tools, so say so in the log.
+				tolerated = fmt.Sprintf("mcp: %s is no longer registered on this host; dropping it from the record (the runtime may still have it loaded in the sandbox)", name)
+				return nil
+			}
+			return e
+		})
 	}); err != nil {
 		return nil, err
 	}
