@@ -555,8 +555,6 @@ func stepWithEvidence(t *testing.T, rt *runtime) {
 	rt.stepOnce("wa")
 }
 
-// SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
-// turn then finishes as usual and no R or X is needed.
 // SWI-28: a step not yet classified takes no evidence from the developer's prompt
 // either: it halts at sentGrace, may have run.
 func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
@@ -585,6 +583,8 @@ func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
 	}
 }
 
+// SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
+// turn then finishes as usual and no R or X is needed.
 func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
 	unconfirmed := func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
 		if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {

@@ -336,6 +336,63 @@ func TestStepModelTurnOnUserPromptSubmit(t *testing.T) {
 	}
 }
 
+// SWI-28: once another prompt is on record since the send, nothing the submit check
+// sees is the step's: it ends typed but not classified, for the orchestrator to
+// resolve by evidence.
+func TestStepOtherPromptIsNotTheStepsTurn(t *testing.T) {
+	other := func(h *stepHarness) {
+		h.mutate(t, func(x *pb.Sandbox) {
+			x.Agent.LastOtherSubmitAt = timestamppb.New(x.GetController().GetRun().GetStepSentAt().AsTime().Add(time.Second))
+		})
+	}
+	action := stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", 1)
+	model := stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1)
+	for _, c := range []struct {
+		name  string
+		req   *pb.DeliverWorkerStepRequest
+		after func(*stepHarness)
+	}{
+		{"its submit", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "UserPromptSubmit"}) }},
+		{"its tool call", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "PreToolUse"}) }},
+		{"its request for input", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "Notification", NeedsInput: true}) }},
+		{"an empty box", custom("x", 1), func(*stepHarness) {}},
+		{"a working agent", custom("x", 1), func(h *stepHarness) {
+			h.mutate(t, func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
+		}},
+		{"a built-in's empty box", model, func(*stepHarness) {}},
+		{"its running footer", action, func(h *stepHarness) { h.scr.set(fixture(t, "turn-running"), false, true) }},
+		{"its turn end", action, func(h *stepHarness) {
+			h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newStepHarness(t)
+			h.typer.onType = func(string) { other(h); c.after(h) }
+			resp := deliverStep(t, h, c.req)
+			if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED || resp.GetNote() != "another prompt was submitted" || resp.GetSubmitAt() != nil {
+				t.Errorf("resp = %+v", resp)
+			}
+		})
+	}
+	// The step's own submit clears the record first, so it counts.
+	h := newStepHarness(t)
+	h.typer.onType = func(string) {
+		other(h)
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastOtherSubmitAt = nil })
+		h.event(agent.HookEvent{Event: "UserPromptSubmit"})
+	}
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
+		t.Errorf("the step's own submit = %+v", resp)
+	}
+	// One from before this send says nothing of it.
+	h = newStepHarness(t)
+	h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastOtherSubmitAt = timestamppb.New(h.e.svc.now().Add(-time.Minute)) })
+	h.typer.onType = func(string) { h.event(agent.HookEvent{Event: "UserPromptSubmit"}) }
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
+		t.Errorf("an older prompt = %+v", resp)
+	}
+}
+
 func TestStepInputOnlyOnNeedsInput(t *testing.T) {
 	h := newStepHarness(t)
 	h.typer.onType = func(string) {

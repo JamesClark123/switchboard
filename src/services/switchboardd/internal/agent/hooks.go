@@ -589,9 +589,18 @@ func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Tim
 	var fn func(*pb.AgentSession)
 	at := timestamppb.New(now)
 	switch {
-	case p.Event == "UserPromptSubmit" && s.otherPrompt(p):
-		fn = func(a *pb.AgentSession) { a.LastSubmitAt, a.LastOtherSubmitAt = at, at }
-	case p.Event == "UserPromptSubmit", p.Event == "PreToolUse" && !s.turnStartRecorded(p.SandboxID):
+	case p.Event == "UserPromptSubmit":
+		own, other := s.comparePrompt(p)
+		fn = func(a *pb.AgentSession) {
+			a.LastSubmitAt = at
+			switch {
+			case own:
+				a.LastOtherSubmitAt = nil
+			case other:
+				a.LastOtherSubmitAt = at
+			}
+		}
+	case p.Event == "PreToolUse" && !s.turnStartRecorded(p.SandboxID):
 		fn = func(a *pb.AgentSession) { a.LastSubmitAt = at }
 	case p.Event == "Stop" && p.PendingBackground == 0:
 		fn = func(a *pb.AgentSession) { a.LastTurnEndAt = at }
@@ -610,19 +619,31 @@ func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Tim
 	s.writeEvidence(p.SandboxID, fn)
 }
 
-// otherPrompt reports whether a submit is known not to be the step last typed on
-// a run: the developer's, typed in the worker's terminal (SWI-28). With no way to
-// tell (no prompt or typed text to compare, or no run) it reads false.
-func (s *HookServer) otherPrompt(p hookPayload) bool {
+// comparePrompt compares a submit with the step last typed on a run (SWI-28). own
+// means it is that step, which outweighs any other prompt before it. other means
+// it isn't: the developer's, an escape-hatch result or a background wake-up. A
+// turn start already on record for this send stays, so a later prompt isn't other.
+// With no way to tell (no prompt or typed text to compare, or no run) both are false.
+func (s *HookServer) comparePrompt(p hookPayload) (own, other bool) {
 	g, ok := s.status.(sandboxGetter)
 	if !ok || s.typedStep == nil || p.Prompt == "" {
-		return false
+		return false, false
 	}
 	sb, err := g.Get(p.SandboxID)
 	if err != nil || sb.GetController().GetRun().GetStepSentAt() == nil {
-		return false
+		return false, false
 	}
-	return !StepPrompt(p.Prompt, s.typedStep(p.SandboxID)) // nothing typed matches anything
+	typed := s.typedStep(p.SandboxID)
+	if typed == "" {
+		return false, false
+	}
+	if StepPrompt(p.Prompt, typed) {
+		return true, false
+	}
+	sent, a := sb.GetController().GetRun().GetStepSentAt().AsTime(), sb.GetAgent()
+	started := a.GetLastSubmitAt() != nil && a.GetLastSubmitAt().AsTime().After(sent) &&
+		(a.GetLastOtherSubmitAt() == nil || !a.GetLastOtherSubmitAt().AsTime().After(sent))
+	return false, !started
 }
 
 // turnStartRecorded reports whether the record has a turn start since the last

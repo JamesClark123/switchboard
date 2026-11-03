@@ -71,11 +71,13 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 
 | Observation (since `sent_at`) | Result |
 |---|---|
+| A tap event while `last_other_submit_at > step_sent_at` (see below) | Ignored: it may be that other prompt's turn |
 | A tap event `UserPromptSubmit` or `PreToolUse` | **MODEL_TURN**: accepted, return now |
 | A tap event `Notification` with a type other than `idle_prompt`/`auth_success` (needs input) | **MODEL_TURN_INPUT_ONLY**, unless a turn-start event also arrived (then MODEL_TURN). Return now. |
 | A tap event `SessionStart`/`SessionEnd` | **Not** a turn start. It is recorded as evidence (CLEAR read-back). |
 | Screen: a modal marker (picker or dialog) with **no** turn-start event yet | Wait up to `modalGrace` (1 s; T006 measures hook latency and may raise it, **capped at 2 s** by §6) for a needs-input `Notification` or a turn start, pressing nothing. If one arrives, classify as above (a skill's own permission or question dialog). Otherwise **NOT_ACCEPTED** `picker opened`, with **no Enter** (FR-206d). |
 | `window` ends and `InputBox` still shows `step.text`: the box's rows joined (a long step wraps) and prefix-matched after trimming, **or** a paste placeholder `[Pasted text #N …]` (a multi-line step such as the framed action prompt) | **Re-press** Enter if fewer than 3 re-presses so far (first `\r`, then keypad Enter, as today), and extend `window` by `submitWindow`. Otherwise NOT_ACCEPTED `text still in the input box`. |
+| `window` ends with `last_other_submit_at > step_sent_at` and the step's text not in the box | **UNCONFIRMED** `another prompt was submitted`, whatever the screen and status show, since they may be that prompt's (the orchestrator resolves it by evidence, R8, SWI-28) |
 | `window` ends with no turn-start event, status IDLE, and `InputBox` empty and ready | **AGENT_LOCAL**, after the read-back below. For ACTION_PROMPT with no evidence of a turn (below): **UNCONFIRMED** `no turn evidence` (typed, not confirmed; the orchestrator resolves it by evidence, R8), so a lost hook never passes for a local command (SWI-28) |
 | The screen is **stale** (research R2) when a decision needs it | Request a lazy repaint nudge and extend `window` by at most 1 s, once. Still stale then: **UNCONFIRMED** `screen resyncing` (typed but not confirmed; the orchestrator resolves it by evidence, R8). Never NOT_ACCEPTED on a stale read alone. |
 | Anything else when `window` ends (box missing, status changed without a turn-start event) | **NOT_ACCEPTED** `not at an empty input box` |
@@ -93,9 +95,12 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 **A prompt that isn't the step's (SWI-28).** The daemon compares each main-session `UserPromptSubmit`'s `prompt`
 with the text last typed as a step, without whitespace and by containment, because a long paste is reported wrapped
 in a `<pasted_content>` tag with its tabs turned to spaces (observed on 2.1.316). A mismatch writes
-`last_other_submit_at`, and the orchestrator then takes nothing after it as the step's evidence (research R8). With
-nothing to compare (a prompt over `maxHookField`, an older agent, or a daemon restarted since the typing) the submit
-counts as before.
+`last_other_submit_at`, and neither the submit check nor the orchestrator then takes anything after it as the step's
+evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one too. A
+mismatch writes nothing once the step's turn start is on record for this send, so a later prompt can't erase it, and
+a match clears the field, so a step that runs after another prompt still counts. With nothing to compare (a prompt
+over `maxHookField`, an older agent, or a daemon restarted since the typing) the submit counts as before and leaves
+the field as it is.
 
 Enter is **never** pressed on an empty box or while a modal is shown. A step whose text was replaced in the box by
 developer typing reads as "box not empty". Under the guard that cannot happen before typing; after typing it ends

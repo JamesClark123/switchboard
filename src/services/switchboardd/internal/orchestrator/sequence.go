@@ -42,7 +42,7 @@ const (
 	restartingNote   = "restarting setup with a fresh agent"
 	unconfirmedNote  = "typed, but not confirmed; it may have run"
 	noEvidenceNote   = "typed, but no report says it was accepted"
-	resumedNote      = "resumed: its turn started after the halt"
+	resumedNote      = "resumed: its turn was seen after the halt"
 	unsupportedNote  = "the worker's daemon does not support pre/post prompts"
 	// unsupportedReason fails a run no attached worker can take (research R6).
 	unsupportedReason = "no worker supports pre/post prompts; update their daemons"
@@ -1192,8 +1192,9 @@ func (rt *runtime) resolveSending(run *pb.Run) bool {
 // a tool call with the submit lost), a needs-input report, or for a step that
 // isn't a built-in a turn end (its start report lost; finishTurn then finishes
 // it). A built-in starts no turn: it reads back instead. Once a prompt other than
-// the step's was submitted since the send, none of it counts: the developer is
-// using that session, and tool calls and turn ends don't say whose turn they are.
+// the step's is on record since the send, none of it counts: tool calls and turn
+// ends don't say whose turn they are. The daemon doesn't record one after this
+// step's turn start, and clears it when the step's own submit follows.
 func turnEvidence(run *pb.Run, sb *pb.Sandbox) pb.StepObserved {
 	sent, a := run.GetStepSentAt(), sb.GetAgent()
 	switch {

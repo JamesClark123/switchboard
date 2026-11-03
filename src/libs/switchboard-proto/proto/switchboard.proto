@@ -704,8 +704,10 @@ message AgentSession {
   string session_id = 10;
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
   AgentCheck agent_check = 12;                          // the detached-agent check (research R14); unset = clear
-  // SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed:
-  // the developer's, so what follows it is no evidence of that step (R8).
+  // SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed
+  // (the developer's, an escape-hatch result, a background wake-up), so what follows
+  // it is no evidence of that step (R8). Not written once the step's turn start is on
+  // record; cleared by the step's own submit.
   google.protobuf.Timestamp last_other_submit_at = 13;
 }
 

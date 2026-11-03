@@ -223,7 +223,7 @@ func TestHookPreToolUseAfterAnUnendedTurn(t *testing.T) {
 	}
 }
 
-// SWI-28: a submit that isn't the step typed is marked as the developer's; with
+// SWI-28: a submit that isn't the step typed is marked as another prompt; with
 // nothing to compare, it counts as before.
 func TestHookOtherPrompt(t *testing.T) {
 	const step = "[frame]\n\tdo\tthe  thing"
@@ -263,6 +263,62 @@ func TestHookOtherPrompt(t *testing.T) {
 		s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: "hi"}))
 		if st.agent("sb").GetLastOtherSubmitAt() != nil {
 			t.Error("with no typed text to compare, a submit is not marked")
+		}
+	})
+}
+
+// SWI-28: what a submit does to last_other_submit_at depends on what this send
+// already has on record: a later prompt can't erase the step's turn start, and the
+// step's own submit outweighs a prompt before it.
+func TestHookOtherPromptOrder(t *testing.T) {
+	const step, other = "do the thing", "what is going on?"
+	submit := func(prompt string) hookPayload {
+		return hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: prompt}
+	}
+	tool := hookPayload{Event: "PreToolUse", SandboxID: "sb"}
+	sent := time.Unix(1, 0)
+	ctrl := &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(sent)}}
+	for _, c := range []struct {
+		name   string
+		events []hookPayload
+		other  bool
+	}{
+		{"the step, then another", []hookPayload{submit(step), submit(other), submit(other)}, false},
+		{"a tool call with the submit lost, then another", []hookPayload{tool, submit(other)}, false},
+		{"can't tell, then another", []hookPayload{submit(""), submit(other)}, false},
+		{"another, then the step", []hookPayload{submit(other), submit(step)}, false},
+		{"another, the step, another", []hookPayload{submit(other), submit(step), submit(other)}, false},
+		{"another", []hookPayload{submit(other)}, true},
+		{"another, then a tool call", []hookPayload{submit(other), tool}, true},
+		{"another, then can't tell", []hookPayload{submit(other), submit("")}, true},
+		{"another, can't tell, another", []hookPayload{submit(other), submit(""), submit(other)}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			for _, ev := range c.events {
+				s.handle(m(ev))
+			}
+			a := st.agent("sb")
+			if !a.GetLastSubmitAt().AsTime().After(sent) {
+				t.Errorf("last_submit_at = %v, sent %v", a.GetLastSubmitAt(), sent)
+			}
+			if got := a.GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
+	// A start from before this send is no start of this step's.
+	t.Run("a start before the send", func(t *testing.T) {
+		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl, Agent: &pb.AgentSession{LastSubmitAt: timestamppb.New(sent.Add(-time.Second))}})
+		s := mainServer(t, st)
+		s.now = tickingNow()
+		s.SetTypedStep(func(string) string { return step })
+		s.handle(m(submit(other)))
+		if st.agent("sb").GetLastOtherSubmitAt() == nil {
+			t.Error("a start before the send must not hide another prompt")
 		}
 	})
 }

@@ -45,7 +45,7 @@ The state word is followed by the step while a sequence is in flight:
 | Halted | `running · setting up 1/3 not accepted: Model 'bogus' not found` / `completed · Clear not accepted: picker opened` |
 | Halted after a restart | `… not accepted (sent before a restart)` |
 | Halted after an unconfirmed send | `… not accepted (may have run)` |
-| Halt taken back by later evidence (research R8) | `running · setting up 1/3 resumed: its turn started after the halt` |
+| Halt taken back by later evidence (research R8) | `running · setting up 1/3 resumed: its turn was seen after the halt` |
 | A step waiting over 10 s | `running · setting up 2/3 waiting: input box not empty` |
 | Holding its sandbox | `completed · needing the developer on alpha-w1` / `… needs input (freeing) …` |
 

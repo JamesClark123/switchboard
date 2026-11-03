@@ -452,6 +452,8 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 		switch {
 		case ev.At.Before(c.sentAt):
 			// A report from before the Enter belongs to something else.
+		case s.otherPromptSince(c):
+			// Another prompt was submitted: this report may be its turn's.
 		case ev.Event == "UserPromptSubmit":
 			turn = true
 			if submitAt.IsZero() {
@@ -538,6 +540,12 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 				s.logf("[worker] step %s: still in the input box; pressing Enter again (%d/%d)", c.id, presses+1, t.rePresses)
 				presses++
 				deadline = now.Add(t.window)
+			case s.otherPromptSince(c):
+				// The screen and status may be that prompt's too. Typed, not
+				// classified: the orchestrator resolves it by evidence (research R8).
+				r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
+				r.Note = "another prompt was submitted"
+				return r
 			case present && ready && strings.TrimSpace(text) == "" && s.agentIdle(c.id):
 				if c.read.kind == pb.StepKind_STEP_KIND_ACTION_PROMPT && !s.actionTurnSeen(c, lines) {
 					// The turn hook may be lost: typed, not classified, and the
@@ -572,6 +580,18 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 func (s *Service) agentIdle(id string) bool {
 	sb, err := s.reg.Get(id)
 	return err == nil && sb.GetAgent().GetStatus() == pb.AgentStatus_AGENT_STATUS_IDLE
+}
+
+// otherPromptSince reports whether a prompt other than the step was submitted
+// since step_sent_at, and not followed by the step's own: as for the orchestrator
+// (research R8), nothing then counts as this step's evidence. The hook server
+// writes the record before it publishes the event.
+func (s *Service) otherPromptSince(c stepCheck) bool {
+	sb, err := s.reg.Get(c.id)
+	if err != nil || sb.GetAgent().GetLastOtherSubmitAt() == nil {
+		return false
+	}
+	return sb.GetAgent().GetLastOtherSubmitAt().AsTime().After(c.recorded)
 }
 
 // actionTurnSeen reports positive evidence that the action prompt started a turn

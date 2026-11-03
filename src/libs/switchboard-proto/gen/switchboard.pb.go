@@ -2230,8 +2230,10 @@ type AgentSession struct {
 	SessionId        string                 `protobuf:"bytes,10,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	LastNeedsInputAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=last_needs_input_at,json=lastNeedsInputAt,proto3" json:"last_needs_input_at,omitempty"` // main-session needs-input Notification (R8 rule 2)
 	AgentCheck       *AgentCheck            `protobuf:"bytes,12,opt,name=agent_check,json=agentCheck,proto3" json:"agent_check,omitempty"`                       // the detached-agent check (research R14); unset = clear
-	// SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed:
-	// the developer's, so what follows it is no evidence of that step (R8).
+	// SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed
+	// (the developer's, an escape-hatch result, a background wake-up), so what follows
+	// it is no evidence of that step (R8). Not written once the step's turn start is on
+	// record; cleared by the step's own submit.
 	LastOtherSubmitAt *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=last_other_submit_at,json=lastOtherSubmitAt,proto3" json:"last_other_submit_at,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
