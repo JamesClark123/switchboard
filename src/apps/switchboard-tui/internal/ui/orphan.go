@@ -70,21 +70,16 @@ func (m Model) orphanGate(sb *pb.Sandbox, host string, d Daemon, external bool, 
 }
 
 // lastSeenText is the detached agent's last known state and time ("working
-// 10:42"); the time is left out when the daemon recorded none.
+// 10:42", dated when not today's), worded as the row note is
+// (swb.LastStateLabel, swb.SeenAt); the time is left out when the daemon
+// recorded none.
 func lastSeenText(check *pb.AgentCheck) string {
-	var state string
-	switch check.GetLastStatus() {
-	case pb.AgentStatus_AGENT_STATUS_WORKING:
-		state = "working"
-	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
-		state = "waiting for input"
-	case pb.AgentStatus_AGENT_STATUS_IDLE:
-		state = "idle"
-	default:
+	state := swb.LastStateLabel(check.GetLastStatus())
+	if state == "unknown state" {
 		state = "in an unknown state"
 	}
 	if ts := check.GetLastSeenAt(); ts != nil {
-		state += " " + ts.AsTime().Local().Format("15:04")
+		state += " " + swb.SeenAt(ts.AsTime(), time.Time{})
 	}
 	return state
 }
@@ -267,7 +262,7 @@ type detachedReplacedMsg struct {
 func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
 	byHost := map[string]*replaceTarget{}
-	var hosts, names, tooOld []string
+	var hosts, names, tooOld, unreachable []string
 	allIdle := true
 	for _, w := range d.detail.GetWorkers() {
 		if w.GetRunId() != "" {
@@ -279,6 +274,7 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 		}
 		od, err := m.connectedDaemon(host)
 		if err != nil {
+			unreachable = append(unreachable, sanitizeLine(sb.GetDisplayName(), 24))
 			continue
 		}
 		if !od.HasCapability(capReplaceDetached) {
@@ -299,8 +295,11 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	}
 	if len(names) == 0 {
 		d.status = "no idle detached worker to replace (a worker with a run: t → Replace)"
-		if len(tooOld) > 0 {
+		switch {
+		case len(tooOld) > 0:
 			d.status = "the daemon of " + strings.Join(tooOld, ", ") + " predates bulk Replace — update with u, or t → Replace"
+		case len(unreachable) > 0:
+			d.status = "the daemon of " + strings.Join(unreachable, ", ") + " is not connected"
 		}
 		return m, nil
 	}
@@ -312,7 +311,7 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	d.status = ""
 	return m.enterConfirm(confirmState{
 		title:        fmt.Sprintf("Replace %s of %s?", plural(len(names), "detached agent", "detached agents"), sanitizeLine(d.name, 32)),
-		body:         replaceBody(names, tooOld),
+		body:         replaceBody(names, tooOld, unreachable),
 		warning:      "Replacing stops them.",
 		returnTo:     screenOrchDetail,
 		acceptLabel:  "replace",
@@ -327,21 +326,16 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 const capReplaceDetached = "replace-detached"
 
 // replaceBody is the confirm's lines: the workers, what happens, and those
-// whose daemon can't do it.
-func replaceBody(names, tooOld []string) []string {
+// whose daemon can't do it or isn't connected.
+func replaceBody(names, tooOld, unreachable []string) []string {
 	body := []string{strings.Join(names, ", "), "Each is stopped and a fresh agent started.", "Workers with a run are left alone."}
 	if len(tooOld) > 0 {
 		body = append(body, "Not included (daemon predates bulk Replace): "+strings.Join(tooOld, ", "))
 	}
+	if len(unreachable) > 0 {
+		body = append(body, "Not included (daemon not connected): "+strings.Join(unreachable, ", "))
+	}
 	return body
-}
-
-// replaceTimeout is how long a daemon gets to replace n agents: it stops four
-// at a time (grpc.replaceConcurrency), each TERM then KILL within about 15 s
-// (sandbox.orphanKillWait + orphanProbeTimeout), plus the usual allowance. The
-// daemon's constants note this bound; change them together.
-func replaceTimeout(n int) time.Duration {
-	return 60*time.Second + time.Duration((n+3)/4)*15*time.Second
 }
 
 // replaceDetachedCmd calls every daemon at once, each on a timeout sized to
@@ -358,7 +352,7 @@ func replaceDetachedCmd(targets []replaceTarget) tea.Cmd {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), replaceTimeout(len(t.ids)))
+				ctx, cancel := context.WithTimeout(context.Background(), swb.BulkReplaceTimeout(len(t.ids)))
 				defer cancel()
 				out, err := t.d.ReplaceDetachedAgents(ctx, t.ids)
 				replies[i] = reply{out: out, err: err}
@@ -390,7 +384,7 @@ func (m Model) applyDetachedReplaced(msg detachedReplacedMsg) (tea.Model, tea.Cm
 // replaceSummary words a bulk Replace's outcomes: "replaced 3 · skipped 1
 // (busy) · failed 1 (w-x: …)".
 func replaceSummary(msg detachedReplacedMsg) string {
-	replaced, skipped := 0, 0
+	replaced, deferred, skipped := 0, 0, 0
 	var why, failed []string
 	for _, o := range msg.outcomes {
 		name := sanitizeLine(o.GetDisplayName(), 24)
@@ -400,6 +394,9 @@ func replaceSummary(msg detachedReplacedMsg) string {
 		switch o.GetResult() {
 		case pb.ReplaceDetachedAgentResponse_RESULT_REPLACED:
 			replaced++
+			if o.GetError() != "" {
+				deferred++ // stopped; the sandbox's bring-up starts the fresh agent
+			}
 		case pb.ReplaceDetachedAgentResponse_RESULT_ERROR:
 			failed = append(failed, name+": "+sanitizeLine(o.GetError(), 60))
 		default:
@@ -408,6 +405,9 @@ func replaceSummary(msg detachedReplacedMsg) string {
 		}
 	}
 	parts := []string{fmt.Sprintf("replaced %d", replaced)}
+	if deferred > 0 {
+		parts[0] += fmt.Sprintf(" (%d awaiting a bring-up)", deferred)
+	}
 	if skipped > 0 {
 		parts = append(parts, fmt.Sprintf("skipped %d (%s)", skipped, strings.Join(why, "; ")))
 	}

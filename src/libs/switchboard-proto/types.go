@@ -281,7 +281,7 @@ func DetachedDetail(check *pb.AgentCheck, now time.Time) string {
 	}
 	parts := []string{"last: " + LastStateLabel(check.GetLastStatus())}
 	if ts := check.GetLastSeenAt(); ts != nil {
-		parts = append(parts, seenAt(ts.AsTime(), now))
+		parts = append(parts, SeenAt(ts.AsTime(), now))
 	}
 	switch n := check.GetProcesses(); {
 	case n == 1:
@@ -318,10 +318,10 @@ func LastStateLabel(s pb.AgentStatus) string {
 	}
 }
 
-// seenAt is when an agent was last seen: the clock time (local) when now is
+// SeenAt is when an agent was last seen: the clock time (local) when now is
 // zero, with the date unless it is today's; otherwise relative to now within a
 // day and the date beyond it.
-func seenAt(t, now time.Time) string {
+func SeenAt(t, now time.Time) string {
 	if now.IsZero() {
 		if !sameDay(t.Local(), time.Now()) {
 			return t.Local().Format("Jan 2 15:04")
@@ -356,3 +356,21 @@ func CheckFailedNote(err string) string { return checkFailedPrefix + ": " + err 
 // note into its run and never pushes its own over it (the daemon restores the
 // earlier note itself once the check clears).
 func IsCheckFailedNote(note string) bool { return strings.HasPrefix(note, checkFailedPrefix) }
+
+// --- SWI-25 A1: the bulk Replace's shape, shared by the daemon and the TUI ---
+
+// BulkReplaceConcurrency is how many detached agents a daemon's bulk Replace
+// (ReplaceDetachedAgent) stops at a time, and BulkReplaceReapBound how long one
+// stop may take (the daemon's orphanKillWait + orphanProbeTimeout: TERM, a wait,
+// KILL, after a probe). The TUI sizes its deadline from both.
+const (
+	BulkReplaceConcurrency = 4
+	BulkReplaceReapBound   = 15 * time.Second
+)
+
+// BulkReplaceTimeout is how long a client gives a daemon to replace n agents:
+// the usual allowance plus the rounds of reaps.
+func BulkReplaceTimeout(n int) time.Duration {
+	rounds := (n + BulkReplaceConcurrency - 1) / BulkReplaceConcurrency
+	return 60*time.Second + time.Duration(rounds)*BulkReplaceReapBound
+}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -583,5 +584,32 @@ func TestUpdateWorkerExpectRunAndHolds(t *testing.T) {
 	// A new run never takes a hold_gen from the request.
 	if _, err := set(&pb.WorkerRun{Id: "r3", HoldGen: 99}, ""); err != nil || run().GetHoldGen() != 0 {
 		t.Errorf("new run = %v / %+v", err, run())
+	}
+}
+
+// An orchestrator's copy of the daemon's check-failed note, pushed after the
+// check cleared and the daemon restored the earlier note, keeps the restored
+// note; while the check still fails, the pushed note lands and the overlay
+// (ApplyCheckNote) saves it (SWI-25 A3).
+func TestNextRunKeepsARestoredNoteOverAStaleFailure(t *testing.T) {
+	failed := swb.CheckFailedNote("boom")
+	cur := &pb.WorkerRun{Id: "r", StepNote: "waiting: x"}
+	req := &pb.UpdateWorkerRequest{SetRun: true, Run: &pb.WorkerRun{Id: "r", StepNote: failed}}
+	next, err := nextRun(cur, req, 0, pb.AgentCheck_STATE_CLEAR)
+	if err != nil || next.GetStepNote() != "waiting: x" {
+		t.Errorf("stale failure over a restored note = %q, %v", next.GetStepNote(), err)
+	}
+	next, err = nextRun(cur, req, 0, pb.AgentCheck_STATE_CHECK_FAILED)
+	if err != nil || next.GetStepNote() != failed {
+		t.Errorf("while failing = %q, %v", next.GetStepNote(), err)
+	}
+	// Any other note, or another run, passes as before.
+	next, _ = nextRun(cur, &pb.UpdateWorkerRequest{SetRun: true, Run: &pb.WorkerRun{Id: "r", StepNote: "halted"}}, 0, pb.AgentCheck_STATE_CLEAR)
+	if next.GetStepNote() != "halted" {
+		t.Errorf("plain push = %q", next.GetStepNote())
+	}
+	next, _ = nextRun(cur, &pb.UpdateWorkerRequest{SetRun: true, Run: &pb.WorkerRun{Id: "r2", StepNote: failed}}, 0, pb.AgentCheck_STATE_CLEAR)
+	if next.GetStepNote() != failed {
+		t.Errorf("another run's push = %q", next.GetStepNote())
 	}
 }

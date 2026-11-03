@@ -633,7 +633,7 @@ func (rt *runtime) mirrorCheckNote(run *pb.Run, wr *pb.WorkerRun) bool {
 	}
 	switch {
 	case swb.IsCheckFailedNote(wr.GetStepNote()):
-		if n := run.GetStepNote(); n != "" && !strings.HasPrefix(n, waitingPrefix) {
+		if n := run.GetStepNote(); n != "" && !strings.HasPrefix(n, waitingPrefix) && !swb.IsCheckFailedNote(n) {
 			return false
 		}
 	case !swb.IsCheckFailedNote(run.GetStepNote()):

@@ -50,7 +50,7 @@ var (
 	orphanProbeTimeout     = 10 * time.Second
 	orphanBackstop         = 60 * time.Second
 	orphanUnknownLimit     = 60 * time.Second
-	orphanKillWait         = 5 * time.Second // with orphanProbeTimeout, a reap's bound; the TUI's bulk-Replace deadline assumes ~15 s (ui.replaceTimeout)
+	orphanKillWait         = 5 * time.Second // with orphanProbeTimeout, a reap's bound: swb.BulkReplaceReapBound
 	orphanRefusalDebounce  = 10 * time.Second
 	orphanRetryBase        = time.Second
 	orphanRetryCap         = 60 * time.Second
@@ -787,7 +787,7 @@ func affectedSandbox(sb *pb.Sandbox) *pb.NotificationEvent_AffectedSandbox {
 	}
 }
 
-// beginBatch opens the start-up batch over the probes of ids (SWI-25 A2).
+// beginBatch opens the start-up batch over ids (SWI-25 A2); batchEnd trims it.
 func (o *orphans) beginBatch(ids []string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -818,6 +818,9 @@ func (o *orphans) batchTake(id, msg string, affected *pb.NotificationEvent_Affec
 // never started (the daemon is shutting down). The last one closes the batch
 // and notifies what it found.
 func (o *orphans) batchEnd(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
 	o.mu.Lock()
 	b := o.batch
 	if b == nil {
@@ -916,11 +919,19 @@ func (m *Manager) PrepareOrphanCheck() func(ctx context.Context) {
 		return func(context.Context) { log.Printf("[warn] detached-agent check skipped: %v", err) }
 	}
 	snap := map[string]int64{}
+	ids := make([]string, 0, len(all))
 	if d := m.orphans.getDeps(); d.Tokens != nil {
 		for _, sb := range all {
 			snap[sb.GetId()] = d.Tokens.Generation(sb.GetId())
 		}
 	}
+	for _, sb := range all {
+		ids = append(ids, sb.GetId())
+	}
+	// The start-up batch opens here, over every sandbox, before anything can
+	// probe (a gate refusal's probe of a candidate must count as the batch's,
+	// SWI-25 A2); the check trims it to the sandboxes it probes.
+	m.orphans.beginBatch(ids)
 	return func(ctx context.Context) { m.checkOrphansAtStart(ctx, all, snap) }
 }
 
@@ -979,11 +990,17 @@ func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, sn
 		}
 	}
 	slices.SortStableFunc(probe, func(a, b probeCandidate) int { return a.class - b.class })
-	ids := make([]string, 0, len(probe))
+	probed := map[string]bool{}
 	for _, c := range probe {
-		ids = append(ids, c.id)
+		probed[c.id] = true
 	}
-	o.beginBatch(ids)
+	var rest []string
+	for _, sb := range all {
+		if !probed[sb.GetId()] {
+			rest = append(rest, sb.GetId())
+		}
+	}
+	o.batchEnd(rest...) // the batch is the probed sandboxes
 	go o.feed(ctx, probe)
 }
 

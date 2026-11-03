@@ -1455,3 +1455,10 @@ func TestOrphansAtStartBatchClosesOnTheLastProbe(t *testing.T) {
 		t.Error("the batch is still open")
 	}
 }
+
+// The bulk Replace's shared reap bound (the TUI's deadline) is the daemon's.
+func TestBulkReplaceReapBound(t *testing.T) {
+	if orphanKillWait+orphanProbeTimeout != swb.BulkReplaceReapBound {
+		t.Errorf("orphanKillWait+orphanProbeTimeout = %v, swb.BulkReplaceReapBound = %v", orphanKillWait+orphanProbeTimeout, swb.BulkReplaceReapBound)
+	}
+}

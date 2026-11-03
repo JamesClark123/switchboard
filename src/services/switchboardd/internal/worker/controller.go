@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
@@ -306,7 +307,7 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 			cur.Name = req.GetName()
 		}
 		if req.GetSetRun() {
-			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()))
+			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()), x.GetAgent().GetAgentCheck().GetState())
 			if err != nil {
 				return err
 			}
@@ -382,7 +383,7 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 //   - hold_gen is never taken from the request (research R13): a write that
 //     moves a run into NEEDS_DEVELOPER records gen, the sandbox's agent
 //     generation now; one that keeps an existing hold keeps its value.
-func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.WorkerRun, error) {
+func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64, check pb.AgentCheck_State) (*pb.WorkerRun, error) {
 	next := req.GetRun()
 	if want := req.GetExpectRunId(); want != "" && (cur == nil || cur.GetId() != want) {
 		return nil, fmt.Errorf("%w: run moved", ErrPrecondition)
@@ -408,6 +409,12 @@ func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.Wor
 	}
 	if same {
 		next.StepRole, next.StepIndex, next.StepSentAt = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt()
+		// An orchestrator's copy of the daemon's check-failed note, pushed
+		// after the check cleared and the daemon restored the earlier note
+		// (SWI-25 A3): the restored note stays; the orchestrator follows it.
+		if check != pb.AgentCheck_STATE_CHECK_FAILED && swb.IsCheckFailedNote(next.GetStepNote()) && !swb.IsCheckFailedNote(cur.GetStepNote()) {
+			next.StepNote = cur.GetStepNote()
+		}
 	}
 	return next, nil
 }

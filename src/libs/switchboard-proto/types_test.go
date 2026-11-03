@@ -192,3 +192,9 @@ func TestCheckFailedNote(t *testing.T) {
 		t.Error("only the prefix matches")
 	}
 }
+
+func TestBulkReplaceTimeout(t *testing.T) {
+	if BulkReplaceTimeout(0) != 60*time.Second || BulkReplaceTimeout(4) != 75*time.Second || BulkReplaceTimeout(5) != 90*time.Second {
+		t.Errorf("timeouts: %v %v %v", BulkReplaceTimeout(0), BulkReplaceTimeout(4), BulkReplaceTimeout(5))
+	}
+}

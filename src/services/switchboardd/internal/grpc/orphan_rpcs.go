@@ -5,18 +5,19 @@ import (
 	"errors"
 	"sync"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/sandbox"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/worker"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 // replaceConcurrency bounds how many detached agents a bulk Replace stops at a
 // time: each reap is one `sbx exec` of up to orphanKillWait + orphanProbeTimeout
-// (about 15 s). The TUI sizes its deadline to this shape (ui.replaceTimeout:
-// 60 s + 15 s per four agents); change them together.
-const replaceConcurrency = 4
+// (swb.BulkReplaceReapBound, which the TUI's deadline is sized from).
+const replaceConcurrency = swb.BulkReplaceConcurrency
 
 // CapabilityReplaceDetached is the DaemonInfo capability that advertises
 // ReplaceDetachedAgent (SWI-25 A1), so the TUI offers R only against a daemon
@@ -101,7 +102,13 @@ func (s *Server) replaceDetached(ctx context.Context, id string) *pb.ReplaceDeta
 		o.Result, o.Error = pb.ReplaceDetachedAgentResponse_RESULT_ERROR, err.Error()
 		return o
 	}
-	if err := s.startAgent(id); err != nil {
+	switch err := s.startAgent(id); {
+	case err == nil:
+	case errors.Is(err, worker.ErrStartDeferred):
+		// Stopped; the bring-up in flight starts the fresh agent (with its
+		// gateway tools), not this call. REPLACED, with the note.
+		o.Error = err.Error()
+	default:
 		o.Result, o.Error = pb.ReplaceDetachedAgentResponse_RESULT_ERROR, "the detached agent was stopped, but no fresh one started: "+err.Error()
 		return o
 	}

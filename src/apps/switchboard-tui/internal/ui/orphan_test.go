@@ -52,7 +52,7 @@ func TestDetachedAgentReplaceOnPlainSandbox(t *testing.T) {
 		t.Fatalf("t should open the dialog: %v", m.screen)
 	}
 	v := ansi.Strip(m.View())
-	for _, want := range []string{"sb-p1's agent was detached by a daemon restart", "Last seen idle 10:42.", "It can't be shown or typed into. Replace it?", "Replacing stops it.", "replace", "wait"} {
+	for _, want := range []string{"sb-p1's agent was detached by a daemon restart", "Last seen idle Oct 28 10:42.", "It can't be shown or typed into. Replace it?", "Replacing stops it.", "replace", "wait"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("dialog missing %q:\n%s", want, v)
 		}
