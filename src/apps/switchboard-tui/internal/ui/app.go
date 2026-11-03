@@ -194,6 +194,7 @@ const (
 	screenOrchDetail
 	// the `o` attach picker over the sandbox list (orchestrator_attach.go)
 	screenAttachPick
+	screenDetachedPick // SWI-25 A2: the start-up notice's orchestrator picker
 	// feature 010: the Jobs screen, third in the shift+←/→ cycle (jobs.go), and a
 	// daemon's Orchestrators section under the Daemons screen
 	// (daemon_orchestrators.go).
@@ -375,6 +376,9 @@ type Model struct {
 	// a form left mid-save and opened again cannot send the same call twice.
 	opCalls map[string]uint64
 	attach  attachState
+	// detachedPick is the orchestrator picker a start-up "agents detached"
+	// notice opens (SWI-25 A2, detached_review.go).
+	detachedPick detachedPickState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -1122,6 +1126,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateOrchDetailKey(msg)
 	case screenAttachPick:
 		return m.updateAttachPickKey(msg)
+	case screenDetachedPick:
+		return m.updateDetachedPickKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -1211,6 +1217,11 @@ func (m Model) viewScreen() string {
 	if m.screen == screenAttachPick {
 		bg := m.chrome(m.viewList(), m.attachPickHelp())
 		return overlayCenter(bg, m.attachModal(), m.width, m.height)
+	}
+	// The start-up notice's orchestrator picker floats over the inbox (SWI-25 A2).
+	if m.screen == screenDetachedPick {
+		bg := m.chrome(m.viewNotifications(), m.detachedPickHelp())
+		return overlayCenter(bg, m.detachedPickModal(), m.width, m.height)
 	}
 
 	// The sbx output viewer floats over the list for the same reason: the row

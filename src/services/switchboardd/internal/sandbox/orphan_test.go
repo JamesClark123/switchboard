@@ -250,6 +250,20 @@ func (f *fakeNotes) EmitNotification(id string, kind pb.NotificationKind, msg st
 	return nil
 }
 
+// EmitHostNotification records a host-level notice as "* <kind> <msg> [ids]"
+// (ids sorted: probes end in any order).
+func (f *fakeNotes) EmitHostNotification(kind pb.NotificationKind, msg string, affected []*pb.NotificationEvent_AffectedSandbox, _ time.Time) *pb.NotificationEvent {
+	ids := make([]string, 0, len(affected))
+	for _, a := range affected {
+		ids = append(ids, a.GetSandboxId())
+	}
+	slices.Sort(ids)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.msgs = append(f.msgs, fmt.Sprintf("* %s %s %v", kind, msg, ids))
+	return nil
+}
+
 func (f *fakeNotes) n() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -483,20 +497,16 @@ func TestOrphansAtStart(t *testing.T) {
 	if g.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED || len(e.tokens.Unretired("gone")) != 0 || !e.wasCleared("gone") {
 		t.Error("a gone agent is EXITED, its token retired, and the worker re-kicked")
 	}
-	// One notification per orphan record, never per re-probe; each carries the
-	// agent's last state after the prefix the halt matchers rely on (SWI-25 A6).
-	if e.notes.n() != 2 {
+	// The two orphans the start-up check found are notified once, together
+	// (SWI-25 A2), never per re-probe.
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.Contains(e.notes.msgs[0], "* NOTIFICATION_KIND_AGENTS_DETACHED_AT_START 2 agents detached by a daemon restart — enter to review [cleanup orphan]") {
 		t.Errorf("notifications %v", e.notes.msgs)
-	}
-	for _, msg := range e.notes.msgs {
-		if !strings.Contains(msg, detachedPrefix+" (last: ") || !strings.Contains(msg, " — t to Replace or Wait") {
-			t.Errorf("notification %q lacks the agent's last state", msg)
-		}
 	}
 	before := e.run.count("probe")
 	e.m.RecheckOrphan("orphan")
 	waitUntil(t, func() bool { return e.run.count("probe") == before+1 && !e.probing("orphan") })
-	if e.notes.n() != 2 {
+	if e.notes.n() != 1 {
 		t.Error("a re-probe re-notified")
 	}
 }
@@ -1328,5 +1338,76 @@ func TestCheckFailedNotifiesAndOverlaysTheNote(t *testing.T) {
 	waitUntil(t, func() bool { return e.notes.n() == 4 })
 	if e.notes.n() != 4 || strings.Contains(e.notes.msgs[3], "(run ") {
 		t.Errorf("notifications %v", e.notes.msgs)
+	}
+}
+
+// A lone orphan at start-up keeps its own AGENT_DETACHED (with the agent's
+// last state, SWI-25 A6, and its orchestrator run); one found after start-up
+// is notified alone too (SWI-25 A2).
+func TestOrphansAtStartSingleOrphanNotifiesItself(t *testing.T) {
+	e := newOrphanEnv(t)
+	running := pb.SandboxState_SANDBOX_STATE_RUNNING
+	e.put(t, "one", running, pb.AgentStatus_AGENT_STATUS_WORKING, &pb.WorkerRun{Id: "r1"})
+	e.tokens.issue("one", 4)
+	e.run.setOut("one", aliveOut(4))
+	e.put(t, "gone", running, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("gone", 5)
+	e.run.setOut("gone", goneOut)
+	e.m.PrepareOrphanCheck()(context.Background())
+	e.waitState(t, "one", pb.AgentCheck_STATE_DETACHED)
+	e.waitState(t, "gone", pb.AgentCheck_STATE_CLEAR)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.HasPrefix(e.notes.msgs[0], "one NOTIFICATION_KIND_AGENT_DETACHED "+detachedPrefix+" (last: working") || !strings.HasSuffix(e.notes.msgs[0], "— t to Replace or Wait (run r1)") {
+		t.Fatalf("notifications %v", e.notes.msgs)
+	}
+	// After start-up: its own notice. (The shared listing the start-up check
+	// cached predates this sandbox: dropped, so its probe lists afresh.)
+	e.put(t, "later", running, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("later", 6)
+	e.run.setOut("later", aliveOut(6))
+	e.m.lists.invalidate()
+	e.m.AgentClientExited("later", 6)
+	e.waitState(t, "later", pb.AgentCheck_STATE_DETACHED)
+	waitUntil(t, func() bool { return e.notes.n() == 2 })
+	if e.notes.n() != 2 || !strings.HasPrefix(e.notes.msgs[1], "later NOTIFICATION_KIND_AGENT_DETACHED ") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+}
+
+// The start-up batch closes when its last probe ends, even when one probe
+// gave no answer (dropped busy, retrying): the aggregate names what was found
+// by then, and a shutdown mid-feed closes it too.
+func TestOrphansAtStartBatchClosesOnTheLastProbe(t *testing.T) {
+	saved := orphanProbeConcurrency
+	orphanProbeConcurrency = 1
+	t.Cleanup(func() { orphanProbeConcurrency = saved })
+	e := newOrphanEnv(t)
+	running, idle := pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE
+	for _, id := range []string{"a", "b", "c"} {
+		e.put(t, id, running, idle, nil)
+		e.tokens.issue(id, 1)
+		e.run.setOut(id, aliveOut(1))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// The first probe is held; the feed is cancelled while it is, so b and c
+	// never start: the batch closes with a's answer alone.
+	hold := make(chan struct{})
+	e.run.setHook(func(kind, ref string) {
+		if kind == "probe" && ref == "a" {
+			<-hold
+		}
+	})
+	e.m.PrepareOrphanCheck()(ctx)
+	waitUntil(t, func() bool { return e.run.count("probe") == 1 })
+	cancel()
+	time.Sleep(10 * time.Millisecond)
+	close(hold)
+	e.waitState(t, "a", pb.AgentCheck_STATE_DETACHED)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.HasPrefix(e.notes.msgs[0], "a NOTIFICATION_KIND_AGENT_DETACHED ") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+	if e.m.orphans.batch != nil {
+		t.Error("the batch is still open")
 	}
 }

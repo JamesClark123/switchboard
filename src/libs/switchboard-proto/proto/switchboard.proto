@@ -440,6 +440,13 @@ enum NotificationKind {
   // spell; names the sandbox, the last error and its run. While it lasts the
   // run's step_note carries the failure; the earlier note comes back after.
   NOTIFICATION_KIND_AGENT_CHECK_FAILED = 11;
+  // Owning daemon (SWI-25 A2): the start-up check found several agents detached
+  // by the daemon restart. One host-level notice replaces their AGENT_DETACHED
+  // ones: sandbox_id is empty and `affected` lists them with their
+  // orchestrators, so the TUI's enter opens the Workers view (or a picker when
+  // they span several orchestrators). A lone orphan, or one found later, keeps
+  // its own AGENT_DETACHED.
+  NOTIFICATION_KIND_AGENTS_DETACHED_AT_START = 12;
 }
 
 // --- SWI-18 ---
@@ -1182,11 +1189,20 @@ message EventsDropped {}
 
 message NotificationEvent {
   string id = 1;
-  string sandbox_id = 2;
+  string sandbox_id = 2;                 // empty on a host-level notice (affected lists the subjects)
   string host_id = 3;                    // subject host (FR-026)
   NotificationKind kind = 4;
   string message = 5;
   google.protobuf.Timestamp created_at = 6;
+  // --- SWI-25 A2 --- a host-level notice's subjects (AGENTS_DETACHED_AT_START).
+  message AffectedSandbox {
+    string sandbox_id = 1;
+    string display_name = 2;
+    string orchestrator_id = 3;          // the worker's controller, when it has one
+    string orchestrator_name = 4;
+    string orchestrator_host_id = 5;     // the orchestrator's daemon (host_id)
+  }
+  repeated AffectedSandbox affected = 7;
 }
 
 message AckNotificationRequest { repeated string notification_ids = 1; }

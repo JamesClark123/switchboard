@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -160,5 +161,90 @@ func TestStepAndDetachedNotifications(t *testing.T) {
 	m = out.(Model)
 	if v := m.View(); !strings.Contains(v, "step not accepted") || !strings.Contains(v, "agent detached") || !strings.Contains(v, "can't check agent") {
 		t.Errorf("inbox:\n%s", v)
+	}
+}
+
+// A start-up "agents detached" notice (SWI-25 A2) has no sandbox row: enter
+// opens the one orchestrator's Workers view, a picker when the workers span
+// several, or the list on the first sandbox when none is a worker.
+func TestDetachedAtStartNoticeRoutesToWorkers(t *testing.T) {
+	d := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot"), orchSummary("o-b", "beta-bot")}}
+	d.orchDetail = &pb.OrchestratorDetail{Summary: d.orchestrators[0]}
+	rn := &recordNotifier{}
+	m := withSandboxes(sized(New(d, "/work").WithNotifier(rn)), []*pb.Sandbox{{Id: "sa"}, {Id: "sb"}, {Id: "plain"}})
+	m.sub = &fakeStream{ctx: context.Background(), ch: nil}
+	host := d.HostID()
+	one := &pb.NotificationEvent{Id: "n-1", Kind: pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, Message: "2 agents detached by a daemon restart — enter to review",
+		Affected: []*pb.NotificationEvent_AffectedSandbox{
+			{SandboxId: "sa", OrchestratorId: "o-a", OrchestratorName: "alpha-bot", OrchestratorHostId: host},
+			{SandboxId: "sb", OrchestratorId: "o-a", OrchestratorName: "alpha-bot", OrchestratorHostId: host},
+		}}
+	m, _ = update(m, eventMsg{ev: &pb.Event{Event: &pb.Event_Notification{Notification: one}}})
+	if len(rn.titles) != 1 || !strings.Contains(rn.titles[0], "agents detached") {
+		t.Fatalf("desktop titles = %v", rn.titles)
+	}
+	out, _ := m.enterNotifications()
+	m = out.(Model)
+	if v := m.View(); !strings.Contains(v, "agents detached") || !strings.Contains(v, "2 sandboxes") {
+		t.Errorf("inbox:\n%s", v)
+	}
+	m, cmd := update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = feed(m, cmd)
+	if m.screen != screenOrchDetail || m.orchDetail.id != "o-a" || m.orchDetail.view != viewWorkers {
+		t.Fatalf("one orchestrator: screen %v detail %q view %v status %q", m.screen, m.orchDetail.id, m.orchDetail.view, m.status)
+	}
+
+	// Two orchestrators: the picker, then the chosen one's Workers view.
+	two := &pb.NotificationEvent{Id: "n-2", Kind: pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, Message: "3 agents detached by a daemon restart — enter to review",
+		Affected: []*pb.NotificationEvent_AffectedSandbox{
+			{SandboxId: "sa", OrchestratorId: "o-a", OrchestratorName: "alpha-bot", OrchestratorHostId: host},
+			{SandboxId: "sb", OrchestratorId: "o-b", OrchestratorName: "beta-bot", OrchestratorHostId: host},
+			{SandboxId: "plain"},
+		}}
+	m, _ = update(m, eventMsg{ev: &pb.Event{Event: &pb.Event_Notification{Notification: two}}})
+	out, _ = m.enterNotifications()
+	m = out.(Model)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter}) // newest first: n-2 is selected
+	if m.screen != screenDetachedPick || len(m.detachedPick.choices) != 2 {
+		t.Fatalf("two orchestrators: screen %v choices %d", m.screen, len(m.detachedPick.choices))
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "alpha-bot") || !strings.Contains(v, "beta-bot") || !strings.Contains(v, "1 worker") || !strings.Contains(v, "Review which?") {
+		t.Errorf("picker:\n%s", v)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != screenNotifications {
+		t.Fatalf("esc returns to the inbox: %v", m.screen)
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = update(m, press("j"))
+	m, cmd = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = feed(m, cmd)
+	if m.screen != screenOrchDetail || m.orchDetail.id != "o-b" || m.orchDetail.view != viewWorkers {
+		t.Fatalf("picked: screen %v detail %q view %v", m.screen, m.orchDetail.id, m.orchDetail.view)
+	}
+
+	// No worker among them: the list, on the first sandbox.
+	none := &pb.NotificationEvent{Id: "n-3", Kind: pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, Message: "2 agents detached",
+		Affected: []*pb.NotificationEvent_AffectedSandbox{{SandboxId: "plain"}, {SandboxId: "sb"}}}
+	m, _ = update(m, eventMsg{ev: &pb.Event{Event: &pb.Event_Notification{Notification: none}}})
+	out, _ = m.enterNotifications()
+	m = out.(Model)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != screenList || m.actionable().GetId() != "plain" {
+		t.Errorf("no worker: screen %v selected %q", m.screen, m.actionable().GetId())
+	}
+
+	// An orchestrator on a daemon the TUI isn't connected to.
+	elsewhere := &pb.NotificationEvent{Id: "n-4", Kind: pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, Message: "2 agents detached",
+		Affected: []*pb.NotificationEvent_AffectedSandbox{{SandboxId: "sa", OrchestratorId: "o-z", OrchestratorName: "zeta", OrchestratorHostId: "nowhere"}, {SandboxId: "sb", OrchestratorId: "o-z", OrchestratorHostId: "nowhere"}}}
+	m, _ = update(m, eventMsg{ev: &pb.Event{Event: &pb.Event_Notification{Notification: elsewhere}}})
+	out, _ = m.enterNotifications()
+	m = out.(Model)
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != screenNotifications || !strings.Contains(m.status, "zeta's daemon is not connected") {
+		t.Errorf("unconnected: screen %v status %q", m.screen, m.status)
+	}
+	if got := detachedOrchestrators(two); len(got) != 2 || got[0].name != "alpha-bot" || got[1].count != 1 {
+		t.Errorf("detachedOrchestrators = %+v", got)
 	}
 }

@@ -168,17 +168,22 @@ func (h *Hub) PublishServiceInstance(inst *pb.ServiceInstance) {
 // EmitNotification buffers and broadcasts a NotificationEvent (FR-024/025). The
 // event identifies the subject sandbox and this host (FR-026).
 func (h *Hub) EmitNotification(sandboxID string, kind pb.NotificationKind, message string, now time.Time) *pb.NotificationEvent {
+	return h.emit(&pb.NotificationEvent{SandboxId: sandboxID, Kind: kind, Message: message, CreatedAt: timestamppb.New(now)})
+}
+
+// EmitHostNotification buffers and broadcasts a host-level NotificationEvent
+// (SWI-25 A2): no subject sandbox, and the sandboxes it covers in affected.
+func (h *Hub) EmitHostNotification(kind pb.NotificationKind, message string, affected []*pb.NotificationEvent_AffectedSandbox, now time.Time) *pb.NotificationEvent {
+	return h.emit(&pb.NotificationEvent{Kind: kind, Message: message, Affected: affected, CreatedAt: timestamppb.New(now)})
+}
+
+// emit numbers ev, stamps this host, buffers it for replay and fans it out.
+func (h *Hub) emit(ev *pb.NotificationEvent) *pb.NotificationEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.seq++
-	ev := &pb.NotificationEvent{
-		Id:        fmt.Sprintf("evt-%d", h.seq),
-		SandboxId: sandboxID,
-		HostId:    h.hostID,
-		Kind:      kind,
-		Message:   message,
-		CreatedAt: timestamppb.New(now),
-	}
+	ev.Id = fmt.Sprintf("evt-%d", h.seq)
+	ev.HostId = h.hostID
 	h.buffer = append(h.buffer, &bufferedNotification{ev: ev})
 	if len(h.buffer) > maxBuffer {
 		h.buffer = h.buffer[len(h.buffer)-maxBuffer:]

@@ -36,7 +36,8 @@ import (
 //
 // Until a probe answers the sandbox is *unknown* and the gate refuses every
 // spawn. Alive with no live session of its generation is an orphan record
-// (surfaced once with AGENT_DETACHED); gone drops the record, retires the
+// (surfaced once with AGENT_DETACHED, or, for those the start-up check finds,
+// once for all of them with AGENTS_DETACHED_AT_START; SWI-25 A2); gone drops the record, retires the
 // generation's token and writes EXITED (the gone rule). Each sandbox's state
 // is published as AgentSession.agent_check, written only when it changes.
 //
@@ -98,9 +99,11 @@ type OrphanTokens interface {
 	BindFromProbe(sandboxID string, p agent.ProbedAgent) error
 }
 
-// OrphanNotifier emits the AGENT_DETACHED notification (agent.Hub).
+// OrphanNotifier emits the AGENT_DETACHED and AGENT_CHECK_FAILED
+// notifications, and the host-level AGENTS_DETACHED_AT_START one (agent.Hub).
 type OrphanNotifier interface {
 	EmitNotification(sandboxID string, kind pb.NotificationKind, message string, now time.Time) *pb.NotificationEvent
+	EmitHostNotification(kind pb.NotificationKind, message string, affected []*pb.NotificationEvent_AffectedSandbox, now time.Time) *pb.NotificationEvent
 }
 
 // OrphanDeps wires the tracker (SetOrphanDeps). Every field MAY be nil.
@@ -153,9 +156,27 @@ type orphans struct {
 	m   *Manager
 	sem chan struct{}
 
-	mu   sync.Mutex
-	st   map[string]*orphanState
-	deps OrphanDeps
+	mu    sync.Mutex
+	st    map[string]*orphanState
+	deps  OrphanDeps
+	batch *startBatch // the start-up check's probes, while any is pending (SWI-25 A2)
+}
+
+// startBatch is the start-up check's set of probes (SWI-25 A2): the orphans
+// they find are not notified one by one but once, when the last of them has
+// ended, as a host-level AGENTS_DETACHED_AT_START (a lone one keeps its own
+// AGENT_DETACHED). A probe that ends without an answer (dropped, or failed
+// and retrying) leaves the batch; an orphan it finds later is notified alone.
+type startBatch struct {
+	pending map[string]bool
+	found   []batchFound
+}
+
+// batchFound is one orphan the start-up batch found: its notice, had it been
+// alone, and its entry in the host-level one.
+type batchFound struct {
+	id, msg  string
+	affected *pb.NotificationEvent_AffectedSandbox
 }
 
 func newOrphans(m *Manager) *orphans {
@@ -468,6 +489,7 @@ func (o *orphans) probeIn(id string, held bool) {
 		if !st.again {
 			st.probing = false
 			o.mu.Unlock()
+			o.batchDone(id)
 			return
 		}
 		st.again = false
@@ -740,7 +762,89 @@ func (o *orphans) alive(id string, epoch uint64, res agent.ProbeResult) {
 		if run := out.GetController().GetRun(); run != nil {
 			msg += " (run " + run.GetId() + ")"
 		}
+		if o.batchTake(id, msg, affectedSandbox(out)) {
+			return // notified with the start-up batch
+		}
 		d.Notify.EmitNotification(id, pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED, msg, time.Now())
+	}
+}
+
+// affectedSandbox is a sandbox's entry in a host-level notice.
+func affectedSandbox(sb *pb.Sandbox) *pb.NotificationEvent_AffectedSandbox {
+	c := sb.GetController()
+	return &pb.NotificationEvent_AffectedSandbox{
+		SandboxId: sb.GetId(), DisplayName: sb.GetDisplayName(),
+		OrchestratorId: c.GetOrchestratorId(), OrchestratorName: c.GetName(), OrchestratorHostId: c.GetHostId(),
+	}
+}
+
+// beginBatch opens the start-up batch over the probes of ids (SWI-25 A2).
+func (o *orphans) beginBatch(ids []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	b := &startBatch{pending: map[string]bool{}}
+	for _, id := range ids {
+		b.pending[id] = true
+	}
+	o.batch = b
+}
+
+// batchTake records an orphan the start-up batch found, reporting whether it
+// did (the caller then emits nothing itself).
+func (o *orphans) batchTake(id, msg string, affected *pb.NotificationEvent_AffectedSandbox) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	b := o.batch
+	if b == nil || !b.pending[id] {
+		return false
+	}
+	b.found = append(b.found, batchFound{id: id, msg: msg, affected: affected})
+	return true
+}
+
+// batchDone ends id's start-up probe; the last one closes the batch and
+// notifies what it found.
+func (o *orphans) batchDone(id string) { o.batchEnd(id) }
+
+// batchDrop ends the start-up probes that never started (the daemon is
+// shutting down), so what the batch found so far is still notified.
+func (o *orphans) batchDrop(ids ...string) { o.batchEnd(ids...) }
+
+func (o *orphans) batchEnd(ids ...string) {
+	o.mu.Lock()
+	b := o.batch
+	if b == nil {
+		o.mu.Unlock()
+		return
+	}
+	for _, id := range ids {
+		delete(b.pending, id)
+	}
+	if len(b.pending) > 0 {
+		o.mu.Unlock()
+		return
+	}
+	o.batch = nil
+	d := o.deps
+	o.mu.Unlock()
+	if d.Notify == nil {
+		return
+	}
+	switch len(b.found) {
+	case 0:
+	case 1:
+		f := b.found[0]
+		d.Notify.EmitNotification(f.id, pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED, f.msg, time.Now())
+	default:
+		affected := make([]*pb.NotificationEvent_AffectedSandbox, 0, len(b.found))
+		for _, f := range b.found {
+			affected = append(affected, f.affected)
+		}
+		msg := fmt.Sprintf("%d agents detached by a daemon restart — enter to review", len(b.found))
+		d.Notify.EmitHostNotification(pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, msg, affected, time.Now())
 	}
 }
 
@@ -871,6 +975,11 @@ func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, sn
 		}
 	}
 	slices.SortStableFunc(probe, func(a, b probeCandidate) int { return a.class - b.class })
+	ids := make([]string, 0, len(probe))
+	for _, c := range probe {
+		ids = append(ids, c.id)
+	}
+	o.beginBatch(ids)
 	go o.feed(ctx, probe)
 }
 
@@ -897,10 +1006,15 @@ func probeClass(sb *pb.Sandbox) int {
 // so that no later candidate's probe runs ahead of an earlier one's; it stops
 // when ctx ends (the daemon is shutting down).
 func (o *orphans) feed(ctx context.Context, probe []probeCandidate) {
-	for _, c := range probe {
+	for i, c := range probe {
 		select {
 		case o.sem <- struct{}{}:
 		case <-ctx.Done():
+			rest := make([]string, 0, len(probe)-i)
+			for _, c := range probe[i:] {
+				rest = append(rest, c.id)
+			}
+			o.batchDrop(rest...)
 			return
 		}
 		go o.probeIn(c.id, true)

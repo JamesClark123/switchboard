@@ -271,6 +271,10 @@ func notifTitle(k pb.NotificationKind) string {
 	// sandbox or Wait); raised once by the sandbox's daemon.
 	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED:
 		return "can't check agent"
+	// SWI-25 A2: the start-up check found several detached agents; one host-level
+	// notice for all of them (enter → the Workers view, detached_review.go).
+	case pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START:
+		return "agents detached"
 	}
 	return "task complete"
 }
@@ -282,9 +286,14 @@ func (m Model) enterNotifications() (tea.Model, tea.Cmd) {
 	l := newItemList("Notifications", "notification", "notifications", m.bodyWidth(), m.bodyHeight())
 	items := make([]list.Item, 0, len(m.inbox))
 	for _, n := range m.inbox {
+		subject := short(n.GetSandboxId())
+		if isHostNotice(n) {
+			// A host-level notice (SWI-25 A2) has no sandbox: its subjects' count.
+			subject = fmt.Sprintf("%d sandboxes", len(n.GetAffected()))
+		}
 		items = append(items, listItem{
 			id:      n.GetSandboxId(),
-			title:   notifIcon(n.GetKind()) + " " + notifTitle(n.GetKind()) + dimStyle.Render("  "+short(n.GetSandboxId())),
+			title:   notifIcon(n.GetKind()) + " " + notifTitle(n.GetKind()) + dimStyle.Render("  "+subject),
 			desc:    sanitizeLine(n.GetMessage(), 0),
 			filter:  sanitizeLine(n.GetMessage(), 0),
 			payload: n,
@@ -304,7 +313,7 @@ func notifIcon(k pb.NotificationKind) string {
 	case pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED,
 		pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED:
 		return lipgloss.NewStyle().Foreground(colError).Render("✗")
-	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED:
+	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED, pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")
 	case pb.NotificationKind_NOTIFICATION_KIND_RUN_AWAITING_REVIEW:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("⚑")
@@ -364,9 +373,13 @@ func (m Model) updateNotificationsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = screenList
 		return m, nil
 	case "enter":
-		// Navigate to the notification's sandbox (FR-026).
+		// Navigate to the notification's sandbox (FR-026); a host-level
+		// notice has none and opens its orchestrator's Workers view (SWI-25 A2).
 		if it, ok := m.notifyList.SelectedItem().(listItem); ok {
 			if n, ok := it.payload.(*pb.NotificationEvent); ok {
+				if isHostNotice(n) {
+					return m.reviewDetached(n)
+				}
 				selectByID(&m.list, n.GetSandboxId())
 			}
 		}
