@@ -55,7 +55,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ConfigDir != "/home/u/.config/switchboard" {
 		t.Errorf("ConfigDir = %q", cfg.ConfigDir)
 	}
-	if cfg.CodeBin != "code" {
-		t.Errorf("CodeBin = %q, want code", cfg.CodeBin)
+	// The override variables are kept raw: unset reads as "" (FR-502).
+	if cfg.EditorBins["vscode"] != "" {
+		t.Errorf("EditorBins[vscode] = %q, want unset", cfg.EditorBins["vscode"])
 	}
 }

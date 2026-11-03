@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 )
 
 type field struct {
@@ -18,23 +20,46 @@ type field struct {
 	required bool
 	def      string
 	doc      string
+	// raw: the value is kept as given, with no default substituted, so a
+	// caller can tell set from unset (the editor override variables, FR-502;
+	// editor.Command applies the default).
+	raw bool
 }
 
-var schema = []field{
-	{"SWITCHBOARD_CONFIG_DIR", false, "$XDG_CONFIG_HOME/switchboard", "Directory holding client TOML state (configs/groups/hosts)."},
-	{"SWITCHBOARD_LOCAL_SOCKET", false, "$XDG_RUNTIME_DIR/switchboard.sock", "Default local daemon Unix socket. When XDG_RUNTIME_DIR is unset it falls back to $HOME/.local/share/switchboard, matching switchboardd."},
-	{"SWITCHBOARD_CODE_BIN", false, "code", "VS Code CLI used to open sandboxes."},
-	{"SWITCHBOARD_SBX_BIN", false, "sbx", "Host sandbox CLI used to open a sandbox's interactive agent terminal."},
-	{"SWITCHBOARD_TERMINAL", false, "", "Terminal command prefix for the popout terminal (T); empty = system default (e.g. \"kitty -e\", \"gnome-terminal --\", \"tmux new-window\")."},
+var schema = buildSchema()
+
+// buildSchema lists the keys in documentation order: the editor override
+// variables come from the catalogue (SWI-24, FR-503), SWITCHBOARD_CODE_BIN
+// first among them with its existing row.
+func buildSchema() []field {
+	s := []field{
+		{key: "SWITCHBOARD_CONFIG_DIR", def: "$XDG_CONFIG_HOME/switchboard", doc: "Directory holding client TOML state (configs/groups/hosts)."},
+		{key: "SWITCHBOARD_LOCAL_SOCKET", def: "$XDG_RUNTIME_DIR/switchboard.sock", doc: "Default local daemon Unix socket. When XDG_RUNTIME_DIR is unset it falls back to $HOME/.local/share/switchboard, matching switchboardd."},
+		{key: "SWITCHBOARD_CODE_BIN", def: "code", doc: "VS Code CLI used to open sandboxes (the default editor). One executable; a wrapper script or Custom covers a command with arguments.", raw: true},
+	}
+	for _, e := range editor.Catalogue() {
+		if e.EnvVar == "" || e.ID == editor.Default {
+			continue
+		}
+		s = append(s, field{key: e.EnvVar, def: e.Command, doc: e.Name + " CLI used to open sandboxes (default " + e.Command + "). One executable; a wrapper script or Custom covers a command with arguments.", raw: true})
+	}
+	return append(s,
+		field{key: "SWITCHBOARD_SBX_BIN", def: "sbx", doc: "Host sandbox CLI used to open a sandbox's interactive agent terminal."},
+		field{key: "SWITCHBOARD_TERMINAL", def: "", doc: "Terminal command prefix for the popout terminal (T); empty = system default (e.g. \"kitty -e\", \"gnome-terminal --\", \"tmux new-window\")."},
+	)
 }
 
 // Config is the parsed, typed client configuration.
 type Config struct {
 	ConfigDir   string
 	LocalSocket string
-	CodeBin     string
-	SbxBin      string
-	Terminal    string
+	// EditorBins holds each built-in editor's override variable by editor ID,
+	// raw: "" when unset or blank (FR-502). The default command is applied by
+	// editor.Command, the one place that decides whether the variable counts
+	// as an override (FR-517).
+	EditorBins map[string]string
+	SbxBin     string
+	Terminal   string
 }
 
 // SchemaKeys returns the declared env keys (sorted) — used by env:check.
@@ -45,6 +70,16 @@ func SchemaKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// SchemaDoc returns a key's documentation line ("" for an unknown key).
+func SchemaDoc(key string) string {
+	for _, f := range schema {
+		if f.key == key {
+			return f.doc
+		}
+	}
+	return ""
 }
 
 // Load parses environment via getenv into a Config. Defaults that reference
@@ -76,6 +111,14 @@ func Load(getenv func(string) string) (*Config, error) {
 	var missing []string
 	for _, f := range schema {
 		v := getenv(f.key)
+		if f.raw {
+			// Kept as given; blank reads as unset (FR-502).
+			if strings.TrimSpace(v) == "" {
+				v = ""
+			}
+			vals[f.key] = v
+			continue
+		}
 		if v == "" {
 			v = expand(f.def)
 		}
@@ -88,10 +131,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
 	}
 
+	bins := map[string]string{}
+	for _, e := range editor.Catalogue() {
+		if e.EnvVar != "" {
+			bins[e.ID] = vals[e.EnvVar]
+		}
+	}
 	return &Config{
 		ConfigDir:   filepath.Clean(vals["SWITCHBOARD_CONFIG_DIR"]),
 		LocalSocket: vals["SWITCHBOARD_LOCAL_SOCKET"],
-		CodeBin:     vals["SWITCHBOARD_CODE_BIN"],
+		EditorBins:  bins,
 		SbxBin:      vals["SWITCHBOARD_SBX_BIN"],
 		Terminal:    defaultTerminal(vals["SWITCHBOARD_TERMINAL"], getenv),
 	}, nil

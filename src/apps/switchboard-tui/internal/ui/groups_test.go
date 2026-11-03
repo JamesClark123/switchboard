@@ -1,13 +1,13 @@
 package ui
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
-	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -20,17 +20,10 @@ func newGroupStore(t *testing.T) *store.GroupStore {
 	return s.Groups()
 }
 
-func recordingOpener() (*vscode.Opener, *bool) {
-	opened := new(bool)
-	o := &vscode.Opener{CodeBin: "code", Run: func(*exec.Cmd) error { *opened = true; return nil }}
-	return o, opened
-}
-
 func TestGroupsCreateAssignNavigate(t *testing.T) {
 	gs := newGroupStore(t)
-	opener, _ := recordingOpener()
 	d := &fakeDaemon{}
-	m := withSandboxes(New(d, "/work").WithGroups(gs, opener), []*pb.Sandbox{{Id: "sb1"}, {Id: "sb2"}})
+	m := withSandboxes(New(d, "/work").WithGroups(gs), []*pb.Sandbox{{Id: "sb1"}, {Id: "sb2"}})
 	m.list.Select(1) // sb2 is the membership target
 
 	// Open groups; none yet.
@@ -90,7 +83,7 @@ func TestGroupsDeleteAddCancelAndNav(t *testing.T) {
 	if _, err := gs.Save(store.Group{Name: "beta"}); err != nil {
 		t.Fatal(err)
 	}
-	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs, nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs))
 	m, cmd := update(m, press("g"))
 	m, _ = update(m, runCmd(cmd))
 	if len(m.groups.rows) != 2 {
@@ -137,57 +130,56 @@ func TestGroupsNoStore(t *testing.T) {
 	}
 }
 
-func TestOpenVSCode(t *testing.T) {
-	opener, opened := recordingOpener()
-	d := &fakeDaemon{}
-	m := withSandboxes(New(d, "/work").WithGroups(newGroupStore(t), opener), []*pb.Sandbox{{Id: "sb1"}})
-
-	_, cmd := update(m, press("v"))
-	msg := runCmd(cmd)
-	if s, ok := msg.(statusMsg); !ok || !strings.Contains(string(s), "opened") {
-		t.Fatalf("vscode open status = %v", msg)
-	}
-	if !*opened {
-		t.Error("opener.Open was not called")
-	}
-
-	// VSCodeTarget error surfaces.
-	d.vscodeErr = exec.ErrNotFound
-	_, cmd = update(m, press("v"))
-	if _, ok := runCmd(cmd).(errMsg); !ok {
-		t.Error("expected errMsg when VSCodeTarget fails")
-	}
-}
-
-func TestOpenVSCodeRemoteUsesRemoteSSH(t *testing.T) {
+// TestOpenEditorFromGroupTab (SWI-24 T033): v from a group tab targets the
+// sandbox's own host's SSH target, not the active host's.
+func TestOpenEditorFromGroupTab(t *testing.T) {
 	s, _ := store.New(t.TempDir())
 	hs := s.Hosts()
-	if _, err := hs.Save(store.KnownHost{ID: "remote", DisplayName: "box", Kind: "ssh", SSHTarget: "user@box"}); err != nil {
-		t.Fatal(err)
-	}
-	var args []string
-	opener := &vscode.Opener{CodeBin: "code", Run: func(c *exec.Cmd) error { args = c.Args; return nil }}
-	d := &fakeDaemon{}
-	m := withSandboxes(New(d, "/work").WithHosts(nil, hs, "remote").WithGroups(s.Groups(), opener), []*pb.Sandbox{{Id: "sb1"}})
-
-	_, cmd := update(m, press("v"))
-	_ = runCmd(cmd)
-	// A remote sandbox opens its controlled folder over Remote-SSH to that host.
-	found := false
-	for _, a := range args {
-		if a == "ssh-remote+user@box" {
-			found = true
+	for _, h := range []store.KnownHost{
+		{ID: "local", DisplayName: "laptop", Kind: "local", SocketPath: "/tmp/s.sock"},
+		{ID: "box", DisplayName: "build-box", Kind: "ssh", SSHTarget: "me@box"},
+	} {
+		if _, err := hs.Save(h); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if !found {
-		t.Errorf("remote open should target ssh-remote+user@box, args=%v", args)
+	gs := s.Groups()
+	g, err := gs.Save(store.Group{Name: "team"})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestOpenVSCodeNoOpener(t *testing.T) {
-	m := withSandboxes(New(&fakeDaemon{}, "/work"), []*pb.Sandbox{{Id: "sb1"}}) // no opener
-	_, cmd := update(m, press("v"))
-	if s, ok := runCmd(cmd).(statusMsg); !ok || !strings.Contains(string(s), "not configured") {
-		t.Errorf("expected not-configured status, got %v", runCmd(cmd))
+	if err := gs.AddMember(g.ID, store.GroupMember{HostID: "box", SandboxID: "remote1"}); err != nil {
+		t.Fatal(err)
+	}
+	local := &fakeDaemon{hostID: "local"}
+	mgr := client.NewManager()
+	mgr.Upsert(client.HostEntry{ID: "local", DisplayName: "laptop", Kind: "local", SocketPath: "/tmp/s.sock"})
+	mgr.Adopt("local", nil)
+	mgr.Upsert(client.HostEntry{ID: "box", DisplayName: "build-box", Kind: "ssh", SSHTarget: "me@box"})
+	mgr.Adopt("box", nil) // connected; the fake stands in for its connection
+	stubLookPath(t)
+	l := &fakeLauncher{report: make(chan editor.ExitReport)}
+	close(l.report)
+	m := sized(New(local, "/work").WithHosts(mgr, hs, "local").WithGroups(gs).WithEditor(l, nil))
+	m, _ = update(m, listDataMsg{
+		hosts: []client.HostSandboxes{
+			{Host: client.HostConn{Entry: client.HostEntry{ID: "local", DisplayName: "laptop"}, State: client.HostConnected}, Sandboxes: []*pb.Sandbox{{Id: "local1", State: pb.SandboxState_SANDBOX_STATE_RUNNING}}},
+			{Host: client.HostConn{Entry: client.HostEntry{ID: "box", DisplayName: "build-box"}, State: client.HostConnected}, Sandboxes: []*pb.Sandbox{{Id: "remote1", State: pb.SandboxState_SANDBOX_STATE_RUNNING}}},
+		},
+		groups: mustGroups(t, gs),
+	})
+	// Move to the group tab, where remote1 is the only row.
+	for i := 0; i < len(m.tabs); i++ {
+		if m.tabs[m.tabIndex].kind == tabGroup {
+			break
+		}
+		m, _ = update(m, tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if m.tabs[m.tabIndex].kind != tabGroup || m.actionable().GetId() != "remote1" {
+		t.Fatalf("group tab: kind %v row %q", m.tabs[m.tabIndex].kind, m.actionable().GetId())
+	}
+	_, msg, _ := pressV(t, m)
+	if msg.failed || strings.Join(l.last(), " ") != "code --remote ssh-remote+me@box /workspace" || local.vscodeCalls != 1 {
+		t.Errorf("group-tab v: %+v argv %q calls %d", msg, l.last(), local.vscodeCalls)
 	}
 }

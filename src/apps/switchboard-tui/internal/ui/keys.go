@@ -146,7 +146,11 @@ func (m Model) listHelp() helpBindings {
 	if len(m.tabs) > 1 {
 		hb = append(hb, hkey("←/→", "group"))
 	}
-	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, k.VSCode, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.OrchestratorAttach)
+	// SWI-24 (FR-519): the `v` entry names the selected editor's identifier,
+	// so the default still reads vscode.
+	e, _ := m.sessionEditor()
+	open := key.NewBinding(key.WithKeys("v"), key.WithHelp("v", e.ID))
+	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, open, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.OrchestratorAttach)
 	// feature 009: mark free is offered only while the selected worker's run
 	// awaits review (FR-156), or its cleanup is stalled on a question (SWI-17
 	// FR-216); every other per-sandbox key works on a worker wherever it is

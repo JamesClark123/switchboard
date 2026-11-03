@@ -71,3 +71,45 @@ func (s *Store) SaveTOML(name string, v any) error {
 	}
 	return os.Rename(tmp, full)
 }
+
+// SaveTOMLPrivate encodes v and writes it to name with owner-only permissions
+// (SWI-24, FR-527): the bytes go to a fresh temp file created with a unique
+// name and mode 0600 in the same directory, which is renamed over the target,
+// and the target is then chmod'ed to 0600 so an existing wider file is
+// corrected. A leftover temp file from a crash is never reused, so it can't
+// widen the mode, and two running TUIs never share one. A write, close or
+// rename failure removes the temp file, because it can hold the Custom
+// command. SaveTOML is unchanged: hosts, groups and configs keep their path.
+func (s *Store) SaveTOMLPrivate(name string, v any) error {
+	b, err := toml.Marshal(v)
+	if err != nil {
+		return err
+	}
+	full := s.path(name)
+	dir := filepath.Dir(full)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(name)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	fail := func(err error) error {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, full); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(full, 0o600)
+}

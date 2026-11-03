@@ -928,6 +928,27 @@ func droppedTagsLine(rec *pb.Orchestrator) string {
 	return "worker tags dropped on upgrade: " + capNames(parts) + " — D dismiss"
 }
 
+// lanesTopLines are the lines the lanes list draws above its rows: the
+// dropped-tags notice and the empty note.
+func (m Model) lanesTopLines(s orchSurface) []string {
+	rec := m.lanesDetail(s).GetSummary().GetOrchestrator()
+	var lines []string
+	if n := droppedTagsLine(rec); n != "" {
+		lines = append(lines, m.fitLine(agentWaitStyle.Render(sanitizeLine(n, 0))))
+	}
+	if len(rec.GetLanes()) == 0 {
+		lines = append(lines, dimStyle.Render("no lanes yet — a to add one"))
+	}
+	return lines
+}
+
+// lanesFixedLines counts the lines lanesView puts above its rows, shared with
+// the status limit (SWI-24): the detail's header, tabs and blank (3) plus
+// lanesTopLines.
+func (m Model) lanesFixedLines(s orchSurface) int {
+	return 3 + len(m.lanesTopLines(s))
+}
+
 // lanesView renders a surface's panel: its form, its picker or the list.
 func (m Model) lanesView(s orchSurface) []string {
 	p := m.lanes(s)
@@ -947,13 +968,7 @@ func (m Model) lanesView(s orchSurface) []string {
 	}
 	det := m.lanesDetail(s)
 	rec := det.GetSummary().GetOrchestrator()
-	var lines []string
-	if n := droppedTagsLine(rec); n != "" {
-		lines = append(lines, m.fitLine(agentWaitStyle.Render(sanitizeLine(n, 0))))
-	}
-	if len(rec.GetLanes()) == 0 {
-		lines = append(lines, dimStyle.Render("no lanes yet — a to add one"))
-	}
+	lines := m.lanesTopLines(s)
 	half := max((m.bodyWidth()-6)/2, 12)
 	var rows []string
 	for i, l := range rec.GetLanes() {

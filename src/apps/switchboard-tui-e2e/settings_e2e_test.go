@@ -37,6 +37,10 @@ func TestTUISettingsPersistE2E(t *testing.T) {
 	if !strings.Contains(string(b), "auto_connect_hosts = false") {
 		t.Errorf("settings.toml = %q", b)
 	}
+	// Owner-only permissions (SWI-24, FR-527).
+	if fi, err := os.Stat(filepath.Join(configDir, "settings.toml")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("settings.toml mode = %v, want -rw------- (%v)", fi.Mode(), err)
+	}
 
 	p2 := spawnTUIWithConfig(t, tui, sock, seedSource(t), configDir)
 	p2.expect(t, "Switchboard", 20*time.Second)

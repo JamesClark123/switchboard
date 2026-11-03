@@ -38,9 +38,15 @@ type fakeDaemon struct {
 	ackedIDs       []string
 	subscribeErr   error
 	vscodeErr      error
-	daemonVer      string
-	updateErr      error
-	updateTarget   string
+	// SWI-24: vscodePath overrides the workspace path VSCodeTarget returns;
+	// vscodeCalls counts the calls; resizes counts SendResize on sessions.
+	vscodePath   string
+	vscodeCalls  int
+	resizes      int
+	attachRows   uint32 // the rows of the last attach
+	daemonVer    string
+	updateErr    error
+	updateTarget string
 
 	// feature 008 fakes: runtime baseline + gateway availability + gateway ops
 	sbxVer      string
@@ -292,10 +298,17 @@ func (f *fakeDaemon) StopService(_ context.Context, sandboxID, name string) (*pb
 }
 
 func (f *fakeDaemon) VSCodeTarget(_ context.Context, id string) (*pb.VSCodeTarget, error) {
+	f.mu.Lock()
+	f.vscodeCalls++
+	path := f.vscodePath
+	f.mu.Unlock()
 	if f.vscodeErr != nil {
 		return nil, f.vscodeErr
 	}
-	return &pb.VSCodeTarget{ContainerName: "/" + id, WorkspacePath: "/workspace"}, nil
+	if path == "" {
+		path = "/workspace"
+	}
+	return &pb.VSCodeTarget{ContainerName: "/" + id, WorkspacePath: path}, nil
 }
 
 // SetTag records/clears the tag on the matching sandbox and returns it (US5).
@@ -318,12 +331,13 @@ func (f *fakeDaemon) SetTag(_ context.Context, id, tag string) (*pb.Sandbox, err
 // AttachTerminal returns a fake session that writes a canned snapshot to sink and
 // echoes subsequent input, so the in-place terminal view (US2) is testable
 // without a real PTY. attachErr, when set, simulates a rejected attach.
-func (f *fakeDaemon) AttachTerminal(_ context.Context, sandboxID string, _ client.AttachKind, _, _ uint32, sink io.Writer) (client.TermSession, error) {
+func (f *fakeDaemon) AttachTerminal(_ context.Context, sandboxID string, _ client.AttachKind, _, rows uint32, sink io.Writer) (client.TermSession, error) {
 	if f.attachErr != nil {
 		return nil, f.attachErr
 	}
 	f.mu.Lock()
 	f.attachedID = sandboxID
+	f.attachRows = rows
 	f.mu.Unlock()
 	_, _ = sink.Write([]byte("SNAPSHOT:" + sandboxID))
 	return &fakeTermSession{sink: sink, d: f}, nil
@@ -352,7 +366,14 @@ func (s *fakeTermSession) SendData(p []byte) error {
 	_, err := s.sink.Write(p) // echo, like a shell
 	return err
 }
-func (s *fakeTermSession) SendResize(uint32, uint32) error { return nil }
+func (s *fakeTermSession) SendResize(uint32, uint32) error {
+	if s.d != nil {
+		s.d.mu.Lock()
+		s.d.resizes++
+		s.d.mu.Unlock()
+	}
+	return nil
+}
 func (s *fakeTermSession) Close() error {
 	s.closed = true
 	if s.d != nil {

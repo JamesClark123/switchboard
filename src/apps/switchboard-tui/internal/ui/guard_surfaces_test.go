@@ -816,7 +816,7 @@ func TestGuardRenameAndTag(t *testing.T) {
 func TestGuardHostAndGroupAdd(t *testing.T) {
 	noKeyGrace(t)
 	s, _ := store.New(t.TempDir())
-	m := sized(New(&fakeDaemon{}, "/work").WithHosts(client.NewManager(), s.Hosts(), "").WithGroups(s.Groups(), nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithHosts(client.NewManager(), s.Hosts(), "").WithGroups(s.Groups()))
 	m, cmd := update(m, press("h"))
 	m, _ = update(m, runCmd(cmd))
 	m, _ = update(m, press("a"))
@@ -1295,5 +1295,58 @@ func TestGuardRefusalSettlesByCallNotLabel(t *testing.T) {
 	unnamed := &orchOpState{formKind: "event", formVals: &eventFormVals{id: "tev-1"}, formTarget: orchTarget{name: "alpha-bot"}}
 	if got := opCallLabel(unnamed); got != "save event (tev-1) on alpha-bot" {
 		t.Errorf("an unnamed edited event's label: %q", got)
+	}
+}
+
+// TestGuardEditorCommand (SWI-24 T035): the settings screen's Custom command
+// input is a guarded inline input chosen from the screen's sub-state; Save acts
+// like enter (a rejection keeps it open), Discard returns to the list.
+func TestGuardEditorCommand(t *testing.T) {
+	noKeyGrace(t)
+	m, st := settingsModel(t)
+	if g, ok := m.activeGuard(); ok || g != gNone {
+		t.Fatal("no guard on the list")
+	}
+	m, _ = update(m, press(","))
+	if _, ok := m.activeGuard(); ok {
+		t.Fatal("the settings rows are not guarded")
+	}
+	m, _ = openCustom(t, m)
+	if g, ok := m.activeGuard(); !ok || g != gEditorCommand || m.guardForm(g) != nil || m.guardDirty(g) {
+		t.Fatalf("input open: guard %v ok %v dirty %v", g, ok, m.guardDirty(g))
+	}
+	m = typeIn(m, "edit {path}")
+	if !m.guardDirty(gEditorCommand) {
+		t.Fatal("typed text is a change")
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.unsaved.open || m.unsaved.surface != gEditorCommand {
+		t.Fatal("esc opens the dialog")
+	}
+	m, _ = update(m, press("s"))
+	if m.settingsView.mode != settingsRows || m.prefs.Editor != "custom" || !strings.Contains(settingsFile(t, st), "editor_custom_command = 'edit {path}'") {
+		t.Errorf("Save writes and closes: mode %v prefs %+v", m.settingsView.mode, m.prefs)
+	}
+	// A whitespace-only change is clean; a cleared value is a change.
+	m, _ = openCustom(t, m)
+	m = typeIn(m, " ")
+	if m.guardDirty(gEditorCommand) {
+		t.Error("surrounding spaces are not a change")
+	}
+	m.settingsView.input.SetValue("")
+	if !m.guardDirty(gEditorCommand) {
+		t.Error("a cleared value is a change")
+	}
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(m, press("d"))
+	if m.settingsView.mode != settingsList || m.prefs.EditorCustomCommand != "edit {path}" {
+		t.Errorf("Discard returns to the list with nothing changed: mode %v", m.settingsView.mode)
+	}
+	// ctrl+c on the input does nothing, as on the rename input.
+	m, _ = update(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeIn(m, "x")
+	m, _ = update(m, ctrlC)
+	if m.settingsView.mode != settingsInput || m.unsaved.open {
+		t.Error("ctrl+c does nothing on the input")
 	}
 }

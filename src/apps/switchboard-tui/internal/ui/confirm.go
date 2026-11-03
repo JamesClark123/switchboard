@@ -61,6 +61,11 @@ type confirmState struct {
 	// onCancel runs on every back-out (n/esc/q/ctrl+c, and enter when
 	// enterCancels): the MCP form's "back-out returns to the form".
 	onCancel func(m *Model) tea.Cmd
+	// holdsV: this is a Replace dialog for an in-place attach, so a `v`
+	// failure or refusal is held while it shows (SWI-24, FR-533). Read from
+	// the showing confirm (Model.vHoldDialog), so no way of closing the
+	// dialog can leave it stale.
+	holdsV bool
 }
 
 // enterConfirm opens the dialog over the sandbox list. The caller supplies the

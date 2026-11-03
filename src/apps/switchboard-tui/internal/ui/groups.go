@@ -225,42 +225,26 @@ func (m Model) viewGroups() string {
 	return out
 }
 
-// --- Open in VS Code (FR-027) ---
-
-func (m Model) openVSCodeCmd(hostID, sandboxID string) tea.Cmd {
-	if m.opener == nil {
-		return func() tea.Msg { return statusMsg("VS Code opener not configured") }
-	}
-	d := m.daemonForHost(hostID)
-	opener := m.opener
-	sshTarget := m.sshTargetForHost(hostID)
-	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
-		tgt, err := d.VSCodeTarget(ctx, sandboxID)
-		if err != nil {
-			return errMsg{err}
-		}
-		if err := opener.Open(tgt, sshTarget); err != nil {
-			return errMsg{err}
-		}
-		return statusMsg("opened " + short(sandboxID) + " in VS Code")
-	}
-}
+// --- Open in editor (FR-027; SWI-24 in editor_open.go) ---
 
 // sshTargetForHost returns a host's SSH target (empty for local), so a remote
-// sandbox opens via DOCKER_HOST=ssh://… (FR-027, research R3). An empty hostID
-// falls back to the active host.
-func (m Model) sshTargetForHost(hostID string) string {
+// sandbox opens over SSH (FR-027, research R3). An empty hostID falls back to
+// the active host. A failed lookup (the hosts file can't be read, the host is
+// gone) is returned as the error, so `v` refuses rather than treating the
+// sandbox as local (SWI-24, FR-520).
+func (m Model) sshTargetForHost(hostID string) (string, error) {
 	if hostID == "" {
 		hostID = m.activeHost
 	}
 	if m.hostStore == nil || hostID == "" {
-		return ""
+		return "", nil
 	}
 	h, err := m.hostStore.Get(hostID)
-	if err != nil || h.Kind != "ssh" {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return h.SSHTarget
+	if h.Kind != "ssh" {
+		return "", nil
+	}
+	return h.SSHTarget, nil
 }

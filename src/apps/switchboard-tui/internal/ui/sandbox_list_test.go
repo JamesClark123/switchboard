@@ -48,7 +48,7 @@ func TestWorkersHiddenSurfacedAndOrdered(t *testing.T) {
 	g, _ := gs.Save(store.Group{Name: "mygroup"})
 	_ = gs.AddMember(g.ID, store.GroupMember{HostID: "hosta", SandboxID: "w1"})
 	_ = gs.AddMember(g.ID, store.GroupMember{HostID: "hosta", SandboxID: "plain-a"})
-	m = m.WithGroups(gs, nil)
+	m = m.WithGroups(gs)
 	_ = hs
 	m = feed2(m, m.listDataCmd())
 

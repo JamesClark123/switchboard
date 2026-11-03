@@ -109,7 +109,7 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 		warning = "Replacing stops it and fails " + sanitizeLine(run.GetId(), 0) + "."
 	}
 	msg := replaceOrphanMsg{sb: sb, host: host, d: d, external: external, returnTo: returnTo}
-	return m.enterConfirm(confirmState{
+	st := confirmState{
 		title:        name + "'s agent was detached by a daemon restart",
 		body:         []string{seen + ".", "It can't be shown or typed into. Replace it?"},
 		warning:      warning,
@@ -118,7 +118,21 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 		cancelLabel:  "wait",
 		enterCancels: check.GetLastStatus() != pb.AgentStatus_AGENT_STATUS_IDLE || (run != nil && failsOnReplace(run)),
 		onConfirm:    func() tea.Msg { return msg },
-	})
+	}
+	if !external {
+		// SWI-24 (FR-533): the dialog can lead to an in-place attach, so a `v`
+		// failure is held while it shows, a recent one already showing is
+		// copied into the hold, and an accept passes the hold to the attach
+		// (its number is the next termSeq) in the same message, with no gap
+		// for the wrapper to release it in. An old attach error still
+		// showing has nothing to do with a failure held behind the dialog,
+		// so it won't be joined.
+		m.termFail = ""
+		m.holdRecentVFail()
+		st.holdsV = true
+		st.onAccept = func(m *Model) { m.vHold.seq = m.termSeq + 1 }
+	}
+	return m.enterConfirm(st)
 }
 
 // confirmRestartUnchecked is `t` on a sandbox whose detached-agent check keeps
