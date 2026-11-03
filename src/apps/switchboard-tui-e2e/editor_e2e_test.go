@@ -46,6 +46,15 @@ func waitLog(t *testing.T, logPath string) []string {
 	return nil
 }
 
+// leaveSettings leaves the settings screen and waits for the list to redraw, so
+// the next key isn't read together with the escape byte as an alt+ chord.
+func leaveSettings(t *testing.T, p *ptyProcess) {
+	t.Helper()
+	m := p.mark()
+	p.send("\x1b")
+	p.expectNew(t, m, "RUNNING", 10*time.Second)
+}
+
 // pickEditor opens the settings screen, the Editor list, moves down n entries
 // from VS Code and confirms.
 func pickEditor(t *testing.T, p *ptyProcess, down int) {
@@ -82,7 +91,7 @@ func TestTUIEditorPickAndOpenE2E(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), "editor = 'webstorm'") {
 		t.Fatalf("settings.toml = %q, %v", b, err)
 	}
-	p.send("\x1b") // back to the list
+	leaveSettings(t, p)
 	m = p.mark()
 	p.send("v")
 	p.expectNew(t, m, "in WebStorm", 15*time.Second)
@@ -117,7 +126,7 @@ func TestTUIEditorCustomCommandE2E(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), "editor_custom_command = 'logedit --open {path}'") {
 		t.Fatalf("settings.toml = %q, %v", b, err)
 	}
-	p.send("\x1b")
+	leaveSettings(t, p)
 	m = p.mark()
 	p.send("v")
 	p.expectNew(t, m, "in Custom", 15*time.Second)
@@ -145,7 +154,7 @@ func TestTUIEditorExitReportE2E(t *testing.T) {
 
 	pickEditor(t, p, 8) // GoLand
 	p.expect(t, "Editor: GoLand", 10*time.Second)
-	p.send("\x1b")
+	leaveSettings(t, p)
 	m := p.mark()
 	p.send("v")
 	p.expectNew(t, m, "exited with status 3", 15*time.Second)

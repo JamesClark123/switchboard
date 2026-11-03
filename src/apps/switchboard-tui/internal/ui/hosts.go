@@ -487,10 +487,11 @@ func (m *Model) closeOrchAdminOnDrop(msg hostsMsg) {
 				m.screen = back
 			}
 			m.status = name + " disconnected — orchestrators closed"
-			// The only message explaining why the screen changed: a `v`
-			// failure held behind the dropped dialog joins it (SWI-24).
-			m.termFail = m.status
 		})
+		// The only message explaining why the screen changed, with any
+		// "unsaved edits lost" note forceClose appended: a `v` failure held
+		// behind the dropped dialog joins it (SWI-24, FR-533).
+		m.termFail = m.status
 		return
 	}
 }
