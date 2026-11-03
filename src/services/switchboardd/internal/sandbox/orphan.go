@@ -27,8 +27,8 @@ import (
 //
 //   - at daemon start, only for a running sandbox that may have a surviving
 //     agent (an unretired hook token; on the first start after the upgrade, a
-//     set, non-EXITED status), in list order (tasks.md Deferred items), at most
-//     orphanProbeConcurrency at a time;
+//     set, non-EXITED status), idle workers first, then workers with a run,
+//     then the rest (SWI-25 A4), at most orphanProbeConcurrency at a time;
 //   - when an agent's exec client exits without the registry closing it;
 //   - on a gate refusal (debounced), a main-agent SessionEnd, and every
 //     orphanBackstop while an orphan or an unknown sandbox holds a run;
@@ -388,18 +388,30 @@ const (
 
 // probe checks one sandbox, single-flight: a probe asked for while one runs
 // runs once more after it.
-func (o *orphans) probe(id string) {
+func (o *orphans) probe(id string) { o.probeIn(id, false) }
+
+// probeIn is probe for a caller that may already hold a slot of sem for the
+// first attempt (held): the start-up feeder, which takes the slot before it
+// starts the probe so that probes start in its order (SWI-25 A4). The slot is
+// released here either way.
+func (o *orphans) probeIn(id string, held bool) {
 	o.mu.Lock()
 	st := o.of(id)
 	if st.probing {
 		st.again = true
 		o.mu.Unlock()
+		if held {
+			<-o.sem
+		}
 		return
 	}
 	st.probing = true
 	o.mu.Unlock()
 	for {
-		o.sem <- struct{}{}
+		if !held {
+			o.sem <- struct{}{}
+		}
+		held = false
 		out, epoch, res, err := o.probeOnce(id)
 		<-o.sem
 		o.apply(id, epoch, out, res, err)
@@ -719,6 +731,12 @@ func (m *Manager) MarkOrphanCandidates() {
 // generation (e.g. a worker warm-started that was not a candidate) is skipped:
 // that agent is never retired, marked EXITED or made unknown from the listing.
 // Each record is re-read as it is classified. Only the listing is slow.
+//
+// The probes start in priority order (SWI-25 A4): idle workers first (a
+// controller and no run: the ones a Replace or a warm start waits on), then
+// workers with a run, then every other sandbox. One feeder goroutine takes a
+// slot of the concurrency semaphore before it starts each probe, so with more
+// candidates than slots the start order is the priority order.
 func (m *Manager) PrepareOrphanCheck() func(ctx context.Context) {
 	all, err := m.store.List()
 	if err != nil {
@@ -742,7 +760,7 @@ func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, sn
 	lctx, cancel := context.WithTimeout(ctx, orphanProbeTimeout)
 	statuses, lerr := m.runner.ListStatuses(lctx)
 	cancel()
-	var probe []string
+	var probe []probeCandidate
 	for _, sb := range all {
 		id := sb.GetId()
 		if d.Tokens != nil && d.Tokens.Generation(id) > snap[id] {
@@ -774,7 +792,7 @@ func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, sn
 			o.setUnknown(id)
 			if sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING {
 				o.write(id, nil)
-				probe = append(probe, id)
+				probe = append(probe, probeCandidate{id: id, class: probeClass(sb)})
 				break
 			}
 			// A record that says stopped, under a listing that can't say: its
@@ -787,8 +805,40 @@ func (m *Manager) checkOrphansAtStart(ctx context.Context, all []*pb.Sandbox, sn
 			o.write(id, nil)
 		}
 	}
-	for _, id := range probe {
-		go o.probe(id)
+	slices.SortStableFunc(probe, func(a, b probeCandidate) int { return a.class - b.class })
+	go o.feed(ctx, probe)
+}
+
+// probeCandidate is a sandbox the start-up check probes, with its priority
+// class (probeClass): lower first.
+type probeCandidate struct {
+	id    string
+	class int
+}
+
+// probeClass orders the start-up probes: idle workers, workers with a run,
+// then the rest.
+func probeClass(sb *pb.Sandbox) int {
+	switch c := sb.GetController(); {
+	case c == nil:
+		return 2
+	case c.GetRun() != nil:
+		return 1
+	}
+	return 0
+}
+
+// feed starts the start-up probes in order, taking a slot of sem before each
+// so that no later candidate's probe runs ahead of an earlier one's; it stops
+// when ctx ends (the daemon is shutting down).
+func (o *orphans) feed(ctx context.Context, probe []probeCandidate) {
+	for _, c := range probe {
+		select {
+		case o.sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		go o.probeIn(c.id, true)
 	}
 }
 

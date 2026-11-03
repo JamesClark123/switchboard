@@ -1218,3 +1218,44 @@ func TestStateWord(t *testing.T) {
 		t.Errorf("stateWord = %q", w)
 	}
 }
+
+// With more candidates than the semaphore allows, the start-up probes run idle
+// workers first, then workers with a run, then plain sandboxes (SWI-25 A4);
+// the store lists them in the opposite order here.
+func TestOrphansAtStartProbeOrder(t *testing.T) {
+	saved := orphanProbeConcurrency
+	orphanProbeConcurrency = 1
+	t.Cleanup(func() { orphanProbeConcurrency = saved })
+	e := newOrphanEnv(t)
+	running, idle := pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE
+	e.put(t, "a-plain", running, idle, nil)
+	e.put(t, "b-run", running, idle, &pb.WorkerRun{Id: "r1"})
+	e.put(t, "c-idle", running, idle, nil)
+	if _, err := e.reg.Update("c-idle", func(s *pb.Sandbox) error {
+		s.Controller = &pb.SandboxController{OrchestratorId: "o"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a-plain", "b-run", "c-idle"} {
+		e.tokens.issue(id, 1)
+		e.run.setOut(id, goneOut)
+	}
+	e.m.PrepareOrphanCheck()(context.Background())
+	waitUntil(t, func() bool { return e.run.count("probe") == 3 })
+	var order []string
+	for _, c := range e.run.callLog() {
+		if strings.HasPrefix(c, "probe ") {
+			order = append(order, strings.TrimPrefix(c, "probe "))
+		}
+	}
+	if want := []string{"c-idle", "b-run", "a-plain"}; !slices.Equal(order, want) {
+		t.Errorf("probe order = %v, want %v", order, want)
+	}
+	for _, id := range []string{"a-plain", "b-run", "c-idle"} {
+		e.waitState(t, id, pb.AgentCheck_STATE_CLEAR)
+	}
+	if probeClass(&pb.Sandbox{}) != 2 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{Run: &pb.WorkerRun{}}}) != 1 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{}}) != 0 {
+		t.Error("probeClass")
+	}
+}
