@@ -273,7 +273,7 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 		st.title = "Fail " + id + " at " + name + "?"
 		st.body = []string{failConsequence(run)}
 		st.warning = "The run fails; this cannot be undone."
-		if mayHaveRun(run) && hasClear(run) {
+		if mayHaveRun(run) && hasClear(run) && startsTurn(currentStep(run)) {
 			st.body = append(st.body, "This step may still be running — check the worker's terminal: Clear ends that session.")
 		}
 	}
@@ -312,6 +312,12 @@ func failConsequence(r *pb.Run) string {
 		return "The remaining post-prompts are dropped; Clear (if enabled) is still sent."
 	}
 	return "No post-prompt follows; Clear (if enabled) is sent once the agent is idle."
+}
+
+// startsTurn reports whether a step starts a turn that could still be running:
+// a built-in doesn't.
+func startsTurn(st *pb.RunStep) bool {
+	return st.GetKind() == pb.StepKind_STEP_KIND_CUSTOM || st.GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT
 }
 
 // hasClear reports whether the run's cleanup includes Clear.

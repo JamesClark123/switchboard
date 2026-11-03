@@ -557,6 +557,34 @@ func stepWithEvidence(t *testing.T, rt *runtime) {
 
 // SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
 // turn then finishes as usual and no R or X is needed.
+// SWI-28: a step not yet classified takes no evidence from the developer's prompt
+// either: it halts at sentGrace, may have run.
+func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		at := sentAfter(sb, time.Second)
+		sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
+	})
+	waitSentSeen(t, rt, run.GetId())
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENT {
+		t.Errorf("after the developer's prompt = %+v", r)
+	}
+	env.clock.Advance(sentGrace)
+	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() {
+		t.Errorf("halted = %+v", r)
+	}
+}
+
 func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
 	unconfirmed := func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
 		if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
@@ -584,7 +612,7 @@ func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
 
 			emit(w, "wa", c.ev)
 			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
-			if r.GetStepKindSeen() != c.want || r.GetStepUnconfirmed() || r.GetStepSentBeforeRestart() || r.GetStepNote() != "" {
+			if r.GetStepKindSeen() != c.want || r.GetStepUnconfirmed() || r.GetStepSentBeforeRestart() || r.GetStepNote() != resumedNote {
 				t.Errorf("resumed = %+v", r)
 			}
 			waitFor(t, func() bool { return !w.get("wa").GetController().GetRun().GetHalted() })
@@ -603,6 +631,42 @@ func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
 			sb.Agent.LastTurnEndAt = sentAfter(sb, 20*time.Second)
 		})
 		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	})
+	t.Run("the developer's prompt, and what follows it, changes nothing", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			at := sentAfter(sb, 20*time.Second)
+			sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
+		})
+		stepWithEvidence(t, rt)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 30*time.Second)
+		})
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED || !r.GetStepUnconfirmed() {
+			t.Errorf("after the developer's prompt = %+v", r)
+		}
+	})
+	t.Run("the developer's prompt before the send is another matter", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.LastOtherSubmitAt = sentAfter(sb, -time.Second)
+			sb.Agent.LastSubmitAt = sentAfter(sb, 20*time.Second)
+		})
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
 	})
 	t.Run("evidence from before the send changes nothing", func(t *testing.T) {
 		env, w, o, rt, d := seqEnv(t, 1, nil)

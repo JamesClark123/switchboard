@@ -158,6 +158,14 @@ func StepInBox(text, stepText string) bool {
 	return box != "" && strings.HasPrefix(squash(stepText), box)
 }
 
+// StepPrompt reports whether a UserPromptSubmit's prompt is a step's text. Compared
+// without whitespace and by containment, because the agent doesn't report a paste
+// as typed: as observed (2.1.316), a long paste comes wrapped in a
+// <pasted_content> tag, with its tabs turned to spaces.
+func StepPrompt(prompt, stepText string) bool {
+	return strings.Contains(squash(prompt), squash(stepText))
+}
+
 // squash removes every whitespace rune (including the no-break space).
 func squash(s string) string {
 	return strings.Map(func(r rune) rune {

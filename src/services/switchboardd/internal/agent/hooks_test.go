@@ -13,6 +13,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // evidenceStatus is a full status side (SWI-17): status, evidence, hold
@@ -196,6 +197,74 @@ func TestHookPreToolUseRecordsALostTurnStart(t *testing.T) {
 	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(submit.AsTime()) {
 		t.Error("a tool call after a recorded submit must write nothing")
 	}
+}
+
+// SWI-28: an older turn start with no recorded end (a turn interrupted with Esc)
+// doesn't hide the first tool call after a step is typed.
+func TestHookPreToolUseAfterAnUnendedTurn(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
+	s := mainServer(t, st)
+	s.now = tickingNow()
+	s.afterFunc = func(time.Duration, func()) stopper { return &fakeTimer{} }
+
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
+	old := st.agent("sb").GetLastSubmitAt()
+	st.mu.Lock()
+	st.sbs["sb"].Controller = &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(old.AsTime().Add(time.Millisecond))}}
+	st.mu.Unlock()
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	first := st.agent("sb").GetLastSubmitAt()
+	if !first.AsTime().After(old.AsTime()) {
+		t.Fatal("the first tool call after a send must record the turn start")
+	}
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(first.AsTime()) {
+		t.Error("a turn's later tool calls must write nothing")
+	}
+}
+
+// SWI-28: a submit that isn't the step typed is marked as the developer's; with
+// nothing to compare, it counts as before.
+func TestHookOtherPrompt(t *testing.T) {
+	const step = "[frame]\n\tdo\tthe  thing"
+	sent := &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(time.Unix(1, 0))}}
+	for _, c := range []struct {
+		name   string
+		ctrl   *pb.SandboxController
+		typed  string
+		prompt string
+		other  bool
+	}{
+		{"the step", sent, step, step, false},
+		{"the step as reported", sent, step, "\n\n<pasted_content id=\"614b\">\n[frame]\n  do  the  thing\n</pasted_content id=\"614b\">\n", false},
+		{"the developer's", sent, step, "what is going on?", true},
+		{"no prompt", sent, step, "", false},
+		{"nothing typed", sent, "", "what is going on?", false},
+		{"no run", nil, step, "what is going on?", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: c.ctrl})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return c.typed })
+			s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: c.prompt}))
+			a := st.agent("sb")
+			if a.GetLastSubmitAt() == nil {
+				t.Error("every submit records last_submit_at")
+			}
+			if got := a.GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
+	t.Run("not wired", func(t *testing.T) {
+		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: sent})
+		s := mainServer(t, st)
+		s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: "hi"}))
+		if st.agent("sb").GetLastOtherSubmitAt() != nil {
+			t.Error("with no typed text to compare, a submit is not marked")
+		}
+	})
 }
 
 func TestHookEvidencePerEvent(t *testing.T) {

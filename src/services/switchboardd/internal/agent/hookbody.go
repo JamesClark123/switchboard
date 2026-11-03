@@ -44,6 +44,8 @@ func readHookInput(r io.Reader) hookInput {
 			in.NotificationType = sk.str()
 		case "source":
 			in.Source = sk.str()
+		case "prompt":
+			in.Prompt = sk.str()
 		case "background_tasks":
 			raw, whole, err := sk.capture()
 			if err != nil {
@@ -79,6 +81,8 @@ func hookInputDone(event string, seen map[string]bool) bool {
 	switch event {
 	case "SessionStart":
 		return seen["source"]
+	case "UserPromptSubmit":
+		return seen["prompt"]
 	case "Notification":
 		return seen["notification_type"]
 	case "Stop":

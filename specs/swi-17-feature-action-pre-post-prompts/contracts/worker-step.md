@@ -90,6 +90,13 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 | CUSTOM | nothing more (a local custom command is finished once the check passes, spec edge case) | — |
 | ACTION_PROMPT | positive evidence of a turn whose hooks never arrived: the turn running on screen (`claudeui.TurnRunning`), an assistant reply (`●` at column 0 on Linux, fixture `reply-row`; `⏺` on macOS, from memory) in `claudeui.Added` (not when the transcript can't be matched), or `last_turn_end_at` after the Enter (SWI-28) | **UNCONFIRMED** `no turn evidence` (not NOT_ACCEPTED: it was typed and may be running) |
 
+**A prompt that isn't the step's (SWI-28).** The daemon compares each main-session `UserPromptSubmit`'s `prompt`
+with the text last typed as a step, without whitespace and by containment, because a long paste is reported wrapped
+in a `<pasted_content>` tag with its tabs turned to spaces (observed on 2.1.316). A mismatch writes
+`last_other_submit_at`, and the orchestrator then takes nothing after it as the step's evidence (research R8). With
+nothing to compare (a prompt over `maxHookField`, an older agent, or a daemon restarted since the typing) the submit
+counts as before.
+
 Enter is **never** pressed on an empty box or while a modal is shown. A step whose text was replaced in the box by
 developer typing reads as "box not empty". Under the guard that cannot happen before typing; after typing it ends
 in NOT_ACCEPTED `text still in the input box`, and nothing is appended (FR-206c).

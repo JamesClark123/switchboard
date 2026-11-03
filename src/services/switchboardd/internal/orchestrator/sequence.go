@@ -42,6 +42,7 @@ const (
 	restartingNote   = "restarting setup with a fresh agent"
 	unconfirmedNote  = "typed, but not confirmed; it may have run"
 	noEvidenceNote   = "typed, but no report says it was accepted"
+	resumedNote      = "resumed: its turn started after the halt"
 	unsupportedNote  = "the worker's daemon does not support pre/post prompts"
 	// unsupportedReason fails a run no attached worker can take (research R6).
 	unsupportedReason = "no worker supports pre/post prompts; update their daemons"
@@ -219,9 +220,10 @@ func moveTo(r *pb.Run, i int, st pb.StepStatus) {
 
 // settleSteps records how the run left its current step on the way to step to
 // (or past the last step): the current step's outcome, and DROPPED for those
-// between. Call it before moveTo clears step_sent_at. Only a step never sent is DROPPED: one halted as not accepted is FAILED, and any other
-// that reached the agent is DONE. A step's first result stands, so a skip
-// recorded before advanceLocked stays a skip.
+// between. Call it before moveTo clears step_sent_at. Only a step never sent is
+// DROPPED: one halted as not accepted is FAILED, and any other that reached the
+// agent is DONE. A step's first result stands, so a skip recorded before
+// advanceLocked stays a skip.
 func settleSteps(r *pb.Run, to int, outcome pb.StepResultOutcome) {
 	from := int(r.GetStep())
 	if outcome == pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED {
@@ -1188,10 +1190,15 @@ func (rt *runtime) resolveSending(run *pb.Run) bool {
 // turnEvidence classifies a typed step from the daemon's main-session
 // evidence after its send (research R8 rule 2): a turn start (a prompt submit, or
 // a tool call with the submit lost), a needs-input report, or for a step that
-// isn't a built-in a turn end (its start report lost; finishTurn then finishes it). A built-in starts no turn: it reads back instead.
+// isn't a built-in a turn end (its start report lost; finishTurn then finishes
+// it). A built-in starts no turn: it reads back instead. Once a prompt other than
+// the step's was submitted since the send, none of it counts: the developer is
+// using that session, and tool calls and turn ends don't say whose turn they are.
 func turnEvidence(run *pb.Run, sb *pb.Sandbox) pb.StepObserved {
 	sent, a := run.GetStepSentAt(), sb.GetAgent()
 	switch {
+	case after(a.GetLastOtherSubmitAt(), sent):
+		return pb.StepObserved_STEP_OBSERVED_UNKNOWN
 	case after(a.GetLastSubmitAt(), sent), !builtin(curStep(run).GetKind()) && after(a.GetLastTurnEndAt(), sent):
 		return pb.StepObserved_STEP_OBSERVED_MODEL_TURN
 	case after(a.GetLastNeedsInputAt(), sent):
@@ -1208,13 +1215,13 @@ func builtin(k pb.StepKind) bool {
 // outcome, a lost answer, an orchestrator restart) by evidence after its send,
 // never by an idle state that was already there (FR-206a, FR-217, research
 // R8). Rule 2: a turn start makes it a TURN (finishTurn then waits for its
-// end), also after a halt (resolveHalted). Rule 3: a built-in whose setting reads back is finished; the daemon
-// runs the read-back (check_only), and for Clear it requires the clear
-// session start after the send, corroborated by its own screen (R13), so the
-// orchestrator never finishes Clear on the hook evidence alone. An agent
-// detached by an owning-daemon restart has no screen to read: only hook
-// evidence counts for it (R14). Rule 4: otherwise, once sentGrace has passed,
-// it halts for the developer, marked as possibly run.
+// end), also after a halt (resolveHalted). Rule 3: a built-in whose setting
+// reads back is finished; the daemon runs the read-back (check_only), and for
+// Clear it requires the clear session start after the send, corroborated by its
+// own screen (R13), so the orchestrator never finishes Clear on the hook
+// evidence alone. An agent detached by an owning-daemon restart has no screen to
+// read: only hook evidence counts for it (R14). Rule 4: otherwise, once sentGrace
+// has passed, it halts for the developer, marked as possibly run.
 func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 	st := curStep(run)
 	if sb == nil || st == nil {
@@ -1273,9 +1280,11 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 
 // resolveHalted takes back a may-have-run halt once evidence after the send shows
 // the step's turn did start: its hooks were late or partly lost, or the turn
-// outlasted sentGrace with none of them. The run goes on as if never halted
-// (SWI-28). A built-in stays halted: it starts no turn, so a submit after it is
-// the developer's, not its own. A restart halt stays too: R restarts setup.
+// outlasted sentGrace with none of them. The run goes on, and its row says why,
+// since the developer was told it halted (SWI-28). A prompt the developer typed
+// on the halted step is no such evidence (turnEvidence). A built-in stays halted:
+// it starts no turn, so a submit after it is the developer's, not its own. A
+// restart halt stays too: R restarts setup.
 func (rt *runtime) resolveHalted(run *pb.Run, sb *pb.Sandbox) bool {
 	if sb == nil || builtin(curStep(run).GetKind()) || restartHalt(run) || (!run.GetStepUnconfirmed() && !run.GetStepSentBeforeRestart()) {
 		return false
@@ -1286,7 +1295,7 @@ func (rt *runtime) resolveHalted(run *pb.Run, sb *pb.Sandbox) bool {
 	}
 	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
 		l.StepStatus, l.StepKindSeen = pb.StepStatus_STEP_STATUS_TURN, kind
-		l.StepNote = ""
+		l.StepNote = resumedNote
 		l.StepUnconfirmed, l.StepSentBeforeRestart = false, false
 		return true
 	})

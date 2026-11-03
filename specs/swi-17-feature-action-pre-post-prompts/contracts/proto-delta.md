@@ -156,6 +156,8 @@ message AgentSession {
                                                         // R13). Used for Clear's read-back and hold release
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
   AgentCheck agent_check = 12;                          // the detached-agent check (research R14, run-595); unset = clear
+  // SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed (R8).
+  google.protobuf.Timestamp last_other_submit_at = 13;
 }
 
 // What the owning daemon knows about a possibly detached agent (research R14). Written by the daemon only, when the

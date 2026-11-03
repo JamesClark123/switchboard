@@ -252,7 +252,11 @@ func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	running := seqRun("run-r", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	cln := halted(seqRun("run-x", pb.RunState_RUN_STATE_COMPLETED, 4, 0), "")
 	cln.Hold, cln.EndedAt = pb.WorkerHold_WORKER_HOLD_CLEANING_UP, at(0)
-	m, d := stepJobs(t, act, clr, unc, det, running, cln)
+	clrU := halted(seqRun("run-cu", pb.RunState_RUN_STATE_COMPLETED, 5, 0), "")
+	clrU.Hold, clrU.EndedAt, clrU.StepUnconfirmed = pb.WorkerHold_WORKER_HOLD_CLEANING_UP, at(0), true
+	mdl := halted(seqRun("run-m", pb.RunState_RUN_STATE_RUNNING, 0, 0), "")
+	mdl.StepUnconfirmed = true
+	m, d := stepJobs(t, act, clr, unc, det, running, cln, clrU, mdl)
 	m.sandboxes[0].Agent = &pb.AgentSession{AgentCheck: &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_WORKING}}
 	refused := func(id, key, want string) {
 		t.Helper()
@@ -283,11 +287,12 @@ func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	confirm("run-c", "X", "left needing the developer")
 	confirm("run-x", "X", "remaining post-prompts are dropped")
 	confirm("run-u", "X", "No post-prompt follows", "may still be running", "Clear ends that session")
-	if v := func() string {
-		mm, _ := update(overviewAt(t, m, "run-a"), press("X"))
-		return ansi.Strip(mm.View())
-	}(); strings.Contains(v, "may still be running") {
-		t.Errorf("a step that can't have run needs no warning:\n%s", v)
+	confirm("run-cu", "X", "left needing the developer")
+	for _, id := range []string{"run-a", "run-cu", "run-m"} {
+		mm, _ := update(overviewAt(t, m, id), press("X"))
+		if v := plainView(mm); strings.Contains(v, "may still be running") {
+			t.Errorf("%s: a step that can't be running needs no warning:\n%s", id, v)
+		}
 	}
 	// FAILED_PRECONDITION: the run moved on — shown, and the view reloads.
 	d.orchErr = status.Error(codes.FailedPrecondition, "the run moved on; reload")

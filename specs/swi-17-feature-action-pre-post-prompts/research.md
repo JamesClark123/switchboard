@@ -476,7 +476,10 @@ it; rule 3 (screen read-back) does not.
    session-filtered (R13); status and `last_event_at` are not, so a nested `claude -p` can't satisfy the rule. For
    a step that isn't a built-in, `last_turn_end_at > step_sent_at` is one too, its start report lost (SWI-28).
    `last_submit_at` also takes a turn's first main-session `PreToolUse` when no submit was recorded for it, as the
-   submit check counts one (SWI-28). It is then finished if `last_turn_end_at > step_sent_at` and the status is IDLE, and otherwise awaited.
+   submit check counts one (SWI-28). It is then finished if `last_turn_end_at > step_sent_at` and the status is
+   IDLE, and otherwise awaited. Once `last_other_submit_at > step_sent_at` none of this counts, for any kind of step
+   and also after a halt: a prompt other than the step's was submitted, so the developer is using that session, and
+   a tool call or turn end doesn't say whose turn it is (SWI-28).
 3. Otherwise, a built-in whose read-back is on screen is finished. The orchestrator asks the daemon to run the
    read-back without typing (`DeliverWorkerStep` with `check_only`). For Clear, `last_session_source == "clear"`
    after `step_sent_at` finishes it.

@@ -269,6 +269,7 @@ type hookPayload struct {
 	Matcher           string `json:"matcher"`
 	NotificationType  string `json:"notification_type,omitempty"`
 	Source            string `json:"source,omitempty"` // SessionStart: startup | resume | clear | compact
+	Prompt            string `json:"-"`                // UserPromptSubmit: never logged or recorded; "" when too long to keep
 	PendingBackground int    `json:"-"`
 	SessionID         string `json:"-"` // Claude Code's session_id (forwarded input)
 	PID               int    `json:"-"` // X-Sxb-Pid: the claude process that fired the hook
@@ -288,6 +289,7 @@ type hookInput struct {
 	SessionID        string           `json:"session_id"`
 	NotificationType string           `json:"notification_type"`
 	Source           string           `json:"source"`           // SessionStart
+	Prompt           string           `json:"prompt"`           // UserPromptSubmit
 	BackgroundTasks  []backgroundTask `json:"background_tasks"` // Stop / SubagentStop
 }
 
@@ -324,6 +326,7 @@ type HookServer struct {
 	onEnd     func(sandboxID string)
 	screen    ScreenFunc
 	repaint   func(sandboxID string) bool
+	typedStep func(sandboxID string) string
 	tokens    *HookTokens
 	logf      func(format string, args ...any)
 
@@ -358,6 +361,10 @@ func (s *HookServer) SetScreen(fn ScreenFunc) { s.screen = fn }
 // SetRepaint registers the lazy repaint nudge for a stale screen
 // (terminal.Registry.RequestRepaint; nil = none).
 func (s *HookServer) SetRepaint(fn func(sandboxID string) bool) { s.repaint = fn }
+
+// SetTypedStep registers where the text last typed as a step is read
+// (Registry.TypedStep), to tell a step's prompt from the developer's (SWI-28).
+func (s *HookServer) SetTypedStep(fn func(sandboxID string) string) { s.typedStep = fn }
 
 // SetTokens registers the hook-token index calls are checked against (SWI-17,
 // research R13). Without one every call is tokenless: status display only.
@@ -444,7 +451,7 @@ func (s *HookServer) Handle(w http.ResponseWriter, r *http.Request) {
 	if ev := q.Get("event"); ev != "" {
 		p.Event, p.SandboxID = ev, q.Get("sandbox_id")
 		in := readHookInput(r.Body)
-		p.NotificationType, p.Source, p.SessionID = in.NotificationType, in.Source, in.SessionID
+		p.NotificationType, p.Source, p.SessionID, p.Prompt = in.NotificationType, in.Source, in.SessionID, in.Prompt
 		p.PendingBackground = pendingBackground(in.BackgroundTasks)
 		p.PID, _ = strconv.Atoi(r.Header.Get(headerPID))
 	} else if err := json.NewDecoder(io.LimitReader(r.Body, maxHookBody)).Decode(&p); err != nil {
@@ -576,12 +583,14 @@ func (s *HookServer) dispatch(p hookPayload) (needsInput bool) {
 // recordEvidence writes what a main-agent hook says about the agent's turns
 // and sessions on its record (research R4): the turn start (the submit, or the
 // first tool call of a turn whose submit was lost, as the submit check counts it),
-// the end of a turn with nothing left in the background, a request for input, and
-// a new session (a compaction is not one).
+// a submit that isn't the step typed, the end of a turn with nothing left in the
+// background, a request for input, and a new session (a compaction is not one).
 func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Time) {
 	var fn func(*pb.AgentSession)
 	at := timestamppb.New(now)
 	switch {
+	case p.Event == "UserPromptSubmit" && s.otherPrompt(p):
+		fn = func(a *pb.AgentSession) { a.LastSubmitAt, a.LastOtherSubmitAt = at, at }
 	case p.Event == "UserPromptSubmit", p.Event == "PreToolUse" && !s.turnStartRecorded(p.SandboxID):
 		fn = func(a *pb.AgentSession) { a.LastSubmitAt = at }
 	case p.Event == "Stop" && p.PendingBackground == 0:
@@ -601,9 +610,25 @@ func (s *HookServer) recordEvidence(p hookPayload, needsInput bool, now time.Tim
 	s.writeEvidence(p.SandboxID, fn)
 }
 
+// otherPrompt reports whether a submit is known not to be the step last typed on
+// a run: the developer's, typed in the worker's terminal (SWI-28). With no way to
+// tell (no prompt or typed text to compare, or no run) it reads false.
+func (s *HookServer) otherPrompt(p hookPayload) bool {
+	g, ok := s.status.(sandboxGetter)
+	if !ok || s.typedStep == nil || p.Prompt == "" {
+		return false
+	}
+	sb, err := g.Get(p.SandboxID)
+	if err != nil || sb.GetController().GetRun().GetStepSentAt() == nil {
+		return false
+	}
+	return !StepPrompt(p.Prompt, s.typedStep(p.SandboxID)) // nothing typed matches anything
+}
+
 // turnStartRecorded reports whether the record has a turn start since the last
-// turn's end, so a turn's tool calls write (and publish) nothing more. It reads
-// true with no way to tell, for the same reason.
+// turn's end and the last step typed, so a turn's tool calls write (and publish)
+// nothing more. An older start with no recorded end (a turn interrupted with Esc)
+// doesn't count. It reads true with no way to tell, for the same reason.
 func (s *HookServer) turnStartRecorded(sandboxID string) bool {
 	g, ok := s.status.(sandboxGetter)
 	if !ok {
@@ -614,7 +639,9 @@ func (s *HookServer) turnStartRecorded(sandboxID string) bool {
 		return true
 	}
 	start, end := sb.GetAgent().GetLastSubmitAt(), sb.GetAgent().GetLastTurnEndAt()
-	return start != nil && (end == nil || start.AsTime().After(end.AsTime()))
+	sent := sb.GetController().GetRun().GetStepSentAt()
+	return start != nil && (end == nil || start.AsTime().After(end.AsTime())) &&
+		(sent == nil || start.AsTime().After(sent.AsTime()))
 }
 
 // writeEvidence applies fn through the status side's EvidenceRecorder, if it
