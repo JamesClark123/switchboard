@@ -136,11 +136,11 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | `vFail`      | `struct{ text string; at time.Time }`    | Last `v` failure/refusal and arrival time; error style while `status == text`. |
 | `vHold`      | `struct{ text string; seq uint64 }`      | Held message; pending in-place attach number (0 = none). |
 | `confirm.holdsV` | `bool` on `confirmState`             | This confirm is a Replace dialog for an in-place attach. `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`, derived so that no way of closing the dialog can leave it stale. |
-| `termFail`   | `string`                                 | Text a release joins instead of replacing: the last attach/terminal error or a daemon drop's `<name> disconnected — orchestrators closed`; cleared by `attachTerminal`. |
+| `termFail`   | `string`                                 | Text a release joins instead of replacing: the last attach/terminal error or a daemon drop's `<name> disconnected — orchestrators closed`; cleared by `attachTerminal` and when a Replace dialog for an in-place attach opens. |
 | `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, markFree}` last checked. |
 | per form     | `lastHeight int`                         | Last `WithHeight` applied (huh has no getter); stored beside each form pointer. |
 
-Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 120`, `osReasonCols = 40`,
+Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 120`, `hostErrCols = 78`, `osReasonCols = 40`,
 `valueCols = 60` (`cutMiddle` keeps 20 + 39), `vHoldRecent = 3 * time.Second`.
 
 ### Hold state machine

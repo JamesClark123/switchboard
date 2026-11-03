@@ -110,7 +110,7 @@ reason.
 ## 4. Rules and messages
 
 `<exe>` is the executable cut in the middle to 60 columns; `<reason>` is the OS error's innermost text cut to 40
-columns; `<err>` outside text cut to 120 columns; `<n>` the sandbox's short id; `<var>` the override variable.
+columns; `<err>` outside text cut to 120 columns (78 for `host-lookup`); `<n>` the sandbox's short id; `<var>` the override variable.
 Every `v` failure or refusal shows in the error style. Notices (FR-529) are appended as ` (<n1>; <n2>)`.
 
 | Rule                   | Status text | Where |
@@ -147,8 +147,10 @@ Every message must fit in 4 lines at 80 columns with the values at their limits 
 editor with a 60-column executable, a 40-column reason, `SWITCHBOARD_CODE_INSIDERS_BIN` and the 60-column
 unknown-editor notice: about 310 characters, and a 60-column executable can't break at a space, so it sits on the
 edge. T028 measures it; if it exceeds 4 lines the reminder shortens first (`(or use Custom)`), then the lead
-(`<n>: <exe>: <reason>`). The FR-523 report, `host-lookup`, `path-limited` and `shell-syntax` are near 4 lines
-too, and the same rule applies; T040 measures each of them with its longest notice. The parts named above (cause, where to fix it, the notices) must stay in every
+(`<n>: <exe>: <reason>`). The FR-523 report, `path-limited` and `shell-syntax` are near 4 lines
+too, and the same rule applies. `host-lookup` is why its `<err>` is cut to 78 columns and not 120: `(<err>)` then fits on
+one line, so it stays at 4 lines with the unknown-editor notice wherever the error's spaces fall. With an 8-character
+`<n>`, some placements reach 5 at 79 columns and above. T040 measures each of them with its longest notice. The parts named above (cause, where to fix it, the notices) must stay in every
 message.
 
 ## 5. Environment variables (FR-502, FR-503)

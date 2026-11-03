@@ -373,7 +373,10 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   and the dialog can sit over the orchestrator detail. A stored flag would stay true and swallow every later failure.
 - `termFail string`: the text a release joins instead of replacing. That's the last attach or terminal error, set at
   `terminal.go:150`, `:190`, `:199` (which covers `:306`), and `closeOrchAdminOnDrop`'s `<name> disconnected —
-  orchestrators closed` (`hosts.go:489`), the only message explaining why the screen changed. `attachTerminal` clears it.
+  orchestrators closed` (`hosts.go:489`), the only message explaining why the screen changed. `attachTerminal` clears it,
+  and so does `confirmReplaceOrphan` for a non-external attach, because `t` can open that dialog with no `attachTerminal`,
+  and an old error still showing would otherwise join a failure held behind it. A drop while the dialog is open sets it
+  after that clear, so that case still joins.
 
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.

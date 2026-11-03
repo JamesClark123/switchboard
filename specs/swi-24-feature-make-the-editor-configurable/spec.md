@@ -165,7 +165,8 @@ The review asked for the first two to be settled first, because they decide how 
 Settled in the spec:
 
 - **Text from outside the spec is cut before the notices are added.** In a `v` outcome message it's cut to 120 columns,
-  and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. (FR-533, FR-518, SC-004)
+  and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. FR-520's lookup error is cut
+  to 78 since a later review. (FR-533, FR-518, SC-004)
 - **A `v` failure on the terminal screen is held, not lost.** One that arrives while a terminal is open or opening is
   shown in full when the terminal closes, in place of `detached from …`. Pressing `v` again is no longer the way to get
   it back, because that repeats the launch. Other messages aren't held. The next review added refusals. (FR-533, SC-008)
@@ -246,6 +247,19 @@ The review offered two options for this, and the first was taken. It changes no 
   accepted, because recovery is one key press and the report names the editor, so it's less likely to be read as the
   reason `t` failed. Joining on arrival was the other option. It was rejected because the error would need its own
   arrival time and 3-second limit, which adds more state to the hold. (Edge Cases)
+
+### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1611`, resolved in pr-response run `run-c275c8f2-1613`)
+
+Found while re-reviewing the plan, and changed here because they change what the spec says:
+
+- **An older error isn't joined to a held failure.** `t` can open a Replace dialog with no attach, so an old
+  `disconnected` or `terminal: …` message can still be showing. It has nothing to do with a failure held behind that
+  dialog, so the failure replaces it. A daemon drop while the dialog is open still joins. (FR-533, SC-008)
+- **FR-520's lookup error is cut to 78 columns, not 120.** With the unknown-editor notice, a longer error can reach
+  5 lines, depending on where its spaces fall, and the end of the notice is then lost on the sandbox list. At 78,
+  `(<err>)` fits on one line, so the message stays at 4. (FR-533, SC-004)
+- **SC-008 names the daemon drop.** Its sentence about what shows in one message now covers it, matching FR-533.
+  (SC-008)
 
 ### PR review 2026-11-03 (plan re-review run `run-c275c8f2-1605`, resolved in pr-response run `run-c275c8f2-1608`)
 
@@ -794,8 +808,8 @@ sandbox. Check that a clear message appears and nothing is started.
   - An executable MUST be cut to at most 60 columns in the middle, keeping its first 20 and last 39 columns (one fewer
     if a wide character falls on the cut), so its name stays readable:
     `/Users/developer/Lib…port/JetBrains/Toolbox/scripts/webstorm`.
-  - In a `v` outcome message, text from outside this spec (a daemon error, or FR-520's lookup error) MUST be cut to 120
-    columns with `…`, and FR-518's reason to 40, before the rest of the message is added. So the text after it,
+  - In a `v` outcome message, text from outside this spec MUST be cut with `…` before the rest of the message is added:
+    a daemon error to 120 columns and FR-520's lookup error to 78. FR-518's reason MUST be cut to 40 the same way. So the text after it,
     FR-529's notices and where to fix it, is never what's lost.
   - A message MUST be cut with `…` at 6 lines, or sooner if that's what's left after the header, the help footer and
     the screen's smallest usable body, and never below 1 line.
@@ -828,7 +842,8 @@ sandbox. Check that a clear message appears and nothing is started.
     `terminal for <name> not opened — you moved on; press t again`, and a daemon drop's
     `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
-    message MUST show in the error style. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
+    message MUST show in the error style. An error or daemon-drop message that was already showing when that attach
+    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
     that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
     same way if it arrived in the last 3 seconds. An older one isn't held. A message that's been released MUST NOT be
     held again, even within its 3 seconds, so the next attach replaces it like any other message.
@@ -910,10 +925,11 @@ sandbox. Check that a clear message appears and nothing is started.
   includes a first attach superseded by a second, and an attach that ends in the Replace dialog, both declined and
   accepted. Tests also check that a `v` refused at the key press and followed by `t` is shown the same way, including
   when `t` opens the Replace dialog and it's accepted more than 3 seconds later, and that a message over 3 seconds old
-  isn't held. When a `v` is refused and the `t` that follows fails to attach, tests check that the status shows both in
+  isn't held. When a `v` is refused and the `t` that follows fails to attach, or a daemon drop closes the Replace dialog, tests check that the status shows both in
   one message, with the error first and in the error style, and that a second `t` within 3 seconds doesn't hold the
   refusal again, so a second failure shows only its own error. The same checks cover an accepted Replace whose attach
-  fails. Tests also check that both show when a terminal session dies or the developer moves on during the attach, and
+  fails. An old error or `disconnected` message still showing when `t` opens the Replace dialog isn't joined to a failure
+  held behind it. Tests also check that both show when a terminal session dies or the developer moves on during the attach, and
   that `detached from <name>` is replaced. A joined message too long for the sandbox list at 80×24
   with the update banner is cut with `…`, with the header and the whole error on screen, and the status keeps all of it
   (FR-533). A `v` failure or refusal shows in the error style when it arrives and when it's released, and the next plain
@@ -1051,7 +1067,7 @@ These follow from the requirements above and from how the code works today. They
   - **Joining an error:** the wrapper can't tell an attach or terminal error from `detached from <name>` or a background
     message by its text. So the assignments that set one (`terminal.go:150`, `:190` and `:199`, which `SendData`'s
     failure at `:306` also reaches) also copy it into a field, such as `m.termFailStatus`, and `attachTerminal` clears
-    that field. `closeOrchAdminOnDrop`'s `disconnected` message (`hosts.go:489`) is copied the same way. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
+    that field. So does `confirmReplaceOrphan` (not for `T`), because `t` can open that dialog with no attach. `closeOrchAdminOnDrop`'s `disconnected` message (`hosts.go:489`) is copied the same way. `:190` can't fire for `t` today, because the daemon only refuses a second external attach
     (`broadcaster.go:156`) and `t` attaches in-TUI, but it's treated the same in case that changes. At a release, if the
     status is non-empty and equals the field, the message is `sanitizeLine(status, 120)`, `; ` and the held text.
     Otherwise it's the held text alone. Both `m.status` and `m.vFailStatus` get the result, so `footer` shows all of it

@@ -145,7 +145,7 @@ through `cfg.CodeBin`; T026 switches it).
 ### Status line, size check and hold (TUI-wide)
 
 - [ ] T013 `UI/status.go` (new): constants `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols =
-  120`, `osReasonCols = 40`, `valueCols = 60`, `vHoldRecent = 3 * time.Second`; `statusLines(text string,
+  120`, `hostErrCols = 78`, `osReasonCols = 40`, `valueCols = 60`, `vHoldRecent = 3 * time.Second`; `statusLines(text string,
   width, limit int) []string` (`sanitizeLine(s, 0)`, which sanitises and turns newlines into spaces, then `ansi.Wrap(s, width, "")` — not
   `Wordwrap`, which leaves a token longer than the width unbroken — cut to `limit` with the last line
   `ansi.Truncate(line, width-1, "") + "…"`, because `Truncate` adds its tail only to text that's too long and a
@@ -216,7 +216,8 @@ through `cfg.CodeBin`; T026 switches it).
   callback); `attachTerminal` (in-place only, i.e. the
   caller isn't `T`'s replace path) sets `vHold.seq = m.termSeq`, clears `termFail`, and copies a recent
   (`nowFunc().Sub(vFail.at) < vHoldRecent`, non-zero `at`) status equal to `vFail.text` into `vHold.text` when
-  empty; `confirmReplaceOrphan` with `!external` sets `holdsV: true` with the same copy and an `onAccept` that sets
+  empty; `confirmReplaceOrphan` with `!external` clears `termFail` too (`t` can open it with no `attachTerminal`, so an
+  old error still showing must not join a failure held behind it), and sets `holdsV: true` with the same copy and an `onAccept` that sets
   `vHold.seq = m.termSeq + 1`, so the hold passes to the attach in the accepting message (it needs no `onCancel`);
   `handleTermOpened`/`handleTermClosed` clear `vHold.seq` only when
   `msg.seq == vHold.seq`; the three error assignments (`not opened — you moved on`, `external terminal already
@@ -232,7 +233,9 @@ through `cfg.CodeBin`; T026 switches it).
   `vHold = {}`. Depends on T016. Tests in `UI/hold_test.go` (step `nowFunc`; use the `fakeDaemon` attach hooks):
   **SC-008** — a failure arriving while the terminal is open is shown in full and red on `ctrl+q`, replacing
   `detached from`; one arriving while opening; a first attach superseded by a second (only the second's message
-  clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); a Replace dialog
+  clears the hold); a Replace dialog declined and accepted (accepted > 3 s after the refusal); an old `<name>
+  disconnected — orchestrators closed` and an old `terminal: <reason>` still showing when `t` opens the Replace dialog, a
+  failure held behind it and the dialog declined (the status is the failure alone, not joined); a Replace dialog
   opened from the orchestrator detail and dropped unanswered by `closeOrchAdminOnDrop` (a held failure is released
   as `<name> disconnected — orchestrators closed; <held>`, red, on the screen the drop lands on, and a later `v` failure
   shows at once, alone; with nothing held the disconnect message stays as it is today, not red; a failure arriving just
@@ -308,7 +311,7 @@ one-line statuses).
   `launcher == nil` → `editorOutcomeMsg{sandboxID, text: "<Name> opener not configured"}`; build `editor.Request{Editor:
   sessionEditor(), Bins: editorBins, Custom: prefs.EditorCustomCommand, SSHTarget, HostErr, Home:
   os.UserHomeDir()}`; `exe, ref := editor.Precheck(req)`; a refusal → `editorOutcomeMsg{sandboxID, failed: true, text:
-  assemble(ref)}` returned as an immediate command. Otherwise the command: `exec.LookPath(exe)` → `not-found`
+  assemble(ref)}` returned as an immediate command (`host-lookup`'s error cut to `hostErrCols` first). Otherwise the command: `exec.LookPath(exe)` → `not-found`
   text with the reason cut to 40; `d.VSCodeTarget` → the error cut to 120 then the notices; `editor.Resolve` →
   refusal text; `launcher.Launch(plan.Argv)` → `not-found`/`launch-failed`; success → `opened <id8> in <Name>`
   plus the notices (+ `the path is on the remote host` when `RemoteNoHost`) and `wait`. Message assembly per
@@ -386,7 +389,7 @@ for a failed host lookup.
   "user@box"}`) — Cursor → `[cursor --remote ssh-remote+user@box <path>]`; Zed with `/srv/ws/my proj` → `[zed
   ssh://user@box/srv/ws/my%20proj]`; WebStorm → `no-remote` text, red, the launcher never called, and the
   refusal returned **before** `VSCodeTarget` is called (the fake daemon counts calls); a `hostStore.Get` error
-  → `host-lookup` text for VS Code too (FR-520); a target `-oProxyCommand=x` → `target-dash`; a target
+  → `host-lookup` text for VS Code too (FR-520), and a 120-column error cut to 78 with `…`; a target `-oProxyCommand=x` → `target-dash`; a target
   `user@box/evil` with Zed → `zed-target`; a remote path containing `(` with `editorBins["cursor"]` set → `path-limited`
   naming `'('` and telling the developer to unset that variable; the same path with Custom → `path-limited` pointing
   to the settings screen, with no mention of unsetting anything.
@@ -475,7 +478,9 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - [ ] T040 [P] `UI/status_test.go`: **SC-004** at `tea.WindowSizeMsg{80, 24}` on the sandbox list with the update
   banner (`applyUpdateAvailable`): for each of — a 120-column daemon error with the unknown-editor notice; a
   daemon error containing 10 tabs; FR-518's longest case (60-column executable, 40-column reason, the variable);
-  FR-520's lookup error; FR-523's report; the built-in `path-limited` refusal with `SWITCHBOARD_CODE_INSIDERS_BIN`, the
+  `host-lookup` with a 120-column error with no spaces and the unknown-editor notice; `host-lookup` with a 78-column error
+  with a space after column 40 and the same notice; `host-lookup` with the unreadable notice; the built-in FR-523 report with a 60-column executable,
+  `SWITCHBOARD_CODE_INSIDERS_BIN` and the unknown-editor notice; the built-in `path-limited` refusal with `SWITCHBOARD_CODE_INSIDERS_BIN`, the
   rejected character at its longest form (`U+10FFFF`) and the unknown-editor notice; the Custom `path-limited` refusal
   with the same character and the unreadable notice; `shell-syntax` with the unreadable notice; the list opened after a 3-line status was set on the settings screen;
   a banner arriving during a 4-line message — assert the header line and the whole message (every notice and

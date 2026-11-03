@@ -107,7 +107,7 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | `v` failure/refusal arrives, no attach pending, terminal not showing | `status = text`, `vFail = {text, now}`, red |
 | `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen |
 | in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
-| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
+| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `termFail = ""`; `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
 | attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`), or a daemon drop closes the orchestrator screens (`<name> disconnected — orchestrators closed`) | `termFail = status` |
@@ -117,7 +117,8 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 A released message (zero `vFail.at`) is never held again. `detached from <name>` is replaced, not joined. A daemon
 drop's `<name> disconnected — orchestrators closed` is joined, because it's the only message explaining why the screen
 changed. That covers a failure held when the drop arrives; one arriving after the drop finds nothing held and replaces
-the message (last row above).
+the message (last row above). An error or drop message already showing when the attach starts or the dialog opens has
+nothing to do with the held failure, so it's replaced, not joined.
 
 ## 4. Settings notices on `v` (FR-529)
 

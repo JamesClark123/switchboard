@@ -78,7 +78,7 @@ decides the report within 3 s.
   message are byte-identical to today's (SC-002); `SWITCHBOARD_CODE_BIN` keeps its name and meaning.
 - Every spec-defined `v` message fits in 4 lines at 80 columns with values at their limits (SC-004); FR-518's
   built-in case is on the edge and its wording is measured and shortened per `contracts/editor-launch.md` §4.
-- Limits are package constants: 3 s exit grace, 6 status lines, 2 on the terminal screen, 60/120/40 columns.
+- Limits are package constants: 3 s exit grace, 6 status lines, 2 on the terminal screen, 60/120/78/40 columns.
 
 **Scale/Scope**: 11 catalogue rows, 2 settings keys, 9 new env vars. About 8 new files in `internal/editor`, 3
 new and ~11 edited files in `internal/ui`, 2 in `internal/store`, 1 in `internal/config`, `main.go`, README,
@@ -151,7 +151,7 @@ src/apps/switchboard-tui/
         ├── settings_command.go        # NEW: command input, gEditorCommand submit/discard, note
         ├── formguard.go               # gEditorCommand in activeGuard/guardDirty/guardSave/guardDiscard
         ├── terminal.go                # termRows fixed; vHold.seq; termFail; 2-line status
-        ├── orphan.go                  # confirmReplaceOrphan: holdsV, onAccept seq
+        ├── orphan.go                  # confirmReplaceOrphan: holdsV, onAccept seq, clears termFail
         ├── confirm.go                 # confirmState.holdsV
         ├── hosts.go                   # closeOrchAdminOnDrop: its disconnected message sets termFail
         ├── jobs.go                    # jobsFixedLines, shared with viewJobs and the status limit
