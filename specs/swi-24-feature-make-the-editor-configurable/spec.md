@@ -131,13 +131,14 @@ Fixed before planning, as the review asked:
 - **The embedded terminal screen is an exception to FR-533.** The PTY's size never depends on the status line, so
   a status change can't resize it or signal the agent. The status there is cut at the 2 lines that fit, so the
   header and its `ctrl+q` hint stay. A message that arrives while the terminal is open can lose its end, which is
-  accepted, apart from a `v` failure since the next review. (FR-533, SC-008)
+  accepted, apart from a `v` failure or refusal since later reviews. (FR-533, SC-008)
 
 Settled in the spec:
 
 - **FR-533 now states a height.** A message is cut to what's left after the header, help footer and the screen's
-  smallest usable body, and everything this spec defines fits in full at 80×24. A terminal too short for even a
-  one-line message loses its top lines, as it does today. (FR-533, SC-004)
+  smallest usable body, and everything this spec defines fits in full at 80×24, on a screen whose body can shrink
+  since a later review. A terminal too short for even a one-line message loses its top lines, as it does today.
+  (FR-533, SC-004)
 - **Body resizing has one choke point.** The `Update` wrapper checks the active surface after each message and resizes
   it. The next review changed what it compares. This is a note for planning.
 - **The settings screen wraps too.** Rows, notices and the note wrap, so `(not saved)` and "fix the file" can't be
@@ -159,7 +160,7 @@ The review asked for the first two to be settled first, because they decide how 
   compared with its target. That also covers a surface the developer returns to, a banner that arrives later, and a
   help footer that changes height. (FR-533, SC-004, Notes for Planning)
 - **`chrome` has no bottom-drop fallback.** It could hide the row `v` acts on, and it contradicted FR-533. A view still
-  taller than the terminal loses its top lines, as it does today, which keeps the selected row visible. (FR-533)
+  taller than the terminal loses its top lines, as it does today. (FR-533)
 
 Settled in the spec:
 
@@ -167,12 +168,38 @@ Settled in the spec:
   and FR-518's OS reason to 40, so a long error can't push out a notice or where to fix it. (FR-533, FR-518, SC-004)
 - **A `v` failure on the terminal screen is held, not lost.** One that arrives while a terminal is open or opening is
   shown in full when the terminal closes, in place of `detached from …`. Pressing `v` again is no longer the way to get
-  it back, because that repeats the launch. Other messages aren't held. (FR-533, SC-008)
+  it back, because that repeats the launch. Other messages aren't held. The next review added refusals. (FR-533, SC-008)
 - **An executable is cut in the middle.** It keeps its first 20 and last 39 columns, so its name stays readable. An
   unknown editor value is still cut at its end. A trailing `…` on the Editor row now only means there are more
   arguments. (FR-533, FR-534)
 - **The list and the input replace everything below the header.** One title line is left, so the 23-line budget at
   80×24 holds. (FR-534)
+
+### PR review 2026-11-03 (re-review run `run-c275c8f2-1548`, resolved in pr-response run `run-c275c8f2-1552`)
+
+The review asked for the first two to be settled first, because they change what FR-533 requires:
+
+- **The hold covers refusals too.** FR-517's path checks run after the daemon replies, so a refusal can arrive after
+  `t` is pressed, and it would be wiped when the terminal opens. The hold now covers every `v` outcome except a
+  completion. (FR-533, SC-008)
+- **The hold lasts through the Replace dialog.** An attach that's refused because of a detached agent opens the dialog
+  and can still lead to another attach, which would clear the status. So the hold lasts until the dialog is declined or
+  the attach it starts has ended. A failure that arrives while that dialog is open is held too. (FR-533, SC-008)
+
+Settled in the spec:
+
+- **A superseded attach can't end the hold, and a held failure keeps its error styling.** The marker holds the pending
+  attach's number. The notes also set the wrapper's order. (FR-533, SC-008, Notes for Planning)
+- **Text is sanitised before it's cut or wrapped.** A tab has no width until sanitising expands it, so cutting first
+  breaks the limits. The middle cut starts from sanitised text. (FR-533, SC-004)
+- **The wrap cache is gone, and the size check runs only when something it reads has changed.** The target height is the
+  expensive step, not the wrap, and a cached cut would go stale. Forms store the last height applied, because huh has no
+  height getter. This is a note for planning.
+- **The 80×24 promise covers screens whose body can shrink.** A view that can't, such as Daemons with many rows, cuts the
+  message to fit, and it isn't given scrolling for this feature. The whole message stays in the status, so it shows in
+  full on a screen with room unless something has replaced it. (FR-533)
+- **`chrome` doesn't drop lines from the bottom of the body**, but that's no promise the selected row stays visible. On a
+  very short terminal it can scroll off the top, as it does today. FR-534's rule for its own note still stands. (FR-533)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -357,8 +384,17 @@ sandbox. Check that a clear message appears and nothing is started.
   and fills the input if Custom is chosen again, but it's gone at the next start unless it's confirmed (FR-530).
 - **A message while the embedded terminal is open or opening.** For example, the developer presses `v`, then `t`, and a
   late failure report (FR-523) arrives. The status is cut at 2 lines, and the PTY isn't resized. Because it's a `v`
-  failure, it's also held, and it's shown in full in place of `detached from …` when the terminal closes (FR-533). Other
+  failure, it's also held, and it's shown in full in place of `detached from …` when the terminal closes (FR-533). A `v`
+  refusal is held the same way, such as FR-517's refusal of a path, which comes after the daemon replies. Other
   messages aren't held, so they can lose their end or be replaced.
+- **A `v` failure while the attach ends in the Replace dialog.** The developer presses `v`, then `t`, a failure arrives,
+  and the attach is refused because of a detached agent. The failure stays held behind the dialog. Declining shows it.
+  Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed
+  (FR-533).
+- **A screen with less room.** A view that can't shrink, such as Daemons with many rows, can leave fewer lines than a
+  message needs, even at 80×24. For example, the developer presses `v` and moves to Daemons, and a late report arrives
+  with 7 daemons listed. The message is cut with `…` to fit, and the whole of it shows on a screen with room, unless
+  something has replaced it (FR-533).
 - **A short terminal.** A message is cut to the room that's left, and never below 1 line. A terminal too short for
   even that loses its top lines, as it does today. At 80 columns the sandbox list needs 20 rows for a one-line
   message (FR-533).
@@ -676,25 +712,37 @@ sandbox. Check that a clear message appears and nothing is started.
   showing, and when the update banner or the help footer changes height during one. To keep one message from filling
   the screen:
   - An unknown editor value MUST be cut to 60 columns, with `…` at its end.
-  - An executable MUST be cut to 60 columns in the middle, keeping its first 20 and last 39 columns, so its name stays
-    readable: `/Users/developer/Lib…port/JetBrains/Toolbox/scripts/webstorm`.
+  - An executable MUST be cut to at most 60 columns in the middle, keeping its first 20 and last 39 columns (one fewer
+    if a wide character falls on the cut), so its name stays readable:
+    `/Users/developer/Lib…port/JetBrains/Toolbox/scripts/webstorm`.
   - In a `v` outcome message, text from outside this spec (a daemon error, or FR-520's lookup error) MUST be cut to 120
     columns with `…`, and FR-518's reason to 40, before the rest of the message is added. So the text after it,
     FR-529's notices and where to fix it, is never what's lost.
   - A message MUST be cut with `…` at 6 lines, or sooner if that's what's left after the header, the help footer and
     the screen's smallest usable body, and never below 1 line.
+  - Every value MUST be sanitised before it's cut, and the status MUST be sanitised before it's wrapped, so these limits
+    count the columns that are actually drawn. Sanitising can make text wider, because a tab has no width until it's
+    expanded.
 
   On a terminal of 80×24 or larger, every message this spec defines, with outside text at these limits, MUST fit in
-  full, so nothing it requires is lost. A view that's still taller than the terminal loses its top lines, as it does
-  today. The bottom of the body is never dropped, so the selected row stays visible.
+  full on a screen whose body can shrink to make room, such as the sandbox list, so nothing it requires is lost. A
+  screen whose own content can't shrink, such as Daemons with many rows, can leave less room. The message is then cut
+  with `…` to fit, and the status keeps the whole of it, so it shows in full on a screen with room unless something has
+  replaced it. These views don't gain scrolling for this feature. A view that's still taller than the terminal loses
+  its top lines, as it does today. `chrome` MUST NOT drop lines from the bottom of the body. On a very short terminal
+  the selected row can still scroll off the top, as it does today. FR-534 has its own rule for its note.
   - **The embedded terminal screen is the exception.** Its body is the agent's PTY grid, so the size of the PTY
     MUST NOT depend on the status line, and a status change MUST NOT resize it or signal the agent. Only a window
     resize does, as today. The status there MUST be cut with `…` at the 2 lines that fit below the grid, so the
     header and its `ctrl+q` hint stay on screen. A message that arrives while the terminal is open can lose its end
     there, and one that arrives while it's opening is replaced when it opens. That's accepted, except for a `v`
-    failure, which includes FR-523's report. One that arrives while an in-place terminal is open or opening MUST be
-    held. When the terminal closes, or its attach ends without opening, it MUST replace whatever the status line shows
-    on the screen the developer lands on, such as `detached from <name>`. A later `v` failure replaces a held one.
+    failure or refusal, meaning any `v` outcome message that isn't a completion, including FR-523's report and FR-517's
+    path refusals. One that arrives while an in-place terminal is open or opening, or while a Replace dialog for an
+    in-place attach is open, MUST be held. The hold ends when the terminal closes, or when its attach ends without
+    opening and no attach can follow. So a Replace dialog keeps the hold until it's declined, and accepting it starts an
+    attach that continues the hold. Only the latest attach can end the hold. A superseded one can't. When the hold ends,
+    the held message MUST replace whatever the status line shows on the screen the developer lands on, such as
+    `detached from <name>`, and MUST keep its error styling. A later `v` failure or refusal replaces a held one.
 - **FR-534**: The settings screen MUST wrap everything it shows to the terminal's width, at spaces where it can, so
   nothing is cut at the edge. That covers the rows and their descriptions, FR-508's and FR-525's notices, and
   FR-521's note.
@@ -748,8 +796,10 @@ sandbox. Check that a clear message appears and nothing is started.
   the settings screen (FR-506) also says why it was rejected. Failures inside the editor after it has started
   can't be detected and aren't covered. An automated test at 80×24 on the sandbox list, with the update banner
   showing, checks that the header and the whole message are on screen, including every notice and where to fix it
-  (FR-533). The cases include a long daemon error with a notice, the list opened after a 3-line status was set on the
-  settings screen, and a banner arriving during a 4-line message. The embedded terminal screen is excluded (SC-008).
+  (FR-533). The cases include a long daemon error with a notice, a long daemon error containing tabs, the list opened
+  after a 3-line status was set on the settings screen, and a banner arriving during a 4-line message. The embedded
+  terminal screen is excluded (SC-008). A view that can't shrink is also excluded, and a separate test checks that it
+  cuts the message to fit with the header on screen, and that the whole message shows on returning to the list.
 - **SC-005**: For a local sandbox, or a remote path that FR-517 accepts, a custom command whose programs
   don't re-parse or execute their arguments opens the right folder, and no part of the path is ever run as a
   command. Locally this holds for a path containing spaces or shell characters, and it also holds for the
@@ -765,8 +815,10 @@ sandbox. Check that a clear message appears and nothing is started.
   settings screen in three states: the rows with two notices and a `(not saved)` mark on a long executable, the open
   Editor list, and the open command input with a rejection and the whole note (FR-534). On the embedded terminal
   screen, tests check that a long status sends no resize and leaves the header on screen, that a terminal opened
-  while a wrapped message is showing gets the same PTY size as one opened with no message, and that a `v` failure
-  arriving while the terminal is open or opening is shown in full once it closes (FR-533).
+  while a wrapped message is showing gets the same PTY size as one opened with no message, and that a `v` failure or
+  refusal arriving while the terminal is open or opening is shown in full, in the error style, once it closes. That
+  includes a first attach superseded by a second, and an attach that ends in the Replace dialog, both declined and
+  accepted (FR-533).
 
 ## Notes for Planning
 
@@ -805,16 +857,41 @@ These follow from the requirements above and from how the code works today. They
     line count would miss a surface the developer returns to, because `m.list` keeps its old height while other screens
     are open. It would also miss the banner, because `applyUpdateAvailable` sets `m.updateBanner` with no `SetSize` and
     `mainListHeight` counts it. Views that read `bodyHeight` as they render, like Jobs, need nothing. A surface with no
-    height to set has its whole height as its smallest usable body, so the message is cut to fit around it.
-  - **Cost of the check:** the wrapper runs on every message, including PTY updates and spinner ticks. Keep the wrapped
-    status keyed on the status string and width, so it's only re-wrapped when they change, and skip the check on the
-    terminal screen, whose size never depends on the status.
+    height to set has its whole height as its smallest usable body, so the message is cut to fit around it. For example,
+    `viewDaemons` has no scrolling, and at 80×24 with no status the screen is 7 + 2N lines for N daemons (measured), so 6
+    daemons leave 5 lines, 7 leave 3 and 8 leave 1.
+  - **Cost of the check:** the wrapper runs on every message, including spinner ticks and mouse wheel and drag events.
+    `tea.WithMouseCellMotion` reports motion only while a button is held. Skip the check on the terminal screen, whose
+    size never depends on the status, which also covers most PTY updates. Elsewhere the expensive step is the target:
+    `mainListHeight()` measured about 265–320 µs and 680–720 KB a call at 80×24 with 8 sandboxes, mostly from `listHelp()`
+    and its value-receiver calls copying `Model`. Wrapping a 280-column status is about 7 µs. So:
+    - Don't cache the wrap. A cached cut would also go stale, because the cut depends on the room left, and a banner
+      arriving changes that with the same status and width. Wrap and cut on each use.
+    - Compute the target only when something it reads has changed, by comparing a small key: the status, width, height,
+      banner, active surface, number of tabs, and whether `listHelp` offers `MarkFree`. It has to be the active surface
+      and not `m.screen`, because a list or form can open and close within one screen, and the one it returns to can
+      have an old height. It has to be `MarkFree` and not the selected row, because a reload can change the row's review
+      state with the same row selected. A test should change each of these and check the size.
+    - huh's `Form` v1.0.0 has `WithHeight` but no way to read the height back, and `Group.WithHeight` renders each field
+      to measure it. So store the last height applied beside each form, and call `WithHeight` only when the target
+      differs. It calls `field.WithHeight` only for a field that's too tall, so a field shrunk during a long message
+      may not grow back. Planning should check this.
   - **No fallback in `chrome`:** the review rendered today's list at 80×15. The view is 20 lines with the selected row at
-    lines 8–10, so Bubble Tea's top-line drop keeps that row, and dropping from the bottom of the body would remove it.
+    lines 8–10, so at that size Bubble Tea's top-line drop keeps that row, and dropping from the bottom of the body would
+    remove it. This isn't a guarantee: with a one-line status and the first row selected, the row's name is gone at 80×11
+    or shorter (measured), so `v`, `d` or `s` can already act on a row whose name can't be seen. FR-533 doesn't make that
+    worse, and this feature doesn't fix it.
   - **Outside text (FR-533):** `errMsg` builds `error: <err.Error()>` with no room for a notice (`groups.go:242`), so
-    `v` needs its own message assembly: cut the error, then add the notices. FR-518's reason is the innermost error,
-    such as `permission denied`, because `Opener.Open` wraps it in `vscode: launch <bin>: …`. These errors name the
+    `v` needs its own message assembly: sanitise and cut the error, then add the notices. FR-518's reason is the innermost
+    error, such as `permission denied`, because `Opener.Open` wraps it in `vscode: launch <bin>: …`. These errors name the
     executable and not its arguments, so FR-532 holds.
+  - **Sanitising first (FR-533):** `sanitizeLine(text, n)` already sanitises and then cuts, so use it for the end cuts.
+    Text with 10 tabs cut by `ansi.Truncate` first came to 156 columns in the review's test and 130 in another, against
+    120 with `sanitizeLine`. The middle cut has no helper, and slicing raw text can split an escape sequence. Start from
+    `sanitizeLine(text, 0)`, then join `ansi.Truncate(s, 20, "")`, `…` and `ansi.TruncateLeft(s, width-39, "")`. That
+    came to 61 columns when a wide character fell on the cut, so test this and drop a column when it does. `footer`
+    keeps calling `sanitizeLine` at render, and the wrap has to come after it, because FR-529 asks for sanitising only
+    for text from the settings file, and other callers set `m.status` with raw text.
   - **Room at 80 columns (measured on today's code):** the sandbox list's help footer is 5 lines, and its bubbles
     list draws at least 9 rows even when given fewer. So the screen needs 19 rows plus the status lines, or 20 plus
     them with the update banner. That leaves 4 lines for a message at 80×24 with the banner, so the longest `v`
@@ -829,11 +906,28 @@ These follow from the requirements above and from how the code works today. They
   status line, because `attachTerminal` reads it before it replaces the status, so a terminal opened during a wrapped
   message would start too short and stay that way until the next resize. `footer` needs a per-screen line limit.
   `escHoldHint` is 101 columns, so it takes 2 lines at 80 columns.
-- **Holding a `v` failure (FR-533):** `attachTerminal` sets `opening terminal…`, `handleTermOpened` sets `m.status = ""`,
-  and both `ctrl+q` and `handleTermClosed` set `detached from <name>`. So a failure needs a field of its own, which the
-  `Update` wrapper can move into the status once the terminal has closed. An attach in flight is only a `termSeq` value
-  today, so the wrapper also needs a marker that one is pending. An attach ends in `handleTermOpened` or
-  `handleTermClosed`, including when the developer has moved on.
+- **Holding a `v` failure or refusal (FR-533):** `attachTerminal` sets `opening terminal…`, `handleTermOpened` sets
+  `m.status = ""`, and both `ctrl+q` and `handleTermClosed` set `detached from <name>`. So the message needs a field of
+  its own, which the `Update` wrapper can move into the status once the hold ends. An attach ends in `handleTermOpened`
+  or `handleTermClosed`, including when the developer has moved on. These details are easy to get wrong:
+  - **Error state:** `footer` shows red only when `m.err != nil` or the status starts with `error` (`app.go:1454`), and
+    `statusMsg` sets `m.err = nil` (`app.go:763`), so a background action finishing while the terminal is open clears it.
+    FR-518's and FR-523's messages don't start with `error`, so the field has to hold the error state as well as the
+    text.
+  - **Superseded attach:** an attach in flight is only a `termSeq` value today, and `t` can be pressed again during one.
+    So the marker has to hold the pending attach's number, set in `attachTerminal`, and only a message with that number
+    clears it. With a plain flag, the older attach would clear it while the newer one runs, and the newer
+    `handleTermOpened` would wipe the released message.
+  - **Replace dialog:** `handleTermClosed` opens it when an attach is refused because of a detached agent
+    (`terminal.go:191`), and `orphanGate` opens it on `t`. It needs a field saying it's for an in-place attach, which the
+    `T` case isn't, and the hold stays while it's open. Declining needs nothing more, because the wrapper then finds no
+    attach pending and releases. Accepting is the trap: `updateConfirmKey` closes the dialog and `replaceOrphanMsg` only
+    arrives in a later `Update`, so the wrapper would release in the gap, and `attachTerminal` and `handleTermOpened`
+    would then replace the message. So the accept must set the marker in the same message, through `onAccept`.
+  - **Order in the wrapper:** `reconcileGuardLayers`, `openParkedOverride`, `openDeferredMcpFollowups`, the release, then
+    the size check. The two `open…` calls can set the status (`sources.go:421`, `mcp.go:845`), so a release before them
+    could be overwritten, and the size check has to see the final status or the surface stays the wrong size until the
+    next message.
 - **Settings screen (FR-534):** `viewSettings` joins its rows with no width limit. Today's sign-in description is
   already over 100 columns, and the notice embeds `err.Error()` before its instruction. It also draws three lines above
   the rows (`Settings`, the `persisted by…` line and a blank), and the list and input replace those with their one title
