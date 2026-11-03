@@ -237,9 +237,10 @@ func TestLifecycleOperationCancelsAnMcpCall(t *testing.T) {
 			e.run.pmu.Lock()
 			e.run.mcpHang = true
 			e.run.pmu.Unlock()
+			before := e.run.count(kind)
 			done := make(chan error, 1)
 			go func() { done <- call(e, id) }()
-			waitUntil(t, func() bool { return e.run.count(kind) >= 1 })
+			waitUntil(t, func() bool { return e.run.count(kind) > before })
 			stopped := make(chan error, 1)
 			go func() {
 				_, err := e.m.Stop(context.Background(), id)

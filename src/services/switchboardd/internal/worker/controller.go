@@ -80,7 +80,8 @@ type Service struct {
 	// now: WarmStart leaves those to OnBringUp, which starts the agent after
 	// the load so it comes up with the orchestrator's tools. owedLoads are the
 	// launches whose load a lifecycle operation refused or cancelled: held the
-	// same way, until the end of the launch runs the bring-up (OnLaunched).
+	// same way, until a bring-up's load has run (OnLaunched starts the first)
+	// or a Detach or destroy settles it.
 	bringMu   sync.Mutex
 	bringing  map[string]int
 	owedLoads map[string]bool
