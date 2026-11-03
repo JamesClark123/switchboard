@@ -263,3 +263,187 @@ func TestHoldsSurfaceOnTheList(t *testing.T) {
 		t.Errorf("orchestrator tab:\n%s", m.View())
 	}
 }
+
+// plainSB builds an unattached sandbox in the given state.
+func plainSB(id string, state pb.SandboxState) *pb.Sandbox {
+	return &pb.Sandbox{Id: id, DisplayName: id, State: state}
+}
+
+// listItemIDs reads the ids of the items the list currently renders, in order.
+func listItemIDs(t *testing.T, m Model) []string {
+	t.Helper()
+	items := m.list.Items()
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		li, ok := it.(listItem)
+		if !ok {
+			t.Fatalf("list item %T is not a listItem", it)
+		}
+		out = append(out, li.id)
+	}
+	return out
+}
+
+// Stopped sandboxes sink below every non-stopped row on every tab, keeping the
+// existing order within each half; stopped wins over "needs the developer";
+// live state changes move the row both ways and the cursor keeps its row
+// number (SWI-31).
+func TestStoppedSandboxesSortLast(t *testing.T) {
+	w2 := worker("w2", "worker-two", false, false)
+	w2.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+	stoppedNeedsInput := plainSB("s-a2", pb.SandboxState_SANDBOX_STATE_STOPPED)
+	stoppedNeedsInput.Agent = &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT}
+	a := &fakeDaemon{sandboxes: []*pb.Sandbox{
+		plainSB("s-a1", pb.SandboxState_SANDBOX_STATE_STOPPED),
+		plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_RUNNING),
+		stoppedNeedsInput,
+		plainSB("e-a", pb.SandboxState_SANDBOX_STATE_ERROR),
+		worker("w1", "worker-one", false, false),
+		w2,
+	}}
+	a.orchestrators = []*pb.OrchestratorSummary{orchSummary("o-a", "review-bot")}
+	b := &fakeDaemon{sandboxes: []*pb.Sandbox{
+		plainSB("s-b", pb.SandboxState_SANDBOX_STATE_STOPPED),
+		plainSB("r-b", pb.SandboxState_SANDBOX_STATE_RUNNING),
+		plainSB("c-b", pb.SandboxState_SANDBOX_STATE_CREATING),
+	}}
+	m, _, _ := twoFakeHosts(t, a, b)
+	s, _ := store.New(t.TempDir())
+	gs := s.Groups()
+	g, _ := gs.Save(store.Group{Name: "mygroup"})
+	_ = gs.AddMember(g.ID, store.GroupMember{HostID: "hosta", SandboxID: "s-a1"})
+	_ = gs.AddMember(g.ID, store.GroupMember{HostID: "hosta", SandboxID: "r-a1"})
+	_ = gs.AddMember(g.ID, store.GroupMember{HostID: "hostb", SandboxID: "s-b"})
+	m = m.WithGroups(gs, nil)
+	m = feed2(m, m.listDataCmd())
+	// An in-flight launch placeholder (CREATING) on alpha.
+	m.launching["pending-1"] = &launchInFlight{tempID: "pending-1", host: "hosta", seq: 1,
+		sb: &pb.Sandbox{Id: "pending-1", State: pb.SandboxState_SANDBOX_STATE_CREATING}}
+	m.refreshListItems()
+
+	// All tab: running, error and creating rows (incl. the placeholder) stay
+	// above every stopped row; the stopped sandbox that needs input sinks
+	// with the other stopped rows (first among them only by stability);
+	// creation order is kept within each half.
+	const wantAll = "r-a1,e-a,r-b,c-b,pending-1,s-a2,s-a1,s-b"
+	if got := rowIDs(m.currentTabRows()); strings.Join(got, ",") != wantAll {
+		t.Fatalf("All rows = %v, want %s", got, wantAll)
+	}
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
+		t.Fatalf("All list items = %v, want %s", got, wantAll)
+	}
+	// Stable across renders.
+	m.refreshListItems()
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
+		t.Fatalf("All list items after re-render = %v, want %s", got, wantAll)
+	}
+
+	// Host, group and Orchestrated tabs apply the same rule.
+	want := map[string]string{
+		"host:hosta": "r-a1,e-a,pending-1,s-a2,s-a1",
+		"host:hostb": "r-b,c-b,s-b",
+		"group":      "r-a1,s-a1,s-b",
+	}
+	seen := 0
+	for i, tab := range m.tabs {
+		var key string
+		switch tab.kind {
+		case tabHost:
+			key = "host:" + tab.hostID
+		case tabGroup:
+			key = "group"
+		default:
+			continue
+		}
+		seen++
+		m.tabIndex = i
+		if got := rowIDs(m.currentTabRows()); strings.Join(got, ",") != want[key] {
+			t.Errorf("%s rows = %v, want %s", key, got, want[key])
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("expected two host tabs and one group tab, checked %d", seen)
+	}
+	m.tabIndex = 0
+	m.refreshListItems()
+	m, _ = update(m, press("O"))
+	if m.tabs[m.tabIndex].kind != tabOrchestrated {
+		t.Fatalf("O should select the Orchestrator Sandboxes tab")
+	}
+	if got := rowIDs(m.currentTabRows()); strings.Join(got, ",") != "w1,w2" {
+		t.Errorf("Orchestrated rows = %v, want w1,w2 (stopped worker last)", got)
+	}
+	m, _ = update(m, press("O"))
+	m.tabIndex = 0
+	m.refreshListItems()
+
+	// A live stop sinks the selected row without a reload. By the SWI-31
+	// decision the cursor keeps its row number (no selection-follow, as with
+	// surfaceFirst today), so the next sandbox takes the selection.
+	m.sub = nil
+	m.list.Select(0)
+	if cur := m.current(); cur.GetId() != "r-a1" {
+		t.Fatalf("selected = %q, want r-a1", cur.GetId())
+	}
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{
+		SandboxChanged: plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_STOPPED)}}})
+	const wantStopped = "e-a,r-b,c-b,pending-1,s-a2,s-a1,r-a1,s-b"
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantStopped {
+		t.Errorf("after stop list items = %v, want %s", got, wantStopped)
+	}
+	if m.list.Index() != 0 || m.current().GetId() != "e-a" {
+		t.Errorf("cursor after stop: index %d selected %q, want row 0 / e-a", m.list.Index(), m.current().GetId())
+	}
+	// Starting it again restores its place among the running rows. The cursor
+	// keeps its row number here too, so the row that moved up leaves the
+	// selection on another stopped sandbox.
+	m.list.Select(6)
+	if cur := m.current(); cur.GetId() != "r-a1" {
+		t.Fatalf("selected = %q, want r-a1", cur.GetId())
+	}
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{
+		SandboxChanged: plainSB("r-a1", pb.SandboxState_SANDBOX_STATE_RUNNING)}}})
+	if got := listItemIDs(t, m); strings.Join(got, ",") != wantAll {
+		t.Errorf("after start list items = %v, want %s", got, wantAll)
+	}
+	if m.list.Index() != 6 || m.current().GetId() != "s-a1" {
+		t.Errorf("cursor after start: index %d selected %q, want row 6 / s-a1", m.list.Index(), m.current().GetId())
+	}
+
+	// A stopped sandbox that needs the developer stays below a running one
+	// that does not, even when the need arises live.
+	stoppedReview := worker("w2", "worker-two", false, true)
+	stoppedReview.State = pb.SandboxState_SANDBOX_STATE_STOPPED
+	m, _ = update(m, eventMsg{hostID: "hosta", ev: &pb.Event{Event: &pb.Event_SandboxChanged{SandboxChanged: stoppedReview}}})
+	got := rowIDs(m.currentTabRows())
+	if strings.Join(got, ",") != "r-a1,e-a,r-b,c-b,pending-1,s-a2,w2,s-a1,s-b" {
+		t.Errorf("stopped review worker rows = %v", got)
+	}
+	if !strings.Contains(m.View(), "worker · review") {
+		t.Error("the stopped review worker should still be visible and marked")
+	}
+}
+
+// An active "/" filter is a search: it ranks matches best-match-first, so a
+// stopped sandbox can rank above a running one (FR-114, SWI-31).
+func TestFilterRanksMatchesOverStoppedOrder(t *testing.T) {
+	m, _, _ := twoFakeHosts(t, &fakeDaemon{sandboxes: []*pb.Sandbox{
+		plainSB("app", pb.SandboxState_SANDBOX_STATE_STOPPED),
+		plainSB("zzappzz", pb.SandboxState_SANDBOX_STATE_RUNNING),
+		plainSB("other", pb.SandboxState_SANDBOX_STATE_RUNNING),
+	}}, &fakeDaemon{})
+	m = feed2(m, m.listDataCmd())
+	m.refreshListItems()
+	if got := listItemIDs(t, m); strings.Join(got, ",") != "zzappzz,other,app" {
+		t.Fatalf("unfiltered list items = %v, want zzappzz,other,app", got)
+	}
+
+	m.list.SetFilterText("app")
+	var got []string
+	for _, it := range m.list.VisibleItems() {
+		got = append(got, it.(listItem).id)
+	}
+	if strings.Join(got, ",") != "app,zzappzz" {
+		t.Errorf("filtered items = %v, want app,zzappzz", got)
+	}
+}
