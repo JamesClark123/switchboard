@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -14,6 +15,11 @@ import (
 // — so a racing process can take it in between. Three attempts is plenty for a race
 // this narrow, and failing after them beats spinning (research R2).
 const allocRetries = 3
+
+// publishAttemptTimeout bounds one `sbx ports --publish`, which can legitimately
+// take far longer than a readiness check (runtimeHoldTimeout) on a busy host. A
+// variable so tests can shorten it.
+var publishAttemptTimeout = 30 * time.Second
 
 // freeLoopbackPort asks the OS for a free port on the loopback interface by binding
 // :0 and immediately releasing it.
@@ -50,6 +56,11 @@ func portFree(port uint32) bool {
 // Retries cover the allocation race described above: if `sbx ports` rejects the
 // port because something grabbed it first, a fresh port is drawn rather than
 // failing the whole start.
+//
+// It runs under the sandbox's runtime lock, so each attempt is bounded
+// (publishAttemptTimeout). An attempt whose context ended is not retried: the
+// runtime isn't answering, and that attempt may have applied its mapping, so the
+// port is given back.
 func (s *Supervisor) publishSandboxPort(ctx context.Context, ref string, listenPort uint32) (uint32, error) {
 	var lastErr error
 	for attempt := 0; attempt < allocRetries; attempt++ {
@@ -58,11 +69,18 @@ func (s *Supervisor) publishSandboxPort(ctx context.Context, ref string, listenP
 			lastErr = err
 			continue
 		}
-		if err := s.runner.PublishPort(ctx, ref, hostPort, listenPort); err != nil {
-			lastErr = err
-			continue
+		actx, cancel := context.WithTimeout(ctx, publishAttemptTimeout)
+		err = s.runner.PublishPort(actx, ref, hostPort, listenPort)
+		ended := actx.Err() != nil
+		cancel()
+		if err == nil {
+			return hostPort, nil
 		}
-		return hostPort, nil
+		if ended {
+			s.unpublish(ref, hostPort, listenPort)
+			return 0, fmt.Errorf("could not publish port %d: %w", listenPort, err)
+		}
+		lastErr = err
 	}
 	return 0, fmt.Errorf("could not publish port %d after %d attempts: %w", listenPort, allocRetries, lastErr)
 }

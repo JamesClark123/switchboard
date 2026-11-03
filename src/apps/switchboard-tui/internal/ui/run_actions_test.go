@@ -426,3 +426,92 @@ func TestWorkersViewMarkFreeHeldWorker(t *testing.T) {
 		t.Errorf("result = %+v", done)
 	}
 }
+
+// SWI-23: `P` on a sandbox row toggles the worker's pause on the orchestrator's
+// daemon, from the roster rather than the row's display copy; the reasoning
+// sandbox and non-workers are refused locally.
+func TestPauseWorkerKey(t *testing.T) {
+	m, a, b := attachEnv(t)
+	plain := selectSandbox(m, "sa")
+	if mm, cmd := update(plain, press("P")); cmd != nil || !strings.Contains(mm.status, "not an orchestrator worker") {
+		t.Errorf("a plain sandbox: cmd %v status %q", cmd != nil, mm.status)
+	}
+	if strings.Contains(ansi.Strip(plain.View()), "pause/resume worker") {
+		t.Error("a plain sandbox should not offer P")
+	}
+	m, _ = update(m, press("O")) // workers show on the Orchestrator Sandboxes tab
+	row := func(c *pb.SandboxController) Model {
+		b.sandboxes[0].Controller = c
+		m = feed2(m, m.listDataCmd())
+		m.refreshListItems()
+		return selectSandbox(m, "sb")
+	}
+	roster := func(paused bool) {
+		a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{{SandboxId: "sb", Paused: paused}}}
+	}
+
+	roster(false)
+	m = row(&pb.SandboxController{OrchestratorId: "o-a", Name: "review-bot", HostId: "hosta"})
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "pause/resume worker") {
+		t.Errorf("a prompt worker should offer P:\n%s", v)
+	}
+	mm, cmd := update(m, press("P"))
+	done, ok := runCmd(cmd).(orchDoneMsg)
+	if !ok || done.err != nil || done.status != "worker sand-b paused" {
+		t.Errorf("pause = %+v", done)
+	}
+	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a sb true") {
+		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+	mm, _ = update(mm, done)
+	if mm.status != done.status {
+		t.Errorf("status = %q", mm.status)
+	}
+
+	// Only a worker with a run is told that run will finish.
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{{SandboxId: "sb", RunId: "r1"}}}
+	_, cmd = update(m, press("P"))
+	if done, _ := runCmd(cmd).(orchDoneMsg); done.status != "worker sand-b paused (current run will finish)" {
+		t.Errorf("pause with a run = %+v", done)
+	}
+
+	// The row's display copy still says unpaused (its push has not landed, or
+	// the worker's host is older): the roster decides, so P resumes.
+	roster(true)
+	_, cmd = update(m, press("P"))
+	if done, _ := runCmd(cmd).(orchDoneMsg); done.status != "worker sand-b resumed" {
+		t.Errorf("resume = %+v", done)
+	}
+	if !strings.Contains(a.orchCallsJoined(), "SetWorkerPaused o-a sb false") {
+		t.Errorf("calls = %q", a.orchCallsJoined())
+	}
+
+	// The daemon's refusal reaches the developer.
+	a.orchErr = errors.New("sandbox sb is not a worker of review-bot")
+	_, cmd = update(m, press("P"))
+	if done, _ := runCmd(cmd).(orchDoneMsg); done.err == nil {
+		t.Errorf("refusal = %+v", done)
+	}
+	a.orchErr = nil
+
+	before := a.orchCallsJoined()
+	for _, c := range []struct {
+		ctl  *pb.SandboxController
+		want string
+	}{
+		{&pb.SandboxController{OrchestratorId: "o-a", Name: "review-bot", HostId: "hosta", Reasoning: true}, "not pausable"},
+		{&pb.SandboxController{OrchestratorId: "o-x", Name: "far-bot", HostId: "elsewhere"}, "far-bot's machine is not connected"},
+	} {
+		m = row(c.ctl)
+		mm, cmd := update(m, press("P"))
+		if cmd != nil || !strings.Contains(mm.status, c.want) {
+			t.Errorf("%+v: cmd %v status %q", c.ctl, cmd != nil, mm.status)
+		}
+		if c.ctl.GetReasoning() && strings.Contains(ansi.Strip(m.View()), "pause/resume worker") {
+			t.Error("the reasoning sandbox should not offer P")
+		}
+	}
+	if a.orchCallsJoined() != before {
+		t.Errorf("refusals called the daemon: %q", strings.TrimPrefix(a.orchCallsJoined(), before))
+	}
+}

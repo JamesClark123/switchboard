@@ -106,8 +106,36 @@ func kitFlags(sources []string) []string {
 }
 
 func (r *SbxRunner) run(ctx context.Context, log func(string), args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, r.Bin, args...).CombinedOutput()
+	return r.result(out, err, log, args)
+}
+
+// heldCallWaitDelay bounds an `sbx mcp` call's pipes once its context has ended
+// or `sbx` has exited, for a descendant the group kill didn't reach.
+const heldCallWaitDelay = 2 * time.Second
+
+// runHeld is run for a call made under the runtime lock (HoldRuntimeRead), which
+// a lifecycle operation cancels and then waits for: `sbx` gets its own process
+// group, the cancel kills the group, and nothing it left holding the output can
+// keep the call alive past heldCallWaitDelay (SWI-26). An `sbx` that exited 0 has
+// succeeded, whatever it left behind, even if the context ends during that wait:
+// Cancel returns nil, so a cancel before the exit is reported as the context's
+// error or an ExitError, and ErrWaitDelay only ever means exit 0.
+func (r *SbxRunner) runHeld(ctx context.Context, log func(string), args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
+	setPgid(cmd)
+	cmd.Cancel = func() error { killPgid(cmd); return nil }
+	cmd.WaitDelay = heldCallWaitDelay
 	out, err := cmd.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	return r.result(out, err, log, args)
+}
+
+// result streams a finished call's output to log and folds a failure's tail into
+// its error.
+func (r *SbxRunner) result(out []byte, err error, log func(string), args []string) (string, error) {
 	if log != nil && len(out) > 0 {
 		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 			log(line)
@@ -341,14 +369,14 @@ func (r *SbxRunner) Exec(ctx context.Context, ref string, argv []string) *exec.C
 // works in both gateway modes and the runtime persists the attachment across
 // restarts, so the daemon never re-applies it.
 func (r *SbxRunner) LoadMcp(ctx context.Context, ref, name string, log func(string)) error {
-	_, err := r.run(ctx, log, "mcp", "load", name, "--sandbox", ref)
+	_, err := r.runHeld(ctx, log, "mcp", "load", name, "--sandbox", ref)
 	return err
 }
 
 // UnloadMcp maps to `sbx mcp unload <name> --sandbox <ref>` (SWI-3). The runtime
 // removes the server's tools from the sandbox live; the registration is untouched.
 func (r *SbxRunner) UnloadMcp(ctx context.Context, ref, name string, log func(string)) error {
-	_, err := r.run(ctx, log, "mcp", "unload", name, "--sandbox", ref)
+	_, err := r.runHeld(ctx, log, "mcp", "unload", name, "--sandbox", ref)
 	return err
 }
 

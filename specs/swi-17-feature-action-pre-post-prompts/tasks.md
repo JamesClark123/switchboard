@@ -38,17 +38,17 @@ conflict; research R14 lists the same items as known limitations.
 - **Plain orphan notes.** The row note is `agent detached by a daemon restart — t to Replace or Wait`, and halt notes
   say `agent detached by a daemon restart`, without the last-seen state or time. `AgentCheck` keeps its fields;
   `last_status` is still filled (for the `t` dialog), `processes` may stay 0.
-- **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise), **no shared rate-limited
-  `ListStatuses`** for probe pre-checks, and **no `runtimeMu` gating of `sbx mcp load/unload` or `sbx ports`**.
-- **The pre-stop drain is best effort** (T047, as already written): no ordering against `sbx stop`, and nothing
-  promised about what survives a failed stop.
+- **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise). *(SWI-26 added the shared
+  rate-limited `ListStatuses` for probe pre-checks and `runtimeMu` gating of `sbx mcp load/unload` and `sbx ports`;
+  see research.md R14, Amendment.)*
+- ~~**The pre-stop drain is best effort**~~ *(SWI-26: ordering against `sbx stop` closed by the read/write split;
+  what survives a failed stop recorded as a decision in R14's amendment.)*
 
 **Also deferred from PR #25's review (run-718, addressed in run-721; follow-up SWI-19):**
 
-- **Service starts/stops during a probe still fail as busy.** A bounded retry would have to outlast a probe (10 s)
-  or reap (15 s); a read/write split of `runtimeMu` is a design change.
-- **`CheckOrphansAtStart` stays synchronous** before the gRPC server serves (at most 10 s on a slow runtime): async
-  classification could retire a fresh agent's token on a stale listing.
+- ~~**Service starts/stops during a probe still fail as busy.**~~ *(SWI-26: `runtimeMu` is a read/write lock.)*
+- ~~**`CheckOrphansAtStart` stays synchronous**~~ *(SWI-26: asynchronous, with a token-generation snapshot taken
+  before the listing.)*
 - **Model/Effort confirmation counts echoes**, so an identical echo scrolling off a full screen can halt a retried
   setup step (R/S/X recover); termview exposes no scroll offset.
 - **Main-agent bind is the first tokened SessionStart**; a lost first hook can bind a nested `claude -p` (Replace

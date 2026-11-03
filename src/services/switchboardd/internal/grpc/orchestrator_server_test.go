@@ -612,6 +612,9 @@ func TestLaneRPCs(t *testing.T) {
 	if _, err := c.SetWorkerLanes(ctx, &pb.SetWorkerLanesRequest{OrchestratorId: id, SandboxId: "nope"}); status.Code(err) != codes.Aborted {
 		t.Errorf("SetWorkerLanes stale = %v", err)
 	}
+	if _, err := c.SetWorkerPaused(ctx, &pb.SetWorkerPausedRequest{OrchestratorId: id, SandboxId: "nope", Paused: true}); status.Code(err) != codes.NotFound {
+		t.Errorf("SetWorkerPaused unknown worker = %v", err)
+	}
 	if _, err := c.SetLaneMembers(ctx, &pb.SetLaneMembersRequest{OrchestratorId: id, LaneId: ln.GetId()}); err != nil {
 		t.Errorf("SetLaneMembers = %v", err)
 	}

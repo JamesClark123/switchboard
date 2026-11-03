@@ -363,13 +363,15 @@ func (rt *runtime) syncWorkerRun(runID string) {
 
 // --- transactions on the live record ---
 
-// sameStep reports whether the live record is where the caller saw it. The
-// in-flight states count as one: status folding moves a run between running,
-// awaiting input and awaiting review while a step call is out, and the step's
-// answer still applies (lost, it would leave a typed step unclassified).
+// sameStep reports whether the live record is where the caller saw it, on the
+// same worker: a released claim can be re-claimed elsewhere at the same step.
+// The in-flight states count as one: status folding moves a run between
+// running, awaiting input and awaiting review while a step call is out, and
+// the step's answer still applies (lost, it would leave a typed step
+// unclassified).
 func sameStep(a, b *pb.Run) bool {
-	return stepState(a) == stepState(b) && a.GetStep() == b.GetStep() && a.GetStepSend() == b.GetStepSend() &&
-		a.GetStepStatus() == b.GetStepStatus() && a.GetHold() == b.GetHold()
+	return stepState(a) == stepState(b) && a.GetSandboxId() == b.GetSandboxId() && a.GetStep() == b.GetStep() &&
+		a.GetStepSend() == b.GetStepSend() && a.GetStepStatus() == b.GetStepStatus() && a.GetHold() == b.GetHold()
 }
 
 func stepState(r *pb.Run) pb.RunState {
@@ -542,10 +544,14 @@ func (rt *runtime) stepOnce(sandboxID string) (more, active bool) {
 func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 	pending := run.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING
 	if run.GetState() == pb.RunState_RUN_STATE_QUEUED {
-		// A claim the worker can't take (gone, stopped, detached agent): back
-		// to the queue, nothing having been typed.
-		if pending && (sb == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING ||
-			agentCheck(sb) != pb.AgentCheck_STATE_CLEAR || hostOf(rt.record(), run.GetSandboxId()) == "") {
+		// A claim the worker can't take (gone, stopped, detached agent, paused):
+		// back to the queue, nothing having been typed.
+		if !pending {
+			return false
+		}
+		w := onRosterEntry(rt.record(), run.GetSandboxId())
+		if sb == nil || sb.GetState() != pb.SandboxState_SANDBOX_STATE_RUNNING ||
+			agentCheck(sb) != pb.AgentCheck_STATE_CLEAR || w.GetHostId() == "" || w.GetPaused() {
 			return rt.unclaim(run)
 		}
 		return false
@@ -665,24 +671,23 @@ func unclaimLocked(l *pb.Run) {
 }
 
 // unclaimOn puts every claimed, untyped run on a sandbox back in the queue
-// (its worker was dropped): pending, or halted on a refused first step.
+// (its worker was dropped or paused): pending, or halted on a refused first
+// step.
 func (rt *runtime) unclaimOn(sandboxID string) {
 	rt.runs.mu.Lock()
-	var back []string
+	n := 0
 	for _, r := range rt.indexedLocked(sandboxID, func(r *pb.Run) bool {
 		st := r.GetStepStatus()
 		return r.GetState() == pb.RunState_RUN_STATE_QUEUED && (st == pb.StepStatus_STEP_STATUS_PENDING || st == pb.StepStatus_STEP_STATUS_HALTED)
 	}) {
 		unclaimLocked(r)
 		if rt.putRun(r) == nil {
-			back = append(back, r.GetId())
+			rt.dropMarks(r.GetId()) // the next claim's refusals are timed afresh
+			n++
 		}
 	}
 	rt.runs.mu.Unlock()
-	for _, id := range back {
-		rt.dropMarks(id) // the next claim's refusals are timed afresh
-	}
-	if len(back) > 0 {
+	if n > 0 {
 		rt.triggerDispatch()
 	}
 }
@@ -1021,7 +1026,8 @@ func (rt *runtime) handBack(run *pb.Run, reason string) bool {
 
 // otherFreeWorker reports whether a worker other than the run's could take it
 // now: allowed by its lanes, free, steps-capable, one that has not refused this
-// run, not being detached or delivered to, and claimed or held by no other run.
+// run, not paused, not being detached or delivered to, and claimed or held by no
+// other run.
 func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	rec := rt.record()
 	ids, mode, ok := effectiveLanes(rec, run)
@@ -1030,7 +1036,7 @@ func (rt *runtime) otherFreeWorker(run *pb.Run) bool {
 	}
 	for _, w := range rec.GetWorkers() {
 		id := w.GetSandboxId()
-		if id == run.GetSandboxId() || w.GetReasoning() || w.GetLanesPending() || !allowed(w.GetLaneIds(), ids, mode) ||
+		if id == run.GetSandboxId() || w.GetReasoning() || w.GetLanesPending() || w.GetPaused() || !allowed(w.GetLaneIds(), ids, mode) ||
 			rt.stepsUnsupported(id) || rt.refused(run.GetId(), id) || rt.isDetaching(id) || rt.isDelivering(id) {
 			continue
 		}

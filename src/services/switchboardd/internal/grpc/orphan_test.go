@@ -31,12 +31,13 @@ const (
 )
 
 // orphanRunner never runs a probe or reap on the host: its `sbx exec`
-// answers from answer, and a reap is counted. stopped records whether the
-// agent session had been drained when `sbx stop` ran.
+// answers from answer, and a probe or reap is counted. stopped records
+// whether the agent session had been drained when `sbx stop` ran.
 type orphanRunner struct {
 	*testRunner
 	mu       sync.Mutex
 	answer   string
+	probes   int
 	reaps    int
 	sess     *echoSession
 	drained  atomic.Bool
@@ -50,6 +51,7 @@ func (r *orphanRunner) Exec(ctx context.Context, _ string, argv []string) *exec.
 		r.reaps++
 		return exec.CommandContext(ctx, "printf", "%s", "agent\t/c\nnofile\nreaped\t1\n")
 	}
+	r.probes++
 	return exec.CommandContext(ctx, "printf", "%s", r.answer)
 }
 
@@ -63,6 +65,12 @@ func (r *orphanRunner) Stop(ctx context.Context, ref string) error {
 	}
 	r.mu.Unlock()
 	return r.testRunner.Stop(ctx, ref)
+}
+
+func (r *orphanRunner) probeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.probes
 }
 
 func (r *orphanRunner) setAnswer(s string) {
@@ -129,6 +137,15 @@ func (o *orphanServer) check() pb.AgentCheck_State {
 	return sb.GetAgent().GetAgentCheck().GetState()
 }
 
+// idle reports whether no probe or operation holds the runtime lock.
+func (o *orphanServer) idle() bool {
+	unlock, ok := o.mgr.TryLockRuntime(o.id)
+	if ok {
+		unlock()
+	}
+	return ok
+}
+
 func waitCond(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -184,7 +201,12 @@ func TestAttachAgentBesideAnOrphan(t *testing.T) {
 	}
 	o.run.setAnswer(orphanAlive)
 	o.mgr.AgentClientExited(o.id, 1)
-	waitCond(t, func() bool { return o.check() == pb.AgentCheck_STATE_DETACHED })
+	// Two probes run: the unknown refusal's and the client exit's (coalesced
+	// when they overlap, the second then running after the first). Wait for
+	// both to finish, so the replace's try-lock does not meet one.
+	waitCond(t, func() bool {
+		return o.run.probeCount() == 2 && o.idle() && o.check() == pb.AgentCheck_STATE_DETACHED
+	})
 	if err := o.attach(t, false); !refused(err, "agent detached by a daemon restart") {
 		t.Errorf("detached: %v", err)
 	}

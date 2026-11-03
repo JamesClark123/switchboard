@@ -150,6 +150,14 @@ func (s *Server) MarkWorkerFree(_ context.Context, req *pb.MarkWorkerFreeRequest
 	return out, orchStatus(err)
 }
 
+func (s *Server) SetWorkerPaused(_ context.Context, req *pb.SetWorkerPausedRequest) (*pb.WorkerView, error) {
+	if s.orchestrator == nil {
+		return nil, errNoOrchestrator
+	}
+	out, err := s.orchestrator.SetWorkerPaused(req.GetOrchestratorId(), req.GetSandboxId(), req.GetPaused())
+	return out, orchStatus(err)
+}
+
 func (s *Server) PutAction(_ context.Context, req *pb.PutActionRequest) (*pb.Action, error) {
 	if s.orchestrator == nil {
 		return nil, errNoOrchestrator

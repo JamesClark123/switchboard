@@ -760,12 +760,65 @@ func TestOtherFreeWorkerSkips(t *testing.T) {
 		t.Error("wb is being delivered to")
 	}
 	rt.endDelivery("wb")
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	if rt.otherFreeWorker(seen) {
+		t.Error("wb is paused")
+	}
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", false); err != nil {
+		t.Fatal(err)
+	}
 	rt.mu.Lock()
 	rt.seq.refusedBy[run.GetId()] = map[string]time.Time{"wb": env.clock.Now()} // its avoid over
 	rt.mu.Unlock()
 	if rt.otherFreeWorker(seen) {
 		t.Error("wb refused this run")
 	}
+}
+
+// A paused worker is no reason to hand a claim back: dispatch would never give
+// it the run. The run stays on the worker that refused it.
+func TestRefusedClaimStaysWhenTheOtherWorkerIsPaused(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit+2*stepRetryEvery)
+	if got := runNow(env, o, run.GetId()); got.GetSandboxId() != "wa" || got.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		t.Fatalf("past the limit = %+v", got)
+	}
+	if rt.refused(run.GetId(), "wa") {
+		t.Error("wa should not be marked as handed back from")
+	}
+}
+
+// Pausing the worker a run was handed to must not strand the run: once the
+// avoid ends, the worker that refused it may take it again, because the paused
+// one doesn't count as free.
+func TestHandedBackRunReturnsWhenItsWorkerIsPaused(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 2, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "input box not empty" }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_PENDING)
+	refuseFor(t, env, rt, w, claimRefuseLimit)
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetSandboxId() == "wb" })
+	if _, err := env.svc.SetWorkerPaused(o.GetId(), "wb", true); err != nil {
+		t.Fatal(err)
+	}
+	// A first step in flight on wb is released on the next retry, so keep the
+	// clock moving: that, then wa's avoid ending.
+	waitFor(t, func() bool {
+		env.clock.Advance(stepRetryEvery)
+		return runNow(env, o, run.GetId()).GetSandboxId() == "wa"
+	})
 }
 
 // With no other worker free, a refused claim is never handed back (that would
