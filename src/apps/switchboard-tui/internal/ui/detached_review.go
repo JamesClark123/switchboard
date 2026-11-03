@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
@@ -126,7 +124,7 @@ func (m Model) detachedPickModal() string {
 	p := m.detachedPick
 	rows := []string{sectionStyle.Render(sanitizeLine(p.n.GetMessage(), 60)), dimStyle.Render("Their workers span several orchestrators. Review which?"), ""}
 	for i, o := range p.choices {
-		label := fitCol(sanitizeLine(o.name, 24), 24) + dimStyle.Render(fmt.Sprintf("  %d %s", o.count, plural(o.count, "worker", "workers")))
+		label := fitCol(sanitizeLine(o.name, 24), 24) + dimStyle.Render("  "+plural(o.count, "worker", "workers"))
 		if i == p.cursor {
 			rows = append(rows, cursorBarStyle.Render("> ")+selectedStyle.Render(label))
 		} else {

@@ -53,6 +53,10 @@ type Daemon interface {
 	// AttachTerminalReplacing attaches in place with AttachInfo.replace_orphan:
 	// `t` → Replace on an agent detached by a daemon restart (SWI-17, R14).
 	AttachTerminalReplacing(ctx context.Context, sandboxID string, cols, rows uint32, sink io.Writer) (client.TermSession, error)
+	// ReplaceDetachedAgents is the bulk Replace (SWI-25 A1, `R` on the Workers
+	// view): the daemon stops each named sandbox's detached agent and starts a
+	// fresh one, reporting an outcome per sandbox.
+	ReplaceDetachedAgents(ctx context.Context, sandboxIDs []string) ([]*pb.ReplaceDetachedAgentResponse_Outcome, error)
 	ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error)
 	OptionManifest(ctx context.Context) (*pb.OptionManifest, error)
 	// US4: agent prompting + live event subscription.
@@ -825,6 +829,8 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyJobsOrch(msg)
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
+	case detachedReplacedMsg:
+		return m.applyDetachedReplaced(msg)
 	case reasoningRebuildMsg:
 		return m.startReasoningRebuild(msg)
 	case reasoningProgressMsg:

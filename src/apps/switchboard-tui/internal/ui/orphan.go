@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,8 +21,8 @@ import (
 // (AgentSession.agent_check); only the developer stops it. `t`/`T` on such a
 // sandbox, worker or not, opens a Wait/Replace dialog instead of the terminal;
 // a sandbox whose check keeps failing offers Restart sandbox/Wait; one still
-// being checked asks to wait. Bulk Replace (`R` on the Workers view) is
-// deferred to SWI-19 (tasks.md, Deferred items).
+// being checked asks to wait. `R` on the Workers view replaces every idle
+// detached worker at once (SWI-25 A1, replaceDetachedWorkers).
 
 // The daemon's refusal texts the TUI recognises (research R14, the gate).
 const (
@@ -237,4 +239,153 @@ func orphanNote(sb *pb.Sandbox) (string, bool) {
 		return swb.CheckFailedNote(sanitizeLine(check.GetError(), 60)), true
 	}
 	return "", false
+}
+
+// --- bulk Replace (SWI-25 A1) ---
+
+// replaceTarget is one daemon's share of a bulk Replace.
+type replaceTarget struct {
+	d        Daemon
+	hostName string
+	ids      []string
+}
+
+// detachedReplacedMsg is a bulk Replace's result: the outcomes the daemons
+// reported and the hosts whose call failed.
+type detachedReplacedMsg struct {
+	outcomes []*pb.ReplaceDetachedAgentResponse_Outcome
+	errs     []string
+}
+
+// replaceDetachedWorkers is `R` on the Workers view: every worker of the open
+// orchestrator whose listed sandbox has a detached agent and no run is named
+// in a confirm, then replaced with one call per owning daemon
+// (ReplaceDetachedAgents). Workers with a run keep their per-sandbox `t` →
+// Replace, which names the run that fails. Wait is the default unless every
+// agent was last seen idle.
+func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
+	d := &m.orchDetail
+	byHost := map[string]*replaceTarget{}
+	var hosts, names []string
+	allIdle := true
+	for _, w := range d.detail.GetWorkers() {
+		if w.GetRunId() != "" {
+			continue
+		}
+		sb, host, why := m.runSandbox(&pb.Run{SandboxId: w.GetSandboxId(), SandboxHostId: w.GetHostId()})
+		if why != "" || sb.GetAgent().GetAgentCheck().GetState() != pb.AgentCheck_STATE_DETACHED || sb.GetController().GetRun() != nil {
+			continue
+		}
+		od, err := m.connectedDaemon(host)
+		if err != nil {
+			continue
+		}
+		t := byHost[host]
+		if t == nil {
+			t = &replaceTarget{d: od, hostName: m.hostDisplayName(host)}
+			byHost[host] = t
+			hosts = append(hosts, host)
+		}
+		t.ids = append(t.ids, sb.GetId())
+		names = append(names, sanitizeLine(sb.GetDisplayName(), 24))
+		if sb.GetAgent().GetAgentCheck().GetLastStatus() != pb.AgentStatus_AGENT_STATUS_IDLE {
+			allIdle = false
+		}
+	}
+	if len(names) == 0 {
+		d.status = "no idle detached worker to replace (a worker with a run: t → Replace)"
+		return m, nil
+	}
+	sort.Strings(hosts)
+	targets := make([]replaceTarget, 0, len(hosts))
+	for _, h := range hosts {
+		targets = append(targets, *byHost[h])
+	}
+	d.status = ""
+	return m.enterConfirm(confirmState{
+		title:        fmt.Sprintf("Replace %s of %s?", plural(len(names), "detached agent", "detached agents"), sanitizeLine(d.name, 32)),
+		body:         []string{strings.Join(names, ", "), "Each is stopped and a fresh agent started.", "Workers with a run are left alone."},
+		warning:      "Replacing stops them.",
+		returnTo:     screenOrchDetail,
+		acceptLabel:  "replace",
+		cancelLabel:  "wait",
+		enterCancels: !allIdle,
+		onConfirm:    replaceDetachedCmd(targets),
+	})
+}
+
+// replaceDetachedCmd calls each daemon in turn and gathers the outcomes.
+func replaceDetachedCmd(targets []replaceTarget) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := ctxTimeout()
+		defer cancel()
+		var msg detachedReplacedMsg
+		for _, t := range targets {
+			out, err := t.d.ReplaceDetachedAgents(ctx, t.ids)
+			if err != nil {
+				msg.errs = append(msg.errs, sanitizeLine(t.hostName, 24)+": "+sanitizeLine(err.Error(), 80))
+				continue
+			}
+			msg.outcomes = append(msg.outcomes, out...)
+		}
+		return msg
+	}
+}
+
+// applyDetachedReplaced puts the summary on the detail's line and reloads it.
+func (m Model) applyDetachedReplaced(msg detachedReplacedMsg) (tea.Model, tea.Cmd) {
+	m.orchDetail.status = replaceSummary(msg)
+	if m.screen != screenOrchDetail {
+		m.status = m.orchDetail.status
+		return m, nil
+	}
+	return m, m.orchDetailLoadCmd()
+}
+
+// replaceSummary words a bulk Replace's outcomes: "replaced 3 · skipped 1
+// (busy) · failed 1 (w-x: …)".
+func replaceSummary(msg detachedReplacedMsg) string {
+	replaced, skipped := 0, 0
+	var why, failed []string
+	for _, o := range msg.outcomes {
+		name := sanitizeLine(o.GetDisplayName(), 24)
+		if name == "" {
+			name = short(o.GetSandboxId())
+		}
+		switch o.GetResult() {
+		case pb.ReplaceDetachedAgentResponse_RESULT_REPLACED:
+			replaced++
+		case pb.ReplaceDetachedAgentResponse_RESULT_ERROR:
+			failed = append(failed, name+": "+sanitizeLine(o.GetError(), 60))
+		default:
+			skipped++
+			why = append(why, name+": "+skipReason(o))
+		}
+	}
+	parts := []string{fmt.Sprintf("replaced %d", replaced)}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("skipped %d (%s)", skipped, strings.Join(why, "; ")))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, fmt.Sprintf("failed %d (%s)", len(failed), strings.Join(failed, "; ")))
+	}
+	if len(msg.errs) > 0 {
+		parts = append(parts, "not reached: "+strings.Join(msg.errs, "; "))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// skipReason is a skipped outcome's short reason.
+func skipReason(o *pb.ReplaceDetachedAgentResponse_Outcome) string {
+	switch o.GetResult() {
+	case pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_BUSY:
+		return "busy"
+	case pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_LIVE_SESSION:
+		return "its agent is live"
+	case pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_RUN:
+		return "has a run"
+	case pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_NOT_DETACHED:
+		return "not detached"
+	}
+	return sanitizeLine(o.GetError(), 40)
 }

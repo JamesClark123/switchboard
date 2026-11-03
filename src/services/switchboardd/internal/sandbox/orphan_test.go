@@ -1178,7 +1178,7 @@ func TestReapOrphanRechecksUnderTheLock(t *testing.T) {
 	e.live.mu.Lock()
 	e.live.m["s"] = 5
 	e.live.mu.Unlock()
-	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, errLiveSession) || e.run.count("reap") != 0 {
+	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, ErrLiveSession) || e.run.count("reap") != 0 {
 		t.Errorf("reap beside a live session = %v, %d reaps", err, e.run.count("reap"))
 	}
 }
@@ -1187,8 +1187,9 @@ func TestReapOrphanRechecksUnderTheLock(t *testing.T) {
 // with replace_orphan, and DeliverWorkerStep's restart.
 func TestReapOrphanCallSites(t *testing.T) {
 	allowed := map[string]bool{
-		filepath.Join("grpc", "subscribe.go"): true,
-		filepath.Join("worker", "step.go"):    true,
+		filepath.Join("grpc", "subscribe.go"):   true,
+		filepath.Join("worker", "step.go"):      true,
+		filepath.Join("grpc", "orphan_rpcs.go"): true, // the developer's bulk Replace (SWI-25 A1)
 	}
 	root := ".."
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -1201,7 +1202,7 @@ func TestReapOrphanCallSites(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		if strings.Contains(string(b), ".ReapOrphan(") && !allowed[rel] {
-			t.Errorf("%s calls ReapOrphan; only the developer's Replace and restart may", rel)
+			t.Errorf("%s calls ReapOrphan; only the developer's Replace (single or bulk) and restart may", rel)
 		}
 		return nil
 	})

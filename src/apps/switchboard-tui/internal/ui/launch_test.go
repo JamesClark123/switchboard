@@ -117,7 +117,12 @@ type fakeDaemon struct {
 	// SWI-17: replacedID records an AttachTerminalReplacing; replaceErr fails it.
 	replacedID string
 	replaceErr error
-	lifecycle  []string // Stop/Restart calls, in order
+	// SWI-25 A1: bulkReplaced records each ReplaceDetachedAgents call's ids;
+	// bulkOutcomes answers it (nil: every id REPLACED); bulkErr fails it.
+	bulkReplaced [][]string
+	bulkOutcomes []*pb.ReplaceDetachedAgentResponse_Outcome
+	bulkErr      error
+	lifecycle    []string // Stop/Restart calls, in order
 
 	// feature 004 fakes: refresh + kits. streamLines stands in for the sbx
 	// output the daemon streams as LaunchProgress.log_line during Refresh/AddKit.
@@ -340,6 +345,25 @@ func (f *fakeDaemon) AttachTerminalReplacing(_ context.Context, sandboxID string
 	f.mu.Unlock()
 	_, _ = sink.Write([]byte("SNAPSHOT:" + sandboxID))
 	return &fakeTermSession{sink: sink, d: f}, nil
+}
+
+// ReplaceDetachedAgents is the bulk Replace (SWI-25 A1): recorded and answered
+// from bulkOutcomes, or every id REPLACED.
+func (f *fakeDaemon) ReplaceDetachedAgents(_ context.Context, ids []string) ([]*pb.ReplaceDetachedAgentResponse_Outcome, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bulkReplaced = append(f.bulkReplaced, append([]string(nil), ids...))
+	if f.bulkErr != nil {
+		return nil, f.bulkErr
+	}
+	if f.bulkOutcomes != nil {
+		return f.bulkOutcomes, nil
+	}
+	var out []*pb.ReplaceDetachedAgentResponse_Outcome
+	for _, id := range ids {
+		out = append(out, &pb.ReplaceDetachedAgentResponse_Outcome{SandboxId: id, DisplayName: "sb-" + id, Result: pb.ReplaceDetachedAgentResponse_RESULT_REPLACED})
+	}
+	return out, nil
 }
 
 type fakeTermSession struct {

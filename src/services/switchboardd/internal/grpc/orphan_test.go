@@ -264,3 +264,81 @@ func TestTeardownOnCreatingMarksUnknown(t *testing.T) {
 		rel()
 	}
 }
+
+// ReplaceDetachedAgent (SWI-25 A1): every idle detached sandbox is reaped and
+// its agent started afresh, with an outcome each; a worker with a run, a busy
+// sandbox and a clear one are skipped and left alone; a failure on one stops
+// no other.
+func TestReplaceDetachedAgentBulk(t *testing.T) {
+	o := newOrphanServer(t)
+	put := func(id string, run *pb.WorkerRun) {
+		sb := &pb.Sandbox{Id: id, DisplayName: "name-" + id, ContainerRef: id, State: pb.SandboxState_SANDBOX_STATE_RUNNING, Agent: &pb.AgentSession{Status: pb.AgentStatus_AGENT_STATUS_IDLE}}
+		if run != nil {
+			sb.Controller = &pb.SandboxController{OrchestratorId: "orch", Run: run}
+		}
+		if err := o.reg.Put(sb); err != nil {
+			t.Fatal(err)
+		}
+		o.run.mu.Lock()
+		o.run.running[id] = true
+		o.run.mu.Unlock()
+	}
+	put("busy", nil)
+	put("with-run", &pb.WorkerRun{Id: "run-1"})
+	put("clear", nil)
+	o.run.setAnswer(orphanAlive)
+	for _, id := range []string{o.id, "busy", "with-run"} {
+		o.mgr.MarkAgentUnknown(id)
+		o.mgr.RecheckOrphan(id)
+	}
+	state := func(id string) pb.AgentCheck_State {
+		sb, _ := o.reg.Get(id)
+		return sb.GetAgent().GetAgentCheck().GetState()
+	}
+	waitCond(t, func() bool {
+		return state(o.id) == pb.AgentCheck_STATE_DETACHED && state("busy") == pb.AgentCheck_STATE_DETACHED && state("with-run") == pb.AgentCheck_STATE_DETACHED
+	})
+	unlock, ok := o.mgr.TryLockRuntime("busy", "stopping")
+	if !ok {
+		t.Fatal("busy's lock")
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// All idle: w (o.id) and busy; with-run holds a run, clear is clear.
+	resp, err := o.client.ReplaceDetachedAgent(ctx, &pb.ReplaceDetachedAgentRequest{AllIdle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*pb.ReplaceDetachedAgentResponse_Outcome{}
+	for _, out := range resp.GetOutcomes() {
+		got[out.GetSandboxId()] = out
+	}
+	if len(got) != 2 || got[o.id].GetResult() != pb.ReplaceDetachedAgentResponse_RESULT_REPLACED || got[o.id].GetDisplayName() != "w" ||
+		got["busy"].GetResult() != pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_BUSY || got["busy"].GetError() != "sandbox is stopping; try again" {
+		t.Fatalf("all idle = %v", resp.GetOutcomes())
+	}
+	waitCond(t, func() bool { return o.spawned.Load() == 1 && state(o.id) == pb.AgentCheck_STATE_CLEAR })
+	if o.run.reaps != 1 || state("busy") != pb.AgentCheck_STATE_DETACHED {
+		t.Errorf("reaps %d, busy %v", o.run.reaps, state("busy"))
+	}
+	// Named: a worker with a run and a clear sandbox are skipped and left alone;
+	// an unknown id is an error; duplicates collapse.
+	resp, err = o.client.ReplaceDetachedAgent(ctx, &pb.ReplaceDetachedAgentRequest{SandboxIds: []string{"with-run", "clear", "nope", "with-run"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outs := resp.GetOutcomes()
+	if len(outs) != 3 || outs[0].GetResult() != pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_RUN || !strings.Contains(outs[0].GetError(), "run-1") ||
+		outs[1].GetResult() != pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_NOT_DETACHED || outs[2].GetResult() != pb.ReplaceDetachedAgentResponse_RESULT_ERROR {
+		t.Fatalf("named = %v", outs)
+	}
+	if o.run.reaps != 1 || o.spawned.Load() != 1 || state("with-run") != pb.AgentCheck_STATE_DETACHED {
+		t.Errorf("a skipped sandbox was touched: reaps %d spawned %d with-run %v", o.run.reaps, o.spawned.Load(), state("with-run"))
+	}
+	// Nothing asked for: nothing done.
+	if resp, err := o.client.ReplaceDetachedAgent(ctx, &pb.ReplaceDetachedAgentRequest{}); err != nil || len(resp.GetOutcomes()) != 0 {
+		t.Errorf("empty request = %v, %v", resp, err)
+	}
+}

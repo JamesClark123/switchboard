@@ -1105,7 +1105,7 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	}
 	if d := o.getDeps(); d.Agents != nil {
 		if _, live := d.Agents.LiveGen(id); live {
-			return errLiveSession
+			return ErrLiveSession
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, orphanKillWait+orphanProbeTimeout)
@@ -1145,9 +1145,26 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	return nil
 }
 
-// errLiveSession refuses a reap while the daemon has a live agent session for
+// ErrLiveSession refuses a reap while the daemon has a live agent session for
 // the sandbox: the script would find and stop that agent.
-var errLiveSession = errors.New("the sandbox's agent is not detached")
+var ErrLiveSession = errors.New("the sandbox's agent is not detached")
+
+// IdleDetached lists the sandboxes with an orphan record (DETACHED) whose
+// controller has no run, sorted: the candidates of a bulk Replace (SWI-25 A1,
+// ReplaceDetachedAgent with all_idle). Unknown and failing checks are not
+// detached agents and are left out.
+func (m *Manager) IdleDetached() []string {
+	var ids []string
+	for _, id := range m.orphans.pendingIDs() {
+		if m.orphans.check(id).GetState() != pb.AgentCheck_STATE_DETACHED {
+			continue
+		}
+		if sb, err := m.store.Get(id); err == nil && sb.GetController().GetRun() == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
 
 // actionRun reports whether a run is in its action phase (or has no steps):
 // replacing its agent fails it.

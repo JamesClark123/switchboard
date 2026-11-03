@@ -249,6 +249,17 @@ func (c *Conn) AttachTerminalReplacing(ctx context.Context, sandboxID string, co
 	})
 }
 
+// ReplaceDetachedAgents is the bulk Replace (SWI-25 A1): the daemon stops the
+// detached agent of each named sandbox and starts a fresh one, skipping
+// workers with a run and sandboxes it holds, with an outcome per sandbox.
+func (c *Conn) ReplaceDetachedAgents(ctx context.Context, sandboxIDs []string) ([]*pb.ReplaceDetachedAgentResponse_Outcome, error) {
+	resp, err := c.API().ReplaceDetachedAgent(ctx, &pb.ReplaceDetachedAgentRequest{SandboxIds: sandboxIDs})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetOutcomes(), nil
+}
+
 // EventStream is the receive side of a Subscribe stream.
 type EventStream interface {
 	Recv() (*pb.Event, error)

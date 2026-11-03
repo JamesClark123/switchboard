@@ -73,6 +73,12 @@ service Switchboard {
   // the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
   // then live `data` frames follow. The session survives client detach.
   rpc AttachAgent(stream AgentInput) returns (stream AgentOutput);
+  // SWI-25 A1: the developer's bulk Replace of agents detached by a daemon
+  // restart: each named idle detached sandbox (or every one on this host) has
+  // its orphan stopped and a fresh agent started, with an outcome per sandbox;
+  // one failure stops no other. Workers with a run and sandboxes with a live
+  // session are skipped, never touched.
+  rpc ReplaceDetachedAgent(ReplaceDetachedAgentRequest) returns (ReplaceDetachedAgentResponse);
 
   // --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
   // On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
@@ -1133,6 +1139,32 @@ message AgentInput {
     // an orphan is refused with the agent's last state.
     bool replace_orphan = 4;
   }
+}
+
+// SWI-25 A1: bulk Replace (ReplaceDetachedAgent). Either the sandboxes to
+// replace, or all_idle for every sandbox on this host whose check says
+// DETACHED and whose controller has no run.
+message ReplaceDetachedAgentRequest {
+  repeated string sandbox_ids = 1;
+  bool all_idle = 2;
+}
+message ReplaceDetachedAgentResponse {
+  enum Result {
+    RESULT_UNSPECIFIED = 0;
+    RESULT_REPLACED = 1;                 // the orphan was stopped and a fresh agent started
+    RESULT_SKIPPED_BUSY = 2;             // a lifecycle operation, probe or spawn holds the sandbox (error names it)
+    RESULT_SKIPPED_LIVE_SESSION = 3;     // the daemon has a live agent session: nothing is detached
+    RESULT_SKIPPED_RUN = 4;              // a worker with a run: left to t -> Replace (error names the run)
+    RESULT_SKIPPED_NOT_DETACHED = 5;     // the check is not DETACHED (clear, unknown, or failing)
+    RESULT_ERROR = 6;                    // the reap or the fresh start failed (error says which)
+  }
+  message Outcome {
+    string sandbox_id = 1;
+    string display_name = 2;
+    Result result = 3;
+    string error = 4;
+  }
+  repeated Outcome outcomes = 1;         // one per requested (or found) sandbox, in request order
 }
 
 // AgentOutput is either a one-shot Snapshot (first frame on attach) or a live

@@ -465,6 +465,8 @@ func (m Model) updateWorkersViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "t":
 		return m.workerTerminal(w)
+	case "R":
+		return m.replaceDetachedWorkers()
 	}
 	return m, nil
 }
