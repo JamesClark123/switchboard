@@ -35,7 +35,7 @@ Each check refuses with `FAILED_PRECONDITION` and the reason given. Nothing is t
 | 3a | `req.step_index` (the run's send number, `Run.step_send`) `> controller.run.step_index` (indices only grow; a skipped step leaves a gap), or nothing recorded yet, or `req.step_index == controller.run.step_index` with `retry` while `controller.run.halted` (or, for a CLEAR step, while `hold == NEEDS_DEVELOPER`). A CLEANUP step other than a retried Clear is refused while `hold == NEEDS_DEVELOPER` (`cleanup dropped`) | `ALREADY_EXISTS` `step already sent` (never typed twice, never replayed) |
 | 4 | Agent status IDLE (WAITING is **not** at a prompt for a step) | `agent is <status>` |
 | 5 | A live agent (`agents.Live`) that is ready (SWI-15 `Ready`). With `first`, no live agent and no hold, the daemon starts one as SWI-15's `Deliver` does (`startAgent`, which creates the broadcaster) and refuses this call. With `restart` (R on a step halted by an owning-daemon restart), the daemon first reaps the orphan (`ReapOrphan`, mode `restart`), then starts a fresh agent and refuses. In every other case with no live agent it refuses and starts nothing: a retried Clear, a cleanup step, or a held sandbox never gets an agent started | `agent is starting` / `no live agent` |
-| 6 | `claudeui.InputBox(screen)` is present, ready and **empty** | `input box not empty` / `not at an input box` |
+| 6 | `claudeui.InputBox(screen)` is present, ready and **empty**, and `claudeui.TurnRunning(screen)` is false: the box reads empty and ready all through a turn, so with the turn's hooks lost (status still IDLE) only the footer's `esc to interrupt` shows it (SWI-28, fixture `turn-running`). This is what keeps `R` and the Clear after `X` out of a live session | `input box not empty` / `not at an input box` / `a turn is running on screen` |
 
 **Commit.** Only when **every** check passes does the same update write `step_index`, `step_sent_at` and `halted =
 false` (and, for `first`, record the run). A refusal at any check writes nothing, so a refused step is never taken
@@ -71,12 +71,14 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 
 | Observation (since `sent_at`) | Result |
 |---|---|
+| A tap event while `last_other_submit_at > step_sent_at` (see below) | Ignored: it may be that other prompt's turn |
 | A tap event `UserPromptSubmit` or `PreToolUse` | **MODEL_TURN**: accepted, return now |
 | A tap event `Notification` with a type other than `idle_prompt`/`auth_success` (needs input) | **MODEL_TURN_INPUT_ONLY**, unless a turn-start event also arrived (then MODEL_TURN). Return now. |
 | A tap event `SessionStart`/`SessionEnd` | **Not** a turn start. It is recorded as evidence (CLEAR read-back). |
 | Screen: a modal marker (picker or dialog) with **no** turn-start event yet | Wait up to `modalGrace` (1 s; T006 measures hook latency and may raise it, **capped at 2 s** by §6) for a needs-input `Notification` or a turn start, pressing nothing. If one arrives, classify as above (a skill's own permission or question dialog). Otherwise **NOT_ACCEPTED** `picker opened`, with **no Enter** (FR-206d). |
 | `window` ends and `InputBox` still shows `step.text`: the box's rows joined (a long step wraps) and prefix-matched after trimming, **or** a paste placeholder `[Pasted text #N …]` (a multi-line step such as the framed action prompt) | **Re-press** Enter if fewer than 3 re-presses so far (first `\r`, then keypad Enter, as today), and extend `window` by `submitWindow`. Otherwise NOT_ACCEPTED `text still in the input box`. |
-| `window` ends with no turn-start event, status IDLE, and `InputBox` empty and ready | **AGENT_LOCAL**, after the read-back below |
+| `window` ends with `last_other_submit_at > step_sent_at` and the step's text not in the box | **UNCONFIRMED** `another prompt was submitted`, whatever the screen and status show, since they may be that prompt's (the orchestrator resolves it by evidence, R8, SWI-28) |
+| `window` ends with no turn-start event, status IDLE, and `InputBox` empty and ready | **AGENT_LOCAL**, after the read-back below. For ACTION_PROMPT with no evidence of a turn (below): **UNCONFIRMED** `no turn evidence` (typed, not confirmed; the orchestrator resolves it by evidence, R8), so a lost hook never passes for a local command (SWI-28) |
 | The screen is **stale** (research R2) when a decision needs it | Request a lazy repaint nudge and extend `window` by at most 1 s, once. Still stale then: **UNCONFIRMED** `screen resyncing` (typed but not confirmed; the orchestrator resolves it by evidence, R8). Never NOT_ACCEPTED on a stale read alone. |
 | Anything else when `window` ends (box missing, status changed without a turn-start event) | **NOT_ACCEPTED** `not at an empty input box` |
 
@@ -84,10 +86,30 @@ a nested `claude -p` in the workspace, including `claude -c -p`, is another proc
 
 | Kind | Must hold | Otherwise NOT_ACCEPTED with |
 |---|---|---|
-| MODEL | `claudeui.ConfirmationAfter(screen, step.text, before)` starts with `Set model to <expect>`, where `before` is the number of `❯ <step.text>` echoes on screen just before typing: only an echo **added after `sent_at`** counts, so an older identical echo (the previous run's `/model opus`, or a retried step) never passes | the line seen (e.g. `Model 'bogus' not found`), or `no confirmation` |
+| MODEL | `claudeui.ConfirmationAfter(screen, step.text)` starts with `Set model to <expect>`, read under the last echo, which must be in `claudeui.Added(before, now)`: the transcript rows added since the read just before typing. Rows can't be told apart by where they are, because the agent repaints whole frames on the alternate screen, with nothing scrolled or erased: a retried command's echo lands on the very row of the one before it (fixtures `effort-repeat-before`, `-after`). So `Added` finds by content how far the transcript moved. Only an echo **added after `sent_at`** counts: an older identical echo (the previous run's `/model opus`, or a retried step) never passes, and one moving up or off the screen doesn't hide the new one. If the transcript can't be matched to the earlier one (it was rewrapped), the last echo is read whichever it is, as `check_only` does: a refusal stays a refusal, though an older identical confirmation can pass (SWI-28) | the line seen (e.g. `Model 'bogus' not found`), or `no confirmation` |
 | EFFORT | the line under a **new** echo (as for MODEL) starts with `Set effort level to <expect>`, or equals `Effort level set to auto` when `expect == "auto"` | the line seen, or `no confirmation` |
 | CLEAR | a tap `SessionStart` with `source == "clear"` arrived after `sent_at`, **corroborated** (research R13): the current generation's token, a `session_id` different from the recorded one, and the screen redrawn to the empty post-clear state, polled for up to `clearSettle` (1 s) after the hook | `no new session after /clear` |
-| CUSTOM, ACTION_PROMPT | nothing more (a local custom command is finished once the check passes, spec edge case) | — |
+| CUSTOM | nothing more (a local custom command is finished once the check passes, spec edge case) | — |
+| ACTION_PROMPT | positive evidence of a turn whose hooks never arrived: the turn running on screen (`claudeui.TurnRunning`), an assistant reply (`●` at column 0 on Linux, fixture `reply-row`; `⏺` on macOS, from memory) in `claudeui.Added` (not when the transcript can't be matched), or `last_turn_end_at` after the Enter (SWI-28) | **UNCONFIRMED** `no turn evidence` (not NOT_ACCEPTED: it was typed and may be running) |
+
+**A prompt that isn't the step's (SWI-28).** The daemon compares each main-session `UserPromptSubmit`'s `prompt`
+with the text last typed as a step, by containment on letters and digits only, after removing terminal escapes, then
+control and format characters, and composing accents (NFC) on both sides. The agent doesn't report a paste as typed
+(observed on 2.1.316 and 2.1.317): a long paste comes wrapped in a `<pasted_content>` tag with its tabs turned to
+spaces, a literal tag in the text gets a backslash, terminal escapes, zero-width and other control characters are
+removed, and a short paste's accents are composed. A CSI runs to its final byte and a string sequence to its terminator,
+either one skipping any other character on the way, including a tab or an accented letter. CAN, SUB, ESC, U+009C or a
+line break (LF, CR, VT, FF, NEL, LS, PS) ends either one sooner, so a CSI cut off before its final byte stops there and
+keeps what follows. Any other ESC takes a final character, or one intermediate and the character after it, whatever
+that is, unless it's one of those stops: `ESC $ ( B` loses `ESC $ (` and keeps the `B`. A step with no letters or digits
+compares the same cleaned text without whitespace instead, and a step with nothing left can't be submitted, so no
+prompt is its own. A mismatch writes `last_other_submit_at`, and neither the submit check nor the orchestrator then
+takes anything after it as the step's evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one
+too. A mismatch writes nothing once a turn is on record for this send (a turn start, or a turn end or a request for
+input with the start lost), so a later prompt can't erase it, and a match clears the field, so a step that runs after
+another prompt still counts. With nothing to compare (a prompt over `maxHookField`, an older agent, or a daemon
+restarted since the typing) the submit counts as before and leaves the field as it is. The answer's note says why a
+step wasn't confirmed: the orchestrator keeps it in `step_note`, for the row while the step waits and for its halt.
 
 Enter is **never** pressed on an empty box or while a modal is shown. A step whose text was replaced in the box by
 developer typing reads as "box not empty". Under the guard that cannot happen before typing; after typing it ends

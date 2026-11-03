@@ -529,10 +529,391 @@ func TestReportOnHaltedActionPrompt(t *testing.T) {
 	if r := runNow(env, o, run.GetId()); r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetSummary() != "done" {
 		t.Errorf("reported run = %+v", r)
 	}
-	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	r = waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
 	if got := d.typedTexts(); got[len(got)-1] != "wa: /clear" {
 		t.Errorf("cleanup after the report: %q", got)
 	}
+	// The report shows the prompt ran: no ✗ on a completed run's action prompt.
+	if got := outcomesOf(r)[2]; got != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE {
+		t.Errorf("action prompt's result = %v, want DONE: %v", got, outcomesOf(r))
+	}
+}
+
+// A developer's mark free shows nothing about the prompt: a halted one stays failed.
+func TestMarkFreeOfHaltedActionPromptStaysFailed(t *testing.T) {
+	r := &pb.Run{
+		Steps:      []*pb.RunStep{{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT}},
+		StepStatus: pb.StepStatus_STEP_STATUS_HALTED, State: pb.RunState_RUN_STATE_COMPLETED, ClosedByDeveloper: true,
+	}
+	settleSteps(r, 1, reportedOutcome(r))
+	if got := outcomesOf(r)[0]; got != pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED {
+		t.Errorf("result = %v", got)
+	}
+}
+
+// stepWithEvidence makes one transition of worker wa once its record shows the
+// submit just emitted: what a kick would do, for a test that nothing happens.
+func stepWithEvidence(t *testing.T, rt *runtime) {
+	t.Helper()
+	waitFor(t, func() bool { return rt.sandboxRecord("wa").GetAgent().GetLastSubmitAt() != nil })
+	rt.stepOnce("wa")
+}
+
+// otherPromptSubmitted records a prompt that isn't the step's, after the step's
+// send, and waits for the orchestrator to have seen it.
+func otherPromptSubmitted(t *testing.T, w *fakeWorker, rt *runtime, id string) {
+	t.Helper()
+	waitFor(t, func() bool { return w.get(id).GetController().GetRun().GetStepSentAt() != nil })
+	emit(w, id, func(sb *pb.Sandbox) {
+		at := sentAfter(sb, time.Second)
+		sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
+	})
+	waitFor(t, func() bool { return rt.sandboxRecord(id).GetAgent().GetLastOtherSubmitAt() != nil })
+}
+
+// SWI-28: a step not yet classified takes no evidence from the developer's prompt
+// either: it halts at sentGrace, may have run.
+func TestDevelopersPromptIsNoEvidenceOfASentStep(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+	otherPromptSubmitted(t, w, rt, "wa")
+	waitSentSeen(t, rt, run.GetId())
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENT {
+		t.Errorf("after the developer's prompt = %+v", r)
+	}
+	env.clock.Advance(sentGrace)
+	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED); !r.GetStepUnconfirmed() || r.GetStepNote() != otherPromptNote {
+		t.Errorf("halted = %+v", r)
+	}
+}
+
+// SWI-28: why a step wasn't confirmed reaches the developer: on its row while it
+// waits, and in its halt. Another prompt on record says so whatever the daemon
+// answered, since that answer may predate it.
+func TestUnconfirmedNoteReachesTheHalt(t *testing.T) {
+	for _, c := range []struct {
+		name, answered, row, halted string
+		other                       bool
+	}{
+		{name: "no reason", halted: unconfirmedNote},
+		{name: "no turn evidence", answered: "no turn evidence", row: "no turn evidence", halted: "no turn evidence"},
+		{name: "another prompt", answered: otherPromptNote, row: otherPromptNote, halted: otherPromptNote},
+		{name: "another prompt after the answer", answered: "no turn evidence", row: "no turn evidence", halted: otherPromptNote, other: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) {
+				d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+					if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+						return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: c.answered}, nil
+					}
+					return nil, nil
+				}
+			})
+			run := callSeq(t, env, o, "1")
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			if r.GetStepNote() != c.row {
+				t.Errorf("row note = %q, want %q", r.GetStepNote(), c.row)
+			}
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			waitSentSeen(t, rt, run.GetId())
+			env.clock.Advance(sentGrace)
+			r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			if !r.GetStepUnconfirmed() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want note %q", r, c.halted)
+			}
+		})
+	}
+	// The reason goes once the turn is seen: the row no longer waits on it.
+	t.Run("the turn is seen", func(t *testing.T) {
+		env, w, o, _, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: otherPromptNote}, nil
+				}
+				return nil, nil
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN); r.GetStepNote() != "" {
+			t.Errorf("note after the turn start = %q", r.GetStepNote())
+		}
+	})
+}
+
+// SWI-28: a built-in's read-back doesn't replace another prompt as the reason for
+// its halt, whether the record or only the daemon's answer says so. The reason goes
+// first, as a row may cut the rest short, and the longest note fits the row's 60
+// columns. The notification keeps the row's "may have run".
+func TestReadBackHaltSaysAnotherPromptWasSubmitted(t *testing.T) {
+	const noClear = "no new session after /clear"
+	if longest := otherPromptNote + "; " + noClear; len(longest) > 60 {
+		t.Errorf("%q is %d columns: the row cuts its note at 60", longest, len(longest))
+	}
+	for _, c := range []struct {
+		name, answered, readBack, halted string
+		other                            bool
+	}{
+		{name: "no other prompt", readBack: "no confirmation", halted: "no confirmation"},
+		{name: "on record", readBack: "no confirmation", halted: otherPromptNote + "; no confirmation", other: true},
+		{name: "in the answer", answered: otherPromptNote, readBack: noClear, halted: otherPromptNote + "; " + noClear},
+		{name: "a read-back with no note", answered: otherPromptNote, halted: otherPromptNote},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) {
+				d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+					if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_MODEL {
+						return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: c.answered}, nil
+					}
+					return nil, nil
+				}
+				d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}
+				}
+			})
+			run := callSeq(t, env, o, "1")
+			waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_SENT)
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			d.set(func(d *fakeDaemon) {
+				d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: c.readBack}
+				}
+			})
+			waitFor(t, func() bool {
+				env.clock.Advance(stepRetryEvery)
+				return runNow(env, o, run.GetId()).GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED
+			})
+			r := runNow(env, o, run.GetId())
+			if !r.GetStepUnconfirmed() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want note %q", r, c.halted)
+			}
+			waitFor(t, func() bool {
+				for _, n := range env.hub.notifications() {
+					if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+						return strings.Contains(n.GetMessage(), "not accepted (may have run) — "+c.halted)
+					}
+				}
+				return false
+			})
+		})
+	}
+}
+
+// SWI-28: a step whose answer was lost halts as sent before a restart, not as
+// unconfirmed, but it was typed all the same: its notification says it may have run.
+func TestLostAnswerHaltSaysItMayHaveRun(t *testing.T) {
+	for _, c := range []struct {
+		name, halted string
+		other        bool
+	}{
+		{name: "no evidence", halted: noEvidenceNote},
+		{name: "another prompt", halted: otherPromptNote, other: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := withSequence([]string{"/ask {ticket}"}, nil)
+			env, w, o, rt, d := seqEnv(t, 1, a)
+			d.set(func(d *fakeDaemon) { d.outcome = lostAnswer })
+			run := callTicket(t, env, o, "1", "T-1")
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			waitSentSeen(t, rt, run.GetId())
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			env.clock.Advance(sentGrace)
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			if r.GetStepUnconfirmed() || !r.GetStepSentBeforeRestart() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want sent before a restart, note %q", r, c.halted)
+			}
+			waitFor(t, func() bool {
+				for _, n := range env.hub.notifications() {
+					if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+						return strings.Contains(n.GetMessage(), "not accepted (may have run) — "+c.halted)
+					}
+				}
+				return false
+			})
+		})
+	}
+}
+
+// A step that never reached the agent says nothing of the kind.
+func TestRefusedStepHaltDoesNotSayItMayHaveRun(t *testing.T) {
+	env, _, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_MODEL {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "picker opened"}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_HALTED)
+	waitFor(t, func() bool {
+		for _, n := range env.hub.notifications() {
+			if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+				return strings.Contains(n.GetMessage(), "not accepted — picker opened")
+			}
+		}
+		return false
+	})
+}
+
+// SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
+// turn then finishes as usual and no R or X is needed.
+func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {
+	unconfirmed := func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+		if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+			return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+		}
+		return nil, nil
+	}
+	for _, c := range []struct {
+		name string
+		ev   func(sb *pb.Sandbox)
+		want pb.StepObserved
+	}{
+		{"a turn start", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, 20*time.Second) }, pb.StepObserved_STEP_OBSERVED_MODEL_TURN},
+		{"a question", func(sb *pb.Sandbox) { sb.Agent.LastNeedsInputAt = sentAfter(sb, 20*time.Second) }, pb.StepObserved_STEP_OBSERVED_MODEL_TURN_INPUT_ONLY},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+			run := callSeq(t, env, o, "1")
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			waitSentSeen(t, rt, run.GetId())
+			env.clock.Advance(sentGrace)
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetHalted() })
+
+			emit(w, "wa", c.ev)
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+			if r.GetStepKindSeen() != c.want || r.GetStepUnconfirmed() || r.GetStepSentBeforeRestart() || r.GetStepNote() != resumedNote {
+				t.Errorf("resumed = %+v", r)
+			}
+			waitFor(t, func() bool { return !w.get("wa").GetController().GetRun().GetHalted() })
+		})
+	}
+	t.Run("a turn end finishes the step", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 20*time.Second)
+		})
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	})
+	t.Run("the developer's prompt, and what follows it, changes nothing", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			at := sentAfter(sb, 20*time.Second)
+			sb.Agent.LastSubmitAt, sb.Agent.LastOtherSubmitAt = at, at
+		})
+		stepWithEvidence(t, rt)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.Status = pb.AgentStatus_AGENT_STATUS_IDLE
+			sb.Agent.LastTurnEndAt = sentAfter(sb, 30*time.Second)
+		})
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED || !r.GetStepUnconfirmed() {
+			t.Errorf("after the developer's prompt = %+v", r)
+		}
+	})
+	t.Run("the developer's prompt before the send is another matter", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) {
+			sb.Agent.LastOtherSubmitAt = sentAfter(sb, -time.Second)
+			sb.Agent.LastSubmitAt = sentAfter(sb, 20*time.Second)
+		})
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	})
+	t.Run("evidence from before the send changes nothing", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) { d.outcome = unconfirmed })
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+		waitSentSeen(t, rt, run.GetId())
+		env.clock.Advance(sentGrace)
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, -time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("old evidence = %+v", r)
+		}
+	})
+	t.Run("a not-accepted halt stays", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "picker opened"}, nil
+				}
+				return nil, nil
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("not accepted = %+v", r)
+		}
+	})
+	t.Run("a built-in stays: a submit after it is the developer's", func(t *testing.T) {
+		env, w, o, rt, d := seqEnv(t, 1, nil)
+		d.set(func(d *fakeDaemon) {
+			d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED}, nil
+			}
+			d.check = func(*pb.DeliverWorkerStepRequest) *pb.DeliverWorkerStepResponse {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "no confirmation"}
+			}
+		})
+		run := callSeq(t, env, o, "1")
+		r := waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_HALTED)
+		if !r.GetStepUnconfirmed() {
+			t.Fatalf("halted = %+v", r)
+		}
+		emit(w, "wa", func(sb *pb.Sandbox) { sb.Agent.LastSubmitAt = sentAfter(sb, time.Second) })
+		stepWithEvidence(t, rt)
+		if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_HALTED {
+			t.Errorf("built-in = %+v", r)
+		}
+	})
 }
 
 // --- delivery: refusals, kicks during a call, single flight ---
@@ -1080,15 +1461,10 @@ func TestUnconfirmedResolution(t *testing.T) {
 	if !r.GetStepUnconfirmed() {
 		t.Fatalf("unconfirmed custom step = %+v", r)
 	}
-	waitFor(t, func() bool { // the sent-grace wake-up, not just any timer
-		rt.mu.Lock()
-		defer rt.mu.Unlock()
-		m := rt.seq.marks[run.GetId()]
-		return m != nil && m.step == 2 && m.wake != nil
-	})
+	waitSentSeen(t, rt, run.GetId())
 	env.clock.Advance(sentGrace)
 	r = waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
-	if !r.GetStepUnconfirmed() || r.GetStepNote() != unconfirmedNote {
+	if !r.GetStepUnconfirmed() || r.GetStepNote() != "screen resyncing" {
 		t.Errorf("halted unconfirmed = %+v", r)
 	}
 	// Both built-ins were confirmed by check_only (steps 0 and 1 passed).
@@ -1475,6 +1851,9 @@ func TestRemovalEndsTheHold(t *testing.T) {
 	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
 	if r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || r.GetState() != pb.RunState_RUN_STATE_COMPLETED {
 		t.Errorf("removed hold = %+v", r)
+	}
+	if got := outcomesOf(r); got[3] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED {
+		t.Errorf("a Clear never sent = %v", got) // its overlay row shows it was dropped
 	}
 }
 
@@ -1944,6 +2323,10 @@ func TestFreeingDuringCleanupWithClear(t *testing.T) {
 	if strings.Contains(typed, "Tidy up") || !strings.Contains(typed, "wa: Ask about T-1|wa: /clear") {
 		t.Errorf("typed = %q", typed)
 	}
+	// The post that asked was typed; only the one after it is dropped.
+	if got := outcomesOf(r); got[3] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE || got[4] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED || got[5] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE {
+		t.Errorf("a free drops the posts: %v", got)
+	}
 	waitFor(t, func() bool { return runNow(env, o, run2.GetId()).GetState() == pb.RunState_RUN_STATE_RUNNING })
 }
 
@@ -2035,14 +2418,15 @@ func lostAnswer(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse
 }
 
 // waitSentSeen waits until a runtime's stepper started timing a SENT step's
-// grace (the restarted stepper saw it with no evidence).
+// grace (the restarted stepper saw it with no evidence) and armed the wake-up
+// that ends it, so the test's clock can't advance before the timer exists.
 func waitSentSeen(t *testing.T, rt *runtime, runID string) {
 	t.Helper()
 	waitFor(t, func() bool {
 		rt.mu.Lock()
 		defer rt.mu.Unlock()
 		m := rt.seq.marks[runID]
-		return m != nil && !m.sentSeen.IsZero()
+		return m != nil && !m.sentSeen.IsZero() && m.wake != nil
 	})
 }
 
@@ -2469,4 +2853,330 @@ func TestReviewAfterActionResolvedOnRestart(t *testing.T) {
 		settle(t, rt)
 		return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_REVIEW
 	})
+}
+
+// --- SWI-28 ---
+
+// clearHeldRun brings a run to a Clear held for the developer (index 3).
+func clearHeldRun(t *testing.T, env *testEnv, w *fakeWorker, o *pb.Orchestrator, rt *runtime, d *fakeDaemon) *pb.Run {
+	t.Helper()
+	d.set(func(d *fakeDaemon) {
+		d.outcome = notAccepted(pb.StepKind_STEP_KIND_CLEAR, "no new session after /clear")
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	turnEnds(w, "wa")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_HALTED)
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_FAIL); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		return w.get("wa").GetController().GetRun().GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	})
+	return run
+}
+
+// X on a held Clear's retry that keeps being refused stops the retries; the
+// worker stays held, and R can start them again.
+func TestStopHeldClearRetries(t *testing.T) {
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	run := clearHeldRun(t, env, w, o, rt, d)
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_FAIL); !errors.Is(err, ErrPrecondition) {
+		t.Fatalf("X with no retry going = %v", err)
+	}
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string { return "agent is working" }
+	})
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_PENDING)
+	for _, res := range []pb.StepResolution{pb.StepResolution_STEP_RESOLUTION_RETRY, pb.StepResolution_STEP_RESOLUTION_SKIP} {
+		if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, res); !errors.Is(err, ErrPrecondition) {
+			t.Fatalf("%v on a retrying Clear = %v", res, err)
+		}
+	}
+	waitFor(t, func() bool {
+		st := runNow(env, o, run.GetId()).GetStepStatus()
+		return st == pb.StepStatus_STEP_STATUS_PENDING
+	})
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_FAIL); err != nil {
+		t.Fatal(err)
+	}
+	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	if r.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || r.GetStepNote() != clearStoppedNote {
+		t.Fatalf("stopped = %+v", r)
+	}
+	waitFor(t, func() bool { return w.get("wa").GetController().GetRun().GetStepNote() == clearStoppedNote })
+	// The ticker kicks nothing more.
+	n := len(stepReqs(w))
+	for range 3 {
+		env.clock.Advance(stepRetryEvery)
+		settle(t, rt)
+	}
+	if got := len(stepReqs(w)); got != n {
+		t.Errorf("stopped retries still called the worker: %d → %d", n, got)
+	}
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_DONE {
+		t.Errorf("stopped Clear moved: %+v", r)
+	}
+	// R starts over.
+	d.set(func(d *fakeDaemon) { d.refuse = nil; d.outcome = nil })
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() != clearStoppedNote })
+}
+
+// X while the retried Clear is being sent waits for that send: refused, the stop
+// applies; typed, its outcome stands.
+func TestStopHeldClearWaitsForTheSend(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refused bool
+	}{{"refused", true}, {"typed", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			env, w, o, rt, d := seqEnv(t, 1, nil)
+			run := clearHeldRun(t, env, w, o, rt, d)
+			entered, release := make(chan struct{}), make(chan struct{})
+			d.set(func(d *fakeDaemon) {
+				d.hold = func(*pb.DeliverWorkerStepRequest) { close(entered); <-release }
+				d.outcome = func(*pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+					if c.refused {
+						return nil, status.Error(codes.FailedPrecondition, "agent is working")
+					}
+					return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL}, nil
+				}
+			})
+			if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_RETRY); err != nil {
+				t.Fatal(err)
+			}
+			<-entered
+			r, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_FAIL)
+			if err != nil || r.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING {
+				t.Fatalf("X in flight = %+v, %v", r, err)
+			}
+			d.set(func(d *fakeDaemon) { d.hold = nil })
+			close(release)
+			r = waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+			switch {
+			case c.refused && (r.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || r.GetStepNote() != clearStoppedNote):
+				t.Errorf("refused send, stopped = %+v", r)
+			case !c.refused && (r.GetHold() != pb.WorkerHold_WORKER_HOLD_NONE || r.GetStepNote() == clearStoppedNote):
+				t.Errorf("typed send's outcome stands = %+v", r)
+			}
+		})
+	}
+}
+
+func outcomesOf(r *pb.Run) map[int32]pb.StepResultOutcome {
+	out := map[int32]pb.StepResultOutcome{}
+	for _, res := range r.GetStepResults() {
+		out[res.GetIndex()] = res.GetOutcome()
+	}
+	return out
+}
+
+func TestSettleSteps(t *testing.T) {
+	const (
+		done    = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE
+		skipped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_SKIPPED
+		dropped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
+		failed  = pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED
+	)
+	r := &pb.Run{Steps: make([]*pb.RunStep, 5)}
+	settleSteps(r, 1, skipped)
+	settleSteps(r, 1, done) // a step's first result stands
+	if got := outcomesOf(r); got[0] != skipped || len(got) != 1 {
+		t.Fatalf("skip = %+v", r.GetStepResults())
+	}
+	r.Step = 1
+	settleSteps(r, 4, failed) // the current one failed, those between dropped
+	if got := outcomesOf(r); got[1] != failed || got[2] != dropped || got[3] != dropped || len(got) != 4 {
+		t.Fatalf("fail = %v", got)
+	}
+	r.Step = 4
+	settleSteps(r, 4, failed) // nothing to leave
+	settleSteps(r, 99, done)  // past the last step stops at it
+	if got := outcomesOf(r); got[4] != done || len(got) != 5 {
+		t.Fatalf("end = %v", got)
+	}
+}
+
+// The results a run leaves behind: a developer SKIP, a finished sequence, and a
+// failed custom post-prompt with the rest dropped.
+func TestStepResultsRecorded(t *testing.T) {
+	const (
+		done    = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE
+		skipped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_SKIPPED
+		dropped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
+		failed  = pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED
+	)
+	env, w, o, rt, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) { d.outcome = notAccepted(pb.StepKind_STEP_KIND_EFFORT, "picker opened") })
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_HALTED)
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 1, pb.StepResolution_STEP_RESOLUTION_SKIP); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	turnEnds(w, "wa")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	r := waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_DONE)
+	if got := outcomesOf(r); got[0] != done || got[1] != skipped || got[2] != done || got[3] != done {
+		t.Errorf("skip then finish = %v", got)
+	}
+
+	a := withSequence(nil, []string{"Summarise {ticket}", "Tidy up"})
+	a.Name = "review-pr"
+	env, w, o, rt, d = seqEnv(t, 1, a)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = notAccepted(pb.StepKind_STEP_KIND_CUSTOM, "text still in the input box")
+	})
+	run, err := env.svc.CallAction(o.GetId(), "review-pr", map[string]string{"ticket": "T-1", "skill": "s", "number": "1", "repo": "acme/web"}, pb.EventKind_EVENT_KIND_USER, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_TURN)
+	turnEnds(w, "wa")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+	if err := report(t, rt, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitStep(t, env, o, run.GetId(), 3, pb.StepStatus_STEP_STATUS_HALTED)
+	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 3, pb.StepResolution_STEP_RESOLUTION_FAIL); err != nil {
+		t.Fatal(err)
+	}
+	r = waitStep(t, env, o, run.GetId(), 5, pb.StepStatus_STEP_STATUS_DONE)
+	if got := outcomesOf(r); got[2] != done || got[3] != failed || got[4] != dropped || got[5] != done {
+		t.Errorf("failed post = %v", got)
+	}
+}
+
+// A hold for the developer drops the posts between the current step and Clear,
+// which keeps no result: R may still retry it.
+func TestStepResultsHoldDropsThePosts(t *testing.T) {
+	_, _, _, rt, _ := seqEnv(t, 1, nil)
+	l := &pb.Run{Step: 1, Steps: []*pb.RunStep{
+		{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CUSTOM},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CUSTOM},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CLEAR},
+	}}
+	rt.toDeveloperLocked(l, nil)
+	got := outcomesOf(l)
+	if got[1] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED || got[2] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED || len(got) != 2 || l.GetStep() != 3 {
+		t.Errorf("hold = %v at step %d", got, l.GetStep())
+	}
+}
+
+// An action prompt left UNCONFIRMED finishes on a turn end recorded after its
+// send, its start report lost, rather than halting at sentGrace.
+func TestUnconfirmedActionFinishesOnTurnEnd(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, Note: "no turn evidence"}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	if r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT); !r.GetStepUnconfirmed() {
+		t.Fatalf("unconfirmed action = %+v", r)
+	}
+	turnEnds(w, "wa")
+	waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_AWAIT_CLOSE)
+}
+
+func TestReleasedAndHeldStepResults(t *testing.T) {
+	const dropped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
+	steps := []*pb.RunStep{
+		{Role: pb.StepRole_STEP_ROLE_ACTION, Kind: pb.StepKind_STEP_KIND_ACTION_PROMPT},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CUSTOM},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CLEAR},
+	}
+	post := &pb.Run{Steps: steps, Step: 1}
+	settleReleased(post)
+	if got := outcomesOf(post); got[1] != dropped || got[2] != dropped {
+		t.Errorf("released at a post = %v", got)
+	}
+	pending := &pb.Run{Steps: steps, Step: 2, StepStatus: pb.StepStatus_STEP_STATUS_PENDING}
+	settleReleased(pending)
+	if got := outcomesOf(pending); got[2] != dropped {
+		t.Errorf("released at a Clear never sent = %v", got)
+	}
+	typed := &pb.Run{Steps: steps, Step: 2, StepStatus: pb.StepStatus_STEP_STATUS_SENT}
+	settleReleased(typed)
+	if len(typed.GetStepResults()) != 0 {
+		t.Errorf("released at a Clear typed = %v", typed.GetStepResults())
+	}
+	// A failed run held for the developer shows the step it failed at.
+	_, _, _, rt, _ := seqEnv(t, 1, nil)
+	l := &pb.Run{Steps: steps, Step: 0, State: pb.RunState_RUN_STATE_FAILED, StepSentAt: timestamppb.Now()}
+	rt.toDeveloperLocked(l, nil)
+	if got := outcomesOf(l); got[0] != pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED || got[1] != dropped {
+		t.Errorf("failed then held = %v", got)
+	}
+}
+
+func TestClosedOutcome(t *testing.T) {
+	const (
+		done    = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE
+		dropped = pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED
+		failed  = pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED
+	)
+	steps := []*pb.RunStep{{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL}}
+	sent := timestamppb.Now()
+	for _, c := range []struct {
+		name string
+		run  *pb.Run
+		want pb.StepResultOutcome
+	}{
+		{"failed, typed", &pb.Run{Steps: steps, State: pb.RunState_RUN_STATE_FAILED, StepSentAt: sent}, failed},
+		{"failed, halted", &pb.Run{Steps: steps, State: pb.RunState_RUN_STATE_FAILED, StepStatus: pb.StepStatus_STEP_STATUS_HALTED}, failed},
+		{"failed, the next step never sent", &pb.Run{Steps: steps, State: pb.RunState_RUN_STATE_FAILED, StepStatus: pb.StepStatus_STEP_STATUS_PENDING}, dropped},
+		{"cancelled", &pb.Run{Steps: steps, State: pb.RunState_RUN_STATE_CANCELLED}, dropped},
+	} {
+		if got := closedOutcome(c.run); got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// A typed step is not dropped, whatever freed its run.
+	r := &pb.Run{Steps: append(steps, steps...), StepSentAt: sent}
+	settleSteps(r, 2, dropped)
+	if got := outcomesOf(r); got[0] != done || got[1] != dropped {
+		t.Errorf("typed then freed = %v", got)
+	}
+	// Nor is one halted as not accepted: it failed.
+	r = &pb.Run{Steps: steps, StepSentAt: sent, StepStatus: pb.StepStatus_STEP_STATUS_HALTED}
+	settleSteps(r, 1, dropped)
+	if got := outcomesOf(r); got[0] != failed {
+		t.Errorf("halted then released = %v", got)
+	}
+	// Closed by a report with a step never sent: it isn't a finished step.
+	_, _, _, rt, _ := seqEnv(t, 1, nil)
+	two := []*pb.RunStep{
+		{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CUSTOM},
+	}
+	r = &pb.Run{Steps: two, StepStatus: pb.StepStatus_STEP_STATUS_PENDING}
+	rt.beginCleanupLocked(r, nil)
+	if got := outcomesOf(r); got[0] != dropped {
+		t.Errorf("reported with an unsent step = %v", got)
+	}
+	// With no Clear, a hold keeps what the typed step did and drops the rest.
+	r = &pb.Run{Steps: []*pb.RunStep{two[1], two[1]}, StepSentAt: sent}
+	rt.toDeveloperLocked(r, nil)
+	if got := outcomesOf(r); got[0] != done || got[1] != dropped {
+		t.Errorf("hold with no Clear = %v", got)
+	}
 }

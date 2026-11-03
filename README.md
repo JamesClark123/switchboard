@@ -500,7 +500,8 @@ confirmed: open the worker's terminal and run `/clear`, which ends the hold).
 **Halted steps: `R` / `S` / `X`.** A step the agent did not accept (a refused `/model`, a prompt left
 in the input box) halts the run, and its row offers `R` retry, `S` skip and `X` fail, each behind a
 confirm that defaults to No. Retry warns when the step may already have run; Clear can't be
-skipped; failing at a setup step sends no post-prompt but still sends Clear. A run whose agent was
+skipped; failing at a setup step sends no post-prompt but still sends Clear. `X` on a retried Clear
+that keeps being refused stops the retries and leaves the worker needing the developer. A run whose agent was
 detached by a daemon restart halts the same way, and `R` stops the detached agent and restarts
 setup from the first step. `t` on any sandbox whose agent is detached opens **Wait / Replace**
 instead of the terminal; Replace stops it and attaches a fresh agent. The daemon only

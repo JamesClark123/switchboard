@@ -294,6 +294,7 @@ func runServe(cfg *config.Config, debug bool) error {
 		}
 		return false
 	})
+	hookServer.SetTypedStep(agents.TypedStep)
 	go hookServer.SampleIdle(ctx)
 	mgr.SetEscapeHatchInjector(func(sandboxID, workspacePath string, commands []*pb.EscapeHatchCommand) error {
 		return escapehatch.Inject(workspacePath, sandboxID, ehCallbackURL, commands)

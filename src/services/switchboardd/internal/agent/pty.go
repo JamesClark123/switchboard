@@ -61,6 +61,8 @@ type sessionEntry struct {
 	// was typed after it.
 	typing sync.Mutex
 	typed  uint64
+	// stepText is the text TypeStep last typed (guarded by the registry's mu).
+	stepText string
 }
 
 // Notifier emits a developer notification (the agent Hub).
@@ -695,6 +697,9 @@ func (r *Registry) TypeStep(sandboxID string, _ *pb.AgentSpec, text string) (sen
 	e.typing.Lock()
 	defer e.typing.Unlock()
 	e.typed++
+	r.mu.Lock()
+	e.stepText = text
+	r.mu.Unlock()
 	if _, err := s.Write([]byte(pasteStart + text + pasteEnd)); err != nil {
 		return time.Time{}, err
 	}
@@ -704,6 +709,17 @@ func (r *Registry) TypeStep(sandboxID string, _ *pb.AgentSpec, text string) (sen
 		return time.Time{}, err
 	}
 	return sentAt, nil
+}
+
+// TypedStep returns the text TypeStep last typed into the sandbox's live session,
+// "" if none (it isn't kept across a daemon restart).
+func (r *Registry) TypedStep(sandboxID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[sandboxID]; ok {
+		return e.stepText
+	}
+	return ""
 }
 
 // RePress presses Enter again in the sandbox's live agent, for a step whose

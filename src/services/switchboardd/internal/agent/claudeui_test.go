@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,7 +13,8 @@ import (
 
 // The fixtures are the screens research R1 recorded, captured from Claude Code
 // 2.1.312 by TestCaptureFixtures, except auto-mode-dialog, which is
-// hand-authored (no start-up dialog appeared on the capture).
+// hand-authored (no start-up dialog appeared on the capture), and those of a real
+// turn, captured on Linux from 2.1.316 by TestCaptureTurnFixtures.
 
 // confirm is a fixture's expected read-back of one command.
 type confirm struct {
@@ -36,6 +39,15 @@ func TestClaudeUIFixtures(t *testing.T) {
 	}{
 		// The placeholder hint is faint: the box reads empty.
 		{name: "startup-placeholder", present: true, ready: true},
+		// A real turn (SWI-28): the box reads empty and ready all through it.
+		{name: "turn-before", present: true, ready: true},
+		{name: "turn-running", present: true, ready: true},
+		{name: "turn-running-narrow", present: true, ready: true},
+		{name: "reply-row", present: true, ready: true},
+		{name: "effort-repeat-before", present: true, ready: true,
+			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
+		{name: "effort-repeat-after", present: true, ready: true,
+			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
 		{name: "empty-after-command", present: true, ready: true,
 			confirm: &confirm{cmd: "/effort medium", prefix: "Set effort level to medium (saved", effort: "medium", notLvl: "high"}},
 		{name: "model-set-opus", present: true, ready: true,
@@ -146,11 +158,146 @@ func TestConfirmationAfterJoinsWrapsAndTakesTheLastEcho(t *testing.T) {
 	if line, _ := ConfirmationAfter(screen, "/model opus"); line != "Set model to Opus 5.5" {
 		t.Fatalf("ConfirmationAfter = %q, want the last echo's line", line)
 	}
-	if n := Echoes(screen, "/model opus"); n != 2 {
-		t.Fatalf("Echoes = %d, want 2", n)
+	if at := LastEcho(screen, "/model opus"); at != 3 {
+		t.Fatalf("LastEcho = %d, want the second echo's row", at)
 	}
-	if n := Echoes(loadFixture(t, "model-set-opus"), "/model opus"); n != 1 {
-		t.Fatalf("Echoes on model-set-opus = %d, want 1", n)
+	if at := LastEcho(screen, "/model haiku"); at != -1 {
+		t.Fatalf("LastEcho of no echo = %d, want -1", at)
+	}
+}
+
+// The glyph a real reply draws on Linux (SWI-28).
+func TestLastReplyOnARealScreen(t *testing.T) {
+	lines := loadFixture(t, "reply-row")
+	if at := LastReply(lines); at < 0 || lines[at].Text != "● pong" {
+		t.Fatalf("LastReply = %d on:\n%s", at, encodeRows(lines))
+	}
+	// Before the turn: no reply; the right-aligned `◐` or `●` effort row isn't one.
+	if at := LastReply(loadFixture(t, "effort-set-medium")); at != -1 {
+		t.Fatalf("LastReply with no reply = %d", at)
+	}
+}
+
+func TestTurnRunning(t *testing.T) {
+	for _, name := range []string{"turn-running", "turn-running-narrow"} {
+		lines := loadFixture(t, name)
+		if !TurnRunning(lines) {
+			t.Errorf("%s: a running turn must read as running:\n%s", name, encodeRows(lines))
+		}
+		// The box alone says nothing: that is why the footer is read.
+		if text, present, ready := InputBox(lines); !present || !ready || strings.TrimSpace(text) != "" {
+			t.Errorf("%s: box = %q %v %v", name, text, present, ready)
+		}
+	}
+	for _, name := range []string{"reply-row", "startup-placeholder", "empty-after-command", "effort-repeat-after", "model-picker"} {
+		if TurnRunning(loadFixture(t, name)) {
+			t.Errorf("%s: no turn is running", name)
+		}
+	}
+	// Quoted in the transcript, or with no box on screen, it doesn't count.
+	quoted := append(rows("❯ what does esc to interrupt do?"), loadFixture(t, "empty-after-command")[1:]...)
+	if TurnRunning(quoted) {
+		t.Error("a transcript quoting the hint is no turn")
+	}
+	if TurnRunning(rows("esc to interrupt")) {
+		t.Error("no box, no footer")
+	}
+}
+
+func TestTranscriptLeavesOutTheBoxAndTheUIOverIt(t *testing.T) {
+	got := TranscriptTexts(loadFixture(t, "effort-repeat-after"))
+	for _, r := range got {
+		if strings.Contains(r, "/effort") && !strings.HasPrefix(r, "❯ /effort") {
+			t.Errorf("the effort indicator is no transcript row: %q", r)
+		}
+		if strings.TrimSpace(r) == "" {
+			t.Error("blank rows are left out")
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] == "❯" {
+		t.Fatalf("transcript = %q", got)
+	}
+	if got := TranscriptTexts(rows("a", "", "b")); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("no box = %q", got)
+	}
+}
+
+func TestAdded(t *testing.T) {
+	const e, r = "❯ /effort medium", "  ⎿  Set"
+	tests := []struct {
+		name        string
+		before, now []string
+		added       []string
+		notAligned  bool
+	}{
+		{name: "nothing before", now: []string{"a"}, added: []string{"a"}},
+		{name: "unchanged", before: []string{"a", e, r}, now: []string{"a", e, r}},
+		{name: "appended", before: []string{"a"}, now: []string{"a", e, r}, added: []string{e, r}},
+		{name: "appended as the top moved off", before: []string{"a", "b", e, r}, now: []string{"b", e, r, e, r}, added: []string{e, r}},
+		{name: "only moved up", before: []string{"a", e, r}, now: []string{e, r}},
+		{name: "a repeat of the rows before", before: []string{e, r, e, r}, now: []string{r, e, r, e, r}, added: []string{e, r}},
+		{name: "one row shared", before: []string{"a", "b"}, now: []string{"b", "c", "d"}, added: []string{"c", "d"}},
+		{name: "nothing shared", before: []string{"a", "b"}, now: []string{"c", "d"}, added: []string{"c", "d"}, notAligned: true},
+		{name: "cleared", before: []string{"a", "b"}, notAligned: true},
+	}
+	for _, c := range tests {
+		t.Run(c.name, func(t *testing.T) {
+			added, aligned := Added(c.before, rows(c.now...))
+			if aligned == c.notAligned {
+				t.Errorf("aligned = %v", aligned)
+			}
+			got := []string{}
+			for _, l := range added {
+				got = append(got, l.Text)
+			}
+			if !slices.Equal(got, append([]string{}, c.added...)) {
+				t.Errorf("added = %q, want %q", got, c.added)
+			}
+		})
+	}
+	// The top rows changing on their own (a notice hiding) doesn't lose the match.
+	long := make([]string, alignRows+2)
+	for i := range long {
+		long[i] = fmt.Sprintf("row %d", i)
+	}
+	now := append(append([]string{"notice gone"}, long[1:]...), "new")
+	if added, aligned := Added(long, rows(now...)); !aligned || len(added) != 1 || added[0].Text != "new" {
+		t.Errorf("top row changed = %v, %v", added, aligned)
+	}
+}
+
+// On real screens the echo typed lands on the row of the one before it, which is
+// why positions can't tell them apart.
+func TestAddedOnRealFrames(t *testing.T) {
+	before, after := loadFixture(t, "effort-repeat-before"), loadFixture(t, "effort-repeat-after")
+	if b, a := LastEcho(before, "/effort medium"), LastEcho(after, "/effort medium"); a != b {
+		t.Fatalf("the frames no longer show the case: last echo on row %d, then %d", b, a)
+	}
+	added, aligned := Added(TranscriptTexts(before), Transcript(after))
+	if !aligned || LastEcho(added, "/effort medium") < 0 {
+		t.Errorf("added = %v, aligned = %v", added, aligned)
+	}
+	added, aligned = Added(TranscriptTexts(after), Transcript(after))
+	if !aligned || len(added) != 0 {
+		t.Errorf("same frame: added = %v, aligned = %v", added, aligned)
+	}
+}
+
+func TestLastReply(t *testing.T) {
+	if at := LastReply(rows("❯ hi", "⏺ first", "", "⏺ second", "  ⎿  done", "")); at != 3 {
+		t.Fatalf("LastReply = %d, want the last reply's row", at)
+	}
+	if at := LastReply(rows("❯ hi", "● on linux", "")); at != 1 {
+		t.Fatalf("LastReply of the non-macOS glyph = %d, want its row", at)
+	}
+	// A row below the input box is no reply.
+	boxed := append(loadFixture(t, "empty-after-command"), rows("● a status row")...)
+	if at := LastReply(boxed); at != -1 {
+		t.Fatalf("LastReply below the box = %d, want -1", at)
+	}
+	// A prompt quoting a reply is indented under its echo: not a reply.
+	if at := LastReply(rows("❯ quoting:", "  ⏺ not a reply")); at != -1 {
+		t.Fatalf("LastReply of a quoted glyph = %d, want -1", at)
 	}
 }
 
@@ -242,6 +389,184 @@ func TestModalOpenIgnoresAnAssistantMessageAboveTheBox(t *testing.T) {
 	}
 }
 
+// SWI-28: what Claude Code 2.1.317 reported for bracketed pastes it was typed
+// (captured through a UserPromptSubmit hook), and prompts that aren't the step.
+func TestStepPrompt(t *testing.T) {
+	rows := strings.Repeat("\x1b[32mline\x1b[0m\n", 40)
+	plainRows := strings.Repeat("line\n", 40)
+	cutOffOSC := "first \x1b]8;;http://x.test/a\n" + plainRows
+	for _, c := range []struct {
+		name, step, prompt string
+		want               bool
+	}{
+		{"as typed", "/model opus", "/model opus", true},
+		{"csi colours", "\x1b[1;31mTestFoo\x1b[0m bar", "TestFoo bar", true},
+		{"csi 256 colours", "a \x1b[38;5;196mred\x1b[0m z", "a red z", true},
+		{"csi private mode", "a \x1b[?25lhidden\x1b[?25h z", "a hidden z", true},
+		{"csi erase and move", "a \x1b[2Kline\x1b[1A z", "a line z", true},
+		{"osc link, bel", "see \x1b]8;;http://x.test/a1\x07link\x1b]8;;\x07 end", "see link end", true},
+		{"osc link, st", "see \x1b]8;;http://x.test/b2\x1b\\link\x1b]8;;\x1b\\ end", "see link end", true},
+		{"osc title", "a \x1b]0;mytitle\x07body z", "a body z", true},
+		{"esc and a letter", "abc\x1bxyz end", "abcyz end", true},
+		{"esc and a digit", "abc\x1b7xyz\x1b8 end", "abcxyz end", true},
+		{"esc, space and a letter", "abc\x1b xyz end", "abcyz end", true},
+		{"esc charset", "abc\x1b(Bxyz end", "abcxyz end", true},
+		{"dcs", "abc\x1bPpayload9\x1b\\xyz end", "abcxyz end", true},
+		{"esc at the end", "abc xyz\x1b", "abc xyz", true},
+		{"c1 csi", "abc\u009b1mxyz end", "abc1mxyz end", true},
+		{"closing tag", "quote </pasted_content> end", "quote <\\/pasted_content> end", true},
+		{"opening tag", "quote <pasted_content> end", "quote <\\pasted_content> end", true},
+		{"zero-width", "ab\u200bcd\u200ce\u200df\u2060g\ufeffh\u00adi end", "abcdefghi end", true},
+		{"control characters", "ab\x01cd\x08ef\x1fgh\x7fij end", "abcdefghij end", true},
+		{"emoji and no-break space", "warn ⚠️ fam 👨‍👩‍👧 nb\u00a0sp end", "warn ⚠️ fam 👨‍👩‍👧 nb\u00a0sp end", true},
+		{"composed accents", "cafe\u0301 ñandú 日本語 end", "caf\u00e9 ñandú 日本語 end", true},
+		{"composed hangul", "\u1112\u1161\u11ab end", "\ud55c end", true},
+		{"composed marks", "o\u0308 a\u030a e\u0301\u0323 end", "\u00f6 \u00e5 \u1eb9\u0301 end", true},
+		{"a long paste keeps its accents", "cafe\u0301\nrow", "\n\n<pasted_content id=\"205a\">\ncafe\u0301\nrow\n</pasted_content id=\"205a\">\n", true},
+		{"a long paste loses its escapes", "\x1b[32mline 0\x1b[0m\tcol 0\n\x1b[32mline 1\x1b[0m\tcol 1", "\n\n<pasted_content id=\"205a\">\nline 0    col 0\nline 1    col 1\n</pasted_content id=\"205a\">\n", true},
+		{"a long paste quotes a tag", "first </pasted_content> x\nrow 0", "\n\n<pasted_content id=\"205a\">\nfirst <\\/pasted_content> x\nrow 0\n</pasted_content id=\"205a\">\n", true},
+		{"csi cut off at the end", "abc def \x1b[1;", "abc def", true},
+		{"csi cut off before a row", "abc \x1b[38;5\nxyz def end", "abc \nxyz def end", true},
+		{"csi cut off before the frame", "abc \x1b[3\n\n[When this run is finished, call report]", "abc \n\n[When this run is finished, call report]", true},
+		{"csi cut off in a long paste", rows + "abc \x1b[3\n\n[When this run is finished, call report]", "\n\n<pasted_content id=\"205a\">\n" + plainRows + "abc \n\n[When this run is finished, call report]\n</pasted_content id=\"205a\">\n", true},
+		{"unterminated osc ends with its row", "\x1b]0;title\ndef ghi end", "\ndef ghi end", true},
+		{"unterminated osc keeps the rows after it", cutOffOSC, "first\n" + plainRows, true},
+		{"unterminated osc is more than its first word", cutOffOSC, "which came first?", false},
+		{"osc ended at CR is more than its first word", "abc \x1b]0;title\rdef ghi\rjkl end", "which abc?", false},
+		{"osc ended at ST is more than its first word", "abc \x1b]0;title\u009c def end", "which abc?", false},
+		{"zero-width inside an accent", "cafe\u200b\u0301 end", "caf\u00e9 end", true},
+		{"control character inside an accent", "cafe\x01\u0301 end", "caf\u00e9 end", true},
+		{"no letters or digits, coloured", "\x1b[31m???\x1b[0m", "???", true},
+		{"no letters or digits, zero-width", "?\u200b?!", "??!", true},
+		{"no letters or digits, coloured emoji", "\x1b[31m🔥\x1b[0m", "🔥", true},
+		{"no letters or digits, coloured, another prompt", "\x1b[31m???\x1b[0m", "what is going on?", false},
+		{"nothing left to submit", "\x1b[31m\u200b\x1b[0m", "what is going on?", false},
+		{"limit 7: a paste restarted inside the step", "abc \x1b[200~def end", "def end", false},
+		{"limit 7: a c1 introducer in a string skips its BEL", "abc \x1b]0;ti\u0090tle\x07 def\x07 ghi end", "abc  ghi end", false},
+		{"limit 7: a c1 introducer after esc takes the next character", "abc \x1b \u009b1mdef end", "abc mdef end", false},
+		{"another prompt", "/prepare T-1", "what is going on?", false},
+		{"different letters", "café", "cafe", false},
+		{"different digits", "/prepare T-1", "/prepare T-2", false},
+		{"no letters or digits, the same", "? ?", "??", true},
+		{"no letters or digits, another prompt", "???", "what is going on?", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := StepPrompt(c.prompt, c.step); got != c.want {
+				t.Errorf("StepPrompt(%q, %q) = %v, want %v", c.prompt, c.step, got, c.want)
+			}
+		})
+	}
+}
+
+// SWI-28: more of what Claude Code 2.1.317 reported for bracketed pastes, for an
+// escape cut short or with something unusual inside it. These compare the whole
+// cleaned text, as StepPrompt's containment would still pass if a step read as only
+// its first word.
+func TestStepPromptReadsEscapesAsTheAgentDoes(t *testing.T) {
+	rows := strings.Repeat("\x1b[32mline\x1b[0m\n", 40)
+	plainRows := strings.Repeat("line\n", 40)
+	for _, c := range []struct{ name, step, prompt string }{
+		{"csi skips a tab", "abc \x1b[3\tfoo bar end", "abc oo bar end"},
+		{"csi skips a control character", "abc \x1b[3\x01foo bar end", "abc oo bar end"},
+		{"csi skips DEL", "abc \x1b[3\x7ffoo bar end", "abc oo bar end"},
+		{"csi skips a format character", "abc \x1b[3\u200bfoo bar end", "abc oo bar end"},
+		{"csi skips a format character before its final", "abc \x1b[3\u200b1mdef end", "abc def end"},
+		{"csi skips a c1 control", "abc \x1b[3\u0090foo bar end", "abc oo bar end"},
+		{"csi skips an accented letter", "abc \x1b[3\u00e9foo bar end", "abc oo bar end"},
+		{"csi skips an accented letter as its parameter", "abc \x1b[1;\u00e9xyz end", "abc yz end"},
+		{"csi skips a no-break space", "abc \x1b[3\u00a0foo bar end", "abc oo bar end"},
+		{"csi skips cjk", "abc \x1b[3\u65e5foo bar end", "abc oo bar end"},
+		{"csi skips a hangul filler", "abc \x1b[3\u3164foo bar end", "abc oo bar end"},
+		{"csi takes a parameter after an intermediate", "abc \x1b[1 1mdef end", "abc def end"},
+		{"csi takes several", "abc \x1b[1 2 3mdef end", "abc def end"},
+		{"csi takes an intermediate first", "abc \x1b[ 1mdef end", "abc def end"},
+		{"csi restarts at a c1 csi", "abc \x1b[3\u009b1mfoo bar end", "abc foo bar end"},
+		{"csi restarts at ESC", "abc \x1b[3\x1b[31mfoo bar end", "abc foo bar end"},
+		{"csi ends at CAN", "abc \x1b[3\x18foo bar end", "abc foo bar end"},
+		{"csi ends at SUB", "abc \x1b[3\x1afoo bar end", "abc foo bar end"},
+		{"csi ends at ST", "abc \x1b[3\u009cfoo bar end", "abc foo bar end"},
+		{"csi ends at CR", "abc \x1b[3\rfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at CR LF", "abc \x1b[3\r\nfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at VT", "abc \x1b[3\x0bfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at FF", "abc \x1b[3\x0cfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at NEL", "abc \x1b[3\u0085foo bar end", "abc \nfoo bar end"},
+		{"csi ends at LS", "abc \x1b[3\u2028foo bar end", "abc \nfoo bar end"},
+		{"csi ends at PS", "abc \x1b[3\u2029foo bar end", "abc \nfoo bar end"},
+		{"osc ends at CR", "abc \x1b]0;title\rdef ghi\nrow two end", "abc \ndef ghi\nrow two end"},
+		{"osc ends at CR, not its terminator", "abc \x1b]0;ti\rtle\x07 def end", "abc \ntle def end"},
+		{"osc ends at each CR", "abc \x1b]0;title\rdef ghi\rjkl end", "abc \ndef ghi\njkl end"},
+		{"osc ends at CR LF", "abc \x1b]0;title\r\ndef end", "abc \ndef end"},
+		{"osc ends at VT", "abc \x1b]0;ti\x0btle\x07 def end", "abc \ntle def end"},
+		{"osc ends at FF", "abc \x1b]0;ti\x0ctle\x07 def end", "abc \ntle def end"},
+		{"osc ends at NEL", "abc \x1b]0;ti\u0085tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at LS", "abc \x1b]0;ti\u2028tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at PS", "abc \x1b]0;ti\u2029tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at CAN", "abc \x1b]0;ti\x18tle\x07 def end", "abc tle def end"},
+		{"osc ends at SUB", "abc \x1b]0;ti\x1atle\x07 def end", "abc tle def end"},
+		{"osc ends at ESC", "abc \x1b]0;ti\x1b[31mtle\x07 def end", "abc tle def end"},
+		{"osc ends at ST", "abc \x1b]0;title\u009c def end", "abc  def end"},
+		{"osc ends at ST, across rows", "abc \x1b]0;title\u009c def\nrow two end", "abc  def\nrow two end"},
+		{"osc skips a control character", "abc \x1b]0;ti\x01tle\x07 def end", "abc  def end"},
+		{"osc skips a tab", "abc \x1b]0;ti\ttle\x07 def end", "abc  def end"},
+		{"osc skips an accented letter", "abc \x1b]0;ti\u00e9tle\x07 def end", "abc  def end"},
+		{"osc skips a c1 csi", "abc \x1b]0;ti\u009b1mtle\x07 def end", "abc  def end"},
+		{"dcs ends at CR", "abc \x1bPq\rrow\x1b\\ def end", "abc \nrow def end"},
+		{"dcs ends at BEL", "abc \x1bPq\x07rest\x1b\\ def end", "abc rest def end"},
+		{"dcs ends at CAN", "abc \x1bPq\x18rest\x1b\\ def end", "abc rest def end"},
+		{"dcs ends at ST", "abc \x1bPq\u009c def end", "abc  def end"},
+		{"apc ends at ST", "abc \x1b_q\u009c def end", "abc  def end"},
+		{"pm ends at ST", "abc \x1b^q\u009c def end", "abc  def end"},
+		{"sos ends at ST", "abc \x1bXq\u009c def end", "abc  def end"},
+		{"esc keeps an accented letter", "abc\x1b\u00e9xyz end", "abc\u00e9xyz end"},
+		{"esc and an intermediate take an accented letter", "abc\x1b \u00e9xyz end", "abcxyz end"},
+		{"esc charset takes an accented letter", "abc\x1b(\u00e9xyz end", "abcxyz end"},
+		{"esc and an intermediate end at a control character", "abc\x1b \x01xyz end", "abcxyz end"},
+		{"esc keeps what follows a tab", "abc\x1b\txyz end", "abc    xyz end"},
+		{"esc takes one intermediate and the next, two spaces", "abc\x1b  (xyz end", "abc(xyz end"},
+		{"esc takes one intermediate and the next, punctuation", "abc\x1b !\"#xyz end", "abc\"#xyz end"},
+		{"esc keeps a two-byte charset's final, $(", "abc \x1b$(Bdef end", "abc Bdef end"},
+		{"esc keeps a two-byte charset's final, $)", "abc \x1b$)Cdef end", "abc Cdef end"},
+		{"esc keeps a final after two intermediates", "abc \x1b%/Gdef end", "abc Gdef end"},
+		{"esc keeps what follows a third intermediate", "abc \x1b$()Bdef end", "abc )Bdef end"},
+		{"esc keeps what follows a fourth intermediate", "abc \x1b !\"#Bdef end", "abc \"#Bdef end"},
+		{"esc single intermediates, removed whole", "a \x1b(Bb \x1b#8c \x1b%Gd \x1b 7e end", "a b c d e end"},
+		{"esc keeps an accented letter after two intermediates", "abc \x1b$(\u00e9def end", "abc \u00e9def end"},
+		{"esc keeps a letter past the bmp after two intermediates", "abc \x1b  \U0001d400def end", "abc \U0001d400def end"},
+		{"esc and two intermediates at the end", "abc def\x1b$(", "abc def"},
+		{"esc and no letters", "?? \x1b$(!!", "?? !!"},
+		{"esc and an intermediate end at a csi", "abc \x1b(\x1b[31mdef end", "abc def end"},
+		{"esc and a space end at a csi", "abc \x1b \x1b[31mdef end", "abc def end"},
+		{"esc and an intermediate end at a charset", "abc \x1b$\x1b(Bdef end", "abc def end"},
+		{"esc and an intermediate end at an osc", "abc \x1b \x1b]0;ttl\x07def end", "abc def end"},
+		{"esc and an intermediate end at esc and a letter", "abc \x1b \x1bxdef end", "abc def end"},
+		{"esc and an intermediate end at another", "abc \x1b \x1b def end", "abc ef end"},
+		{"esc and an intermediate end at ESC \\", "abc \x1b \x1b\\def end", "abc def end"},
+		{"esc and an intermediate, then another sequence, no letters", "?? \x1b \x1b[31m!!", "?? !!"},
+		{"esc and an intermediate end at a line break", "abc \x1b \nrow two end", "abc \nrow two end"},
+		{"c1 osc alone is only a control character", "abc \u009d0;title\x07 def end", "abc 0;title def end"},
+		{"c1 dcs alone is only a control character", "abc \u0090q\u009c def end", "abc q def end"},
+		{"a long paste, csi", rows + "abc \x1b[3\u200b1mdef end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc def end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, csi and an accented letter", rows + "abc \x1b[1;\u00e9xyz end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc yz end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, csi ends at CAN", rows + "abc \x1b[3\x18foo bar end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc foo bar end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, osc ends at CR", rows + "abc \x1b]0;ti\rtle\x07 def end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc \ntle def end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, esc charset", rows + "abc \x1b$(Bdef end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc Bdef end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, esc and an intermediate end at a csi", rows + "abc \x1b(\x1b[31mdef end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc def end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, osc ends at ST", rows + "abc \x1b]0;title\u009c def end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc  def end\n</pasted_content id=\"2674\">\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !StepPrompt(c.prompt, c.step) {
+				t.Errorf("StepPrompt(%q, %q) = false, want true", c.prompt, c.step)
+			}
+			if strings.Contains(c.prompt, "<pasted_content") {
+				return // the wrapper's own letters are in the prompt, not the step
+			}
+			if got, want := lettersAndDigits(asReported(c.step)), lettersAndDigits(asReported(c.prompt)); got != want {
+				t.Errorf("step %q cleans to %q, want the whole prompt's %q", c.step, got, want)
+			}
+		})
+	}
+}
+
 func TestStepInBox(t *testing.T) {
 	tests := []struct {
 		name string
@@ -305,4 +630,9 @@ func TestPlaceholderNeedsTheFaintSidecar(t *testing.T) {
 	if got, _, _ := InputBox(unstyled); !strings.HasPrefix(got, "Try ") {
 		t.Fatalf("InputBox without faint = %q, want the hint text", got)
 	}
+}
+
+func encodeRows(lines []termview.Line) string {
+	text, _ := encodeFixture(lines)
+	return text
 }

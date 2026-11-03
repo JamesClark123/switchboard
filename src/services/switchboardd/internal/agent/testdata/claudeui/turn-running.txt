@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.316
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/TestCaptureTurnFixtures3903725511/001
+
+
+❯ Use the Bash tool to run exactly sleep 15 && echo done. After it finishes, reply with the single word pong.
+
+  Sleeping 15 seconds then echo done · 3s
+  ⎿  $ sleep 15 && echo done
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+· Philosophizing… (3s · ↓ 90 tokens)
+                                                                                                                        ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents

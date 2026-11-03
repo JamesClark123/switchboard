@@ -106,8 +106,23 @@ message RunStep {
   string expect = 4;                     // MODEL: family ("Opus"); EFFORT: level ("medium", "auto")
 }
 
+// SWI-28: how a run left each step, for the prompt overlay. A held Clear, which R may retry, has none.
+enum StepResultOutcome {
+  STEP_RESULT_OUTCOME_UNSPECIFIED = 0;
+  STEP_RESULT_OUTCOME_DONE = 1;
+  STEP_RESULT_OUTCOME_SKIPPED = 2;
+  STEP_RESULT_OUTCOME_DROPPED = 3;
+  STEP_RESULT_OUTCOME_FAILED = 4;
+}
+
+message StepResult {
+  int32 index = 1;
+  StepResultOutcome outcome = 2;
+}
+
 message Run {
   // … fields 1..19 unchanged …
+  repeated StepResult step_results = 33; // SWI-28 (31..32 are SWI-18's)
   repeated RunStep steps = 20;           // empty => no sequence; delivered exactly as before (FR-208)
   int32 step = 21;
   StepStatus step_status = 22;
@@ -128,7 +143,7 @@ message Run {
 
 message AgentSession {
   // … fields 1..4 unchanged …
-  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit
+  google.protobuf.Timestamp last_submit_at = 5;         // UserPromptSubmit, or a turn's first main-session PreToolUse with it lost (SWI-28)
   google.protobuf.Timestamp last_turn_end_at = 6;       // Stop w/o background tasks, or backstop expiry
   google.protobuf.Timestamp last_session_start_at = 7;  // SessionStart (not "compact")
   string last_session_source = 8;                       // "startup" | "resume" | "clear"
@@ -141,6 +156,9 @@ message AgentSession {
                                                         // R13). Used for Clear's read-back and hold release
   google.protobuf.Timestamp last_needs_input_at = 11;   // main-session needs-input Notification (R8 rule 2)
   AgentCheck agent_check = 12;                          // the detached-agent check (research R14, run-595); unset = clear
+  // SWI-28: a main-session UserPromptSubmit whose prompt is not the step last typed (R8).
+  // Not written once the step's turn start is on record; cleared by the step's own submit.
+  google.protobuf.Timestamp last_other_submit_at = 13;
 }
 
 // What the owning daemon knows about a possibly detached agent (research R14). Written by the daemon only, when the
@@ -274,7 +292,7 @@ enum StepResolution {
   STEP_RESOLUTION_UNSPECIFIED = 0;
   STEP_RESOLUTION_RETRY = 1;
   STEP_RESOLUTION_SKIP = 2;              // refused for CLEAR
-  STEP_RESOLUTION_FAIL = 3;
+  STEP_RESOLUTION_FAIL = 3;              // also stops a held Clear's retries (SWI-28)
 }
 
 message ResolveRunStepRequest {

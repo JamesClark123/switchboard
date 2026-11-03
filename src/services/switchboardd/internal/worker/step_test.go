@@ -336,6 +336,63 @@ func TestStepModelTurnOnUserPromptSubmit(t *testing.T) {
 	}
 }
 
+// SWI-28: once another prompt is on record since the send, nothing the submit check
+// sees is the step's: it ends typed but not classified, for the orchestrator to
+// resolve by evidence.
+func TestStepOtherPromptIsNotTheStepsTurn(t *testing.T) {
+	other := func(h *stepHarness) {
+		h.mutate(t, func(x *pb.Sandbox) {
+			x.Agent.LastOtherSubmitAt = timestamppb.New(x.GetController().GetRun().GetStepSentAt().AsTime().Add(time.Second))
+		})
+	}
+	action := stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", 1)
+	model := stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1)
+	for _, c := range []struct {
+		name  string
+		req   *pb.DeliverWorkerStepRequest
+		after func(*stepHarness)
+	}{
+		{"its submit", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "UserPromptSubmit"}) }},
+		{"its tool call", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "PreToolUse"}) }},
+		{"its request for input", custom("x", 1), func(h *stepHarness) { h.event(agent.HookEvent{Event: "Notification", NeedsInput: true}) }},
+		{"an empty box", custom("x", 1), func(*stepHarness) {}},
+		{"a working agent", custom("x", 1), func(h *stepHarness) {
+			h.mutate(t, func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WORKING })
+		}},
+		{"a built-in's empty box", model, func(*stepHarness) {}},
+		{"its running footer", action, func(h *stepHarness) { h.scr.set(fixture(t, "turn-running"), false, true) }},
+		{"its turn end", action, func(h *stepHarness) {
+			h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newStepHarness(t)
+			h.typer.onType = func(string) { other(h); c.after(h) }
+			resp := deliverStep(t, h, c.req)
+			if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED || resp.GetNote() != "another prompt was submitted" || resp.GetSubmitAt() != nil {
+				t.Errorf("resp = %+v", resp)
+			}
+		})
+	}
+	// The step's own submit clears the record first, so it counts.
+	h := newStepHarness(t)
+	h.typer.onType = func(string) {
+		other(h)
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastOtherSubmitAt = nil })
+		h.event(agent.HookEvent{Event: "UserPromptSubmit"})
+	}
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
+		t.Errorf("the step's own submit = %+v", resp)
+	}
+	// One from before this send says nothing of it.
+	h = newStepHarness(t)
+	h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastOtherSubmitAt = timestamppb.New(h.e.svc.now().Add(-time.Minute)) })
+	h.typer.onType = func(string) { h.event(agent.HookEvent{Event: "UserPromptSubmit"}) }
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
+		t.Errorf("an older prompt = %+v", resp)
+	}
+}
+
 func TestStepInputOnlyOnNeedsInput(t *testing.T) {
 	h := newStepHarness(t)
 	h.typer.onType = func(string) {
@@ -651,6 +708,8 @@ func TestStepGuardRefusalsTypeNothing(t *testing.T) {
 			h.mutate(t, func(x *pb.Sandbox) { x.Agent.Status = pb.AgentStatus_AGENT_STATUS_WAITING })
 		}, nil, "agent is waiting"},
 		{"box not empty", func(h *stepHarness) { h.scr.set(fixture(t, "text-left-in-box"), false, true) }, nil, "input box not empty"},
+		// The record says IDLE (its hooks lost), the box reads empty: only the footer shows it.
+		{"turn running on screen", func(h *stepHarness) { h.scr.set(fixture(t, "turn-running"), false, true) }, nil, "a turn is running on screen"},
 		{"picker", func(h *stepHarness) { h.scr.set(fixture(t, "model-picker"), false, true) }, nil, "not at an input box"},
 		{"no screen", func(h *stepHarness) { h.scr.set(nil, false, false) }, nil, "not at an input box"},
 		{"stale", func(h *stepHarness) { h.scr.set(h.scr.lines, true, true) }, nil, "screen resyncing"},
@@ -1059,5 +1118,157 @@ func TestRemoteDeliverWorkerStepMapsCodes(t *testing.T) {
 	}
 	if resp, err := Remote(stepClient{}).DeliverWorkerStep(bg, &pb.DeliverWorkerStepRequest{}); err != nil || resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_MODEL_TURN {
 		t.Errorf("ok = %+v / %v", resp, err)
+	}
+}
+
+// SWI-28 D1, on real screens: the agent repaints whole frames, so on a transcript
+// longer than the screen a retried command's echo lands on the row of the identical
+// one before it, with nothing scrolled. It still reads as new; the older echo
+// moving up does not.
+func TestStepReadBackRepeatedEchoOnAFullScreen(t *testing.T) {
+	effort := func() *pb.DeliverWorkerStepRequest { return stepReq(pb.StepKind_STEP_KIND_EFFORT, "", "medium", 1) }
+	h := newStepHarness(t)
+	h.scr.set(fixture(t, "effort-repeat-before"), false, true)
+	h.typer.onType = func(string) { h.scr.set(fixture(t, "effort-repeat-after"), false, true) }
+	if resp := deliverStep(t, h, effort()); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("new echo on the old one's row = %+v", resp)
+	}
+	// Swallowed: the same frame again.
+	h = newStepHarness(t)
+	h.scr.set(fixture(t, "effort-repeat-after"), false, true)
+	resp := deliverStep(t, h, effort())
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED || resp.GetNote() != "no confirmation" {
+		t.Errorf("no new echo = %+v", resp)
+	}
+	// Swallowed, with the older echo moved up by something else.
+	empty := blankBox(t)
+	echo := []string{"❯ /model opus", "  ⎿  Set model to Opus 5.5"}
+	h = newStepHarness(t)
+	h.scr.set(withRows(empty, "older output", "", echo[0], echo[1]), false, true)
+	h.typer.onType = func(string) { h.scr.set(withRows(empty, echo...), false, true) }
+	resp = deliverStep(t, h, stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1))
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED || resp.GetNote() != "no confirmation" {
+		t.Errorf("older echo moved up = %+v", resp)
+	}
+}
+
+// SWI-28 D2: an empty box alone never finishes the action prompt.
+func TestStepActionPromptNeedsATurn(t *testing.T) {
+	action := func(idx int32) *pb.DeliverWorkerStepRequest {
+		return stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", idx)
+	}
+	// No turn hook, an idle agent, no reply on screen.
+	h := newStepHarness(t)
+	resp := deliverStep(t, h, action(1))
+	if resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED || resp.GetNote() != "no turn evidence" || resp.GetSentAt() == nil {
+		t.Errorf("no evidence = %+v", resp)
+	}
+	// A reply from before typing is no evidence, wherever a repaint has moved it.
+	reply := withRows(blankBox(t), "❯ earlier", "⏺ an earlier reply")
+	h = newStepHarness(t)
+	h.scr.set(reply, false, true)
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED {
+		t.Errorf("old reply = %+v", resp)
+	}
+	// A reply added since typing is, its hooks lost.
+	h = newStepHarness(t)
+	h.scr.set(reply, false, true)
+	h.typer.onType = func(string) {
+		h.scr.set(withRows(blankBox(t), "⏺ an earlier reply", "❯ [switchboard orchestrator", "⏺ the reply"), false, true)
+	}
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("new reply = %+v", resp)
+	}
+	// So is a turn end recorded since the Enter; one from before it is not.
+	h = newStepHarness(t)
+	h.typer.onType = func(string) {
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+	}
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("turn end after the send = %+v", resp)
+	}
+	h = newStepHarness(t)
+	h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(-time.Minute)) })
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED {
+		t.Errorf("turn end before the send = %+v", resp)
+	}
+	// A custom step still finishes on the empty box (a local command).
+	h = newStepHarness(t)
+	if resp := deliverStep(t, h, custom("x", 1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("custom = %+v", resp)
+	}
+	// A turn running on screen is evidence with every hook lost, and it is what
+	// keeps a slow turn from halting (real screens).
+	for _, name := range []string{"turn-running", "turn-running-narrow"} {
+		h = newStepHarness(t)
+		h.typer.onType = func(string) { h.scr.set(fixture(t, name), false, true) }
+		if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+			t.Errorf("%s = %+v", name, resp)
+		}
+	}
+	// A real reply added since typing.
+	h = newStepHarness(t)
+	h.scr.set(fixture(t, "turn-before"), false, true)
+	h.typer.onType = func(string) { h.scr.set(fixture(t, "reply-row"), false, true) }
+	if resp := deliverStep(t, h, action(1)); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("reply-row = %+v", resp)
+	}
+}
+
+// SWI-28: a screen that can't be matched to the one before typing (rewrapped). A
+// built-in then reads the last echo, as check_only does, so a refusal stays a
+// refusal; the action prompt can't take a reply on screen for its own.
+func TestStepUnalignedScreen(t *testing.T) {
+	empty := blankBox(t)
+	model := func() *pb.DeliverWorkerStepRequest { return stepReq(pb.StepKind_STEP_KIND_MODEL, "", "opus", 1) }
+	action := func() *pb.DeliverWorkerStepRequest {
+		return stepReq(pb.StepKind_STEP_KIND_ACTION_PROMPT, "Review it.", "", 1)
+	}
+	for _, c := range []struct {
+		name    string
+		req     *pb.DeliverWorkerStepRequest
+		after   []termview.Line
+		outcome pb.StepOutcome
+		note    string
+	}{
+		{"model set", model(), withRows(empty, "❯ /model opus", "  ⎿  Set model to Opus 5.5"), pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL, ""},
+		{"model refused", model(), withRows(empty, "❯ /model opus", "  ⎿  Model 'opus' not found"), pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "Model 'opus' not found"},
+		{"model with no echo", model(), empty, pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "no confirmation"},
+		{"action with an old reply rewrapped", action(), withRows(empty, "⏺ an old", "  reply"), pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, "no turn evidence"},
+		{"action with an old reply reprinted", action(), withRows(empty, "⏺ an old reply"), pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED, "no turn evidence"},
+	} {
+		h := newStepHarness(t)
+		h.scr.set(withRows(empty, "⏺ an old reply"), false, true)
+		h.typer.onType = func(string) { h.scr.set(c.after, false, true) }
+		if resp := deliverStep(t, h, c.req); resp.GetOutcome() != c.outcome || resp.GetNote() != c.note {
+			t.Errorf("%s = %+v, want %v %q", c.name, resp, c.outcome, c.note)
+		}
+	}
+	// A turn end recorded since the Enter still counts for the action prompt.
+	h := newStepHarness(t)
+	h.scr.set(withRows(empty, "⏺ an old reply"), false, true)
+	h.typer.onType = func(string) {
+		h.scr.set(withRows(empty, "⏺ an old", "  reply"), false, true)
+		h.mutate(t, func(x *pb.Sandbox) { x.Agent.LastTurnEndAt = timestamppb.New(h.clock.Now().Add(time.Second)) })
+	}
+	if resp := deliverStep(t, h, action()); resp.GetOutcome() != pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL {
+		t.Errorf("action with a turn end = %+v", resp)
+	}
+}
+
+// A clear SessionStart with the screen still stale is unknown, not a failed
+// read-back (research R2).
+func TestStepClearOnAStaleScreenIsUnconfirmed(t *testing.T) {
+	h := newStepHarness(t)
+	clear := stepReq(pb.StepKind_STEP_KIND_CLEAR, "", "", 1)
+	h.scr.set(fixture(t, "empty-after-command"), false, true)
+	note, ok := h.e.svc.clearCorroborated(stepCheck{id: clear.GetSandboxId()}, agent.HookEvent{SessionID: "new"}, 0)
+	if ok || note == screenResyncing {
+		t.Fatalf("fresh screen with the box and no post-clear = %q, %v", note, ok)
+	}
+	h.scr.set(h.scr.lines, true, true)
+	note, ok = h.e.svc.clearCorroborated(stepCheck{id: clear.GetSandboxId()}, agent.HookEvent{SessionID: "new"}, 0)
+	if ok || note != screenResyncing {
+		t.Errorf("stale screen = %q, %v", note, ok)
 	}
 }

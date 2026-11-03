@@ -412,14 +412,20 @@ func TestReadHookInputStopsOnceTheFieldsAreSeen(t *testing.T) {
 		`{"session_id":"s","hook_event_name":"SessionStart","source":"clear","model":`:   {SessionID: "s", HookEventName: "SessionStart", Source: "clear"},
 		`{"hook_event_name":"Notification","session_id":"s","notification_type":"idle",`: {SessionID: "s", HookEventName: "Notification", NotificationType: "idle"},
 		`{"hook_event_name":"Stop","session_id":"s","background_tasks":[],`:              {SessionID: "s", HookEventName: "Stop"},
+		`{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi","x":`:      {SessionID: "s", HookEventName: "UserPromptSubmit", Prompt: "hi"},
 	} {
 		// bufio reads ahead, so the reader must never reach its end: the body
 		// is followed by more input than one buffer.
 		r := &errAfter{io.MultiReader(strings.NewReader(body), strings.NewReader(strings.Repeat(" ", 1<<16)))}
 		got := readHookInput(r)
-		if got.SessionID != want.SessionID || got.HookEventName != want.HookEventName || got.Source != want.Source || got.NotificationType != want.NotificationType {
+		if got.SessionID != want.SessionID || got.HookEventName != want.HookEventName || got.Source != want.Source || got.NotificationType != want.NotificationType || got.Prompt != want.Prompt {
 			t.Errorf("%.40q = %+v, want %+v", body, got, want)
 		}
+	}
+	// A prompt too long to keep is no prompt: the submit can't be told apart.
+	long := `{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"` + strings.Repeat("x", maxHookField) + `"}`
+	if in := readHookInput(strings.NewReader(long)); in.Prompt != "" || in.SessionID != "s" {
+		t.Errorf("long prompt = %.40q, session %q", in.Prompt, in.SessionID)
 	}
 	// A SessionStart still waits for its source.
 	if in := readHookInput(strings.NewReader(`{"session_id":"s","hook_event_name":"SessionStart","x":1,"source":"resume"}`)); in.Source != "resume" {

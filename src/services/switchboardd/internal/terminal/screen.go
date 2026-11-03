@@ -144,6 +144,18 @@ func (sc *screen) isStale() bool {
 	return sc.stale
 }
 
+// markStale marks the screen stale for a resize the PTY is about to get. Like a
+// reset it waits for a later nudge's repaint; the caller counts the resize as
+// that nudge once it is applied, so the repaint it causes clears the flag when
+// the output settles. An agent that repaints nothing stays stale until a reader
+// asks (RequestRepaint).
+func (sc *screen) markStale() {
+	sc.flagMu.Lock()
+	defer sc.flagMu.Unlock()
+	sc.stale = true
+	sc.resetAt, sc.repaintAt = sc.nudges.Load(), time.Time{}
+}
+
 // EnableScreen gives the broadcaster an agent screen if it has none (SWI-17,
 // research R2), and nudges a repaint so the screen fills. It is called when a
 // sandbox becomes a worker (its broadcaster may predate that) and on its first
@@ -171,8 +183,8 @@ func (b *Broadcaster) enableScreenLocked() {
 }
 
 // Screen returns a copy of the agent screen's live rows and whether the screen
-// is stale (a chunk was dropped, or no repaint has been parsed since it was
-// enabled). lines is nil when the broadcaster keeps no screen.
+// is stale (a chunk was dropped, the size changed, or no repaint has been parsed
+// since it was enabled). lines is nil when the broadcaster keeps no screen.
 func (b *Broadcaster) Screen() (lines []termview.Line, stale bool) {
 	sc := b.scr.Load()
 	if sc == nil {

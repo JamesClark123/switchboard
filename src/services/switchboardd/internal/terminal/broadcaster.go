@@ -205,8 +205,9 @@ func (b *Broadcaster) detach(id int) {
 
 // applyResizeLocked sets the PTY size to the smallest rows/cols across attached
 // clients (research.md R3) so no client's viewport ever overflows. The agent
-// screen, when there is one, follows the PTY. With no client sized, the PTY
-// keeps its size. Caller holds mu.
+// screen, when there is one, follows the PTY, and reads stale after a size change
+// until the agent's repaint settles (termview only truncates or pads). With no
+// client sized, the PTY keeps its size. Caller holds mu.
 func (b *Broadcaster) applyResizeLocked() {
 	var cols, rows uint16
 	for _, a := range b.subs {
@@ -218,10 +219,18 @@ func (b *Broadcaster) applyResizeLocked() {
 		}
 	}
 	if cols > 0 && rows > 0 {
+		sc := b.scr.Load()
+		changed := cols != b.cols || rows != b.rows
+		if sc != nil && changed {
+			sc.markStale()
+		}
+		if sc != nil {
+			sc.view.Resize(int(cols), int(rows)) // first: the repaint is for the new size
+		}
 		_ = b.pty.Resize(cols, rows)
 		b.cols, b.rows = cols, rows
-		if sc := b.scr.Load(); sc != nil {
-			sc.view.Resize(int(cols), int(rows))
+		if sc != nil && changed {
+			sc.nudges.Add(1) // only now: output parsed so far isn't its repaint
 		}
 	}
 }
