@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -416,6 +417,12 @@ func workerRunFor(run *pb.Run, live *pb.WorkerRun) *pb.WorkerRun {
 	out.Halted = haltedOnWorker(run)
 	if sequenced(run) {
 		out.StepNote = run.GetStepNote()
+	}
+	if live.GetId() == run.GetId() && swb.IsCheckFailedNote(live.GetStepNote()) {
+		// The owning daemon's overlay while the sandbox can't be checked for a
+		// detached agent (SWI-25 A3): kept, never pushed over; the daemon
+		// restores the earlier note itself (mirrorCheckNote follows it).
+		out.StepNote = live.GetStepNote()
 	}
 	return out
 }

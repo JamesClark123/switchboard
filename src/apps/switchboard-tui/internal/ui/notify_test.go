@@ -141,18 +141,24 @@ func TestStepAndDetachedNotifications(t *testing.T) {
 	m.sub = &fakeStream{ctx: context.Background(), ch: nil}
 	m, _ = update(m, eventMsg{ev: notif("n-1", "sb1", pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED)})
 	m, _ = update(m, eventMsg{ev: notif("n-2", "sb2", pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED)})
-	if len(m.inbox) != 2 || len(rn.titles) != 2 {
+	m, _ = update(m, eventMsg{ev: notif("n-3", "sb3", pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED)})
+	if len(m.inbox) != 3 || len(rn.titles) != 3 {
 		t.Fatalf("inbox %d desktop %d", len(m.inbox), len(rn.titles))
 	}
-	if !strings.Contains(strings.Join(rn.titles, "|"), "step not accepted") || !strings.Contains(strings.Join(rn.titles, "|"), "agent detached") {
+	titles := strings.Join(rn.titles, "|")
+	if !strings.Contains(titles, "step not accepted") || !strings.Contains(titles, "agent detached") || !strings.Contains(titles, "can't check agent") {
 		t.Errorf("titles = %v", rn.titles)
 	}
 	if notifIcon(pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED) != notifIcon(pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED) {
 		t.Error("not accepted is shown like a failed run")
 	}
+	// SWI-25 A3: a failing check is an error, and enter goes to the sandbox.
+	if notifIcon(pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED) != notifIcon(pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED) {
+		t.Error("a failing check is shown like a failed run")
+	}
 	out, _ := m.enterNotifications()
 	m = out.(Model)
-	if v := m.View(); !strings.Contains(v, "step not accepted") || !strings.Contains(v, "agent detached") {
+	if v := m.View(); !strings.Contains(v, "step not accepted") || !strings.Contains(v, "agent detached") || !strings.Contains(v, "can't check agent") {
 		t.Errorf("inbox:\n%s", v)
 	}
 }

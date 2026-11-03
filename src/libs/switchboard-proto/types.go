@@ -328,3 +328,20 @@ func seenAt(t, now time.Time) string {
 	}
 	return t.Local().Format("Jan 2 15:04")
 }
+
+// --- SWI-25 A3: the check-failed note ---
+
+// checkFailedPrefix opens the note of a sandbox that can't be checked for a
+// detached agent (AgentCheck CHECK_FAILED).
+const checkFailedPrefix = "can't check for a detached agent"
+
+// CheckFailedNote is the note the owning daemon overlays on a worker run's
+// step_note, and the body of its notification and the sandbox row's note, while
+// the sandbox's detached-agent check keeps failing: the prefix and the last
+// probe error.
+func CheckFailedNote(err string) string { return checkFailedPrefix + ": " + err }
+
+// IsCheckFailedNote reports a CheckFailedNote: the orchestrator mirrors such a
+// note into its run and never pushes its own over it (the daemon restores the
+// earlier note itself once the check clears).
+func IsCheckFailedNote(note string) bool { return strings.HasPrefix(note, checkFailedPrefix) }

@@ -234,7 +234,7 @@ func orphanNote(sb *pb.Sandbox) (string, bool) {
 	case pb.AgentCheck_STATE_DETACHED:
 		return detachedRefusal + swb.DetachedDetail(check, time.Now()) + " — t to Replace or Wait", true
 	case pb.AgentCheck_STATE_CHECK_FAILED:
-		return "can't check for a detached agent: " + sanitizeLine(check.GetError(), 60), true
+		return swb.CheckFailedNote(sanitizeLine(check.GetError(), 60)), true
 	}
 	return "", false
 }

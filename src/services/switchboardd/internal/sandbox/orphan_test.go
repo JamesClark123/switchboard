@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -1257,5 +1258,75 @@ func TestOrphansAtStartProbeOrder(t *testing.T) {
 	}
 	if probeClass(&pb.Sandbox{}) != 2 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{Run: &pb.WorkerRun{}}}) != 1 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{}}) != 0 {
 		t.Error("probeClass")
+	}
+}
+
+// A sandbox that reaches CHECK_FAILED raises one AGENT_CHECK_FAILED
+// notification and overlays the failure on its run's step_note; the earlier
+// note comes back when the check clears (gone) or finds the agent (detached),
+// and a note changed under the overlay stands (SWI-25 A3).
+func TestCheckFailedNotifiesAndOverlaysTheNote(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r1", StepNote: "waiting: x"})
+	e.tokens.issue("s", 2)
+	e.m.AgentClientExited("s", 2) // no probe answer: every probe fails
+	e.waitState(t, "s", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.Contains(e.notes.msgs[0], "NOTIFICATION_KIND_AGENT_CHECK_FAILED can't check for a detached agent: ") ||
+		!strings.Contains(e.notes.msgs[0], "— t to Restart sandbox or Wait (run r1)") {
+		t.Fatalf("notifications %v", e.notes.msgs)
+	}
+	run := e.get(t, "s").GetController().GetRun()
+	if !strings.HasPrefix(run.GetStepNote(), "can't check for a detached agent: ") || run.GetStepNote() != swb.CheckFailedNote(e.get(t, "s").GetAgent().GetAgentCheck().GetError()) {
+		t.Fatalf("overlaid note = %q", run.GetStepNote())
+	}
+	// More failures: still one notification, the note follows the error.
+	before := e.run.count("probe")
+	e.m.RecheckOrphan("s")
+	waitUntil(t, func() bool { return e.run.count("probe") > before && !e.probing("s") })
+	if e.notes.n() != 1 {
+		t.Errorf("re-notified: %v", e.notes.msgs)
+	}
+	// The check clears: the earlier note is back.
+	e.run.setOut("s", goneOut)
+	e.m.RecheckOrphan("s")
+	e.waitState(t, "s", pb.AgentCheck_STATE_CLEAR)
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); note != "waiting: x" {
+		t.Errorf("restored note = %q", note)
+	}
+
+	// Found alive instead: the note is restored under the DETACHED check, and
+	// AGENT_DETACHED is raised as usual.
+	e.put(t, "a", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_WORKING, &pb.WorkerRun{Id: "r2", StepNote: "setting up"})
+	e.tokens.issue("a", 3)
+	e.m.AgentClientExited("a", 3)
+	e.waitState(t, "a", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 2 })
+	// Someone writes the note under the overlay: that is what comes back.
+	if _, err := e.reg.Update("a", func(s *pb.Sandbox) error {
+		s.Controller.Run.StepNote = "waiting: agent busy"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.run.setOut("a", aliveOut(3))
+	e.m.RecheckOrphan("a")
+	e.waitState(t, "a", pb.AgentCheck_STATE_DETACHED)
+	if note := e.get(t, "a").GetController().GetRun().GetStepNote(); note != "waiting: agent busy" {
+		t.Errorf("restored note under DETACHED = %q", note)
+	}
+	waitUntil(t, func() bool { return e.notes.n() == 3 })
+	if e.notes.n() != 3 || !strings.Contains(e.notes.msgs[2], "NOTIFICATION_KIND_AGENT_DETACHED") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+
+	// A sandbox without a run: the notification, no note.
+	e.put(t, "p", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("p", 4)
+	e.m.AgentClientExited("p", 4)
+	e.waitState(t, "p", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 4 })
+	if e.notes.n() != 4 || strings.Contains(e.notes.msgs[3], "(run ") {
+		t.Errorf("notifications %v", e.notes.msgs)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -2128,4 +2129,46 @@ func TestReviewAfterActionResolvedOnRestart(t *testing.T) {
 		settle(t, rt)
 		return stateOf(env, o.GetId(), run.GetId()) == pb.RunState_RUN_STATE_AWAITING_REVIEW
 	})
+}
+
+// While a worker can't be checked for a detached agent, its daemon overlays the
+// failure on controller.run.step_note; the run's note follows it both ways and
+// the orchestrator never pushes its own note over it (SWI-25 A3).
+func TestCheckFailedNoteMirrored(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string { return pickKind(req, pb.StepKind_STEP_KIND_EFFORT) }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_PENDING)
+	failed := swb.CheckFailedNote("probe: exit status 1")
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		if sb.GetController().GetRun().GetId() != run.GetId() {
+			t.Fatalf("the worker's record holds %q", sb.GetController().GetRun().GetId())
+		}
+		sb.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_CHECK_FAILED, Error: "probe: exit status 1"}
+		sb.Controller.Run.StepNote = failed
+	})
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == failed })
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_PENDING {
+		t.Fatalf("the step is held, not moved: %+v", r)
+	}
+	// The daemon's note is never pushed over.
+	if note := emit(w, "wa", nil).GetController().GetRun().GetStepNote(); note != failed {
+		t.Errorf("the worker's note was overwritten: %q", note)
+	}
+	// The check clears and the daemon restores the earlier note: the run follows.
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.AgentCheck = nil
+		sb.Controller.Run.StepNote = ""
+	})
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == "" })
+	// A live check-failed note is kept by workerRunFor; any other note is the run's.
+	live := &pb.WorkerRun{Id: "x", StepNote: failed}
+	if got := workerRunFor(&pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}, live).GetStepNote(); got != failed {
+		t.Errorf("workerRunFor over an overlay = %q", got)
+	}
+	if got := workerRunFor(&pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}, &pb.WorkerRun{Id: "x"}).GetStepNote(); got != "waiting: y" {
+		t.Errorf("workerRunFor = %q", got)
+	}
 }

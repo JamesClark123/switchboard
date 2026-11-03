@@ -267,6 +267,10 @@ func notifTitle(k pb.NotificationKind) string {
 		return "step not accepted"
 	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED:
 		return "agent detached"
+	// SWI-25 A3: the sandbox can't be checked for a detached agent (t → Restart
+	// sandbox or Wait); raised once by the sandbox's daemon.
+	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED:
+		return "can't check agent"
 	}
 	return "task complete"
 }
@@ -297,7 +301,8 @@ func notifIcon(k pb.NotificationKind) string {
 	case pb.NotificationKind_NOTIFICATION_KIND_NEEDS_PROMPTING,
 		pb.NotificationKind_NOTIFICATION_KIND_ESCAPE_HATCH_NEEDS_APPROVAL:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")
-	case pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED:
+	case pb.NotificationKind_NOTIFICATION_KIND_RUN_FAILED, pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED,
+		pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED:
 		return lipgloss.NewStyle().Foreground(colError).Render("✗")
 	case pb.NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED:
 		return lipgloss.NewStyle().Foreground(colWarn).Render("◆")

@@ -230,6 +230,11 @@ const (
 	// orphan), once per orphan; names the sandbox, the agent's last state and its
 	// run. The daemon never stops it; t -> Replace or Wait (research R14).
 	NotificationKind_NOTIFICATION_KIND_AGENT_DETACHED NotificationKind = 10
+	// Owning daemon (SWI-25 A3): a sandbox could not be checked for a detached
+	// agent (AgentCheck CHECK_FAILED: 3 failed probes, or 60 s unknown), once per
+	// spell; names the sandbox, the last error and its run. While it lasts the
+	// run's step_note carries the failure; the earlier note comes back after.
+	NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED NotificationKind = 11
 )
 
 // Enum value maps for NotificationKind.
@@ -246,6 +251,7 @@ var (
 		8:  "NOTIFICATION_KIND_RUN_NEEDS_INPUT",
 		9:  "NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED",
 		10: "NOTIFICATION_KIND_AGENT_DETACHED",
+		11: "NOTIFICATION_KIND_AGENT_CHECK_FAILED",
 	}
 	NotificationKind_value = map[string]int32{
 		"NOTIFICATION_KIND_UNSPECIFIED":                 0,
@@ -259,6 +265,7 @@ var (
 		"NOTIFICATION_KIND_RUN_NEEDS_INPUT":             8,
 		"NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED":       9,
 		"NOTIFICATION_KIND_AGENT_DETACHED":              10,
+		"NOTIFICATION_KIND_AGENT_CHECK_FAILED":          11,
 	}
 )
 
@@ -16077,7 +16084,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x18AGENT_STATUS_NEEDS_INPUT\x10\x03\x12\x17\n" +
 	"\x13AGENT_STATUS_EXITED\x10\x04\x12\x18\n" +
 	"\x14AGENT_STATUS_WAITING\x10\x05\x12\x19\n" +
-	"\x15AGENT_STATUS_STARTING\x10\x06*\xd8\x03\n" +
+	"\x15AGENT_STATUS_STARTING\x10\x06*\xfc\x03\n" +
 	"\x10NotificationKind\x12!\n" +
 	"\x1dNOTIFICATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fNOTIFICATION_KIND_TASK_COMPLETE\x10\x01\x12%\n" +
@@ -16090,7 +16097,8 @@ const file_switchboard_proto_rawDesc = "" +
 	"!NOTIFICATION_KIND_RUN_NEEDS_INPUT\x10\b\x12+\n" +
 	"'NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED\x10\t\x12$\n" +
 	" NOTIFICATION_KIND_AGENT_DETACHED\x10\n" +
-	"\"\x04\b\v\x10\v*W\n" +
+	"\x12(\n" +
+	"$NOTIFICATION_KIND_AGENT_CHECK_FAILED\x10\v*W\n" +
 	"\bLaneMode\x12\x19\n" +
 	"\x15LANE_MODE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13LANE_MODE_EXCLUSIVE\x10\x01\x12\x17\n" +

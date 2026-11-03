@@ -176,3 +176,13 @@ func TestDetachedDetail(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckFailedNote(t *testing.T) {
+	note := CheckFailedNote("probe: exit 1")
+	if note != "can't check for a detached agent: probe: exit 1" || !IsCheckFailedNote(note) {
+		t.Errorf("note = %q", note)
+	}
+	if IsCheckFailedNote("waiting: can't check for a detached agent") || IsCheckFailedNote("") {
+		t.Error("only the prefix matches")
+	}
+}

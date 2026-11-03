@@ -600,6 +600,9 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 	if rt.orphanHalt(run, sb) {
 		return true
 	}
+	if rt.mirrorCheckNote(run, wr) {
+		return true
+	}
 	if wr.GetId() == run.GetId() && run.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING {
 		// A halt, hold or note push lost on a down link (T022 halted repair).
 		if want := workerRunFor(run, wr); !proto.Equal(want, wr) {
@@ -607,6 +610,31 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 		}
 	}
 	return false
+}
+
+// mirrorCheckNote follows the owning daemon's check-failed note on the
+// worker's record (SWI-25 A3): while the sandbox can't be checked for a
+// detached agent the daemon overlays controller.run.step_note with the failure
+// and restores the earlier note once the check clears or finds the agent. The
+// run's note follows both ways, so the Jobs screen shows the failure, and
+// workerRunFor never pushes the run's own note over the daemon's. It reports
+// whether it changed the run.
+func (rt *runtime) mirrorCheckNote(run *pb.Run, wr *pb.WorkerRun) bool {
+	if wr.GetId() != run.GetId() || wr.GetStepNote() == run.GetStepNote() {
+		return false
+	}
+	if !swb.IsCheckFailedNote(wr.GetStepNote()) && !swb.IsCheckFailedNote(run.GetStepNote()) {
+		return false
+	}
+	note := wr.GetStepNote()
+	_, ok := rt.stepTx(run, func(l *pb.Run) bool {
+		if l.GetStepNote() == note {
+			return false
+		}
+		l.StepNote = note
+		return true
+	})
+	return ok
 }
 
 // orphanHalt halts a run in setup whose agent a daemon restart detached
@@ -960,7 +988,8 @@ func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) {
 	rt.armStepRetry()
 	note := waitingPrefix + reason
 	if now.Sub(since) < stepWaitNote || run.GetStepNote() == note ||
-		(run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED) {
+		(run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED) ||
+		swb.IsCheckFailedNote(run.GetStepNote()) { // the daemon's note says why (SWI-25 A3)
 		return
 	}
 	if live, ok := rt.stepTx(run, func(l *pb.Run) bool {
@@ -1138,8 +1167,11 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		return true
 	}
 	if builtin(st.GetKind()) && canType(sb) {
-		if agentCheck(sb) == pb.AgentCheck_STATE_UNKNOWN {
-			return false // a probe is pending: its answer (a status change) kicks again
+		if c := agentCheck(sb); c == pb.AgentCheck_STATE_UNKNOWN || c == pb.AgentCheck_STATE_CHECK_FAILED {
+			// A probe is pending, or keeps failing: the daemon refuses every
+			// send meanwhile (the gate), and its answer (a check change) kicks
+			// again. A failing check's note is the daemon's (SWI-25 A3).
+			return false
 		}
 		api, err := rt.apiFor(run.GetSandboxHostId())
 		if err != nil {

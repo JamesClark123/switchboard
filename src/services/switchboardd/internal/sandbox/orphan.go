@@ -122,6 +122,14 @@ type orphanRecord struct {
 	lastSeen   *timestamppb.Timestamp
 }
 
+// noteOverlay is the check-failed note the daemon put on a worker run's
+// step_note (SWI-25 A3) and the note it replaced: shown is restored to saved
+// once the check clears or finds the agent, unless something else wrote the
+// note meanwhile.
+type noteOverlay struct {
+	runID, saved, shown string
+}
+
 // orphanState is one sandbox's check.
 type orphanState struct {
 	unknown   bool
@@ -130,8 +138,9 @@ type orphanState struct {
 	firstTry  time.Time // the first probe attempt of this unknown spell
 	surfaced  bool      // CHECK_FAILED
 	lastErr   string
-	probing   bool // single flight
-	again     bool // a probe was asked for while one ran
+	overlay   *noteOverlay // the run note while surfaced (kept across drop until restored)
+	probing   bool         // single flight
+	again     bool         // a probe was asked for while one ran
 	retry     *time.Timer
 	refusedAt time.Time
 	// epoch counts drops (a reap, a confirmed stop, a clear): a probe records
@@ -278,12 +287,14 @@ func (o *orphans) write(id string, extra func(s *pb.Sandbox)) *pb.Sandbox {
 func (o *orphans) store(id string, extra func(s *pb.Sandbox)) *pb.Sandbox {
 	out, err := o.m.store.Update(id, func(s *pb.Sandbox) error {
 		before := proto.Clone(s).(*pb.Sandbox)
-		if want := o.check(id); !proto.Equal(s.GetAgent().GetAgentCheck(), want) {
+		want := o.check(id)
+		if !proto.Equal(s.GetAgent().GetAgentCheck(), want) {
 			if s.Agent == nil {
 				s.Agent = &pb.AgentSession{}
 			}
 			s.Agent.AgentCheck = want
 		}
+		o.noteOverlay(id, s, want)
 		if extra != nil {
 			extra(s)
 		}
@@ -297,6 +308,44 @@ func (o *orphans) store(id string, extra func(s *pb.Sandbox)) *pb.Sandbox {
 		return nil
 	}
 	return out
+}
+
+// noteOverlay keeps a worker run's step_note in step with the published check
+// (SWI-25 A3), inside the store's write transaction: while the check is
+// CHECK_FAILED the note is the failure (swb.CheckFailedNote), and the note it
+// replaced is kept; once the check is anything else the kept note is restored,
+// unless the note was changed under the overlay (then that change stands). A
+// note written under the overlay by someone else becomes the one to restore.
+// extra runs after it, so a Replace's replacedNote still wins.
+func (o *orphans) noteOverlay(id string, s *pb.Sandbox, want *pb.AgentCheck) {
+	run := s.GetController().GetRun()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	st := o.st[id]
+	if want.GetState() == pb.AgentCheck_STATE_CHECK_FAILED && run != nil {
+		if st == nil {
+			return // check() read a state that is gone: nothing to overlay
+		}
+		shown := swb.CheckFailedNote(want.GetError())
+		ov := st.overlay
+		if ov == nil || ov.runID != run.GetId() {
+			ov = &noteOverlay{runID: run.GetId(), saved: run.GetStepNote()}
+			st.overlay = ov
+		} else if cur := run.GetStepNote(); cur != ov.shown && !swb.IsCheckFailedNote(cur) {
+			ov.saved = cur
+		}
+		ov.shown = shown
+		run.StepNote = shown
+		return
+	}
+	if st == nil || st.overlay == nil {
+		return
+	}
+	ov := st.overlay
+	st.overlay = nil
+	if run != nil && run.GetId() == ov.runID && run.GetStepNote() == ov.shown {
+		run.StepNote = ov.saved
+	}
 }
 
 // exitedOnce is the gone rule's write: EXITED only when the recorded status
@@ -550,8 +599,9 @@ func (o *orphans) current(id string, epoch uint64) bool {
 
 // failed leaves the sandbox unknown, retried with backoff (capped at
 // orphanRetryCap). After orphanMaxFailures in a row, or orphanUnknownLimit
-// since its first attempt, it is surfaced once as CHECK_FAILED (the row note;
-// tasks.md Deferred items: no notification, no run note).
+// since its first attempt, it is surfaced as CHECK_FAILED: the row note, one
+// AGENT_CHECK_FAILED notification as it flips, and the failure overlaid on its
+// run's step_note for as long as it lasts (noteOverlay; SWI-25 A3).
 func (o *orphans) failed(id string, epoch uint64, perr error) {
 	o.mu.Lock()
 	st := o.of(id)
@@ -561,7 +611,9 @@ func (o *orphans) failed(id string, epoch uint64, perr error) {
 	}
 	st.failures++
 	st.lastErr = perr.Error()
+	surfacing := false
 	if st.failures >= orphanMaxFailures || (!st.firstTry.IsZero() && time.Since(st.firstTry) >= orphanUnknownLimit) {
+		surfacing = !st.surfaced && st.record == nil
 		st.surfaced = true
 	}
 	if st.record != nil {
@@ -578,7 +630,20 @@ func (o *orphans) failed(id string, epoch uint64, perr error) {
 	st.retry = time.AfterFunc(backoff, func() { o.probe(id) })
 	o.mu.Unlock()
 	log.Printf("[warn] sandbox %s: check for a detached agent failed: %v (retrying in %s)", id, perr, backoff)
-	o.write(id, nil)
+	out := o.write(id, nil)
+	if !surfacing {
+		return
+	}
+	if d := o.getDeps(); d.Notify != nil {
+		msg := swb.CheckFailedNote(perr.Error()) + " — t to Restart sandbox or Wait"
+		if out == nil {
+			out, _ = o.m.store.Get(id)
+		}
+		if run := out.GetController().GetRun(); run != nil {
+			msg += " (run " + run.GetId() + ")"
+		}
+		d.Notify.EmitNotification(id, pb.NotificationKind_NOTIFICATION_KIND_AGENT_CHECK_FAILED, msg, time.Now())
+	}
 }
 
 // cleared ends a sandbox's check: no agent is left beside a live session.

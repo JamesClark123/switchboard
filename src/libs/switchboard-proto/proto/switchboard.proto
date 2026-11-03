@@ -435,8 +435,11 @@ enum NotificationKind {
   // orphan), once per orphan; names the sandbox, the agent's last state and its
   // run. The daemon never stops it; t -> Replace or Wait (research R14).
   NOTIFICATION_KIND_AGENT_DETACHED = 10;
-  // 11 is reserved for AGENT_CHECK_FAILED (deferred to SWI-19).
-  reserved 11;
+  // Owning daemon (SWI-25 A3): a sandbox could not be checked for a detached
+  // agent (AgentCheck CHECK_FAILED: 3 failed probes, or 60 s unknown), once per
+  // spell; names the sandbox, the last error and its run. While it lasts the
+  // run's step_note carries the failure; the earlier note comes back after.
+  NOTIFICATION_KIND_AGENT_CHECK_FAILED = 11;
 }
 
 // --- SWI-18 ---
