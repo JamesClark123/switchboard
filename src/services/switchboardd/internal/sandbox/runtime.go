@@ -117,11 +117,14 @@ func (m *Manager) TryRLockRuntime(id string) (unlock func(), ok bool) {
 }
 
 // HoldRuntimeRead is TryRLockRuntime for an `sbx mcp` call, which may run for a
-// minute where the supervisor's calls are bounded by seconds. The returned
-// context, derived from ctx, is cancelled when a lifecycle operation asks for
-// the lock, so the operation never waits out the call, and neither do the
-// readers it blocks meanwhile. A caller sees that as its context ending while
-// ctx has not. unlock releases the hold.
+// minute and can't be bounded any tighter without breaking slow loads. The
+// returned context, derived from ctx, is cancelled when a lifecycle operation
+// asks for the lock, so the operation never waits out the call, and neither do
+// the readers it blocks meanwhile. The cancel has to end the call promptly, since
+// the operation waits for this hold with nothing to give up on: the call kills
+// `sbx`'s process group and doesn't wait on what escapes it (SbxRunner.runHeld,
+// mcp.CLI.Load). A caller sees the cancel as its context ending while ctx has not.
+// unlock releases the hold.
 func (m *Manager) HoldRuntimeRead(ctx context.Context, id string) (held context.Context, unlock func(), ok bool) {
 	l := m.runtime.of(id)
 	l.holdsMu.Lock()
@@ -187,11 +190,12 @@ func (m *Manager) orphanGate(id string) (unlock func(), ok bool) {
 
 // runtimeOp takes the sandbox's runtime lock for a lifecycle operation,
 // waiting for it, after cancelling the MCP calls holding it (HoldRuntimeRead):
-// what's left to wait for is bounded by seconds. The returned func releases it
-// and then applies the outcome rule (research R14) from the state the operation
-// wrote: a sandbox RUNNING with an orphan record or unknown is marked unknown
-// and probed once. The STOPPED and destroyed branch runs when that state is
-// published (emit).
+// what's left to wait for has its own bound, seconds for most readers, and up to
+// about 50 s for a developer's service stop and 90 s for a port publish. The
+// returned func releases it and then applies the outcome rule (research R14) from
+// the state the operation wrote: a sandbox RUNNING with an orphan record or
+// unknown is marked unknown and probed once. The STOPPED and destroyed branch runs
+// when that state is published (emit).
 func (m *Manager) runtimeOp(id string) func() {
 	l := m.runtime.of(id)
 	l.beginOp()

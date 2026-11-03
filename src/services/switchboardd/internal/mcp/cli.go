@@ -129,7 +129,9 @@ func (c *CLI) AddRemote(ctx context.Context, name, url string) (string, error) {
 func (c *CLI) Load(ctx context.Context, name, sandboxRef string) (string, error) {
 	lctx, cancel := context.WithTimeout(ctx, time.Duration(loadTimeout))
 	defer cancel()
-	return c.run(lctx, argvLoad(name, sandboxRef)...)
+	// Bounded on cancel: the load runs under the sandbox's runtime lock, and a
+	// lifecycle operation cancels it and then waits for that hold (SWI-26).
+	return c.runBounded(lctx, argvLoad(name, sandboxRef)...)
 }
 
 // Remove unregisters a server: `sbx mcp rm <name> --force`.
@@ -169,11 +171,13 @@ func (c *CLI) runJSON(ctx context.Context, args ...string) (string, error) {
 // did not run on the host.
 var errNotStarted = errors.New("not started")
 
-// runBounded runs a save's `mcp rm` / `mcp add` (SWI-21 research R7): the child
-// gets its own process group, which is killed on the context deadline, and the
-// call returns only after the child has exited, so "the process has exited"
-// holds before any re-check. The combined output is returned; the error never
-// carries stdin (there is none). A failure to start wraps errNotStarted.
+// runBounded runs a save's `mcp rm` / `mcp add` (SWI-21 research R7) and a load:
+// the child gets its own process group, which is killed when the context ends,
+// and the call returns only after the child has exited, so "the process has
+// exited" holds before any re-check. A child that exited 0 has succeeded, even if
+// a helper it left behind holds its output past WaitDelay. The combined output is
+// returned; the error never carries stdin (there is none). A failure to start
+// wraps errNotStarted.
 func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	setPgid(cmd)
@@ -184,7 +188,7 @@ func (c *CLI) runBounded(ctx context.Context, args ...string) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("%s %s: %w (%w)", c.Bin, strings.Join(args, " "), err, errNotStarted)
 	}
-	if err := cmd.Wait(); err != nil {
+	if err := cmd.Wait(); err != nil && (!errors.Is(err, exec.ErrWaitDelay) || ctx.Err() != nil) {
 		return out.String(), fmt.Errorf("%s %s: %w%s", c.Bin, strings.Join(args, " "), err, outputTail(out.Bytes()))
 	}
 	return out.String(), nil

@@ -116,12 +116,22 @@ func (s *Supervisor) terminate(h *procHandle, sandboxDown bool) {
 
 	// The port is only really released once nothing holds it. Bounded by the same
 	// grace period so a wedged kernel socket cannot hang the stop forever.
-	if h.sbxPort != 0 {
-		portDeadline := time.Now().Add(s.stopGrace)
-		for time.Now().Before(portDeadline) && !portFree(h.hostPortOrListen()) {
-			time.Sleep(portFreeWaitStep)
+	portDeadline := time.Now().Add(s.stopGrace)
+	for time.Now().Before(portDeadline) {
+		port := s.portToWatch(h)
+		if port == 0 || portFree(port) {
+			break
 		}
+		time.Sleep(portFreeWaitStep)
 	}
+}
+
+// portToWatch reads hostPortOrListen under the lock: a publish in flight beside
+// this stop records its port as it lands (bringUp).
+func (s *Supervisor) portToWatch(h *procHandle) uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return h.hostPortOrListen()
 }
 
 // signalGroup sends SIGTERM (or SIGKILL) to the service's process tree, by the

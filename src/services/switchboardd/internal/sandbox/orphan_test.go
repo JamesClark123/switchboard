@@ -36,6 +36,7 @@ type probeRunner struct {
 	hook     func(kind, ref string)
 	listHook func() // may block; runs on each ListStatuses
 	mcpHang  bool   // an `sbx mcp` call hangs until its context ends
+	mcpVia   Runner // when set, `sbx mcp` calls run through it
 }
 
 func newProbeRunner() *probeRunner {
@@ -150,6 +151,12 @@ func (p *probeRunner) mcpCall(ctx context.Context, kind, ref string) (hung bool,
 }
 
 func (p *probeRunner) LoadMcp(ctx context.Context, ref, name string, log func(string)) error {
+	p.pmu.Lock()
+	via := p.mcpVia
+	p.pmu.Unlock()
+	if via != nil {
+		return via.LoadMcp(ctx, ref, name, log)
+	}
 	if hung, err := p.mcpCall(ctx, "load", ref); hung {
 		return err
 	}

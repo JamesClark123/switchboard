@@ -348,7 +348,7 @@ func runServe(cfg *config.Config, debug bool) error {
 	mgr.SetOnDestroy(workerSvc.OnDestroy)
 	mgr.SetOnBringUp(workerSvc.OnBringUp)
 	mgr.SetGoBringUp(workerSvc.GoBringUp)
-	mgr.SetOnLaunched(workerSvc.WarmStart)
+	mgr.SetOnLaunched(workerSvc.OnLaunched)
 	mgr.SetControllerApplier(workerSvc.Apply)
 	// SWI-17 (research R14): the detached-agent check; a sandbox found clear
 	// again has its worker's agent warm-started, and R on a restart halt

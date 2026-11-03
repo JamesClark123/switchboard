@@ -263,6 +263,34 @@ func TestLifecycleOperationCancelsAnMcpCall(t *testing.T) {
 	}
 }
 
+// SWI-26 (review run-1528): through the real runner, an `sbx mcp load` with a
+// child running can't hold a stop past the cancel, and the child doesn't outlive it.
+func TestStopFreesAnMcpCallWithAChildRunning(t *testing.T) {
+	e := newOrphanEnv(t)
+	id := e.launched(t, "p").GetId()
+	bin, pidFile := holdingSbx(t, "sleep 60", "wait")
+	e.run.pmu.Lock()
+	e.run.mcpVia = &SbxRunner{Bin: bin}
+	e.run.pmu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.m.AttachMcp(context.Background(), id, "srv", nil)
+		done <- err
+	}()
+	waitUntil(t, func() bool { return helperPid(pidFile) > 0 })
+	start := time.Now()
+	if _, err := e.m.Stop(context.Background(), id); err != nil {
+		t.Errorf("stop = %v", err)
+	}
+	if took := time.Since(start); took >= heldCallWaitDelay {
+		t.Errorf("the stop took %v", took)
+	}
+	if err := <-done; !errors.Is(err, ErrBusy) {
+		t.Errorf("the cancelled call = %v, want busy", err)
+	}
+	waitHelperGone(t, helperPid(pidFile))
+}
+
 // A caller's own cancellation isn't reported as busy, and a hold can't slip in
 // between an operation's cancelling the holds and its asking for the lock.
 func TestHoldRuntimeRead(t *testing.T) {

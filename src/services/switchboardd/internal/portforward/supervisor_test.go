@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,7 @@ type fakeRunner struct {
 	mu          sync.Mutex
 	published   [][2]uint32
 	unpublished [][2]uint32
+	unpubRefs   []string
 	execArgv    [][]string
 	publishErr  error
 	forwarders  map[uint32]net.Listener
@@ -176,9 +178,10 @@ func (r *fakeRunner) PublishPort(ctx context.Context, _ string, hostPort, sandbo
 	return nil
 }
 
-func (r *fakeRunner) UnpublishPort(_ context.Context, _ string, hostPort, sandboxPort uint32) error {
+func (r *fakeRunner) UnpublishPort(_ context.Context, ref string, hostPort, sandboxPort uint32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.unpubRefs = append(r.unpubRefs, ref)
 	if ln, ok := r.forwarders[hostPort]; ok {
 		_ = ln.Close()
 		delete(r.forwarders, hostPort)
@@ -214,6 +217,12 @@ func (r *fakeRunner) unpublishes() [][2]uint32 {
 	out := make([][2]uint32, len(r.unpublished))
 	copy(out, r.unpublished)
 	return out
+}
+
+func (r *fakeRunner) unpublishRefs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.unpubRefs)
 }
 
 // launchCount counts only the exec calls that started a service, ignoring the

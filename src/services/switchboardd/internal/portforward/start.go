@@ -198,6 +198,10 @@ func (s *Supervisor) launchExclusive(ctx context.Context, sb *pb.Sandbox, declar
 			return nil, nil
 		}
 		sb = cur
+		// A stop signals and unpublishes on the ref the launch ran against.
+		s.mu.Lock()
+		h.ref = cur.GetContainerRef()
+		s.mu.Unlock()
 	}
 	proc, err := s.launch(ctx, sb, declared, command, inSandbox, effPort)
 	if err != nil {

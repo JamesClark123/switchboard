@@ -61,3 +61,88 @@ func TestRunBoundedSuccessAndFailure(t *testing.T) {
 		t.Errorf("bad = %q, %v", out, err)
 	}
 }
+
+// holdingSbx writes a stub `sbx` that leaves a helper holding its output, records
+// the helper's pid and then runs rest. setsid escapes sbx's process group.
+func holdingSbx(t *testing.T, helper, rest string) (bin, pidFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	bin = filepath.Join(dir, "sbx")
+	pidFile = filepath.Join(dir, "helper.pid")
+	script := "#!/usr/bin/env bash\n" + helper + " &\necho $! > " + pidFile + "\necho started\n" + rest + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return bin, pidFile
+}
+
+func helperPid(t *testing.T, pidFile string) int {
+	t.Helper()
+	b, _ := os.ReadFile(pidFile)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid == 0 {
+		t.Fatal("no helper pid")
+	}
+	return pid
+}
+
+// SWI-26 (review run-1528): cancelling a load ends it promptly and kills its
+// child, which would otherwise keep the call, and the runtime hold, alive.
+func TestLoadCancelKillsItsChild(t *testing.T) {
+	bin, pidFile := holdingSbx(t, "sleep 60", "wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(300*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := (&CLI{Bin: bin}).Load(ctx, "srv", "sb"); err == nil {
+		t.Fatal("a cancelled load should fail")
+	}
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Errorf("the cancelled load took %v", took)
+	}
+	pid := helperPid(t, pidFile)
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if syscall.Kill(pid, 0) == nil {
+		if st, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); !strings.Contains(string(st), ") Z") {
+			t.Errorf("child %d survived the cancel", pid)
+		}
+	}
+}
+
+// A helper outside the group can't hold a cancelled load past the wait delay.
+func TestLoadCancelDoesNotWaitOnAnEscapedHelper(t *testing.T) {
+	bin, _ := holdingSbx(t, "setsid sleep 60", "wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(300*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := (&CLI{Bin: bin}).Load(ctx, "srv", "sb"); err == nil {
+		t.Fatal("a cancelled load should fail")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the cancelled load took %v", took)
+	}
+}
+
+// An `sbx` that exited 0 has succeeded, whatever it left holding its output.
+func TestLoadExitingZeroBesideAHelperSucceeds(t *testing.T) {
+	bin, _ := holdingSbx(t, "sleep 30", "exit 0")
+	start := time.Now()
+	out, err := (&CLI{Bin: bin}).Load(context.Background(), "srv", "sb")
+	if err != nil || !strings.Contains(out, "started") {
+		t.Fatalf("load = %q, %v", out, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the load took %v", took)
+	}
+}

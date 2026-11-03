@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 // SWI-26 B4: the gateway's `sbx mcp load` takes the sandbox's runtime read
@@ -242,4 +243,103 @@ func TestAttachReadsTheStateUnderTheRuntimeLock(t *testing.T) {
 			t.Errorf("a sandbox back up: %q, %d agents", log, *created)
 		}
 	})
+}
+
+// SWI-26 (review run-1528): a launch-attach whose load is refused owes it to the
+// end of the launch. The record is CREATING, so a bring-up then would give up on
+// it, and the launch would warm-start an agent without the orchestrator's tools.
+func TestLaunchAttachBusyLoadRunsAtTheEndOfTheLaunch(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	busy := e.busyLock()
+	busy.Store(true)
+	stored := e.sandbox(t, "77777777-aaaa", "launching", pb.SandboxState_SANDBOX_STATE_CREATING)
+	view := proto.Clone(stored).(*pb.Sandbox)
+	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+	if err := e.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than a bring-up's retry step: one started now would have found the
+	// record CREATING and given up by the time the launch writes RUNNING.
+	time.Sleep(3 * loadRetryStep)
+	if !e.svc.bringingUp(stored.GetId()) {
+		t.Error("the owed load should hold the agent's start")
+	}
+	// Launch writes RUNNING and publishes it, which can wake a dispatch.
+	out := e.setState(t, stored.GetId(), pb.SandboxState_SANDBOX_STATE_RUNNING)
+	e.svc.WarmStart(out)
+	if e.loads(t) != 0 || *created != 0 {
+		t.Fatalf("before the end of the launch: %d loads, %d agents", e.loads(t), *created)
+	}
+	// The end of the launch doesn't wait for an operation still holding the sandbox.
+	e.svc.OnLaunched(out)
+	if !e.svc.bringingUp(stored.GetId()) || e.loads(t) != 0 || *created != 0 {
+		t.Fatalf("while the operation holds it: %d loads, %d agents", e.loads(t), *created)
+	}
+	busy.Store(false)
+	// The bring-up's warm start follows its mark, on the bring-up's goroutine.
+	deadline := time.Now().Add(3 * time.Second)
+	for !e.svc.agents.Live(stored.GetId()) {
+		if time.Now().After(deadline) {
+			t.Fatal("no agent after the launch")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e.loads(t) != 1 || *created != 1 {
+		t.Errorf("after the launch: %d loads, %d agents", e.loads(t), *created)
+	}
+	if e.svc.loadOwed(stored.GetId()) {
+		t.Error("the bring-up should settle the owed load")
+	}
+}
+
+// A launch whose load went through only warm-starts, and the end of a launch that
+// was stopped before it ended starts nothing.
+func TestOnLaunchedWithNoOwedLoad(t *testing.T) {
+	e, _, created := deliverEnv(t, false)
+	sb := e.sandbox(t, "77777777-aaaa", "launched", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	if err := e.svc.Apply(bg, sb, controller("orch-1", "a"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if e.loads(t) != 1 || *created != 0 {
+		t.Fatalf("after the attach: %d loads, %d agents", e.loads(t), *created)
+	}
+	stored, _ := e.reg.Get(sb.GetId())
+	e.svc.OnLaunched(stored)
+	if e.loads(t) != 1 || *created != 1 {
+		t.Errorf("after the launch: %d loads, %d agents", e.loads(t), *created)
+	}
+
+	e2, _, created2 := deliverEnv(t, false)
+	busy := e2.busyLock()
+	busy.Store(true)
+	sb2 := e2.sandbox(t, "88888888-bbbb", "stopped", pb.SandboxState_SANDBOX_STATE_CREATING)
+	view := proto.Clone(sb2).(*pb.Sandbox)
+	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+	if err := e2.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
+		t.Fatal(err)
+	}
+	busy.Store(false)
+	e2.svc.OnLaunched(e2.setState(t, sb2.GetId(), pb.SandboxState_SANDBOX_STATE_STOPPED))
+	e2.waitBroughtUp(t, sb2.GetId())
+	if e2.loads(t) != 0 || *created2 != 0 {
+		t.Errorf("for a stopped sandbox: %d loads, %d agents", e2.loads(t), *created2)
+	}
+}
+
+// A destroy settles the owed load, so nothing is held for an id that's gone.
+func TestDestroySettlesAnOwedLoad(t *testing.T) {
+	e := newEnv(t, "")
+	busy := e.busyLock()
+	busy.Store(true)
+	stored := e.sandbox(t, "77777777-aaaa", "destroyed", pb.SandboxState_SANDBOX_STATE_CREATING)
+	view := proto.Clone(stored).(*pb.Sandbox)
+	view.State = pb.SandboxState_SANDBOX_STATE_RUNNING
+	if err := e.svc.Apply(bg, view, controller("orch-1", "a"), ""); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := e.reg.Get(stored.GetId())
+	e.svc.OnDestroy(cur)
+	if e.svc.bringingUp(stored.GetId()) {
+		t.Error("the destroy should settle the owed load")
+	}
 }

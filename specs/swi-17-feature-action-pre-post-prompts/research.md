@@ -1189,10 +1189,16 @@ one exclusive lock, operations that don't conflict refused each other: a develop
     load (`worker.gateway.load`). These take `HoldRuntimeRead`, because an `sbx mcp` call may run for 60 s (120 s
     for an unload trying two refs) and bounding it by seconds would break slow loads: a lifecycle operation cancels
     the ones in flight just before it asks for the write lock, and the caller reports that as the same busy refusal.
-    So a stop waits only for readers bounded by seconds to tens of seconds (a wedged publish, a developer's service
-    stop), and a killed load leaves the record untouched for the developer to retry. A load refused or cancelled at
-    attach becomes a bring-up (`GoBringUp`), so the agent start is held until the load, as after a Restart, and
-    warm-started after it. A bring-up retries a refused load (`Service.loadWhen`, up to 30 min, each attempt
+    The cancel kills `sbx`'s whole process group, and a `WaitDelay` of 2 s bounds whatever escapes the group and still
+    holds the output (`SbxRunner.runHeld`, `mcp.CLI.runBounded`): the cancel alone would kill only `sbx`, and the call
+    would then wait for the pipes to close, with the stop behind it unable to give up. An `sbx` that exits 0 has
+    succeeded even if a helper it left outlasts the delay (`exec.ErrWaitDelay` with the context still live).
+    So a stop waits only for readers with their own bounds, seconds to tens of seconds (about 50 s for a developer's
+    service stop, about 90 s for a wedged publish), and a killed load leaves the record untouched for the developer
+    to retry. A load refused or cancelled at attach becomes a bring-up (`GoBringUp`), so the agent start is held until
+    the load, as after a Restart, and warm-started after it. At a launch-attach the persisted record is still CREATING
+    and a bring-up would give up on it, so the load is recorded as owed, which holds the agent start the same way, and
+    the end of the launch runs the bring-up instead of a warm start (`Service.OnLaunched`). A bring-up retries a refused load (`Service.loadWhen`, up to 30 min, each attempt
     bounded); if the sandbox is not RUNNING, or gone, it neither loads nor warm-starts (`errNotRunning`): both would
     start it again, or mint a hook token for a destroyed sandbox. The next Restart, Refresh or AddKit ends in the
     bring-up that does them. AddKit gained that bring-up here: its CREATING closes the agent and defers any

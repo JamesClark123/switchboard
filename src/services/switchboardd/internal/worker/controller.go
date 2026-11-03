@@ -78,9 +78,12 @@ type Service struct {
 
 	// bringing counts the bring-ups reloading a sandbox's gateway server right
 	// now: WarmStart leaves those to OnBringUp, which starts the agent after
-	// the load so it comes up with the orchestrator's tools.
-	bringMu  sync.Mutex
-	bringing map[string]int
+	// the load so it comes up with the orchestrator's tools. owedLoads are the
+	// launches whose load a lifecycle operation refused or cancelled: held the
+	// same way, until the end of the launch runs the bring-up (OnLaunched).
+	bringMu   sync.Mutex
+	bringing  map[string]int
+	owedLoads map[string]bool
 
 	// Step delivery (SWI-17, step.go): the hook tap, and the screen, typer
 	// and clock, which default to the terminal registry, the agent registry
@@ -194,8 +197,15 @@ func (s *Service) attach(ctx context.Context, req *pb.AttachControllerRequest, l
 	if err := s.gw.register(ctx, sb.GetId(), token, resolve); errors.Is(err, errLoadBusy) {
 		// Registered; a lifecycle operation holds the sandbox, so the load
 		// waits it out as a bring-up (SWI-26): the agent's start is held until
-		// it, and warm-started after it.
-		s.GoBringUp(sb)
+		// it, and warm-started after it. A launching record isn't RUNNING yet and
+		// a bring-up would give up on it, so that one waits for the end of the
+		// launch.
+		if launching != nil {
+			s.logf("[worker] attach %s: sandbox busy; gateway load deferred until the launch completes", sb.GetId())
+			s.setLoadOwed(sb.GetId(), true)
+		} else {
+			s.GoBringUp(sb)
+		}
 	} else if err != nil {
 		// The controller stands; the registration is retried at the next bring-up.
 		s.logf("[worker] attach %s: gateway registration failed (retried at bring-up): %v", sb.GetId(), err)
@@ -405,10 +415,23 @@ func (s *Service) OnDestroy(sb *pb.Sandbox) {
 			return
 		}
 	}
+	s.setLoadOwed(sb.GetId(), false)
 	s.revokeToken(sb.GetId())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s.gw.unregister(ctx, sb.GetId())
+}
+
+// OnLaunched ends a controlled sandbox's launch, once its record is RUNNING
+// (sandbox.Manager's launched hook): the agent's warm start, or the bring-up that
+// loads the gateway first if the launch-attach couldn't (SWI-26). It never waits
+// for the load: a lifecycle operation may hold the sandbox for a while yet.
+func (s *Service) OnLaunched(sb *pb.Sandbox) {
+	if s.loadOwed(sb.GetId()) {
+		s.GoBringUp(sb)
+		return
+	}
+	s.WarmStart(sb)
 }
 
 // OnBringUp re-loads a controlled sandbox's registration after a restart or
@@ -430,8 +453,10 @@ func (s *Service) GoBringUp(sb *pb.Sandbox) {
 }
 
 // beginBringUp marks a controlled sandbox with a gateway token as bringing up
-// and returns the rest of its bring-up, or nil when there is none to do.
+// and returns the rest of its bring-up, or nil when there is none to do. It
+// settles any load a launch owes: the mark takes over that hold, with no gap.
 func (s *Service) beginBringUp(sb *pb.Sandbox) func() {
+	defer s.setLoadOwed(sb.GetId(), false)
 	if sb.GetController() == nil {
 		return nil
 	}
@@ -528,11 +553,33 @@ func (s *Service) markBringUp(sandboxID string, delta int) {
 	}
 }
 
-// bringingUp reports whether a bring-up is reloading the sandbox's gateway.
+// bringingUp reports whether a bring-up is reloading the sandbox's gateway, or a
+// launch still owes it the load.
 func (s *Service) bringingUp(sandboxID string) bool {
 	s.bringMu.Lock()
 	defer s.bringMu.Unlock()
-	return s.bringing[sandboxID] > 0
+	return s.bringing[sandboxID] > 0 || s.owedLoads[sandboxID]
+}
+
+// setLoadOwed records or settles the gateway load a launch owes the sandbox.
+func (s *Service) setLoadOwed(sandboxID string, owed bool) {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	if !owed {
+		delete(s.owedLoads, sandboxID)
+		return
+	}
+	if s.owedLoads == nil {
+		s.owedLoads = map[string]bool{}
+	}
+	s.owedLoads[sandboxID] = true
+}
+
+// loadOwed reports whether a launch owes the sandbox its gateway load.
+func (s *Service) loadOwed(sandboxID string) bool {
+	s.bringMu.Lock()
+	defer s.bringMu.Unlock()
+	return s.owedLoads[sandboxID]
 }
 
 // AcceptLink serves one OrchestratorLink stream (the gRPC handler and Local

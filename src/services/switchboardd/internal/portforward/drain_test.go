@@ -544,6 +544,76 @@ func TestStopDuringAPublishGetsItsPortBack(t *testing.T) {
 	}
 }
 
+// SWI-26 (review run-1528): a publish that lands while the stop is still waiting
+// for the port records it beside the stop's read, and the port still goes back.
+func TestStopOverlappingAPublishThatLands(t *testing.T) {
+	ln, port := listenAllInterfaces(t)
+	defer func() { _ = ln.Close() }() // held open: the stop waits on the port
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, _, runner, _ := newTestSupervisor(t, sb)
+	s.SetStopGrace(500 * time.Millisecond)
+	var published atomic.Uint32
+	stopped := make(chan error, 1)
+	runner.publishHook = func(_ context.Context, hostPort uint32) error {
+		published.Store(hostPort)
+		go func() {
+			_, err := s.Stop("sb1", "web")
+			stopped <- err
+		}()
+		id := instanceIDOf(t, s, "sb1", "web")
+		for deadline := time.Now().Add(5 * time.Second); !s.isStopping(id) && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the unpublish", 5*time.Second, func() bool { return len(runner.unpublishes()) == 1 })
+	if un := runner.unpublishes(); un[0] != [2]uint32{published.Load(), port} {
+		t.Errorf("unpublished %v, want %d:%d", un, published.Load(), port)
+	}
+	if inst, _ := s.insts.GetByService("sb1", "web"); inst.GetState() != pb.ServiceState_SERVICE_STATE_STOPPED {
+		t.Errorf("after the stop: %v", inst)
+	}
+}
+
+// SWI-26 (review run-1528): the handle follows the record the launch ran against,
+// so a stop signals and unpublishes on that ref, not the one Start read.
+func TestHandleKeepsTheRefTheLaunchRanAgainst(t *testing.T) {
+	_, port := listenAllInterfaces(t)
+	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
+	s, lookup, runner, _ := newTestSupervisor(t, sb)
+	s.SetRuntimeLock(func(string) (func(), bool) {
+		moved := runningSandbox("sb1", sb.GetServices()...)
+		moved.ContainerRef = "sb1-new-ref"
+		lookup.set(moved)
+		return func() {}, true
+	})
+	if _, err := s.Start("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	id := instanceIDOf(t, s, "sb1", "web")
+	waitFor(t, "the launch", 5*time.Second, func() bool { return s.procFor(id) != nil })
+	s.mu.Lock()
+	ref := s.handles[id].ref
+	s.mu.Unlock()
+	if ref != "sb1-new-ref" {
+		t.Errorf("handle ref = %q", ref)
+	}
+	waitForState(t, s, "sb1", "web", pb.ServiceState_SERVICE_STATE_RUNNING, 5*time.Second)
+	if _, err := s.Stop("sb1", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if refs := runner.unpublishRefs(); len(refs) != 1 || refs[0] != "sb1-new-ref" {
+		t.Errorf("unpublished on %q", refs)
+	}
+}
+
 // A developer's stop of a RUNNING service signals it, and its exit is not a crash.
 func TestStoppingARunningServiceReportsNoFailure(t *testing.T) {
 	_, port := listenAllInterfaces(t)

@@ -412,7 +412,9 @@ func TestGoBringUpMarksBeforeReturning(t *testing.T) {
 	if _, err := e.svc.Attach(bg, &pb.AttachControllerRequest{SandboxId: sb.GetId(), Controller: controller("orch-1", "a")}); err != nil {
 		t.Fatal(err)
 	}
-	stored, _ := e.reg.Get(sb.GetId())
+	// RUNNING, so the bring-up reaches the blocked load and holds the mark until
+	// it is released: a stopped record would end the bring-up at once.
+	stored := e.setState(t, sb.GetId(), pb.SandboxState_SANDBOX_STATE_RUNNING)
 	e.svc.GoBringUp(stored)
 	if !e.svc.bringingUp(stored.GetId()) {
 		t.Error("GoBringUp returned before marking the bring-up")
@@ -426,6 +428,9 @@ func TestGoBringUpMarksBeforeReturning(t *testing.T) {
 	}
 	if e.svc.bringingUp(stored.GetId()) {
 		t.Error("the bring-up mark outlived the bring-up")
+	}
+	if n := e.loads(t); n != 1 {
+		t.Errorf("%d loads, want the bring-up's", n)
 	}
 	e.svc.GoBringUp(&pb.Sandbox{Id: "plain"})
 	if e.svc.bringingUp("plain") {
