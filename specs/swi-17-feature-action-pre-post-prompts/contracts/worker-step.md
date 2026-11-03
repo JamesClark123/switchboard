@@ -100,10 +100,11 @@ spaces, a literal tag in the text gets a backslash, terminal escapes, zero-width
 removed, and a short paste's accents are composed. A CSI runs to its final byte and a string sequence to its terminator,
 either one skipping any other character on the way, including a tab or an accented letter. CAN, SUB, ESC, U+009C or a
 line break (LF, CR, VT, FF, NEL, LS, PS) ends either one sooner, so a CSI cut off before its final byte stops there and
-keeps what follows. A step with no letters or digits compares the same cleaned text
-without whitespace instead, and a step with nothing left can't be submitted, so no prompt is its own. A mismatch
-writes `last_other_submit_at`, and neither the submit check nor the orchestrator then takes anything after it as the
-step's evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one
+keeps what follows. Any other ESC takes a final character, or one intermediate and the character after it, whatever
+that is, unless it's one of those stops: `ESC $ ( B` loses `ESC $ (` and keeps the `B`. A step with no letters or digits
+compares the same cleaned text without whitespace instead, and a step with nothing left can't be submitted, so no
+prompt is its own. A mismatch writes `last_other_submit_at`, and neither the submit check nor the orchestrator then
+takes anything after it as the step's evidence (research R8). It need not be the developer's: an escape-hatch result or a background wake-up is one
 too. A mismatch writes nothing once a turn is on record for this send (a turn start, or a turn end or a request for
 input with the start lost), so a later prompt can't erase it, and a match clears the field, so a step that runs after
 another prompt still counts. With nothing to compare (a prompt over `maxHookField`, an older agent, or a daemon

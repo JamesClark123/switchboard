@@ -60,11 +60,11 @@ var (
 	//     skips anything else on the way, including a tab or an accented letter;
 	//   - a string sequence (OSC, DCS and the like) runs to its terminator (BEL,
 	//     ST or ESC \), and skips the rest the same way;
-	//   - ESC with its intermediates and final character, which after an
-	//     intermediate may be any non-ASCII character.
+	//   - otherwise ESC and a final character, or ESC, one intermediate and
+	//     whatever comes next, even another intermediate or a non-ASCII character.
 	//
-	// escapeStops end the first two early and aren't removed with them.
-	terminalEscape = regexp.MustCompile(`\x1b(?:\[[^@-~` + escapeStops + `]*[@-~]?|[\]PX^_][^\x07` + escapeStops + `]*(?:\x07|\x1b\\)?|[ -/]*[0-~]|[ -/]+[^\x00-\x7f])`)
+	// escapeStops end any of these early and aren't removed with them.
+	terminalEscape = regexp.MustCompile(`\x1b(?:\[[^@-~` + escapeStops + `]*[@-~]?|[\]PX^_][^\x07` + escapeStops + `]*(?:\x07|\x1b\\)?|[0-~]|[ -/][^` + escapeStops + `]?)`)
 )
 
 // escapeStops are what cut a sequence short: CAN, SUB, ESC, ST, and every line
