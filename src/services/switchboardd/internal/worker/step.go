@@ -113,7 +113,7 @@ func (s *Service) restartAgent(ctx context.Context, sandboxID string) error {
 	if s.reaper == nil {
 		return fmt.Errorf("%w: detached agents are not handled here", ErrPrecondition)
 	}
-	if err := s.reaper.ReapOrphan(ctx, sandboxID, sandbox.ReapRestart); err != nil {
+	if err := s.reaper.ReapOrphan(ctx, sandboxID, sandbox.ReapRestart); err != nil && !errors.Is(err, sandbox.ErrNothingToStop) {
 		return fmt.Errorf("%w: %v", ErrPrecondition, err)
 	}
 	if err := s.startAgentErr(sandboxID); err != nil {

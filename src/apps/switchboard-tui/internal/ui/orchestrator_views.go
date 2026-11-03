@@ -173,7 +173,10 @@ func (m Model) orchDetailHelp() helpBindings {
 	hb := helpBindings{hkey("←/→", "view"), hkey("↑/↓", "move")}
 	switch d.view {
 	case viewWorkers:
-		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"), hkey("P", "pause/resume"), hkey("t", "terminal"), hkey("R", "replace detached"))
+		hb = append(hb, hkey("x", "detach"), hkey("m", "mark free"), hkey("P", "pause/resume"), hkey("t", "terminal"))
+		if od, err := m.connectedDaemon(d.host); err == nil && od.HasCapability(capReplaceDetached) {
+			hb = append(hb, hkey("R", "replace detached"))
+		}
 		if m.hostHasLanes(d.host) {
 			hb = append(hb, hkey("l", "lanes"))
 		}

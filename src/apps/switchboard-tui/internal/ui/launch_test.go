@@ -48,8 +48,10 @@ type fakeDaemon struct {
 	baselineMet bool
 	mcpAvail    bool
 	mcpReason   string
-	// SWI-18: the fake advertises "lanes" unless noLanes is set.
-	noLanes bool
+	// SWI-18: the fake advertises "lanes" unless noLanes is set; SWI-25:
+	// "replace-detached" unless noReplace is set.
+	noLanes   bool
+	noReplace bool
 	// SWI-21 fakes: mcpEdit advertises "mcp-edit"; mcpPendings ride on the
 	// list; mcpViews answers GetMcpServerDefinition by name (mcpDefErr fails
 	// it); mcpSaveResults are popped one per SaveMcpServer (an empty queue
@@ -422,7 +424,7 @@ func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
 func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
 
 func (f *fakeDaemon) HasCapability(name string) bool {
-	return name == "lanes" && !f.noLanes || name == "mcp-edit" && f.mcpEdit
+	return name == "lanes" && !f.noLanes || name == "mcp-edit" && f.mcpEdit || name == "replace-detached" && !f.noReplace
 }
 
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {

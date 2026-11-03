@@ -16,6 +16,11 @@ import (
 // time: each reap is one `sbx exec` of up to orphanKillWait + a probe.
 const replaceConcurrency = 4
 
+// CapabilityReplaceDetached is the DaemonInfo capability that advertises
+// ReplaceDetachedAgent (SWI-25 A1), so the TUI offers R only against a daemon
+// that has it.
+const CapabilityReplaceDetached = "replace-detached"
+
 // ReplaceDetachedAgent is the developer's bulk Replace (SWI-25 A1; `R` on the
 // Workers view): for each named sandbox, or every idle detached one on this
 // host, the detached agent is stopped (sandbox.Manager.ReapOrphan, the same
@@ -75,6 +80,11 @@ func (s *Server) replaceDetached(ctx context.Context, id string) *pb.ReplaceDeta
 	}
 	switch err := s.mgr.ReapOrphan(ctx, id, sandbox.ReapReplace); {
 	case err == nil:
+	case errors.Is(err, sandbox.ErrNothingToStop):
+		// A probe cleared the sandbox since the check above: the daemon's own
+		// agent (or none) is what runs there, and nothing was replaced.
+		o.Result, o.Error = pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_NOT_DETACHED, "the check cleared meanwhile"
+		return o
 	case errors.Is(err, agent.ErrBusy):
 		o.Result, o.Error = pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_BUSY, err.Error()
 		return o
@@ -94,11 +104,15 @@ func (s *Server) replaceDetached(ctx context.Context, id string) *pb.ReplaceDeta
 }
 
 // startAgent starts a sandbox's agent as AttachAgent does after its Replace:
-// the terminal registry's broadcaster spawns the session (and keeps draining
-// its output with no client attached); without a terminal registry the agent
-// registry spawns it directly.
+// through the worker side when there is one (worker.Service.StartAgent, which
+// leaves a sandbox mid bring-up to that bring-up, so a worker's fresh agent
+// always has its gateway tools), else the terminal registry's broadcaster
+// spawns the session (and keeps draining its output with no client attached);
+// without either the agent registry spawns it directly.
 func (s *Server) startAgent(id string) error {
 	switch {
+	case s.worker != nil:
+		return s.worker.StartAgent(id)
 	case s.terms != nil:
 		_, err := s.terms.Broadcaster(id)
 		return err

@@ -1039,7 +1039,7 @@ func TestReapOrphan(t *testing.T) {
 	e := newOrphanEnv(t)
 	ctx := context.Background()
 	e.put(t, "plain", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
-	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); err != nil || e.run.count("reap") != 0 {
+	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); !errors.Is(err, ErrNothingToStop) || e.run.count("reap") != 0 {
 		t.Fatalf("no orphan: %v, %d reaps", err, e.run.count("reap"))
 	}
 
@@ -1094,7 +1094,7 @@ func TestReapOrphan(t *testing.T) {
 	if err := e.m.ReapOrphan(ctx, "down", ReapReplace); err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("stopped: %v", err)
 	}
-	if err := e.m.ReapOrphan(ctx, "missing", ReapReplace); err != nil {
+	if err := e.m.ReapOrphan(ctx, "missing", ReapReplace); !errors.Is(err, ErrNothingToStop) {
 		t.Errorf("no state: %v", err)
 	}
 	e.m.orphans.setUnknown("missing")
@@ -1298,11 +1298,34 @@ func TestCheckFailedNotifiesAndOverlaysTheNote(t *testing.T) {
 	if e.notes.n() != 1 {
 		t.Errorf("re-notified: %v", e.notes.msgs)
 	}
-	// The check clears: the earlier note is back.
+	// The orchestrator writes a note under the overlay through the worker side
+	// (ApplyCheckNote): the failure stays, and that note is the one restored.
+	if _, err := e.reg.Update("s", func(s *pb.Sandbox) error {
+		s.Controller.Run.StepNote = "waiting: pushed"
+		e.m.ApplyCheckNote(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); !strings.HasPrefix(note, "can't check for a detached agent: ") {
+		t.Fatalf("note after a push under the overlay = %q", note)
+	}
+	// A run newly put on the sandbox carries the failure at once.
+	if _, err := e.reg.Update("s", func(s *pb.Sandbox) error {
+		s.Controller.Run = &pb.WorkerRun{Id: "r1b", StepNote: "setting up"}
+		e.m.ApplyCheckNote(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); !strings.HasPrefix(note, "can't check for a detached agent: ") {
+		t.Fatalf("note on a new run = %q", note)
+	}
+	// The check clears: the note that was under the overlay is back.
 	e.run.setOut("s", goneOut)
 	e.m.RecheckOrphan("s")
 	e.waitState(t, "s", pb.AgentCheck_STATE_CLEAR)
-	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); note != "waiting: x" {
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); note != "setting up" {
 		t.Errorf("restored note = %q", note)
 	}
 

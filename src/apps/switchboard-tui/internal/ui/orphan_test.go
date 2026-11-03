@@ -363,6 +363,17 @@ func TestWorkersViewBulkReplace(t *testing.T) {
 	}}); got != "replaced 0 · skipped 4 (w2: has a run; w3: its agent is live; w4: not detached; w5: odd) · failed 1 (abcdefgh: stop the detached agent: exit 1)" {
 		t.Errorf("summary = %q", got)
 	}
+	// A daemon without the RPC: R is not offered and says why.
+	a.noReplace = true
+	m = openDetail(t, m)
+	if v := m.View(); strings.Contains(v, "R replace detached") {
+		t.Error("R is offered against a daemon without bulk Replace")
+	}
+	m, _ = update(m, press("R"))
+	if m.screen != screenOrchDetail || !strings.Contains(m.orchDetail.status, "predates bulk Replace") {
+		t.Errorf("old daemon: screen %v status %q", m.screen, m.orchDetail.status)
+	}
+	a.noReplace = false
 	// Nothing idle and detached: R says so.
 	a.orchDetail.Workers = a.orchDetail.Workers[:1]
 	m = openDetail(t, m)

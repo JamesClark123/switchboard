@@ -129,6 +129,12 @@ func (s *Service) startAgent(sandboxID, why string) {
 	}
 }
 
+// StartAgent starts a sandbox's agent for the bulk Replace (SWI-25 A1,
+// grpc.Server.ReplaceDetachedAgent), as a warm start does: not while the
+// sandbox is mid bring-up (that bring-up starts it, with its gateway tools),
+// nor beside a live one. It reports why the agent was not started.
+func (s *Service) StartAgent(sandboxID string) error { return s.startAgentErr(sandboxID) }
+
 // startAgentErr is startAgent returning why the agent was not started. Every
 // spawn goes through the orphan gate (agent.Registry.Session), which refuses
 // beside an agent detached by a daemon restart (research R14).

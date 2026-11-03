@@ -617,13 +617,21 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 // detached agent the daemon overlays controller.run.step_note with the failure
 // and restores the earlier note once the check clears or finds the agent. The
 // run's note follows both ways, so the Jobs screen shows the failure, and
-// workerRunFor never pushes the run's own note over the daemon's. It reports
+// workerRunFor never pushes the run's own note over the daemon's (one the
+// orchestrator writes during the spell reaches the daemon once it ends). The
+// failure only ever replaces an empty or `waiting:` note: a halt or hold note
+// the orchestrator wrote meanwhile stands, since it says more. It reports
 // whether it changed the run.
 func (rt *runtime) mirrorCheckNote(run *pb.Run, wr *pb.WorkerRun) bool {
 	if wr.GetId() != run.GetId() || wr.GetStepNote() == run.GetStepNote() {
 		return false
 	}
-	if !swb.IsCheckFailedNote(wr.GetStepNote()) && !swb.IsCheckFailedNote(run.GetStepNote()) {
+	switch {
+	case swb.IsCheckFailedNote(wr.GetStepNote()):
+		if n := run.GetStepNote(); n != "" && !strings.HasPrefix(n, waitingPrefix) {
+			return false
+		}
+	case !swb.IsCheckFailedNote(run.GetStepNote()):
 		return false
 	}
 	note := wr.GetStepNote()

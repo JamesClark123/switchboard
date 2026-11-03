@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -266,7 +267,7 @@ type detachedReplacedMsg struct {
 func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	d := &m.orchDetail
 	byHost := map[string]*replaceTarget{}
-	var hosts, names []string
+	var hosts, names, tooOld []string
 	allIdle := true
 	for _, w := range d.detail.GetWorkers() {
 		if w.GetRunId() != "" {
@@ -278,6 +279,10 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 		}
 		od, err := m.connectedDaemon(host)
 		if err != nil {
+			continue
+		}
+		if !od.HasCapability(capReplaceDetached) {
+			tooOld = append(tooOld, sanitizeLine(sb.GetDisplayName(), 24))
 			continue
 		}
 		t := byHost[host]
@@ -294,6 +299,9 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	}
 	if len(names) == 0 {
 		d.status = "no idle detached worker to replace (a worker with a run: t → Replace)"
+		if len(tooOld) > 0 {
+			d.status = "the daemon of " + strings.Join(tooOld, ", ") + " predates bulk Replace — update with u, or t → Replace"
+		}
 		return m, nil
 	}
 	sort.Strings(hosts)
@@ -304,7 +312,7 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	d.status = ""
 	return m.enterConfirm(confirmState{
 		title:        fmt.Sprintf("Replace %s of %s?", plural(len(names), "detached agent", "detached agents"), sanitizeLine(d.name, 32)),
-		body:         []string{strings.Join(names, ", "), "Each is stopped and a fresh agent started.", "Workers with a run are left alone."},
+		body:         replaceBody(names, tooOld),
 		warning:      "Replacing stops them.",
 		returnTo:     screenOrchDetail,
 		acceptLabel:  "replace",
@@ -314,19 +322,49 @@ func (m Model) replaceDetachedWorkers() (tea.Model, tea.Cmd) {
 	})
 }
 
-// replaceDetachedCmd calls each daemon in turn and gathers the outcomes.
+// capReplaceDetached is the DaemonInfo capability that advertises the bulk
+// Replace RPC (grpc.CapabilityReplaceDetached).
+const capReplaceDetached = "replace-detached"
+
+// replaceBody is the confirm's lines: the workers, what happens, and those
+// whose daemon can't do it.
+func replaceBody(names, tooOld []string) []string {
+	body := []string{strings.Join(names, ", "), "Each is stopped and a fresh agent started.", "Workers with a run are left alone."}
+	if len(tooOld) > 0 {
+		body = append(body, "Not included (daemon predates bulk Replace): "+strings.Join(tooOld, ", "))
+	}
+	return body
+}
+
+// replaceDetachedCmd calls every daemon at once, each on its own timeout (a
+// daemon stops its agents a few at a time, up to ~15 s each), and gathers the
+// outcomes in host order.
 func replaceDetachedCmd(targets []replaceTarget) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
+		type reply struct {
+			out []*pb.ReplaceDetachedAgentResponse_Outcome
+			err error
+		}
+		replies := make([]reply, len(targets))
+		var wg sync.WaitGroup
+		for i, t := range targets {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := ctxTimeout()
+				defer cancel()
+				out, err := t.d.ReplaceDetachedAgents(ctx, t.ids)
+				replies[i] = reply{out: out, err: err}
+			}()
+		}
+		wg.Wait()
 		var msg detachedReplacedMsg
-		for _, t := range targets {
-			out, err := t.d.ReplaceDetachedAgents(ctx, t.ids)
-			if err != nil {
-				msg.errs = append(msg.errs, sanitizeLine(t.hostName, 24)+": "+sanitizeLine(err.Error(), 80))
-				continue
+		for i, t := range targets {
+			if r := replies[i]; r.err != nil {
+				msg.errs = append(msg.errs, sanitizeLine(t.hostName, 24)+": "+sanitizeLine(r.err.Error(), 80))
+			} else {
+				msg.outcomes = append(msg.outcomes, r.out...)
 			}
-			msg.outcomes = append(msg.outcomes, out...)
 		}
 		return msg
 	}

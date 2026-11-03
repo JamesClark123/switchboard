@@ -116,13 +116,14 @@ func (l *sandboxLocks) setGateOp(op string) {
 	l.holderMu.Unlock()
 }
 
-// busy is the refusal of a try-lock of rw: the holder's operation, or
-// agent.ErrBusy's generic text if it released between the try and this read.
+// busy is the refusal of a try-lock of rw: the holder's operation, or the
+// generic text if it released between the try and this read (still a
+// RuntimeBusyError, so both sentinels match).
 func (l *sandboxLocks) busy() error {
 	l.holderMu.Lock()
 	defer l.holderMu.Unlock()
 	if len(l.ops) == 0 {
-		return agent.ErrBusy
+		return &RuntimeBusyError{Op: "sandbox is busy"} // released between the try and this read
 	}
 	return &RuntimeBusyError{Op: "sandbox is " + l.ops[0]}
 }
@@ -132,7 +133,7 @@ func (l *sandboxLocks) gateBusy() error {
 	l.holderMu.Lock()
 	defer l.holderMu.Unlock()
 	if l.gateOp == "" {
-		return agent.ErrBusy
+		return &RuntimeBusyError{Op: "sandbox is busy"}
 	}
 	return &RuntimeBusyError{Op: l.gateOp}
 }

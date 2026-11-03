@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/mcp"
@@ -24,6 +23,10 @@ type Manager interface {
 	Get(id string) (*pb.Sandbox, error)
 	List() ([]*pb.Sandbox, error)
 	Emit(sb *pb.Sandbox)
+	// ApplyCheckNote keeps a run's step_note in step with the sandbox's
+	// detached-agent check as an update lands (SWI-25 A3); it runs inside
+	// the record's write transaction.
+	ApplyCheckNote(sb *pb.Sandbox)
 }
 
 // Registry is the registry surface: the sandbox record (CAS under Update) and
@@ -303,11 +306,15 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 			cur.Name = req.GetName()
 		}
 		if req.GetSetRun() {
-			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()), x.GetAgent().GetAgentCheck().GetState())
+			run, err := nextRun(cur.GetRun(), req, s.agentGen(x.GetId()))
 			if err != nil {
 				return err
 			}
 			cur.Run = run
+			// While the sandbox can't be checked for a detached agent, the
+			// daemon's failure note stays on the run and the note the
+			// orchestrator just wrote is the one restored after (SWI-25 A3).
+			s.mgr.ApplyCheckNote(x)
 		}
 		if l := req.GetLanes(); l != nil {
 			// SWI-18 (FR-309a/b): a display copy only. A name breaking the
@@ -375,7 +382,7 @@ func (s *Service) Update(ctx context.Context, req *pb.UpdateWorkerRequest) (*pb.
 //   - hold_gen is never taken from the request (research R13): a write that
 //     moves a run into NEEDS_DEVELOPER records gen, the sandbox's agent
 //     generation now; one that keeps an existing hold keeps its value.
-func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64, check pb.AgentCheck_State) (*pb.WorkerRun, error) {
+func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64) (*pb.WorkerRun, error) {
 	next := req.GetRun()
 	if want := req.GetExpectRunId(); want != "" && (cur == nil || cur.GetId() != want) {
 		return nil, fmt.Errorf("%w: run moved", ErrPrecondition)
@@ -401,12 +408,6 @@ func nextRun(cur *pb.WorkerRun, req *pb.UpdateWorkerRequest, gen int64, check pb
 	}
 	if same {
 		next.StepRole, next.StepIndex, next.StepSentAt = cur.GetStepRole(), cur.GetStepIndex(), cur.GetStepSentAt()
-		// The daemon's check-failed note stays while the check fails (SWI-25
-		// A3): the orchestrator mirrors it rather than writing over it, and the
-		// daemon restores the earlier note itself (sandbox.orphans.noteOverlay).
-		if check == pb.AgentCheck_STATE_CHECK_FAILED && swb.IsCheckFailedNote(cur.GetStepNote()) && !swb.IsCheckFailedNote(next.GetStepNote()) {
-			next.StepNote = cur.GetStepNote()
-		}
 	}
 	return next, nil
 }

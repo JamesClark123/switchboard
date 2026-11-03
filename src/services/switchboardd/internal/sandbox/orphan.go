@@ -489,7 +489,7 @@ func (o *orphans) probeIn(id string, held bool) {
 		if !st.again {
 			st.probing = false
 			o.mu.Unlock()
-			o.batchDone(id)
+			o.batchEnd(id)
 			return
 		}
 		st.again = false
@@ -805,14 +805,9 @@ func (o *orphans) batchTake(id, msg string, affected *pb.NotificationEvent_Affec
 	return true
 }
 
-// batchDone ends id's start-up probe; the last one closes the batch and
-// notifies what it found.
-func (o *orphans) batchDone(id string) { o.batchEnd(id) }
-
-// batchDrop ends the start-up probes that never started (the daemon is
-// shutting down), so what the batch found so far is still notified.
-func (o *orphans) batchDrop(ids ...string) { o.batchEnd(ids...) }
-
+// batchEnd ends the start-up probes of ids: one that answered, or those that
+// never started (the daemon is shutting down). The last one closes the batch
+// and notifies what it found.
 func (o *orphans) batchEnd(ids ...string) {
 	o.mu.Lock()
 	b := o.batch
@@ -1014,7 +1009,7 @@ func (o *orphans) feed(ctx context.Context, probe []probeCandidate) {
 			for _, c := range probe[i:] {
 				rest = append(rest, c.id)
 			}
-			o.batchDrop(rest...)
+			o.batchEnd(rest...)
 			return
 		}
 		go o.probeIn(c.id, true)
@@ -1070,9 +1065,11 @@ func (o *orphans) pendingIDs() []string {
 }
 
 // ReapOrphan is the developer's stop of a detached agent (research R14),
-// called only by AttachAgent with replace_orphan and DeliverWorkerStep's
-// restart; the daemon never calls it on its own. A sandbox with no orphan
-// record and no unknown check has nothing to stop. Otherwise, on a RUNNING
+// called only by AttachAgent with replace_orphan, DeliverWorkerStep's restart
+// and the bulk Replace (ReplaceDetachedAgent); the daemon never calls it on its
+// own. A sandbox with no orphan record and no unknown check has nothing to
+// stop (ErrNothingToStop: a Replace goes on to its spawn, a bulk Replace
+// reports the sandbox skipped). Otherwise, on a RUNNING
 // sandbox, under the orphan gate (try-lock: a RuntimeBusyError, agent.ErrBusy,
 // naming the holder while an operation holds the runtime lock, or a probe or
 // spawn holds the gate), one script
@@ -1084,7 +1081,7 @@ func (o *orphans) pendingIDs() []string {
 func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) error {
 	o := m.orphans
 	if !o.pending(id) {
-		return nil
+		return ErrNothingToStop
 	}
 	sb, err := m.store.Get(id)
 	if err != nil {
@@ -1101,7 +1098,7 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 	// Again under the gate: a probe may have cleared the sandbox since, and
 	// the daemon's own fresh agent (a live session) is never stopped.
 	if !o.pending(id) {
-		return nil
+		return ErrNothingToStop
 	}
 	if d := o.getDeps(); d.Agents != nil {
 		if _, live := d.Agents.LiveGen(id); live {
@@ -1148,6 +1145,22 @@ func (m *Manager) ReapOrphan(ctx context.Context, id string, mode ReapMode) erro
 // ErrLiveSession refuses a reap while the daemon has a live agent session for
 // the sandbox: the script would find and stop that agent.
 var ErrLiveSession = errors.New("the sandbox's agent is not detached")
+
+// ErrNothingToStop is ReapOrphan on a sandbox with neither an orphan record
+// nor an unknown check: nothing was stopped (a probe may have cleared it since
+// the caller looked).
+var ErrNothingToStop = errors.New("no detached agent to stop")
+
+// ApplyCheckNote keeps a worker run's step_note in step with the sandbox's
+// published check inside a write the tracker didn't make (SWI-25 A3): the
+// worker side calls it as it applies an orchestrator's run update, so a run
+// newly put on a sandbox whose check keeps failing carries the failure at
+// once, and a note the orchestrator writes under the overlay becomes the one
+// restored when the check clears. It runs inside the store's write
+// transaction, like noteOverlay.
+func (m *Manager) ApplyCheckNote(s *pb.Sandbox) {
+	m.orphans.noteOverlay(s.GetId(), s, s.GetAgent().GetAgentCheck())
+}
 
 // IdleDetached lists the sandboxes with an orphan record (DETACHED) whose
 // controller has no run, sorted: the candidates of a bulk Replace (SWI-25 A1,
