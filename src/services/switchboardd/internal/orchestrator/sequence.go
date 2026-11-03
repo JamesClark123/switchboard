@@ -41,7 +41,7 @@ const (
 	clearStoppedNote = "clear retries stopped"
 	restartingNote   = "restarting setup with a fresh agent"
 	unconfirmedNote  = "typed, but not confirmed"
-	otherPromptNote  = "another prompt was submitted"
+	otherPromptNote  = worker.OtherPromptNote
 	noEvidenceNote   = "typed, but no report says it was accepted"
 	resumedNote      = "resumed: its turn was seen after the halt"
 	unsupportedNote  = "the worker's daemon does not support pre/post prompts"
@@ -983,8 +983,10 @@ func typedLocked(l *pb.Run, res stepResult, resp *pb.DeliverWorkerStepResponse, 
 func haltLocked(l *pb.Run, note string) stepFx {
 	l.StepStatus = pb.StepStatus_STEP_STATUS_HALTED
 	l.StepNote = note
-	marker := "" // the row's (may have run): the notification has no other place for it
-	if l.GetStepUnconfirmed() {
+	// It was typed and may have run. The row says so with its own marker; the
+	// notification has no other place for it.
+	marker := ""
+	if l.GetStepUnconfirmed() || l.GetStepSentBeforeRestart() {
 		marker = " (may have run)"
 	}
 	return stepFx{sync: true, halted: "halted: " + stepLabel(l) + " not accepted" + marker + " — " + note}

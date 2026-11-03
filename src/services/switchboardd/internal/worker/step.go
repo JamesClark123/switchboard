@@ -182,6 +182,10 @@ func builtinText(step *pb.RunStep) (string, error) {
 // screenResyncing is the note of a step left unknown by a stale screen.
 const screenResyncing = "screen resyncing"
 
+// OtherPromptNote is the note of a step left unknown by another prompt. The
+// orchestrator reads it too: it keeps it as a built-in's reason to halt.
+const OtherPromptNote = "another prompt was submitted"
+
 // readSpec is the expected read-back of a built-in.
 type readSpec struct {
 	kind   pb.StepKind
@@ -544,7 +548,7 @@ func (s *Service) submitCheck(ctx context.Context, c stepCheck) *pb.DeliverWorke
 				// The screen and status may be that prompt's too. Typed, not
 				// classified: the orchestrator resolves it by evidence (research R8).
 				r := resp(pb.StepOutcome_STEP_OUTCOME_UNCONFIRMED)
-				r.Note = "another prompt was submitted"
+				r.Note = OtherPromptNote
 				return r
 			case present && ready && strings.TrimSpace(text) == "" && s.agentIdle(c.id):
 				if c.read.kind == pb.StepKind_STEP_KIND_ACTION_PROMPT && !s.actionTurnSeen(c, lines) {

@@ -432,6 +432,8 @@ func TestStepPrompt(t *testing.T) {
 		{"unterminated osc ends with its row", "\x1b]0;title\ndef ghi end", "\ndef ghi end", true},
 		{"unterminated osc keeps the rows after it", cutOffOSC, "first\n" + plainRows, true},
 		{"unterminated osc is more than its first word", cutOffOSC, "which came first?", false},
+		{"osc ended at CR is more than its first word", "abc \x1b]0;title\rdef ghi\rjkl end", "which abc?", false},
+		{"osc ended at ST is more than its first word", "abc \x1b]0;title\u009c def end", "which abc?", false},
 		{"zero-width inside an accent", "cafe\u200b\u0301 end", "caf\u00e9 end", true},
 		{"control character inside an accent", "cafe\x01\u0301 end", "caf\u00e9 end", true},
 		{"no letters or digits, coloured", "\x1b[31m???\x1b[0m", "???", true},
@@ -448,6 +450,92 @@ func TestStepPrompt(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := StepPrompt(c.prompt, c.step); got != c.want {
 				t.Errorf("StepPrompt(%q, %q) = %v, want %v", c.prompt, c.step, got, c.want)
+			}
+		})
+	}
+}
+
+// SWI-28: more of what Claude Code 2.1.317 reported for bracketed pastes, for an
+// escape cut short or with something unusual inside it. These compare the whole
+// cleaned text, as StepPrompt's containment would still pass if a step read as only
+// its first word.
+func TestStepPromptReadsEscapesAsTheAgentDoes(t *testing.T) {
+	rows := strings.Repeat("\x1b[32mline\x1b[0m\n", 40)
+	plainRows := strings.Repeat("line\n", 40)
+	for _, c := range []struct{ name, step, prompt string }{
+		{"csi skips a tab", "abc \x1b[3\tfoo bar end", "abc oo bar end"},
+		{"csi skips a control character", "abc \x1b[3\x01foo bar end", "abc oo bar end"},
+		{"csi skips DEL", "abc \x1b[3\x7ffoo bar end", "abc oo bar end"},
+		{"csi skips a format character", "abc \x1b[3\u200bfoo bar end", "abc oo bar end"},
+		{"csi skips a format character before its final", "abc \x1b[3\u200b1mdef end", "abc def end"},
+		{"csi skips a c1 control", "abc \x1b[3\u0090foo bar end", "abc oo bar end"},
+		{"csi skips an accented letter", "abc \x1b[3\u00e9foo bar end", "abc oo bar end"},
+		{"csi skips an accented letter as its parameter", "abc \x1b[1;\u00e9xyz end", "abc yz end"},
+		{"csi skips a no-break space", "abc \x1b[3\u00a0foo bar end", "abc oo bar end"},
+		{"csi skips cjk", "abc \x1b[3\u65e5foo bar end", "abc oo bar end"},
+		{"csi skips a hangul filler", "abc \x1b[3\u3164foo bar end", "abc oo bar end"},
+		{"csi takes a parameter after an intermediate", "abc \x1b[1 1mdef end", "abc def end"},
+		{"csi takes several", "abc \x1b[1 2 3mdef end", "abc def end"},
+		{"csi takes an intermediate first", "abc \x1b[ 1mdef end", "abc def end"},
+		{"csi restarts at a c1 csi", "abc \x1b[3\u009b1mfoo bar end", "abc foo bar end"},
+		{"csi restarts at ESC", "abc \x1b[3\x1b[31mfoo bar end", "abc foo bar end"},
+		{"csi ends at CAN", "abc \x1b[3\x18foo bar end", "abc foo bar end"},
+		{"csi ends at SUB", "abc \x1b[3\x1afoo bar end", "abc foo bar end"},
+		{"csi ends at ST", "abc \x1b[3\u009cfoo bar end", "abc foo bar end"},
+		{"csi ends at CR", "abc \x1b[3\rfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at CR LF", "abc \x1b[3\r\nfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at VT", "abc \x1b[3\x0bfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at FF", "abc \x1b[3\x0cfoo bar end", "abc \nfoo bar end"},
+		{"csi ends at NEL", "abc \x1b[3\u0085foo bar end", "abc \nfoo bar end"},
+		{"csi ends at LS", "abc \x1b[3\u2028foo bar end", "abc \nfoo bar end"},
+		{"csi ends at PS", "abc \x1b[3\u2029foo bar end", "abc \nfoo bar end"},
+		{"osc ends at CR", "abc \x1b]0;title\rdef ghi\nrow two end", "abc \ndef ghi\nrow two end"},
+		{"osc ends at CR, not its terminator", "abc \x1b]0;ti\rtle\x07 def end", "abc \ntle def end"},
+		{"osc ends at each CR", "abc \x1b]0;title\rdef ghi\rjkl end", "abc \ndef ghi\njkl end"},
+		{"osc ends at CR LF", "abc \x1b]0;title\r\ndef end", "abc \ndef end"},
+		{"osc ends at VT", "abc \x1b]0;ti\x0btle\x07 def end", "abc \ntle def end"},
+		{"osc ends at FF", "abc \x1b]0;ti\x0ctle\x07 def end", "abc \ntle def end"},
+		{"osc ends at NEL", "abc \x1b]0;ti\u0085tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at LS", "abc \x1b]0;ti\u2028tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at PS", "abc \x1b]0;ti\u2029tle\x07 def end", "abc \ntle def end"},
+		{"osc ends at CAN", "abc \x1b]0;ti\x18tle\x07 def end", "abc tle def end"},
+		{"osc ends at SUB", "abc \x1b]0;ti\x1atle\x07 def end", "abc tle def end"},
+		{"osc ends at ESC", "abc \x1b]0;ti\x1b[31mtle\x07 def end", "abc tle def end"},
+		{"osc ends at ST", "abc \x1b]0;title\u009c def end", "abc  def end"},
+		{"osc ends at ST, across rows", "abc \x1b]0;title\u009c def\nrow two end", "abc  def\nrow two end"},
+		{"osc skips a control character", "abc \x1b]0;ti\x01tle\x07 def end", "abc  def end"},
+		{"osc skips a tab", "abc \x1b]0;ti\ttle\x07 def end", "abc  def end"},
+		{"osc skips an accented letter", "abc \x1b]0;ti\u00e9tle\x07 def end", "abc  def end"},
+		{"osc skips a c1 csi", "abc \x1b]0;ti\u009b1mtle\x07 def end", "abc  def end"},
+		{"dcs ends at CR", "abc \x1bPq\rrow\x1b\\ def end", "abc \nrow def end"},
+		{"dcs ends at BEL", "abc \x1bPq\x07rest\x1b\\ def end", "abc rest def end"},
+		{"dcs ends at CAN", "abc \x1bPq\x18rest\x1b\\ def end", "abc rest def end"},
+		{"dcs ends at ST", "abc \x1bPq\u009c def end", "abc  def end"},
+		{"apc ends at ST", "abc \x1b_q\u009c def end", "abc  def end"},
+		{"pm ends at ST", "abc \x1b^q\u009c def end", "abc  def end"},
+		{"sos ends at ST", "abc \x1bXq\u009c def end", "abc  def end"},
+		{"esc keeps an accented letter", "abc\x1b\u00e9xyz end", "abc\u00e9xyz end"},
+		{"esc and an intermediate take an accented letter", "abc\x1b \u00e9xyz end", "abcxyz end"},
+		{"esc charset takes an accented letter", "abc\x1b(\u00e9xyz end", "abcxyz end"},
+		{"esc and an intermediate end at a control character", "abc\x1b \x01xyz end", "abcxyz end"},
+		{"esc keeps what follows a tab", "abc\x1b\txyz end", "abc    xyz end"},
+		{"c1 osc alone is only a control character", "abc \u009d0;title\x07 def end", "abc 0;title def end"},
+		{"c1 dcs alone is only a control character", "abc \u0090q\u009c def end", "abc q def end"},
+		{"a long paste, csi", rows + "abc \x1b[3\u200b1mdef end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc def end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, csi and an accented letter", rows + "abc \x1b[1;\u00e9xyz end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc yz end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, csi ends at CAN", rows + "abc \x1b[3\x18foo bar end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc foo bar end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, osc ends at CR", rows + "abc \x1b]0;ti\rtle\x07 def end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc \ntle def end\n</pasted_content id=\"2674\">\n"},
+		{"a long paste, osc ends at ST", rows + "abc \x1b]0;title\u009c def end", "\n\n<pasted_content id=\"2674\">\n" + plainRows + "abc  def end\n</pasted_content id=\"2674\">\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !StepPrompt(c.prompt, c.step) {
+				t.Errorf("StepPrompt(%q, %q) = false, want true", c.prompt, c.step)
+			}
+			if strings.Contains(c.prompt, "<pasted_content") {
+				return // the wrapper's own letters are in the prompt, not the step
+			}
+			if got, want := lettersAndDigits(asReported(c.step)), lettersAndDigits(asReported(c.prompt)); got != want {
+				t.Errorf("step %q cleans to %q, want the whole prompt's %q", c.step, got, want)
 			}
 		})
 	}

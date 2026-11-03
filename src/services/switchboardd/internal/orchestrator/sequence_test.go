@@ -712,6 +712,66 @@ func TestReadBackHaltSaysAnotherPromptWasSubmitted(t *testing.T) {
 	}
 }
 
+// SWI-28: a step whose answer was lost halts as sent before a restart, not as
+// unconfirmed, but it was typed all the same: its notification says it may have run.
+func TestLostAnswerHaltSaysItMayHaveRun(t *testing.T) {
+	for _, c := range []struct {
+		name, halted string
+		other        bool
+	}{
+		{name: "no evidence", halted: noEvidenceNote},
+		{name: "another prompt", halted: otherPromptNote, other: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := withSequence([]string{"/ask {ticket}"}, nil)
+			env, w, o, rt, d := seqEnv(t, 1, a)
+			d.set(func(d *fakeDaemon) { d.outcome = lostAnswer })
+			run := callTicket(t, env, o, "1", "T-1")
+			waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_SENT)
+			waitSentSeen(t, rt, run.GetId())
+			if c.other {
+				otherPromptSubmitted(t, w, rt, "wa")
+			}
+			env.clock.Advance(sentGrace)
+			r := waitStep(t, env, o, run.GetId(), 2, pb.StepStatus_STEP_STATUS_HALTED)
+			if r.GetStepUnconfirmed() || !r.GetStepSentBeforeRestart() || r.GetStepNote() != c.halted {
+				t.Errorf("halted = %+v, want sent before a restart, note %q", r, c.halted)
+			}
+			waitFor(t, func() bool {
+				for _, n := range env.hub.notifications() {
+					if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+						return strings.Contains(n.GetMessage(), "not accepted (may have run) — "+c.halted)
+					}
+				}
+				return false
+			})
+		})
+	}
+}
+
+// A step that never reached the agent says nothing of the kind.
+func TestRefusedStepHaltDoesNotSayItMayHaveRun(t *testing.T) {
+	env, _, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.outcome = func(req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+			if req.GetStep().GetKind() == pb.StepKind_STEP_KIND_MODEL {
+				return &pb.DeliverWorkerStepResponse{Outcome: pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, Note: "picker opened"}, nil
+			}
+			return nil, nil
+		}
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 0, pb.StepStatus_STEP_STATUS_HALTED)
+	waitFor(t, func() bool {
+		for _, n := range env.hub.notifications() {
+			if n.GetKind() == pb.NotificationKind_NOTIFICATION_KIND_RUN_STEP_NOT_ACCEPTED {
+				return strings.Contains(n.GetMessage(), "not accepted — picker opened")
+			}
+		}
+		return false
+	})
+}
+
 // SWI-28: evidence arriving after a may-have-run halt takes the halt back; the
 // turn then finishes as usual and no R or X is needed.
 func TestHaltedStepResumesOnLaterEvidence(t *testing.T) {

@@ -159,4 +159,5 @@ sandbox answers "start the sandbox before opening its terminal", as today.
 ## Notifications
 
 `RUN_STEP_NOT_ACCEPTED` shows in the inbox and on the desktop like `RUN_FAILED`: "<run> (<action>): <step> not
-accepted — <reason>".
+accepted — <reason>". A step that was typed and may have run, whether unconfirmed or with its answer lost, reads "not
+accepted (may have run) — <reason>" (SWI-28).

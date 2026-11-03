@@ -55,11 +55,21 @@ var (
 	// pastePlaceholder is how the box shows a multi-line paste.
 	pastePlaceholder = regexp.MustCompile(`^\[Pasted text #\d+[^\]]*\]$`)
 	// terminalEscape is what the agent removes from a paste as one escape, as
-	// observed (2.1.316, 2.1.317): a CSI sequence, even with its final byte cut off,
-	// a string sequence (OSC, DCS and the like) up to its terminator or the end of
-	// its row, or ESC with its intermediates and final character.
-	terminalEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]?|[\]PX^_][^\x07\x1b\n]*(?:\x07|\x1b\\)?|[ -/]*[0-~])`)
+	// observed (2.1.316, 2.1.317):
+	//   - a CSI sequence runs to its final byte, even cut off before one, and
+	//     skips anything else on the way, including a tab or an accented letter;
+	//   - a string sequence (OSC, DCS and the like) runs to its terminator (BEL,
+	//     ST or ESC \), and skips the rest the same way;
+	//   - ESC with its intermediates and final character, which after an
+	//     intermediate may be any non-ASCII character.
+	//
+	// escapeStops end the first two early and aren't removed with them.
+	terminalEscape = regexp.MustCompile(`\x1b(?:\[[^@-~` + escapeStops + `]*[@-~]?|[\]PX^_][^\x07` + escapeStops + `]*(?:\x07|\x1b\\)?|[ -/]*[0-~]|[ -/]+[^\x00-\x7f])`)
 )
+
+// escapeStops are what cut a sequence short: CAN, SUB, ESC, ST, and every line
+// break, as the agent turns CR, VT, FF, NEL, LS and PS into a newline first.
+const escapeStops = `\x18\x1a\x1b\n\v\f\r\x{85}\x{9c}\x{2028}\x{2029}`
 
 // InputBox reads the input box: every row between the last two horizontal rules,
 // starting at the `❯` row, with wrapped rows joined. text is the typed text with
