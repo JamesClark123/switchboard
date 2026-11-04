@@ -526,6 +526,10 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 - [ ] T049 Manual: quickstart Scenarios 0–7 on a real machine; record Scenario 0's results in
   `contracts/editor-launch.md` §1's *Verified* column (Windsurf and Cursor rows; Zed's installed version) with the
   date, and fix the Windsurf catalogue row if its authority differs (research R8).
+  **Deferred, not run** (developer's decision on PR #38, 2026-11-03: "Please continue without T049 confirmation").
+  Scenarios 0–7 weren't run on a real machine, so the *Verified* column stays as it was: Windsurf's and Cursor's
+  `--remote` rows are documentation-derived, and Zed's address form is from its source, unconfirmed on an installed
+  version. The box stays unchecked because the task wasn't done.
 
 ---
 
@@ -558,7 +562,7 @@ argument; `cd {path} && nvim .` is rejected with the shell-syntax reason.
 2. US2 and US4 are small on top of US1 (messages and the remote branch of `Resolve`, both already in `editor`).
 3. US3 adds the input and the guard surface last, since nothing else needs them.
 4. Polish pins SC-004/SC-008 layouts, the e2e flows and the docs, then the manual quickstart settles the
-   documentation-derived rows.
+   documentation-derived rows (T049, deferred: those rows stay documentation-derived for now).
 
 Format check: every task above has a checkbox, an ID, a `[P]` marker only where parallel, a `[USn]` label in the
 story phases, and names its file(s).

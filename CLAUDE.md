@@ -148,7 +148,7 @@ A package that reads any env var MUST:
 
 <!-- SPECKIT START -->
 Active feature: `specs/swi-24-feature-make-the-editor-configurable/plan.md` (Configurable Editor for the
-Open-in-Editor Key, SWI-24; **implemented** — T001–T048 done, T049 manual quickstart pending, so Windsurf's and
+Open-in-Editor Key, SWI-24; **implemented** — T001–T048 done, T049 manual quickstart deferred, so Windsurf's and
 Cursor's `--remote` rows are still documentation-derived). **TUI-only**: no daemon, proto or bbolt change. `v`
 opens the sandbox's workspace folder in the editor chosen on the settings screen. Package **`internal/editor`**
 replaces `internal/vscode` (stdlib only): the FR-501 catalogue (`Catalogue`/`Lookup`/`Command(e, bins)` — a blank
