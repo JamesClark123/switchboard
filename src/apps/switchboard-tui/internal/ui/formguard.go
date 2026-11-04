@@ -293,6 +293,9 @@ const (
 	gTag
 	gHostAdd
 	gGroupAdd
+	// gEditorCommand is the settings screen's Custom command input (SWI-24,
+	// FR-528), chosen from the screen's sub-state like gHostAdd.
+	gEditorCommand
 )
 
 // activeGuard is the surface open now. Every case checks m.screen first, so a
@@ -357,6 +360,10 @@ func (m Model) activeGuard() (guardSurface, bool) {
 	case screenGroups:
 		if m.groups.adding {
 			return gGroupAdd, true
+		}
+	case screenSettings:
+		if m.settingsView.mode == settingsInput {
+			return gEditorCommand, true
 		}
 	}
 	return gNone, false
@@ -455,6 +462,8 @@ func (m Model) guardDirty(g guardSurface) bool {
 		return strings.TrimSpace(m.hosts.input.Value()) != ""
 	case gGroupAdd:
 		return strings.TrimSpace(m.groups.input.Value()) != ""
+	case gEditorCommand:
+		return strings.TrimSpace(m.settingsView.input.Value()) != m.settingsView.inputInitial
 	}
 	return false
 }
@@ -513,6 +522,9 @@ func (m Model) surfaceSave(g guardSurface) (Model, tea.Cmd) {
 		return m.submitHostAdd()
 	case gGroupAdd:
 		return m.submitGroupAdd()
+	case gEditorCommand:
+		// Save acts exactly like enter: a rejection keeps the input open.
+		return guardResult(m.submitEditorCommand())
 	}
 	return m, nil
 }
@@ -566,6 +578,8 @@ func (m Model) guardLeave(g guardSurface) (Model, tea.Cmd) {
 		m = m.leaveHostAdd()
 	case gGroupAdd:
 		m = m.leaveGroupAdd()
+	case gEditorCommand:
+		m = m.leaveEditorCommand(settingsList) // back one level: the list
 	}
 	return m, nil
 }

@@ -188,7 +188,8 @@ re-reads the file into `settingsFile` (a missing file is the zero value; a read 
 `*store.SettingsUnreadableError` without writing), copies each non-nil change over the corresponding pointer
 field, so only the changed keys are written and an absent, unchanged key stays absent, and writes through a new
 `Store.SaveTOMLPrivate(name, v)`: `os.CreateTemp(dir, ".settings.toml-*.tmp")` (fresh, unique, `0600`), write,
-close, `os.Rename`, then `os.Chmod(full, 0600)` so an existing wider file is corrected (FR-527). A failure after
+close, `os.Rename`, which replaces an existing wider file with the `0600` one, so no chmod follows: one could only
+fail after the save had happened, and report it as failed (FR-527). A failure after
 `CreateTemp` removes the temp file: each name is unique, so nothing else would, and it can hold the Custom command
 after the developer has cleared it from settings. Unknown keys and
 comments are dropped, as FR-530 states. The callers are: toggle → `{AutoConnectHosts: &v}`; built-in editor →
@@ -340,7 +341,7 @@ answer for the rest.
   static view cuts the message to fit with the header on screen; `chrome` never drops lines from the bottom of the
   body. `BenchmarkViewList` keeps the frame cost visible.
 - **Size check** in the `Update` wrapper, after the release (R10) and skipped on the terminal screen: a small
-  `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, markFree bool}` is compared
+  `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, listHelp listHelpEntries}` is compared
   with the one stored; on a change the active surface's height is compared with its target and set only if they
   differ: `m.list.Height() != m.mainListHeight()` → `SetSize`; an open item list (groups, hosts, configs picker,
   kit picker, notifications, runs, services) → `SetSize(bodyWidth, bodyHeight)`; an open huh form → `WithHeight`
@@ -371,7 +372,16 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   the error style when `m.status != "" && m.status == m.vFail.text` (and keeps today's `m.err`/`error` prefix
   rule). A completion message never sets it, and clears `m.err` as `statusMsg` does today. `editorOutcomeMsg` with
   `failed` and `editorExitMsg` set `m.status`, `m.vFail` and don't touch `m.err`.
-- `vHold struct{text string; seq uint64}`: a held message and the attach number it waits on (0 = none pending).
+- `vHold struct{text string; seq uint64; since time.Time}`: a held message, the attach number it waits on (0 = none
+  pending) and when that attach started. Past `vHoldAttachLimit` (5 s) a pending attach no longer hides the message:
+  a timer shows one already held, and `setVFail` shows a later one at once. Either way it's then an ordinary showing
+  message with `vFail.at = now`, not a held one. A `v` completion clears `text`. These were added in PR review
+  (2026-11-04). The timer's message joins an error or `termFail` showing at the limit, because the timer, unlike a
+  release, fires whatever has happened since. `statusIsErr()` alone can't decide that: a stale `m.err` styles
+  `opening terminal…` too, so the attach's own texts and the held text are excluded. An earlier version kept a shown
+  message held and recorded when it went on screen (`shown`). Three review rounds found low edge cases in that overlap,
+  so it was removed: a message is held out of sight or showing, not both, and one recency rule covers every showing
+  message, apart from one joined to an input error, which has a zero `vFail.at` because it leaves with the input.
 - `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),
@@ -385,13 +395,13 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
 
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
-`confirmReplaceOrphan` for a non-external attach sets `holdsV` with the same copy rule and sets
-`onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
+`confirmReplaceOrphan` for a non-external attach sets `holdsV`, notes the message that rule would copy without holding
+it (clearing the copy an attach ending has just made, when a detached refusal opens the dialog), and sets `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
 `replaceOrphanMsg`) in the same message, so the hold passes from the dialog to
-the attach with no gap; a decline or a dropped dialog needs nothing, so the release follows at once. A `v` failure or refusal arriving while `vHold.seq != 0`
+the attach with no gap, and to hold the noted message if nothing is held and it's still the status. A decline or a dropped dialog needs nothing, so the release follows at once and a message left showing stays an ordinary one. A `v` failure or refusal arriving while `vHold.seq != 0`
 or `m.vHoldDialog()` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
 the terminal screen). `handleTermOpened` and `handleTermClosed` clear `vHold.seq` only for `msg.seq ==
-vHold.seq`. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and
+vHold.seq`, and then apply the same copy rule, because both replace the status. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and
 `openDeferredMcpFollowups`, before the size check): if `vHold.text != ""` and `vHold.seq == 0` and `!m.vHoldDialog()`
 and `m.screen != screenTerminal`, then the message is `sanitizeLine(m.status, 120) + "; " + vHold.text` when
 `m.status != "" && m.status == m.termFail`, else `vHold.text`; it's written to `m.status` and `vFail.text`,

@@ -775,7 +775,7 @@ func (m Model) updateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case keyIs(msg, m.keys.VSCode):
 		if sb := m.actionable(); sb != nil {
-			return m.startBusy(sb.GetId(), "opening"), m.openVSCodeCmd(m.currentHostID(), sb.GetId())
+			return m.startBusy(sb.GetId(), "opening"), m.openEditorCmd(m.currentHostID(), sb.GetId())
 		}
 		return m, nil
 	case keyIs(msg, m.keys.StartStop):
@@ -901,7 +901,8 @@ func (m Model) viewList() string {
 	}
 	parts := make([]string, 0, 4)
 	if m.updateBanner != "" {
-		parts = append(parts, updateBannerStyle.Render(m.updateBanner))
+		// Cut to the width, so the header stays on screen at 80 columns (SWI-24 SC-004).
+		parts = append(parts, updateBannerStyle.Render(m.fitLine(m.updateBanner)))
 	}
 	parts = append(parts, header, "", m.list.View())
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)

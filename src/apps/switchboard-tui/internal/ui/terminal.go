@@ -104,6 +104,9 @@ func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo
 	return m.attachTerminal(sb, host, d, returnTo, false)
 }
 
+// openingText is the status while an in-place attach is pending.
+const openingText = "opening terminal…"
+
 // attachTerminal opens the in-place terminal; replace attaches with
 // AttachInfo.replace_orphan (`t` → Replace).
 func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo screen, replace bool) (tea.Model, tea.Cmd) {
@@ -111,11 +114,18 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 	seq := m.termSeq
 	cols, rows := m.bodyWidth(), m.termRows()
 	id, name := sb.GetId(), sb.GetDisplayName()
-	m.status = "opening terminal…"
+	// SWI-24 (FR-533): a `v` failure arriving while this attach is pending
+	// is held, and a recent one already showing is held too; an older
+	// attach error isn't joined to it.
+	m.vHold.seq = seq
+	m.vHold.since = nowFunc()
+	m.termFail = ""
+	m.holdRecentVFail()
+	m.status = openingText
 	if replace {
 		m.status = replacingText
 	}
-	return m, func() tea.Msg {
+	return m, tea.Batch(func() tea.Msg {
 		screen := termview.New(cols, rows)
 		updates := make(chan struct{}, 1)
 		done := make(chan struct{})
@@ -136,10 +146,11 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
 			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo, seq: seq,
 		}
-	}
+	}, m.vHoldLimitCmd())
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
+	m.endVHoldAttach(msg.seq)
 	if msg.seq != m.termSeq || !m.attachAwaited(msg.returnTo) {
 		// A newer attach superseded it, or the developer moved on (another
 		// screen, an overlay) while it attached: detach rather than pull them in.
@@ -148,6 +159,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		close(msg.done)
 		if msg.seq == m.termSeq {
 			m.status = "terminal for " + msg.name + " not opened — you moved on; press t again"
+			m.termFail = m.status
 		}
 		return m, nil
 	}
@@ -175,6 +187,7 @@ func (m Model) attachAwaited(from screen) bool {
 // changes screen only when it is about the terminal showing: a failed attach
 // leaves the developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
+	m.endVHoldAttach(msg.seq)
 	showing := m.screen == screenTerminal && msg.seq == m.term.seq
 	if !showing && msg.seq != m.termSeq {
 		return m, nil // about an attach a newer one superseded: nothing to report
@@ -188,6 +201,7 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case errors.Is(msg.err, client.ErrExternalAlreadyOpen):
 			m.status = "an external terminal is already attached to " + msg.name
+			m.termFail = m.status
 		case !showing && !msg.replace && msg.sb != nil && isDetachedRefusal(msg.err) && m.attachAwaited(msg.returnTo):
 			// The record was stale: the daemon found the detached agent first.
 			// The dialog opens on its own, so it accepts on y alone.
@@ -197,6 +211,7 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 			return out, dcmd
 		default:
 			m.status = "terminal: " + attachErrText(msg.err)
+			m.termFail = m.status
 		}
 		return m, cmd
 	}
@@ -261,8 +276,12 @@ func (m *Model) resizeTerminal() {
 	}
 }
 
+// termRows is the PTY's height: fixed at the terminal height less the chrome
+// with a one-line status, independent of the status line (SWI-24, FR-533), so
+// a status change never resizes the PTY or signals the agent and a terminal
+// opened during a wrapped message gets the same size as one opened with none.
 func (m Model) termRows() int {
-	if r := m.bodyHeight() - 2; r >= 3 {
+	if r := m.height - 8; r >= 3 {
 		return r
 	}
 	return 3

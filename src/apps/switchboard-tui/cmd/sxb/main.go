@@ -12,10 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/config"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/notify"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/ui"
-	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	upd "github.com/jamesclark123/switchboard/libs/switchboard-update"
 )
@@ -116,7 +116,10 @@ func main() {
 	// Source candidates are offered from the current working directory's parent
 	// by default; a future launch wizard will let the user pick a root.
 	root, _ := os.Getwd()
-	m := ui.New(conn, root).WithVersion(version).WithNotifier(notify.New()).WithSbx(cfg.SbxBin).WithTerminal(cfg.Terminal)
+	// The editor the `v` key starts (SWI-24): detached launcher plus the
+	// override variables' raw values; the choice itself is a saved setting.
+	m := ui.New(conn, root).WithVersion(version).WithNotifier(notify.New()).WithSbx(cfg.SbxBin).WithTerminal(cfg.Terminal).
+		WithEditor(editor.NewLauncher(), cfg.EditorBins)
 
 	// Attach the client-side stores (source of truth for configs, groups, and
 	// known hosts — FR-002c). A failure here is non-fatal; the dependent features
@@ -137,8 +140,8 @@ func main() {
 		}
 		m = m.WithHosts(mgr, hostStore, activeHost)
 
-		// Groups + VS Code opener (US5).
-		m = m.WithGroups(st.Groups(), vscode.NewOpener(cfg.CodeBin))
+		// Groups (US5).
+		m = m.WithGroups(st.Groups())
 
 		// Agent kits (feature 004).
 		m = m.WithKits(st.Kits())

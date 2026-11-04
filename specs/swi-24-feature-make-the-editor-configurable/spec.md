@@ -289,6 +289,61 @@ Found while reviewing the plan, and changed here because they change what the sp
 - **A `v` completion clears `m.err`.** It no longer goes through `statusMsg`, which clears it today, so the plan has to
   do it, and the note saying an `errMsg` stays set now says so. (FR-529, SC-002)
 
+### PR review 2026-11-04 (review run `run-c275c8f2-1725`, resolved in pr-response run `run-c275c8f2-1729`)
+
+- **A pending attach can keep a held message out of sight for 5 seconds at most.** An attach has no deadline, so a
+  stalled link used to hide every later `v` failure, with `opening terminal…` still showing. A deadline on the attach
+  itself was the other option. It was rejected because it would end slow attaches that would have worked, and this PR
+  doesn't otherwise change attaches, so `opening terminal…` can still stay when nothing is held, as on `main`. A shown
+  message stays held, because the attach can still open and clear the status. (FR-533, SC-008) A later review replaced
+  that last rule with the 3-second one.
+- **A `v` completion ends the hold.** A failure the developer has since fixed used to come back in red when the terminal
+  closed. It isn't tied to a sandbox, because the status line holds one message and the newest `v` outcome replaces an
+  older one when nothing is held. (FR-533)
+- **An input's rejection leaves with the input.** It used to stay in red on the sandbox list after its command was
+  discarded, taking list rows when it wrapped. (FR-528)
+
+### PR review 2026-11-04 (re-review run `run-c275c8f2-1733`, resolved in pr-response run `run-c275c8f2-1735`)
+
+- **The 5-second limit keeps a newer error.** Its timer fires whatever has happened since, so it could replace a failed
+  destroy with an older `v` refusal, and nothing showed the destroy error again. An error showing at the limit, or a
+  message a release would join, is now kept in front: `<error>; <held message>`. A status that isn't an error is still
+  replaced. (FR-533)
+- **A message already shown doesn't cross a retried `t` for long.** A stalled attach is when someone presses `t` again,
+  and the shown failure then came back on the new attach, possibly hours later, looking current. It's now kept only if
+  it was shown in the last 3 seconds, the same rule as a refusal showing with no attach pending. A message that hasn't
+  been shown stays held. The original attach opening late still brings it back when the terminal closes. (FR-533)
+  The next review changed the last part: an attach opening late brings it back only within 3 seconds.
+
+### PR review 2026-11-04 (re-review run `run-c275c8f2-1739`, resolved in pr-response run `run-c275c8f2-1741`)
+
+Three review rounds in a row found low edge cases in a message that was shown and still held, and each fix opened new
+ones. The state is now simpler, which settles the two findings of this round without a rule for either:
+
+- **A shown message is no longer held.** A message is held out of sight or it's showing, not both. Once the 5-second
+  limit shows it, it's an ordinary message, and the same 3-second rule as any other showing failure decides whether it
+  survives what replaces the status. That rule also runs when the attach ends. The cost: an attach that opens or fails
+  more than 3 seconds after the message showed no longer brings it back or joins it. The developer has seen it by then,
+  and bringing it back looked current. (FR-533)
+- **A Replace dialog leaves a showing message alone.** It's kept for an accept only, and only if it's still showing, so
+  a decline leaves nothing behind to come back on a later `t`. This closes the review's first finding. The cost: a
+  recent message behind a dialog that a daemon drop closes is replaced by the drop's message, not joined. (FR-533)
+- **Leaving the Custom command input brings nothing back.** An error about the input leaves with it, along with a
+  message joined to that error at the limit. This closes the review's second finding. The cost: that message has been
+  on screen, but it's no longer left showing alone. (FR-533, FR-528)
+
+### PR review 2026-11-04 (re-review run `run-c275c8f2-1746`, resolved in pr-response run `run-c275c8f2-1748`)
+
+Two low findings against the rule above, both a showing message also being treated as held. Each fix is a few lines and
+adds no state:
+
+- **A dialog that opens by itself doesn't hold what's showing either.** A detached refusal opens the dialog just after
+  the attach ends, and the attach ending had copied a recent message into the hold. So a decline brought it back over a
+  newer status. The dialog now clears that copy. (FR-533)
+- **A message joined to an input error isn't recent.** An attach ending within 3 seconds held the joined text, and it
+  outlived the input. The joined text now has no arrival time, so the recency rule skips it. The cost: in that case the
+  refusal isn't joined to the attach's error, though it has been on screen. (FR-533)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -480,6 +535,14 @@ sandbox. Check that a clear message appears and nothing is started.
   Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed.
   If the daemon behind the screen under the dialog disconnects, the dialog closes unanswered and the status shows
   `<name> disconnected — orchestrators closed; <failure>` (FR-533).
+- **A `v` failure behind an attach that doesn't return.** The developer presses `t`, the attach stalls, and they move
+  to another row and press `v`, which fails. `opening terminal…` stays for up to 5 seconds after `t`, then the failure
+  replaces it, in the error style, after any error showing by then (`<error>; <failure>`). From then on it's an ordinary
+  message. If the attach opens, or fails, or they press `t` again in the next 3 seconds, it's kept and shown again when
+  that's over. After that it has been seen and doesn't come back (FR-533).
+- **A failure, then a success, behind an attach.** The developer presses `t`, `v` is refused, they switch editors, and
+  `v` succeeds. The refusal is dropped, so `detached from <name>` shows when the terminal closes (FR-533). This holds
+  even if the success is on another sandbox, as it would with nothing held, because the status line holds one message.
 - **A failed `t` after a `v` refusal.** A remote sandbox has WebStorm selected. The developer presses `v`, which
   refuses, then `t`, and the attach fails because the daemon can't be reached. The status shows
   `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
@@ -720,6 +783,8 @@ sandbox. Check that a clear message appears and nothing is started.
     MUST raise the unsaved-changes dialog. Save acts exactly like `enter`, so an FR-506 rejection keeps the
     input open with the reason. Cancel returns to the input unchanged. Discard returns to the list with
     nothing saved.
+  - A rejection or failed write showing when the developer leaves the input, by Discard or by `esc` with nothing
+    changed, MUST be cleared with it, unless something has replaced it.
   - `enter` writes before it closes. On success the input closes to the **settings row** and the command
     applies. If the write itself fails, the input MUST stay open with its text and the error (SWI-9 FR-017),
     and the session's editor and command don't change, so `v` never starts using a command that failed to save
@@ -853,10 +918,12 @@ sandbox. Check that a clear message appears and nothing is started.
     `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
     message MUST show in the error style. An error or daemon-drop message that was already showing when that attach
-    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
-    that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
-    same way if it arrived in the last 3 seconds. An older one isn't held. A message that's been released MUST NOT be
-    held again, even within its 3 seconds, so the next attach replaces it like any other message.
+    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one, and a later `v` completion ends the hold, so the failure doesn't come back. An attach has no deadline and may never end, so a held message MUST NOT stay out of sight behind a pending attach for more than 5 seconds: at that limit it MUST show in the error style, and one arriving after the limit MUST show at once. Either way it's then an ordinary showing message, not a held one, so it can't come back later looking current. An error showing at that limit, or a message that a release would join, MUST NOT be lost: the status is `<error>; <held message>`, with the error cut to 120 columns first. An error about the Custom command input still leaves with the input, and a held message joined to it leaves too, because it has been on screen; the recency rule below doesn't apply to that joined message. A held message that hasn't been shown stays held across a new attach or dialog. A `v` failure or refusal
+    that's showing when an in-place attach starts or ends MUST be held in the same way if it went on screen in the last
+    3 seconds, and so MUST one showing when a Replace dialog for an in-place attach opens, if that dialog is accepted and
+    the message is still showing. Declining leaves it on the status line as an ordinary message. An older one isn't held,
+    because the developer has seen it. A message that's been released MUST NOT be held again, even within its 3 seconds,
+    so the next attach replaces it like any other message.
 - **FR-534**: The settings screen MUST wrap everything it shows to the terminal's width, at spaces where it can, so
   nothing is cut at the edge. That covers the rows and their descriptions, FR-508's and FR-525's notices, and
   FR-521's note.
@@ -1058,7 +1125,8 @@ These follow from the requirements above and from how the code works today. They
     must clear it as `statusMsg` does today, or a success after an `errMsg` would show in red.
   - **A message already showing:** the refused case returns before the daemon call, so it's on the screen when `t` arrives,
     and `attachTerminal` replaces it. So `attachTerminal` and `confirmReplaceOrphan` (not for `T`) both check for a
-    recent one, and copy it into the held field if the status still equals it. It stays on the status line behind the
+    recent one, and copy it into the held field if the status still equals it (since the 2026-11-04 re-review, the
+    dialog's copy waits for an accept, and an attach ending checks too). It stays on the status line behind the
     dialog. The check belongs in those two rather than in `enterTerminalFrom`, because `t`'s own refusals, such as
     `start the sandbox…` and the wait notice, start no attach. They replace the message on a screen that's still showing,
     like any other message. The 3 seconds can't be checked only in `attachTerminal`, because an accepted Replace dialog

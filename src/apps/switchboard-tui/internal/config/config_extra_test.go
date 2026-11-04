@@ -23,7 +23,7 @@ func TestLoadHomeFallbackAndExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ConfigDir != "/cfg" || cfg.CodeBin != "code-insiders" || cfg.SbxBin != "sbx-dev" || cfg.LocalSocket != "/run/s.sock" {
+	if cfg.ConfigDir != "/cfg" || cfg.EditorBins["vscode"] != "code-insiders" || cfg.SbxBin != "sbx-dev" || cfg.LocalSocket != "/run/s.sock" {
 		t.Errorf("explicit values not applied: %+v", cfg)
 	}
 	if cfg.Terminal != "kitty -e" {

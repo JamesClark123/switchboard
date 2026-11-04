@@ -69,8 +69,10 @@ each module's `README.md`.
 - **Docker** running on each host that will run sandboxes (`docker version`).
 - The host's sandbox CLI **`sbx`** on `PATH` for any host that launches sandboxes.
 - **SSH** access (key/agent auth) to any remote host you want to connect to.
-- **VS Code** for the open-in-VS-Code feature — it opens the sandbox's controlled workspace folder
-  (the copied files); add `ms-vscode-remote.remote-ssh` to open that folder on a remote host.
+- **An editor** for the open-in-editor feature (`v`): one of the supported editors, VS Code by default —
+  it opens the sandbox's controlled workspace folder (the copied files); for VS Code and its forks add the
+  Remote-SSH extension (`ms-vscode-remote.remote-ssh`) to open that folder on a remote host. See
+  [Editor](#editor) under *Settings & startup sign-in*.
 - For development only: `golangci-lint` at the version CI uses, needed by `make fmt` / `make fmt-check`
   as well as `make lint` (`make lint-version` prints it; any
   build made with Go ≥ 1.26 works, an older one fails with `can't load config: … lower than the
@@ -145,7 +147,16 @@ local `.env` (gitignored) for development.
 |---------------------------|--------------------------------------|---------|
 | `SWITCHBOARD_CONFIG_DIR`  | `$XDG_CONFIG_HOME/switchboard`        | Client TOML state (configs / groups / hosts) |
 | `SWITCHBOARD_LOCAL_SOCKET`| `$XDG_RUNTIME_DIR/switchboard.sock`   | Default local daemon socket |
-| `SWITCHBOARD_CODE_BIN`    | `code`                               | VS Code CLI used to open sandboxes |
+| `SWITCHBOARD_CODE_BIN`    | `code`                               | VS Code CLI (the default editor); one executable |
+| `SWITCHBOARD_CODE_INSIDERS_BIN` | `code-insiders`                | VS Code Insiders CLI; one executable |
+| `SWITCHBOARD_CURSOR_BIN`  | `cursor`                             | Cursor CLI; one executable |
+| `SWITCHBOARD_WINDSURF_BIN`| `windsurf`                           | Windsurf CLI; one executable |
+| `SWITCHBOARD_ZED_BIN`     | `zed`                                | Zed CLI; one executable |
+| `SWITCHBOARD_WEBSTORM_BIN`| `webstorm`                           | WebStorm CLI; one executable |
+| `SWITCHBOARD_IDEA_BIN`    | `idea`                               | IntelliJ IDEA CLI; one executable |
+| `SWITCHBOARD_PYCHARM_BIN` | `pycharm`                            | PyCharm CLI; one executable |
+| `SWITCHBOARD_GOLAND_BIN`  | `goland`                             | GoLand CLI; one executable |
+| `SWITCHBOARD_SUBLIME_BIN` | `subl`                               | Sublime Text CLI; one executable |
 | `SWITCHBOARD_SBX_BIN`     | `sbx`                                | Sandbox CLI used to open a sandbox's terminal (`t`) |
 | `SWITCHBOARD_TERMINAL`    | system default                       | Terminal command prefix for the popout terminal (`T`), e.g. `kitty -e`, `gnome-terminal --`, `tmux new-window` |
 
@@ -215,7 +226,7 @@ The sandbox list is the home screen. Keys:
 | `c` | Create / edit a configuration (covers 100% of `sbx` options) |
 | `h` | Hosts: connect/disconnect, add SSH host, set active host |
 | `g` | Groups: create, assign sandboxes (cross-host), navigate |
-| `v` | Open the selected sandbox in VS Code |
+| `v` | Open the selected sandbox in the configured editor (VS Code by default; `,` to change) |
 | `t` | Open the sandbox's terminal inline (suspends the TUI; resumes on exit) |
 | `T` | Open the sandbox's terminal in a popout window (keeps the TUI running) |
 | `i` | Notification inbox (task-complete / needs-prompting / escape-hatch; 🔔 badge) |
@@ -514,7 +525,78 @@ detects and reports a detached agent and never stops one itself.
 silently; a host that needs a password raises a centered prompt (blank retries keys, `esc` skips);
 a host that fails shows why with `r` retry / `esc` skip. Nothing blocks, nothing is stored, and a
 skipped host is still connectable from the hosts screen. Settings live in `settings.toml` under
-the client config dir.
+the client config dir, written with owner-only permissions (`0600`).
+
+#### Editor
+
+The **Editor** row chooses what `v` opens the selected sandbox's workspace folder in. `enter` on the
+row opens the list; `enter` on an entry saves it (always, even on the marked one) and `esc` backs out one
+level. The choice takes effect on the next `v` and survives a restart; the list's footer entry for `v`
+names the identifier (`vscode`, `webstorm`, `custom`, …).
+
+| Editor | Default command | Override variable | Remote sandboxes |
+|--------|-----------------|-------------------|------------------|
+| VS Code (default) | `code` | `SWITCHBOARD_CODE_BIN` | yes (Remote-SSH) |
+| VS Code Insiders | `code-insiders` | `SWITCHBOARD_CODE_INSIDERS_BIN` | yes (Remote-SSH) |
+| Cursor | `cursor` | `SWITCHBOARD_CURSOR_BIN` | yes (Remote-SSH; needs its remote-SSH extension) |
+| Windsurf | `windsurf` | `SWITCHBOARD_WINDSURF_BIN` | yes (Remote-SSH; needs its remote-SSH extension) |
+| Zed | `zed` | `SWITCHBOARD_ZED_BIN` | yes (`ssh://<target>/<path>`) |
+| WebStorm, IntelliJ IDEA, PyCharm, GoLand | `webstorm`, `idea`, `pycharm`, `goland` | `SWITCHBOARD_<NAME>_BIN` | no — `v` refuses with a message |
+| Sublime Text | `subl` | `SWITCHBOARD_SUBLIME_BIN` | no — `v` refuses with a message |
+| Custom | your command line | (the settings screen) | via the `{host}` marker |
+
+**Override variables.** Each names **one executable**, used exactly as given: it is never split into words
+(macOS paths contain spaces), and `~` and `$VAR` are not expanded. A command with arguments (`flatpak run
+dev.zed.Zed`) needs a wrapper script, or the Custom editor. An unset, empty or blank variable means the default
+command; a value equal to the default is the same as leaving it unset. The variables are listed in the
+[TUI configuration](#tui--sxb-srcappsswitchboard-tuienvexample) table and checked by `make env-check`.
+
+Every editor starts **detached** from the TUI: its own session, no terminal, stdin/stdout/stderr connected to
+nothing, reaped in the background, so it keeps running after the TUI quits. A command that can't be started
+is reported with the executable, the OS's reason and the variable to set; one that exits non-zero within
+3 seconds is reported too (the status, the executable and where to fix it). Failures inside the editor after
+it has started can't be seen.
+
+**Custom command.** Choosing *Custom* in the list opens an input for a full command line (`esc` with
+typed changes asks to save or discard, like other inputs). Rules:
+
+- `{path}` is the workspace folder and `{host}` the host's SSH target (empty for a local sandbox). With no
+  `{path}` the folder is added as the last argument. Each marker is replaced inside its argument, so the
+  folder is always one argument, even with spaces, and a value containing a marker is never expanded again.
+  A bare `{host}` argument is dropped on a local sandbox; a `{host}` inside a larger argument (`--remote
+  ssh-remote+{host}`) only works on remote sandboxes, so one command rarely serves both kinds of host.
+- The command is split like a shell would (quotes and backslashes honoured) but **runs without a shell**:
+  a leading `~/` expands at launch; `$VAR`, backticks, unquoted `|`, `;`, `&`, `<`, `>` and a first word
+  like `NAME=value` are rejected; globs stay literal. To use shell syntax, start a shell yourself and pass
+  the folder as a **positional argument**, never inside the script, because a program that re-parses its
+  arguments (`sh -c`) can run a folder path as code:
+  `kitty -e sh -c 'cd "$1" && nvim .' sh {path}`.
+- The command runs with no terminal, so a terminal editor needs a terminal emulator in front of it
+  (`kitty -e nvim {path}`).
+- On a remote sandbox the folder path comes from the remote daemon. With Custom, or with the selected
+  editor's override variable set to something other than its default (a wrapper script may re-parse its
+  arguments), `v` refuses a path that holds anything but letters, marks, digits, spaces and `/ . _ - + = @ , :`,
+  naming the character; move the workspace on the daemon, or unset the variable.
+- The command is stored **in plain text** in `settings.toml`, and its arguments are visible in the process
+  list (`ps`, `/proc/<pid>/cmdline`) while the editor runs. A secret belongs in a wrapper script or the
+  environment, not in the command. Outside the input the TUI shows only the command's executable.
+- The settings screen is the recommended way to set a command with quotes, because it handles the escaping.
+  By hand, use a TOML literal string, or a multi-line literal when the command contains a single quote:
+
+  ```toml
+  editor = 'custom'
+  editor_custom_command = '"/Applications/My Editor.app/bin/edit" {path}'
+  ```
+
+  ```toml
+  editor = 'custom'
+  editor_custom_command = '''kitty -e sh -c 'cd "$1" && nvim .' sh {path}'''
+  ```
+
+  Hand edits take effect at the next start. A save re-reads the file and writes only the changed key, so a
+  hand edit to another key survives, but comments aren't kept. A file that can't be parsed is never
+  overwritten: the screen says so, changes apply to the session only and rows show `(not saved)` until a
+  save writes them.
 
 ### Escape Hatch
 

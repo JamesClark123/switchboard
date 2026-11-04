@@ -118,8 +118,8 @@ Every `v` failure or refusal shows in the error style. Notices (FR-529) are appe
 | completion             | `opened <n> in <Name>` (+ notices; Custom remote with no `{host}` adds `the path is on the remote host` last) | — |
 | `host-lookup`          | `can't open <n>: host entry unavailable (<err>) — check the hosts file` | hosts |
 | `no-remote`            | `<Name> can't open folders on remote hosts — switch editors on the settings screen (,)` | settings |
-| `not-found` (built-in) | `<n>: can't start <exe>: <reason> — set <var> to one executable (wrapper script or Custom for arguments)` | env var |
-| `not-found` (Custom)   | `<n>: can't start <exe>: <reason> — fix the Custom command on the settings screen (,)` | settings |
+| `not-found` (built-in) | `can't start <exe>: <reason> — set <var> to one executable (or use Custom)` | env var |
+| `not-found` (Custom)   | `can't start <exe>: <reason> — fix the Custom command on the settings screen (,)` | settings |
 | `launch-failed`        | same shape as `not-found` | as above |
 | `empty`                | `no Custom command is set — set one on the settings screen (,)` | settings |
 | `empty-executable`     | `the Custom command has an empty first argument — fix it on the settings screen (,)` | settings |
@@ -145,9 +145,11 @@ refusals never quote any part of the command (FR-532).
 Every message must fit in 4 lines at 80 columns with the values at their limits (the room on the sandbox list at
 80×24 with the banner; SC-004's test, T040, is the authority). The tightest case is `not-found` for a built-in
 editor with a 60-column executable, a 40-column reason, `SWITCHBOARD_CODE_INSIDERS_BIN` and the 60-column
-unknown-editor notice: about 310 characters, and a 60-column executable can't break at a space, so it sits on the
-edge. T028 measures it; if it exceeds 4 lines the reminder shortens first (`(or use Custom)`), then the lead
-(`<n>: <exe>: <reason>`). The FR-523 report, `path-limited` and `shell-syntax` are near 4 lines
+unknown-editor notice: a 60-column executable can't break at a space, so it sits on the edge. T028 measured the
+first wording (`<n>: can't start <exe>: <reason> — … (wrapper script or Custom for arguments)`) at 5 lines, so the
+reminder is shortened to `(or use Custom)` and the lead to `can't start <exe>: <reason>`: the sandbox's id adds
+nothing (the row that was pressed shows the spinner) and `can't start` keeps the cause readable. As built the case
+wraps to 4 lines (`TestOpenEditorNotFound`). The FR-523 report, `path-limited` and `shell-syntax` are near 4 lines
 too, and the same rule applies. `host-lookup` is why its `<err>` is cut to 78 columns and not 120: `(<err>)` then fits on
 one line, so it stays at 4 lines with the unknown-editor notice wherever the error's spaces fall. With an 8-character
 `<n>`, some placements reach 5 at 79 columns and above. The cut is in the middle (first 38 and last 39 columns) because these
