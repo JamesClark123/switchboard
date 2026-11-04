@@ -310,7 +310,7 @@ func TestCallActionSnapshotsSteps(t *testing.T) {
 		"STEP_ROLE_SETUP STEP_KIND_MODEL /model opus|Opus",
 		"STEP_ROLE_SETUP STEP_KIND_EFFORT /effort medium|medium",
 		"STEP_ROLE_SETUP STEP_KIND_CUSTOM Open SWI-1|",
-		"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT " + run.GetPrompt() + "|",
+		"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |", // Run.prompt, filled in when sent (SWI-29)
 		"STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Wrap up|",
 		"STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|",
 	}

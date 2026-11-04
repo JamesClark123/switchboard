@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // evidenceStatus is a full status side (SWI-17): status, evidence, hold
@@ -163,6 +165,219 @@ func TestHookTapIsBestEffort(t *testing.T) {
 	}
 	if len(ch) != tapBuffer {
 		t.Errorf("a full tap must drop, not block: %d buffered", len(ch))
+	}
+}
+
+// SWI-28: a turn's first tool call stands in for a lost submit, and the rest of
+// its tool calls write nothing.
+func TestHookPreToolUseRecordsALostTurnStart(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
+	s := mainServer(t, st)
+	s.now = tickingNow()
+	s.afterFunc = func(time.Duration, func()) stopper { return &fakeTimer{} }
+
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	first := st.agent("sb").GetLastSubmitAt()
+	if first == nil {
+		t.Fatal("a tool call with no submit must record the turn start")
+	}
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(first.AsTime()) {
+		t.Error("a turn's later tool calls must write nothing")
+	}
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().After(first.AsTime()) {
+		t.Error("the next turn's first tool call is a new turn start")
+	}
+	// A submit that arrived: its tool calls add nothing.
+	s.handle(m(hookPayload{Event: "Stop", SandboxID: "sb"}))
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
+	submit := st.agent("sb").GetLastSubmitAt()
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(submit.AsTime()) {
+		t.Error("a tool call after a recorded submit must write nothing")
+	}
+}
+
+// SWI-28: an older turn start with no recorded end (a turn interrupted with Esc)
+// doesn't hide the first tool call after a step is typed.
+func TestHookPreToolUseAfterAnUnendedTurn(t *testing.T) {
+	st := newEvidenceStatus(&pb.Sandbox{Id: "sb"})
+	s := mainServer(t, st)
+	s.now = tickingNow()
+	s.afterFunc = func(time.Duration, func()) stopper { return &fakeTimer{} }
+
+	s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb"}))
+	old := st.agent("sb").GetLastSubmitAt()
+	st.mu.Lock()
+	st.sbs["sb"].Controller = &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(old.AsTime().Add(time.Millisecond))}}
+	st.mu.Unlock()
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	first := st.agent("sb").GetLastSubmitAt()
+	if !first.AsTime().After(old.AsTime()) {
+		t.Fatal("the first tool call after a send must record the turn start")
+	}
+	s.handle(m(hookPayload{Event: "PreToolUse", SandboxID: "sb"}))
+	if got := st.agent("sb").GetLastSubmitAt(); !got.AsTime().Equal(first.AsTime()) {
+		t.Error("a turn's later tool calls must write nothing")
+	}
+}
+
+// SWI-28: a submit that isn't the step typed is marked as another prompt; with
+// nothing to compare, it counts as before.
+func TestHookOtherPrompt(t *testing.T) {
+	const step = "[frame]\n\tdo\tthe  thing"
+	sent := &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(time.Unix(1, 0))}}
+	for _, c := range []struct {
+		name   string
+		ctrl   *pb.SandboxController
+		typed  string
+		prompt string
+		other  bool
+	}{
+		{"the step", sent, step, step, false},
+		{"the step as reported", sent, step, "\n\n<pasted_content id=\"614b\">\n[frame]\n  do  the  thing\n</pasted_content id=\"614b\">\n", false},
+		{"the step with its text altered", sent, "run \x1b[1;31mTestFoo\x1b[0m\u200b </pasted_content> cafe\u0301", "run TestFoo <\\/pasted_content> caf\u00e9", false},
+		{"the developer's", sent, step, "what is going on?", true},
+		{"no prompt", sent, step, "", false},
+		{"nothing typed", sent, "", "what is going on?", false},
+		{"no run", nil, step, "what is going on?", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: c.ctrl})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return c.typed })
+			s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: c.prompt}))
+			a := st.agent("sb")
+			if a.GetLastSubmitAt() == nil {
+				t.Error("every submit records last_submit_at")
+			}
+			if got := a.GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
+	t.Run("not wired", func(t *testing.T) {
+		st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: sent})
+		s := mainServer(t, st)
+		s.handle(m(hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: "hi"}))
+		if st.agent("sb").GetLastOtherSubmitAt() != nil {
+			t.Error("with no typed text to compare, a submit is not marked")
+		}
+	})
+}
+
+// SWI-28, SWI-27: the prompt in a hook's body reaches the comparison, and the read
+// stops there: the rest of the body is left unread, and the connection closed.
+func TestHookOtherPromptOverHTTP(t *testing.T) {
+	const step = "do the thing"
+	for _, c := range []struct {
+		name   string
+		prompt string
+		other  bool
+	}{
+		{"the step", step, false},
+		{"the developer's", "what is going on?", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: &pb.SandboxController{
+				Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(time.Unix(1, 0))},
+			}})
+			s, sp := tokenServer(t, st)
+			s.tokens.BindMain("sb", 1, mainPID)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			srv := httptest.NewServer(http.HandlerFunc(s.Handle))
+			defer srv.Close()
+
+			body := `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"` + c.prompt + `","rest":"not read"}`
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"?event=UserPromptSubmit&sandbox_id=sb", strings.NewReader(body))
+			req.Header.Set(headerToken, sp.Token)
+			req.Header.Set(headerGen, "1")
+			req.Header.Set(headerPID, strconv.Itoa(mainPID))
+			resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent || !resp.Close {
+				t.Errorf("status %d, close %v", resp.StatusCode, resp.Close)
+			}
+			if got := st.agent("sb").GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
+}
+
+// SWI-28: what a submit does to last_other_submit_at depends on what this send
+// already has on record: a later prompt can't erase the step's turn start, and the
+// step's own submit outweighs a prompt before it.
+func TestHookOtherPromptOrder(t *testing.T) {
+	const step, other = "do the thing", "what is going on?"
+	submit := func(prompt string) hookPayload {
+		return hookPayload{Event: "UserPromptSubmit", SandboxID: "sb", Prompt: prompt}
+	}
+	tool := hookPayload{Event: "PreToolUse", SandboxID: "sb"}
+	turnEnd := hookPayload{Event: "Stop", SandboxID: "sb"}
+	question := hookPayload{Event: "Notification", NotificationType: "permission_prompt", SandboxID: "sb"}
+	sent := time.Unix(1, 0)
+	ctrl := &pb.SandboxController{Run: &pb.WorkerRun{Id: "r", StepSentAt: timestamppb.New(sent)}}
+	for _, c := range []struct {
+		name   string
+		events []hookPayload
+		other  bool
+	}{
+		{"the step, then another", []hookPayload{submit(step), submit(other), submit(other)}, false},
+		{"a tool call with the submit lost, then another", []hookPayload{tool, submit(other)}, false},
+		{"a turn end with the submit lost, then another", []hookPayload{turnEnd, submit(other)}, false},
+		{"a question with the submit lost, then another", []hookPayload{question, submit(other)}, false},
+		{"can't tell, then another", []hookPayload{submit(""), submit(other)}, false},
+		{"another, then the step", []hookPayload{submit(other), submit(step)}, false},
+		{"another, the step, another", []hookPayload{submit(other), submit(step), submit(other)}, false},
+		{"another", []hookPayload{submit(other)}, true},
+		{"another, then a tool call", []hookPayload{submit(other), tool}, true},
+		{"another, its turn end, another", []hookPayload{submit(other), turnEnd, submit(other)}, true},
+		{"another, its question, another", []hookPayload{submit(other), question, submit(other)}, true},
+		{"another, then can't tell", []hookPayload{submit(other), submit("")}, true},
+		{"another, can't tell, another", []hookPayload{submit(other), submit(""), submit(other)}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			for _, ev := range c.events {
+				s.handle(m(ev))
+			}
+			a := st.agent("sb")
+			if !a.GetLastSubmitAt().AsTime().After(sent) {
+				t.Errorf("last_submit_at = %v, sent %v", a.GetLastSubmitAt(), sent)
+			}
+			if got := a.GetLastOtherSubmitAt() != nil; got != c.other {
+				t.Errorf("other = %v, want %v", got, c.other)
+			}
+		})
+	}
+	// A turn from before this send is no turn of this step's.
+	before := timestamppb.New(sent.Add(-time.Second))
+	for name, a := range map[string]*pb.AgentSession{
+		"a start before the send":    {LastSubmitAt: before},
+		"a turn end before the send": {LastTurnEndAt: before},
+		"a question before the send": {LastNeedsInputAt: before},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := newEvidenceStatus(&pb.Sandbox{Id: "sb", Controller: ctrl, Agent: a})
+			s := mainServer(t, st)
+			s.now = tickingNow()
+			s.SetTypedStep(func(string) string { return step })
+			s.handle(m(submit(other)))
+			if st.agent("sb").GetLastOtherSubmitAt() == nil {
+				t.Error("a turn before the send must not hide another prompt")
+			}
+		})
 	}
 }
 

@@ -1,14 +1,18 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 
 	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
+	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -20,7 +24,105 @@ import (
 // runState guards every read-modify-write of the run bucket for one
 // orchestrator and the transient per-run state beside it.
 type runState struct {
-	mu sync.Mutex
+	mu  sync.Mutex
+	idx runIndex // guarded by mu
+}
+
+// runIndex maps each sandbox to the runs on it that are not over: claimed
+// while queued, in flight, or closed with step work left (SWI-29). A lookup by
+// sandbox reads just those runs by id instead of scanning every run; the store
+// stays the source of truth, so each hit is re-read and re-checked. Every
+// write through putRun keeps it current, and the runtime seeds it at start.
+type runIndex struct {
+	seeded    bool                           // built from the store (a failed seed is retried on the next lookup)
+	bySandbox map[string]map[string]struct{} // sandbox id → run ids
+	sandboxOf map[string]string              // run id → sandbox id
+}
+
+// onSandbox reports whether a run belongs in the index.
+func onSandbox(r *pb.Run) bool {
+	return r.GetSandboxId() != "" && (!finished(r) || stepActive(r))
+}
+
+// note files a run as just persisted (or deleted, gone true).
+func (x *runIndex) note(r *pb.Run, gone bool) {
+	id, sb := r.GetId(), r.GetSandboxId()
+	keep := !gone && onSandbox(r)
+	if was, ok := x.sandboxOf[id]; ok {
+		if keep && was == sb {
+			return
+		}
+		delete(x.bySandbox[was], id)
+		if len(x.bySandbox[was]) == 0 {
+			delete(x.bySandbox, was)
+		}
+		delete(x.sandboxOf, id)
+	}
+	if !keep {
+		return
+	}
+	if x.bySandbox == nil {
+		x.bySandbox, x.sandboxOf = map[string]map[string]struct{}{}, map[string]string{}
+	}
+	if x.bySandbox[sb] == nil {
+		x.bySandbox[sb] = map[string]struct{}{}
+	}
+	x.bySandbox[sb][id] = struct{}{}
+	x.sandboxOf[id] = sb
+}
+
+// ids returns the indexed run ids on a sandbox, or every indexed run id when
+// sandboxID is "", in receipt order.
+func (x *runIndex) ids(sandboxID string) []string {
+	var out []string
+	if sandboxID == "" {
+		out = slices.Collect(maps.Keys(x.sandboxOf))
+	} else {
+		out = slices.Collect(maps.Keys(x.bySandbox[sandboxID]))
+	}
+	slices.SortFunc(out, func(a, b string) int { return cmp.Compare(registry.RunSeq(a), registry.RunSeq(b)) })
+	return out
+}
+
+// seedRunIndex builds the index from the store (one scan, at start).
+func (rt *runtime) seedRunIndex() {
+	rt.runs.mu.Lock()
+	defer rt.runs.mu.Unlock()
+	rt.seedRunIndexLocked()
+}
+
+func (rt *runtime) seedRunIndexLocked() {
+	runs, err := rt.svc.reg.ListRuns(rt.id)
+	if err != nil {
+		rt.svc.logf("[orchestrator %s] index runs: %v", rt.name(), err)
+		return
+	}
+	rt.runs.idx = runIndex{seeded: true}
+	for _, r := range runs {
+		rt.runs.idx.note(r, false)
+	}
+}
+
+// indexedLocked reads the indexed runs on a sandbox (every indexed run when
+// sandboxID is "") that keep accepts, in receipt order, from the store (caller
+// holds runs.mu). A run the store no longer has leaves the index.
+func (rt *runtime) indexedLocked(sandboxID string, keep func(*pb.Run) bool) []*pb.Run {
+	if !rt.runs.idx.seeded {
+		rt.seedRunIndexLocked()
+	}
+	var out []*pb.Run
+	for _, id := range rt.runs.idx.ids(sandboxID) {
+		r, err := rt.svc.reg.GetRun(rt.id, id)
+		if errors.Is(err, registry.ErrRunNotFound) {
+			rt.runs.idx.note(&pb.Run{Id: id}, true)
+			continue
+		}
+		if err != nil || (sandboxID != "" && r.GetSandboxId() != sandboxID) || !keep(r) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // newRunID renders run-<orchestrator8>-<seq>.
@@ -66,7 +168,7 @@ func (rt *runtime) callAction(action string, args map[string]string, kind pb.Eve
 		}
 		// The sequence is snapshotted beside the prompt: later edits to the
 		// action never change this run (FR-207).
-		steps, err := buildSteps(a, args, prompt)
+		steps, err := buildSteps(a, args)
 		if err != nil {
 			return err
 		}
@@ -269,11 +371,16 @@ func stateLabel(st pb.RunState) string {
 
 // --- transitions (callers hold no lock unless noted) ---
 
-// putRun persists a run and announces the change.
+// putRun persists a run, files it in the sandbox index and announces the
+// change (caller holds runs.mu).
 func (rt *runtime) putRun(run *pb.Run) error {
 	run.WaitingReason = "" // derived on read, never stored (FR-315)
 	if err := rt.svc.reg.PutRun(run); err != nil {
 		return err
+	}
+	rt.runs.idx.note(run, false)
+	if run.GetState() != pb.RunState_RUN_STATE_QUEUED {
+		rt.forgetRefusals(run.GetId()) // typed or closed: no more hand-backs
 	}
 	rt.svc.emitChanged(rt.id)
 	return nil
@@ -281,14 +388,11 @@ func (rt *runtime) putRun(run *pb.Run) error {
 
 // runOnLocked returns the in-flight run on a sandbox (caller holds runs.mu).
 func (rt *runtime) runOnLocked(sandboxID string) *pb.Run {
-	runs, err := rt.svc.reg.ListRuns(rt.id)
-	if err != nil {
+	if sandboxID == "" {
 		return nil
 	}
-	for _, r := range runs {
-		if inFlight(r) && r.GetSandboxId() == sandboxID {
-			return r
-		}
+	if runs := rt.indexedLocked(sandboxID, inFlight); len(runs) > 0 {
+		return runs[0]
 	}
 	return nil
 }
@@ -644,7 +748,9 @@ func (rt *runtime) closeAllRuns(reason string) (failed, cancelled uint32) {
 			r.Reason = reason
 			r.EndedAt = timestamppb.New(rt.svc.clock.Now())
 			fx, seq := rt.closeStepsLocked(r, false)
-			_ = rt.svc.reg.PutRun(r)
+			if rt.svc.reg.PutRun(r) == nil {
+				rt.runs.idx.note(r, false)
+			}
 			rt.runs.mu.Unlock()
 			if seq {
 				rt.applyFx(r, fx)

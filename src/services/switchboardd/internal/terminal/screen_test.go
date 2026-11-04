@@ -411,3 +411,50 @@ func TestScreenAndBroadcasterExistingNeverSpawn(t *testing.T) {
 		t.Fatalf("the spawning provider was called %d times", spawn.n())
 	}
 }
+
+// SWI-28: a size change reads stale until the repaint it causes settles; the
+// same size never does.
+func TestResizeMarksTheScreenStale(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	settled := func() bool {
+		p.feed([]byte("x"))
+		time.Sleep(5 * time.Millisecond)
+		_, stale := b.Screen()
+		return !stale
+	}
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() > 0 })
+	waitFor(t, settled)
+
+	c.Resize(100, 30)
+	if _, stale := b.Screen(); stale {
+		t.Fatal("a resize to the same size must not mark the screen stale")
+	}
+	repaintSettle = time.Hour
+	c.Resize(90, 20)
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a size change must mark the screen stale")
+	}
+	// The repaint starts: still stale while the output goes on.
+	p.feed([]byte("\x1b[H\x1b[2Jrepaint"))
+	waitFor(t, func() bool {
+		sc := b.scr.Load()
+		sc.flagMu.Lock()
+		defer sc.flagMu.Unlock()
+		return !sc.repaintAt.IsZero()
+	})
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("the screen must stay stale until the repaint settles")
+	}
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("the resize's repaint should clear the flag once it settled")
+	}
+}

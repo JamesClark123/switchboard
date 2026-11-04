@@ -319,6 +319,18 @@ func TestUpdateOrchestratorRuns(t *testing.T) {
 	if err := r.ViewOrchestratorRuns("missing", func(*pb.Orchestrator, []*pb.Run) error { return nil }); !errors.Is(err, ErrOrchestratorNotFound) {
 		t.Fatalf("view missing = %v", err)
 	}
+	// …and the all-runs view every run of that commit, in receipt order.
+	if err := r.ViewOrchestratorAllRuns(orch, func(o *pb.Orchestrator, all []*pb.Run) error {
+		if o.GetName() != "b" || len(all) != 3 || RunSeq(all[0].GetId()) > RunSeq(all[2].GetId()) {
+			return fmt.Errorf("all view: %q %d", o.GetName(), len(all))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ViewOrchestratorAllRuns("missing", func(*pb.Orchestrator, []*pb.Run) error { return nil }); !errors.Is(err, ErrOrchestratorNotFound) {
+		t.Fatalf("all view missing = %v", err)
+	}
 	// Corrupt record and runs surface errors.
 	if err := r.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(runsBucket).Put(runKey(orch, 7), []byte{0xff})
@@ -327,6 +339,9 @@ func TestUpdateOrchestratorRuns(t *testing.T) {
 	}
 	if err := r.ViewOrchestratorRuns(orch, func(*pb.Orchestrator, []*pb.Run) error { return nil }); err == nil {
 		t.Fatal("corrupt run should surface")
+	}
+	if err := r.ViewOrchestratorAllRuns(orch, func(*pb.Orchestrator, []*pb.Run) error { return nil }); err == nil {
+		t.Fatal("corrupt run should surface in the all-runs view")
 	}
 	if err := r.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(orchestratorsBucket).Put([]byte(orch), []byte{0xff})

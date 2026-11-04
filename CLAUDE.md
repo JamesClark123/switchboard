@@ -147,7 +147,41 @@ A package that reads any env var MUST:
 - Line endings LF only; `.editorconfig` at root defines charset/EOL/final-newline/indent.
 
 <!-- SPECKIT START -->
-Active feature: `specs/swi-21-feature-update-mcp-page/plan.md` (MCP Page Quality of Life — Edit, In-Page Secrets,
+Active feature: `specs/swi-24-feature-make-the-editor-configurable/plan.md` (Configurable Editor for the
+Open-in-Editor Key, SWI-24; **planned; implementation pending, not on `main`**: the files named below do not exist
+yet). **TUI-only**: no daemon, proto or bbolt change. `v` opens the sandbox's workspace folder in the editor chosen
+on the settings screen. A new package **`internal/editor`** replaces `internal/vscode`: the FR-501 catalogue (VS Code
+default, VS Code Insiders, Cursor, Windsurf, Zed, WebStorm, IntelliJ IDEA, PyCharm, GoLand, Sublime Text, Custom;
+`Remote` = `--remote ssh-remote+<target>` for the VS Code family, one `ssh://[user@]host[:port]/<percent-encoded
+path>` argument for Zed (form confirmed from Zed's `open_listener.rs`), refuse for JetBrains/Sublime), the FR-531
+tokenizer (`Split` with per-word `TildeOK`; FR-506 rules as `*CheckError{Rule}` that never carry text), `Check`/
+`Expand`/`Substitute` (single pass, `{path}` appended when absent, bare `{host}` dropped locally), the FR-517 path
+checks (the remote character limit only for Custom or the selected editor's own set variable, a value equal to the
+default not counting), `Precheck` (every
+check that needs no path, before the daemon call) / `Resolve` (after), and `Launch` (`Setsid`, `/dev/null` stdio, a
+reaper that reports a non-zero exit or signal within 3 s on `Started.Report`). Env: one `SWITCHBOARD_<EDITOR>_BIN`
+per built-in editor declared in `config.schema` from the catalogue, kept **raw** in `Config.EditorBins` (blank =
+unset) so FR-517 knows "set"; `SWITCHBOARD_CODE_BIN` unchanged. Settings: `settings.toml` gains `editor`
+(identifier, raw, unknown values kept) and `editor_custom_command`; `SettingsStore.Save` becomes
+`Update(SettingsChange)` (re-read → write only the non-nil change fields → `SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename +
+chmod; a read/parse failure is `*SettingsUnreadableError` and writes nothing). Session state: `fileUnreadable`
+(startup, nothing written all session, "restart"), `lastSaveFailed` (mid-session, "fix the file"), `notSaved[key]`
+→ `(not saved)`; notices derived at render. Settings screen: Editor row, list mode (`enter` always saves, `esc`
+back one level), Custom command input (`gEditorCommand` guard surface chosen from `screenSettings` +
+`mode == settingsInput`; submit writes first and closes after; FR-521 note ≤ 10 lines). `v`: `openEditorCmd` →
+`editorOutcomeMsg` / `editorExitMsg` (clear only the row's `busy`, no reload), text assembled from typed refusals
+with outside text cut (120 / 40 cols) before FR-529's notices. Status line (`ui/status.go`): wrap + cut to
+`min(6, room)` lines (terminal screen 2, PTY size `height - 8` fixed), `bodyHeight` shrinks by the extra lines, a
+keyed size check (`status, width, height, banner, surface, tabs, markFree`) in the `Update` wrapper resizes the
+active surface (list / item list / huh form with stored `lastHeight` + `Update(nil)`); a `v` failure or refusal has
+its own style (`vFail{text, at}`), is held (`vHold{text, seq}`) through an in-place attach or its Replace
+dialog (`confirmState.holdsV`, read from the showing confirm so no close path can leave it stale; `onAccept` sets `seq = termSeq+1`), released in the wrapper (order: guard layers, parked override, MCP
+follow-ups, release, size check) joined to a showing terminal error or daemon-drop message (`termFail`) as `<error>; <held>`, and never
+held again. Windsurf's/Cursor's `--remote` rows are documentation-derived (quickstart Scenario 0). See
+`research.md` (F1–F8, R1–R16), `data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`,
+`settings-ui.md`), `quickstart.md`, `tasks.md` (T001–T049).
+
+Prior feature: `specs/swi-21-feature-update-mcp-page/plan.md` (MCP Page Quality of Life — Edit, In-Page Secrets,
 Scopes, SWI-21; **implemented** — T001–T051 done, T052 manual real-host Scenario 0 pending, so every `sbx` row and
 `mcp/hostflags.go` flag is still documentation-derived. As built: a failed save-time host re-read refuses `UNVERIFIED`
 only when the fingerprint differs (a host whose inspect always fails can still save); a Retry skips the fingerprint

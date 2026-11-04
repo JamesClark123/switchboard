@@ -44,7 +44,9 @@ The state word is followed by the step while a sequence is in flight:
 | Closed, cleaning up 1 of 2 | `completed · cleaning up 1/2 on alpha-w1 — <summary snippet>` |
 | Halted | `running · setting up 1/3 not accepted: Model 'bogus' not found` / `completed · Clear not accepted: picker opened` |
 | Halted after a restart | `… not accepted (sent before a restart)` |
-| Halted after an unconfirmed send | `… not accepted (may have run)` |
+| Waiting after an unconfirmed send | `running · setting up 1/3 another prompt was submitted` |
+| Halted after an unconfirmed send | `… not accepted (may have run): another prompt was submitted` |
+| Halt taken back by later evidence (research R8) | `running · setting up 1/3 resumed: its turn was seen after the halt` |
 | A step waiting over 10 s | `running · setting up 2/3 waiting: input box not empty` |
 | Holding its sandbox | `completed · needing the developer on alpha-w1` / `… needs input (freeing) …` |
 
@@ -108,16 +110,16 @@ These are added to the run-row help only when the run is halted:
 
 | Key | Action | Notes |
 |---|---|---|
-| `R` | Retry the step | For a step *sent before a restart*, it first opens the confirm "This step may already have run — check the worker's terminal. Retry anyway? (y/N)". While the step's text is still in the box the row says `clear the step's text in the worker's terminal (t) to retry`. The same confirm is used for a step marked *may have run* (UNCONFIRMED, research R2). For a step halted by an **owning-daemon** restart (note `agent detached by a daemon restart`), `R` is **Restart setup** instead, with one confirm whatever else the step is marked: "Stop the detached agent (last seen <state> <time>) and restart setup from the first step? Anything it was doing is lost. (y/N)" (default No). Then the orphan is stopped, a fresh agent starts, and every pre-step is sent again from the first (research R14). |
-| `S` | Skip the step | Not offered for Clear or for the action step (skipping it would leave the run waiting for a report that can't come), nor for a step halted by an owning-daemon restart (the agent is replaced, so setup restarts with `R`). Listed **before** `R` for a step sent before an orchestrator restart, or marked *may have run*. |
-| `X` | Fail | Confirm, defaulting to **No**: "Fail <run> at <step>? (y/N)". A pre-prompt or the action step fails the run, naming the step (FR-212). No custom post-prompt follows, and Clear (if enabled) is sent once the agent is idle (FR-214 as amended). A custom post-prompt drops the remaining custom post-prompts; **Clear (if enabled) is still sent**, and the sandbox is free once it finishes (FR-216, FR-222). Clear leaves the sandbox *needing the developer*, and `R` stays on the row to retry Clear (FR-222). `X` is offered only on halted runs and `x` (cancel) only on queued ones, so a Shift slip opens a confirm or does nothing. |
+| `R` | Retry the step | For a step *sent before a restart*, it first opens the confirm "This step may already have run — check the worker's terminal. Retry anyway? (y/N)". While the step's text is still in the box the row says `clear the step's text in the worker's terminal (t) to retry`. The same confirm is used for a step marked *may have run* (UNCONFIRMED, research R2), and adds `Reason: <note>`, since a row may cut the note. For a step halted by an **owning-daemon** restart (note `agent detached by a daemon restart`), `R` is **Restart setup** instead, with one confirm whatever else the step is marked: "Stop the detached agent (last seen <state> <time>) and restart setup from the first step? Anything it was doing is lost. (y/N)" (default No). Then the orphan is stopped, a fresh agent starts, and every pre-step is sent again from the first (research R14). |
+| `S` | Skip the step | Not offered for Clear or for the action step (skipping it would leave the run waiting for a report that can't come), nor for a step halted by an owning-daemon restart (the agent is replaced, so setup restarts with `R`). Listed **before** `R` for a step sent before an orchestrator restart, or marked *may have run*; for such a step its confirm adds `Reason: <note>`, as `R`'s does. |
+| `X` | Fail | Confirm, defaulting to **No**: "Fail <run> at <step>? (y/N)". A pre-prompt or the action step fails the run, naming the step (FR-212). No custom post-prompt follows, and Clear (if enabled) is sent once the agent is idle (FR-214 as amended), with no turn running on screen (worker-step.md guard 6). On a custom step or action prompt that may have run, the confirm says it may still be running and that Clear ends that session; a built-in starts no turn, so it gets no such line (SWI-28). A custom post-prompt drops the remaining custom post-prompts; **Clear (if enabled) is still sent**, and the sandbox is free once it finishes (FR-216, FR-222). Clear leaves the sandbox *needing the developer*, and `R` stays on the row to retry Clear (FR-222). While a Clear retried under that hold waits to be sent, `X` is **Stop Clear retries** instead: its confirm says the worker stays needing the developer, a send already in flight finishes first, and `R` can retry again (SWI-28). `X` is offered only on halted runs and those retries, and `x` (cancel) only on queued ones, so a Shift slip opens a confirm or does nothing. |
 
 All three call `ResolveRunStep{run_id, step, resolution}`. A `FAILED_PRECONDITION` ("the run moved on") shows on the
 status line and the view reloads.
 
 ## Prompt overlay (`enter` on a run) — FR-220
 
-The overlay lists the snapshot in order, marking the current step with `▶` and finished ones with `✓`:
+The overlay lists the snapshot in order, marking the current step with `▶`, finished ones with `✓`, and, from `Run.step_results` (SWI-28), skipped or dropped ones with `–` and failed ones with `✗`. A run with no results (an older daemon) has its marks inferred from where it is:
 
 ```text
 pre   ✓ /model opus
@@ -157,4 +159,5 @@ sandbox answers "start the sandbox before opening its terminal", as today.
 ## Notifications
 
 `RUN_STEP_NOT_ACCEPTED` shows in the inbox and on the desktop like `RUN_FAILED`: "<run> (<action>): <step> not
-accepted — <reason>".
+accepted — <reason>". A step that was typed and may have run, whether unconfirmed or with its answer lost, reads "not
+accepted (may have run) — <reason>" (SWI-28).

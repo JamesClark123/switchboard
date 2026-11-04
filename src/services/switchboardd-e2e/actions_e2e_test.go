@@ -127,22 +127,30 @@ func TestActionSequenceE2E(t *testing.T) {
 	}
 
 	// Calls snapshot the steps: the defaults for the legacy action, the
-	// custom prompts with their placeholders filled for the other.
+	// custom prompts with their placeholders filled for the other. The action
+	// step has no text of its own: its prompt is Run.prompt (SWI-29), filled in
+	// only on the copy sent to the worker.
 	run, err := c.CallAction(ctx, &pb.CallActionRequest{OrchestratorId: o.GetId(), Action: "legacy", Arguments: map[string]string{"repo": "acme/web"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(stepTexts(run.GetSteps()), "|"); got != "/model opus|/effort medium|Tidy acme/web.|/clear" {
+	if got := strings.Join(stepTexts(run.GetSteps()), "|"); got != "/model opus|/effort medium||/clear" {
 		t.Errorf("legacy steps = %q", got)
+	}
+	if got := run.GetPrompt(); got != "Tidy acme/web." {
+		t.Errorf("legacy prompt = %q", got)
 	}
 	run, err = c.CallAction(ctx, &pb.CallActionRequest{OrchestratorId: o.GetId(), Action: "review", Arguments: map[string]string{"pr": "412", "repo": "acme/web"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(stepTexts(run.GetSteps()), "|"); got != "/model sonnet|/effort high|/pre-setupskill|Look at 412 with review|Review 412 in acme/web.|/tear-down-skill acme/web|/clear" {
+	if got := strings.Join(stepTexts(run.GetSteps()), "|"); got != "/model sonnet|/effort high|/pre-setupskill|Look at 412 with review||/tear-down-skill acme/web|/clear" {
 		t.Errorf("review steps = %q", got)
 	}
-	if got, err := c.GetRun(ctx, &pb.GetRunRequest{OrchestratorId: o.GetId(), RunId: run.GetId()}); err != nil || got.GetState() != pb.RunState_RUN_STATE_QUEUED || len(got.GetSteps()) != 7 {
+	if got := run.GetPrompt(); got != "Review 412 in acme/web." {
+		t.Errorf("review prompt = %q", got)
+	}
+	if got, err := c.GetRun(ctx, &pb.GetRunRequest{OrchestratorId: o.GetId(), RunId: run.GetId()}); err != nil || got.GetState() != pb.RunState_RUN_STATE_QUEUED || len(got.GetSteps()) != 7 || got.GetPrompt() != "Review 412 in acme/web." {
 		t.Errorf("queued run = %v, %v", got, err)
 	}
 }

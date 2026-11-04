@@ -40,7 +40,9 @@ conflict; research R14 lists the same items as known limitations.
   again`, `checking for a detached agent; try again`, …; it still matches `agent.ErrBusy`.)*
 - ~~**Plain orphan notes.**~~ *(SWI-25 A6: the row note, notification and halt notes append the agent's last state,
   time and process count after the unchanged prefix, e.g. `agent detached by a daemon restart (last: working,
-  10:42, 4 procs) — t to Replace or Wait`; `switchboardproto.DetachedDetail`.)*
+  10:42, 4 procs) — t to Replace or Wait`; `switchboardproto.DetachedDetail`. A close's hold note keeps its short
+  text and puts the detail last, so a row that cuts it keeps what frees the worker: `agent detached; t → Replace frees
+  it; clear retries stopped (last: working, 10:42, 4 procs)`.)*
 - **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise). *(SWI-26 added the shared
   rate-limited `ListStatuses` for probe pre-checks and `runtimeMu` gating of `sbx mcp load/unload` and `sbx ports`;
   see research.md R14, Amendment.)*
@@ -53,26 +55,31 @@ conflict; research R14 lists the same items as known limitations.
 - ~~**`CheckOrphansAtStart` stays synchronous**~~ *(SWI-26: asynchronous, with a token-generation snapshot taken
   before the listing.)*
 - **Model/Effort confirmation counts echoes**, so an identical echo scrolling off a full screen can halt a retried
-  setup step (R/S/X recover); termview exposes no scroll offset.
+  setup step (R/S/X recover). Done in SWI-28, by content: the agent repaints whole frames, so no scroll offset would
+  tell (research R2).
 - **Main-agent bind is the first tokened SessionStart**; a lost first hook can bind a nested `claude -p` (Replace
   recovers). Nested events no longer drive status once a main PID is bound.
 - **The hook token is expanded into curl's argv** in the hook command (it is already in `/proc/<pid>/environ`, R13).
 - **Hooks still forward their full body** (reading stops once the wanted fields are seen); `sampleIdle` is not
   rate-limited.
-- **ACTION_PROMPT may still be AGENT_LOCAL** when its turn hook is lost, as contracts/worker-step.md §3 says.
-- **A resize doesn't mark the daemon screen stale.**
-- **A claimed queued run stays with its worker** while that worker refuses for a non-terminal reason (T019/R6).
-- **No in-memory sandbox→run index**, and the action step's text still duplicates `Run.Prompt`.
-- **Old daemons are shown the default sequence** in the TUI (no capability signal).
-- **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them.
-- **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step).
+- **ACTION_PROMPT may still be AGENT_LOCAL** when its turn hook is lost, as contracts/worker-step.md §3 says. Done in SWI-28.
+- **A resize doesn't mark the daemon screen stale.** Done in SWI-28.
+- ~~**A claimed queued run stays with its worker** while that worker refuses for a non-terminal reason (T019/R6).~~
+  Done in SWI-29: handed back after `claimRefuseLimit` (R6).
+- ~~**No in-memory sandbox→run index**, and the action step's text still duplicates `Run.Prompt`.~~ Done in SWI-29.
+- ~~**Old daemons are shown the default sequence** in the TUI (no capability signal).~~ Done in SWI-29 (`steps`
+  capability).
+- **Clear retries under a NEEDS_DEVELOPER hold can't be stopped** by the developer; a fresh session ends them. Done in SWI-28.
+- **The prompt overlay can't tell skipped steps from finished ones** (the run records only its current step). Done in SWI-28.
 
 **Also deferred from PR #25's re-review 5692052431 (run-746, addressed in run-749; follow-up SWI-19):**
 
-- **A dispatch pass reads the runs twice**: `ViewOrchestratorRuns` for the queued runs, then `ListRuns` for the
-  claimed and holding sandboxes. One read needs a registry view that returns both.
-- **Rebuilding the paged action form returns it to page 1** (refused save, guard confirm, back from `ctrl+l`, lane
-  reload), with no page indicator. Restoring focus means stepping huh's groups, which validate on the way.
+- ~~**A dispatch pass reads the runs twice**: `ViewOrchestratorRuns` for the queued runs, then `ListRuns` for the
+  claimed and holding sandboxes. One read needs a registry view that returns both.~~ Done in SWI-29
+  (`ViewOrchestratorAllRuns`).
+- ~~**Rebuilding the paged action form returns it to page 1** (refused save, guard confirm, back from `ctrl+l`, lane
+  reload), with no page indicator. Restoring focus means stepping huh's groups, which validate on the way.~~ Done in
+  SWI-29.
 
 Tests that exist only for a deferred item are dropped.
 
@@ -537,8 +544,8 @@ sequence model. No user story can be delivered before this phase.
     Replace or Wait`.
   - **Phases.** For each orphan whose sandbox has a `controller.run` with a `step_role` or `hold`:
     - **ACTION:** left as is (in flight; hooks and the MCP report still work). At close, the cleanup steps are
-      dropped, and the hold is NEEDS_DEVELOPER with the note `agent detached by a daemon restart; t → Replace frees
-      the worker` (+ `custom post-prompts were dropped` when there were any);
+      dropped, and the hold is NEEDS_DEVELOPER with the note `agent detached; t → Replace frees it` (+ `post-prompts
+      dropped` when there were any);
     - **SETUP**, or an action step not yet accepted: marked so the orchestrator halts the step with the note `agent
       detached by a daemon restart; last seen <state> <time>; R restarts setup with a fresh agent` (and
       `sent_before_restart` when it was sent). `X` fails the run and leaves the hold NEEDS_DEVELOPER;

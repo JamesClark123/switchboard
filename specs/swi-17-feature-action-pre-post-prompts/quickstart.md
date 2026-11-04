@@ -108,7 +108,7 @@ The prompt `  !echo hi` is saved trimmed as `!echo hi`.
    - An *agent detached* notification names each sandbox with a detached agent, once. The daemon never stops one
      on its own.
    - **During the action prompt:** the run stays in progress, and the agent's completion report closes it. The
-     worker then shows *needing the developer* (`t → Replace frees the worker`, plus a note when custom post-prompts
+     worker then shows *needing the developer* (`t → Replace frees it`, plus a note when custom post-prompts
      were dropped); Replace starts a fresh agent and frees it. Pressing `t` before the report shows the Wait/Replace dialog (default Wait); **Replace** fails the run
      (`agent replaced by the developer after a daemon restart`) and starts one fresh agent.
    - **During a setup step:** the step halts with `agent detached by a daemon restart; last seen …`. An escape-hatch

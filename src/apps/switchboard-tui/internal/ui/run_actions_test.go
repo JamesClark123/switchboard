@@ -11,6 +11,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // SWI-17: a run's sequence on its row, the R/S/X controls of a halted step and
@@ -62,6 +63,10 @@ func TestRunRowsShowTheStep(t *testing.T) {
 	restart.StepSentBeforeRestart = true
 	unconfirmed := halted(seqRun("run-unc", pb.RunState_RUN_STATE_RUNNING, 2, 0), "")
 	unconfirmed.StepUnconfirmed = true
+	otherPrompt := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "another prompt was submitted")
+	otherPrompt.StepUnconfirmed = true
+	unconfirmedSent := seqRun("run-uns", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
+	unconfirmedSent.StepNote = "another prompt was submitted"
 	waiting := seqRun("run-wait", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_PENDING)
 	waiting.StepNote = "waiting: input box not empty"
 	clearHalt := halted(closedHold("run-clr", pb.WorkerHold_WORKER_HOLD_CLEANING_UP), "picker opened")
@@ -73,10 +78,12 @@ func TestRunRowsShowTheStep(t *testing.T) {
 		closedHold("run-dev", pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER):                          "needing the developer on worker-w-run",
 		closedHold("run-frg", pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING):                      "needs input (freeing) on worker-w-run",
 		halted(seqRun("run-bog", pb.RunState_RUN_STATE_RUNNING, 0, 0), "Model 'bogus' not found"): "setting up 1/3 not accepted: Model 'bogus' not found",
-		restart:     "setting up 3/3 not accepted (sent before a restart)",
-		unconfirmed: "setting up 3/3 not accepted (may have run)",
-		waiting:     "setting up 2/3 waiting: input box not empty",
-		clearHalt:   "Clear not accepted: picker opened",
+		restart:         "setting up 3/3 not accepted (sent before a restart)",
+		unconfirmed:     "setting up 3/3 not accepted (may have run)",
+		otherPrompt:     "setting up 3/3 not accepted (may have run): another prompt was submitted",
+		unconfirmedSent: "setting up 2/3 another prompt was submitted",
+		waiting:         "setting up 2/3 waiting: input box not empty",
+		clearHalt:       "Clear not accepted: picker opened",
 	}
 	var runs []*pb.Run
 	for r := range cases {
@@ -150,6 +157,8 @@ func TestStepKeysHelpAndAvailability(t *testing.T) {
 	detached := halted(seqRun("run-d", pb.RunState_RUN_STATE_RUNNING, 1, 0), "agent detached by a daemon restart")
 	heldClear := seqRun("run-hc", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_DONE)
 	heldClear.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	clearRetry := seqRun("run-cr", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_PENDING)
+	clearRetry.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
 	running := seqRun("run-r", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	m := Model{}
 	for _, c := range []struct {
@@ -162,6 +171,7 @@ func TestStepKeysHelpAndAvailability(t *testing.T) {
 		{before, "S skip step • R retry step • X fail run"},
 		{detached, "R restart setup • X fail run"},
 		{heldClear, "R retry Clear"},
+		{clearRetry, "X stop Clear retries"},
 	} {
 		h := strings.ReplaceAll(ansi.Strip(m.renderHelp(stepKeysHelp(c.run))), "\n", " • ")
 		if !strings.Contains(h, c.want) {
@@ -207,6 +217,87 @@ func TestStepKeysConfirmDefaultNoAndCall(t *testing.T) {
 	}
 }
 
+// SWI-28: X stops a held Clear's retry that keeps being refused, while it waits
+// and while it is being sent; R is not for it, and a Clear not retrying has no X.
+func TestStopClearRetriesKey(t *testing.T) {
+	for _, st := range []pb.StepStatus{pb.StepStatus_STEP_STATUS_PENDING, pb.StepStatus_STEP_STATUS_SENDING} {
+		run := seqRun("run-cr", pb.RunState_RUN_STATE_COMPLETED, 5, st)
+		run.Hold, run.EndedAt = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, at(0)
+		m, d := stepJobs(t, run)
+		m = overviewAt(t, m, "run-cr")
+		mm, cmd := update(m, press("R"))
+		if cmd != nil || mm.screen != screenJobs {
+			t.Errorf("%v: R on a retrying Clear opened %v", st, mm.screen)
+		}
+		m, _ = update(m, press("X"))
+		v := plainView(m)
+		if m.screen != screenConfirm || !strings.Contains(v, "Stop retrying Clear of run-cr?") || strings.Contains(v, "The run fails") {
+			t.Fatalf("%v: confirm:\n%s", st, v)
+		}
+		m, cmd = update(m, press("y"))
+		m = feed2(m, cmd)
+		if !strings.Contains(d.orchCallsJoined(), "ResolveRunStep o-a run-cr 5 STEP_RESOLUTION_FAIL") || !strings.Contains(m.status, "stop retries requested for run-cr") {
+			t.Errorf("%v: calls %q status %q", st, d.orchCallsJoined(), m.status)
+		}
+	}
+	held := seqRun("run-hc", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	held.Hold, held.EndedAt = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, at(0)
+	m, _ := stepJobs(t, held)
+	m = overviewAt(t, m, "run-hc")
+	if mm, cmd := update(m, press("X")); cmd != nil || mm.screen != screenJobs {
+		t.Errorf("X on a held Clear with no retry opened %v", mm.screen)
+	}
+}
+
+// SWI-28: a halt's reason shows whole on the row from 134 columns, or 160 when the
+// row also keeps 24 for a timed or triggered run's origin. Narrower, the row cuts it,
+// so the R and S confirms say it at any width.
+func TestHaltReasonAtNormalWidths(t *testing.T) {
+	run := halted(seqRun("run-oth", pb.RunState_RUN_STATE_RUNNING, 2, 0), "another prompt was submitted")
+	run.StepUnconfirmed, run.EventKind = true, pb.EventKind_EVENT_KIND_USER
+	const reason = "not accepted (may have run): another prompt was submitted"
+	row := func(r *pb.Run, width int) string {
+		m, _ := stepJobs(t, r)
+		m, _ = update(m, tea.WindowSizeMsg{Width: width, Height: 40})
+		return plainView(m)
+	}
+	triggered := proto.Clone(run).(*pb.Run)
+	triggered.EventKind, triggered.OriginLabel = pb.EventKind_EVENT_KIND_TRIGGERED, "a long enough event name"
+	if v := row(run, 134); !strings.Contains(v, reason) {
+		t.Errorf("134 columns: row cuts the reason:\n%s", v)
+	}
+	if v := row(triggered, 160); !strings.Contains(v, reason) {
+		t.Errorf("160 columns with an origin: row cuts the reason:\n%s", v)
+	}
+	if v := row(run, 100); strings.Contains(v, reason) {
+		t.Errorf("100 columns: the row is expected to cut the reason:\n%s", v)
+	}
+	m, _ := stepJobs(t, run)
+	m, _ = update(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	for _, key := range []string{"R", "S"} {
+		mm, _ := update(overviewAt(t, m, "run-oth"), press(key))
+		if v := plainView(mm); !strings.Contains(v, "Reason: another prompt was submitted") {
+			t.Errorf("%s confirm has no reason:\n%s", key, v)
+		}
+	}
+	// A step with no kept reason has no such line.
+	run.StepNote = ""
+	m, _ = stepJobs(t, run)
+	m, _ = update(overviewAt(t, m, "run-oth"), press("R"))
+	if v := plainView(m); strings.Contains(v, "Reason:") {
+		t.Errorf("confirm with no reason:\n%s", v)
+	}
+	// Nor does a step that isn't marked as maybe run: its note is on its row.
+	plain := halted(seqRun("run-bog", pb.RunState_RUN_STATE_RUNNING, 2, 0), "picker opened")
+	m, _ = stepJobs(t, plain)
+	for _, key := range []string{"R", "S"} {
+		mm, _ := update(overviewAt(t, m, "run-bog"), press(key))
+		if v := plainView(mm); strings.Contains(v, "Reason:") {
+			t.Errorf("%s confirm of a plain halt:\n%s", key, v)
+		}
+	}
+}
+
 func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	act := halted(seqRun("run-a", pb.RunState_RUN_STATE_RUNNING, 3, 0), "")
 	clr := halted(seqRun("run-c", pb.RunState_RUN_STATE_COMPLETED, 5, 0), "")
@@ -217,7 +308,11 @@ func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	running := seqRun("run-r", pb.RunState_RUN_STATE_RUNNING, 1, pb.StepStatus_STEP_STATUS_SENT)
 	cln := halted(seqRun("run-x", pb.RunState_RUN_STATE_COMPLETED, 4, 0), "")
 	cln.Hold, cln.EndedAt = pb.WorkerHold_WORKER_HOLD_CLEANING_UP, at(0)
-	m, d := stepJobs(t, act, clr, unc, det, running, cln)
+	clrU := halted(seqRun("run-cu", pb.RunState_RUN_STATE_COMPLETED, 5, 0), "")
+	clrU.Hold, clrU.EndedAt, clrU.StepUnconfirmed = pb.WorkerHold_WORKER_HOLD_CLEANING_UP, at(0), true
+	mdl := halted(seqRun("run-m", pb.RunState_RUN_STATE_RUNNING, 0, 0), "")
+	mdl.StepUnconfirmed = true
+	m, d := stepJobs(t, act, clr, unc, det, running, cln, clrU, mdl)
 	m.sandboxes[0].Agent = &pb.AgentSession{AgentCheck: &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_WORKING}}
 	refused := func(id, key, want string) {
 		t.Helper()
@@ -247,7 +342,14 @@ func TestStepKeysRefusalsAndWarnings(t *testing.T) {
 	confirm("run-d", "R", "Restart setup of run-d?", "last seen working", "Anything it was doing is lost.")
 	confirm("run-c", "X", "left needing the developer")
 	confirm("run-x", "X", "remaining post-prompts are dropped")
-	confirm("run-u", "X", "No post-prompt follows")
+	confirm("run-u", "X", "No post-prompt follows", "may still be running", "Clear ends that session")
+	confirm("run-cu", "X", "left needing the developer")
+	for _, id := range []string{"run-a", "run-cu", "run-m"} {
+		mm, _ := update(overviewAt(t, m, id), press("X"))
+		if v := plainView(mm); strings.Contains(v, "may still be running") {
+			t.Errorf("%s: a step that can't be running needs no warning:\n%s", id, v)
+		}
+	}
 	// FAILED_PRECONDITION: the run moved on — shown, and the view reloads.
 	d.orchErr = status.Error(codes.FailedPrecondition, "the run moved on; reload")
 	mm := overviewAt(t, m, "run-u")
@@ -321,6 +423,56 @@ func TestPromptOverlayListsSteps(t *testing.T) {
 	}
 	if v := ansi.Strip(m.promptView(&pb.Run{Id: "p", Prompt: "just the prompt"})); strings.Contains(v, "pre") || !strings.Contains(v, "just the prompt") {
 		t.Errorf("no steps:\n%s", v)
+	}
+}
+
+// SWI-28: recorded results mark skipped and dropped steps –, failed ones ✗; with
+// none (an older daemon) the marks are inferred as before.
+func TestHeldRunRowShowsItsNote(t *testing.T) {
+	r := seqRun("h", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	r.Hold, r.StepNote = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, "clear retries stopped"
+	if d := runStepDetail(r); !strings.Contains(d, "needing the developer") || !strings.HasSuffix(d, ": clear retries stopped") {
+		t.Errorf("detail = %q", d)
+	}
+	// A detached agent: what frees it and that the retries stopped both show.
+	r.StepNote = "agent detached; t → Replace frees it; post-prompts dropped; clear retries stopped"
+	if d := runStepDetail(r); !strings.HasSuffix(d, ": "+r.StepNote) {
+		t.Errorf("detached detail = %q", d)
+	}
+	r.StepNote = ""
+	if d := runStepDetail(r); strings.Contains(d, ":") {
+		t.Errorf("no note = %q", d)
+	}
+}
+
+func TestPromptOverlayMarksStepResults(t *testing.T) {
+	m, _ := stepJobs(t)
+	res := func(i int32, o pb.StepResultOutcome) *pb.StepResult {
+		return &pb.StepResult{Index: i, Outcome: o}
+	}
+	r := seqRun("d", pb.RunState_RUN_STATE_COMPLETED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	r.StepResults = []*pb.StepResult{
+		res(0, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE),
+		res(1, pb.StepResultOutcome_STEP_RESULT_OUTCOME_SKIPPED),
+		res(2, pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED),
+		res(4, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED),
+		res(5, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE),
+	}
+	v := ansi.Strip(m.promptView(r))
+	for _, want := range []string{"✓ /model opus", "– /effort medium", "✗ /pre-setupskill", "– /tear-down-skill", "✓ /clear"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("results overlay missing %q:\n%s", want, v)
+		}
+	}
+	// A hold after dropping the posts: Clear keeps no result, ✗ as it stopped there.
+	h := seqRun("h", pb.RunState_RUN_STATE_FAILED, 5, pb.StepStatus_STEP_STATUS_DONE)
+	h.Hold = pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	h.StepResults = []*pb.StepResult{res(4, pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED)}
+	v = ansi.Strip(m.promptView(h))
+	for _, want := range []string{"✓ /model opus", "– /tear-down-skill", "✗ /clear"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("held overlay missing %q:\n%s", want, v)
+		}
 	}
 }
 

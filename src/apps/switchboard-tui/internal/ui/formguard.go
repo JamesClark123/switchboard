@@ -681,9 +681,15 @@ func (m *Model) reopenForm(g guardSurface) tea.Cmd {
 		if op.formBuild == nil {
 			return nil
 		}
+		focus := formFocusKey(op.form)
 		op.formSpec = newFormSpec()
 		op.form = op.formBuild(*m, op.formSpec)
-		return op.form.Init()
+		init := op.form.Init()
+		if v, ok := op.formVals.(*actionFormVals); ok {
+			// The paged action form returns to the field that had focus (E5).
+			return tea.Batch(init, restoreActionFocus(op.form, v, focus))
+		}
+		return init
 	case gKitItem:
 		ke := &m.kitEditor
 		if ke.vals == nil {

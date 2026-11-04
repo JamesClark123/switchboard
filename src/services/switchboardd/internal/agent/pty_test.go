@@ -196,6 +196,12 @@ func TestTypeStepAndRePress(t *testing.T) {
 	if got := sess.written(); got != Typed("/model opus") {
 		t.Errorf("typed %q, want one paste then Enter", got)
 	}
+	if got := reg.TypedStep("sb"); got != "/model opus" {
+		t.Errorf("TypedStep = %q", got)
+	}
+	if got := reg.TypedStep("other"); got != "" {
+		t.Errorf("TypedStep of no session = %q", got)
+	}
 	// No blind re-press follows on its own.
 	time.Sleep(20 * time.Millisecond)
 	if got := sess.written(); got != "" {

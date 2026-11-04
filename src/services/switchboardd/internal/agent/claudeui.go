@@ -2,8 +2,11 @@ package agent
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 )
@@ -51,7 +54,22 @@ var (
 	numberedOption = regexp.MustCompile(`^\s+❯\s*\d+\.`)
 	// pastePlaceholder is how the box shows a multi-line paste.
 	pastePlaceholder = regexp.MustCompile(`^\[Pasted text #\d+[^\]]*\]$`)
+	// terminalEscape is what the agent removes from a paste as one escape, as
+	// observed (2.1.316, 2.1.317):
+	//   - a CSI sequence runs to its final byte, even cut off before one, and
+	//     skips anything else on the way, including a tab or an accented letter;
+	//   - a string sequence (OSC, DCS and the like) runs to its terminator (BEL,
+	//     ST or ESC \), and skips the rest the same way;
+	//   - otherwise ESC and a final character, or ESC, one intermediate and
+	//     whatever comes next, even another intermediate or a non-ASCII character.
+	//
+	// escapeStops end any of these early and aren't removed with them.
+	terminalEscape = regexp.MustCompile(`\x1b(?:\[[^@-~` + escapeStops + `]*[@-~]?|[\]PX^_][^\x07` + escapeStops + `]*(?:\x07|\x1b\\)?|[0-~]|[ -/][^` + escapeStops + `]?)`)
 )
+
+// escapeStops are what cut a sequence short: CAN, SUB, ESC, ST, and every line
+// break, as the agent turns CR, VT, FF, NEL, LS and PS into a newline first.
+const escapeStops = `\x18\x1a\x1b\n\v\f\r\x{85}\x{9c}\x{2028}\x{2029}`
 
 // InputBox reads the input box: every row between the last two horizontal rules,
 // starting at the `❯` row, with wrapped rows joined. text is the typed text with
@@ -157,6 +175,47 @@ func StepInBox(text, stepText string) bool {
 	return box != "" && strings.HasPrefix(squash(stepText), box)
 }
 
+// StepPrompt reports whether a UserPromptSubmit's prompt is a step's text. The
+// agent doesn't report a paste as typed: as observed (2.1.316, 2.1.317), a long
+// paste comes wrapped in a <pasted_content> tag with its tabs turned to spaces, a
+// literal tag in the text gets a backslash, terminal escapes, zero-width and other
+// control characters are removed, and a short paste's accents are composed. So both
+// sides are cleaned the same way (asReported), and the rest compares by containment
+// on letters and digits only. A step with neither compares without whitespace
+// instead, since every prompt would contain nothing. A step with nothing left at all
+// can't be submitted, so no prompt is its own.
+func StepPrompt(prompt, stepText string) bool {
+	prompt, stepText = asReported(prompt), asReported(stepText)
+	step := lettersAndDigits(stepText)
+	if step == "" {
+		rest := squash(stepText)
+		return rest != "" && strings.Contains(squash(prompt), rest)
+	}
+	return strings.Contains(lettersAndDigits(prompt), step)
+}
+
+// asReported removes terminal escapes, then control and format characters other
+// than whitespace, and composes what's left (NFC), in that order: a removed
+// character may sit between a letter and its accent.
+func asReported(s string) string {
+	return norm.NFC.String(strings.Map(func(r rune) rune {
+		if unicode.In(r, unicode.Cc, unicode.Cf) && !unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, terminalEscape.ReplaceAllString(s, "")))
+}
+
+// lettersAndDigits keeps only the letters and digits.
+func lettersAndDigits(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // squash removes every whitespace rune (including the no-break space).
 func squash(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -210,17 +269,17 @@ func isEcho(s string) bool { return strings.HasPrefix(s, promptGlyph+" ") }
 // isResult reports whether a row is a command's result line (`  ⎿  …`).
 func isResult(s string) bool { return strings.HasPrefix(strings.TrimSpace(s), resultGlyph) }
 
-// Echoes counts the transcript's echoes of stepText (`❯ <stepText>` rows). The
-// submit check counts them before typing, so that only an echo added after the
-// step was sent is read back (contracts/worker-step.md §3).
-func Echoes(lines []termview.Line, stepText string) int {
-	n := 0
-	for _, l := range lines {
-		if isEchoOf(l.Text, stepText) {
-			n++
+// LastEcho is the row of the transcript's last echo of stepText (`❯ <stepText>`),
+// -1 when there is none. The submit check marks its position before typing, so
+// that only an echo added after the step was sent is read back, even once older
+// identical echoes have scrolled off (contracts/worker-step.md §3).
+func LastEcho(lines []termview.Line, stepText string) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isEchoOf(lines[i].Text, stepText) {
+			return i
 		}
 	}
-	return n
+	return -1
 }
 
 func isEchoOf(row, stepText string) bool {
@@ -232,13 +291,7 @@ func isEchoOf(row, stepText string) bool {
 // wrapped rows joined. ok is false when there is no such echo, or no result row
 // directly under it.
 func ConfirmationAfter(lines []termview.Line, stepText string) (string, bool) {
-	at := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if isEchoOf(lines[i].Text, stepText) {
-			at = i
-			break
-		}
-	}
+	at := LastEcho(lines, stepText)
 	if at < 0 || at+1 >= len(lines) || !isResult(lines[at+1].Text) {
 		return "", false
 	}
@@ -280,8 +333,101 @@ func EffortConfirmed(line, level string) bool {
 	return line == want || strings.HasPrefix(line, want+" ")
 }
 
-// assistantGlyph starts an assistant message or tool call in the transcript.
-const assistantGlyph = "⏺"
+// assistantGlyphs start an assistant message or tool call in the transcript, at
+// column 0: `●` on Linux (fixture reply-row), `⏺` on macOS (from memory: no fixture
+// has it). A right-aligned `●` is the effort indicator.
+var assistantGlyphs = []string{"⏺", "●"}
+
+func isReply(row string) bool {
+	return slices.ContainsFunc(assistantGlyphs, func(g string) bool { return strings.HasPrefix(row, g) })
+}
+
+// LastReply is the row of the transcript's last assistant message or tool call,
+// -1 when there is none. The glyph must start the row (an echoed prompt quoting
+// one is indented under its `❯`), above the input box when it is on screen.
+func LastReply(lines []termview.Line) int {
+	if top, _, ok := boxBounds(lines); ok {
+		lines = lines[:top]
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isReply(lines[i].Text) {
+			return i
+		}
+	}
+	return -1
+}
+
+// runningHint is in the footer under the input box while a turn runs (fixtures
+// turn-running, turn-running-narrow). The box itself reads empty and ready then.
+const runningHint = "esc to interrupt"
+
+// TurnRunning reports whether the screen shows a turn running, whatever the hooks
+// said. Only the rows under the box count, so a transcript quoting the hint doesn't
+// read as a turn; with no box, or a footer cut too short to show it, it reads false.
+func TurnRunning(lines []termview.Line) bool {
+	_, bottom, ok := boxBounds(lines)
+	return ok && slices.ContainsFunc(lines[bottom+1:], func(l termview.Line) bool { return strings.Contains(l.Text, runningHint) })
+}
+
+// rightAligned is how far a row must be indented to be UI drawn over the
+// transcript's end, not part of it: the effort indicator, an update notice.
+const rightAligned = 40
+
+// Transcript is the screen's transcript: the rows above the input box (all of them
+// with none on screen), less blank and right-aligned ones, which a repaint adds
+// and drops as it likes.
+func Transcript(lines []termview.Line) []termview.Line {
+	if top, _, ok := boxBounds(lines); ok {
+		lines = lines[:top]
+	}
+	out := make([]termview.Line, 0, len(lines))
+	for _, l := range lines {
+		if s := strings.TrimLeft(l.Text, " "); s != "" && len(l.Text)-len(s) < rightAligned {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TranscriptTexts is Transcript's rows as text, kept to compare with Added.
+func TranscriptTexts(lines []termview.Line) []string {
+	rows := Transcript(lines)
+	out := make([]string, len(rows))
+	for i, l := range rows {
+		out[i] = l.Text
+	}
+	return out
+}
+
+// alignRows is how many of the rows two transcripts share must match for Added to
+// line them up. It is not all of them because the rows at the top change on their
+// own (a start-up notice hiding).
+const alignRows = 12
+
+// Added returns the rows of the transcript now that came after the transcript
+// before. Rows can't be told apart by where they are: the agent repaints whole
+// frames on the alternate screen (fixtures effort-repeat-before and -after), so a
+// new echo lands on the row of the identical one before it, with nothing scrolled
+// or erased that a terminal could count. So it finds how far now moved up by content:
+// the smallest shift at which the rows they share match.
+//
+// aligned is false when no shift matches (the screen was rewrapped, or a long
+// reply pushed everything off), and then every row is returned. The one case read
+// wrongly is a transcript whose last alignRows rows are one command repeated, which
+// reads as unchanged: nothing is added, the safe direction.
+func Added(before []string, now []termview.Line) (added []termview.Line, aligned bool) {
+	for shift := range before {
+		shared := len(before) - shift
+		if shared > len(now) {
+			continue
+		}
+		n := min(shared, alignRows)
+		if slices.EqualFunc(now[shared-n:shared], before[len(before)-n:], func(l termview.Line, s string) bool { return l.Text == s }) {
+			return now[shared:], true
+		}
+	}
+	return now, len(before) == 0
+}
 
 // PostClear reports whether the screen shows a session just cleared (research
 // R13, fixture clear-banner): the input box empty and ready, and nothing of a
@@ -296,7 +442,7 @@ func PostClear(lines []termview.Line) bool {
 	top, _, _ := boxBounds(lines)
 	for _, l := range lines[:top] {
 		switch s := l.Text; {
-		case isEcho(s) && !isEchoOf(s, "/clear"), isResult(s), strings.HasPrefix(strings.TrimSpace(s), assistantGlyph):
+		case isEcho(s) && !isEchoOf(s, "/clear"), isResult(s), isReply(s), strings.HasPrefix(strings.TrimSpace(s), "⏺"):
 			return false
 		}
 	}

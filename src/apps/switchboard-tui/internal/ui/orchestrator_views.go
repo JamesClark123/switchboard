@@ -388,7 +388,7 @@ func (m Model) orchViewTabs() string {
 func (m Model) viewOrchDetail() string {
 	d := m.orchDetail
 	if d.form != nil {
-		parts := []string{sectionStyle.Render(sanitizeLine(d.name+" › "+d.formKind, 0)), "", d.form.View()}
+		parts := []string{sectionStyle.Render(sanitizeLine(d.name+" › "+d.formKind, 0)) + opFormPage(&d.orchOpState), "", d.form.View()}
 		if d.status != "" {
 			// A daemon refusal stays visible under the open form (verbatim).
 			parts = append(parts, "", statusErrStyle.Render(sanitizeTerminalText(d.status)))

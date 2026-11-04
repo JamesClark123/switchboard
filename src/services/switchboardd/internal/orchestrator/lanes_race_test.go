@@ -359,3 +359,97 @@ func TestDeletesWaitForAStepperRewrite(t *testing.T) {
 		t.Fatalf("the lane delete's strip was lost: %+v", kept)
 	}
 }
+
+// The sandbox→run index (SWI-29) agrees with the store after concurrent calls,
+// cancels, claims, refusals, hand-backs and the sweeps that read it: every run
+// on a sandbox that is not over is filed under it, and nothing else is.
+func TestRunIndexRace(t *testing.T) {
+	env, _, o, rt, d := seqEnv(t, 3, nil)
+	rng := rand.New(rand.NewSource(7))
+	var rngMu sync.Mutex
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(*pb.DeliverWorkerStepRequest) string {
+			rngMu.Lock()
+			defer rngMu.Unlock()
+			if rng.Intn(3) == 0 {
+				return "input box not empty"
+			}
+			return ""
+		}
+	})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 8; i++ {
+				run, err := env.svc.CallAction(o.GetId(), "review-pr", map[string]string{"number": fmt.Sprint(g*100 + i), "repo": "r"}, pb.EventKind_EVENT_KIND_USER, "", "")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if i%3 == g%3 {
+					_, _ = env.svc.CancelRun(o.GetId(), run.GetId()) // queued or claimed; a typed one refuses
+				}
+				sb := []string{"wa", "wb", "wc"}[(g+i)%3]
+				rt.kickSteps(sb)
+				rt.stepRetryTick()
+				if i%4 == 0 {
+					rt.unclaimOn(sb)
+				}
+			}
+		}(g)
+	}
+	for i := 0; i < 10; i++ {
+		env.clock.Advance(stepRetryEvery * 4)
+		time.Sleep(time.Millisecond)
+	}
+	wg.Wait()
+	d.set(func(d *fakeDaemon) { d.refuse = nil })
+	env.clock.Advance(claimAvoidFor + stepRetryEvery)
+	settle(t, rt)
+	// Every worker ends on a typed step (TURN) or free; the queue keeps the rest.
+	waitFor(t, func() bool {
+		for _, sb := range []string{"wa", "wb", "wc"} {
+			if r := rt.seqRunOn(sb); r != nil && r.GetStepStatus() != pb.StepStatus_STEP_STATUS_TURN {
+				env.clock.Advance(stepRetryEvery)
+				return false
+			}
+		}
+		return true
+	})
+	rt.runs.mu.Lock()
+	defer rt.runs.mu.Unlock()
+	runs, err := env.reg.ListRuns(o.GetId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, r := range runs {
+		if onSandbox(r) {
+			want[r.GetId()] = r.GetSandboxId()
+		}
+	}
+	got := rt.runs.idx.sandboxOf
+	if len(got) != len(want) {
+		t.Errorf("index has %d runs, store %d: %v vs %v", len(got), len(want), got, want)
+	}
+	for id, sb := range want {
+		if got[id] != sb {
+			t.Errorf("run %s: index %q, store %q", id, got[id], sb)
+		}
+		if _, ok := rt.runs.idx.bySandbox[sb][id]; !ok {
+			t.Errorf("run %s missing under %s", id, sb)
+		}
+	}
+	n := 0
+	for _, set := range rt.runs.idx.bySandbox {
+		n += len(set)
+	}
+	if n != len(got) {
+		t.Errorf("bySandbox holds %d runs, sandboxOf %d", n, len(got))
+	}
+	if len(want) == 0 {
+		t.Error("no run reached a worker: the race exercised nothing")
+	}
+}

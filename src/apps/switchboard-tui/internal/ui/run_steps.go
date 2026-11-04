@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -113,7 +114,14 @@ func runStepDetail(r *pb.Run) string {
 		return d
 	}
 	switch r.GetHold() {
-	case pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING, pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+	case pb.WorkerHold_WORKER_HOLD_NEEDS_INPUT_FREEING:
+		return swb.WorkerHoldLabel(r.GetHold())
+	case pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER:
+		// The note says what frees the worker, why a retried Clear waits, or that
+		// its retries stopped. It may be several of those, so it gets more room.
+		if note := sanitizeLine(r.GetStepNote(), 90); note != "" {
+			return swb.WorkerHoldLabel(r.GetHold()) + ": " + note
+		}
 		return swb.WorkerHoldLabel(r.GetHold())
 	}
 	// A `waiting: <reason>` note follows the progress (or stands alone on the
@@ -154,6 +162,14 @@ func retryClearHeld(r *pb.Run) bool {
 		r.GetStepStatus() == pb.StepStatus_STEP_STATUS_DONE
 }
 
+// clearRetrying reports a Clear retried under a NEEDS_DEVELOPER hold that waits
+// to be sent (the worker keeps refusing it): X stops the retries (SWI-28).
+func clearRetrying(r *pb.Run) bool {
+	st := currentStep(r)
+	return st != nil && st.GetKind() == pb.StepKind_STEP_KIND_CLEAR && r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER &&
+		(r.GetStepStatus() == pb.StepStatus_STEP_STATUS_PENDING || r.GetStepStatus() == pb.StepStatus_STEP_STATUS_SENDING)
+}
+
 // stepSkippable reports whether S applies: not for Clear, the action step (the
 // run would wait for a report that can't come) or a restart halt.
 func stepSkippable(r *pb.Run) bool {
@@ -172,12 +188,26 @@ func stepSkippable(r *pb.Run) bool {
 // listed first and R asks first.
 func mayHaveRun(r *pb.Run) bool { return r.GetStepSentBeforeRestart() || r.GetStepUnconfirmed() }
 
+// haltReason is the confirm's line saying why a may-have-run step wasn't confirmed:
+// it decides between R and S, and a row may cut it short, so here it's whole.
+func haltReason(r *pb.Run) []string {
+	note := sanitizeLine(r.GetStepNote(), 0)
+	if note == "" {
+		return nil
+	}
+	return []string{"Reason: " + note}
+}
+
 // stepKeysHelp is the R/S/X help of a run row, offered only on a halted run
-// (R also on a held Clear). S comes first for a step that may have run.
+// (R also on a held Clear, X on its retry). S comes first for a step that may
+// have run.
 func stepKeysHelp(r *pb.Run) helpBindings {
 	if !runHalted(r) {
-		if retryClearHeld(r) {
+		switch {
+		case retryClearHeld(r):
 			return helpBindings{hkey("R", "retry Clear")}
+		case clearRetrying(r):
+			return helpBindings{hkey("X", "stop Clear retries")}
 		}
 		return nil
 	}
@@ -200,11 +230,12 @@ func stepKeysHelp(r *pb.Run) helpBindings {
 }
 
 // stepKey handles R, S and X on a run row. Each opens a confirm that defaults
-// to No; X is offered only on halted runs and x only on queued ones, so a Shift
-// slip opens a confirm or does nothing (contracts/jobs-ui.md).
+// to No; X is offered only on halted runs and retrying held Clears and x only on
+// queued ones, so a Shift slip opens a confirm or does nothing
+// (contracts/jobs-ui.md).
 func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.Model, tea.Cmd) {
 	op := m.opState(s)
-	if !runHalted(run) && (k != "R" || !retryClearHeld(run)) {
+	if !runHalted(run) && (k != "R" || !retryClearHeld(run)) && (k != "X" || !clearRetrying(run)) {
 		op.status = "R, S and X are for a run halted at a step"
 		return m, nil
 	}
@@ -222,7 +253,7 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 			st.warning = "Anything it was doing is lost."
 		case mayHaveRun(run):
 			st.title = "Retry " + name + " of " + id + "?"
-			st.body = []string{"This step may already have run — check the worker's terminal."}
+			st.body = append([]string{"This step may already have run — check the worker's terminal."}, haltReason(run)...)
 			st.warning = "Retry anyway? It may run twice."
 		default:
 			st.title = "Retry " + name + " of " + id + "?"
@@ -240,12 +271,24 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 		res = pb.StepResolution_STEP_RESOLUTION_SKIP
 		st.title = "Skip " + name + " of " + id + "?"
 		st.body = []string{"The run goes on with the next step."}
+		if mayHaveRun(run) {
+			st.body = append(st.body, haltReason(run)...)
+		}
 		st.warning = "The skipped step is not sent."
 	case "X":
 		res = pb.StepResolution_STEP_RESOLUTION_FAIL
+		if clearRetrying(run) {
+			st.title = "Stop retrying Clear of " + id + "?"
+			st.body = []string{"The worker stays needing the developer (R retries Clear again)."}
+			st.notice = "A send already in flight finishes first."
+			break
+		}
 		st.title = "Fail " + id + " at " + name + "?"
 		st.body = []string{failConsequence(run)}
 		st.warning = "The run fails; this cannot be undone."
+		if mayHaveRun(run) && hasClear(run) && startsTurn(currentStep(run)) {
+			st.body = append(st.body, "This step may still be running — check the worker's terminal: Clear ends that session.")
+		}
 	}
 	od, ok := m.requireDaemon(s, t.host)
 	if !ok {
@@ -253,6 +296,9 @@ func (m Model) stepKey(s orchSurface, t orchTarget, run *pb.Run, k string) (tea.
 	}
 	orchID, runID, step := t.id, run.GetId(), run.GetStep()
 	verb := swb.StepResolutionLabel(res)
+	if clearRetrying(run) {
+		verb = "stop retries"
+	}
 	st.onConfirm = func() tea.Msg {
 		ctx, cancel := ctxTimeout()
 		defer cancel()
@@ -281,6 +327,17 @@ func failConsequence(r *pb.Run) string {
 	return "No post-prompt follows; Clear (if enabled) is sent once the agent is idle."
 }
 
+// startsTurn reports whether a step starts a turn that could still be running:
+// a built-in doesn't.
+func startsTurn(st *pb.RunStep) bool {
+	return st.GetKind() == pb.StepKind_STEP_KIND_CUSTOM || st.GetKind() == pb.StepKind_STEP_KIND_ACTION_PROMPT
+}
+
+// hasClear reports whether the run's cleanup includes Clear.
+func hasClear(r *pb.Run) bool {
+	return slices.ContainsFunc(r.GetSteps(), func(st *pb.RunStep) bool { return st.GetKind() == pb.StepKind_STEP_KIND_CLEAR })
+}
+
 // lastSeenOf is " (last seen working 10:42)" for a restart halt's detached
 // agent, read from its worker's record when the TUI lists it; "" otherwise.
 func (m Model) lastSeenOf(r *pb.Run) string {
@@ -293,13 +350,19 @@ func (m Model) lastSeenOf(r *pb.Run) string {
 
 // stepLines renders a run's steps for the prompt overlay (FR-220): pre, the
 // action prompt (its composed text in the panel), post; ✓ marks finished steps,
-// ▶ the current one, and ✗ the step a hold for the developer stopped at.
-// width bounds a step's line.
+// – skipped or dropped ones, ✗ failed ones and the step a hold for the developer
+// stopped at, and ▶ the current one. A step with no recorded result (all of them
+// on an older daemon's run) is inferred from where the run is. width bounds a
+// step's line.
 func (m Model) stepLines(r *pb.Run, width int) []string {
 	cur := int(r.GetStep())
 	done := r.GetStepStatus() == pb.StepStatus_STEP_STATUS_DONE
 	queued := r.GetState() == pb.RunState_RUN_STATE_QUEUED
 	held := r.GetHold() == pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER
+	results := make(map[int]pb.StepResultOutcome, len(r.GetStepResults()))
+	for _, res := range r.GetStepResults() {
+		results[int(res.GetIndex())] = res.GetOutcome()
+	}
 	var lines []string
 	last := pb.StepRole_STEP_ROLE_UNSPECIFIED
 	for i, st := range r.GetSteps() {
@@ -318,9 +381,13 @@ func (m Model) stepLines(r *pb.Run, width int) []string {
 		mark := "  "
 		switch {
 		case queued:
-		case held && i == cur:
+		case results[i] == pb.StepResultOutcome_STEP_RESULT_OUTCOME_DONE:
+			mark = statusOKStyle.Render("✓") + " "
+		case results[i] == pb.StepResultOutcome_STEP_RESULT_OUTCOME_SKIPPED, results[i] == pb.StepResultOutcome_STEP_RESULT_OUTCOME_DROPPED:
+			mark = dimStyle.Render("–") + " "
+		case results[i] == pb.StepResultOutcome_STEP_RESULT_OUTCOME_FAILED, held && i == cur:
 			mark = statusErrStyle.Render("✗") + " "
-		case done || i < cur:
+		case i < cur || (done && !held):
 			mark = statusOKStyle.Render("✓") + " "
 		case i == cur:
 			mark = agentWorkStyle.Render("▶") + " "
