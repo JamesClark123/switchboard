@@ -465,7 +465,8 @@ func (m Model) vHoldLimitCmd() tea.Cmd {
 
 // handleVHoldLimit shows a held message whose attach is still pending at the
 // limit, after an error it would otherwise replace, and ends its hold. If the
-// attach opens in the next 3 s, the recency rule keeps the message. A superseded
+// attach opens in the next 3 s, the recency rule keeps the message, unless it's
+// joined to an error about the input, which it leaves with. A superseded
 // attach's limit does nothing: the newer attach has its own. Neither does a
 // second timer for an attach whose message has already been shown.
 func (m Model) handleVHoldLimit(msg vHoldLimitMsg) (tea.Model, tea.Cmd) {
@@ -473,14 +474,16 @@ func (m Model) handleVHoldLimit(msg vHoldLimitMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	text := m.vHold.text
+	at := nowFunc()
 	if m.vHoldLimitJoins() {
 		text = joinHeld(m.status, text)
 		if m.status == m.settingsView.inputError {
 			m.settingsView.inputError = text // it leaves with the input
+			at = time.Time{}
 		}
 	}
 	m.status = text
-	m.vFail = vFailState{text: text, at: nowFunc()}
+	m.vFail = vFailState{text: text, at: at}
 	m.vHold.text = ""
 	return m, nil
 }

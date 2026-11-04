@@ -332,6 +332,18 @@ ones. The state is now simpler, which settles the two findings of this round wit
   message joined to that error at the limit. This closes the review's second finding. The cost: that message has been
   on screen, but it's no longer left showing alone. (FR-533, FR-528)
 
+### PR review 2026-11-04 (re-review run `run-c275c8f2-1746`, resolved in pr-response run `run-c275c8f2-1748`)
+
+Two low findings against the rule above, both a showing message also being treated as held. Each fix is a few lines and
+adds no state:
+
+- **A dialog that opens by itself doesn't hold what's showing either.** A detached refusal opens the dialog just after
+  the attach ends, and the attach ending had copied a recent message into the hold. So a decline brought it back over a
+  newer status. The dialog now clears that copy. (FR-533)
+- **A message joined to an input error isn't recent.** An attach ending within 3 seconds held the joined text, and it
+  outlived the input. The joined text now has no arrival time, so the recency rule skips it. The cost: in that case the
+  refusal isn't joined to the attach's error, though it has been on screen. (FR-533)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -906,7 +918,7 @@ sandbox. Check that a clear message appears and nothing is started.
     `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
     message MUST show in the error style. An error or daemon-drop message that was already showing when that attach
-    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one, and a later `v` completion ends the hold, so the failure doesn't come back. An attach has no deadline and may never end, so a held message MUST NOT stay out of sight behind a pending attach for more than 5 seconds: at that limit it MUST show in the error style, and one arriving after the limit MUST show at once. Either way it's then an ordinary showing message, not a held one, so it can't come back later looking current. An error showing at that limit, or a message that a release would join, MUST NOT be lost: the status is `<error>; <held message>`, with the error cut to 120 columns first. An error about the Custom command input still leaves with the input, and a held message joined to it leaves too, because it has been on screen. A held message that hasn't been shown stays held across a new attach or dialog. A `v` failure or refusal
+    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one, and a later `v` completion ends the hold, so the failure doesn't come back. An attach has no deadline and may never end, so a held message MUST NOT stay out of sight behind a pending attach for more than 5 seconds: at that limit it MUST show in the error style, and one arriving after the limit MUST show at once. Either way it's then an ordinary showing message, not a held one, so it can't come back later looking current. An error showing at that limit, or a message that a release would join, MUST NOT be lost: the status is `<error>; <held message>`, with the error cut to 120 columns first. An error about the Custom command input still leaves with the input, and a held message joined to it leaves too, because it has been on screen; the recency rule below doesn't apply to that joined message. A held message that hasn't been shown stays held across a new attach or dialog. A `v` failure or refusal
     that's showing when an in-place attach starts or ends MUST be held in the same way if it went on screen in the last
     3 seconds, and so MUST one showing when a Replace dialog for an in-place attach opens, if that dialog is accepted and
     the message is still showing. Declining leaves it on the status line as an ordinary message. An older one isn't held,

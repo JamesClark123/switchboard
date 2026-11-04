@@ -124,12 +124,15 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 		// failure is held while it shows, and an accept passes the hold to the
 		// attach (its number is the next termSeq) in the same message, with no
 		// gap for the wrapper to release it in. A recent one already showing
-		// stays on the status line behind the dialog, and an accept holds it
-		// however long the dialog was open. An old attach error still showing
-		// has nothing to do with a failure held behind the dialog, so it won't
-		// be joined.
+		// stays on the status line behind the dialog, not held as well (an attach
+		// ending just before this copied it), and an accept holds it however long
+		// the dialog was open. An old attach error still showing has nothing to do
+		// with a failure held behind the dialog, so it won't be joined.
 		m.termFail = ""
 		kept := m.recentVFail()
+		if kept != "" && m.vHold.text == kept {
+			m.vHold.text = ""
+		}
 		st.holdsV = true
 		st.onAccept = func(m *Model) {
 			m.vHold.seq = m.termSeq + 1

@@ -537,6 +537,21 @@ func TestHoldAttachLimitJoinsAnInputError(t *testing.T) {
 	if m.status != "" || m.statusIsErr() {
 		t.Errorf("an old message came back: %q red %v", m.status, m.statusIsErr())
 	}
+	// Joined at the limit, the attach then ends: the joined text isn't a recent
+	// `v` failure, so it can't be released into a status that outlives the input.
+	m = reject(open())
+	m.termSeq = 7
+	m, _ = update(m, vHoldLimitMsg{seq: 7})
+	assertRed(t, m, rejection+"; "+vRefusal)
+	step(time.Second)
+	m, _ = update(m, termClosedMsg{err: errors.New("daemon unreachable"), seq: 7})
+	if m.status != "terminal: daemon unreachable" || m.vHold.text != "" {
+		t.Fatalf("attach failed: status %q held %q", m.status, m.vHold.text)
+	}
+	m = discard(m)
+	if m.status != "terminal: daemon unreachable" {
+		t.Errorf("the rejection outlived the input: %q", m.status)
+	}
 	// Still held out of sight: leaving the input doesn't show it, its limit does.
 	m = reject(open())
 	m = discard(m)
@@ -679,6 +694,36 @@ func TestHoldShownMessageAcrossAReplaceDialog(t *testing.T) {
 	m, _ = update(m, press("y"))
 	if m.vHold.text != "" {
 		t.Errorf("replaced behind the dialog, then accepted: held %q", m.vHold.text)
+	}
+	// The daemon's refusal opens the dialog, as the attach ends: the same. The
+	// message isn't held as well as showing, so a decline leaves a newer status
+	// alone, and an accept holds it.
+	refused := func() Model {
+		d := &fakeDaemon{attachErr: status.Error(codes.FailedPrecondition, detachedRefusal)}
+		m, attach := update(runningSbx(d), press("t"))
+		m = vFail(m, vRefusal)
+		step(vHoldAttachLimit)
+		m, _ = update(m, vHoldLimitMsg{seq: m.vHold.seq})
+		step(time.Second)
+		m, _ = update(m, runTermAttach(attach))
+		if m.screen != screenConfirm || m.status != vRefusal || m.vHold.text != "" {
+			t.Fatalf("the refusal's dialog: screen %v status %q held %q", m.screen, m.status, m.vHold.text)
+		}
+		return m
+	}
+	m = refused()
+	m, _ = update(m, statusMsg("stopped sb2"))
+	step(time.Hour)
+	m, _ = update(m, press("n"))
+	if m.status != "stopped sb2" || m.statusIsErr() || m.vHold.text != "" {
+		t.Errorf("declined behind a newer status: %q red %v held %q", m.status, m.statusIsErr(), m.vHold.text)
+	}
+	m = refused()
+	step(time.Minute)
+	m, cmd = update(m, press("y"))
+	m, _ = update(m, runTermAttach(cmd))
+	if m.vHold.text != vRefusal || m.status != replacingText {
+		t.Errorf("accepted: held %q status %q", m.vHold.text, m.status)
 	}
 	// Shown behind a dialog, its attach then ends: a failure held after that
 	// hasn't been seen, however long the dialog stays open.

@@ -147,7 +147,7 @@ Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 1
 
 ```
 none ──v failure/refusal arrives──▶ showing(vFail.at = now)
-showing ──in-place attach starts or ends, or a Replace dialog opened on it is accepted, age < 3 s──▶ held(seq)
+showing ──in-place attach starts or ends, or a Replace dialog opened on it is accepted, age < 3 s (not a message joined to an input error, which has a zero vFail.at)──▶ held(seq)
 none/showing ──failure arrives while terminal open/opening or dialog open──▶ held (replaces any held text)
 held(seq) ──the attach reaches 5 s──▶ showing(vFail.at = now), or a failure arrives past 5 s: showing, replacing it
 held(dialog) ──decline, or the dialog dropped unanswered (closeOrchAdminOnDrop)──▶ release

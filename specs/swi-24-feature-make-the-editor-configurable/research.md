@@ -381,7 +381,7 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   `opening terminal…` too, so the attach's own texts and the held text are excluded. An earlier version kept a shown
   message held and recorded when it went on screen (`shown`). Three review rounds found low edge cases in that overlap,
   so it was removed: a message is held out of sight or showing, not both, and one recency rule covers every showing
-  message.
+  message, apart from one joined to an input error, which has a zero `vFail.at` because it leaves with the input.
 - `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),
@@ -396,7 +396,7 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
 `confirmReplaceOrphan` for a non-external attach sets `holdsV`, notes the message that rule would copy without holding
-it, and sets `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
+it (clearing the copy an attach ending has just made, when a detached refusal opens the dialog), and sets `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
 `replaceOrphanMsg`) in the same message, so the hold passes from the dialog to
 the attach with no gap, and to hold the noted message if nothing is held and it's still the status. A decline or a dropped dialog needs nothing, so the release follows at once and a message left showing stays an ordinary one. A `v` failure or refusal arriving while `vHold.seq != 0`
 or `m.vHoldDialog()` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
