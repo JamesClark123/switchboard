@@ -144,6 +144,27 @@ type helpBindings []key.Binding
 func (h helpBindings) ShortHelp() []key.Binding  { return h }
 func (h helpBindings) FullHelp() [][]key.Binding { return [][]key.Binding{h} }
 
+// listHelpEntries names the per-row entries the list's help carries only
+// sometimes. Each can wrap the footer onto another line, so it's part of the
+// size check's key, and listHelp reads them from here.
+type listHelpEntries struct {
+	markFree, pauseWorker bool
+}
+
+func (m Model) listHelpEntries() listHelpEntries {
+	sb := m.current()
+	c := sb.GetController()
+	return listHelpEntries{
+		// feature 009: mark free is offered only while the selected worker's
+		// run awaits review (FR-156), or its cleanup is stalled on a question
+		// (SWI-17 FR-216); every other per-sandbox key works on a worker
+		// wherever it is shown (FR-116).
+		markFree: sb != nil && (c.GetRun().GetNeedsReview() || cleanupNeedsInput(sb)),
+		// SWI-23: pause applies only to prompt workers.
+		pauseWorker: c != nil && !c.GetReasoning(),
+	}
+}
+
 func (m Model) listHelp() helpBindings {
 	k := m.keys
 	hb := helpBindings{}
@@ -155,15 +176,11 @@ func (m Model) listHelp() helpBindings {
 	e, _ := m.sessionEditor()
 	open := key.NewBinding(key.WithKeys("v"), key.WithHelp("v", e.ID))
 	hb = append(hb, k.Launch, k.FromConfig, k.Hosts, k.Groups, open, k.Terminal, k.Popout, k.Inbox, k.StartStop, k.Destroy, k.Rename, k.Tag, k.RefreshSandbox, k.Sources, k.Kits, k.AddKit, k.EscapeHatchRuns, k.Services, k.McpServers, k.Log, k.OrchestratorAttach)
-	// feature 009: mark free is offered only while the selected worker's run
-	// awaits review (FR-156), or its cleanup is stalled on a question (SWI-17
-	// FR-216); every other per-sandbox key works on a worker wherever it is
-	// shown (FR-116).
-	if sb := m.current(); sb != nil && (sb.GetController().GetRun().GetNeedsReview() || cleanupNeedsInput(sb)) {
+	row := m.listHelpEntries()
+	if row.markFree {
 		hb = append(hb, k.MarkFree)
 	}
-	// SWI-23: pause applies only to prompt workers.
-	if c := m.current().GetController(); c != nil && !c.GetReasoning() {
+	if row.pauseWorker {
 		hb = append(hb, k.PauseWorker)
 	}
 	hb = append(hb, k.OrchestratedTab, m.screenNextKey(), k.Settings)

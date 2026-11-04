@@ -188,7 +188,8 @@ re-reads the file into `settingsFile` (a missing file is the zero value; a read 
 `*store.SettingsUnreadableError` without writing), copies each non-nil change over the corresponding pointer
 field, so only the changed keys are written and an absent, unchanged key stays absent, and writes through a new
 `Store.SaveTOMLPrivate(name, v)`: `os.CreateTemp(dir, ".settings.toml-*.tmp")` (fresh, unique, `0600`), write,
-close, `os.Rename`, then `os.Chmod(full, 0600)` so an existing wider file is corrected (FR-527). A failure after
+close, `os.Rename`, which replaces an existing wider file with the `0600` one, so no chmod follows: one could only
+fail after the save had happened, and report it as failed (FR-527). A failure after
 `CreateTemp` removes the temp file: each name is unique, so nothing else would, and it can hold the Custom command
 after the developer has cleared it from settings. Unknown keys and
 comments are dropped, as FR-530 states. The callers are: toggle → `{AutoConnectHosts: &v}`; built-in editor →
@@ -340,7 +341,7 @@ answer for the rest.
   static view cuts the message to fit with the header on screen; `chrome` never drops lines from the bottom of the
   body. `BenchmarkViewList` keeps the frame cost visible.
 - **Size check** in the `Update` wrapper, after the release (R10) and skipped on the terminal screen: a small
-  `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, markFree bool}` is compared
+  `sizeKey{status, width, height, banner string, surface activeSurface, tabs int, listHelp listHelpEntries}` is compared
   with the one stored; on a change the active surface's height is compared with its target and set only if they
   differ: `m.list.Height() != m.mainListHeight()` → `SetSize`; an open item list (groups, hosts, configs picker,
   kit picker, notifications, runs, services) → `SetSize(bodyWidth, bodyHeight)`; an open huh form → `WithHeight`
@@ -371,7 +372,10 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   the error style when `m.status != "" && m.status == m.vFail.text` (and keeps today's `m.err`/`error` prefix
   rule). A completion message never sets it, and clears `m.err` as `statusMsg` does today. `editorOutcomeMsg` with
   `failed` and `editorExitMsg` set `m.status`, `m.vFail` and don't touch `m.err`.
-- `vHold struct{text string; seq uint64}`: a held message and the attach number it waits on (0 = none pending).
+- `vHold struct{text string; seq uint64; since time.Time}`: a held message, the attach number it waits on (0 = none
+  pending) and when that attach started. Past `vHoldAttachLimit` (5 s) a pending attach no longer hides the message:
+  a timer shows one already held, `setVFail` shows a later one at once, and both stay held. A `v` completion clears
+  `text`. These were added in PR review (2026-11-04).
 - `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),

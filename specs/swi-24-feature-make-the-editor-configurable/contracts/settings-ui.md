@@ -70,7 +70,8 @@ unsaved-changes dialog (Save = enter, Cancel = back to the input, Discard = the 
 Every printable key, including `q`, `,`, `j`, `k`, space, is text; `ctrl+e` end of line; `ctrl+c` as on the rename
 input. `ctrl+v` and bracketed paste both insert text, and the cursor blinks (the input is focused and `forwardScreen`
 sends it non-key messages). A resize resets `Width` and the visible window, keeping the cursor, so a long command never
-runs off the edge. A rejection shows in the status line only (red), the input stays open. Help: `enter save · esc back`.
+runs off the edge. A rejection shows in the status line only (red), the input stays open; leaving by Discard or a clean
+`esc` clears it unless something has replaced it. Help: `enter save · esc back`.
 
 ## 2. Status line (`footer`) — FR-533
 
@@ -95,7 +96,8 @@ runs off the edge. A rejection shows in the status line only (red), the input st
 
 ### Size check (Update wrapper, after the release, skipped on the terminal screen)
 
-Key: `{status, width, height, banner, activeSurface, len(tabs), markFree}`. On change, the active surface is
+Key: `{status, width, height, banner, activeSurface, len(tabs), listHelpEntries}` plus the enlarge hint, where
+`listHelpEntries` is the list help's conditional per-row entries (mark free, pause). On change, the active surface is
 resized only if its height differs from its target: `m.list` → `mainListHeight()`; an open item list →
 `bodyHeight()`; an open huh form → `WithHeight(bodyHeight())` when it differs from the stored `lastHeight`, then
 `form.Update(nil)` in the same pass (its command kept). Tests change each key field and assert the size.
@@ -105,9 +107,11 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | Event | Effect |
 |-------|--------|
 | `v` failure/refusal arrives, no attach pending, terminal not showing | `status = text`, `vFail = {text, now}`, red |
-| `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen |
-| in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
-| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `termFail = ""`; `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
+| `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen, and drawn if the attach is past the limit |
+| `v` completion arrives | `vHold.text = ""`, `vFail = {}`; the attach, if any, stays pending |
+| in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `vHold.since = now`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
+| a pending attach reaches the limit (`now - vHold.since = 5 s`; a timer set when a message is held out of sight, carrying the attach's `seq`) with `msg.seq == vHold.seq` and `vHold.text != ""` | `status = vHold.text`, red; it stays held. A superseded attach's timer does nothing |
+| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `termFail = ""`; `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1` and `vHold.since = now`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
 | attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`), or a daemon drop closes the orchestrator screens (`<name> disconnected — orchestrators closed`) | `termFail = status` |

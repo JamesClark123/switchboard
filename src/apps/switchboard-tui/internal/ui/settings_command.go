@@ -123,6 +123,7 @@ func (m Model) submitEditorCommand() (tea.Model, tea.Cmd) {
 			rule = ce.Rule
 		}
 		m.showErr(inputRejectionText(rule))
+		m.settingsView.inputError = m.status
 		return m, nil
 	}
 	custom := editor.Custom
@@ -136,6 +137,7 @@ func (m Model) submitEditorCommand() (tea.Model, tea.Cmd) {
 		// SWI-9 FR-017: the input stays open with its text and the error, and
 		// the session's editor and command don't change.
 		m.showErr("error: could not save settings: " + writeErr.Error())
+		m.settingsView.inputError = m.status
 		return m, nil
 	}
 	m = m.applySaveOutcome(keyEditor, apply, tried, writeErr)
@@ -143,8 +145,13 @@ func (m Model) submitEditorCommand() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// leaveEditorCommand closes the input to the given mode.
+// leaveEditorCommand closes the input to the given mode. An error about the
+// input goes with it, unless something has replaced it.
 func (m Model) leaveEditorCommand(to settingsMode) Model {
+	if m.status == m.settingsView.inputError {
+		m.status = ""
+	}
+	m.settingsView.inputError = ""
 	m.settingsView.input.Blur()
 	m.settingsView.inputRewrite = false
 	m.settingsView.mode = to

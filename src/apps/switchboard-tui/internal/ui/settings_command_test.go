@@ -141,6 +141,61 @@ func TestSettingsCommandRewriteNotice(t *testing.T) {
 	}
 }
 
+// A rejection goes with the input: leaving by Discard or by a clean esc clears
+// it, unless something has replaced it (and a save replaces it anyway).
+func TestSettingsCommandRejectionLeavesWithTheInput(t *testing.T) {
+	noKeyGrace(t)
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	// Discard, then back out to the sandbox list.
+	m, _ := settingsModel(t)
+	m, _ = openCustom(t, m)
+	m.settingsView.input.SetValue("foo 'bar")
+	m, _ = update(m, enter)
+	if m.status != "the command has an unbalanced quote" || !m.statusIsErr() {
+		t.Fatalf("rejection: %q red %v", m.status, m.statusIsErr())
+	}
+	m, _ = update(m, esc)
+	m, _ = update(m, press("d"))
+	if m.settingsView.mode != settingsList || m.status != "" {
+		t.Errorf("after Discard: mode %v status %q", m.settingsView.mode, m.status)
+	}
+	m, _ = update(m, esc)
+	m, _ = update(m, esc)
+	if m.screen != screenList || m.status != "" || m.statusIsErr() {
+		t.Errorf("back on the list: screen %v status %q", m.screen, m.status)
+	}
+	// A clean esc: an empty command rejected, nothing typed.
+	m, _ = settingsModel(t)
+	m, _ = openCustom(t, m)
+	m, _ = update(m, enter)
+	if m.status != "a command is required" {
+		t.Fatalf("rejection: %q", m.status)
+	}
+	m, _ = update(m, esc)
+	if m.settingsView.mode != settingsList || m.status != "" {
+		t.Errorf("after a clean esc: mode %v status %q", m.settingsView.mode, m.status)
+	}
+	// A late v failure replaced the rejection: leaving doesn't clear that.
+	m, _ = settingsModel(t)
+	m, _ = openCustom(t, m)
+	m, _ = update(m, enter)
+	m, _ = update(m, editorExitMsg{sandboxID: "sb1", text: "the editor exited"})
+	m, _ = update(m, esc)
+	if m.status != "the editor exited" || !m.statusIsErr() {
+		t.Errorf("a newer failure stays: %q red %v", m.status, m.statusIsErr())
+	}
+	// A rejection, then a valid command saved.
+	m, _ = settingsModel(t)
+	m, _ = openCustom(t, m)
+	m, _ = update(m, enter)
+	m.settingsView.input.SetValue("edit {path}")
+	m, _ = update(m, enter)
+	if m.settingsView.mode != settingsRows || m.status != "saved settings" || m.statusIsErr() {
+		t.Errorf("after a save: mode %v status %q red %v", m.settingsView.mode, m.status, m.statusIsErr())
+	}
+}
+
 // A write error keeps the input open and v keeps the old editor; a nil store
 // closes it with (not saved); a broken file closes it with the mark; a
 // session-only Custom then Zed confirmed saves Zed, clears the mark, and

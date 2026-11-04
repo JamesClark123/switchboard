@@ -41,7 +41,7 @@ Rules:
   EditorCustomCommand *string}`: re-read → copy each non-nil change over the file's pointer field → write. A key
   absent in the file and nil in the change stays absent; a key present stays as read. A read or parse failure
   returns `*SettingsUnreadableError{Err}` and writes nothing (FR-525, SC-006). Written with `SaveTOMLPrivate`
-  (`0600`, fresh unique temp `.settings.toml-*.tmp`, final chmod; FR-527).
+  (`0600`, fresh unique temp `.settings.toml-*.tmp`, renamed over the target; FR-527).
 - Validation of `Editor` and `EditorCustomCommand` is **not** done in the store: the session decides what an
   unknown or invalid value means (FR-508, FR-522).
 
@@ -137,7 +137,7 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | `vHold`      | `struct{ text string; seq uint64 }`      | Held message; pending in-place attach number (0 = none). |
 | `confirm.holdsV` | `bool` on `confirmState`             | This confirm is a Replace dialog for an in-place attach. `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`, derived so that no way of closing the dialog can leave it stale. |
 | `termFail`   | `string`                                 | Text a release joins instead of replacing: the last attach/terminal error or a daemon drop's `<name> disconnected — orchestrators closed`; cleared by `attachTerminal` and when a Replace dialog for an in-place attach opens. |
-| `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, markFree}` last checked. |
+| `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, listHelp}` last checked. |
 | per form     | `lastHeight int`                         | Last `WithHeight` applied (huh has no getter); stored beside each form pointer. |
 
 Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 120`, `hostErrCols = 78`, `osReasonCols = 40`,

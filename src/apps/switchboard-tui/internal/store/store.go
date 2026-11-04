@@ -75,8 +75,8 @@ func (s *Store) SaveTOML(name string, v any) error {
 // SaveTOMLPrivate encodes v and writes it to name with owner-only permissions
 // (SWI-24, FR-527): the bytes go to a fresh temp file created with a unique
 // name and mode 0600 in the same directory, which is renamed over the target,
-// and the target is then chmod'ed to 0600 so an existing wider file is
-// corrected. A leftover temp file from a crash is never reused, so it can't
+// so an existing wider file is replaced by a 0600 one and no chmod is needed.
+// A leftover temp file from a crash is never reused, so it can't
 // widen the mode, and two running TUIs never share one. A write, close or
 // rename failure removes the temp file, because it can hold the Custom
 // command. SaveTOML is unchanged: hosts, groups and configs keep their path.
@@ -109,5 +109,5 @@ func (s *Store) SaveTOMLPrivate(name string, v any) error {
 	if err := os.Rename(tmp, full); err != nil {
 		return fail(err)
 	}
-	return os.Chmod(full, 0o600)
+	return nil
 }

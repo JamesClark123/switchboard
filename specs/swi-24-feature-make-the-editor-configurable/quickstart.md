@@ -125,3 +125,6 @@ Expected: each opens the workspace folder on the remote host, or the row is corr
 4. A sandbox with a detached agent: `v` (refused), `t` → Replace dialog. Decline → the refusal shows. Repeat and
    accept after 5 s → the refusal shows once the replacing terminal closes.
 5. Wait 4 s after a refusal, then `t`. **Expect** the refusal is not held (replaced by `opening terminal…`).
+6. Stall the attach (a daemon that accepts the stream and never replies), then `v` (refused) on another row. **Expect**
+   the refusal in red within 5 s of `t`, with no key pressed.
+7. `v` (refused), `t`, switch to an editor that opens, `v` again. **Expect** on `ctrl+q` `detached from <name>`, not red.

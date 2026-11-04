@@ -163,7 +163,7 @@ else closes). Env: `config.schema` declares one `SWITCHBOARD_<EDITOR>_BIN` per b
 catalogue (`raw` fields, kept as given in `Config.EditorBins`, blank = `""`); `SWITCHBOARD_CODE_BIN` unchanged,
 `Config.CodeBin` gone. Settings: `settings.toml` gains `editor` (raw identifier, unknown values kept) and
 `editor_custom_command`; `SettingsStore.Save` is now `Update(SettingsChange)` (re-read → non-nil fields only →
-`Store.SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename + chmod, temp removed on failure; a read/parse failure is
+`Store.SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename, temp removed on failure; a read/parse failure is
 `*SettingsUnreadableError` and writes nothing). UI (`settings.go`, `settings_command.go`): rows (toggle + Editor),
 list mode and the Custom command input (`gEditorCommand` guard surface from `screenSettings` + `mode ==
 settingsInput`; `submitEditorCommand` writes first via `writeSetting` and closes after through
@@ -179,11 +179,15 @@ terminal) → `minBody` → `statusLimitFor(helpLines)`; `statusFitsOneLine` sho
 `bodyHeight = height - 6 - (lines - 1)`; `chrome` renders the help once and caps the limit by the room the body
 left; `activeHelp()` is the one screen → help map `viewScreen` uses; `termRows = height - 8`. Size check
 `checkSizes` in the `Update` wrapper (order: guard layers, parked override, MCP follow-ups, `releaseHeld`,
-`checkSizes`), keyed on `sizeKey{status, banner, width, height, tabs, surface, markFree}`; forms' last heights
-live in `Model.formHeights` (a map keyed by `*huh.Form`, recorded by the first check after a form opens, not a
-field per form) and a resize is followed by `form.Update(nil)`. Hold: `vFail{text, at}` (error style while
-`status == text`; `showErr` sets it with a zero time for non-`v` errors such as the input's rejection),
-`vHold{text, seq}`, `confirmState.holdsV` (`vHoldDialog()`), `termFail` (set by the three terminal errors and
+`checkSizes`), keyed on `sizeKey{status, banner, width, height, tabs, surface, listHelp, enlargeHint}` (`listHelp` is
+`listHelpEntries`, the list help's conditional per-row entries, which `listHelp()` also reads); forms' last heights
+live in `Model.formHeights` (a map keyed by `*huh.Form`, sized and recorded by the first check after a form opens,
+not a field per form) and a resize is followed by `form.Update(nil)`. Hold: `vFail{text, at}` (error style while
+`status == text`; `showErr` sets it with a zero time for non-`v` errors such as the input's rejection, which `leaveEditorCommand`
+clears through `settingsView.inputError` unless something has replaced it),
+`vHold{text, seq, since}` (a `v` completion clears `text`; past `vHoldAttachLimit`, 5 s, a pending attach no longer
+hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it, `setVFail` shows a later one at once, and it stays held),
+`confirmState.holdsV` (`vHoldDialog()`), `termFail` (set by the three terminal errors and
 `closeOrchAdminOnDrop`); `attachTerminal`/`confirmReplaceOrphan(!external)` clear `termFail` and `holdRecentVFail`;
 `onAccept` sets `seq = termSeq+1`; `releaseHeld` joins `sanitizeLine(termFail, 120) + "; "`. The update banner
 is cut to the width (`fitLine`) so SC-004 holds. `jobsFixedLines` / `lanesFixedLines` are shared by the views and

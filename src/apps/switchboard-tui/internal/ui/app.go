@@ -726,6 +726,8 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editorOutcomeMsg:
 		return m.handleEditorOutcome(msg)
+	case vHoldLimitMsg:
+		return m.handleVHoldLimit(msg)
 	case editorExitMsg:
 		return m.handleEditorExit(msg)
 

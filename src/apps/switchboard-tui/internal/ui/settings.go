@@ -40,6 +40,9 @@ type settingsState struct {
 	input        textinput.Model
 	inputInitial string
 	inputRewrite bool
+	// inputError is the rejection or failed write showing for the input;
+	// leaving the input clears it if nothing has replaced it.
+	inputError string
 	// fileUnreadable: settings.toml couldn't be read at startup (FR-525 state
 	// 1): nothing is written this session. lastSaveFailed: a save's re-read
 	// failed (state 2): cleared by the next successful save. notSaved marks

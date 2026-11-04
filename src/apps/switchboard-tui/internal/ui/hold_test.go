@@ -45,11 +45,24 @@ func assertRed(t *testing.T, m Model, want string) {
 	}
 }
 
+// runTermAttach runs an attach's command. With a message held it's batched with
+// that message's limit timer, attach first; the timer isn't run.
+func runTermAttach(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return batch[0]()
+	}
+	return msg
+}
+
 // openTerm presses t and opens the terminal.
 func openTerm(t *testing.T, m Model) Model {
 	t.Helper()
 	m, cmd := update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	if m.screen != screenTerminal {
 		t.Fatalf("terminal not open: %v %q", m.screen, m.status)
 	}
@@ -88,7 +101,7 @@ func TestHoldWhileOpening(t *testing.T) {
 	if m.vHold.text != vRefusal || m.status != "opening terminal…" {
 		t.Fatalf("held %q shown %q", m.vHold.text, m.status)
 	}
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	if m.screen != screenTerminal || m.vHold.text != vRefusal {
 		t.Fatal("the terminal opens with the message still held")
 	}
@@ -103,11 +116,11 @@ func TestHoldSupersededAttach(t *testing.T) {
 	m, cmd1 := update(m, press("t"))
 	m, cmd2 := update(m, press("t"))
 	m = vFail(m, vRefusal)
-	m, _ = update(m, runCmd(cmd1))
+	m, _ = update(m, runTermAttach(cmd1))
 	if m.vHold.seq == 0 || m.screen == screenTerminal || m.status != "opening terminal…" {
 		t.Fatalf("the superseded attach must not end the hold: seq %d screen %v status %q", m.vHold.seq, m.screen, m.status)
 	}
-	m, _ = update(m, runCmd(cmd2))
+	m, _ = update(m, runTermAttach(cmd2))
 	if m.screen != screenTerminal || m.vHold.seq != 0 {
 		t.Fatal("the second attach opens")
 	}
@@ -140,11 +153,11 @@ func TestHoldReplaceDialog(t *testing.T) {
 		if m.vHold.seq != m.termSeq+1 || m.vHold.text != "later failure" {
 			t.Fatalf("accept passes the hold to the attach: seq %d termSeq %d", m.vHold.seq, m.termSeq)
 		}
-		m, cmd = update(m, runCmd(cmd)) // replaceOrphanMsg → attach
+		m, cmd = update(m, runTermAttach(cmd)) // replaceOrphanMsg → attach
 		if m.vHold.seq != m.termSeq || m.status != replacingText {
 			t.Fatalf("attach: seq %d termSeq %d status %q", m.vHold.seq, m.termSeq, m.status)
 		}
-		m, _ = update(m, runCmd(cmd))
+		m, _ = update(m, runTermAttach(cmd))
 		if m.screen != screenTerminal || d.replacedID != "p1" {
 			t.Fatal("the replacing terminal opens")
 		}
@@ -244,10 +257,10 @@ func TestHoldJoinsTerminalErrors(t *testing.T) {
 	m := runningSbx(d)
 	m = vFail(m, vRefusal)
 	m, cmd := update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	assertRed(t, m, "terminal: daemon unreachable; "+vRefusal)
 	m, cmd = update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	if m.status != "terminal: daemon unreachable" || m.statusIsErr() {
 		t.Errorf("a retried t shows only its own error: %q red %v", m.status, m.statusIsErr())
 	}
@@ -257,14 +270,14 @@ func TestHoldJoinsTerminalErrors(t *testing.T) {
 	m, cmd = update(m, press("t"))
 	m = vFail(m, vRefusal)
 	m, _ = update(m, press(","))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	assertRed(t, m, "terminal for demo not opened — you moved on; press t again; "+vRefusal)
 	// External already attached.
 	d.attachErr = client.ErrExternalAlreadyOpen
 	m = runningSbx(d)
 	m = vFail(m, vRefusal)
 	m, cmd = update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	assertRed(t, m, "an external terminal is already attached to demo; "+vRefusal)
 	// An accepted Replace whose attach fails.
 	d.attachErr = nil
@@ -273,15 +286,15 @@ func TestHoldJoinsTerminalErrors(t *testing.T) {
 	rm = vFail(rm, vRefusal)
 	rm, _ = update(rm, press("t"))
 	rm, cmd = update(rm, press("y"))
-	rm, cmd = update(rm, runCmd(cmd))
-	rm, _ = update(rm, runCmd(cmd))
+	rm, cmd = update(rm, runTermAttach(cmd))
+	rm, _ = update(rm, runTermAttach(cmd))
 	assertRed(t, rm, "terminal: replace failed; "+vRefusal)
 	// A refused attach that opens the dialog from the daemon's refusal.
 	d.attachErr = status.Error(codes.FailedPrecondition, detachedRefusal)
 	m = runningSbx(d)
 	m = vFail(m, vRefusal)
 	m, cmd = update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	if m.screen != screenConfirm || !m.vHoldDialog() || m.vHold.text != vRefusal {
 		t.Fatalf("the refusal's dialog holds: %v %q", m.screen, m.vHold.text)
 	}
@@ -305,4 +318,119 @@ func TestHoldSessionDiesAndReplace(t *testing.T) {
 	m = vFail(m, vRefusal)
 	m, _ = update(m, termClosedMsg{name: "demo", seq: m.term.seq})
 	assertRed(t, m, vRefusal)
+}
+
+// An attach that never returns: a failure held behind it shows at the limit,
+// one arriving after the limit shows at once, and both stay held in case the
+// attach does open after all, which clears the status.
+func TestHoldAttachLimit(t *testing.T) {
+	step := clock(t)
+	m := runningSbx(&fakeDaemon{})
+	m, attach := update(m, press("t"))
+	// The timer is for what's left of the limit, here 1 ms, not all of it.
+	step(vHoldAttachLimit - time.Millisecond)
+	m, limit := update(m, editorOutcomeMsg{sandboxID: "sb1", text: vRefusal, failed: true})
+	if m.status != "opening terminal…" || m.vHold.text != vRefusal || limit == nil {
+		t.Fatalf("within the limit: shown %q held %q timer %v", m.status, m.vHold.text, limit != nil)
+	}
+	m, _ = update(m, limit())
+	assertRed(t, m, vRefusal)
+	if m.vHold.text != vRefusal || m.vHold.seq == 0 {
+		t.Fatalf("shown at the limit, still held: %+v", m.vHold)
+	}
+	// A later failure is past the limit: shown at once, no timer.
+	step(time.Millisecond)
+	m, limit = update(m, editorExitMsg{sandboxID: "sb1", text: "later failure"})
+	assertRed(t, m, "later failure")
+	if m.vHold.text != "later failure" || limit != nil {
+		t.Fatalf("past the limit: held %q timer %v", m.vHold.text, limit != nil)
+	}
+	// The attach opens after all: the status clears, and the failure comes back.
+	m, _ = update(m, runTermAttach(attach))
+	if m.screen != screenTerminal || m.status != "" {
+		t.Fatalf("the late attach opens: screen %v status %q", m.screen, m.status)
+	}
+	m = ctrlQ(m)
+	assertRed(t, m, "later failure")
+	if m.vHold.text != "" {
+		t.Errorf("released, nothing held: %q", m.vHold.text)
+	}
+}
+
+// A refusal already showing when t is pressed is held, and comes back at the
+// limit: the attach's command carries the timer.
+func TestHoldAttachLimitCoversARecentRefusal(t *testing.T) {
+	clock(t)
+	m := vFail(runningSbx(&fakeDaemon{}), vRefusal)
+	m, cmd := update(m, press("t"))
+	if m.status != "opening terminal…" || m.vHold.text != vRefusal {
+		t.Fatalf("shown %q held %q", m.status, m.vHold.text)
+	}
+	if batch, ok := cmd().(tea.BatchMsg); !ok || len(batch) != 2 {
+		t.Fatalf("the attach's command should carry the timer: %#v", batch)
+	}
+	m, _ = update(m, vHoldLimitMsg{seq: m.vHold.seq})
+	assertRed(t, m, vRefusal)
+}
+
+// A timer only speaks for its own attach: a newer attach gets the whole limit,
+// and one that has ended leaves the status alone.
+func TestHoldAttachLimitOnlyForThePendingAttach(t *testing.T) {
+	step := clock(t)
+	m := runningSbx(&fakeDaemon{})
+	m, _ = update(m, press("t"))
+	first := m.vHold.seq
+	m = vFail(m, vRefusal)
+	step(vHoldAttachLimit)
+	m, second := update(m, press("t"))
+	m, _ = update(m, vHoldLimitMsg{seq: first})
+	if m.status != "opening terminal…" || m.vHold.seq == first {
+		t.Fatalf("a superseded attach's limit showed %q (seq %d)", m.status, m.vHold.seq)
+	}
+	if m.vHoldAttachOverdue() {
+		t.Error("the newer attach starts its own limit")
+	}
+	m, _ = update(m, runTermAttach(second))
+	if m.screen != screenTerminal {
+		t.Fatalf("the newer attach opens: %v", m.screen)
+	}
+	seq := m.term.seq
+	m, _ = update(m, vHoldLimitMsg{seq: seq})
+	if m.status != "" {
+		t.Errorf("an attach that has ended has no limit: status %q", m.status)
+	}
+}
+
+// A successful v after a failed one ends the hold: the old error doesn't come
+// back when the terminal closes, whether the success came while it was opening
+// or while it was open.
+func TestHoldEndsOnACompletion(t *testing.T) {
+	clock(t)
+	done := editorOutcomeMsg{sandboxID: "sb1", text: "opened demo in VS Code"}
+	check := func(m Model) {
+		t.Helper()
+		if m.status != "detached from demo" || m.statusIsErr() {
+			t.Errorf("after the terminal closes: %q red %v", m.status, m.statusIsErr())
+		}
+	}
+	// While it opens.
+	m := runningSbx(&fakeDaemon{})
+	m, cmd := update(m, press("t"))
+	m = vFail(m, vRefusal)
+	m, _ = update(m, done)
+	if m.status != done.text || m.statusIsErr() || m.vHold.text != "" {
+		t.Fatalf("after the success: %q red %v held %q", m.status, m.statusIsErr(), m.vHold.text)
+	}
+	m, _ = update(m, runTermAttach(cmd))
+	check(ctrlQ(m))
+	// While it's open.
+	m = openTerm(t, runningSbx(&fakeDaemon{}))
+	m = vFail(m, vRefusal)
+	m, _ = update(m, done)
+	check(ctrlQ(m))
+	// A failure after the success is held as usual.
+	m = openTerm(t, runningSbx(&fakeDaemon{}))
+	m, _ = update(m, done)
+	m = vFail(m, vRefusal)
+	assertRed(t, ctrlQ(m), vRefusal)
 }

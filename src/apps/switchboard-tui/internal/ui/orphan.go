@@ -130,7 +130,10 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 		m.termFail = ""
 		m.holdRecentVFail()
 		st.holdsV = true
-		st.onAccept = func(m *Model) { m.vHold.seq = m.termSeq + 1 }
+		st.onAccept = func(m *Model) {
+			m.vHold.seq = m.termSeq + 1
+			m.vHold.since = nowFunc()
+		}
 	}
 	return m.enterConfirm(st)
 }

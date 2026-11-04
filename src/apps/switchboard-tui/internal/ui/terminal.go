@@ -115,13 +115,14 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 	// is held, and a recent one already showing is held too; an older
 	// attach error isn't joined to it.
 	m.vHold.seq = seq
+	m.vHold.since = nowFunc()
 	m.termFail = ""
 	m.holdRecentVFail()
 	m.status = "opening terminal…"
 	if replace {
 		m.status = replacingText
 	}
-	return m, func() tea.Msg {
+	return m, tea.Batch(func() tea.Msg {
 		screen := termview.New(cols, rows)
 		updates := make(chan struct{}, 1)
 		done := make(chan struct{})
@@ -142,7 +143,7 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
 			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo, seq: seq,
 		}
-	}
+	}, m.vHoldLimitCmd())
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {

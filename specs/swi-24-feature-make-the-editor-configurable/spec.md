@@ -289,6 +289,19 @@ Found while reviewing the plan, and changed here because they change what the sp
 - **A `v` completion clears `m.err`.** It no longer goes through `statusMsg`, which clears it today, so the plan has to
   do it, and the note saying an `errMsg` stays set now says so. (FR-529, SC-002)
 
+### PR review 2026-11-04 (review run `run-c275c8f2-1725`, resolved in pr-response run `run-c275c8f2-1729`)
+
+- **A pending attach can keep a held message out of sight for 5 seconds at most.** An attach has no deadline, so a
+  stalled link used to hide every later `v` failure, with `opening terminal…` still showing. A deadline on the attach
+  itself was the other option. It was rejected because it would end slow attaches that would have worked, and this PR
+  doesn't otherwise change attaches, so `opening terminal…` can still stay when nothing is held, as on `main`. A shown
+  message stays held, because the attach can still open and clear the status. (FR-533, SC-008)
+- **A `v` completion ends the hold.** A failure the developer has since fixed used to come back in red when the terminal
+  closed. It isn't tied to a sandbox, because the status line holds one message and the newest `v` outcome replaces an
+  older one when nothing is held. (FR-533)
+- **An input's rejection leaves with the input.** It used to stay in red on the sandbox list after its command was
+  discarded, taking list rows when it wrapped. (FR-528)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Pick which editor `v` opens (Priority: P1)
@@ -480,6 +493,13 @@ sandbox. Check that a clear message appears and nothing is started.
   Accepting starts the replacing attach, and the failure shows once that attach has ended and its terminal has closed.
   If the daemon behind the screen under the dialog disconnects, the dialog closes unanswered and the status shows
   `<name> disconnected — orchestrators closed; <failure>` (FR-533).
+- **A `v` failure behind an attach that doesn't return.** The developer presses `t`, the attach stalls, and they move
+  to another row and press `v`, which fails. `opening terminal…` stays for up to 5 seconds after `t`, then the failure
+  replaces it, in the error style. If the attach opens later, the failure is shown again when the terminal closes, or
+  joined to the error if it fails (FR-533).
+- **A failure, then a success, behind an attach.** The developer presses `t`, `v` is refused, they switch editors, and
+  `v` succeeds. The refusal is dropped, so `detached from <name>` shows when the terminal closes (FR-533). This holds
+  even if the success is on another sandbox, as it would with nothing held, because the status line holds one message.
 - **A failed `t` after a `v` refusal.** A remote sandbox has WebStorm selected. The developer presses `v`, which
   refuses, then `t`, and the attach fails because the daemon can't be reached. The status shows
   `terminal: <reason>; <the refusal>`, so the terminal's failure isn't hidden or blamed on the editor. An accepted
@@ -720,6 +740,8 @@ sandbox. Check that a clear message appears and nothing is started.
     MUST raise the unsaved-changes dialog. Save acts exactly like `enter`, so an FR-506 rejection keeps the
     input open with the reason. Cancel returns to the input unchanged. Discard returns to the list with
     nothing saved.
+  - A rejection or failed write showing when the developer leaves the input, by Discard or by `esc` with nothing
+    changed, MUST be cleared with it, unless something has replaced it.
   - `enter` writes before it closes. On success the input closes to the **settings row** and the command
     applies. If the write itself fails, the input MUST stay open with its text and the error (SWI-9 FR-017),
     and the session's editor and command don't change, so `v` never starts using a command that failed to save
@@ -853,7 +875,7 @@ sandbox. Check that a clear message appears and nothing is started.
     `<name> disconnected — orchestrators closed`, which is the only message explaining why the screen changed. The status MUST then show both in one message, with
     the error first: `<error>; <held message>`. The error MUST be cut to 120 columns with `…` first, and the whole
     message MUST show in the error style. An error or daemon-drop message that was already showing when that attach
-    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one. A `v` failure or refusal
+    started or that Replace dialog opened isn't joined: the held message replaces it. A later `v` failure or refusal replaces a held one, and a later `v` completion ends the hold, so the failure doesn't come back. An attach has no deadline and may never end, so a held message MUST NOT stay out of sight behind a pending attach for more than 5 seconds: at that limit it MUST show in the error style, and one arriving after the limit MUST show at once. It stays held in both cases, because the attach can still open and clear the status. A `v` failure or refusal
     that's already showing when an in-place attach starts, or when a Replace dialog for one opens, MUST be held in the
     same way if it arrived in the last 3 seconds. An older one isn't held. A message that's been released MUST NOT be
     held again, even within its 3 seconds, so the next attach replaces it like any other message.

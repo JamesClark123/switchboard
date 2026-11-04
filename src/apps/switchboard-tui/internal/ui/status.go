@@ -16,7 +16,8 @@ import (
 // adds come out of the body (bodyHeight), and a keyed size check in the Update
 // wrapper resizes the active surface when its height differs from its target.
 // A `v` failure or refusal has its own error style and is held through an
-// in-place attach or its Replace dialog, then released (research R9, R10).
+// in-place attach or its Replace dialog, then released; an attach pending past
+// vHoldAttachLimit no longer keeps it off the screen (research R9, R10).
 
 const (
 	// statusMaxLines caps a wrapped status; terminalStatusLines is the cap on
@@ -33,6 +34,10 @@ const (
 	// vHoldRecent is how recent a showing `v` failure must be to be held when
 	// an in-place attach starts or its Replace dialog opens.
 	vHoldRecent = 3 * time.Second
+	// vHoldAttachLimit is how long a pending attach can keep a held message
+	// off the screen. An attach has no deadline and may never end, so past
+	// this the message shows as well as staying held.
+	vHoldAttachLimit = 5 * time.Second
 )
 
 // statusLines sanitises text, wraps it at width (at spaces where it can; a
@@ -288,7 +293,7 @@ type sizeKey struct {
 	width, height  int
 	tabs           int
 	surface        activeSurface
-	markFree       bool
+	listHelp       listHelpEntries
 	// enlargeHint: the help offers ctrl+e (a focused Text), which can wrap
 	// the footer to another line.
 	enlargeHint bool
@@ -307,13 +312,6 @@ func (m Model) offersEnlarge() bool {
 	return ok
 }
 
-// listOffersMarkFree reports whether the list's help offers mark free, which
-// changes the help footer's height.
-func (m Model) listOffersMarkFree() bool {
-	sb := m.current()
-	return sb != nil && (sb.GetController().GetRun().GetNeedsReview() || cleanupNeedsInput(sb))
-}
-
 // checkSizes resizes the active surface when its height differs from its
 // target, on a key change only; skipped on the terminal screen. An open huh
 // form takes a no-op Update in the same pass, because a shrink can leave the
@@ -324,7 +322,7 @@ func (m *Model) checkSizes() tea.Cmd {
 	}
 	key := sizeKey{
 		status: m.status, banner: m.updateBanner, width: m.width, height: m.height,
-		tabs: len(m.tabs), surface: m.activeSurface(), markFree: m.listOffersMarkFree(),
+		tabs: len(m.tabs), surface: m.activeSurface(), listHelp: m.listHelpEntries(),
 		enlargeHint: m.offersEnlarge(),
 	}
 	if key == m.sizeKey {
@@ -400,12 +398,17 @@ type vFailState struct {
 	at   time.Time
 }
 
-// vHoldState is a held message and the in-place attach it waits on (0 = none
-// pending; a Replace dialog holds through confirm.holdsV instead).
+// vHoldState is a held message, the in-place attach it waits on (0 = none
+// pending; a Replace dialog holds through confirm.holdsV instead) and when
+// that attach started.
 type vHoldState struct {
-	text string
-	seq  uint64
+	text  string
+	seq   uint64
+	since time.Time
 }
+
+// vHoldLimitMsg is the attach numbered seq reaching vHoldAttachLimit.
+type vHoldLimitMsg struct{ seq uint64 }
 
 // vHoldDialog reports a Replace dialog for an in-place attach showing: derived
 // from the showing confirm, so no way of closing it can leave it stale
@@ -421,14 +424,19 @@ func (m *Model) showErr(text string) {
 	m.vFail = vFailState{text: text}
 }
 
+// vHoldAttachOverdue reports a pending attach past vHoldAttachLimit.
+func (m Model) vHoldAttachOverdue() bool {
+	return m.vHold.seq != 0 && nowFunc().Sub(m.vHold.since) >= vHoldAttachLimit
+}
+
 // setVFail shows a `v` failure or refusal: in the error style wherever it's
 // drawn, and held instead of shown while an in-place attach is pending, its
 // Replace dialog is open, or the terminal screen shows (where it's drawn too,
-// cut to 2 lines).
+// cut to 2 lines). An attach past vHoldAttachLimit holds it and shows it too.
 func (m *Model) setVFail(text string) {
 	m.vFail = vFailState{text: text, at: nowFunc()}
 	switch {
-	case m.screen == screenTerminal:
+	case m.screen == screenTerminal, m.vHoldAttachOverdue():
 		m.vHold.text = text
 		m.status = text
 	case m.vHold.seq != 0 || m.vHoldDialog():
@@ -436,6 +444,29 @@ func (m *Model) setVFail(text string) {
 	default:
 		m.status = text
 	}
+}
+
+// vHoldLimitCmd fires when the pending attach reaches vHoldAttachLimit, if a
+// message is being held out of sight until then.
+func (m Model) vHoldLimitCmd() tea.Cmd {
+	if m.vHold.text == "" || m.vHold.seq == 0 || m.vHoldAttachOverdue() {
+		return nil
+	}
+	seq := m.vHold.seq
+	return tea.Tick(vHoldAttachLimit-nowFunc().Sub(m.vHold.since), func(time.Time) tea.Msg {
+		return vHoldLimitMsg{seq: seq}
+	})
+}
+
+// handleVHoldLimit shows a held message whose attach is still pending at the
+// limit. It stays held, because that attach can still open and clear the
+// status. A superseded attach's limit does nothing: the newer attach has its own.
+func (m Model) handleVHoldLimit(msg vHoldLimitMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != 0 && msg.seq == m.vHold.seq && m.vHold.text != "" {
+		m.status = m.vHold.text
+		m.vFail = vFailState{text: m.vHold.text, at: nowFunc()}
+	}
+	return m, nil
 }
 
 // holdRecentVFail copies a showing `v` failure that arrived in the last 3 s
@@ -469,6 +500,6 @@ func (m *Model) releaseHeld() {
 }
 
 // formHeights records the last height applied to each open huh form, which
-// has no height getter; the first size check after a form opens records the
-// height it was built with.
+// has no height getter; the first size check after a form opens sizes it and
+// records that height.
 type formHeights map[*huh.Form]int

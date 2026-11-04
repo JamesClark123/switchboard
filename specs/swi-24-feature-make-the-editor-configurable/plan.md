@@ -141,7 +141,7 @@ src/apps/switchboard-tui/
     │   ├── resolve.go                 # Request, Plan, Precheck, Resolve (FR-510–FR-526)
     │   └── launch.go                  # Launch, Started, ExitReport, exitGrace (FR-511, FR-523)
     ├── store/
-    │   ├── store.go                   # + SaveTOMLPrivate (0600, CreateTemp, chmod)
+    │   ├── store.go                   # + SaveTOMLPrivate (0600, CreateTemp, rename)
     │   └── settings.go                # Editor, EditorCustomCommand; Update(SettingsChange); SettingsUnreadableError
     └── ui/
         ├── app.go                     # Model fields; wrapper order (release, size check); bodyHeight; footer; chrome; activeHelp; forwardScreen and resize for the input

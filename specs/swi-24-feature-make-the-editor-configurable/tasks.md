@@ -123,8 +123,8 @@ through `cfg.CodeBin`; T026 switches it).
 ### Store
 
 - [X] T011 [P] `ST/store.go`: add `SaveTOMLPrivate(name string, v any) error`: marshal, `os.CreateTemp(dir,
-  "."+name+"-*.tmp")` (so `.settings.toml-<random>.tmp`, mode `0600`), write, close, `os.Rename`, then
-  `os.Chmod(full, 0o600)`. A write, close or rename failure removes the temp file before returning, because it can
+  "."+name+"-*.tmp")` (so `.settings.toml-<random>.tmp`, mode `0600`), write, close, `os.Rename` (the chmod first planned here was
+  removed in PR review 2026-11-04: the rename already gives the target mode `0600`). A write, close or rename failure removes the temp file before returning, because it can
   hold the Custom command (FR-527) and each name is unique. `SaveTOML` is unchanged. Tests in `ST/store_test.go`: the
   final mode is `0600`; a pre-existing `0644` file becomes `0600`; a leftover `0644` `.settings.toml-stale.tmp` is
   not used and the result is still `0600` (the review's case, spec Notes); no temp file remains after the save; a
@@ -199,7 +199,7 @@ through `cfg.CodeBin`; T026 switches it).
   the help zero times and `chrome` once (counted through a test hook); `BenchmarkViewList` at 80×24 with 8 sandboxes
   (empty and one-line status) keeps the frame cost visible (research R9).
 - [X] T015 `UI/status.go` + `UI/app.go`: the size check. `sizeKey{status, banner string; width, height, tabs int;
-  surface activeSurface; markFree bool}` stored on `Model`; `(m *Model) checkSizes() tea.Cmd` run in the `Update`
+  surface activeSurface; listHelp listHelpEntries}` (`markFree bool` until PR review 2026-11-04) stored on `Model`; `(m *Model) checkSizes() tea.Cmd` run in the `Update`
   wrapper **last** (after the release, T017), skipped on `surfaceTerminal`; on a key change: list →
   `SetSize(bodyWidth, mainListHeight())` when `Height()` differs; the open item list of the surface (groups,
   hosts, configs picker, kit picker, notifications, runs, services) → `SetSize(bodyWidth, bodyHeight)` when it

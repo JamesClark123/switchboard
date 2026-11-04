@@ -212,19 +212,19 @@ func waitExitCmd(wait <-chan editor.ExitReport, sandboxID, exe, where string, no
 // handleEditorOutcome clears only this row's spinner and rebuilds the rows (a
 // row's text is built into its list item, so the spinner would stay otherwise)
 // with no reload (FR-523); a completion clears m.err as statusMsg does today,
-// so an earlier error never turns it red (FR-529, SC-002).
+// so an earlier error never turns it red (FR-529, SC-002), and it ends any
+// held failure: the newest `v` outcome replaces an older one, held or showing.
 func (m Model) handleEditorOutcome(msg editorOutcomeMsg) (tea.Model, tea.Cmd) {
 	delete(m.busy, msg.sandboxID)
 	m.refreshListItems()
 	if msg.failed {
 		m.setVFail(msg.text)
-	} else {
-		if m.vFail.text != "" && m.vFail.text == m.status {
-			m.vFail.text = "" // the error style ends with the message it styled
-		}
-		m.status = msg.text
-		m.err = nil
+		return m, m.vHoldLimitCmd()
 	}
+	m.vFail = vFailState{} // the error style ends with the message it styled
+	m.vHold.text = ""
+	m.status = msg.text
+	m.err = nil
 	if msg.wait != nil {
 		return m, waitExitCmd(msg.wait, msg.sandboxID, msg.exe, msg.where, m.vNotices())
 	}
@@ -235,5 +235,5 @@ func (m Model) handleEditorOutcome(msg editorOutcomeMsg) (tea.Model, tea.Cmd) {
 // change, no reload.
 func (m Model) handleEditorExit(msg editorExitMsg) (tea.Model, tea.Cmd) {
 	m.setVFail(msg.text)
-	return m, nil
+	return m, m.vHoldLimitCmd()
 }

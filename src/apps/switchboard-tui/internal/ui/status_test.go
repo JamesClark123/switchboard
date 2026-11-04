@@ -229,7 +229,7 @@ func TestStatusTerminalLimit(t *testing.T) {
 		t.Errorf("termRows = %d, want %d regardless of the status", m.termRows(), rows)
 	}
 	m, cmd := update(m, press("t"))
-	m, _ = update(m, runCmd(cmd))
+	m, _ = update(m, runTermAttach(cmd))
 	m = setStatus(m, strings.Repeat("a long status while the terminal is open ", 8))
 	if m.screen != screenTerminal || m.statusLimit() != terminalStatusLines {
 		t.Fatalf("screen %v limit %d", m.screen, m.statusLimit())
@@ -407,6 +407,41 @@ func TestSizeCheck(t *testing.T) {
 	e, _ = update(e, press("d"))
 	if e.formHeights != nil {
 		t.Error("a closed form's height is forgotten")
+	}
+}
+
+// TestSizeCheckPauseKey: moving between a reasoning row and a worker row adds or
+// removes `P pause/resume worker`, which can wrap the footer; the list follows.
+func TestSizeCheckPauseKey(t *testing.T) {
+	noKeyGrace(t)
+	d := &fakeDaemon{}
+	sbs := seeded(d, 2)
+	sbs[0].Controller = &pb.SandboxController{OrchestratorId: "o", Name: "bot", Reasoning: true}
+	sbs[1].Controller = &pb.SandboxController{OrchestratorId: "o", Name: "bot"}
+	m := withSandboxes(New(d, "/work").WithVersion("v0.1.0"), sbs)
+	m, _ = update(m, press("O")) // workers are listed on the Orchestrated tab
+	wrapped := 0
+	for w := 60; w <= 200; w++ {
+		m, _ = update(m, tea.WindowSizeMsg{Width: w, Height: 24})
+		before := m.helpLineCount(m.activeHelp())
+		beforeRow := m.listHelpEntries()
+		key := "j"
+		if m.current().GetId() == sbs[1].GetId() {
+			key = "k"
+		}
+		m, _ = update(m, press(key))
+		if m.listHelpEntries() == beforeRow {
+			t.Fatalf("width %d: %s didn't change the row's help entries", w, key)
+		}
+		if m.helpLineCount(m.activeHelp()) != before {
+			wrapped++
+		}
+		if m.list.Height() != m.mainListHeight() {
+			t.Errorf("width %d: list %d target %d", w, m.list.Height(), m.mainListHeight())
+		}
+	}
+	if wrapped == 0 {
+		t.Fatal("no width changed the footer's height, so this tested nothing")
 	}
 }
 
