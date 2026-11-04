@@ -185,13 +185,14 @@ live in `Model.formHeights` (a map keyed by `*huh.Form`, sized and recorded by t
 not a field per form) and a resize is followed by `form.Update(nil)`. Hold: `vFail{text, at}` (error style while
 `status == text`; `showErr` sets it with a zero time for non-`v` errors such as the input's rejection, which `leaveEditorCommand`
 clears through `settingsView.inputError` unless something has replaced it),
-`vHold{text, seq, since, shown}` (a `v` completion clears `text`; past `vHoldAttachLimit`, 5 s, a pending attach no longer
-hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it, after an error or `termFail` showing by then
-(`vHoldLimitJoins`), `setVFail` shows a later one at once, and it stays held; `shown` is when it last went on screen,
-and `holdRecentVFail` drops a shown message older than `vHoldRecent`),
+`vHold{text, seq, since}` (out of sight or showing, never both, the terminal screen aside; a `v` completion clears `text`;
+past `vHoldAttachLimit`, 5 s, a pending attach no longer hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it and ends
+its hold, after an error or `termFail` showing by then (`vHoldLimitJoins`), and `setVFail` shows a later one at once),
 `confirmState.holdsV` (`vHoldDialog()`), `termFail` (set by the three terminal errors and
-`closeOrchAdminOnDrop`); `attachTerminal`/`confirmReplaceOrphan(!external)` clear `termFail` and `holdRecentVFail`;
-`onAccept` sets `seq = termSeq+1`; `releaseHeld` joins `sanitizeLine(termFail, 120) + "; "`. The update banner
+`closeOrchAdminOnDrop`); `attachTerminal` and an attach ending (`endVHoldAttach`) run `holdRecentVFail`, which holds a
+showing failure under `vHoldRecent`; `attachTerminal`/`confirmReplaceOrphan(!external)` clear `termFail`, and the
+dialog's `onAccept` sets `seq = termSeq+1` and holds what `recentVFail` found when it opened, if that's still the status;
+`releaseHeld` joins `sanitizeLine(termFail, 120) + "; "`. The update banner
 is cut to the width (`fitLine`) so SC-004 holds. `jobsFixedLines` / `lanesFixedLines` are shared by the views and
 the limit. E2E: `editor_e2e_test.go` with a stub editor on `PATH`. See `research.md` (F1–F8, R1–R16),
 `data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`, `settings-ui.md`), `quickstart.md`,

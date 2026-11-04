@@ -374,12 +374,14 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
   `failed` and `editorExitMsg` set `m.status`, `m.vFail` and don't touch `m.err`.
 - `vHold struct{text string; seq uint64; since time.Time}`: a held message, the attach number it waits on (0 = none
   pending) and when that attach started. Past `vHoldAttachLimit` (5 s) a pending attach no longer hides the message:
-  a timer shows one already held, `setVFail` shows a later one at once, and both stay held. A `v` completion clears
-  `text`. These were added in PR review (2026-11-04). The re-review added `shown`, when the message last went on
-  screen (zero while it's out of sight): a new attach or Replace dialog keeps a shown message only if `shown` is under
-  `vHoldRecent` old, and drops it otherwise. It also joined the timer's message to an error or `termFail` showing at
-  the limit, because the timer, unlike a release, fires whatever has happened since. `statusIsErr()` alone can't decide
-  that: a stale `m.err` styles `opening terminal…` too, so the attach's own texts and the held text are excluded.
+  a timer shows one already held, and `setVFail` shows a later one at once. Either way it's then an ordinary showing
+  message with `vFail.at = now`, not a held one. A `v` completion clears `text`. These were added in PR review
+  (2026-11-04). The timer's message joins an error or `termFail` showing at the limit, because the timer, unlike a
+  release, fires whatever has happened since. `statusIsErr()` alone can't decide that: a stale `m.err` styles
+  `opening terminal…` too, so the attach's own texts and the held text are excluded. An earlier version kept a shown
+  message held and recorded when it went on screen (`shown`). Three review rounds found low edge cases in that overlap,
+  so it was removed: a message is held out of sight or showing, not both, and one recency rule covers every showing
+  message.
 - `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),
@@ -393,13 +395,13 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
 
 Rules: `attachTerminal` (in-place only) sets `vHold.seq = m.termSeq` and, if `m.status == vFail.text` and
 `nowFunc().Sub(vFail.at) < vHoldRecent (3 s)` and `vHold.text == ""`, copies the status into `vHold.text`.
-`confirmReplaceOrphan` for a non-external attach sets `holdsV` with the same copy rule and sets
-`onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
+`confirmReplaceOrphan` for a non-external attach sets `holdsV`, notes the message that rule would copy without holding
+it, and sets `onAccept` to set `vHold.seq = m.termSeq + 1` (the number `attachTerminal` will take in the later
 `replaceOrphanMsg`) in the same message, so the hold passes from the dialog to
-the attach with no gap; a decline or a dropped dialog needs nothing, so the release follows at once. A `v` failure or refusal arriving while `vHold.seq != 0`
+the attach with no gap, and to hold the noted message if nothing is held and it's still the status. A decline or a dropped dialog needs nothing, so the release follows at once and a message left showing stays an ordinary one. A `v` failure or refusal arriving while `vHold.seq != 0`
 or `m.vHoldDialog()` or the terminal screen is showing replaces `vHold.text` (and is also drawn, cut to 2 lines, on
 the terminal screen). `handleTermOpened` and `handleTermClosed` clear `vHold.seq` only for `msg.seq ==
-vHold.seq`. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and
+vHold.seq`, and then apply the same copy rule, because both replace the status. The **release** step in the `Update` wrapper (after `reconcileGuardLayers`, `openParkedOverride` and
 `openDeferredMcpFollowups`, before the size check): if `vHold.text != ""` and `vHold.seq == 0` and `!m.vHoldDialog()`
 and `m.screen != screenTerminal`, then the message is `sanitizeLine(m.status, 120) + "; " + vHold.text` when
 `m.status != "" && m.status == m.termFail`, else `vHold.text`; it's written to `m.status` and `vFail.text`,

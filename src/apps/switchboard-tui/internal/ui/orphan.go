@@ -121,18 +121,22 @@ func (m Model) confirmReplaceOrphan(sb *pb.Sandbox, host string, d Daemon, exter
 	}
 	if !external {
 		// SWI-24 (FR-533): the dialog can lead to an in-place attach, so a `v`
-		// failure is held while it shows, a recent one already showing is
-		// copied into the hold, and an accept passes the hold to the attach
-		// (its number is the next termSeq) in the same message, with no gap
-		// for the wrapper to release it in. An old attach error still
-		// showing has nothing to do with a failure held behind the dialog,
-		// so it won't be joined.
+		// failure is held while it shows, and an accept passes the hold to the
+		// attach (its number is the next termSeq) in the same message, with no
+		// gap for the wrapper to release it in. A recent one already showing
+		// stays on the status line behind the dialog, and an accept holds it
+		// however long the dialog was open. An old attach error still showing
+		// has nothing to do with a failure held behind the dialog, so it won't
+		// be joined.
 		m.termFail = ""
-		m.holdRecentVFail()
+		kept := m.recentVFail()
 		st.holdsV = true
 		st.onAccept = func(m *Model) {
 			m.vHold.seq = m.termSeq + 1
 			m.vHold.since = nowFunc()
+			if m.vHold.text == "" && m.status == kept {
+				m.vHold.text = kept
+			}
 		}
 	}
 	return m.enterConfirm(st)

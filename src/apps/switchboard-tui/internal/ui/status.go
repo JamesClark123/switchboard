@@ -399,14 +399,14 @@ type vFailState struct {
 }
 
 // vHoldState is a held message, the in-place attach it waits on (0 = none
-// pending; a Replace dialog holds through confirm.holdsV instead), when that
-// attach started, and when the message last went on screen (zero while it's
-// out of sight).
+// pending; a Replace dialog holds through confirm.holdsV instead) and when that
+// attach started. A held message is out of sight, or cut to 2 lines on the
+// terminal screen, until it's shown once in full; from then on it's an ordinary
+// showing message (vFail), which only the recency rule can hold again.
 type vHoldState struct {
 	text  string
 	seq   uint64
 	since time.Time
-	shown time.Time
 }
 
 // vHoldLimitMsg is the attach numbered seq reaching vHoldAttachLimit.
@@ -434,17 +434,18 @@ func (m Model) vHoldAttachOverdue() bool {
 // setVFail shows a `v` failure or refusal: in the error style wherever it's
 // drawn, and held instead of shown while an in-place attach is pending, its
 // Replace dialog is open, or the terminal screen shows (where it's drawn too,
-// cut to 2 lines). An attach past vHoldAttachLimit holds it and shows it too.
+// cut to 2 lines). An attach past vHoldAttachLimit no longer hides it.
 func (m *Model) setVFail(text string) {
 	m.vFail = vFailState{text: text, at: nowFunc()}
 	switch {
-	case m.screen == screenTerminal, m.vHoldAttachOverdue():
+	case m.screen == screenTerminal:
 		m.vHold.text = text
-		m.vHold.shown = nowFunc()
+		m.status = text
+	case m.vHoldAttachOverdue():
+		m.vHold.text = ""
 		m.status = text
 	case m.vHold.seq != 0 || m.vHoldDialog():
 		m.vHold.text = text
-		m.vHold.shown = time.Time{}
 	default:
 		m.status = text
 	}
@@ -463,22 +464,24 @@ func (m Model) vHoldLimitCmd() tea.Cmd {
 }
 
 // handleVHoldLimit shows a held message whose attach is still pending at the
-// limit, after an error it would otherwise replace. It stays held, because that
-// attach can still open and clear the status. A superseded attach's limit does
-// nothing: the newer attach has its own. Neither does a second timer for an
-// attach whose message has already been shown.
+// limit, after an error it would otherwise replace, and ends its hold. If the
+// attach opens in the next 3 s, the recency rule keeps the message. A superseded
+// attach's limit does nothing: the newer attach has its own. Neither does a
+// second timer for an attach whose message has already been shown.
 func (m Model) handleVHoldLimit(msg vHoldLimitMsg) (tea.Model, tea.Cmd) {
-	if msg.seq == 0 || msg.seq != m.vHold.seq || m.vHold.text == "" || !m.vHold.shown.IsZero() {
+	if msg.seq == 0 || msg.seq != m.vHold.seq || m.vHold.text == "" {
 		return m, nil
 	}
 	text := m.vHold.text
 	if m.vHoldLimitJoins() {
 		text = joinHeld(m.status, text)
 		if m.status == m.settingsView.inputError {
-			m.settingsView.inputError = text // it still leaves with the input
+			m.settingsView.inputError = text // it leaves with the input
 		}
 	}
-	m.showVHold(text)
+	m.status = text
+	m.vFail = vFailState{text: text, at: nowFunc()}
+	m.vHold.text = ""
 	return m, nil
 }
 
@@ -493,35 +496,36 @@ func (m Model) vHoldLimitJoins() bool {
 	return m.statusIsErr() || m.status == m.termFail
 }
 
-// showVHold puts a held message on screen, alone or joined to an error.
-func (m *Model) showVHold(text string) {
-	m.status = text
-	m.vFail = vFailState{text: text, at: nowFunc()}
-	m.vHold.shown = nowFunc()
-}
-
 // joinHeld is an error and a held message on one line, the error cut first.
 func joinHeld(status, held string) string {
 	return sanitizeLine(status, outsideTextCols) + "; " + held
 }
 
-// holdRecentVFail is run as an in-place attach starts or its Replace dialog
-// opens (the dialog can stay open longer than the 3 s). A held message that has
-// been on screen goes back out of sight only if it was shown in the last 3 s;
-// an older one has been seen and is dropped. One never shown stays held. With
-// nothing held, a showing `v` failure that arrived in the last 3 s is copied in.
+// recentVFail is the `v` failure showing, if it went on screen in the last 3 s
+// and hasn't been released; otherwise "".
+func (m Model) recentVFail() string {
+	if m.status == "" || m.status != m.vFail.text || m.vFail.at.IsZero() || nowFunc().Sub(m.vFail.at) >= vHoldRecent {
+		return ""
+	}
+	return m.status
+}
+
+// holdRecentVFail is the recency rule, run as an in-place attach starts or ends
+// because either replaces the status: a recent failure is held, not lost. An
+// older one has been seen and goes with the status. A message already held is
+// the same one or a newer one.
 func (m *Model) holdRecentVFail() {
-	if !m.vHold.shown.IsZero() {
-		if nowFunc().Sub(m.vHold.shown) >= vHoldRecent {
-			m.vHold.text = ""
-		}
-		m.vHold.shown = time.Time{}
+	if m.vHold.text == "" {
+		m.vHold.text = m.recentVFail()
 	}
-	if m.vHold.text != "" || m.status == "" || m.status != m.vFail.text || m.vFail.at.IsZero() {
-		return
-	}
-	if nowFunc().Sub(m.vFail.at) < vHoldRecent {
-		m.vHold.text = m.status
+}
+
+// endVHoldAttach is the attach numbered seq ending, opened or not. Only the
+// latest attach ends the hold (FR-533).
+func (m *Model) endVHoldAttach(seq uint64) {
+	if seq == m.vHold.seq {
+		m.vHold.seq = 0
+		m.holdRecentVFail()
 	}
 }
 

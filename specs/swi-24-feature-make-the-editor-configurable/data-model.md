@@ -134,7 +134,7 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | Field        | Type                                     | Meaning |
 |--------------|------------------------------------------|---------|
 | `vFail`      | `struct{ text string; at time.Time }`    | Last `v` failure/refusal and arrival time; error style while `status == text`. |
-| `vHold`      | `struct{ text string; seq uint64; since, shown time.Time }` | Held message; pending in-place attach number (0 = none); when that attach started; when the message last went on screen (zero while out of sight). |
+| `vHold`      | `struct{ text string; seq uint64; since time.Time }` | Held message; pending in-place attach number (0 = none); when that attach started. |
 | `confirm.holdsV` | `bool` on `confirmState`             | This confirm is a Replace dialog for an in-place attach. `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`, derived so that no way of closing the dialog can leave it stale. |
 | `termFail`   | `string`                                 | Text a release joins instead of replacing: the last attach/terminal error or a daemon drop's `<name> disconnected — orchestrators closed`; cleared by `attachTerminal` and when a Replace dialog for an in-place attach opens. |
 | `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, listHelp}` last checked. |
@@ -147,8 +147,9 @@ Constants: `statusMaxLines = 6`, `terminalStatusLines = 2`, `outsideTextCols = 1
 
 ```
 none ──v failure/refusal arrives──▶ showing(vFail.at = now)
-showing ──in-place attach starts or Replace dialog opens, age < 3 s──▶ held(seq | dialog)
+showing ──in-place attach starts or ends, or a Replace dialog opened on it is accepted, age < 3 s──▶ held(seq)
 none/showing ──failure arrives while terminal open/opening or dialog open──▶ held (replaces any held text)
+held(seq) ──the attach reaches 5 s──▶ showing(vFail.at = now), or a failure arrives past 5 s: showing, replacing it
 held(dialog) ──decline, or the dialog dropped unanswered (closeOrchAdminOnDrop)──▶ release
 held(dialog) ──accept (onAccept: seq = termSeq+1)──▶ held(seq)
 held(seq) ──termOpened/termClosed with that seq, terminal not showing──▶ release

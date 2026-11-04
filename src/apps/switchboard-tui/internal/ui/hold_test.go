@@ -135,10 +135,10 @@ func TestHoldReplaceDialog(t *testing.T) {
 		m, d := orphanList(t, detachedSandbox("p1", pb.AgentStatus_AGENT_STATUS_IDLE, false))
 		m = vFail(m, vRefusal) // showing, recent
 		m, _ = update(m, press("t"))
-		if m.screen != screenConfirm || !m.confirm.holdsV || m.vHold.text != vRefusal || !m.vHoldDialog() {
-			t.Fatalf("dialog: screen %v holdsV %v held %q", m.screen, m.confirm.holdsV, m.vHold.text)
+		if m.screen != screenConfirm || !m.confirm.holdsV || m.status != vRefusal || !m.vHoldDialog() {
+			t.Fatalf("dialog: screen %v holdsV %v status %q", m.screen, m.confirm.holdsV, m.status)
 		}
-		// A failure arriving while the dialog is open replaces the held one.
+		// A failure arriving while the dialog is open is held.
 		m = vFail(m, "later failure")
 		if m.vHold.text != "later failure" || m.status == "later failure" {
 			t.Fatalf("held %q status %q", m.vHold.text, m.status)
@@ -320,9 +320,9 @@ func TestHoldSessionDiesAndReplace(t *testing.T) {
 	assertRed(t, m, vRefusal)
 }
 
-// An attach that never returns: a failure held behind it shows at the limit,
-// one arriving after the limit shows at once, and both stay held in case the
-// attach does open after all, which clears the status.
+// An attach that never returns: a failure held behind it shows at the limit, and
+// one arriving after the limit shows at once. Neither is held once shown, unless
+// the attach opens within 3 s, which would otherwise lose it.
 func TestHoldAttachLimit(t *testing.T) {
 	step := clock(t)
 	m := runningSbx(&fakeDaemon{})
@@ -335,17 +335,17 @@ func TestHoldAttachLimit(t *testing.T) {
 	}
 	m, _ = update(m, limit())
 	assertRed(t, m, vRefusal)
-	if m.vHold.text != vRefusal || m.vHold.seq == 0 {
-		t.Fatalf("shown at the limit, still held: %+v", m.vHold)
+	if m.vHold.text != "" || m.vHold.seq == 0 {
+		t.Fatalf("shown at the limit, the attach still pending: %+v", m.vHold)
 	}
 	// A later failure is past the limit: shown at once, no timer.
 	step(time.Millisecond)
 	m, limit = update(m, editorExitMsg{sandboxID: "sb1", text: "later failure"})
 	assertRed(t, m, "later failure")
-	if m.vHold.text != "later failure" || limit != nil {
+	if m.vHold.text != "" || limit != nil {
 		t.Fatalf("past the limit: held %q timer %v", m.vHold.text, limit != nil)
 	}
-	// The attach opens after all: the status clears, and the failure comes back.
+	// The attach opens straight after: the status clears, and the failure comes back.
 	m, _ = update(m, runTermAttach(attach))
 	if m.screen != screenTerminal || m.status != "" {
 		t.Fatalf("the late attach opens: screen %v status %q", m.screen, m.status)
@@ -355,6 +355,14 @@ func TestHoldAttachLimit(t *testing.T) {
 	if m.vHold.text != "" {
 		t.Errorf("released, nothing held: %q", m.vHold.text)
 	}
+	// A failure past the limit, ahead of the timer: the older one is gone, so
+	// the timer has nothing to show.
+	m, _ = update(runningSbx(&fakeDaemon{}), press("t"))
+	m = vFail(m, vRefusal)
+	step(vHoldAttachLimit)
+	m = vFail(m, "later failure")
+	m, _ = update(m, vHoldLimitMsg{seq: m.vHold.seq})
+	assertRed(t, m, "later failure")
 }
 
 // A refusal already showing when t is pressed is held, and comes back at the
@@ -402,8 +410,7 @@ func TestHoldAttachLimitOnlyForThePendingAttach(t *testing.T) {
 }
 
 // The limit doesn't lose what arrived while the message was held: an error, or
-// a message a release would join, stays in front of the held message, whose
-// text alone is what comes back if the attach opens after all.
+// a message a release would join, stays in front of the held message.
 func TestHoldAttachLimitKeepsANewerError(t *testing.T) {
 	clock(t)
 	stalled := func() (Model, tea.Cmd) {
@@ -420,14 +427,15 @@ func TestHoldAttachLimitKeepsANewerError(t *testing.T) {
 	m, _ = update(m, errMsg{err: errors.New("destroy sb2: permission denied")})
 	m = limit(m)
 	assertRed(t, m, destroy+"; "+vRefusal)
-	if m.vHold.text != vRefusal {
-		t.Errorf("held %q, want the failure alone", m.vHold.text)
+	if m.vHold.text != "" {
+		t.Errorf("held %q, want nothing once shown", m.vHold.text)
 	}
 	// A second timer for this attach (one per failure held) changes nothing.
 	m = limit(m)
 	assertRed(t, m, destroy+"; "+vRefusal)
+	// What's on screen is what the recency rule keeps.
 	m, _ = update(m, runTermAttach(attach))
-	assertRed(t, ctrlQ(m), vRefusal)
+	assertRed(t, ctrlQ(m), destroy+"; "+vRefusal)
 
 	// An error with no "error" prefix, which only m.err marks.
 	m, _ = stalled()
@@ -467,62 +475,76 @@ func TestHoldAttachLimitKeepsANewerError(t *testing.T) {
 	assertRed(t, limit(m), vRefusal)
 }
 
-// An error about the input leaves with the input after the limit has joined the
-// held message to it, and the held message stays on screen.
+// An error about the input leaves with the input, along with a held message the
+// limit joined to it: that message has been on screen. Nothing comes back in
+// their place.
 func TestHoldAttachLimitJoinsAnInputError(t *testing.T) {
-	clock(t)
+	step := clock(t)
 	noKeyGrace(t)
 	esc := tea.KeyMsg{Type: tea.KeyEsc}
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
-	reject := func() Model {
+	open := func() Model {
 		m, _ := settingsModel(t)
 		m, _ = openCustom(t, m)
 		m.vHold = vHoldState{text: vRefusal, seq: 7, since: nowFunc()}
+		return m
+	}
+	reject := func(m Model) Model {
 		m.settingsView.input.SetValue("foo 'bar")
 		m, _ = update(m, enter)
 		return m
 	}
+	discard := func(m Model) Model {
+		m, _ = update(m, esc)
+		m, _ = update(m, press("d"))
+		if m.settingsView.mode != settingsList {
+			t.Fatalf("mode %v", m.settingsView.mode)
+		}
+		return m
+	}
 	rejection := "the command has an unbalanced quote"
 	// The rejection arrives first, then the limit.
-	m := reject()
+	m := reject(open())
 	if m.status != rejection {
 		t.Fatalf("rejection: %q", m.status)
 	}
 	m, _ = update(m, vHoldLimitMsg{seq: 7})
 	assertRed(t, m, rejection+"; "+vRefusal)
-	m, _ = update(m, esc)
-	m, _ = update(m, press("d"))
-	if m.settingsView.mode != settingsList {
-		t.Fatalf("mode %v", m.settingsView.mode)
+	m = discard(m)
+	if m.status != "" {
+		t.Errorf("the joined message leaves with the input: %q", m.status)
 	}
-	assertRed(t, m, vRefusal)
 	// The limit first, then the rejection, which replaces the shown message.
-	m, _ = settingsModel(t)
-	m, _ = openCustom(t, m)
-	m.vHold = vHoldState{text: vRefusal, seq: 7, since: nowFunc()}
+	m = open()
 	m, _ = update(m, vHoldLimitMsg{seq: 7})
-	m.settingsView.input.SetValue("foo 'bar")
-	m, _ = update(m, enter)
+	assertRed(t, m, vRefusal)
+	m = reject(m)
 	if m.status != rejection {
 		t.Fatalf("rejection: %q", m.status)
 	}
-	m, _ = update(m, esc)
-	m, _ = update(m, press("d"))
-	assertRed(t, m, vRefusal)
-	// A completion ended the hold: the status clears.
-	m, _ = settingsModel(t)
-	m, _ = openCustom(t, m)
-	m.vHold = vHoldState{text: vRefusal, seq: 7, since: nowFunc()}
+	m = discard(m)
+	if m.status != "" {
+		t.Errorf("a shown message doesn't come back: %q", m.status)
+	}
+	// A message something else replaced, long since: a discarded typo doesn't
+	// bring it back.
+	m = open()
 	m, _ = update(m, vHoldLimitMsg{seq: 7})
-	m, _ = update(m, editorOutcomeMsg{sandboxID: "sb1", text: "opened demo in VS Code"})
-	if m.vHold.text != "" || !m.vHold.shown.IsZero() {
-		t.Errorf("a completion ends the hold: %+v", m.vHold)
-	}
-	m, _ = update(m, enter)
-	m, _ = update(m, esc)
+	m, _ = update(m, statusMsg("stopped sb2"))
+	step(time.Hour)
+	m = reject(m)
+	m = discard(m)
 	if m.status != "" || m.statusIsErr() {
-		t.Errorf("after a completion: %q red %v", m.status, m.statusIsErr())
+		t.Errorf("an old message came back: %q red %v", m.status, m.statusIsErr())
 	}
+	// Still held out of sight: leaving the input doesn't show it, its limit does.
+	m = reject(open())
+	m = discard(m)
+	if m.status != "" || m.vHold.text != vRefusal {
+		t.Errorf("still held: status %q held %q", m.status, m.vHold.text)
+	}
+	m, _ = update(m, vHoldLimitMsg{seq: 7})
+	assertRed(t, m, vRefusal)
 	// Nothing held: the status clears, as before.
 	m, _ = settingsModel(t)
 	m, _ = openCustom(t, m)
@@ -578,7 +600,7 @@ func TestHoldShownMessageAcrossARetry(t *testing.T) {
 		m = shown()
 		step(vHoldRecent - time.Millisecond)
 		m, _ = update(m, press("t"))
-		if m.status != openingText || m.vHold.text != vRefusal || !m.vHold.shown.IsZero() {
+		if m.status != openingText || m.vHold.text != vRefusal {
 			t.Errorf("%s: a recent message is kept: status %q hold %+v", name, m.status, m.vHold)
 		}
 		step(vHoldAttachLimit)
@@ -618,8 +640,8 @@ func TestHoldShownMessageAcrossAReplaceDialog(t *testing.T) {
 	}
 	m = shown()
 	m, _ = update(m, press("t"))
-	if m.screen != screenConfirm || m.vHold.text != vRefusal {
-		t.Fatalf("a recent message is kept: screen %v held %q", m.screen, m.vHold.text)
+	if m.screen != screenConfirm || m.status != vRefusal || m.vHold.text != "" {
+		t.Fatalf("a recent message stays on the status line: screen %v status %q held %q", m.screen, m.status, m.vHold.text)
 	}
 	step(time.Minute)
 	m, cmd := update(m, press("y"))
@@ -629,6 +651,35 @@ func TestHoldShownMessageAcrossAReplaceDialog(t *testing.T) {
 	}
 	m, _ = update(m, runTermAttach(cmd))
 	assertRed(t, ctrlQ(m), vRefusal)
+	// Declined: it's an ordinary message, and a later t doesn't bring it back,
+	// the attach it was shown behind still pending.
+	m = shown()
+	m, _ = update(m, press("t"))
+	m, _ = update(m, press("n"))
+	assertRed(t, m, vRefusal)
+	if m.vHold.text != "" || m.vHold.seq != 7 {
+		t.Fatalf("declined: %+v", m.vHold)
+	}
+	step(time.Hour)
+	m, _ = update(m, press("t"))
+	if m.screen != screenConfirm || m.vHold.text != "" {
+		t.Fatalf("an hour later: screen %v held %q", m.screen, m.vHold.text)
+	}
+	m, cmd = update(m, press("y"))
+	m, cmd = update(m, runTermAttach(cmd))
+	m, _ = update(m, runTermAttach(cmd))
+	m = ctrlQ(m)
+	if !strings.HasPrefix(m.status, "detached from") || m.statusIsErr() {
+		t.Errorf("after the retry closes: %q red %v", m.status, m.statusIsErr())
+	}
+	// Replaced behind the dialog: an accept doesn't bring it back.
+	m = shown()
+	m, _ = update(m, press("t"))
+	m, _ = update(m, statusMsg("stopped sb2"))
+	m, _ = update(m, press("y"))
+	if m.vHold.text != "" {
+		t.Errorf("replaced behind the dialog, then accepted: held %q", m.vHold.text)
+	}
 	// Shown behind a dialog, its attach then ends: a failure held after that
 	// hasn't been seen, however long the dialog stays open.
 	m, _ = orphanList(t, detachedSandbox("p1", pb.AgentStatus_AGENT_STATUS_IDLE, false))
@@ -647,6 +698,53 @@ func TestHoldShownMessageAcrossAReplaceDialog(t *testing.T) {
 	m, _ = update(m, runTermAttach(cmd))
 	if m.vHold.text != "later failure" {
 		t.Errorf("a failure never shown stays held: %q", m.vHold.text)
+	}
+}
+
+// An attach ending replaces the status, so the recency rule applies then too: a
+// message shown in the last 3 s comes back, or joins the attach's error, and an
+// older one has been seen and doesn't.
+func TestHoldShownMessageWhenTheAttachEnds(t *testing.T) {
+	step := clock(t)
+	shown := func(d *fakeDaemon) (Model, tea.Cmd) {
+		m, attach := update(runningSbx(d), press("t"))
+		m = vFail(m, vRefusal)
+		step(vHoldAttachLimit)
+		m, _ = update(m, vHoldLimitMsg{seq: m.vHold.seq})
+		assertRed(t, m, vRefusal)
+		return m, attach
+	}
+	// It opens.
+	m, attach := shown(&fakeDaemon{})
+	step(vHoldRecent - time.Millisecond)
+	m, _ = update(m, runTermAttach(attach))
+	assertRed(t, ctrlQ(m), vRefusal)
+	m, attach = shown(&fakeDaemon{})
+	step(vHoldRecent)
+	m, _ = update(m, runTermAttach(attach))
+	m = ctrlQ(m)
+	if m.status != "detached from demo" || m.statusIsErr() {
+		t.Errorf("opened late: %q red %v", m.status, m.statusIsErr())
+	}
+	// It fails.
+	failing := &fakeDaemon{attachErr: errors.New("daemon unreachable")}
+	m, attach = shown(failing)
+	step(vHoldRecent - time.Millisecond)
+	m, _ = update(m, runTermAttach(attach))
+	assertRed(t, m, "terminal: daemon unreachable; "+vRefusal)
+	m, attach = shown(failing)
+	step(vHoldRecent)
+	m, _ = update(m, runTermAttach(attach))
+	if m.status != "terminal: daemon unreachable" {
+		t.Errorf("failed late: %q", m.status)
+	}
+	// Something replaced it: it doesn't come back, however recent.
+	m, attach = shown(&fakeDaemon{})
+	m, _ = update(m, statusMsg("stopped sb2"))
+	m, _ = update(m, runTermAttach(attach))
+	m = ctrlQ(m)
+	if m.status != "detached from demo" {
+		t.Errorf("replaced: %q", m.status)
 	}
 }
 

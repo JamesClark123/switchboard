@@ -219,7 +219,7 @@ through `cfg.CodeBin`; T026 switches it).
   caller isn't `T`'s replace path) sets `vHold.seq = m.termSeq`, clears `termFail`, and copies a recent
   (`nowFunc().Sub(vFail.at) < vHoldRecent`, non-zero `at`) status equal to `vFail.text` into `vHold.text` when
   empty; `confirmReplaceOrphan` with `!external` clears `termFail` too (`t` can open it with no `attachTerminal`, so an
-  old error still showing must not join a failure held behind it), and sets `holdsV: true` with the same copy and an `onAccept` that sets
+  old error still showing must not join a failure held behind it), and sets `holdsV: true` with the same copy (made on accept since the 2026-11-04 re-review, `run-c275c8f2-1741`) and an `onAccept` that sets
   `vHold.seq = m.termSeq + 1`, so the hold passes to the attach in the accepting message (it needs no `onCancel`);
   `handleTermOpened`/`handleTermClosed` clear `vHold.seq` only when
   `msg.seq == vHold.seq`; the three error assignments (`not opened — you moved on`, `external terminal already

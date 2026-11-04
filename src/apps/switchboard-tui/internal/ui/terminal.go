@@ -150,9 +150,7 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
-	if msg.seq == m.vHold.seq {
-		m.vHold.seq = 0 // only the latest attach ends the hold (FR-533)
-	}
+	m.endVHoldAttach(msg.seq)
 	if msg.seq != m.termSeq || !m.attachAwaited(msg.returnTo) {
 		// A newer attach superseded it, or the developer moved on (another
 		// screen, an overlay) while it attached: detach rather than pull them in.
@@ -189,9 +187,7 @@ func (m Model) attachAwaited(from screen) bool {
 // changes screen only when it is about the terminal showing: a failed attach
 // leaves the developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
-	if msg.seq == m.vHold.seq {
-		m.vHold.seq = 0
-	}
+	m.endVHoldAttach(msg.seq)
 	showing := m.screen == screenTerminal && msg.seq == m.term.seq
 	if !showing && msg.seq != m.termSeq {
 		return m, nil // about an attach a newer one superseded: nothing to report
