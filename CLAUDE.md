@@ -185,8 +185,10 @@ live in `Model.formHeights` (a map keyed by `*huh.Form`, sized and recorded by t
 not a field per form) and a resize is followed by `form.Update(nil)`. Hold: `vFail{text, at}` (error style while
 `status == text`; `showErr` sets it with a zero time for non-`v` errors such as the input's rejection, which `leaveEditorCommand`
 clears through `settingsView.inputError` unless something has replaced it),
-`vHold{text, seq, since}` (a `v` completion clears `text`; past `vHoldAttachLimit`, 5 s, a pending attach no longer
-hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it, `setVFail` shows a later one at once, and it stays held),
+`vHold{text, seq, since, shown}` (a `v` completion clears `text`; past `vHoldAttachLimit`, 5 s, a pending attach no longer
+hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it, after an error or `termFail` showing by then
+(`vHoldLimitJoins`), `setVFail` shows a later one at once, and it stays held; `shown` is when it last went on screen,
+and `holdRecentVFail` drops a shown message older than `vHoldRecent`),
 `confirmState.holdsV` (`vHoldDialog()`), `termFail` (set by the three terminal errors and
 `closeOrchAdminOnDrop`); `attachTerminal`/`confirmReplaceOrphan(!external)` clear `termFail` and `holdRecentVFail`;
 `onAccept` sets `seq = termSeq+1`; `releaseHeld` joins `sanitizeLine(termFail, 120) + "; "`. The update banner

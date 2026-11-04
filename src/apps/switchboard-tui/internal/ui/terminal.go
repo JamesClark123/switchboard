@@ -104,6 +104,9 @@ func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo
 	return m.attachTerminal(sb, host, d, returnTo, false)
 }
 
+// openingText is the status while an in-place attach is pending.
+const openingText = "opening terminal…"
+
 // attachTerminal opens the in-place terminal; replace attaches with
 // AttachInfo.replace_orphan (`t` → Replace).
 func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo screen, replace bool) (tea.Model, tea.Cmd) {
@@ -118,7 +121,7 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 	m.vHold.since = nowFunc()
 	m.termFail = ""
 	m.holdRecentVFail()
-	m.status = "opening terminal…"
+	m.status = openingText
 	if replace {
 		m.status = replacingText
 	}

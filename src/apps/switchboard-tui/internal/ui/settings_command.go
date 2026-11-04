@@ -146,10 +146,14 @@ func (m Model) submitEditorCommand() (tea.Model, tea.Cmd) {
 }
 
 // leaveEditorCommand closes the input to the given mode. An error about the
-// input goes with it, unless something has replaced it.
+// input goes with it, unless something has replaced it; a held message past its
+// attach's limit shows again in its place.
 func (m Model) leaveEditorCommand(to settingsMode) Model {
 	if m.status == m.settingsView.inputError {
 		m.status = ""
+		if m.settingsView.inputError != "" && !m.vHold.shown.IsZero() {
+			m.showVHold(m.vHold.text)
+		}
 	}
 	m.settingsView.inputError = ""
 	m.settingsView.input.Blur()

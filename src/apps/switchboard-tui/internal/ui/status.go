@@ -399,12 +399,14 @@ type vFailState struct {
 }
 
 // vHoldState is a held message, the in-place attach it waits on (0 = none
-// pending; a Replace dialog holds through confirm.holdsV instead) and when
-// that attach started.
+// pending; a Replace dialog holds through confirm.holdsV instead), when that
+// attach started, and when the message last went on screen (zero while it's
+// out of sight).
 type vHoldState struct {
 	text  string
 	seq   uint64
 	since time.Time
+	shown time.Time
 }
 
 // vHoldLimitMsg is the attach numbered seq reaching vHoldAttachLimit.
@@ -438,9 +440,11 @@ func (m *Model) setVFail(text string) {
 	switch {
 	case m.screen == screenTerminal, m.vHoldAttachOverdue():
 		m.vHold.text = text
+		m.vHold.shown = nowFunc()
 		m.status = text
 	case m.vHold.seq != 0 || m.vHoldDialog():
 		m.vHold.text = text
+		m.vHold.shown = time.Time{}
 	default:
 		m.status = text
 	}
@@ -459,20 +463,60 @@ func (m Model) vHoldLimitCmd() tea.Cmd {
 }
 
 // handleVHoldLimit shows a held message whose attach is still pending at the
-// limit. It stays held, because that attach can still open and clear the
-// status. A superseded attach's limit does nothing: the newer attach has its own.
+// limit, after an error it would otherwise replace. It stays held, because that
+// attach can still open and clear the status. A superseded attach's limit does
+// nothing: the newer attach has its own. Neither does a second timer for an
+// attach whose message has already been shown.
 func (m Model) handleVHoldLimit(msg vHoldLimitMsg) (tea.Model, tea.Cmd) {
-	if msg.seq != 0 && msg.seq == m.vHold.seq && m.vHold.text != "" {
-		m.status = m.vHold.text
-		m.vFail = vFailState{text: m.vHold.text, at: nowFunc()}
+	if msg.seq == 0 || msg.seq != m.vHold.seq || m.vHold.text == "" || !m.vHold.shown.IsZero() {
+		return m, nil
 	}
+	text := m.vHold.text
+	if m.vHoldLimitJoins() {
+		text = joinHeld(m.status, text)
+		if m.status == m.settingsView.inputError {
+			m.settingsView.inputError = text // it still leaves with the input
+		}
+	}
+	m.showVHold(text)
 	return m, nil
 }
 
-// holdRecentVFail copies a showing `v` failure that arrived in the last 3 s
-// into the hold, when nothing newer is held: run as an in-place attach starts
-// or its Replace dialog opens (the dialog can stay open longer than that).
+// vHoldLimitJoins reports a status the limit must not replace: an error, or a
+// message a release would join. The attach's own text doesn't count, though a
+// stale m.err can show it in the error style.
+func (m Model) vHoldLimitJoins() bool {
+	switch m.status {
+	case "", openingText, replacingText, m.vHold.text:
+		return false
+	}
+	return m.statusIsErr() || m.status == m.termFail
+}
+
+// showVHold puts a held message on screen, alone or joined to an error.
+func (m *Model) showVHold(text string) {
+	m.status = text
+	m.vFail = vFailState{text: text, at: nowFunc()}
+	m.vHold.shown = nowFunc()
+}
+
+// joinHeld is an error and a held message on one line, the error cut first.
+func joinHeld(status, held string) string {
+	return sanitizeLine(status, outsideTextCols) + "; " + held
+}
+
+// holdRecentVFail is run as an in-place attach starts or its Replace dialog
+// opens (the dialog can stay open longer than the 3 s). A held message that has
+// been on screen goes back out of sight only if it was shown in the last 3 s;
+// an older one has been seen and is dropped. One never shown stays held. With
+// nothing held, a showing `v` failure that arrived in the last 3 s is copied in.
 func (m *Model) holdRecentVFail() {
+	if !m.vHold.shown.IsZero() {
+		if nowFunc().Sub(m.vHold.shown) >= vHoldRecent {
+			m.vHold.text = ""
+		}
+		m.vHold.shown = time.Time{}
+	}
 	if m.vHold.text != "" || m.status == "" || m.status != m.vFail.text || m.vFail.at.IsZero() {
 		return
 	}
@@ -492,7 +536,7 @@ func (m *Model) releaseHeld() {
 	}
 	text := m.vHold.text
 	if m.status != "" && m.status == m.termFail {
-		text = sanitizeLine(m.status, outsideTextCols) + "; " + text
+		text = joinHeld(m.status, text)
 	}
 	m.status = text
 	m.vFail = vFailState{text: text}

@@ -375,7 +375,11 @@ a per-screen `bodyHeight` parameter (the 14 build sites would still be stale).
 - `vHold struct{text string; seq uint64; since time.Time}`: a held message, the attach number it waits on (0 = none
   pending) and when that attach started. Past `vHoldAttachLimit` (5 s) a pending attach no longer hides the message:
   a timer shows one already held, `setVFail` shows a later one at once, and both stay held. A `v` completion clears
-  `text`. These were added in PR review (2026-11-04).
+  `text`. These were added in PR review (2026-11-04). The re-review added `shown`, when the message last went on
+  screen (zero while it's out of sight): a new attach or Replace dialog keeps a shown message only if `shown` is under
+  `vHoldRecent` old, and drops it otherwise. It also joined the timer's message to an error or `termFail` showing at
+  the limit, because the timer, unlike a release, fires whatever has happened since. `statusIsErr()` alone can't decide
+  that: a stale `m.err` styles `opening terminal…` too, so the attach's own texts and the held text are excluded.
 - `confirmState.holdsV bool`, with `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`: whether a
   Replace dialog for an in-place attach is open. It's derived from the showing confirm rather than stored beside
   the hold, because `closeOrchAdminOnDrop` closes a confirm running neither `onAccept` nor `onCancel` (`hosts.go:484`),

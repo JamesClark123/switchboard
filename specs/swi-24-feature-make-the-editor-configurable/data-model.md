@@ -134,7 +134,7 @@ executable too, so the caller can `LookPath` it. Custom commands pass through `S
 | Field        | Type                                     | Meaning |
 |--------------|------------------------------------------|---------|
 | `vFail`      | `struct{ text string; at time.Time }`    | Last `v` failure/refusal and arrival time; error style while `status == text`. |
-| `vHold`      | `struct{ text string; seq uint64 }`      | Held message; pending in-place attach number (0 = none). |
+| `vHold`      | `struct{ text string; seq uint64; since, shown time.Time }` | Held message; pending in-place attach number (0 = none); when that attach started; when the message last went on screen (zero while out of sight). |
 | `confirm.holdsV` | `bool` on `confirmState`             | This confirm is a Replace dialog for an in-place attach. `m.vHoldDialog()` = `m.screen == screenConfirm && m.confirm.holdsV`, derived so that no way of closing the dialog can leave it stale. |
 | `termFail`   | `string`                                 | Text a release joins instead of replacing: the last attach/terminal error or a daemon drop's `<name> disconnected — orchestrators closed`; cleared by `attachTerminal` and when a Replace dialog for an in-place attach opens. |
 | `sizeKey`    | `sizeKey`                                | `{status, width, height, banner, surface, tabs, listHelp}` last checked. |

@@ -107,16 +107,17 @@ resized only if its height differs from its target: `m.list` → `mainListHeight
 | Event | Effect |
 |-------|--------|
 | `v` failure/refusal arrives, no attach pending, terminal not showing | `status = text`, `vFail = {text, now}`, red |
-| `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen, and drawn if the attach is past the limit |
-| `v` completion arrives | `vHold.text = ""`, `vFail = {}`; the attach, if any, stays pending |
-| in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `vHold.since = now`; `termFail = ""`; if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
-| a pending attach reaches the limit (`now - vHold.since = 5 s`; a timer set when a message is held out of sight, carrying the attach's `seq`) with `msg.seq == vHold.seq` and `vHold.text != ""` | `status = vHold.text`, red; it stays held. A superseded attach's timer does nothing |
-| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `termFail = ""`; `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same copy rule; `onAccept` sets `vHold.seq = termSeq + 1` and `vHold.since = now`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
+| `v` failure/refusal arrives while an in-place attach is pending (`vHold.seq != 0`), a Replace dialog for one is open, or the terminal screen shows | `vHold.text = text` (replacing any held); also drawn (cut to 2 lines) on the terminal screen, and drawn if the attach is past the limit. `vHold.shown = now` if drawn, otherwise zero |
+| `v` completion arrives | `vHold.text = ""`, `vHold.shown = zero`, `vFail = {}`; the attach, if any, stays pending |
+| in-place attach starts (`attachTerminal`, not `T`) | `vHold.seq = termSeq`; `vHold.since = now`; `termFail = ""`; if `vHold.shown` is set, `vHold.text = ""` when `now - vHold.shown >= 3 s`, and `vHold.shown = zero` either way; then if `status == vFail.text` and `now - vFail.at < 3 s` and `vHold.text == ""` → `vHold.text = status` |
+| a pending attach reaches the limit (`now - vHold.since = 5 s`; a timer set when a message is held out of sight, carrying the attach's `seq`) with `msg.seq == vHold.seq`, `vHold.text != ""` and `vHold.shown` zero | `status = vHold.text`, or `cut120(status) + "; " + vHold.text` when the status is an error (`statusIsErr()`) or `termFail`, and isn't `opening terminal…`, `replacing the detached agent…` or the held text; red; `vHold.shown = now`; it stays held, and `settingsView.inputError` follows a status it matched. A superseded attach's timer does nothing, nor does a second timer for an attach whose message has been shown |
+| Replace dialog opens for an in-place attach (`confirmReplaceOrphan`, `!external`) | `termFail = ""`; `confirmState.holdsV = true`, so `m.vHoldDialog()` holds for as long as it's the showing confirm; same rule for a shown message, same copy rule; `onAccept` sets `vHold.seq = termSeq + 1` and `vHold.since = now`; a decline, or the dialog dropped unanswered when its daemon disconnects, needs nothing more |
 | `termOpenedMsg` / `termClosedMsg` with `msg.seq == vHold.seq` | `vHold.seq = 0` (a superseded attach's message never clears it) |
 | terminal closes (`ctrl+q`, session ends) | the screen leaves `screenTerminal` |
 | attach/terminal error set (`not opened — you moved on`, `external terminal already attached`, `terminal: …`), or a daemon drop closes the orchestrator screens (`<name> disconnected — orchestrators closed`) | `termFail = status` |
 | **release** (wrapper: `vHold.text != ""`, `seq == 0`, `!m.vHoldDialog()`, screen ≠ terminal) | `status = (status != "" && status == termFail ? cut120(status) + "; " : "") + vHold.text`; `vFail = {status, zero}`; `vHold = {}`; red |
 | a `v` failure arrives when an error is already showing and nothing is held | replaces the error (not joined) |
+| the Custom command input is left while its error (`settingsView.inputError`) is the status | `status = ""`; if `vHold.shown` is set, `status = vHold.text`, red, `vHold.shown = now` |
 
 A released message (zero `vFail.at`) is never held again. `detached from <name>` is replaced, not joined. A daemon
 drop's `<name> disconnected — orchestrators closed` is joined, because it's the only message explaining why the screen

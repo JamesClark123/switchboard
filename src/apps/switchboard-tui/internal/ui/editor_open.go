@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
@@ -222,7 +223,7 @@ func (m Model) handleEditorOutcome(msg editorOutcomeMsg) (tea.Model, tea.Cmd) {
 		return m, m.vHoldLimitCmd()
 	}
 	m.vFail = vFailState{} // the error style ends with the message it styled
-	m.vHold.text = ""
+	m.vHold.text, m.vHold.shown = "", time.Time{}
 	m.status = msg.text
 	m.err = nil
 	if msg.wait != nil {
