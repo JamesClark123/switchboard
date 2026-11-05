@@ -44,7 +44,8 @@ type termState struct {
 // terminal (SWI-32); tests step nowFunc across it.
 const termResetEvery = time.Second
 
-// termResetText is the status after ctrl+l reset the terminal view.
+// termResetText is the status after ctrl+l reset the terminal view; the next
+// other key clears it.
 const termResetText = "terminal reset"
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
@@ -324,8 +325,8 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.status == escHoldHint {
-		m.status = "" // the held esc is resolved: this key is sent (or ignored)
+	if m.status == escHoldHint || (m.status == termResetText && msg.Type != tea.KeyCtrlL) {
+		m.status = "" // the held esc is resolved or the reset is over: this key is sent (or ignored)
 	}
 	if msg.Type == tea.KeyCtrlL {
 		// Reset the view (SWI-32): blank the local screen, ask the daemon to

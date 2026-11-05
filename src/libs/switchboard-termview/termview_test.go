@@ -540,6 +540,27 @@ func TestCursorHiddenByDECTCEM(t *testing.T) {
 	}
 }
 
+// SWI-32: DECTCEM is the app's mode: a redraw after a reset need not hide the
+// cursor again, so the reset keeps it. A full reset from the app does not.
+func TestResetKeepsTheCursorHidden(t *testing.T) {
+	s := New(10, 2)
+	_, _ = s.Write([]byte("\x1b[?25lhello"))
+	s.Reset()
+	_, _ = s.Write([]byte("redrawn"))
+	if hasReverse(s.Render()) {
+		t.Fatalf("the reset brought back a hidden cursor: %q", s.Render())
+	}
+	_, _ = s.Write([]byte("\x1b[?25h"))
+	s.Reset()
+	if !hasReverse(s.Render()) {
+		t.Fatalf("the reset hid a visible cursor: %q", s.Render())
+	}
+	_, _ = s.Write([]byte("\x1b[?25l\x1bc"))
+	if !hasReverse(s.Render()) {
+		t.Fatalf("a full reset from the app should show the cursor: %q", s.Render())
+	}
+}
+
 func TestCursorOverlayDoesNotCorruptContent(t *testing.T) {
 	// Rendering the cursor is non-destructive: the underlying glyph and later
 	// renders are unchanged.

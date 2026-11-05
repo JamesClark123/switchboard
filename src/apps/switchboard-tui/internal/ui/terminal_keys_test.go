@@ -223,6 +223,29 @@ func TestCtrlLClearsAHeldEsc(t *testing.T) {
 	}
 }
 
+// SWI-32: the reset's status goes with the next other key. A swallowed repeat
+// press keeps it, or holding the key would hide it at once, and other statuses
+// stay as they were.
+func TestCtrlLStatusClearsOnTheNextKey(t *testing.T) {
+	tick := clock(t)
+	m := openTerm(t, runningSbx(&fakeDaemon{}))
+	m = ctrlL(m)
+	tick(termResetEvery / 2)
+	m = ctrlL(m)
+	if m.status != termResetText {
+		t.Fatalf("after a swallowed repeat: status %q, want %q", m.status, termResetText)
+	}
+	m, _ = update(m, press("x"))
+	if m.status != "" {
+		t.Errorf("after the next key: status %q, want it cleared", m.status)
+	}
+	m.status = "something else"
+	m, _ = update(m, press("x"))
+	if m.status != "something else" {
+		t.Errorf("a key cleared another status: %q", m.status)
+	}
+}
+
 // SWI-32: a failed redraw request closes the terminal as a failed SendData does.
 func TestCtrlLRepaintErrorClosesTheTerminal(t *testing.T) {
 	clock(t)

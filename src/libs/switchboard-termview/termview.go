@@ -209,8 +209,9 @@ func (s *Screen) filterOSC(p []byte) []byte {
 }
 
 // Reset clears the screen, resets the cursor to the origin, and drops any
-// pending SGR state. Called on reattach before replaying the daemon snapshot
-// so a stale prior frame does not bleed into the new one.
+// pending SGR state, so a stale prior frame does not bleed into the next one.
+// The cursor's visibility stays: DECTCEM is the app's mode, not the view's
+// contents, and a redraw need not hide the cursor again (SWI-32).
 func (s *Screen) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,7 +219,6 @@ func (s *Screen) Reset() {
 	s.cx, s.cy = 0, 0
 	s.sx, s.sy = 0, 0
 	s.pen = cellbuf.Style{}
-	s.cursorHidden = false
 	s.scroll = nil
 	s.viewOffset = 0
 	// A reset may follow dropped bytes (the daemon's screen): forget any

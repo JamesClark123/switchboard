@@ -58,6 +58,8 @@ type Broadcaster struct {
 
 	cols, rows uint16    // the PTY size last set (0 until something sizes it)
 	lastNudge  time.Time // the last repaint nudge (debounce, screen.go)
+	nudging    bool      // a nudge is in flight (startNudgeLocked)
+	nudgeAgain bool      // a client's reset arrived during it: nudge once more
 
 	scr      atomic.Pointer[screen] // the agent screen; nil when none
 	done     chan struct{}          // closed when the session ends (stops the parser)
@@ -188,10 +190,10 @@ func (c *Conn) Resize(cols, rows uint16) {
 
 // Repaint nudges the agent to redraw for a client that just reset its view
 // (SWI-32, ctrl+l). It is not debounced: a reset dropped because a worker or
-// stale-screen nudge came first would leave that client's view blank. Only a
-// request while a nudge is still in flight is folded into it, which redraws
-// the agent anyway; the client throttles repeat presses as well. It reports
-// whether a nudge was issued (not on a closed or unsized session).
+// stale-screen nudge came first would leave that client's view blank. A request
+// while a nudge is in flight gets one more nudge after it (nudgeLocked), and the
+// client throttles repeat presses as well. It reports whether a nudge was issued
+// or queued (not on a closed or unsized session).
 func (c *Conn) Repaint() bool {
 	c.b.mu.Lock()
 	defer c.b.mu.Unlock()
