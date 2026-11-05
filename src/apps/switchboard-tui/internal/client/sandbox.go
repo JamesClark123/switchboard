@@ -217,6 +217,8 @@ func (c *Conn) ResolveWorkspace(ctx context.Context, path string) (*pb.ResolveWo
 type TermSession interface {
 	SendData(p []byte) error
 	SendResize(cols, rows uint32) error
+	// SendRepaint asks the daemon to make the agent redraw (SWI-32, ctrl+l).
+	SendRepaint() error
 	Close() error
 }
 

@@ -186,6 +186,17 @@ func (c *Conn) Resize(cols, rows uint16) {
 	c.b.mu.Unlock()
 }
 
+// Repaint nudges the agent to redraw for a client that just reset its view
+// (SWI-32, ctrl+l). It is not debounced: a reset dropped because a worker or
+// stale-screen nudge came first would leave that client's view blank. The
+// client throttles repeat presses instead. It reports whether a nudge was
+// issued (not on a closed or unsized session).
+func (c *Conn) Repaint() bool {
+	c.b.mu.Lock()
+	defer c.b.mu.Unlock()
+	return c.b.nudgeLocked(true)
+}
+
 // Close detaches this client. The session and PTY keep running (FR-002/004).
 func (c *Conn) Close() { c.b.detach(c.id) }
 

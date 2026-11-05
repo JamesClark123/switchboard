@@ -179,7 +179,7 @@ func (b *Broadcaster) enableScreenLocked() {
 	sc := newScreen(b.cols, b.rows)
 	b.scr.Store(sc)
 	go sc.parse(b.done)
-	b.nudgeLocked()
+	b.nudgeLocked(false)
 }
 
 // Screen returns a copy of the agent screen's live rows and whether the screen
@@ -203,18 +203,20 @@ func (b *Broadcaster) HasScreen() bool { return b.scr.Load() != nil }
 func (b *Broadcaster) RequestRepaint() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.nudgeLocked()
+	return b.nudgeLocked(false)
 }
 
-// nudgeLocked issues a debounced repaint nudge. Caller holds mu. The resize
-// back runs after nudgeGap on its own goroutine, to the size current then (a
-// client may have resized meanwhile), and counts the nudge for the stale flag.
-func (b *Broadcaster) nudgeLocked() bool {
+// nudgeLocked issues a repaint nudge, debounced to one per repaintEvery unless
+// force is set. Caller holds mu. The resize back runs after nudgeGap on its own
+// goroutine, to the size current then (a client may have resized meanwhile),
+// and counts the nudge for the stale flag. Overlapping nudges are safe for the
+// same reason: every restore resizes back to the full size current then.
+func (b *Broadcaster) nudgeLocked(force bool) bool {
 	if b.closed || b.cols == 0 || b.rows < 2 {
 		return false
 	}
 	now := time.Now()
-	if !b.lastNudge.IsZero() && now.Sub(b.lastNudge) < repaintEvery {
+	if !force && !b.lastNudge.IsZero() && now.Sub(b.lastNudge) < repaintEvery {
 		return false
 	}
 	b.lastNudge = now

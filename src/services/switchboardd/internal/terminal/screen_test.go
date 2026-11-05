@@ -458,3 +458,96 @@ func TestResizeMarksTheScreenStale(t *testing.T) {
 		t.Fatal("the resize's repaint should clear the flag once it settled")
 	}
 }
+
+// SWI-32: a client's reset (Conn.Repaint) nudges inside the debounce window,
+// where RequestRepaint is refused, so a reset right after a worker or
+// stale-screen nudge never leaves the view blank.
+func TestRepaintForcedInsideDebounce(t *testing.T) {
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true) // the enabling nudge counts
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if b.RequestRepaint() {
+		t.Fatal("a second nudge within repaintEvery should be refused")
+	}
+	n := len(resizesOf(p))
+	if !c.Repaint() {
+		t.Fatal("a client's reset should nudge inside the debounce window")
+	}
+	if got := resizesOf(p); len(got) <= n || got[len(got)-1] != [2]uint16{100, 29} {
+		t.Fatalf("reset did not shrink the PTY by one row: %v", got)
+	}
+	// The forced nudge still counts for the debounce of the lazy path.
+	if b.RequestRepaint() {
+		t.Fatal("a lazy nudge right after a reset should be refused")
+	}
+}
+
+// SWI-32: overlapping nudges end at the full size, because every restore
+// resizes back to the size current then, and each counts.
+func TestOverlappingNudgesRestoreTheFullSize(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 20 * time.Millisecond
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Settled: the attach's size change counted, and the enabling nudge restored.
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() >= 2 })
+	before := b.scr.Load().nudges.Load()
+	n := len(resizesOf(p))
+	for i := 0; i < 2; i++ {
+		if !c.Repaint() {
+			t.Fatalf("reset %d of two in a row refused", i+1)
+		}
+	}
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() == before+2 })
+	got := resizesOf(p)[n:]
+	if len(got) != 4 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{100, 29} ||
+		got[2] != [2]uint16{100, 30} || got[3] != [2]uint16{100, 30} {
+		t.Fatalf("resizes = %v, want two shrinks then two restores to 100x30", got)
+	}
+	// A client that resized meanwhile is restored to its new size, not the old.
+	n = len(resizesOf(p))
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	c.Resize(90, 20)
+	waitFor(t, func() bool { return len(resizesOf(p)) >= n+3 })
+	got = resizesOf(p)[n:]
+	if len(got) != 3 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{90, 20} || got[2] != [2]uint16{90, 20} {
+		t.Fatalf("resizes = %v, want the shrink, the client's resize, then the restore at 90x20", got)
+	}
+}
+
+// SWI-32: a reset on an unsized or closed session nudges nothing.
+func TestRepaintSkipsClosedOrUnsized(t *testing.T) {
+	p := newFakePTY()
+	b := New(p, 0, nil)
+	c, err := b.Attach(KindInTUI, 0, 0) // leaves the PTY unsized
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Repaint() || len(resizesOf(p)) != 0 {
+		t.Fatalf("an unsized session was nudged: %v", resizesOf(p))
+	}
+	one, err := b.Attach(KindInTUI, 80, 1) // sized, but too short to shrink
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Repaint() {
+		t.Fatal("a one-row PTY cannot be nudged")
+	}
+	_ = b.Close()
+	if c.Repaint() {
+		t.Fatal("a closed session should not be nudged")
+	}
+}

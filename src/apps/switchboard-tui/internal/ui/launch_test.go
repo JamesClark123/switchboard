@@ -40,9 +40,12 @@ type fakeDaemon struct {
 	vscodeErr      error
 	// SWI-24: vscodePath overrides the workspace path VSCodeTarget returns;
 	// vscodeCalls counts the calls; resizes counts SendResize on sessions.
-	vscodePath   string
-	vscodeCalls  int
-	resizes      int
+	vscodePath  string
+	vscodeCalls int
+	resizes     int
+	// SWI-32: repaints counts SendRepaint on sessions; repaintErr fails them.
+	repaints     int
+	repaintErr   error
 	attachRows   uint32 // the rows of the last attach
 	daemonVer    string
 	updateErr    error
@@ -373,6 +376,19 @@ func (s *fakeTermSession) SendResize(uint32, uint32) error {
 		s.d.mu.Lock()
 		s.d.resizes++
 		s.d.mu.Unlock()
+	}
+	return nil
+}
+
+// SendRepaint counts the redraw requests (SWI-32) and fails with repaintErr.
+func (s *fakeTermSession) SendRepaint() error {
+	if s.d != nil {
+		s.d.mu.Lock()
+		s.d.repaints++
+		s.d.mu.Unlock()
+		if s.d.repaintErr != nil {
+			return s.d.repaintErr
+		}
 	}
 	return nil
 }

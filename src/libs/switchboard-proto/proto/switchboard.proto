@@ -1137,6 +1137,12 @@ message AgentInput {
     // an orphan is refused with the agent's last state.
     bool replace_orphan = 4;
   }
+
+  // repaint asks the daemon to make the agent redraw its whole frame (SWI-32):
+  // the PTY is resized one row smaller and back, so the agent sees a size
+  // change. The in-TUI terminal sends it with ctrl+l after clearing its own
+  // view. It is not debounced; the client throttles presses.
+  bool repaint = 5;
 }
 
 // AgentOutput is either a one-shot Snapshot (first frame on attach) or a live

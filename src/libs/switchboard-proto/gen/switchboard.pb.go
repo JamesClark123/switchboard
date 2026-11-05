@@ -5559,7 +5559,12 @@ type AgentInput struct {
 	Resize    *AgentInput_Resize     `protobuf:"bytes,3,opt,name=resize,proto3" json:"resize,omitempty"`
 	// attach is set only on the FIRST frame (feature 003). It declares the client
 	// kind so the daemon can enforce one-EXTERNAL-per-sandbox and count attachments.
-	Attach        *AgentInput_AttachInfo `protobuf:"bytes,4,opt,name=attach,proto3" json:"attach,omitempty"`
+	Attach *AgentInput_AttachInfo `protobuf:"bytes,4,opt,name=attach,proto3" json:"attach,omitempty"`
+	// repaint asks the daemon to make the agent redraw its whole frame (SWI-32):
+	// the PTY is resized one row smaller and back, so the agent sees a size
+	// change. The in-TUI terminal sends it with ctrl+l after clearing its own
+	// view. It is not debounced; the client throttles presses.
+	Repaint       bool `protobuf:"varint,5,opt,name=repaint,proto3" json:"repaint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5620,6 +5625,13 @@ func (x *AgentInput) GetAttach() *AgentInput_AttachInfo {
 		return x.Attach
 	}
 	return nil
+}
+
+func (x *AgentInput) GetRepaint() bool {
+	if x != nil {
+		return x.Repaint
+	}
+	return false
 }
 
 // AgentOutput is either a one-shot Snapshot (first frame on attach) or a live
@@ -15356,14 +15368,15 @@ const file_switchboard_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"1\n" +
 	"\x13PromptAgentResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xba\x03\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xd4\x03\n" +
 	"\n" +
 	"AgentInput\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x129\n" +
 	"\x06resize\x18\x03 \x01(\v2!.switchboard.v1.AgentInput.ResizeR\x06resize\x12=\n" +
-	"\x06attach\x18\x04 \x01(\v2%.switchboard.v1.AgentInput.AttachInfoR\x06attach\x1a0\n" +
+	"\x06attach\x18\x04 \x01(\v2%.switchboard.v1.AgentInput.AttachInfoR\x06attach\x12\x18\n" +
+	"\arepaint\x18\x05 \x01(\bR\arepaint\x1a0\n" +
 	"\x06Resize\x12\x12\n" +
 	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\x1a\xcc\x01\n" +
