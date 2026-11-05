@@ -471,6 +471,9 @@ func TestRepaintForcedInsideDebounce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	// The enabling nudge restored (its timer can't land in the checks below)
+	// but is well inside repaintEvery.
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() >= 2 })
 	if b.RequestRepaint() {
 		t.Fatal("a second nudge within repaintEvery should be refused")
 	}
@@ -478,7 +481,7 @@ func TestRepaintForcedInsideDebounce(t *testing.T) {
 	if !c.Repaint() {
 		t.Fatal("a client's reset should nudge inside the debounce window")
 	}
-	if got := resizesOf(p); len(got) <= n || got[len(got)-1] != [2]uint16{100, 29} {
+	if got := resizesOf(p); len(got) <= n || got[n] != [2]uint16{100, 29} {
 		t.Fatalf("reset did not shrink the PTY by one row: %v", got)
 	}
 	// The forced nudge still counts for the debounce of the lazy path.
@@ -506,16 +509,30 @@ func TestOverlappingNudgesRestoreTheFullSize(t *testing.T) {
 	waitFor(t, func() bool { return b.scr.Load().nudges.Load() >= 2 })
 	before := b.scr.Load().nudges.Load()
 	n := len(resizesOf(p))
-	for i := 0; i < 2; i++ {
-		if !c.Repaint() {
-			t.Fatalf("reset %d of two in a row refused", i+1)
-		}
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	// A request while that nudge is in flight is folded into it: no second
+	// shrink, so a flood of requests never resizes faster than the gap.
+	if c.Repaint() {
+		t.Fatal("a reset inside nudgeGap should fold into the nudge in flight")
+	}
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() == before+1 })
+	got := resizesOf(p)[n:]
+	if len(got) != 2 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{100, 30} {
+		t.Fatalf("resizes = %v, want one shrink then one restore to 100x30", got)
+	}
+	// After the gap a reset nudges again, inside repaintEvery (debounce is 0
+	// here, so make it long to prove the forced path).
+	repaintEvery = time.Hour
+	n = len(resizesOf(p))
+	if !c.Repaint() {
+		t.Fatal("a reset after the gap refused")
 	}
 	waitFor(t, func() bool { return b.scr.Load().nudges.Load() == before+2 })
-	got := resizesOf(p)[n:]
-	if len(got) != 4 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{100, 29} ||
-		got[2] != [2]uint16{100, 30} || got[3] != [2]uint16{100, 30} {
-		t.Fatalf("resizes = %v, want two shrinks then two restores to 100x30", got)
+	got = resizesOf(p)[n:]
+	if len(got) != 2 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{100, 30} {
+		t.Fatalf("resizes = %v, want a shrink then a restore to 100x30", got)
 	}
 	// A client that resized meanwhile is restored to its new size, not the old.
 	n = len(resizesOf(p))

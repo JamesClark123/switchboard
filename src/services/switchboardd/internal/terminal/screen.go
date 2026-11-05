@@ -207,19 +207,24 @@ func (b *Broadcaster) RequestRepaint() bool {
 }
 
 // nudgeLocked issues a repaint nudge, debounced to one per repaintEvery unless
-// force is set. Caller holds mu. The resize back runs after nudgeGap on its own
-// goroutine, to the size current then (a client may have resized meanwhile),
-// and counts the nudge for the stale flag. Overlapping nudges are safe for the
-// same reason: every restore resizes back to the full size current then. The
-// screen reads stale from the shrink until the repaint after the restore
-// settles: what the agent draws for the smaller size is not its frame.
+// force is set. A forced nudge is only folded into one still in flight (within
+// nudgeGap of the last): its restore redraws the agent just the same, so a
+// client flooding requests cannot resize the PTY faster than the gap. Caller
+// holds mu. The resize back runs after nudgeGap on its own goroutine, to the
+// size current then (a client may have resized meanwhile), and counts the
+// nudge for the stale flag. Overlapping nudges are safe for the same reason:
+// every restore resizes back to the full size current then. The screen reads
+// stale from the shrink until the repaint after the restore settles: what the
+// agent draws for the smaller size is not its frame.
 func (b *Broadcaster) nudgeLocked(force bool) bool {
 	if b.closed || b.cols == 0 || b.rows < 2 {
 		return false
 	}
 	now := time.Now()
-	if !force && !b.lastNudge.IsZero() && now.Sub(b.lastNudge) < repaintEvery {
-		return false
+	if !b.lastNudge.IsZero() {
+		if since := now.Sub(b.lastNudge); since < nudgeGap || (!force && since < repaintEvery) {
+			return false
+		}
 	}
 	b.lastNudge = now
 	if sc := b.scr.Load(); sc != nil {
