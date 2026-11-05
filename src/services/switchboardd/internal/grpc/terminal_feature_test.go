@@ -257,3 +257,48 @@ func waitForBytes(t *testing.T, st pb.Switchboard_AttachAgentClient, sub string)
 	}
 	t.Fatalf("did not observe %q in output", sub)
 }
+
+// TestRepaintResizesThePTYDownAndBack proves an AgentInput with repaint set
+// makes the daemon nudge the agent: the PTY is resized one row smaller and
+// then back to the client's size (SWI-32).
+func TestRepaintResizesThePTYDownAndBack(t *testing.T) {
+	client, _, book := startServerWithSessions(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testWaitTimeout)
+	defer cancel()
+
+	st, err := client.AttachAgent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Send(&pb.AgentInput{
+		SandboxId: "sb1",
+		Attach:    &pb.AgentInput_AttachInfo{Kind: pb.ClientKind_CLIENT_KIND_IN_TUI, InitialSize: &pb.AgentInput_Resize{Cols: 80, Rows: 24}},
+		Data:      []byte("ready"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForBytes(t, st, "ready") // the session exists and is sized
+	sess := book.get("sb1")
+	if sess == nil {
+		t.Fatal("no session spawned for sb1")
+	}
+	n := len(sess.resizesOf())
+	// The redraw request and the forwarded key share one frame: the resize
+	// precedes the key.
+	if err := st.Send(&pb.AgentInput{Repaint: true, Data: []byte{0x0c}}); err != nil {
+		t.Fatal(err)
+	}
+	waitForBytes(t, st, "\x0c")
+	deadline := time.Now().Add(testWaitTimeout)
+	var got [][2]uint16
+	for {
+		got = sess.resizesOf()[n:]
+		if len(got) >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 2 || got[0] != [2]uint16{80, 23} || got[1] != [2]uint16{80, 24} {
+		t.Fatalf("resizes after repaint = %v, want [80 23] then [80 24]", got)
+	}
+}

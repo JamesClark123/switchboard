@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,7 +34,19 @@ type termState struct {
 	// likely meant as "back", but it would interrupt the worker's agent, so
 	// the first one is held and explained instead (SWI-14).
 	escHeld bool
+	// lastReset is when ctrl+l last reset the view (SWI-32): presses within
+	// termResetEvery of it are ignored, so a held key never floods the PTY
+	// with resizes (the daemon does not debounce a client's redraw request).
+	lastReset time.Time
 }
+
+// termResetEvery is the least time between two ctrl+l resets of the in-TUI
+// terminal (SWI-32); tests step nowFunc across it.
+const termResetEvery = time.Second
+
+// termResetText is the status after ctrl+l reset the terminal view; the next
+// other key clears it.
+const termResetText = "terminal reset"
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
 // so it re-renders. The signal is best-effort (buffered, non-blocking): a full
@@ -312,8 +325,26 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.status == escHoldHint {
-		m.status = "" // the held esc is resolved: this key is sent (or ignored)
+	if m.status == escHoldHint || (m.status == termResetText && msg.Type != tea.KeyCtrlL) {
+		m.status = "" // the held esc is resolved or the reset is over: this key is sent (or ignored)
+	}
+	if msg.Type == tea.KeyCtrlL {
+		// Reset the view (SWI-32): blank the local screen, ask the daemon to
+		// make the agent redraw, then forward the key as usual, so a plain
+		// shell clears and reprints its prompt. Repeat presses inside
+		// termResetEvery do none of the three.
+		now := nowFunc()
+		if !m.term.lastReset.IsZero() && now.Sub(m.term.lastReset) < termResetEvery {
+			return m, nil
+		}
+		m.term.lastReset = now
+		if m.term.screen != nil {
+			m.term.screen.Reset()
+		}
+		if err := m.term.session.SendRepaint(); err != nil {
+			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name, returnTo: m.term.returnTo, seq: m.term.seq})
+		}
+		m.status = termResetText
 	}
 	if b := keyToBytes(msg); len(b) > 0 {
 		// Typing snaps the view back to the live output so the user sees what
@@ -347,6 +378,7 @@ func (m Model) updateTerminalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m Model) terminalHelp() helpBindings {
 	return helpBindings{
 		hkey("ctrl+q", "detach"),
+		hkey("ctrl+l", "reset view"),
 	}
 }
 
@@ -363,7 +395,11 @@ func (m Model) viewTerminal() string {
 	if off := m.term.screen.ScrollOffset(); off > 0 {
 		header += dimStyle.Render("   ⇡ scrolled " + strconv.Itoa(off) + " (type to follow)")
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.term.screen.Render())
+	// The reset hint last (SWI-32): the scroll state matters more when a
+	// narrow terminal cuts the end. Cut to the width, or a wider header would
+	// pad every line past it.
+	header += dimStyle.Render(" · ctrl+l reset view")
+	return lipgloss.JoinVertical(lipgloss.Left, m.fitLine(header), "", m.term.screen.Render())
 }
 
 // keyToBytes translates a Bubble Tea key event into the raw bytes a PTY expects.
