@@ -588,6 +588,81 @@ func TestResetDuringANudgeGetsOneMore(t *testing.T) {
 	}
 }
 
+// timedPTY records when each resize reached the PTY.
+type timedPTY struct {
+	*fakePTY
+	at []time.Time // guarded by fakePTY.mu
+}
+
+func (p *timedPTY) Resize(cols, rows uint16) error {
+	p.mu.Lock()
+	p.at = append(p.at, time.Now())
+	p.mu.Unlock()
+	return p.fakePTY.Resize(cols, rows)
+}
+
+// SWI-32: a queued nudge's shrink waits a full gap after the restore before it.
+// Claude Code drew nothing on a shrink sent straight after a restore, so without
+// the wait a reset in flight can still leave the view blank.
+func TestQueuedNudgeWaitsOutTheGap(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 20 * time.Millisecond
+	p := &timedPTY{fakePTY: newFakePTY()}
+	b := New(p, 0, nil)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n := len(resizesOf(p.fakePTY))
+	for range 2 { // the first starts a nudge, the second queues one
+		if !c.Repaint() {
+			t.Fatal("reset refused")
+		}
+	}
+	waitNoNudge(t, b)
+	got := resizesOf(p.fakePTY)[n:]
+	small, full := [2]uint16{100, 29}, [2]uint16{100, 30}
+	if len(got) != 4 || got[0] != small || got[1] != full || got[2] != small || got[3] != full {
+		t.Fatalf("resizes = %v, want two shrink-restore pairs", got)
+	}
+	p.mu.Lock()
+	wait := p.at[n+2].Sub(p.at[n+1])
+	p.mu.Unlock()
+	if wait < nudgeGap {
+		t.Fatalf("the queued shrink came %v after the restore, want at least %v", wait, nudgeGap)
+	}
+}
+
+// SWI-32: closing the session drops a queued nudge, so nothing resizes the closed
+// PTY. The test closes between the restore and the queued shrink. A poll late by
+// a whole gap closes after that shrink instead, and passes without testing this.
+func TestCloseDropsAQueuedNudge(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 50 * time.Millisecond
+	p := newFakePTY()
+	b := New(p, 0, nil)
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n := len(resizesOf(p))
+	for range 2 {
+		if !c.Repaint() {
+			t.Fatal("reset refused")
+		}
+	}
+	waitFor(t, func() bool { return len(resizesOf(p)) >= n+2 }) // the restore
+	_ = b.Close()
+	n = len(resizesOf(p))
+	time.Sleep(2 * nudgeGap) // past when the queued shrink was due
+	if got := resizesOf(p)[n:]; len(got) != 0 {
+		t.Fatalf("resizes after close = %v, want none", got)
+	}
+}
+
 // SWI-32: the restore lands at the size current then.
 func TestNudgeRestoresTheSizeCurrentThen(t *testing.T) {
 	fastNudges(t)
