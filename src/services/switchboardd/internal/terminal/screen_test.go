@@ -767,13 +767,18 @@ func TestNudgeOfASilentAgentLeavesAFreshScreenFresh(t *testing.T) {
 	fastNudges(t)
 	p := newFakePTY()
 	b, c := freshScreen(t, p)
+	repaintSettle = time.Hour
 	if !c.Repaint() {
 		t.Fatal("reset refused")
 	}
 	if _, stale := b.Screen(); !stale {
 		t.Fatal("a nudge must mark the screen stale")
 	}
-	waitFor(t, func() bool { _, stale := b.Screen(); return !stale })
+	waitNoNudge(t, b)
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("a nudge the agent ignored should leave the screen fresh")
+	}
 }
 
 // SWI-32: with no frame on the screen a silent agent proves nothing, so the
