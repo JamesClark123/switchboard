@@ -831,6 +831,21 @@ func TestNudgeRestoreSettlesOverAChunkFromTheShrink(t *testing.T) {
 	}
 }
 
+// SWI-32: a repaint still settling at the shrink has drawn the frame, so a nudge
+// the agent ignores doesn't lose it (ctrl+l right after a resize's repaint).
+func TestNudgeKeepsARepaintStillSettling(t *testing.T) {
+	saved := repaintSettle
+	repaintSettle = 0
+	t.Cleanup(func() { repaintSettle = saved })
+	sc := newScreen(100, 30)
+	sc.repaintAt = time.Now().Add(time.Hour) // stale, and not settled for now
+	sc.nudgeShrinks()
+	sc.nudgeRestored()
+	if sc.isStale() {
+		t.Fatal("the nudge lost a repaint that was settling")
+	}
+}
+
 // SWI-32: a drop or a client's resize during a nudge voids what the nudge saw.
 // The bytes parsed since may be a partial frame, or one for the old size, so the
 // restore alone must not read fresh.
