@@ -210,7 +210,9 @@ func (b *Broadcaster) RequestRepaint() bool {
 // force is set. Caller holds mu. The resize back runs after nudgeGap on its own
 // goroutine, to the size current then (a client may have resized meanwhile),
 // and counts the nudge for the stale flag. Overlapping nudges are safe for the
-// same reason: every restore resizes back to the full size current then.
+// same reason: every restore resizes back to the full size current then. The
+// screen reads stale from the shrink until the repaint after the restore
+// settles: what the agent draws for the smaller size is not its frame.
 func (b *Broadcaster) nudgeLocked(force bool) bool {
 	if b.closed || b.cols == 0 || b.rows < 2 {
 		return false
@@ -220,6 +222,9 @@ func (b *Broadcaster) nudgeLocked(force bool) bool {
 		return false
 	}
 	b.lastNudge = now
+	if sc := b.scr.Load(); sc != nil {
+		sc.markStale()
+	}
 	_ = b.pty.Resize(b.cols, b.rows-1)
 	time.AfterFunc(nudgeGap, func() {
 		b.mu.Lock()

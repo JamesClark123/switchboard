@@ -5560,10 +5560,10 @@ type AgentInput struct {
 	// attach is set only on the FIRST frame (feature 003). It declares the client
 	// kind so the daemon can enforce one-EXTERNAL-per-sandbox and count attachments.
 	Attach *AgentInput_AttachInfo `protobuf:"bytes,4,opt,name=attach,proto3" json:"attach,omitempty"`
-	// repaint asks the daemon to make the agent redraw its whole frame (SWI-32):
-	// the PTY is resized one row smaller and back, so the agent sees a size
-	// change. The in-TUI terminal sends it with ctrl+l after clearing its own
-	// view. It is not debounced; the client throttles presses.
+	// repaint asks the daemon to make the agent redraw its whole frame (SWI-32).
+	// The in-TUI terminal sends it with ctrl+l after clearing its own view. How
+	// the daemon prompts the redraw is its own business; it does not debounce
+	// the request, so the client throttles presses.
 	Repaint       bool `protobuf:"varint,5,opt,name=repaint,proto3" json:"repaint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

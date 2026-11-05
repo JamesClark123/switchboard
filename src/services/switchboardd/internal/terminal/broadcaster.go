@@ -194,6 +194,9 @@ func (c *Conn) Resize(cols, rows uint16) {
 func (c *Conn) Repaint() bool {
 	c.b.mu.Lock()
 	defer c.b.mu.Unlock()
+	if _, ok := c.b.subs[c.id]; !ok {
+		return false // detached: no say over the shared PTY any more
+	}
 	return c.b.nudgeLocked(true)
 }
 

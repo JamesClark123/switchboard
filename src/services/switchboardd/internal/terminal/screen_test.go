@@ -491,7 +491,9 @@ func TestRepaintForcedInsideDebounce(t *testing.T) {
 // resizes back to the size current then, and each counts.
 func TestOverlappingNudgesRestoreTheFullSize(t *testing.T) {
 	fastNudges(t)
+	gap := nudgeGap
 	nudgeGap = 20 * time.Millisecond
+	t.Cleanup(func() { nudgeGap = gap })
 	p := newFakePTY()
 	b := newBroadcaster(p, 0, nil, true)
 	defer func() { _ = b.Close() }()
@@ -546,8 +548,65 @@ func TestRepaintSkipsClosedOrUnsized(t *testing.T) {
 	if one.Repaint() {
 		t.Fatal("a one-row PTY cannot be nudged")
 	}
+	sized, err := b.Attach(KindInTUI, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized.Close() // detached: no say over the shared PTY any more
+	if n := len(resizesOf(p)); sized.Repaint() || len(resizesOf(p)) != n {
+		t.Fatal("a detached client should not nudge")
+	}
 	_ = b.Close()
 	if c.Repaint() {
 		t.Fatal("a closed session should not be nudged")
+	}
+}
+
+// SWI-32: a nudge marks the agent screen stale from the shrink until the
+// repaint after the restore settles, like a client's resize does, so a step
+// check never reads the frame drawn for the smaller size as fresh.
+func TestNudgeMarksTheScreenStale(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() >= 2 })
+	waitFor(t, func() bool {
+		p.feed([]byte("x"))
+		time.Sleep(5 * time.Millisecond)
+		_, stale := b.Screen()
+		return !stale
+	})
+
+	repaintSettle = time.Hour
+	before := b.scr.Load().nudges.Load()
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a nudge must mark the screen stale")
+	}
+	// Output before the restore is the frame for the smaller size: still stale.
+	p.feed([]byte("\x1b[H\x1b[2Jsmall"))
+	time.Sleep(5 * time.Millisecond)
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("output before the restore must not read fresh")
+	}
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() > before })
+	p.feed([]byte("\x1b[H\x1b[2Jrepaint"))
+	waitFor(t, func() bool {
+		sc := b.scr.Load()
+		sc.flagMu.Lock()
+		defer sc.flagMu.Unlock()
+		return !sc.repaintAt.IsZero()
+	})
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("the repaint after the restore should clear the flag once it settled")
 	}
 }

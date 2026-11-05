@@ -8,7 +8,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
@@ -42,8 +41,8 @@ type termState struct {
 }
 
 // termResetEvery is the least time between two ctrl+l resets of the in-TUI
-// terminal (SWI-32). A variable so tests can shorten it.
-var termResetEvery = time.Second
+// terminal (SWI-32); tests step nowFunc across it.
+const termResetEvery = time.Second
 
 // termResetText is the status after ctrl+l reset the terminal view.
 const termResetText = "terminal reset"
@@ -391,14 +390,15 @@ func (m Model) viewTerminal() string {
 		// The way back first: a narrow terminal cuts the header's end.
 		detach = "   ctrl+q back to Jobs · keys go to the agent (esc interrupts it)"
 	}
-	detach += " · ctrl+l reset view"
 	header := sectionStyle.Render("Terminal ") + dimStyle.Render(m.term.name) + dimStyle.Render(detach)
 	if off := m.term.screen.ScrollOffset(); off > 0 {
 		header += dimStyle.Render("   ⇡ scrolled " + strconv.Itoa(off) + " (type to follow)")
 	}
-	// Cut to the width: a wider header would pad every line past it (SWI-32).
-	header = ansi.Truncate(header, m.bodyWidth(), "…")
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.term.screen.Render())
+	// The reset hint last (SWI-32): the scroll state matters more when a
+	// narrow terminal cuts the end. Cut to the width, or a wider header would
+	// pad every line past it.
+	header += dimStyle.Render(" · ctrl+l reset view")
+	return lipgloss.JoinVertical(lipgloss.Left, m.fitLine(header), "", m.term.screen.Render())
 }
 
 // keyToBytes translates a Bubble Tea key event into the raw bytes a PTY expects.
