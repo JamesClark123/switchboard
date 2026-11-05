@@ -240,6 +240,25 @@ func TestStatusTerminalLimit(t *testing.T) {
 	}
 }
 
+// TestStatusDetachedPickOverInbox: the start-up notice's picker floats over the
+// inbox (SWI-25 A2), so a long status takes its lines from the inbox list and
+// the frame stays on screen.
+func TestStatusDetachedPickOverInbox(t *testing.T) {
+	m := listAt80x24(t, &fakeDaemon{})
+	out, _ := m.enterNotifications()
+	m = out.(Model)
+	m.detachedPick = detachedPickState{n: &pb.NotificationEvent{}, choices: []detachedOrch{{id: "o", name: "a", count: 1}}}
+	m.screen = screenDetachedPick
+	if got := m.activeSurface(); got != (activeSurface{kind: surfaceItemList, which: ilNotifications}) {
+		t.Errorf("surface = %+v, want the inbox list", got)
+	}
+	m = setStatus(m, strings.Repeat("a message about the editor that goes on ", 8))
+	if m.notifyList.Height() != m.bodyHeight() {
+		t.Errorf("inbox list height = %d, want the body's %d", m.notifyList.Height(), m.bodyHeight())
+	}
+	assertFits(t, m, 80, 24)
+}
+
 // TestActiveHelpMatchesRender: every screen's activeHelp() is what its render
 // passes to chrome.
 func TestActiveHelpMatchesRender(t *testing.T) {
@@ -277,6 +296,10 @@ func TestActiveHelpMatchesRender(t *testing.T) {
 	check("jobs", jm)
 	c, _ := m.enterConfirm(confirmState{title: "x", onConfirm: func() tea.Msg { return nil }})
 	check("confirm", c.(Model))
+	pick := m
+	pick.detachedPick = detachedPickState{n: &pb.NotificationEvent{}, choices: []detachedOrch{{id: "o", name: "a", count: 1}}}
+	pick.screen = screenDetachedPick
+	check("detached pick", pick)
 	tm, cmd := update(runningSbx(d), press("t"))
 	tm, _ = update(tm, runCmd(cmd))
 	check("terminal", tm)

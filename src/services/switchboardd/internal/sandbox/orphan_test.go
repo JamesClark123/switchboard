@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
@@ -249,6 +250,20 @@ func (f *fakeNotes) EmitNotification(id string, kind pb.NotificationKind, msg st
 	return nil
 }
 
+// EmitHostNotification records a host-level notice as "* <kind> <msg> [ids]"
+// (ids sorted: probes end in any order).
+func (f *fakeNotes) EmitHostNotification(kind pb.NotificationKind, msg string, affected []*pb.NotificationEvent_AffectedSandbox, _ time.Time) *pb.NotificationEvent {
+	ids := make([]string, 0, len(affected))
+	for _, a := range affected {
+		ids = append(ids, a.GetSandboxId())
+	}
+	slices.Sort(ids)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.msgs = append(f.msgs, fmt.Sprintf("* %s %s %v", kind, msg, ids))
+	return nil
+}
+
 func (f *fakeNotes) n() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -482,14 +497,16 @@ func TestOrphansAtStart(t *testing.T) {
 	if g.GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED || len(e.tokens.Unretired("gone")) != 0 || !e.wasCleared("gone") {
 		t.Error("a gone agent is EXITED, its token retired, and the worker re-kicked")
 	}
-	// One notification per orphan record, never per re-probe.
-	if e.notes.n() != 2 {
+	// The two orphans the start-up check found are notified once, together
+	// (SWI-25 A2), never per re-probe.
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.Contains(e.notes.msgs[0], "* NOTIFICATION_KIND_AGENTS_DETACHED_AT_START 2 agents detached by a daemon restart — enter to review [cleanup orphan]") {
 		t.Errorf("notifications %v", e.notes.msgs)
 	}
 	before := e.run.count("probe")
 	e.m.RecheckOrphan("orphan")
 	waitUntil(t, func() bool { return e.run.count("probe") == before+1 && !e.probing("orphan") })
-	if e.notes.n() != 2 {
+	if e.notes.n() != 1 {
 		t.Error("a re-probe re-notified")
 	}
 }
@@ -692,14 +709,14 @@ func TestRuntimeLockOrdersOperations(t *testing.T) {
 			if _, err := e.m.Admit(id); !errors.Is(err, agent.ErrBusy) && !errors.Is(err, agent.ErrOrphan) {
 				t.Errorf("Admit during %s = %v", name, err)
 			}
-			if rel, ok := e.m.TryLockRuntime(id); ok {
+			if rel, ok := e.m.TryLockRuntime(id, "testing"); ok {
 				rel()
 				t.Errorf("%s does not hold the runtime lock", name)
 			}
 			// Every other `sbx exec` is refused, not run, while the operation
 			// holds the lock (SWI-26 B5): the read lock of a service and an
 			// MCP load or unload.
-			if rel, ok := e.m.TryRLockRuntime(id); ok {
+			if rel, err := e.m.TryRLockRuntime(id); err == nil {
 				rel()
 				t.Errorf("a read lock was granted during %s", name)
 			}
@@ -857,7 +874,7 @@ func TestRenameIgnoresTheRuntimeLock(t *testing.T) {
 	if _, err := e.m.Stop(context.Background(), sb.GetId()); err != nil {
 		t.Fatal(err)
 	}
-	unlock, ok := e.m.TryLockRuntime(sb.GetId())
+	unlock, ok := e.m.TryLockRuntime(sb.GetId(), "testing")
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -989,7 +1006,7 @@ func TestBusyProbeRetried(t *testing.T) {
 	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
 	e.tokens.issue("s", 2)
 	e.run.setOut("s", aliveOut(2))
-	unlock, ok := e.m.TryLockRuntime("s")
+	unlock, ok := e.m.TryLockRuntime("s", "testing")
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -1022,7 +1039,7 @@ func TestReapOrphan(t *testing.T) {
 	e := newOrphanEnv(t)
 	ctx := context.Background()
 	e.put(t, "plain", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
-	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); err != nil || e.run.count("reap") != 0 {
+	if err := e.m.ReapOrphan(ctx, "plain", ReapReplace); !errors.Is(err, ErrNothingToStop) || e.run.count("reap") != 0 {
 		t.Fatalf("no orphan: %v, %d reaps", err, e.run.count("reap"))
 	}
 
@@ -1032,7 +1049,7 @@ func TestReapOrphan(t *testing.T) {
 	e.m.AgentClientExited("s", 4)
 	e.waitState(t, "s", pb.AgentCheck_STATE_DETACHED)
 
-	unlock, _ := e.m.TryLockRuntime("s")
+	unlock, _ := e.m.TryLockRuntime("s", "testing")
 	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, agent.ErrBusy) {
 		t.Errorf("busy: %v", err)
 	}
@@ -1077,7 +1094,7 @@ func TestReapOrphan(t *testing.T) {
 	if err := e.m.ReapOrphan(ctx, "down", ReapReplace); err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("stopped: %v", err)
 	}
-	if err := e.m.ReapOrphan(ctx, "missing", ReapReplace); err != nil {
+	if err := e.m.ReapOrphan(ctx, "missing", ReapReplace); !errors.Is(err, ErrNothingToStop) {
 		t.Errorf("no state: %v", err)
 	}
 	e.m.orphans.setUnknown("missing")
@@ -1161,7 +1178,7 @@ func TestReapOrphanRechecksUnderTheLock(t *testing.T) {
 	e.live.mu.Lock()
 	e.live.m["s"] = 5
 	e.live.mu.Unlock()
-	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, errLiveSession) || e.run.count("reap") != 0 {
+	if err := e.m.ReapOrphan(ctx, "s", ReapReplace); !errors.Is(err, ErrLiveSession) || e.run.count("reap") != 0 {
 		t.Errorf("reap beside a live session = %v, %d reaps", err, e.run.count("reap"))
 	}
 }
@@ -1170,8 +1187,9 @@ func TestReapOrphanRechecksUnderTheLock(t *testing.T) {
 // with replace_orphan, and DeliverWorkerStep's restart.
 func TestReapOrphanCallSites(t *testing.T) {
 	allowed := map[string]bool{
-		filepath.Join("grpc", "subscribe.go"): true,
-		filepath.Join("worker", "step.go"):    true,
+		filepath.Join("grpc", "subscribe.go"):   true,
+		filepath.Join("worker", "step.go"):      true,
+		filepath.Join("grpc", "orphan_rpcs.go"): true, // the developer's bulk Replace (SWI-25 A1)
 	}
 	root := ".."
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -1184,7 +1202,7 @@ func TestReapOrphanCallSites(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		if strings.Contains(string(b), ".ReapOrphan(") && !allowed[rel] {
-			t.Errorf("%s calls ReapOrphan; only the developer's Replace and restart may", rel)
+			t.Errorf("%s calls ReapOrphan; only the developer's Replace (single or bulk) and restart may", rel)
 		}
 		return nil
 	})
@@ -1210,5 +1228,237 @@ func TestMarkAgentUnknown(t *testing.T) {
 func TestStateWord(t *testing.T) {
 	if w := stateWord(pb.SandboxState_SANDBOX_STATE_STOPPED); w != "stopped" {
 		t.Errorf("stateWord = %q", w)
+	}
+}
+
+// With more candidates than the semaphore allows, the start-up probes run idle
+// workers first, then workers with a run, then plain sandboxes (SWI-25 A4);
+// the store lists them in the opposite order here.
+func TestOrphansAtStartProbeOrder(t *testing.T) {
+	saved := orphanProbeConcurrency
+	orphanProbeConcurrency = 1
+	t.Cleanup(func() { orphanProbeConcurrency = saved })
+	e := newOrphanEnv(t)
+	running, idle := pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE
+	e.put(t, "a-plain", running, idle, nil)
+	e.put(t, "b-run", running, idle, &pb.WorkerRun{Id: "r1"})
+	e.put(t, "c-idle", running, idle, nil)
+	if _, err := e.reg.Update("c-idle", func(s *pb.Sandbox) error {
+		s.Controller = &pb.SandboxController{OrchestratorId: "o"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a-plain", "b-run", "c-idle"} {
+		e.tokens.issue(id, 1)
+		e.run.setOut(id, goneOut)
+	}
+	e.m.PrepareOrphanCheck()(context.Background())
+	waitUntil(t, func() bool { return e.run.count("probe") == 3 })
+	var order []string
+	for _, c := range e.run.callLog() {
+		if strings.HasPrefix(c, "probe ") {
+			order = append(order, strings.TrimPrefix(c, "probe "))
+		}
+	}
+	if want := []string{"c-idle", "b-run", "a-plain"}; !slices.Equal(order, want) {
+		t.Errorf("probe order = %v, want %v", order, want)
+	}
+	for _, id := range []string{"a-plain", "b-run", "c-idle"} {
+		e.waitState(t, id, pb.AgentCheck_STATE_CLEAR)
+	}
+	if probeClass(&pb.Sandbox{}) != 2 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{Run: &pb.WorkerRun{}}}) != 1 || probeClass(&pb.Sandbox{Controller: &pb.SandboxController{}}) != 0 {
+		t.Error("probeClass")
+	}
+}
+
+// A sandbox that reaches CHECK_FAILED raises one AGENT_CHECK_FAILED
+// notification and overlays the failure on its run's step_note; the earlier
+// note comes back when the check clears (gone) or finds the agent (detached),
+// and a note changed under the overlay stands (SWI-25 A3).
+func TestCheckFailedNotifiesAndOverlaysTheNote(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "s", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r1", StepNote: "waiting: x"})
+	e.tokens.issue("s", 2)
+	e.m.AgentClientExited("s", 2) // no probe answer: every probe fails
+	e.waitState(t, "s", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.Contains(e.notes.msgs[0], "NOTIFICATION_KIND_AGENT_CHECK_FAILED can't check for a detached agent: ") ||
+		!strings.Contains(e.notes.msgs[0], "— t to Restart sandbox or Wait (run r1)") {
+		t.Fatalf("notifications %v", e.notes.msgs)
+	}
+	run := e.get(t, "s").GetController().GetRun()
+	if !strings.HasPrefix(run.GetStepNote(), "can't check for a detached agent: ") || run.GetStepNote() != swb.CheckFailedNote(e.get(t, "s").GetAgent().GetAgentCheck().GetError()) {
+		t.Fatalf("overlaid note = %q", run.GetStepNote())
+	}
+	// More failures: still one notification, the note follows the error.
+	before := e.run.count("probe")
+	e.m.RecheckOrphan("s")
+	waitUntil(t, func() bool { return e.run.count("probe") > before && !e.probing("s") })
+	if e.notes.n() != 1 {
+		t.Errorf("re-notified: %v", e.notes.msgs)
+	}
+	// The orchestrator writes a note under the overlay through the worker side
+	// (ApplyCheckNote): the failure stays, and that note is the one restored.
+	if _, err := e.reg.Update("s", func(s *pb.Sandbox) error {
+		s.Controller.Run.StepNote = "waiting: pushed"
+		e.m.ApplyCheckNote(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); !strings.HasPrefix(note, "can't check for a detached agent: ") {
+		t.Fatalf("note after a push under the overlay = %q", note)
+	}
+	// A run newly put on the sandbox carries the failure at once.
+	if _, err := e.reg.Update("s", func(s *pb.Sandbox) error {
+		s.Controller.Run = &pb.WorkerRun{Id: "r1b", StepNote: "setting up"}
+		e.m.ApplyCheckNote(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); !strings.HasPrefix(note, "can't check for a detached agent: ") {
+		t.Fatalf("note on a new run = %q", note)
+	}
+	// The check clears: the note that was under the overlay is back.
+	e.run.setOut("s", goneOut)
+	e.m.RecheckOrphan("s")
+	e.waitState(t, "s", pb.AgentCheck_STATE_CLEAR)
+	if note := e.get(t, "s").GetController().GetRun().GetStepNote(); note != "setting up" {
+		t.Errorf("restored note = %q", note)
+	}
+
+	// Found alive instead: the note is restored under the DETACHED check, and
+	// AGENT_DETACHED is raised as usual.
+	e.put(t, "a", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_WORKING, &pb.WorkerRun{Id: "r2", StepNote: "setting up"})
+	e.tokens.issue("a", 3)
+	e.m.AgentClientExited("a", 3)
+	e.waitState(t, "a", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 2 })
+	// Someone writes the note under the overlay: that is what comes back.
+	if _, err := e.reg.Update("a", func(s *pb.Sandbox) error {
+		s.Controller.Run.StepNote = "waiting: agent busy"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.run.setOut("a", aliveOut(3))
+	e.m.RecheckOrphan("a")
+	e.waitState(t, "a", pb.AgentCheck_STATE_DETACHED)
+	if note := e.get(t, "a").GetController().GetRun().GetStepNote(); note != "waiting: agent busy" {
+		t.Errorf("restored note under DETACHED = %q", note)
+	}
+	waitUntil(t, func() bool { return e.notes.n() == 3 })
+	if e.notes.n() != 3 || !strings.Contains(e.notes.msgs[2], "NOTIFICATION_KIND_AGENT_DETACHED") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+
+	// A stale check-failed note nobody overlaid (the daemon restarted with it)
+	// goes at the next write whose check isn't CHECK_FAILED; and when the check
+	// fails again it is not what comes back afterwards.
+	e.put(t, "z", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r3", StepNote: swb.CheckFailedNote("old")})
+	e.tokens.issue("z", 5)
+	e.m.MarkAgentUnknown("z")
+	waitUntil(t, func() bool { return e.get(t, "z").GetController().GetRun().GetStepNote() == "" })
+	e.put(t, "y", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, &pb.WorkerRun{Id: "r4", StepNote: swb.CheckFailedNote("old")})
+	e.tokens.issue("y", 6)
+	e.m.lists.invalidate()
+	e.m.AgentClientExited("y", 6)
+	e.waitState(t, "y", pb.AgentCheck_STATE_CHECK_FAILED)
+	e.run.setOut("y", goneOut)
+	e.m.RecheckOrphan("y")
+	e.waitState(t, "y", pb.AgentCheck_STATE_CLEAR)
+	if note := e.get(t, "y").GetController().GetRun().GetStepNote(); note != "" {
+		t.Errorf("a stale failure came back: %q", note)
+	}
+	waitUntil(t, func() bool { return e.notes.n() == 4 }) // y's own CHECK_FAILED notice
+
+	// A sandbox without a run: the notification, no note.
+	e.put(t, "p", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("p", 4)
+	e.m.AgentClientExited("p", 4)
+	e.waitState(t, "p", pb.AgentCheck_STATE_CHECK_FAILED)
+	waitUntil(t, func() bool { return e.notes.n() == 5 })
+	if e.notes.n() != 5 || strings.Contains(e.notes.msgs[4], "(run ") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+}
+
+// A lone orphan at start-up keeps its own AGENT_DETACHED (with the agent's
+// last state, SWI-25 A6, and its orchestrator run); one found after start-up
+// is notified alone too (SWI-25 A2).
+func TestOrphansAtStartSingleOrphanNotifiesItself(t *testing.T) {
+	e := newOrphanEnv(t)
+	running := pb.SandboxState_SANDBOX_STATE_RUNNING
+	e.put(t, "one", running, pb.AgentStatus_AGENT_STATUS_WORKING, &pb.WorkerRun{Id: "r1"})
+	e.tokens.issue("one", 4)
+	e.run.setOut("one", aliveOut(4))
+	e.put(t, "gone", running, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("gone", 5)
+	e.run.setOut("gone", goneOut)
+	e.m.PrepareOrphanCheck()(context.Background())
+	e.waitState(t, "one", pb.AgentCheck_STATE_DETACHED)
+	e.waitState(t, "gone", pb.AgentCheck_STATE_CLEAR)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.HasPrefix(e.notes.msgs[0], "one NOTIFICATION_KIND_AGENT_DETACHED "+detachedPrefix+" (last: working") || !strings.HasSuffix(e.notes.msgs[0], "— t to Replace or Wait (run r1)") {
+		t.Fatalf("notifications %v", e.notes.msgs)
+	}
+	// After start-up: its own notice. (The shared listing the start-up check
+	// cached predates this sandbox: dropped, so its probe lists afresh.)
+	e.put(t, "later", running, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.tokens.issue("later", 6)
+	e.run.setOut("later", aliveOut(6))
+	e.m.lists.invalidate()
+	e.m.AgentClientExited("later", 6)
+	e.waitState(t, "later", pb.AgentCheck_STATE_DETACHED)
+	waitUntil(t, func() bool { return e.notes.n() == 2 })
+	if e.notes.n() != 2 || !strings.HasPrefix(e.notes.msgs[1], "later NOTIFICATION_KIND_AGENT_DETACHED ") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+}
+
+// The start-up batch closes when its last probe ends, even when one probe
+// gave no answer (dropped busy, retrying): the aggregate names what was found
+// by then, and a shutdown mid-feed closes it too.
+func TestOrphansAtStartBatchClosesOnTheLastProbe(t *testing.T) {
+	saved := orphanProbeConcurrency
+	orphanProbeConcurrency = 1
+	t.Cleanup(func() { orphanProbeConcurrency = saved })
+	e := newOrphanEnv(t)
+	running, idle := pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE
+	for _, id := range []string{"a", "b", "c"} {
+		e.put(t, id, running, idle, nil)
+		e.tokens.issue(id, 1)
+		e.run.setOut(id, aliveOut(1))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// The first probe is held; the feed is cancelled while it is, so b and c
+	// never start: the batch closes with a's answer alone.
+	hold := make(chan struct{})
+	e.run.setHook(func(kind, ref string) {
+		if kind == "probe" && ref == "a" {
+			<-hold
+		}
+	})
+	e.m.PrepareOrphanCheck()(ctx)
+	waitUntil(t, func() bool { return e.run.count("probe") == 1 })
+	cancel()
+	time.Sleep(10 * time.Millisecond)
+	close(hold)
+	e.waitState(t, "a", pb.AgentCheck_STATE_DETACHED)
+	waitUntil(t, func() bool { return e.notes.n() == 1 })
+	if e.notes.n() != 1 || !strings.HasPrefix(e.notes.msgs[0], "a NOTIFICATION_KIND_AGENT_DETACHED ") {
+		t.Errorf("notifications %v", e.notes.msgs)
+	}
+	if e.m.orphans.batch != nil {
+		t.Error("the batch is still open")
+	}
+}
+
+// The bulk Replace's shared reap bound (the TUI's deadline) is the daemon's.
+func TestBulkReplaceReapBound(t *testing.T) {
+	if orphanKillWait+orphanProbeTimeout != swb.BulkReplaceReapBound {
+		t.Errorf("orphanKillWait+orphanProbeTimeout = %v, swb.BulkReplaceReapBound = %v", orphanKillWait+orphanProbeTimeout, swb.BulkReplaceReapBound)
 	}
 }

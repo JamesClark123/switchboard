@@ -319,7 +319,7 @@ func (s *Server) GetDaemonInfo(_ context.Context, _ *pb.GetDaemonInfoRequest) (*
 		McpGatewayAvailable: s.mcpAvail.Available,
 		McpGatewayReason:    s.mcpAvail.Reason,
 		// SWI-18 (FR-318a); SWI-21 (research R15)
-		Capabilities: []string{orchestrator.CapabilityLanes, orchestrator.CapabilitySteps, CapabilityMcpEdit},
+		Capabilities: []string{orchestrator.CapabilityLanes, orchestrator.CapabilitySteps, CapabilityMcpEdit, CapabilityReplaceDetached},
 	}, nil
 }
 

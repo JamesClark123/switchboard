@@ -362,3 +362,17 @@ func TestInjectHooks(t *testing.T) {
 		}
 	}
 }
+
+// A host-level notice (SWI-25 A2) has no subject sandbox, lists the sandboxes
+// it covers, and is buffered for replay like any other.
+func TestHubEmitHostNotification(t *testing.T) {
+	h := NewHub("host-1")
+	affected := []*pb.NotificationEvent_AffectedSandbox{{SandboxId: "a", OrchestratorId: "o"}, {SandboxId: "b"}}
+	ev := h.EmitHostNotification(pb.NotificationKind_NOTIFICATION_KIND_AGENTS_DETACHED_AT_START, "2 agents detached", affected, time.Unix(3, 0))
+	if ev.GetSandboxId() != "" || ev.GetHostId() != "host-1" || ev.GetId() == "" || len(ev.GetAffected()) != 2 || ev.GetAffected()[0].GetOrchestratorId() != "o" {
+		t.Errorf("host notice = %+v", ev)
+	}
+	if u := h.Undelivered(); len(u) != 1 || u[0].GetId() != ev.GetId() {
+		t.Errorf("undelivered = %v", u)
+	}
+}

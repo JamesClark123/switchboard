@@ -58,9 +58,11 @@ type fakeDaemon struct {
 	mcpAvail    bool
 	mcpReason   string
 	// SWI-18: the fake advertises "lanes" unless noLanes is set; SWI-29:
-	// "steps" unless noSteps is set.
-	noLanes bool
-	noSteps bool
+	// "steps" unless noSteps is set; SWI-25: "replace-detached" unless noReplace
+	// is set.
+	noLanes   bool
+	noSteps   bool
+	noReplace bool
 	// SWI-21 fakes: mcpEdit advertises "mcp-edit"; mcpPendings ride on the
 	// list; mcpViews answers GetMcpServerDefinition by name (mcpDefErr fails
 	// it); mcpSaveResults are popped one per SaveMcpServer (an empty queue
@@ -128,7 +130,12 @@ type fakeDaemon struct {
 	// SWI-17: replacedID records an AttachTerminalReplacing; replaceErr fails it.
 	replacedID string
 	replaceErr error
-	lifecycle  []string // Stop/Restart calls, in order
+	// SWI-25 A1: bulkReplaced records each ReplaceDetachedAgents call's ids;
+	// bulkOutcomes answers it (nil: every id REPLACED); bulkErr fails it.
+	bulkReplaced [][]string
+	bulkOutcomes []*pb.ReplaceDetachedAgentResponse_Outcome
+	bulkErr      error
+	lifecycle    []string // Stop/Restart calls, in order
 
 	// feature 004 fakes: refresh + kits. streamLines stands in for the sbx
 	// output the daemon streams as LaunchProgress.log_line during Refresh/AddKit.
@@ -361,6 +368,25 @@ func (f *fakeDaemon) AttachTerminalReplacing(_ context.Context, sandboxID string
 	return &fakeTermSession{sink: sink, d: f}, nil
 }
 
+// ReplaceDetachedAgents is the bulk Replace (SWI-25 A1): recorded and answered
+// from bulkOutcomes, or every id REPLACED.
+func (f *fakeDaemon) ReplaceDetachedAgents(_ context.Context, ids []string) ([]*pb.ReplaceDetachedAgentResponse_Outcome, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bulkReplaced = append(f.bulkReplaced, append([]string(nil), ids...))
+	if f.bulkErr != nil {
+		return nil, f.bulkErr
+	}
+	if f.bulkOutcomes != nil {
+		return f.bulkOutcomes, nil
+	}
+	var out []*pb.ReplaceDetachedAgentResponse_Outcome
+	for _, id := range ids {
+		out = append(out, &pb.ReplaceDetachedAgentResponse_Outcome{SandboxId: id, DisplayName: "sb-" + id, Result: pb.ReplaceDetachedAgentResponse_RESULT_REPLACED})
+	}
+	return out, nil
+}
+
 type fakeTermSession struct {
 	sink   io.Writer
 	d      *fakeDaemon
@@ -437,7 +463,7 @@ func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
 func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
 
 func (f *fakeDaemon) HasCapability(name string) bool {
-	return name == "lanes" && !f.noLanes || name == "steps" && !f.noSteps || name == "mcp-edit" && f.mcpEdit
+	return name == "lanes" && !f.noLanes || name == "steps" && !f.noSteps || name == "mcp-edit" && f.mcpEdit || name == "replace-detached" && !f.noReplace
 }
 
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {

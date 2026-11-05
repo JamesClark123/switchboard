@@ -52,7 +52,7 @@ func TestDetachedAgentReplaceOnPlainSandbox(t *testing.T) {
 		t.Fatalf("t should open the dialog: %v", m.screen)
 	}
 	v := ansi.Strip(m.View())
-	for _, want := range []string{"sb-p1's agent was detached by a daemon restart", "Last seen idle 10:42.", "It can't be shown or typed into. Replace it?", "Replacing stops it.", "replace", "wait"} {
+	for _, want := range []string{"sb-p1's agent was detached by a daemon restart", "Last seen idle Oct 28 10:42.", "It can't be shown or typed into. Replace it?", "Replacing stops it.", "replace", "wait"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("dialog missing %q:\n%s", want, v)
 		}
@@ -273,5 +273,112 @@ func TestDetachedAgentFromJobs(t *testing.T) {
 	m, _ = update(m, runCmd(cmd))
 	if m.screen != screenTerminal || d.replacedID != "w-run" || m.term.returnTo != screenJobs {
 		t.Errorf("screen %v replaced %q", m.screen, d.replacedID)
+	}
+}
+
+// The row note carries the detached agent's last state, time and process
+// count after the prefix the restart-halt matcher relies on (SWI-25 A6).
+func TestOrphanNoteDetail(t *testing.T) {
+	sb := detachedSandbox("p1", pb.AgentStatus_AGENT_STATUS_WORKING, false)
+	sb.Agent.AgentCheck.Processes = 4
+	note, surfaced := orphanNote(sb)
+	if !surfaced || note != detachedRefusal+" (last: working, Oct 28 10:42, 4 procs) — t to Replace or Wait" {
+		t.Errorf("row note = %q (surfaced %v)", note, surfaced)
+	}
+	if !isRestartHalt(&pb.Run{Steps: []*pb.RunStep{{}}, StepStatus: pb.StepStatus_STEP_STATUS_HALTED, StepNote: note}) {
+		t.Error("the prefix matcher must still match a detailed note")
+	}
+	sb.Agent.AgentCheck.LastSeenAt = nil
+	sb.Agent.AgentCheck.Processes = 0
+	if note, _ := orphanNote(sb); note != detachedRefusal+" (last: working) — t to Replace or Wait" {
+		t.Errorf("bare row note = %q", note)
+	}
+}
+
+// `R` on the Workers view (SWI-25 A1) names every idle detached worker, asks,
+// and replaces them with one call to their daemon; workers with a run are
+// left to `t`; the outcomes are summarised on the view's line.
+func TestWorkersViewBulkReplace(t *testing.T) {
+	a := &fakeDaemon{orchestrators: []*pb.OrchestratorSummary{orchSummary("o-a", "alpha-bot")}}
+	a.orchDetail = &pb.OrchestratorDetail{Summary: a.orchestrators[0], Workers: []*pb.WorkerView{
+		{SandboxId: "w-run", HostId: "test-host", DisplayName: "sb-w-run", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_BUSY, RunId: "run-9", HostReachable: true},
+		{SandboxId: "w-idle", HostId: "test-host", DisplayName: "sb-w-idle", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE, HostReachable: true},
+		{SandboxId: "w-busy", HostId: "test-host", DisplayName: "sb-w-busy", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE, HostReachable: true},
+		{SandboxId: "w-clear", HostId: "test-host", DisplayName: "sb-w-clear", Availability: pb.WorkerAvailability_WORKER_AVAILABILITY_FREE, HostReachable: true},
+	}}
+	m := withSandboxes(sized(New(a, "/work")), []*pb.Sandbox{
+		detachedSandbox("w-run", pb.AgentStatus_AGENT_STATUS_WORKING, true),
+		detachedSandbox("w-idle", pb.AgentStatus_AGENT_STATUS_IDLE, false),
+		detachedSandbox("w-busy", pb.AgentStatus_AGENT_STATUS_WORKING, false),
+		runningWorker("w-clear"),
+	})
+	m, _ = update(m, tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = openDetail(t, m)
+	if v := m.View(); !strings.Contains(v, "R replace detached") {
+		t.Errorf("help line:\n%s", v)
+	}
+	m, cmd := update(m, press("R"))
+	if cmd != nil || m.screen != screenConfirm {
+		t.Fatalf("R should ask: screen %v status %q", m.screen, m.orchDetail.status)
+	}
+	v := ansi.Strip(m.View())
+	for _, want := range []string{"Replace 2 detached agents of alpha-bot?", "sb-w-idle, sb-w-busy", "Workers with a run are left alone.", "replace", "wait"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("confirm missing %q:\n%s", want, v)
+		}
+	}
+	if !m.confirm.enterCancels {
+		t.Error("one agent was last seen working: enter waits")
+	}
+	// Wait leaves everything alone.
+	m, _ = update(m, press("n"))
+	if m.screen != screenOrchDetail || len(a.bulkReplaced) != 0 {
+		t.Fatalf("wait: screen %v calls %v", m.screen, a.bulkReplaced)
+	}
+	a.bulkOutcomes = []*pb.ReplaceDetachedAgentResponse_Outcome{
+		{SandboxId: "w-idle", DisplayName: "sb-w-idle", Result: pb.ReplaceDetachedAgentResponse_RESULT_REPLACED},
+		{SandboxId: "w-busy", DisplayName: "sb-w-busy", Result: pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_BUSY, Error: "sandbox is stopping; try again"},
+	}
+	m, _ = update(m, press("R"))
+	m, cmd = update(m, press("y"))
+	m, cmd = update(m, runCmd(cmd))
+	if len(a.bulkReplaced) != 1 || strings.Join(a.bulkReplaced[0], ",") != "w-idle,w-busy" {
+		t.Fatalf("calls = %v", a.bulkReplaced)
+	}
+	if m.orchDetail.status != "replaced 1 · skipped 1 (sb-w-busy: busy)" || cmd == nil {
+		t.Errorf("summary %q (reload %v)", m.orchDetail.status, cmd != nil)
+	}
+	// A daemon that can't be reached is named; failures are listed.
+	a.bulkErr = errors.New("boom")
+	m, _ = update(m, press("R"))
+	m, cmd = update(m, press("y"))
+	m, _ = update(m, runCmd(cmd))
+	if !strings.Contains(m.orchDetail.status, "replaced 0 · not reached: ") || !strings.Contains(m.orchDetail.status, "boom") {
+		t.Errorf("unreached summary %q", m.orchDetail.status)
+	}
+	if got := replaceSummary(detachedReplacedMsg{outcomes: []*pb.ReplaceDetachedAgentResponse_Outcome{
+		{SandboxId: "abcdefghijkl", Result: pb.ReplaceDetachedAgentResponse_RESULT_ERROR, Error: "stop the detached agent: exit 1"},
+		{DisplayName: "w2", Result: pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_RUN}, {DisplayName: "w3", Result: pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_LIVE_SESSION},
+		{DisplayName: "w4", Result: pb.ReplaceDetachedAgentResponse_RESULT_SKIPPED_NOT_DETACHED}, {DisplayName: "w5", Result: pb.ReplaceDetachedAgentResponse_RESULT_UNSPECIFIED, Error: "odd"},
+	}}); got != "replaced 0 · skipped 4 (w2: has a run; w3: its agent is live; w4: not detached; w5: odd) · failed 1 (abcdefgh: stop the detached agent: exit 1)" {
+		t.Errorf("summary = %q", got)
+	}
+	// A daemon without the RPC: R is not offered and says why.
+	a.noReplace = true
+	m = openDetail(t, m)
+	if v := m.View(); strings.Contains(v, "R replace detached") {
+		t.Error("R is offered against a daemon without bulk Replace")
+	}
+	m, _ = update(m, press("R"))
+	if m.screen != screenOrchDetail || !strings.Contains(m.orchDetail.status, "predates bulk Replace") {
+		t.Errorf("old daemon: screen %v status %q", m.screen, m.orchDetail.status)
+	}
+	a.noReplace = false
+	// Nothing idle and detached: R says so.
+	a.orchDetail.Workers = a.orchDetail.Workers[:1]
+	m = openDetail(t, m)
+	m, _ = update(m, press("R"))
+	if m.screen != screenOrchDetail || !strings.Contains(m.orchDetail.status, "no idle detached worker") {
+		t.Errorf("nothing to replace: screen %v status %q", m.screen, m.orchDetail.status)
 	}
 }

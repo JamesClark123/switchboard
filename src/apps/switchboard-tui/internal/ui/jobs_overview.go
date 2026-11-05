@@ -390,13 +390,8 @@ func (m Model) runSandbox(r *pb.Run) (*pb.Sandbox, string, string) {
 	entry, scoped := "", false
 	if hid := r.GetSandboxHostId(); hid != "" {
 		var ok bool
-		if entry, ok = m.entryForDaemonHost(hid); !ok {
-			// entryForDaemonHost skips a host without a connection object, which
-			// is how a manager can hold the adopted active host (connOf).
-			if m.daemon.HostID() != hid {
-				return nil, "", "is not on a connected daemon"
-			}
-			entry = m.activeHost
+		if entry, ok = m.entryForDaemonHostOrActive(hid); !ok {
+			return nil, "", "is not on a connected daemon"
 		}
 		scoped = true
 	}

@@ -35,8 +35,8 @@ import (
 const (
 	waitingPrefix    = "waiting: "
 	orphanNote       = "agent detached by a daemon restart"
-	orphanSetupNote  = orphanNote + "; R restarts setup with a fresh agent"
-	orphanCloseNote  = "agent detached; t → Replace frees it"
+	orphanSetupTail  = "; R restarts setup with a fresh agent"
+	orphanCloseHead  = "agent detached; t → Replace frees it"
 	droppedPostNote  = "post-prompts dropped"
 	clearStoppedNote = "clear retries stopped"
 	restartingNote   = "restarting setup with a fresh agent"
@@ -336,6 +336,18 @@ func agentCheck(sb *pb.Sandbox) pb.AgentCheck_State {
 	return sb.GetAgent().GetAgentCheck().GetState()
 }
 
+// checkFailing reports a sandbox whose check keeps failing: its daemon owns
+// the run's note meanwhile (SWI-25 A3).
+func checkFailing(sb *pb.Sandbox) bool { return agentCheck(sb) == pb.AgentCheck_STATE_CHECK_FAILED }
+
+// orphanSetupNote is the restart-halt note (SWI-25 A6): orphanNote, the agent's
+// last state, time and process count from the sandbox's check
+// (swb.DetachedDetail), then what R does. restartHalt and the TUI prefix-match
+// on orphanNote.
+func orphanSetupNote(sb *pb.Sandbox) string {
+	return orphanNote + swb.DetachedDetail(sb.GetAgent().GetAgentCheck(), time.Time{}) + orphanSetupTail
+}
+
 // canType reports whether a sandbox's agent can be typed into: running, not
 // exited and not detached by an owning-daemon restart (an unknown check may
 // still clear, so it waits rather than drops).
@@ -418,11 +430,12 @@ func (rt *runtime) syncWorkerRun(runID string) {
 	if err != nil || live.GetSandboxId() == "" {
 		return
 	}
-	cur := rt.sandboxRecord(live.GetSandboxId()).GetController().GetRun()
+	sb := rt.sandboxRecord(live.GetSandboxId())
+	cur := sb.GetController().GetRun()
 	if cur.GetId() != live.GetId() {
 		return
 	}
-	if want := workerRunFor(live, cur); !proto.Equal(want, cur) {
+	if want := workerRunFor(live, cur, checkFailing(sb)); !proto.Equal(want, cur) {
 		rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), want, live.GetId())
 	}
 }
@@ -667,13 +680,51 @@ func (rt *runtime) reconcileStep(run *pb.Run, sb *pb.Sandbox) bool {
 	if rt.orphanHalt(run, sb) {
 		return true
 	}
+	if rt.mirrorCheckNote(run, wr) {
+		return true
+	}
 	if wr.GetId() == run.GetId() && run.GetStepStatus() != pb.StepStatus_STEP_STATUS_SENDING {
 		// A halt, hold or note push lost on a down link (T022 halted repair).
-		if want := workerRunFor(run, wr); !proto.Equal(want, wr) {
+		if want := workerRunFor(run, wr, checkFailing(sb)); !proto.Equal(want, wr) {
 			rt.syncWorkerRun(run.GetId())
 		}
 	}
 	return false
+}
+
+// mirrorCheckNote follows the owning daemon's check-failed note on the
+// worker's record (SWI-25 A3): while the sandbox can't be checked for a
+// detached agent the daemon overlays controller.run.step_note with the failure
+// and restores the earlier note once the check clears or finds the agent. The
+// run's note follows both ways, so the Jobs screen shows the failure, and
+// workerRunFor never pushes the run's own note over the daemon's (one the
+// orchestrator writes during the spell reaches the daemon once it ends). The
+// failure only ever replaces an empty or `waiting:` note: a halt or hold note
+// the orchestrator wrote meanwhile stands, since it says more. It reports
+// whether it changed the run.
+func (rt *runtime) mirrorCheckNote(run *pb.Run, wr *pb.WorkerRun) bool {
+	if wr.GetId() != run.GetId() || wr.GetStepNote() == run.GetStepNote() {
+		return false
+	}
+	switch {
+	case swb.IsCheckFailedNote(wr.GetStepNote()):
+		if n := run.GetStepNote(); n != "" && !strings.HasPrefix(n, waitingPrefix) && !swb.IsCheckFailedNote(n) {
+			return false
+		}
+	case !swb.IsCheckFailedNote(run.GetStepNote()):
+		return false
+	}
+	note := wr.GetStepNote()
+	changed := false
+	rt.stepTx(run, func(l *pb.Run) bool {
+		if l.GetStepNote() == note {
+			return false
+		}
+		l.StepNote = note
+		changed = true
+		return true
+	})
+	return changed
 }
 
 // orphanHalt halts a run in setup whose agent a daemon restart detached
@@ -704,10 +755,10 @@ func (rt *runtime) orphanHalt(run *pb.Run, sb *pb.Sandbox) bool {
 	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
 		sent := l.GetStepSentAt() != nil
 		l.StepStatus = pb.StepStatus_STEP_STATUS_HALTED
-		l.StepNote = orphanSetupNote
+		l.StepNote = orphanSetupNote(sb)
 		l.StepSentBeforeRestart = sent
 		l.StepUnconfirmed = false
-		fx = stepFx{sync: true, halted: "halted at " + stepLabel(l) + ": " + orphanSetupNote}
+		fx = stepFx{sync: true, halted: "halted at " + stepLabel(l) + ": " + l.GetStepNote()}
 		return true
 	})
 	if ok {
@@ -1061,7 +1112,8 @@ func (rt *runtime) stepRefused(run *pb.Run, sb *pb.Sandbox, reason string) bool 
 	rt.armStepRetry()
 	note := waitingPrefix + reason
 	if now.Sub(since) < stepWaitNote || run.GetStepNote() == note ||
-		(run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED) {
+		(run.GetStepNote() == restartingNote && agentCheck(sb) == pb.AgentCheck_STATE_DETACHED) ||
+		swb.IsCheckFailedNote(run.GetStepNote()) { // the daemon's note says why (SWI-25 A3)
 		return false
 	}
 	if live, ok := rt.stepTx(run, func(l *pb.Run) bool {
@@ -1272,8 +1324,7 @@ func (rt *runtime) stopHeldClear(run *pb.Run) bool {
 	sb := rt.sandboxRecord(run.GetSandboxId())
 	var fx stepFx
 	live, ok := rt.stepTx(run, func(l *pb.Run) bool {
-		fx = rt.toDeveloperLocked(l, sb)
-		l.StepNote = withNote(clearStoppedNote, l.GetStepNote())
+		fx = rt.toDeveloperLocked(l, sb, clearStoppedNote)
 		return true
 	})
 	if ok {
@@ -1414,6 +1465,9 @@ func (rt *runtime) resolveSent(run *pb.Run, sb *pb.Sandbox) bool {
 		if agentCheck(sb) == pb.AgentCheck_STATE_UNKNOWN {
 			return false // a probe is pending: its answer (a status change) kicks again
 		}
+		// A check that keeps failing (CHECK_FAILED) doesn't hold the read-back:
+		// it types nothing and takes no gate, and the agent may well be the
+		// daemon's own live one (the runtime's listing is what fails).
 		api, err := rt.apiFor(run.GetSandboxHostId())
 		if err != nil {
 			return false
@@ -1647,11 +1701,14 @@ func (rt *runtime) failCleanupLocked(l *pb.Run, sb *pb.Sandbox, typed bool) step
 
 // toDeveloperLocked drops a run's remaining cleanup and holds the sandbox for
 // the developer (FR-216): only a fresh session (startup or clear), seen by its
-// daemon, frees it. The run stays on its Clear step, which R may retry.
-func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
-	note := ""
+// daemon, frees it. The run stays on its Clear step, which R may retry. also is
+// added to the note; a detached agent's detail (SWI-25 A6) goes after it, as a
+// row may cut the note short and the detail is the part it can spare.
+func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox, also ...string) stepFx {
+	note, detail := "", ""
 	if agentCheck(sb) == pb.AgentCheck_STATE_DETACHED {
-		note = orphanCloseNote
+		note = orphanCloseHead
+		detail = swb.DetachedDetail(sb.GetAgent().GetAgentCheck(), time.Time{})
 		from := int(l.GetStep())
 		for i, s := range l.GetSteps() {
 			if i >= from && s.GetRole() == pb.StepRole_STEP_ROLE_CLEANUP && s.GetKind() == pb.StepKind_STEP_KIND_CUSTOM {
@@ -1671,7 +1728,10 @@ func (rt *runtime) toDeveloperLocked(l *pb.Run, sb *pb.Sandbox) stepFx {
 	}
 	settleSteps(l, at, closedOutcome(l))
 	moveTo(l, at, pb.StepStatus_STEP_STATUS_DONE)
-	l.StepNote = note
+	for _, a := range also {
+		note = withNote(a, note)
+	}
+	l.StepNote = note + detail
 	return stepFx{sync: true}
 }
 
@@ -1830,9 +1890,10 @@ func (rt *runtime) resolveRunStep(runID string, step int32, res pb.StepResolutio
 			failReason = "failed by the developer at " + stepLabel(run)
 		case st.GetKind() == pb.StepKind_STEP_KIND_CLEAR:
 			// The sandbox needs the developer; R stays on the row (FR-222).
-			fx = rt.toDeveloperLocked(run, rt.sandboxRecord(run.GetSandboxId()))
 			if clearRetrying {
-				run.StepNote = withNote(clearStoppedNote, run.GetStepNote())
+				fx = rt.toDeveloperLocked(run, rt.sandboxRecord(run.GetSandboxId()), clearStoppedNote)
+			} else {
+				fx = rt.toDeveloperLocked(run, rt.sandboxRecord(run.GetSandboxId()))
 			}
 		default:
 			// A custom post-prompt: the rest of them are dropped, Clear still

@@ -55,12 +55,12 @@ func TestReadersShareTheRuntimeLock(t *testing.T) {
 				}
 			})
 			defer release()
-			unlock, ok := e.m.TryRLockRuntime("s")
-			if !ok {
-				t.Fatalf("a service request is refused during a %s", kind)
+			unlock, err := e.m.TryRLockRuntime("s")
+			if err != nil {
+				t.Fatalf("a service request is refused during a %s: %v", kind, err)
 			}
 			unlock()
-			if unlock, ok := e.m.TryLockRuntime("s"); ok {
+			if unlock, ok := e.m.TryLockRuntime("s", "testing"); ok {
 				unlock()
 				t.Errorf("the write lock was granted during a %s", kind)
 			}
@@ -149,8 +149,8 @@ func TestReapAndAdmitExclude(t *testing.T) {
 				defer wg.Done()
 				// Past the state check, as when a probe clears the sandbox
 				// between a reap's own check and its script.
-				rel, ok := e.m.orphanGate("s")
-				if !ok {
+				rel, err := e.m.orphanGate("s", gateStarting)
+				if err != nil {
 					return
 				}
 				mu.Lock()
@@ -177,7 +177,7 @@ func TestMcpLoadTakesTheRuntimeReadLock(t *testing.T) {
 	e := newOrphanEnv(t)
 	sb := e.launched(t, "p")
 	id := sb.GetId()
-	unlock, ok := e.m.TryLockRuntime(id)
+	unlock, ok := e.m.TryLockRuntime(id, "testing")
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -188,7 +188,7 @@ func TestMcpLoadTakesTheRuntimeReadLock(t *testing.T) {
 	if _, err := e.m.AttachMcp(context.Background(), id, "srv", nil); err != nil {
 		t.Fatal(err)
 	}
-	unlock, _ = e.m.TryLockRuntime(id)
+	unlock, _ = e.m.TryLockRuntime(id, "testing")
 	if _, err := e.m.DetachMcp(context.Background(), id, "srv", nil); !errors.Is(err, ErrBusy) {
 		t.Errorf("DetachMcp under a lifecycle operation = %v", err)
 	}
@@ -314,25 +314,25 @@ func TestHoldRuntimeRead(t *testing.T) {
 	}
 
 	l := e.m.runtime.of(id)
-	held, unlock, ok := e.m.HoldRuntimeRead(context.Background(), id)
-	if !ok {
-		t.Fatal("no hold")
+	held, unlock, err := e.m.HoldRuntimeRead(context.Background(), id)
+	if err != nil {
+		t.Fatalf("no hold: %v", err)
 	}
-	l.beginOp()
+	l.holdsOp(l.beginOp(opStopping))
 	if held.Err() == nil {
 		t.Error("the operation didn't cancel the hold")
 	}
-	if _, _, ok := e.m.HoldRuntimeRead(context.Background(), id); ok {
-		t.Error("a hold slipped in ahead of the operation's Lock")
+	if _, _, err := e.m.HoldRuntimeRead(context.Background(), id); err == nil || err.Error() != "sandbox is stopping; try again" || !errors.Is(err, agent.ErrBusy) || !errors.Is(err, ErrBusy) {
+		t.Errorf("a hold slipped in ahead of the operation's Lock, or its refusal doesn't name the operation: %v", err)
 	}
 	l.endOp()
 	unlock()
 	if len(l.holds) != 0 {
 		t.Errorf("%d holds left", len(l.holds))
 	}
-	_, unlock, ok = e.m.HoldRuntimeRead(context.Background(), id)
-	if !ok {
-		t.Fatal("no hold once the operation ended")
+	_, unlock, err = e.m.HoldRuntimeRead(context.Background(), id)
+	if err != nil {
+		t.Fatalf("no hold once the operation ended: %v", err)
 	}
 	unlock()
 }
@@ -352,7 +352,7 @@ func TestAddKitBringsUpAfterReleasingTheLock(t *testing.T) {
 	var ups []pb.SandboxState
 	e.m.SetOnBringUp(func(sb *pb.Sandbox) {
 		ups = append(ups, sb.GetState())
-		unlock, ok := e.m.TryLockRuntime(id)
+		unlock, ok := e.m.TryLockRuntime(id, "testing")
 		if !ok {
 			t.Error("the bring-up ran under the runtime lock")
 			return
@@ -450,7 +450,7 @@ func TestSharedListing(t *testing.T) {
 		t.Errorf("cached read = %v, %d listings", err, lists())
 	}
 	// A lifecycle operation drops it.
-	e.m.runtimeOp("s")()
+	e.m.runtimeOp("s", opStopping)()
 	if _, err := e.m.listShared(context.Background()); err != nil || lists() != 2 {
 		t.Errorf("after an operation = %v, %d listings", err, lists())
 	}
@@ -592,5 +592,115 @@ func TestStartupCheckKeepsAGenerationMintedSinceTheSnapshot(t *testing.T) {
 	}
 	if len(e.tokens.Unretired("plain")) != 0 || e.get(t, "plain").GetAgent().GetStatus() != pb.AgentStatus_AGENT_STATUS_EXITED {
 		t.Error("a listed-stopped sandbox is settled: tokens retired, EXITED")
+	}
+}
+
+// --- operation-specific busy refusals (SWI-25 A5) ---
+
+// Every runtimeMu refusal names the operation holding the lock, and still
+// matches agent.ErrBusy (so the gRPC code is unchanged). "c" is clear, so a
+// spawn's only refusal is the lock's; "u" is unknown, so a reap has something
+// to stop.
+func TestBusyRefusalsNameTheHolder(t *testing.T) {
+	e := newOrphanEnv(t)
+	e.put(t, "c", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.put(t, "u", pb.SandboxState_SANDBOX_STATE_RUNNING, pb.AgentStatus_AGENT_STATUS_IDLE, nil)
+	e.m.MarkAgentUnknown("u")
+
+	check := func(what string, err error, want string) {
+		t.Helper()
+		if err == nil || err.Error() != want || !errors.Is(err, agent.ErrBusy) {
+			t.Errorf("%s = %v, want %q matching agent.ErrBusy", what, err, want)
+		}
+	}
+	for _, id := range []string{"c", "u"} {
+		release := e.m.runtimeOp(id, opStopping)
+		_, err := e.m.TryRLockRuntime(id)
+		check(id+": read lock during a stop", err, "sandbox is stopping; try again")
+		_, _, err = e.m.HoldRuntimeRead(context.Background(), id)
+		check(id+": mcp hold during a stop", err, "sandbox is stopping; try again")
+		if id == "c" {
+			_, err = e.m.Admit(id)
+			check("spawn during a stop", err, "sandbox is stopping; try again")
+		} else {
+			check("reap during a stop", e.m.ReapOrphan(context.Background(), id, ReapReplace), "sandbox is stopping; try again")
+		}
+		release()
+		if rel, err := e.m.TryRLockRuntime(id); err != nil {
+			t.Fatalf("after the stop: %v", err)
+		} else {
+			rel()
+		}
+	}
+
+	// The orphan gate's holders name themselves too; a read lock is unaffected.
+	for _, id := range []string{"c", "u"} {
+		unlock, err := e.m.orphanGate(id, gateProbing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id == "c" {
+			_, err = e.m.Admit(id)
+			check("spawn during a probe", err, "checking for a detached agent; try again")
+		} else {
+			check("reap during a probe", e.m.ReapOrphan(context.Background(), id, ReapReplace), "checking for a detached agent; try again")
+		}
+		if rel, err := e.m.TryRLockRuntime(id); err != nil {
+			t.Errorf("a read lock during a probe: %v", err)
+		} else {
+			rel()
+		}
+		unlock()
+	}
+	unlock, err := e.m.orphanGate("c", gateReaping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.m.Admit("c")
+	check("spawn during a reap", err, "the detached agent is being stopped; try again")
+	unlock()
+	unlock, err = e.m.orphanGate("u", gateStarting)
+	if err != nil {
+		t.Fatalf("gate after release: %v", err)
+	}
+	check("reap during a spawn", e.m.ReapOrphan(context.Background(), "u", ReapReplace), "the agent is starting; try again")
+	unlock()
+
+	// Each lifecycle operation's name.
+	for op, want := range map[string]string{opRestarting: "restarting", opRefreshing: "refreshing", opKitAttach: "recreating for a kit attach", opDestroying: "being destroyed"} {
+		rel := e.m.runtimeOp("c", op)
+		if _, err := e.m.TryRLockRuntime("c"); err == nil || err.Error() != "sandbox is "+want+"; try again" {
+			t.Errorf("%s: %v", op, err)
+		}
+		rel()
+	}
+	// An operation waiting behind another is named once it holds the lock: the
+	// first one's release doesn't lose the waiter's name.
+	relStop := e.m.runtimeOp("c", opStopping)
+	restarting := make(chan func())
+	go func() { restarting <- e.m.runtimeOp("c", opRestarting) }()
+	waitUntil(t, func() bool {
+		l := e.m.runtime.of("c")
+		l.holderMu.Lock()
+		defer l.holderMu.Unlock()
+		return len(l.ops) == 2
+	})
+	if _, err := e.m.TryRLockRuntime("c"); err == nil || err.Error() != "sandbox is stopping; try again" {
+		t.Errorf("while the stop holds and a restart waits: %v", err)
+	}
+	relStop()
+	relRestart := <-restarting
+	if _, err := e.m.TryRLockRuntime("c"); err == nil || err.Error() != "sandbox is restarting; try again" {
+		t.Errorf("once the restart holds: %v", err)
+	}
+	relRestart()
+	if rel, err := e.m.TryRLockRuntime("c"); err != nil {
+		t.Errorf("after both: %v", err)
+	} else {
+		rel()
+	}
+	// The MCP RPCs map the operation latch's sentinel: a runtime refusal matches it too.
+	if !errors.Is(&RuntimeBusyError{Op: "x"}, ErrBusy) {
+		t.Error("a runtime refusal should match the latch sentinel")
 	}
 }

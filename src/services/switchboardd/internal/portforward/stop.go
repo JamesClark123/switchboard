@@ -45,9 +45,9 @@ func (s *Supervisor) Stop(sandboxID, name string) (*pb.ServiceInstance, error) {
 	// A developer's stop is refused while a lifecycle operation holds the
 	// sandbox's runtime lock: that operation is stopping the service anyway
 	// (SWI-17, research R14).
-	unlock, ok := s.lockRuntime(sandboxID)
-	if !ok {
-		return nil, ErrSandboxBusy
+	unlock, err := s.lockRuntime(sandboxID)
+	if err != nil {
+		return nil, err
 	}
 	defer unlock()
 	// A launch in flight is waited for (at most pgidWait), so its PGID is known

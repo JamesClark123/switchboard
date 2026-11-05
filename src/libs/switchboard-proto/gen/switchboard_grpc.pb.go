@@ -52,6 +52,7 @@ const (
 	Switchboard_ResolveWorkspace_FullMethodName         = "/switchboard.v1.Switchboard/ResolveWorkspace"
 	Switchboard_PromptAgent_FullMethodName              = "/switchboard.v1.Switchboard/PromptAgent"
 	Switchboard_AttachAgent_FullMethodName              = "/switchboard.v1.Switchboard/AttachAgent"
+	Switchboard_ReplaceDetachedAgent_FullMethodName     = "/switchboard.v1.Switchboard/ReplaceDetachedAgent"
 	Switchboard_Subscribe_FullMethodName                = "/switchboard.v1.Switchboard/Subscribe"
 	Switchboard_AckNotification_FullMethodName          = "/switchboard.v1.Switchboard/AckNotification"
 	Switchboard_GetVSCodeTarget_FullMethodName          = "/switchboard.v1.Switchboard/GetVSCodeTarget"
@@ -164,6 +165,12 @@ type SwitchboardClient interface {
 	// the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
 	// then live `data` frames follow. The session survives client detach.
 	AttachAgent(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentInput, AgentOutput], error)
+	// SWI-25 A1: the developer's bulk Replace of agents detached by a daemon
+	// restart: each named idle detached sandbox (or every one on this host) has
+	// its orphan stopped and a fresh agent started, with an outcome per sandbox;
+	// one failure stops no other. Workers with a run and sandboxes with a live
+	// session are skipped, never touched.
+	ReplaceDetachedAgent(ctx context.Context, in *ReplaceDetachedAgentRequest, opts ...grpc.CallOption) (*ReplaceDetachedAgentResponse, error)
 	// --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
 	// On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
@@ -683,6 +690,16 @@ func (c *switchboardClient) AttachAgent(ctx context.Context, opts ...grpc.CallOp
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_AttachAgentClient = grpc.BidiStreamingClient[AgentInput, AgentOutput]
+
+func (c *switchboardClient) ReplaceDetachedAgent(ctx context.Context, in *ReplaceDetachedAgentRequest, opts ...grpc.CallOption) (*ReplaceDetachedAgentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplaceDetachedAgentResponse)
+	err := c.cc.Invoke(ctx, Switchboard_ReplaceDetachedAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *switchboardClient) Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -1385,6 +1402,12 @@ type SwitchboardServer interface {
 	// the first AgentOutput frame is a Snapshot (current-screen + scrollback redraw),
 	// then live `data` frames follow. The session survives client detach.
 	AttachAgent(grpc.BidiStreamingServer[AgentInput, AgentOutput]) error
+	// SWI-25 A1: the developer's bulk Replace of agents detached by a daemon
+	// restart: each named idle detached sandbox (or every one on this host) has
+	// its orphan stopped and a fresh agent started, with an outcome per sandbox;
+	// one failure stops no other. Workers with a run and sandboxes with a live
+	// session are skipped, never touched.
+	ReplaceDetachedAgent(context.Context, *ReplaceDetachedAgentRequest) (*ReplaceDetachedAgentResponse, error)
 	// --- Live updates: sandbox state changes + agent notifications (FR-024-026b, SC-008) ---
 	// On (re)subscribe the daemon replays undelivered NotificationEvents (FR-026b).
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[Event]) error
@@ -1730,6 +1753,9 @@ func (UnimplementedSwitchboardServer) PromptAgent(context.Context, *PromptAgentR
 }
 func (UnimplementedSwitchboardServer) AttachAgent(grpc.BidiStreamingServer[AgentInput, AgentOutput]) error {
 	return status.Error(codes.Unimplemented, "method AttachAgent not implemented")
+}
+func (UnimplementedSwitchboardServer) ReplaceDetachedAgent(context.Context, *ReplaceDetachedAgentRequest) (*ReplaceDetachedAgentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReplaceDetachedAgent not implemented")
 }
 func (UnimplementedSwitchboardServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[Event]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
@@ -2212,6 +2238,24 @@ func _Switchboard_AttachAgent_Handler(srv interface{}, stream grpc.ServerStream)
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Switchboard_AttachAgentServer = grpc.BidiStreamingServer[AgentInput, AgentOutput]
+
+func _Switchboard_ReplaceDetachedAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplaceDetachedAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwitchboardServer).ReplaceDetachedAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Switchboard_ReplaceDetachedAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwitchboardServer).ReplaceDetachedAgent(ctx, req.(*ReplaceDetachedAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _Switchboard_Subscribe_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SubscribeRequest)
@@ -3315,6 +3359,10 @@ var Switchboard_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PromptAgent",
 			Handler:    _Switchboard_PromptAgent_Handler,
+		},
+		{
+			MethodName: "ReplaceDetachedAgent",
+			Handler:    _Switchboard_ReplaceDetachedAgent_Handler,
 		},
 		{
 			MethodName: "AckNotification",

@@ -245,15 +245,17 @@ output untouched); a per-agent hook token passed in the agent's environment at l
 daemon-side corroboration for hold release and Clear. After an owning-daemon restart the agent survives as an
 orphan, found by a probe of running sandboxes (a recorded agent PID alive with no live session) at start (only
 sandboxes with an unretired token; the rest are clear at once), on an `sbx exec` client exit and on gate refusals;
-*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED, row note only). `agent.Registry.Session` is the one choke point that refuses to spawn beside
+*unknown* is bounded (`orphanUnknownLimit` 60 s or 3 failures → `AgentSession.agent_check` CHECK_FAILED: row note, one `AGENT_CHECK_FAILED` notification and the run-note overlay, SWI-25). `agent.Registry.Session` is the one choke point that refuses to spawn beside
 it, and try-locks the sandbox's `runtimeMu` (held by stop/recreate ops, and ordering every probe and stop) from the
-gate check through `cmd.Start` (generic `ErrBusy` `sandbox is busy; try again`); a stop drains the sandbox's `sbx exec` clients
+gate check through `cmd.Start` (`sandbox.RuntimeBusyError` naming the holder, e.g. `sandbox is stopping; try again`, SWI-25); a stop drains the sandbox's `sbx exec` clients
 best effort before `sbx stop` (the agent's, plus still-starting services, recorded FAILED `may still be running`, groups TERM then KILL; RUNNING services keep their clients; bounded, no ordering promise; only developer-initiated execs try-lock `runtimeMu`, there is no exec guard), and the on-change hook clears orphan state only on a confirmed stop/destroy (never CREATING/ERROR).
 The daemon only detects and surfaces an orphan
-(one *agent detached* notification per orphan) and never stops one itself: only the developer (`t` →
-Replace, `R`) or a sandbox stop/restart does (R14). **Deferred to SWI-19** (tasks.md *Deferred items*): bulk Replace /
-`ReplaceDetachedAgent`, the aggregated start-up notice, `AGENT_CHECK_FAILED` + run-note overlay, probe priority,
-operation-specific busy messages, detailed orphan notes.
+(one *agent detached* notification per orphan, with its last state, time and process count; the orphans the
+start-up check finds get one host-level `AGENTS_DETACHED_AT_START` whose `enter` opens the Workers view) and never
+stops one itself: only the developer (`t` → Replace, `R` on a restart halt, or `R` on the Workers view →
+`ReplaceDetachedAgent` for every idle detached worker) or a sandbox stop/restart does (R14). A check that keeps
+failing raises `AGENT_CHECK_FAILED` once and overlays `can't check for a detached agent: …` on the run's note until it
+clears (SWI-25, items A1–A6 of SWI-19; tasks.md *Deferred items* records each).
 See `research.md` (R1–R14),
 `data-model.md`, `contracts/`, `quickstart.md`.
 

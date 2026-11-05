@@ -53,6 +53,10 @@ type Daemon interface {
 	// AttachTerminalReplacing attaches in place with AttachInfo.replace_orphan:
 	// `t` → Replace on an agent detached by a daemon restart (SWI-17, R14).
 	AttachTerminalReplacing(ctx context.Context, sandboxID string, cols, rows uint32, sink io.Writer) (client.TermSession, error)
+	// ReplaceDetachedAgents is the bulk Replace (SWI-25 A1, `R` on the Workers
+	// view): the daemon stops each named sandbox's detached agent and starts a
+	// fresh one, reporting an outcome per sandbox.
+	ReplaceDetachedAgents(ctx context.Context, sandboxIDs []string) ([]*pb.ReplaceDetachedAgentResponse_Outcome, error)
 	ListSources(ctx context.Context, root string, reposOnly bool) ([]*pb.SourceRef, error)
 	OptionManifest(ctx context.Context) (*pb.OptionManifest, error)
 	// US4: agent prompting + live event subscription.
@@ -194,6 +198,7 @@ const (
 	screenOrchDetail
 	// the `o` attach picker over the sandbox list (orchestrator_attach.go)
 	screenAttachPick
+	screenDetachedPick // SWI-25 A2: the start-up notice's orchestrator picker
 	// feature 010: the Jobs screen, third in the shift+←/→ cycle (jobs.go), and a
 	// daemon's Orchestrators section under the Daemons screen
 	// (daemon_orchestrators.go).
@@ -389,6 +394,9 @@ type Model struct {
 	// a form left mid-save and opened again cannot send the same call twice.
 	opCalls map[string]uint64
 	attach  attachState
+	// detachedPick is the orchestrator picker a start-up "agents detached"
+	// notice opens (SWI-25 A2, detached_review.go).
+	detachedPick detachedPickState
 	// markFreeFromList is set while the mark-free dialog was opened from the
 	// sandbox list (it returns there instead of the detail).
 	markFreeFromList bool
@@ -857,6 +865,8 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyJobsOrch(msg)
 	case orchDoneMsg:
 		return m.applyOrchDone(msg)
+	case detachedReplacedMsg:
+		return m.applyDetachedReplaced(msg)
 	case reasoningRebuildMsg:
 		return m.startReasoningRebuild(msg)
 	case reasoningProgressMsg:
@@ -1166,6 +1176,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateOrchDetailKey(msg)
 	case screenAttachPick:
 		return m.updateAttachPickKey(msg)
+	case screenDetachedPick:
+		return m.updateDetachedPickKey(msg)
 	default:
 		return m.updateListKey(msg)
 	}
@@ -1217,6 +1229,8 @@ func (m Model) activeHelp() helpBindings {
 		return m.sandboxMcpHelp()
 	case screenAttachPick:
 		return m.attachPickHelp()
+	case screenDetachedPick:
+		return m.detachedPickHelp()
 	case screenOpLog:
 		return m.opLogHelp()
 	case screenTerminal:
@@ -1332,6 +1346,11 @@ func (m Model) viewScreen() string {
 	if m.screen == screenAttachPick {
 		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.attachModal(), m.width, m.height)
+	}
+	// The start-up notice's orchestrator picker floats over the inbox (SWI-25 A2).
+	if m.screen == screenDetachedPick {
+		bg := m.chrome(m.viewNotifications(), hb)
+		return overlayCenter(bg, m.detachedPickModal(), m.width, m.height)
 	}
 
 	// The sbx output viewer floats over the list for the same reason: the row

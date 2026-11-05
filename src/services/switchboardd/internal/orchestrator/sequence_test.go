@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1890,18 +1891,18 @@ func TestWorkerRunForKeepsHoldAndSteps(t *testing.T) {
 		Hold: pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER, HoldGen: 3}
 	run := &pb.Run{Id: "r", Action: "a", State: pb.RunState_RUN_STATE_COMPLETED, Steps: []*pb.RunStep{{}}, Hold: pb.WorkerHold_WORKER_HOLD_CLEANING_UP,
 		StepStatus: pb.StepStatus_STEP_STATUS_HALTED, StepNote: "picker opened"}
-	got := workerRunFor(run, live)
+	got := workerRunFor(run, live, false)
 	if got.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER || !got.GetHalted() || got.GetStepIndex() != 4 ||
 		got.GetStepRole() != pb.StepRole_STEP_ROLE_CLEANUP || got.GetHoldGen() != 3 || got.GetStepNote() != "picker opened" {
 		t.Errorf("workerRunFor = %+v", got)
 	}
 	// A retry pending keeps the record halted, so the worker accepts it.
 	run.StepStatus, run.StepSentAt = pb.StepStatus_STEP_STATUS_PENDING, sent
-	if !workerRunFor(run, live).GetHalted() {
+	if !workerRunFor(run, live, false).GetHalted() {
 		t.Error("a pending retry stays halted on the worker")
 	}
 	run.StepSentAt = nil
-	if workerRunFor(run, live).GetHalted() {
+	if workerRunFor(run, live, false).GetHalted() {
 		t.Error("a new step is not halted")
 	}
 }
@@ -1946,7 +1947,7 @@ func TestOrphanActionRunCloses(t *testing.T) {
 	}
 	r := runNow(env, o, run.GetId())
 	if r.GetState() != pb.RunState_RUN_STATE_COMPLETED || r.GetHold() != pb.WorkerHold_WORKER_HOLD_NEEDS_DEVELOPER ||
-		r.GetStepNote() != orphanCloseNote+"; "+droppedPostNote {
+		r.GetStepNote() != orphanCloseHead+"; "+droppedPostNote+" (last: working)" {
 		t.Fatalf("orphan close = %+v", r)
 	}
 	waitFor(t, func() bool {
@@ -2009,7 +2010,7 @@ func TestOrphanSetupRestart(t *testing.T) {
 		sb.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_DETACHED, LastStatus: pb.AgentStatus_AGENT_STATUS_IDLE}
 	})
 	r := waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_HALTED)
-	if r.GetStepNote() != orphanSetupNote || r.GetStepSentBeforeRestart() {
+	if r.GetStepNote() != orphanNote+" (last: idle)"+orphanSetupTail || r.GetStepSentBeforeRestart() {
 		t.Fatalf("restart halt = %+v", r)
 	}
 	if _, err := env.svc.ResolveRunStep(o.GetId(), run.GetId(), 1, pb.StepResolution_STEP_RESOLUTION_SKIP); err == nil || !strings.Contains(err.Error(), "restart setup with R") {
@@ -2855,6 +2856,53 @@ func TestReviewAfterActionResolvedOnRestart(t *testing.T) {
 	})
 }
 
+// While a worker can't be checked for a detached agent, its daemon overlays the
+// failure on controller.run.step_note; the run's note follows it both ways and
+// the orchestrator never pushes its own note over it (SWI-25 A3).
+func TestCheckFailedNoteMirrored(t *testing.T) {
+	env, w, o, _, d := seqEnv(t, 1, nil)
+	d.set(func(d *fakeDaemon) {
+		d.refuse = func(req *pb.DeliverWorkerStepRequest) string { return pickKind(req, pb.StepKind_STEP_KIND_EFFORT) }
+	})
+	run := callSeq(t, env, o, "1")
+	waitStep(t, env, o, run.GetId(), 1, pb.StepStatus_STEP_STATUS_PENDING)
+	failed := swb.CheckFailedNote("probe: exit status 1")
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		if sb.GetController().GetRun().GetId() != run.GetId() {
+			t.Fatalf("the worker's record holds %q", sb.GetController().GetRun().GetId())
+		}
+		sb.Agent.AgentCheck = &pb.AgentCheck{State: pb.AgentCheck_STATE_CHECK_FAILED, Error: "probe: exit status 1"}
+		sb.Controller.Run.StepNote = failed
+	})
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == failed })
+	if r := runNow(env, o, run.GetId()); r.GetStepStatus() != pb.StepStatus_STEP_STATUS_PENDING {
+		t.Fatalf("the step is held, not moved: %+v", r)
+	}
+	// The daemon's note is never pushed over.
+	if note := emit(w, "wa", nil).GetController().GetRun().GetStepNote(); note != failed {
+		t.Errorf("the worker's note was overwritten: %q", note)
+	}
+	// The check clears and the daemon restores the earlier note: the run follows.
+	emit(w, "wa", func(sb *pb.Sandbox) {
+		sb.Agent.AgentCheck = nil
+		sb.Controller.Run.StepNote = ""
+	})
+	waitFor(t, func() bool { return runNow(env, o, run.GetId()).GetStepNote() == "" })
+	// A live check-failed note is kept by workerRunFor while the check fails;
+	// once it doesn't, a stale one is pushed over like any other note.
+	live := &pb.WorkerRun{Id: "x", StepNote: failed}
+	seq := &pb.Run{Id: "x", StepNote: "waiting: y", Steps: []*pb.RunStep{{}}}
+	if got := workerRunFor(seq, live, true).GetStepNote(); got != failed {
+		t.Errorf("workerRunFor over an overlay = %q", got)
+	}
+	if got := workerRunFor(seq, live, false).GetStepNote(); got != "waiting: y" {
+		t.Errorf("workerRunFor over a stale overlay = %q", got)
+	}
+	if got := workerRunFor(seq, &pb.WorkerRun{Id: "x"}, true).GetStepNote(); got != "waiting: y" {
+		t.Errorf("workerRunFor = %q", got)
+	}
+}
+
 // --- SWI-28 ---
 
 // clearHeldRun brings a run to a Clear held for the developer (index 3).
@@ -3062,6 +3110,30 @@ func TestStepResultsRecorded(t *testing.T) {
 
 // A hold for the developer drops the posts between the current step and Clear,
 // which keeps no result: R may still retry it.
+// A detached agent's hold note says what frees the worker and that the retries
+// stopped within the row's 90 columns, however long the detail after them is
+// (SWI-28's room for the stop note, SWI-25 A6's detail).
+func TestDetachedHoldNoteKeepsItsDetailLast(t *testing.T) {
+	_, _, _, rt, _ := seqEnv(t, 1, nil)
+	sb := &pb.Sandbox{Agent: &pb.AgentSession{AgentCheck: &pb.AgentCheck{
+		State:      pb.AgentCheck_STATE_DETACHED,
+		LastStatus: pb.AgentStatus_AGENT_STATUS_WORKING,
+		Processes:  4,
+	}}}
+	l := &pb.Run{Step: 0, Steps: []*pb.RunStep{
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CUSTOM},
+		{Role: pb.StepRole_STEP_ROLE_CLEANUP, Kind: pb.StepKind_STEP_KIND_CLEAR},
+	}}
+	rt.toDeveloperLocked(l, sb, clearStoppedNote)
+	head := orphanCloseHead + "; " + droppedPostNote + "; " + clearStoppedNote
+	if want := head + " (last: working, 4 procs)"; l.GetStepNote() != want {
+		t.Errorf("note = %q, want %q", l.GetStepNote(), want)
+	}
+	if len(head) > 90 {
+		t.Errorf("%q is %d columns: the row cuts its note at 90", head, len(head))
+	}
+}
+
 func TestStepResultsHoldDropsThePosts(t *testing.T) {
 	_, _, _, rt, _ := seqEnv(t, 1, nil)
 	l := &pb.Run{Step: 1, Steps: []*pb.RunStep{

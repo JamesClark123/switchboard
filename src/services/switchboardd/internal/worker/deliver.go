@@ -129,6 +129,31 @@ func (s *Service) startAgent(sandboxID, why string) {
 	}
 }
 
+// ErrStartDeferred is StartAgent on a sandbox mid bring-up: that bring-up
+// starts the agent (with its gateway tools), not the caller.
+var ErrStartDeferred = errors.New("the sandbox's bring-up starts the fresh agent")
+
+// StartAgent starts a sandbox's agent for the bulk Replace (SWI-25 A1,
+// grpc.Server.ReplaceDetachedAgent), as a warm start does, unless one is live
+// already. Mid bring-up it starts nothing and reports ErrStartDeferred. Unlike
+// the best-effort startAgentErr, nil means an agent is up: the caller reports
+// "replaced" on it.
+func (s *Service) StartAgent(sandboxID string) error {
+	if s.agents == nil {
+		return errors.New("agent registry not configured")
+	}
+	if s.agents.Live(sandboxID) {
+		return nil
+	}
+	if s.bringingUp(sandboxID) {
+		return ErrStartDeferred
+	}
+	if _, err := s.reg.Get(sandboxID); err != nil {
+		return err
+	}
+	return s.startAgentErr(sandboxID)
+}
+
 // startAgentErr is startAgent returning why the agent was not started. Every
 // spawn goes through the orphan gate (agent.Registry.Session), which refuses
 // beside an agent detached by a daemon restart (research R14).

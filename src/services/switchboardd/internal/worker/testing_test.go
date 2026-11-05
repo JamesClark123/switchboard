@@ -50,6 +50,7 @@ type fakeManager struct {
 
 func (m *fakeManager) Get(id string) (*pb.Sandbox, error) { return m.reg.Get(id) }
 func (m *fakeManager) List() ([]*pb.Sandbox, error)       { return m.reg.List() }
+func (m *fakeManager) ApplyCheckNote(*pb.Sandbox)         {}
 func (m *fakeManager) Emit(sb *pb.Sandbox) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

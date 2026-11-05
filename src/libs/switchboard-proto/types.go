@@ -8,6 +8,9 @@ package switchboardproto
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
@@ -262,4 +265,112 @@ func DecodeOptionValue(s string) (any, error) {
 		return nil, err
 	}
 	return v, nil
+}
+
+// --- SWI-25 A6: detached-agent notes ---
+
+// DetachedDetail is the detail every detached-agent note carries after its
+// fixed prefix (SWI-25 A6): the agent's last known state, when it was last
+// seen, and its live process count when known, e.g. " (last: working, 10:42,
+// 4 procs)". The time is relative to now ("3m ago") for a note rendered live,
+// or the clock time when now is zero for one that is persisted or emitted once
+// (a notification, a run's halt note). Only a DETACHED check has a detail.
+func DetachedDetail(check *pb.AgentCheck, now time.Time) string {
+	if check.GetState() != pb.AgentCheck_STATE_DETACHED {
+		return ""
+	}
+	parts := []string{"last: " + LastStateLabel(check.GetLastStatus())}
+	if ts := check.GetLastSeenAt(); ts != nil {
+		parts = append(parts, SeenAt(ts.AsTime(), now))
+	}
+	switch n := check.GetProcesses(); {
+	case n == 1:
+		parts = append(parts, "1 proc")
+	case n > 1:
+		parts = append(parts, fmt.Sprintf("%d procs", n))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// sameDay reports whether a and b fall on the same calendar day (local).
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
+}
+
+// LastStateLabel words an agent's last known status for a detached-agent note
+// ("working", "waiting for input", "idle", "unknown state").
+func LastStateLabel(s pb.AgentStatus) string {
+	switch s {
+	case pb.AgentStatus_AGENT_STATUS_WORKING:
+		return "working"
+	case pb.AgentStatus_AGENT_STATUS_NEEDS_INPUT:
+		return "waiting for input"
+	case pb.AgentStatus_AGENT_STATUS_IDLE:
+		return "idle"
+	case pb.AgentStatus_AGENT_STATUS_WAITING:
+		return "waiting"
+	case pb.AgentStatus_AGENT_STATUS_STARTING:
+		return "starting"
+	default:
+		return "unknown state"
+	}
+}
+
+// SeenAt is when an agent was last seen: the clock time (local) when now is
+// zero, with the date unless it is today's; otherwise relative to now within a
+// day and the date beyond it.
+func SeenAt(t, now time.Time) string {
+	if now.IsZero() {
+		if !sameDay(t.Local(), time.Now()) {
+			return t.Local().Format("Jan 2 15:04")
+		}
+		return t.Local().Format("15:04")
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return t.Local().Format("Jan 2 15:04")
+}
+
+// --- SWI-25 A3: the check-failed note ---
+
+// checkFailedPrefix opens the note of a sandbox that can't be checked for a
+// detached agent (AgentCheck CHECK_FAILED).
+const checkFailedPrefix = "can't check for a detached agent"
+
+// CheckFailedNote is the note the owning daemon overlays on a worker run's
+// step_note, and the body of its notification and the sandbox row's note, while
+// the sandbox's detached-agent check keeps failing: the prefix and the last
+// probe error.
+func CheckFailedNote(err string) string { return checkFailedPrefix + ": " + err }
+
+// IsCheckFailedNote reports a CheckFailedNote: the orchestrator mirrors such a
+// note into its run and never pushes its own over it (the daemon restores the
+// earlier note itself once the check clears).
+func IsCheckFailedNote(note string) bool { return strings.HasPrefix(note, checkFailedPrefix) }
+
+// --- SWI-25 A1: the bulk Replace's shape, shared by the daemon and the TUI ---
+
+// BulkReplaceConcurrency is how many detached agents a daemon's bulk Replace
+// (ReplaceDetachedAgent) stops at a time, and BulkReplaceReapBound how long one
+// stop may take (the daemon's orphanKillWait + orphanProbeTimeout: TERM, a wait,
+// KILL, after a probe). The TUI sizes its deadline from both.
+const (
+	BulkReplaceConcurrency = 4
+	BulkReplaceReapBound   = 15 * time.Second
+)
+
+// BulkReplaceTimeout is how long a client gives a daemon to replace n agents:
+// the usual allowance plus the rounds of reaps.
+func BulkReplaceTimeout(n int) time.Duration {
+	rounds := (n + BulkReplaceConcurrency - 1) / BulkReplaceConcurrency
+	return 60*time.Second + time.Duration(rounds)*BulkReplaceReapBound
 }

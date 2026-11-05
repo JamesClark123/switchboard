@@ -552,7 +552,7 @@ func tryRefs(refs []string, op func(string) error) error {
 // Stop stops the container but RETAINS the workspace copy (FR-012a).
 func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
-	defer m.runtimeOp(id)()
+	defer m.runtimeOp(id, opStopping)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return nil, err
@@ -584,7 +584,7 @@ func (m *Manager) Stop(ctx context.Context, id string) (*pb.Sandbox, error) {
 // clearing any stale container first.
 func (m *Manager) Restart(ctx context.Context, id string, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
-	release := sync.OnceFunc(m.runtimeOp(id))
+	release := sync.OnceFunc(m.runtimeOp(id, opRestarting))
 	defer release()
 	sb, err := m.store.Get(id)
 	if err != nil {
@@ -729,7 +729,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 	// Held continuously from the stop through the re-seed and bring-up, so
 	// nothing spawns into the half-seeded workspace (research R14), and
 	// released before the bring-up observer starts the agent.
-	release := sync.OnceFunc(m.runtimeOp(id))
+	release := sync.OnceFunc(m.runtimeOp(id, opRefreshing))
 	defer release()
 
 	sb, err := m.store.Get(id)
@@ -840,7 +840,7 @@ func (m *Manager) Refresh(ctx context.Context, id string, onProgress func(duplic
 // one, as Restart and Refresh do, after the runtime lock is released.
 func (m *Manager) AddKit(ctx context.Context, id, kitSource string, newCommands []*pb.EscapeHatchCommand, newServices []*pb.KitService, onLog func(string)) (*pb.Sandbox, error) {
 	defer m.lifecycle.begin(id)()
-	release := sync.OnceFunc(m.runtimeOp(id))
+	release := sync.OnceFunc(m.runtimeOp(id, opKitAttach))
 	defer release()
 	sb, err := m.store.Get(id)
 	if err != nil {
@@ -915,7 +915,7 @@ func (m *Manager) ValidateKit(ctx context.Context, kitDir string) (string, error
 // Destroy removes the container and DELETES the retained copy (FR-012c).
 func (m *Manager) Destroy(ctx context.Context, id string) (bool, error) {
 	defer m.lifecycle.begin(id)()
-	defer m.runtimeOp(id)()
+	defer m.runtimeOp(id, opDestroying)()
 	sb, err := m.store.Get(id)
 	if err != nil {
 		return false, err

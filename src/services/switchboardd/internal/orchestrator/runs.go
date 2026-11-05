@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/registry"
 	"google.golang.org/protobuf/proto"
@@ -506,7 +507,7 @@ func (rt *runtime) clearWorkerRun(run *pb.Run) {
 // fresh WorkerRun would drop them), overlaid with the fields the orchestrator
 // owns: needs_review, hold and halted. A live record of another run (or none)
 // contributes nothing.
-func workerRunFor(run *pb.Run, live *pb.WorkerRun) *pb.WorkerRun {
+func workerRunFor(run *pb.Run, live *pb.WorkerRun, failing bool) *pb.WorkerRun {
 	out := &pb.WorkerRun{}
 	if live.GetId() == run.GetId() {
 		out = proto.Clone(live).(*pb.WorkerRun)
@@ -520,6 +521,14 @@ func workerRunFor(run *pb.Run, live *pb.WorkerRun) *pb.WorkerRun {
 	out.Halted = haltedOnWorker(run)
 	if sequenced(run) {
 		out.StepNote = run.GetStepNote()
+	}
+	if failing && live.GetId() == run.GetId() && swb.IsCheckFailedNote(live.GetStepNote()) {
+		// The owning daemon's overlay while the sandbox can't be checked for a
+		// detached agent (SWI-25 A3): kept, never pushed over; the daemon
+		// restores the earlier note itself (mirrorCheckNote follows it). Only
+		// while the check says so: a stale note on a cleared sandbox is pushed
+		// over like any other.
+		out.StepNote = live.GetStepNote()
 	}
 	return out
 }
@@ -540,8 +549,8 @@ func (rt *runtime) syncReviewFlag(runID string) {
 	if err != nil || !inFlight(live) || live.GetSandboxId() == "" {
 		return
 	}
-	cur := rt.sandboxRecord(live.GetSandboxId()).GetController().GetRun()
-	rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), workerRunFor(live, cur), live.GetId())
+	sb := rt.sandboxRecord(live.GetSandboxId())
+	rt.setWorkerRun(live.GetSandboxHostId(), live.GetSandboxId(), workerRunFor(live, sb.GetController().GetRun(), checkFailing(sb)), live.GetId())
 }
 
 // repairReviewFlag re-pushes the worker's needs_review flag when its record

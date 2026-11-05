@@ -25,6 +25,10 @@ func (r *fakeRunner) execed(sub string) bool {
 	return false
 }
 
+// errTestBusy is what the fake runtime locks refuse with: the lock's own text,
+// naming the operation (SWI-25 A5).
+var errTestBusy = errors.New("sandbox is stopping; try again")
+
 // failedNotifications counts the SERVICE_FAILED notifications s has emitted.
 func failedNotifications(s *Supervisor) int {
 	failed := 0
@@ -158,11 +162,11 @@ func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {
 	sb := runningSandbox("sb1", listeningService("web", port, inSandbox), listeningService("other", freePort(t), inSandbox))
 	s, _, runner, _ := newTestSupervisor(t, sb)
 	var busy atomic.Bool
-	s.SetRuntimeLock(func(string) (func(), bool) {
+	s.SetRuntimeLock(func(string) (func(), error) {
 		if busy.Load() {
-			return nil, false
+			return nil, errTestBusy
 		}
-		return func() {}, true
+		return func() {}, nil
 	})
 	if _, err := s.Start("sb1", "web"); err != nil {
 		t.Fatal(err)
@@ -174,7 +178,7 @@ func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {
 		}
 	})
 	busy.Store(true)
-	if _, err := s.Stop("sb1", "web"); !errors.Is(err, ErrSandboxBusy) {
+	if _, err := s.Stop("sb1", "web"); !errors.Is(err, ErrSandboxBusy) || err.Error() != errTestBusy.Error() {
 		t.Errorf("stop while busy = %v", err)
 	}
 	launches := runner.launchCount()
@@ -182,7 +186,7 @@ func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	inst := waitForState(t, s, "sb1", "other", pb.ServiceState_SERVICE_STATE_FAILED, 5*time.Second)
-	if inst.GetFailureDetail() != ErrSandboxBusy.Error() || inst.GetLocalPort() != 0 || runner.launchCount() != launches {
+	if inst.GetFailureDetail() != errTestBusy.Error() || inst.GetLocalPort() != 0 || runner.launchCount() != launches {
 		t.Errorf("busy start = %v (launches %d -> %d)", inst, launches, runner.launchCount())
 	}
 	busy.Store(false)
@@ -195,11 +199,11 @@ func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {
 // sandbox.Manager.TryRLockRuntime does (SWI-26).
 func rwRuntimeLock(s *Supervisor) *sync.RWMutex {
 	var rw sync.RWMutex
-	s.SetRuntimeLock(func(string) (func(), bool) {
+	s.SetRuntimeLock(func(string) (func(), error) {
 		if !rw.TryRLock() {
-			return nil, false
+			return nil, errTestBusy
 		}
-		return rw.RUnlock, true
+		return rw.RUnlock, nil
 	})
 	return &rw
 }
@@ -241,14 +245,14 @@ func startUnderOperationOn(t *testing.T, port uint32) (*Supervisor, *fakeRunner,
 	s.SetReadinessTimeout(200 * time.Millisecond)
 	var rw sync.RWMutex
 	var calls atomic.Int32
-	s.SetRuntimeLock(func(string) (func(), bool) {
+	s.SetRuntimeLock(func(string) (func(), error) {
 		if calls.Add(1) == 2 {
 			rw.Lock() // the operation takes the lock right after the launch
 		}
 		if !rw.TryRLock() {
-			return nil, false
+			return nil, errTestBusy
 		}
-		return rw.RUnlock, true
+		return rw.RUnlock, nil
 	})
 	if _, err := s.Start("sb1", "web"); err != nil {
 		t.Fatal(err)
@@ -494,11 +498,11 @@ func TestALaunchAfterAStopNeverRuns(t *testing.T) {
 func TestStartIsRefusedIfTheSandboxStoppedSinceItsRead(t *testing.T) {
 	sb := runningSandbox("sb1", listeningService("web", freePort(t), inSandbox))
 	s, lookup, runner, _ := newTestSupervisor(t, sb)
-	s.SetRuntimeLock(func(string) (func(), bool) {
+	s.SetRuntimeLock(func(string) (func(), error) {
 		stopped := runningSandbox("sb1", sb.GetServices()...)
 		stopped.State = pb.SandboxState_SANDBOX_STATE_STOPPED
 		lookup.set(stopped)
-		return func() {}, true
+		return func() {}, nil
 	})
 	if _, err := s.Start("sb1", "web"); err != nil {
 		t.Fatal(err)
@@ -627,11 +631,11 @@ func TestHandleKeepsTheRefTheLaunchRanAgainst(t *testing.T) {
 	_, port := listenAllInterfaces(t)
 	sb := runningSandbox("sb1", listeningService("web", port, inSandbox))
 	s, lookup, runner, _ := newTestSupervisor(t, sb)
-	s.SetRuntimeLock(func(string) (func(), bool) {
+	s.SetRuntimeLock(func(string) (func(), error) {
 		moved := runningSandbox("sb1", sb.GetServices()...)
 		moved.ContainerRef = "sb1-new-ref"
 		lookup.set(moved)
-		return func() {}, true
+		return func() {}, nil
 	})
 	if _, err := s.Start("sb1", "web"); err != nil {
 		t.Fatal(err)

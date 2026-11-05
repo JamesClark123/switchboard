@@ -94,7 +94,7 @@ func (s *Server) AttachAgent(stream pb.Switchboard_AttachAgentServer) error {
 	// R14): the developer's stop of the orphan comes first. Without it, the
 	// spawn below is refused beside one by the orphan gate.
 	if first.GetAttach().GetReplaceOrphan() && s.mgr != nil {
-		if err := s.mgr.ReapOrphan(stream.Context(), sandboxID, sandbox.ReapReplace); err != nil {
+		if err := s.mgr.ReapOrphan(stream.Context(), sandboxID, sandbox.ReapReplace); err != nil && !errors.Is(err, sandbox.ErrNothingToStop) {
 			return status.Error(codes.FailedPrecondition, err.Error())
 		}
 	}

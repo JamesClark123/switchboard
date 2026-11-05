@@ -51,8 +51,9 @@ type gateway struct {
 	// a lifecycle operation cancels when it asks for the lock (SWI-26,
 	// sandbox.Manager.HoldRuntimeRead): `sbx mcp load` starts a stopped sandbox,
 	// so it never runs inside an operation, and a load may take a minute, so no
-	// operation waits one out. nil = ungated.
-	holdRuntime func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), ok bool)
+	// operation waits one out. nil = ungated. A refusal names the operation
+	// holding the lock.
+	holdRuntime func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), err error)
 }
 
 // register adds the per-worker server and, when the sandbox is running, loads
@@ -84,7 +85,7 @@ func (g *gateway) register(ctx context.Context, sandboxID, token string, resolve
 // errLoadBusy refuses a load while a lifecycle operation holds the sandbox's
 // runtime lock, or reports one that operation cancelled; Service.loadWhen
 // retries it.
-var errLoadBusy = errors.New("sandbox is busy")
+var errLoadBusy = errors.New("gateway load refused")
 
 // load attaches the registration to the sandbox live, under the sandbox's runtime
 // lock (read, try-lock: errLoadBusy while an operation holds it). resolve runs under
@@ -96,9 +97,9 @@ func (g *gateway) load(ctx context.Context, sandboxID string, resolve func() (st
 	}
 	lctx := ctx
 	if g.holdRuntime != nil {
-		held, unlock, ok := g.holdRuntime(ctx, sandboxID)
-		if !ok {
-			return errLoadBusy
+		held, unlock, err := g.holdRuntime(ctx, sandboxID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errLoadBusy, err)
 		}
 		defer unlock()
 		lctx = held

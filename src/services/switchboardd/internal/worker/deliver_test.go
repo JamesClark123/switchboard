@@ -288,6 +288,34 @@ func TestDeliverReportsAFailedAgentStart(t *testing.T) {
 	}
 }
 
+// TestStartAgentReportsWhatItDidNotStart (SWI-25 A1): the bulk Replace says
+// "replaced" on a nil return, so nil must mean an agent is live or just started.
+func TestStartAgentReportsWhatItDidNotStart(t *testing.T) {
+	bare := newEnv(t, "")
+	sb := bare.sandbox(t, "ffffffff-7", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	bare.svc.agents = nil
+	if err := bare.svc.StartAgent(sb.GetId()); err == nil {
+		t.Error("no agent registry: want an error")
+	}
+
+	e, _, created := deliverEnv(t, false)
+	if err := e.svc.StartAgent("missing"); err == nil || *created != 0 {
+		t.Errorf("no record: err %v, %d sessions", err, *created)
+	}
+	sb = e.sandbox(t, "ffffffff-8", "w", pb.SandboxState_SANDBOX_STATE_RUNNING)
+	e.svc.markBringUp(sb.GetId(), 1)
+	if err := e.svc.StartAgent(sb.GetId()); !errors.Is(err, ErrStartDeferred) || *created != 0 {
+		t.Errorf("mid bring-up: err %v, %d sessions", err, *created)
+	}
+	e.svc.markBringUp(sb.GetId(), -1)
+	if err := e.svc.StartAgent(sb.GetId()); err != nil || !e.svc.agents.Live(sb.GetId()) || *created != 1 {
+		t.Errorf("start: err %v, live %v, %d sessions", err, e.svc.agents.Live(sb.GetId()), *created)
+	}
+	if err := e.svc.StartAgent(sb.GetId()); err != nil || *created != 1 {
+		t.Errorf("already live: err %v, %d sessions", err, *created)
+	}
+}
+
 // SWI-15: a prompt is never typed into an agent that has not reported ready.
 // With no session the agent is started and the run refused (it stays queued);
 // a live agent still starting is refused without a second session.

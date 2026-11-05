@@ -141,8 +141,8 @@ func (s *Supervisor) lockedListenState(ctx context.Context, sandboxID, ref strin
 	if ctx.Err() != nil {
 		return listenNone
 	}
-	unlock, ok := s.lockRuntime(sandboxID)
-	if !ok {
+	unlock, err := s.lockRuntime(sandboxID)
+	if err != nil {
 		return listenNone
 	}
 	defer unlock()

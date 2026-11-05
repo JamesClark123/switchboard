@@ -372,7 +372,7 @@ func TestWorkerRunFor(t *testing.T) {
 	}
 	for name, c := range cases {
 		before := proto.Clone(live)
-		if got := workerRunFor(c.run, c.live); !proto.Equal(got, c.want) {
+		if got := workerRunFor(c.run, c.live, false); !proto.Equal(got, c.want) {
 			t.Errorf("%s:\n got %v\nwant %v", name, got, c.want)
 		}
 		if !proto.Equal(before, live) {

@@ -52,6 +52,11 @@ type runtimeLocks struct {
 // cancels before it waits for the write lock. opsWaiting refuses new ones from
 // that sweep until the operation's Lock call makes rw refuse them itself. Both
 // are guarded by holdsMu, a leaf (the TryRLock under it never waits).
+//
+// ops names the lifecycle operations holding or waiting for rw ("stopping"),
+// in order (the first holds, the rest wait), and gateOp the probe, reap or
+// spawn holding the orphan gate; a refused try-lock reads them for its refusal
+// (SWI-25 A5). Both under holderMu, a leaf.
 type sandboxLocks struct {
 	rw     sync.RWMutex
 	orphan sync.Mutex
@@ -60,17 +65,32 @@ type sandboxLocks struct {
 	holds      map[uint64]context.CancelFunc
 	holdSeq    uint64
 	opsWaiting int
+
+	holderMu sync.Mutex
+	ops      []*opRecord
+	gateOp   string
+}
+
+// opRecord is one lifecycle operation on the lock: waiting for it, or holding
+// it (holds). The RWMutex grants waiters in no particular order, so the holder
+// is marked once its Lock returns rather than inferred from arrival.
+type opRecord struct {
+	op    string
+	holds bool
 }
 
 // beginOp cancels the MCP calls in flight and refuses new ones, ahead of an
-// operation's rw.Lock; endOp undoes the refusal once that Lock has returned.
-func (l *sandboxLocks) beginOp() {
+// operation's rw.Lock, and records the operation as waiting for the lock;
+// endOp undoes the refusal once that Lock has returned.
+func (l *sandboxLocks) beginOp(op string) *opRecord {
+	r := l.addOp(op, false)
 	l.holdsMu.Lock()
 	defer l.holdsMu.Unlock()
 	l.opsWaiting++
 	for _, cancel := range l.holds {
 		cancel()
 	}
+	return r
 }
 
 func (l *sandboxLocks) endOp() {
@@ -78,6 +98,95 @@ func (l *sandboxLocks) endOp() {
 	defer l.holdsMu.Unlock()
 	l.opsWaiting--
 }
+
+// addOp records an operation waiting for (or, with holds, holding) the lock.
+func (l *sandboxLocks) addOp(op string, holds bool) *opRecord {
+	r := &opRecord{op: op, holds: holds}
+	l.holderMu.Lock()
+	l.ops = append(l.ops, r)
+	l.holderMu.Unlock()
+	return r
+}
+
+// holdsOp marks r as the operation holding the lock (its Lock returned).
+func (l *sandboxLocks) holdsOp(r *opRecord) {
+	l.holderMu.Lock()
+	r.holds = true
+	l.holderMu.Unlock()
+}
+
+// removeOp forgets r: the operation released the lock. The waiters' records
+// stay, so a refusal keeps naming the operation that holds or waits.
+func (l *sandboxLocks) removeOp(r *opRecord) {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	for i, o := range l.ops {
+		if o == r {
+			l.ops = append(l.ops[:i], l.ops[i+1:]...)
+			return
+		}
+	}
+}
+
+func (l *sandboxLocks) setGateOp(op string) {
+	l.holderMu.Lock()
+	l.gateOp = op
+	l.holderMu.Unlock()
+}
+
+// busy is the refusal of a try-lock of rw: the operation holding it, else the
+// first waiting for it (the try-lock is refused while one waits), or the
+// generic text if it released between the try and this read (still a
+// RuntimeBusyError, so both sentinels match).
+func (l *sandboxLocks) busy() error {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	if len(l.ops) == 0 {
+		return &RuntimeBusyError{Op: "sandbox is busy"}
+	}
+	for _, r := range l.ops {
+		if r.holds {
+			return &RuntimeBusyError{Op: "sandbox is " + r.op}
+		}
+	}
+	return &RuntimeBusyError{Op: "sandbox is " + l.ops[0].op}
+}
+
+// gateBusy is the refusal of a try-lock of the orphan gate.
+func (l *sandboxLocks) gateBusy() error {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	if l.gateOp == "" {
+		return &RuntimeBusyError{Op: "sandbox is busy"}
+	}
+	return &RuntimeBusyError{Op: l.gateOp}
+}
+
+// RuntimeBusyError refuses a runner call into a sandbox while a lifecycle
+// operation holds (or waits for) its runtime lock, or a probe, reap or spawn
+// holds its orphan gate (SWI-25 A5). Op names the holder: "sandbox is
+// stopping", "checking for a detached agent". It matches agent.ErrBusy, and
+// ErrBusy (the operation latch's sentinel, which the MCP RPCs map), in
+// errors.Is, so every mapping of either to FAILED_PRECONDITION still applies
+// and only the text changes.
+type RuntimeBusyError struct{ Op string }
+
+func (e *RuntimeBusyError) Error() string { return e.Op + "; try again" }
+
+func (e *RuntimeBusyError) Is(target error) bool { return target == agent.ErrBusy || target == ErrBusy }
+
+// The holders' names (RuntimeBusyError.Op). The lifecycle operations complete
+// "sandbox is …"; the orphan gate's are whole clauses.
+const (
+	opStopping   = "stopping"
+	opRestarting = "restarting"
+	opRefreshing = "refreshing"
+	opKitAttach  = "recreating for a kit attach"
+	opDestroying = "being destroyed"
+	gateProbing  = "checking for a detached agent"
+	gateReaping  = "the detached agent is being stopped"
+	gateStarting = "the agent is starting"
+)
 
 func (r *runtimeLocks) of(id string) *sandboxLocks {
 	r.mu.Lock()
@@ -95,25 +204,31 @@ func (r *runtimeLocks) of(id string) *sandboxLocks {
 
 // TryLockRuntime try-locks the sandbox's runtime lock for writing, never
 // waiting: the hold a lifecycle operation takes, for a caller that must
-// exclude every reader.
-func (m *Manager) TryLockRuntime(id string) (unlock func(), ok bool) {
+// exclude every reader. op names the caller for the refusals it causes
+// (RuntimeBusyError: "sandbox is <op>").
+func (m *Manager) TryLockRuntime(id, op string) (unlock func(), ok bool) {
 	l := m.runtime.of(id)
 	if !l.rw.TryLock() {
 		return nil, false
 	}
-	return l.rw.Unlock, true
+	r := l.addOp(op, true)
+	return func() {
+		l.removeOp(r) // before the release: a refusal never names a gone operation
+		l.rw.Unlock()
+	}, true
 }
 
 // TryRLockRuntime try-locks the sandbox's runtime lock for reading, never
-// waiting: refused only while a lifecycle operation holds it or waits for it.
-// It is the hold of every `sbx exec` outside the orphan gate (the service
-// supervisor's); an `sbx mcp` call takes HoldRuntimeRead.
-func (m *Manager) TryRLockRuntime(id string) (unlock func(), ok bool) {
+// waiting: refused, with a RuntimeBusyError naming the operation, only while a
+// lifecycle operation holds it or waits for it. It is the hold of every `sbx
+// exec` outside the orphan gate (the service supervisor's); an `sbx mcp` call
+// takes HoldRuntimeRead.
+func (m *Manager) TryRLockRuntime(id string) (unlock func(), err error) {
 	l := m.runtime.of(id)
 	if !l.rw.TryRLock() {
-		return nil, false
+		return nil, l.busy()
 	}
-	return l.rw.RUnlock, true
+	return l.rw.RUnlock, nil
 }
 
 // HoldRuntimeRead is TryRLockRuntime for an `sbx mcp` call, which may run for a
@@ -124,13 +239,14 @@ func (m *Manager) TryRLockRuntime(id string) (unlock func(), ok bool) {
 // the operation waits for this hold with nothing to give up on: the call kills
 // `sbx`'s process group and doesn't wait on what escapes it (SbxRunner.runHeld,
 // mcp.CLI.Load). A caller sees the cancel as its context ending while ctx has not.
-// unlock releases the hold.
-func (m *Manager) HoldRuntimeRead(ctx context.Context, id string) (held context.Context, unlock func(), ok bool) {
+// unlock releases the hold. A refusal is a RuntimeBusyError naming the
+// operation.
+func (m *Manager) HoldRuntimeRead(ctx context.Context, id string) (held context.Context, unlock func(), err error) {
 	l := m.runtime.of(id)
 	l.holdsMu.Lock()
 	defer l.holdsMu.Unlock()
 	if l.opsWaiting > 0 || !l.rw.TryRLock() {
-		return nil, nil, false
+		return nil, nil, l.busy()
 	}
 	held, cancel := context.WithCancel(ctx)
 	if l.holds == nil {
@@ -145,66 +261,68 @@ func (m *Manager) HoldRuntimeRead(ctx context.Context, id string) (held context.
 		l.holdsMu.Unlock()
 		cancel()
 		l.rw.RUnlock()
-	}, true
+	}, nil
 }
 
-// errRuntimeBusy refuses a runner call into a sandbox while a lifecycle
-// operation holds its runtime lock, or reports one that operation cancelled. It
-// wraps ErrBusy, so the gRPC layer maps it like an operation-latch refusal.
-var errRuntimeBusy = &busyError{label: "a stop, restart, refresh or kit attach"}
-
 // withRuntimeRead runs fn under the sandbox's runtime lock, read (HoldRuntimeRead),
-// or refuses with errRuntimeBusy while a lifecycle operation holds it. A failure
-// because an operation cancelled fn is errRuntimeBusy too.
+// or refuses with a RuntimeBusyError naming the lifecycle operation holding it
+// (the gRPC layer maps it like an operation-latch refusal). A failure because an
+// operation cancelled fn is the same refusal.
 func (m *Manager) withRuntimeRead(ctx context.Context, id string, fn func(ctx context.Context) error) error {
-	held, unlock, ok := m.HoldRuntimeRead(ctx, id)
-	if !ok {
-		return errRuntimeBusy
+	held, unlock, err := m.HoldRuntimeRead(ctx, id)
+	if err != nil {
+		return err
 	}
 	defer unlock()
-	err := fn(held)
+	err = fn(held)
 	if err != nil && held.Err() != nil && ctx.Err() == nil {
-		return errRuntimeBusy
+		return m.runtime.of(id).busy()
 	}
 	return err
 }
 
 // orphanGate try-locks the runtime lock for reading and then the sandbox's
-// orphan gate, the hold of a probe, a reap and a spawn. It refuses while a
-// lifecycle operation holds the runtime lock or another of the three holds the
-// gate.
-func (m *Manager) orphanGate(id string) (unlock func(), ok bool) {
+// orphan gate, the hold of a probe, a reap and a spawn; op names the caller
+// for the refusals it causes (gateProbing, gateReaping, gateStarting). It
+// refuses, with a RuntimeBusyError naming the holder, while a lifecycle
+// operation holds the runtime lock or another of the three holds the gate.
+func (m *Manager) orphanGate(id, op string) (unlock func(), err error) {
 	l := m.runtime.of(id)
 	if !l.rw.TryRLock() {
-		return nil, false
+		return nil, l.busy()
 	}
 	if !l.orphan.TryLock() {
 		l.rw.RUnlock()
-		return nil, false
+		return nil, l.gateBusy()
 	}
+	l.setGateOp(op)
 	return func() {
+		l.setGateOp("")
 		l.orphan.Unlock()
 		l.rw.RUnlock()
-	}, true
+	}, nil
 }
 
-// runtimeOp takes the sandbox's runtime lock for a lifecycle operation,
-// waiting for it, after cancelling the MCP calls holding it (HoldRuntimeRead):
+// runtimeOp takes the sandbox's runtime lock for a lifecycle operation named
+// op (opStopping, …; the refusals it causes name it), waiting for it, after
+// cancelling the MCP calls holding it (HoldRuntimeRead):
 // what's left to wait for has its own bound, seconds for most readers, and up to
 // about 50 s for a developer's service stop and 90 s for a port publish. The
 // returned func releases it and then applies the outcome rule (research R14) from
 // the state the operation wrote: a sandbox RUNNING with an orphan record or
 // unknown is marked unknown and probed once. The STOPPED and destroyed branch runs
 // when that state is published (emit).
-func (m *Manager) runtimeOp(id string) func() {
+func (m *Manager) runtimeOp(id, op string) func() {
 	l := m.runtime.of(id)
-	l.beginOp()
+	r := l.beginOp(op)
 	l.rw.Lock()
+	l.holdsOp(r)
 	l.endOp()
 	return func() {
 		// The operation may have started or stopped the container: a listing
 		// taken before now must not answer the outcome rule's probe.
 		m.lists.invalidate()
+		l.removeOp(r) // before the release: a refusal never names a gone operation
 		l.rw.Unlock()
 		sb, err := m.store.Get(id)
 		if err == nil && sb.GetState() == pb.SandboxState_SANDBOX_STATE_RUNNING && m.orphans.pending(id) {
@@ -219,18 +337,14 @@ func (m *Manager) runtimeOp(id string) func() {
 // is being checked for, it refuses (agent.ErrDetached / agent.ErrChecking) and
 // schedules a re-probe, debounced per sandbox; while a lifecycle operation
 // holds the runtime lock, or a probe or reap holds the orphan gate, it refuses
-// with agent.ErrBusy. On a pass the caller holds the runtime lock for reading
-// and the orphan gate until release.
+// with a RuntimeBusyError (agent.ErrBusy) naming the holder. On a pass the
+// caller holds the runtime lock for reading and the orphan gate until release.
 func (m *Manager) Admit(id string) (release func(), err error) {
 	if err := m.orphans.refusal(id); err != nil {
 		m.orphans.refused(id)
 		return nil, err
 	}
-	unlock, ok := m.orphanGate(id)
-	if !ok {
-		return nil, agent.ErrBusy
-	}
-	return unlock, nil
+	return m.orphanGate(id, gateStarting)
 }
 
 // SetStopDrain registers the best-effort drain a stop runs under the runtime

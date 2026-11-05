@@ -23,21 +23,26 @@ Paths are relative to the repository root:
 The developer accepted PR #21's *Proposed deferrals*. **This list overrides the task text below** wherever they
 conflict; research R14 lists the same items as known limitations.
 
-- **No bulk Replace.** No `ReplaceDetachedAgent` RPC (T003, T047) and no `R` on the Workers view (T031). Each
-  detached worker is replaced with `t` → Replace (`AttachAgent.replace_orphan`). The `ReapOrphan` call-site guard
-  test (T047) allows two callers: `AttachAgent` with `replace_orphan` and `DeliverWorkerStep.restart`.
-- **No aggregated start-up notification.** Every orphan record gets its own `NOTIFICATION_KIND_AGENT_DETACHED` once
-  (T047 *Surfacing*); there is no host-level notice or `enter` → Workers routing (T027).
-- **No `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and no run-note overlay.** Field number 11 of `NotificationKind` is
-  reserved, not added (T003). After `orphanUnknownLimit` or 3 failures the sandbox becomes `agent_check`
-  CHECK_FAILED and the row note reads `can't check for a detached agent: <error>`; `controller.run.step_note` is
-  **not** touched, and the `t` dialog offers *Restart sandbox* / *Wait* (T047, T027, T029).
-- **No probe priority order.** Start-up probes run in list order (T047).
-- **Generic busy message.** Every `runtimeMu` refusal is `ErrBusy` with the text `sandbox is busy; try again`; it
-  doesn't name the operation (T047, T048).
-- **Plain orphan notes.** The row note is `agent detached by a daemon restart — t to Replace or Wait`, and halt notes
-  say `agent detached by a daemon restart`, without the last-seen state or time. `AgentCheck` keeps its fields;
-  `last_status` is still filled (for the `t` dialog), `processes` may stay 0.
+- ~~**No bulk Replace.**~~ *(SWI-25 A1: `ReplaceDetachedAgent` replaces every named, or every idle detached,
+  sandbox's agent with an outcome each; `R` on the Workers view names the idle detached workers and calls it per
+  owning daemon. Workers with a run keep `t` → Replace. The `ReapOrphan` call-site guard allows three callers:
+  `AttachAgent` with `replace_orphan`, `DeliverWorkerStep.restart` and `grpc/orphan_rpcs.go`.)*
+- ~~**No aggregated start-up notification.**~~ *(SWI-25 A2: the start-up check's probes are a batch; the orphans
+  they find are notified once, as `NOTIFICATION_KIND_AGENTS_DETACHED_AT_START` with `NotificationEvent.affected`,
+  when the last probe ends. A lone orphan, or one found later, keeps its own `AGENT_DETACHED`. `enter` opens the
+  orchestrator's Workers view, a picker over several orchestrators, or the list.)*
+- ~~**No `NOTIFICATION_KIND_AGENT_CHECK_FAILED` and no run-note overlay.**~~ *(SWI-25 A3: kind 11, raised once as
+  the check flips to CHECK_FAILED; the failure is overlaid on `controller.run.step_note` while it lasts and the
+  earlier note restored after; the orchestrator mirrors it into `Run.step_note` and never pushes over it.)*
+- ~~**No probe priority order.**~~ *(SWI-25 A4: idle workers, then workers with a run, then the rest, fed through
+  the semaphore in that order.)*
+- ~~**Generic busy message.**~~ *(SWI-25 A5: `sandbox.RuntimeBusyError` names the holder: `sandbox is stopping; try
+  again`, `checking for a detached agent; try again`, …; it still matches `agent.ErrBusy`.)*
+- ~~**Plain orphan notes.**~~ *(SWI-25 A6: the row note, notification and halt notes append the agent's last state,
+  time and process count after the unchanged prefix, e.g. `agent detached by a daemon restart (last: working,
+  10:42, 4 procs) — t to Replace or Wait`; `switchboardproto.DetachedDetail`. A close's hold note keeps its short
+  text and puts the detail last, so a row that cuts it keeps what frees the worker: `agent detached; t → Replace frees
+  it; clear retries stopped (last: working, 10:42, 4 procs)`.)*
 - **No PID-1/subreaper refusal** of first binds (T045/T046 as written otherwise). *(SWI-26 added the shared
   rate-limited `ListStatuses` for probe pre-checks and `runtimeMu` gating of `sbx mcp load/unload` and `sbx ports`;
   see research.md R14, Amendment.)*

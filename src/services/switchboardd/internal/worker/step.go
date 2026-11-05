@@ -101,7 +101,7 @@ func (s *Service) SetOrphanReaper(r OrphanReaper) { s.reaper = r }
 // `sbx mcp load` takes (SWI-26, sandbox.Manager.HoldRuntimeRead): refused
 // while a stop, restart, refresh or kit attach holds the sandbox, and cancelled
 // when one asks for it, which leaves the load to that operation's bring-up.
-func (s *Service) SetRuntimeLock(fn func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), ok bool)) {
+func (s *Service) SetRuntimeLock(fn func(ctx context.Context, sandboxID string) (held context.Context, unlock func(), err error)) {
 	s.gw.holdRuntime = fn
 }
 
@@ -113,7 +113,7 @@ func (s *Service) restartAgent(ctx context.Context, sandboxID string) error {
 	if s.reaper == nil {
 		return fmt.Errorf("%w: detached agents are not handled here", ErrPrecondition)
 	}
-	if err := s.reaper.ReapOrphan(ctx, sandboxID, sandbox.ReapRestart); err != nil {
+	if err := s.reaper.ReapOrphan(ctx, sandboxID, sandbox.ReapRestart); err != nil && !errors.Is(err, sandbox.ErrNothingToStop) {
 		return fmt.Errorf("%w: %v", ErrPrecondition, err)
 	}
 	if err := s.startAgentErr(sandboxID); err != nil {

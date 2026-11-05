@@ -26,10 +26,20 @@ const (
 // not own.
 var ErrUnknownSandbox = errors.New("unknown sandbox")
 
-// ErrSandboxBusy refuses a service start or stop inside a sandbox while a
-// lifecycle operation (stop, restart, refresh, kit attach, destroy) holds the
-// sandbox's runtime lock (SWI-17, research R14).
+// ErrSandboxBusy is what every refusal of a service start or stop inside a
+// sandbox while a lifecycle operation (stop, restart, refresh, kit attach,
+// destroy) holds the sandbox's runtime lock matches (SWI-17, research R14).
+// The refusal's text is the lock's own, naming the operation ("sandbox is
+// stopping; try again", SWI-25 A5); this text is the fallback.
 var ErrSandboxBusy = errors.New("sandbox is busy; try again")
+
+// sandboxBusy is one such refusal: the runtime lock's error, matched by
+// ErrSandboxBusy.
+type sandboxBusy struct{ err error }
+
+func (e *sandboxBusy) Error() string        { return e.err.Error() }
+func (e *sandboxBusy) Unwrap() error        { return e.err }
+func (e *sandboxBusy) Is(target error) bool { return target == ErrSandboxBusy }
 
 // ErrServiceNotDeclared is returned when a request names a service absent from the
 // sandbox's persisted set. This is the security boundary: only a declared name can
@@ -100,8 +110,8 @@ type Supervisor struct {
 
 	// tryRuntime try-locks a sandbox's runtime lock for reading (SWI-17,
 	// research R14; SWI-26: sandbox.Manager.TryRLockRuntime); nil = never
-	// gated. It never waits.
-	tryRuntime func(sandboxID string) (unlock func(), ok bool)
+	// gated. It never waits; a refusal names the operation holding the lock.
+	tryRuntime func(sandboxID string) (unlock func(), err error)
 }
 
 // NewSupervisor constructs a Supervisor.
@@ -125,17 +135,22 @@ func NewSupervisor(sandboxes SandboxLookup, runner Runner, emitter Emitter) *Sup
 // probe, a reap or each other. The read lock is shared, so a developer's start
 // or stop goes ahead while a probe or reap is in flight; a stop and its own
 // instance's launch exclude each other on the handle (procHandle.launch).
-func (s *Supervisor) SetRuntimeLock(fn func(sandboxID string) (unlock func(), ok bool)) {
+func (s *Supervisor) SetRuntimeLock(fn func(sandboxID string) (unlock func(), err error)) {
 	s.tryRuntime = fn
 }
 
-// lockRuntime try-locks the sandbox's runtime lock, or reports ok with a no-op
-// unlock when none is registered.
-func (s *Supervisor) lockRuntime(sandboxID string) (func(), bool) {
+// lockRuntime try-locks the sandbox's runtime lock, or returns a no-op unlock
+// when none is registered. A refusal is the lock's own error, naming the
+// operation holding it, matched by ErrSandboxBusy.
+func (s *Supervisor) lockRuntime(sandboxID string) (func(), error) {
 	if s.tryRuntime == nil {
-		return func() {}, true
+		return func() {}, nil
 	}
-	return s.tryRuntime(sandboxID)
+	unlock, err := s.tryRuntime(sandboxID)
+	if err != nil {
+		return nil, &sandboxBusy{err: err}
+	}
+	return unlock, nil
 }
 
 // runtimeHoldTimeout bounds a readiness check, which is a cheap read of /proc
@@ -153,7 +168,7 @@ const runtimeRetryStep = 50 * time.Millisecond
 // teardown cancels ctx when it settles the instance itself.
 func (s *Supervisor) awaitRuntime(ctx context.Context, sandboxID string) (func(), bool) {
 	for {
-		if unlock, ok := s.lockRuntime(sandboxID); ok {
+		if unlock, err := s.lockRuntime(sandboxID); err == nil {
 			if ctx.Err() != nil { // cancelled meanwhile: the canceller owns it
 				unlock()
 				return nil, false

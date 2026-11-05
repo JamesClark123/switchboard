@@ -196,7 +196,7 @@ func TestWorkersViewHoldsAndTerminal(t *testing.T) {
 	m = openDetail(t, m)
 	v := m.View()
 	for _, want := range []string{"⚑ needing the developer — open its terminal and run /clear run-d", "⚑ run-h halted: step not accepted",
-		"⚑ cleaning up run-c · waiting: agent busy", "⚑ cleaning up run-p", "agent detached by a daemon restart — t to Replace or Wait", "t terminal"} {
+		"⚑ cleaning up run-c · waiting: agent busy", "⚑ cleaning up run-p", "agent detached by a daemon restart (last: idle, Oct 28 10:42) — t to Replace or Wait", "t terminal"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("workers view missing %q:\n%s", want, v)
 		}
