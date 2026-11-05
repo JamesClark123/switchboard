@@ -20,10 +20,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/editor"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/forward"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/notify"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/store"
-	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/vscode"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 )
 
@@ -307,10 +307,24 @@ type Model struct {
 	subscribed map[string]bool
 	subErr     error
 
-	// US5: groups + VS Code.
+	// US5: groups. SWI-24: the editor launcher and the override variables
+	// (editor ID -> raw value) the `v` key uses.
 	groupStore *store.GroupStore
 	groups     groupsState
-	opener     *vscode.Opener
+	launcher   editor.Launcher
+	editorBins map[string]string
+
+	// --- SWI-24: the status line's hold and the size check (status.go) ---
+	// vFail is the last `v` failure or refusal (error style while shown);
+	// vHold a message held through an in-place attach; termFail the attach,
+	// terminal or daemon-drop message a release joins instead of replacing;
+	// sizeKey what the size check last read; formHeights the last height
+	// applied to each open huh form (huh has no getter).
+	vFail       vFailState
+	vHold       vHoldState
+	termFail    string
+	sizeKey     sizeKey
+	formHeights formHeights
 
 	// self-update: the running client version, the latest release seen, a
 	// dismissable banner when an update is available, the in-flight update
@@ -446,6 +460,7 @@ func New(daemon Daemon, srcRoot string) Model {
 		sourceAdds:       map[string]*sourceAddInFlight{},
 		opLogs:           map[string]*opLog{},
 		prefs:            store.DefaultSettings(),
+		settingsView:     settingsState{notSaved: map[string]bool{}},
 		listLoading:      true, // the first list load is in flight until it arrives
 		inboxHosts:       map[string]string{},
 		subs:             map[string]client.EventStream{},
@@ -487,10 +502,18 @@ func (m Model) WithTerminal(cmd string) Model {
 	return m
 }
 
-// WithGroups attaches the group store and VS Code opener (US5).
-func (m Model) WithGroups(gs *store.GroupStore, opener *vscode.Opener) Model {
+// WithGroups attaches the group store (US5).
+func (m Model) WithGroups(gs *store.GroupStore) Model {
 	m.groupStore = gs
-	m.opener = opener
+	return m
+}
+
+// WithEditor attaches the editor launcher and the override variables' raw
+// values by editor ID (SWI-24, FR-502), so `v` can open a sandbox's workspace
+// folder in the editor chosen on the settings screen.
+func (m Model) WithEditor(l editor.Launcher, bins map[string]string) Model {
+	m.launcher = l
+	m.editorBins = bins
 	return m
 }
 
@@ -676,14 +699,19 @@ func (m Model) Init() tea.Cmd {
 
 // Update routes messages by screen.
 // Update handles one message, then reconciles the guard's layers with whatever
-// surface the message left open (SWI-9: the lifetime invariant).
+// surface the message left open (SWI-9: the lifetime invariant), opens a
+// parked confirm or follow-up, releases a held `v` message and resizes the
+// active surface to the status line (SWI-24), in that order: the two open…
+// steps can set the status, and the size check must see the final one.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.handleMsg(msg)
 	if nm, ok := next.(Model); ok {
 		nm.reconcileGuardLayers()
 		nm, ocmd := nm.openParkedOverride(msg)
 		nm, fcmd := nm.openDeferredMcpFollowups(msg)
-		return nm, tea.Batch(cmd, ocmd, fcmd)
+		nm.releaseHeld()
+		scmd := nm.checkSizes()
+		return nm, tea.Batch(cmd, ocmd, fcmd, scmd)
 	}
 	return next, cmd
 }
@@ -701,7 +729,15 @@ func (m Model) handleMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.enlarge.open {
 			m.enlarge.resize(m.width, m.height)
 		}
+		m.resizeEditorInput()
 		return m, nil
+
+	case editorOutcomeMsg:
+		return m.handleEditorOutcome(msg)
+	case vHoldLimitMsg:
+		return m.handleVHoldLimit(msg)
+	case editorExitMsg:
+		return m.handleEditorExit(msg)
 
 	case termOpenedMsg:
 		return m.handleTermOpened(msg)
@@ -1030,6 +1066,14 @@ func (m Model) forwardScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case screenNotifications:
 		m.notifyList, cmd = m.notifyList.Update(msg)
+	case screenSettings:
+		// The Custom command input is focused: a paste's command (a non-key
+		// message) and the cursor blink must reach it (SWI-24, research R11).
+		if m.settingsView.mode == settingsInput {
+			m.settingsView.input, cmd = m.settingsView.input.Update(msg)
+			return m, cmd
+		}
+		m.list, cmd = m.list.Update(msg)
 	case screenMcp:
 		if m.mcpView.form != nil {
 			return m.advanceMcpForm(msg)
@@ -1168,11 +1212,88 @@ func (m Model) View() string {
 	return out
 }
 
+// activeHelp is the help footer the current screen renders: the one screen →
+// help map, which viewScreen passes to chrome and the status limit reads
+// (SWI-24, research R9), so the two can't drift.
+func (m Model) activeHelp() helpBindings {
+	switch m.screen {
+	case screenLaunch:
+		return m.launchHelp()
+	case screenConfirm:
+		return m.confirmHelp()
+	case screenApproval:
+		return m.approvalHelp()
+	case screenSources:
+		return m.sourcesHelp()
+	case screenSandboxMcp:
+		return m.sandboxMcpHelp()
+	case screenAttachPick:
+		return m.attachPickHelp()
+	case screenOpLog:
+		return m.opLogHelp()
+	case screenTerminal:
+		return m.terminalHelp()
+	case screenJobs:
+		if m.jobs.results != nil {
+			return m.runResultsHelp()
+		}
+	case screenMcp:
+		if m.mcpView.mcpModalOpen() {
+			return m.mcpHelp() // the overlay has focus: no enlarge hint
+		}
+	}
+	var hb helpBindings
+	switch m.screen {
+	case screenRename:
+		hb = m.renameHelp()
+	case screenTag:
+		hb = m.tagHelp()
+	case screenConfigEditor:
+		hb = m.editorHelp()
+	case screenConfigPicker:
+		hb = m.pickerHelp()
+	case screenKitPicker:
+		hb = m.kitPickerHelp()
+	case screenKitEditor:
+		hb = m.kitEditorHelp()
+	case screenHosts:
+		hb = m.hostsHelp()
+	case screenNotifications:
+		hb = m.notificationsHelp()
+	case screenGroups:
+		hb = m.groupsHelp()
+	case screenUpdate:
+		hb = m.updateHelpBindings()
+	case screenRuns:
+		hb = m.runsHelp()
+	case screenServices:
+		hb = m.servicesHelp()
+	case screenDaemons:
+		hb = m.daemonsHelp()
+	case screenMcp:
+		hb = m.mcpHelp()
+	case screenSecrets:
+		hb = m.secretsHelp()
+	case screenSettings:
+		hb = m.settingsHelp()
+	case screenDaemonOrchs:
+		hb = m.daemonOrchsHelp()
+	case screenJobs:
+		hb = m.jobsHelp()
+	case screenOrchDetail:
+		hb = m.orchDetailHelp()
+	default:
+		hb = m.listHelp()
+	}
+	return m.withEnlargeHint(hb)
+}
+
 // viewScreen renders the current screen and the overlays that belong to it.
 func (m Model) viewScreen() string {
+	hb := m.activeHelp()
 	// The launch flow is a modal layer floating over the list page.
 	if m.screen == screenLaunch {
-		bg := m.chrome(m.viewList(), m.launchHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.launchModal(), m.width, m.height)
 	}
 
@@ -1183,16 +1304,16 @@ func (m Model) viewScreen() string {
 		var bg string
 		switch m.confirm.returnTo {
 		case screenDaemonOrchs:
-			bg = m.chrome(m.viewDaemonOrchs(), m.confirmHelp())
+			bg = m.chrome(m.viewDaemonOrchs(), hb)
 		case screenJobs:
-			bg = m.chrome(m.viewJobs(), m.confirmHelp())
+			bg = m.chrome(m.viewJobs(), hb)
 		case screenOrchDetail:
-			bg = m.chrome(m.viewOrchDetail(), m.confirmHelp())
+			bg = m.chrome(m.viewOrchDetail(), hb)
 		case screenLaunch:
 			// the reasoning setup's Rebuild confirm keeps the setup in view
-			bg = overlayCenter(m.chrome(m.viewList(), m.confirmHelp()), m.launchModal(), m.width, m.height)
+			bg = overlayCenter(m.chrome(m.viewList(), hb), m.launchModal(), m.width, m.height)
 		default:
-			bg = m.chrome(m.viewList(), m.confirmHelp())
+			bg = m.chrome(m.viewList(), hb)
 		}
 		return overlayCenter(bg, m.confirmModal(), m.width, m.height)
 	}
@@ -1200,28 +1321,28 @@ func (m Model) viewScreen() string {
 	// The escape-hatch approval gate floats over the list (feature 005), same path
 	// as the destructive-action confirm.
 	if m.screen == screenApproval {
-		bg := m.chrome(m.viewList(), m.approvalHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.approvalModal(), m.width, m.height)
 	}
 
 	// The sources editor floats over the list too (feature 007), so the row it
 	// edits stays visible while folders are added or marked for removal.
 	if m.screen == screenSources {
-		bg := m.chrome(m.viewList(), m.sourcesHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.sourcesModal(), m.width, m.height)
 	}
 
 	// The per-sandbox MCP overlay floats over the list as well (feature 008,
 	// FR-102): the row whose servers it shows stays visible.
 	if m.screen == screenSandboxMcp {
-		bg := m.chrome(m.viewList(), m.sandboxMcpHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.sandboxMcpModal(), m.width, m.height)
 	}
 
 	// The attach picker (feature 009, `o`) floats over the list like the launch
 	// modal: the row being attached stays in view.
 	if m.screen == screenAttachPick {
-		bg := m.chrome(m.viewList(), m.attachPickHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.attachModal(), m.width, m.height)
 	}
 	// The start-up notice's orchestrator picker floats over the inbox (SWI-25 A2).
@@ -1233,73 +1354,72 @@ func (m Model) viewScreen() string {
 	// The sbx output viewer floats over the list for the same reason: the row
 	// whose launch/attach/refresh it shows stays in view.
 	if m.screen == screenOpLog {
-		bg := m.chrome(m.viewList(), m.opLogHelp())
+		bg := m.chrome(m.viewList(), hb)
 		return overlayCenter(bg, m.opLogModal(), m.width, m.height)
 	}
 
 	// The gateway view's authorization wait and host-command warning float over it
 	// (feature 008).
 	if m.screen == screenMcp && m.mcpView.mcpModalOpen() {
-		bg := m.chrome(m.viewMcp(), m.mcpHelp())
+		bg := m.chrome(m.viewMcp(), hb)
 		return overlayCenter(bg, m.mcpModal(), m.width, m.height)
 	}
 
 	// Open results (feature 010) floats over the Jobs screen.
 	if m.screen == screenJobs && m.jobs.results != nil {
-		bg := m.chrome(m.viewJobs(), m.runResultsHelp())
+		bg := m.chrome(m.viewJobs(), hb)
 		return overlayCenter(bg, m.runResultsModal(), m.width, m.height)
 	}
 
 	// The in-place terminal view takes the full body (US2).
 	if m.screen == screenTerminal {
-		return m.chrome(m.viewTerminal(), m.terminalHelp())
+		return m.chrome(m.viewTerminal(), hb)
 	}
 
 	var body string
-	var hb helpBindings
 	switch m.screen {
 	case screenRename:
-		body, hb = m.viewRename(), m.renameHelp()
+		body = m.viewRename()
 	case screenTag:
-		body, hb = m.viewTag(), m.tagHelp()
+		body = m.viewTag()
 	case screenConfigEditor:
-		body, hb = m.viewEditor(), m.editorHelp()
+		body = m.viewEditor()
 	case screenConfigPicker:
-		body, hb = m.viewPicker(), m.pickerHelp()
+		body = m.viewPicker()
 	case screenKitPicker:
-		body, hb = m.kitPicker.list.View(), m.kitPickerHelp()
+		body = m.kitPicker.list.View()
 	case screenKitEditor:
-		body, hb = m.viewKitEditor(), m.kitEditorHelp()
+		body = m.viewKitEditor()
 	case screenHosts:
-		body, hb = m.viewHosts(), m.hostsHelp()
+		body = m.viewHosts()
 	case screenNotifications:
-		body, hb = m.viewNotifications(), m.notificationsHelp()
+		body = m.viewNotifications()
 	case screenGroups:
-		body, hb = m.viewGroups(), m.groupsHelp()
+		body = m.viewGroups()
 	case screenUpdate:
-		body, hb = m.viewUpdate(), m.updateHelpBindings()
+		body = m.viewUpdate()
 	case screenRuns:
-		body, hb = m.viewRuns(), m.runsHelp()
+		body = m.viewRuns()
 	case screenServices:
-		body, hb = m.viewServices(), m.servicesHelp()
+		body = m.viewServices()
 	case screenDaemons:
-		body, hb = m.viewDaemons(), m.daemonsHelp()
+		body = m.viewDaemons()
 	case screenMcp:
-		body, hb = m.viewMcp(), m.mcpHelp()
+		body = m.viewMcp()
 	case screenSecrets:
-		body, hb = m.viewSecrets(), m.secretsHelp()
+		body = m.viewSecrets()
 	case screenSettings:
-		body, hb = m.viewSettings(), m.settingsHelp()
+		body = m.viewSettings()
 	case screenDaemonOrchs:
-		body, hb = m.viewDaemonOrchs(), m.daemonOrchsHelp()
+		body = m.viewDaemonOrchs()
 	case screenJobs:
-		body, hb = m.viewJobs(), m.jobsHelp()
+		body = m.viewJobs()
 	case screenOrchDetail:
-		body, hb = m.viewOrchDetail(), m.orchDetailHelp()
+		body = m.viewOrchDetail()
 	default:
-		body, hb = m.viewList(), m.listHelp()
+		body = m.viewList()
 	}
-	return m.chrome(body, m.withEnlargeHint(hb))
+	return m.chrome(body, hb)
 }
 
 // --- chrome (header + body + footer) ---
@@ -1311,9 +1431,12 @@ func (m Model) bodyWidth() int {
 	return m.width
 }
 
+// bodyHeight is the room for the body: header (title + blank line) + footer
+// (one status line + help) ≈ 5 lines, less the extra lines a wrapped status
+// takes (SWI-24, FR-533). It never renders a view: statusLineCount computes
+// the limit from the active help and the surface's smallest body.
 func (m Model) bodyHeight() int {
-	// header (title + blank line) + footer (status + help) ≈ 5 lines.
-	h := m.height - 6
+	h := m.height - 6 - (m.statusLineCount() - 1)
 	if h < 3 {
 		return 3
 	}
@@ -1465,23 +1588,35 @@ func (m Model) screenPrevKey() key.Binding {
 	return key.NewBinding(key.WithKeys("shift+left"), key.WithHelp("shift+←", m.screenPrevLabel()))
 }
 
-func (m Model) footer(hb helpBindings) string {
+// footer renders the status, wrapped at the width and cut to limit lines
+// (FR-533), then the already-rendered help. The error style applies to an
+// error, a status starting with "error" and a `v` failure or refusal (FR-529).
+func (m Model) footer(help string, limit int) string {
 	var parts []string
 	if m.status != "" {
 		style := statusOKStyle
-		if m.err != nil || strings.HasPrefix(m.status, "error") {
+		if m.statusIsErr() {
 			style = statusErrStyle
 		}
-		parts = append(parts, style.Render(sanitizeLine(m.status, 0)))
+		for _, l := range statusLines(m.status, m.bodyWidth(), limit) {
+			parts = append(parts, style.Render(l))
+		}
 	}
-	parts = append(parts, m.renderHelp(hb))
+	parts = append(parts, help)
 	return "\n" + strings.Join(parts, "\n")
+}
+
+// statusIsErr reports the error style: an error, a status starting with
+// "error", or a `v` failure or refusal while it shows (FR-529).
+func (m Model) statusIsErr() bool {
+	return m.err != nil || strings.HasPrefix(m.status, "error") || (m.status != "" && m.status == m.vFail.text)
 }
 
 // renderHelp lays out the key/desc hints, wrapping onto multiple lines when the
 // terminal is too narrow to fit them on one — bubbles' help.View truncates
 // instead, which hides commands. Styling matches the help component.
 func (m Model) renderHelp(hb helpBindings) string {
+	helpRenders++
 	width := m.width
 	if width < 20 {
 		width = 20
@@ -1524,8 +1659,34 @@ func (m Model) renderHelp(hb helpBindings) string {
 	return strings.Join(lines, "\n")
 }
 
+// chromeRenders counts chrome's renders and helpRenders the help renders;
+// chromeHook sees the help chrome was given. All for tests.
+var (
+	chromeRenders int
+	helpRenders   int
+	chromeHook    func(helpBindings)
+)
+
+// chrome frames a body with the header and footer. The help is rendered once
+// here; only a status wider than one line computes its limit, and the room
+// the rendered body really left caps it, so a view that can't shrink (Daemons
+// with many rows) cuts the message to keep the header on screen. chrome never
+// drops lines from the bottom of the body.
 func (m Model) chrome(body string, hb helpBindings) string {
-	return lipgloss.JoinVertical(lipgloss.Left, m.header(), body, m.footer(hb))
+	chromeRenders++
+	if chromeHook != nil {
+		chromeHook(hb)
+	}
+	help := m.renderHelp(hb)
+	limit := 1
+	if !m.statusFitsOneLine() {
+		helpLines := strings.Count(help, "\n") + 1
+		limit = m.statusLimitFor(helpLines)
+		if room := m.height - 2 - lipgloss.Height(body) - 1 - helpLines; room < limit {
+			limit = max(room, 1)
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, m.header(), body, m.footer(help, limit))
 }
 
 // --- rename screen (textinput) ---

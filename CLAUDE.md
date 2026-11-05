@@ -148,38 +148,57 @@ A package that reads any env var MUST:
 
 <!-- SPECKIT START -->
 Active feature: `specs/swi-24-feature-make-the-editor-configurable/plan.md` (Configurable Editor for the
-Open-in-Editor Key, SWI-24; **planned; implementation pending, not on `main`**: the files named below do not exist
-yet). **TUI-only**: no daemon, proto or bbolt change. `v` opens the sandbox's workspace folder in the editor chosen
-on the settings screen. A new package **`internal/editor`** replaces `internal/vscode`: the FR-501 catalogue (VS Code
-default, VS Code Insiders, Cursor, Windsurf, Zed, WebStorm, IntelliJ IDEA, PyCharm, GoLand, Sublime Text, Custom;
-`Remote` = `--remote ssh-remote+<target>` for the VS Code family, one `ssh://[user@]host[:port]/<percent-encoded
-path>` argument for Zed (form confirmed from Zed's `open_listener.rs`), refuse for JetBrains/Sublime), the FR-531
-tokenizer (`Split` with per-word `TildeOK`; FR-506 rules as `*CheckError{Rule}` that never carry text), `Check`/
-`Expand`/`Substitute` (single pass, `{path}` appended when absent, bare `{host}` dropped locally), the FR-517 path
-checks (the remote character limit only for Custom or the selected editor's own set variable, a value equal to the
-default not counting), `Precheck` (every
-check that needs no path, before the daemon call) / `Resolve` (after), and `Launch` (`Setsid`, `/dev/null` stdio, a
-reaper that reports a non-zero exit or signal within 3 s on `Started.Report`). Env: one `SWITCHBOARD_<EDITOR>_BIN`
-per built-in editor declared in `config.schema` from the catalogue, kept **raw** in `Config.EditorBins` (blank =
-unset) so FR-517 knows "set"; `SWITCHBOARD_CODE_BIN` unchanged. Settings: `settings.toml` gains `editor`
-(identifier, raw, unknown values kept) and `editor_custom_command`; `SettingsStore.Save` becomes
-`Update(SettingsChange)` (re-read → write only the non-nil change fields → `SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename +
-chmod; a read/parse failure is `*SettingsUnreadableError` and writes nothing). Session state: `fileUnreadable`
-(startup, nothing written all session, "restart"), `lastSaveFailed` (mid-session, "fix the file"), `notSaved[key]`
-→ `(not saved)`; notices derived at render. Settings screen: Editor row, list mode (`enter` always saves, `esc`
-back one level), Custom command input (`gEditorCommand` guard surface chosen from `screenSettings` +
-`mode == settingsInput`; submit writes first and closes after; FR-521 note ≤ 10 lines). `v`: `openEditorCmd` →
-`editorOutcomeMsg` / `editorExitMsg` (clear only the row's `busy`, no reload), text assembled from typed refusals
-with outside text cut (120 / 40 cols) before FR-529's notices. Status line (`ui/status.go`): wrap + cut to
-`min(6, room)` lines (terminal screen 2, PTY size `height - 8` fixed), `bodyHeight` shrinks by the extra lines, a
-keyed size check (`status, width, height, banner, surface, tabs, markFree`) in the `Update` wrapper resizes the
-active surface (list / item list / huh form with stored `lastHeight` + `Update(nil)`); a `v` failure or refusal has
-its own style (`vFail{text, at}`), is held (`vHold{text, seq}`) through an in-place attach or its Replace
-dialog (`confirmState.holdsV`, read from the showing confirm so no close path can leave it stale; `onAccept` sets `seq = termSeq+1`), released in the wrapper (order: guard layers, parked override, MCP
-follow-ups, release, size check) joined to a showing terminal error or daemon-drop message (`termFail`) as `<error>; <held>`, and never
-held again. Windsurf's/Cursor's `--remote` rows are documentation-derived (quickstart Scenario 0). See
-`research.md` (F1–F8, R1–R16), `data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`,
-`settings-ui.md`), `quickstart.md`, `tasks.md` (T001–T049).
+Open-in-Editor Key, SWI-24; **implemented** — T001–T048 done, T049 manual quickstart deferred, so Windsurf's and
+Cursor's `--remote` rows are still documentation-derived). **TUI-only**: no daemon, proto or bbolt change. `v`
+opens the sandbox's workspace folder in the editor chosen on the settings screen. Package **`internal/editor`**
+replaces `internal/vscode` (stdlib only): the FR-501 catalogue (`Catalogue`/`Lookup`/`Command(e, bins)` — a blank
+variable is unset and a value equal to the default isn't an override), the FR-531 tokenizer (`Split` → `Word{Text,
+TildeOK}`, rules as `*CheckError{Rule}` that never carry text), `Check`/`Expand`/`Substitute` (single pass, `{path}`
+appended when absent, bare `{host}` dropped locally), `checkPath` (FR-517: `path-unsafe`; the character limit only
+for Custom or the selected editor's own overriding variable, `path-limited` naming `'x'`/`U+XXXX`), `ZedAddress`
+(`ssh://[user@]host[:port]/<encoded path>`, round-trip checked), `Precheck` (host lookup → no-remote → Custom
+rules/home → target-dash/Zed → executable; before the daemon call) / `Resolve` (path checks, argv), and `Launch`
+(`Setsid`, `/dev/null` stdio, a reaper; `Started.Report` gets a non-zero exit or signal within `exitGrace` 3 s,
+else closes). Env: `config.schema` declares one `SWITCHBOARD_<EDITOR>_BIN` per built-in editor from the
+catalogue (`raw` fields, kept as given in `Config.EditorBins`, blank = `""`); `SWITCHBOARD_CODE_BIN` unchanged,
+`Config.CodeBin` gone. Settings: `settings.toml` gains `editor` (raw identifier, unknown values kept) and
+`editor_custom_command`; `SettingsStore.Save` is now `Update(SettingsChange)` (re-read → non-nil fields only →
+`Store.SaveTOMLPrivate`: `os.CreateTemp` `0600` + rename, temp removed on failure; a read/parse failure is
+`*SettingsUnreadableError` and writes nothing). UI (`settings.go`, `settings_command.go`): rows (toggle + Editor),
+list mode and the Custom command input (`gEditorCommand` guard surface from `screenSettings` + `mode ==
+settingsInput`; `submitEditorCommand` writes first via `writeSetting` and closes after through
+`applySaveOutcome`; `leaveEditorCommand(settingsList)` is Discard); `fileUnreadable` / `lastSaveFailed` /
+`notSaved[key]` with notices derived at render (`settingsNotices`, `vNotices`); `WithSettings` sets the startup
+notices in `m.status`. `v` (`editor_open.go`): `openEditorCmd` → `editorOutcomeMsg` / `editorExitMsg` (only the
+row's `busy` cleared, `refreshListItems`, no reload; a completion clears `m.err`); texts from `refusalText`,
+`startFailedText` (as built: `can't start <exe>: <reason> — set <var> to one executable (or use Custom)`, the
+contract's shortened form so the tightest case fits 4 lines), `hostLookupText` (78-column middle cut),
+`exitReportText`; `lookPath` is a package var tests stub. Status line (`status.go`): `statusLines` (sanitise →
+`ansi.Wrap` → cut with `…`), `cutMiddle`/`cutEnd`, `activeSurface()` (list / item list / form / windowed / static /
+terminal) → `minBody` → `statusLimitFor(helpLines)`; `statusFitsOneLine` short-circuits `statusLineCount`;
+`bodyHeight = height - 6 - (lines - 1)`; `chrome` renders the help once and caps the limit by the room the body
+left; `activeHelp()` is the one screen → help map `viewScreen` uses; `termRows = height - 8`. Size check
+`checkSizes` in the `Update` wrapper (order: guard layers, parked override, MCP follow-ups, `releaseHeld`,
+`checkSizes`), keyed on `sizeKey{status, banner, width, height, tabs, surface, listHelp, enlargeHint}` (`listHelp` is
+`listHelpEntries`, the list help's conditional per-row entries, which `listHelp()` also reads); forms' last heights
+live in `Model.formHeights` (a map keyed by `*huh.Form`, sized and recorded by the first check after a form opens,
+not a field per form) and a resize is followed by `form.Update(nil)`. Hold: `vFail{text, at}` (error style while
+`status == text`; `showErr` sets it with a zero time for non-`v` errors such as the input's rejection, which `leaveEditorCommand`
+clears through `settingsView.inputError` unless something has replaced it),
+`vHold{text, seq, since}` (out of sight or showing, never both, the terminal screen aside; a `v` completion clears `text`;
+past `vHoldAttachLimit`, 5 s, a pending attach no longer hides it: `vHoldLimitCmd` → `handleVHoldLimit` shows it and ends
+its hold, after an error or `termFail` showing by then (`vHoldLimitJoins`), with a zero `vFail.at` if joined to the input's
+error, which it leaves with, and `setVFail` shows a later one at once),
+`confirmState.holdsV` (`vHoldDialog()`), `termFail` (set by the three terminal errors and
+`closeOrchAdminOnDrop`); `attachTerminal` and an attach ending (`endVHoldAttach`) run `holdRecentVFail`, which holds a
+showing failure under `vHoldRecent`; `attachTerminal`/`confirmReplaceOrphan(!external)` clear `termFail`, and the
+dialog clears a copy of what `recentVFail` finds as it opens, and its `onAccept` sets `seq = termSeq+1` and holds that, if
+it's still the status;
+`releaseHeld` joins `sanitizeLine(termFail, 120) + "; "`. The update banner
+is cut to the width (`fitLine`) so SC-004 holds. `jobsFixedLines` / `lanesFixedLines` are shared by the views and
+the limit. E2E: `editor_e2e_test.go` with a stub editor on `PATH`. See `research.md` (F1–F8, R1–R16),
+`data-model.md`, `contracts/` (`settings-file.md`, `editor-launch.md`, `settings-ui.md`), `quickstart.md`,
+`tasks.md` (T001–T049).
 
 Prior feature: `specs/swi-21-feature-update-mcp-page/plan.md` (MCP Page Quality of Life — Edit, In-Page Secrets,
 Scopes, SWI-21; **implemented** — T001–T051 done, T052 manual real-host Scenario 0 pending, so every `sbx` row and

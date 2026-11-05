@@ -401,21 +401,7 @@ func (m Model) viewJobs() string {
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
-	header := m.jobsTabBar()
-	if m.jobsRefreshing() && !m.jobsWaiting() {
-		header += "   " + m.spinner.View() + dimStyle.Render(" refreshing…")
-	}
-	top := []string{header}
-	if names := m.jobsUnreadable(); len(names) > 0 {
-		top = append(top, m.fitLine(dimStyle.Render("could not read: "+joinNames(names))))
-	}
-	if names := m.jobsConnectingHosts(); len(names) > 0 {
-		top = append(top, m.fitLine(dimStyle.Render("connecting: "+joinNames(names))))
-	}
-	if names := m.jobsLoadingHosts(); len(names) > 0 {
-		top = append(top, m.fitLine(dimStyle.Render("loading: "+joinNames(names))))
-	}
-	top = append(top, "")
+	top, bottom := m.jobsFixedLines()
 	var body []string
 	focus := 0
 	switch {
@@ -433,13 +419,35 @@ func (m Model) viewJobs() string {
 			body, focus = m.renderJobsQueue()
 		}
 	}
-	var bottom []string
-	if j.status != "" {
-		bottom = []string{"", statusErrStyle.Render(sanitizeTerminalText(j.status))}
-	}
 	avail := m.bodyHeight() - len(top) - len(bottom) - (m.helpLineCount(m.jobsHelp()) - 1)
 	lines := append(top, windowLines(body, focus, avail)...)
 	return lipgloss.JoinVertical(lipgloss.Left, append(lines, bottom...)...)
+}
+
+// jobsFixedLines are the lines viewJobs draws above and below its window: the
+// tab bar, the could-not-read / connecting / loading lines, a blank, and the
+// status under the window. Shared with the status limit (SWI-24), which must
+// not render; so this reads no bodyHeight.
+func (m Model) jobsFixedLines() (top, bottom []string) {
+	header := m.jobsTabBar()
+	if m.jobsRefreshing() && !m.jobsWaiting() {
+		header += "   " + m.spinner.View() + dimStyle.Render(" refreshing…")
+	}
+	top = []string{header}
+	if names := m.jobsUnreadable(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("could not read: "+joinNames(names))))
+	}
+	if names := m.jobsConnectingHosts(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("connecting: "+joinNames(names))))
+	}
+	if names := m.jobsLoadingHosts(); len(names) > 0 {
+		top = append(top, m.fitLine(dimStyle.Render("loading: "+joinNames(names))))
+	}
+	top = append(top, "")
+	if m.jobs.status != "" {
+		bottom = []string{"", statusErrStyle.Render(sanitizeTerminalText(m.jobs.status))}
+	}
+	return top, bottom
 }
 
 // fitLine cuts a rendered line to the body width.

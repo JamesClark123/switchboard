@@ -67,7 +67,7 @@ func TestToggleMembershipNoTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No sandbox selected (empty list) -> targetSbx stays empty.
-	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs, nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs))
 	m, cmd := update(m, press("g"))
 	m, _ = update(m, runCmd(cmd))
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeySpace})
@@ -136,7 +136,7 @@ func TestPerScreenViewAndForward(t *testing.T) {
 		s, _ := store.New(t.TempDir())
 		m := New(d, "/work").
 			WithConfigs(s.Configs()).
-			WithGroups(s.Groups(), nil).
+			WithGroups(s.Groups()).
 			WithHosts(client.NewManager(), s.Hosts(), "local")
 		return withSandboxes(m, []*pb.Sandbox{{Id: "sb1", DisplayName: "demo", State: pb.SandboxState_SANDBOX_STATE_RUNNING}})
 	}

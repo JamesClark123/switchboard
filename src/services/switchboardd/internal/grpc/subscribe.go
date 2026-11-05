@@ -168,6 +168,11 @@ func pumpInput(stream pb.Switchboard_AttachAgentServer, conn *terminal.Conn, fir
 		if r := in.GetResize(); r != nil {
 			conn.Resize(uint16(r.GetCols()), uint16(r.GetRows()))
 		}
+		// The redraw request goes before any data in the same frame, so the
+		// agent's repaint follows the key it is sent with (SWI-32).
+		if in.GetRepaint() {
+			conn.Repaint()
+		}
 		if len(in.GetData()) > 0 {
 			if _, err := conn.Write(in.GetData()); err != nil {
 				return err

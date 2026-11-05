@@ -115,6 +115,45 @@ func TestInterruptStartingDrainsOnlyStartingServices(t *testing.T) {
 	}
 }
 
+// failStarting records FAILED before it cancels the attempt, so a bringUp woken
+// by the cancel finds nothing left to overwrite. The handle's cancel stands in
+// for that bringUp, making the write that used to win (readinessFailed on a
+// cancelled probe) at the moment it runs. FAILED is still announced only after
+// the release.
+func TestFailStartingOutranksTheBringUpItCancels(t *testing.T) {
+	s, _, runner, emitter := newTestSupervisor(t, runningSandbox("sb1"))
+	inst, _ := s.insts.Create("sb1", "slow")
+	id := inst.GetId()
+	wrote, announcedAtCancel := false, -1
+	s.mu.Lock()
+	s.handles[id] = &procHandle{ref: "sb1-ref", hostPort: 51234, sbxPort: 3000, inSbx: true, cancel: func() {
+		announcedAtCancel = emitter.eventCount()
+		wrote = s.transitionStarting(id, func(i *pb.ServiceInstance) {
+			i.State = pb.ServiceState_SERVICE_STATE_STOPPED
+		})
+	}}
+	s.mu.Unlock()
+
+	s.failStarting(id, pb.ServiceFailureReason_SERVICE_FAILURE_REASON_LAUNCH_FAILED, startInterruptedDetail)
+
+	if wrote {
+		t.Error("the cancelled bringUp's write applied")
+	}
+	if announcedAtCancel != 0 {
+		t.Errorf("%d events before the release, want 0", announcedAtCancel)
+	}
+	got, _ := s.insts.Get(id)
+	if got.GetState() != pb.ServiceState_SERVICE_STATE_FAILED || got.GetFailureDetail() != startInterruptedDetail {
+		t.Errorf("instance = %v", got)
+	}
+	if n := emitter.notifications(); len(n) != 1 || n[0].kind != pb.NotificationKind_NOTIFICATION_KIND_SERVICE_FAILED {
+		t.Errorf("notifications = %+v, want one SERVICE_FAILED", n)
+	}
+	if un := runner.unpublishes(); len(un) != 1 {
+		t.Errorf("unpublishes = %v, want one", un)
+	}
+}
+
 // While a lifecycle operation holds the runtime lock, a developer's
 // in-sandbox start fails busy keeping no port, and a stop is refused.
 func TestBusyRuntimeRefusesServiceStartAndStop(t *testing.T) {

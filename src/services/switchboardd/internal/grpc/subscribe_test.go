@@ -18,12 +18,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// echoSession is a fake agent.Session: written bytes become readable.
+// echoSession is a fake agent.Session: written bytes become readable. It
+// records its resizes (SWI-32).
 type echoSession struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	closed bool
+	mu      sync.Mutex
+	cond    *sync.Cond
+	buf     []byte
+	closed  bool
+	resizes [][2]uint16
 }
 
 func newEchoSession() *echoSession {
@@ -51,7 +53,31 @@ func (s *echoSession) Read(p []byte) (int, error) {
 	s.buf = s.buf[n:]
 	return n, nil
 }
-func (s *echoSession) Resize(uint16, uint16) error { return nil }
+func (s *echoSession) Resize(cols, rows uint16) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resizes = append(s.resizes, [2]uint16{cols, rows})
+	return nil
+}
+
+// resizesOf returns a copy of the session's recorded resizes.
+func (s *echoSession) resizesOf() [][2]uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][2]uint16(nil), s.resizes...)
+}
+
+// sessionBook records the echo sessions a test server spawned, by sandbox id.
+type sessionBook struct {
+	mu       sync.Mutex
+	sessions map[string]*echoSession
+}
+
+func (b *sessionBook) get(id string) *echoSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sessions[id]
+}
 func (s *echoSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -62,6 +88,15 @@ func (s *echoSession) Close() error {
 
 func startServerWithAgents(t *testing.T) (pb.SwitchboardClient, *agent.Hub) {
 	t.Helper()
+	client, hub, _ := startServerWithSessions(t)
+	return client, hub
+}
+
+// startServerWithSessions is startServerWithAgents, also returning the book of
+// echo sessions spawned, so a test can see what the daemon did to a PTY.
+func startServerWithSessions(t *testing.T) (pb.SwitchboardClient, *agent.Hub, *sessionBook) {
+	t.Helper()
+	book := &sessionBook{sessions: map[string]*echoSession{}}
 	dir := t.TempDir()
 	reg, err := registry.Open(dir)
 	if err != nil {
@@ -71,8 +106,12 @@ func startServerWithAgents(t *testing.T) (pb.SwitchboardClient, *agent.Hub) {
 	ws := filepath.Join(dir, "ws")
 	mgr := sandbox.NewManager(reg, &testRunner{running: map[string]bool{}}, ws, "host-1")
 	hub := agent.NewHub("host-1")
-	agents := agent.NewRegistry(func(string, *pb.AgentSpec) (agent.Session, error) {
-		return newEchoSession(), nil
+	agents := agent.NewRegistry(func(id string, _ *pb.AgentSpec) (agent.Session, error) {
+		s := newEchoSession()
+		book.mu.Lock()
+		book.sessions[id] = s
+		book.mu.Unlock()
+		return s, nil
 	})
 	srv := sbgrpc.NewServer(sbgrpc.Config{Manager: mgr, HostID: "host-1", WorkspaceRoot: ws, Hub: hub, Agents: agents})
 
@@ -88,7 +127,7 @@ func startServerWithAgents(t *testing.T) (pb.SwitchboardClient, *agent.Hub) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return pb.NewSwitchboardClient(conn), hub
+	return pb.NewSwitchboardClient(conn), hub, book
 }
 
 func TestSubscribeLiveNotification(t *testing.T) {

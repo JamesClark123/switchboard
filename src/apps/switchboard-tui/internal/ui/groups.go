@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -225,42 +226,41 @@ func (m Model) viewGroups() string {
 	return out
 }
 
-// --- Open in VS Code (FR-027) ---
-
-func (m Model) openVSCodeCmd(hostID, sandboxID string) tea.Cmd {
-	if m.opener == nil {
-		return func() tea.Msg { return statusMsg("VS Code opener not configured") }
-	}
-	d := m.daemonForHost(hostID)
-	opener := m.opener
-	sshTarget := m.sshTargetForHost(hostID)
-	return func() tea.Msg {
-		ctx, cancel := ctxTimeout()
-		defer cancel()
-		tgt, err := d.VSCodeTarget(ctx, sandboxID)
-		if err != nil {
-			return errMsg{err}
-		}
-		if err := opener.Open(tgt, sshTarget); err != nil {
-			return errMsg{err}
-		}
-		return statusMsg("opened " + short(sandboxID) + " in VS Code")
-	}
-}
+// --- Open in editor (FR-027; SWI-24 in editor_open.go) ---
 
 // sshTargetForHost returns a host's SSH target (empty for local), so a remote
-// sandbox opens via DOCKER_HOST=ssh://… (FR-027, research R3). An empty hostID
-// falls back to the active host.
-func (m Model) sshTargetForHost(hostID string) string {
+// sandbox opens over SSH (FR-027, research R3). An empty hostID falls back to
+// the active host. A failed lookup (the hosts file can't be read, the host is
+// gone) is returned as the error, so `v` refuses rather than treating the
+// sandbox as local (SWI-24, FR-520).
+func (m Model) sshTargetForHost(hostID string) (string, error) {
 	if hostID == "" {
 		hostID = m.activeHost
 	}
 	if m.hostStore == nil || hostID == "" {
-		return ""
+		return "", nil
 	}
 	h, err := m.hostStore.Get(hostID)
-	if err != nil || h.Kind != "ssh" {
-		return ""
+	if errors.Is(err, store.ErrHostNotFound) && hostID == m.activeHost && !m.managerSaysSSH(hostID) {
+		// The active daemon is connected by construction; its entry can be
+		// missing when EnsureLocal couldn't write the hosts file at startup,
+		// and that sandbox is local, as it was before SWI-24.
+		return "", nil
 	}
-	return h.SSHTarget
+	if err != nil {
+		return "", err
+	}
+	if h.Kind != "ssh" {
+		return "", nil
+	}
+	return h.SSHTarget, nil
+}
+
+// managerSaysSSH reports a host the connection manager knows as an SSH host.
+func (m Model) managerSaysSSH(hostID string) bool {
+	if m.manager == nil {
+		return false
+	}
+	hc, ok := m.manager.Get(hostID)
+	return ok && hc.Entry.Kind == "ssh"
 }

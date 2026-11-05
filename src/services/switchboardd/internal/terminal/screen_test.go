@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,16 @@ func waitFresh(t *testing.T, b *Broadcaster, p *fakePTY, repaint string) {
 		time.Sleep(5 * time.Millisecond)
 		p.feed([]byte(repaint))
 		return false
+	})
+}
+
+// waitNoNudge waits until no nudge is in flight, so the next one starts at once.
+func waitNoNudge(t *testing.T, b *Broadcaster) {
+	t.Helper()
+	waitFor(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return !b.nudging
 	})
 }
 
@@ -174,6 +185,7 @@ func TestOverflowResetsAndRepaintRecovers(t *testing.T) {
 	p := newFakePTY()
 	b := newBroadcaster(p, 0, nil, true)
 	defer func() { _ = b.Close() }()
+	waitNoNudge(t, b) // its restore would count as the repaint after the reset
 
 	p.feed([]byte("old-content"))
 	for i := 0; i < screenQueue+10; i++ {
@@ -191,6 +203,20 @@ func TestOverflowResetsAndRepaintRecovers(t *testing.T) {
 	waitFor(t, func() bool { l, _ := b.Screen(); return !strings.Contains(screenText(l), "old-content") })
 	if _, stale := b.Screen(); !stale {
 		t.Fatal("screen should stay stale until a repaint")
+	}
+	// Past what the PTY still held of the old stream: a chunk parsed during a
+	// nudge's shrink counts as its frame, and this test feeds the frame itself.
+	for i := 0; ; i++ {
+		mark := fmt.Sprintf("mark-%d", i)
+		p.feed([]byte("\x1b[H\x1b[2J" + mark))
+		time.Sleep(time.Millisecond)
+		l, stale := b.Screen()
+		if !stale {
+			t.Fatal("output with no nudge since the reset read fresh")
+		}
+		if strings.Contains(screenText(l), mark) {
+			break
+		}
 	}
 	waitFresh(t, b, p, "\x1b[H\x1b[2J❯ repainted")
 	lines, _ := b.Screen()
@@ -233,6 +259,7 @@ func TestRepaintIsDebounced(t *testing.T) {
 	if b.RequestRepaint() {
 		t.Fatal("a second nudge within repaintEvery should be refused")
 	}
+	waitNoNudge(t, b)
 	n := len(resizesOf(p))
 	b.mu.Lock()
 	b.lastNudge = time.Now().Add(-2 * repaintEvery)
@@ -456,5 +483,486 @@ func TestResizeMarksTheScreenStale(t *testing.T) {
 	repaintSettle = 0
 	if _, stale := b.Screen(); stale {
 		t.Fatal("the resize's repaint should clear the flag once it settled")
+	}
+}
+
+// SWI-32: a client's reset (Conn.Repaint) nudges inside the debounce window,
+// where RequestRepaint is refused, so a reset right after a worker or
+// stale-screen nudge never leaves the view blank.
+func TestRepaintForcedInsideDebounce(t *testing.T) {
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true) // the enabling nudge counts
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// The enabling nudge is over (its timers can't land in the checks below)
+	// but well inside repaintEvery.
+	waitNoNudge(t, b)
+	if b.RequestRepaint() {
+		t.Fatal("a second nudge within repaintEvery should be refused")
+	}
+	n := len(resizesOf(p))
+	if !c.Repaint() {
+		t.Fatal("a client's reset should nudge inside the debounce window")
+	}
+	if got := resizesOf(p); len(got) <= n || got[n] != [2]uint16{100, 29} {
+		t.Fatalf("reset did not shrink the PTY by one row: %v", got)
+	}
+	// The forced nudge still counts for the debounce of the lazy path.
+	if b.RequestRepaint() {
+		t.Fatal("a lazy nudge right after a reset should be refused")
+	}
+}
+
+// shrinkOnlyPTY is an agent that draws its frame on a shrink and nothing on the
+// restore, as Claude Code's onboarding screen did when probed at 40 rows.
+type shrinkOnlyPTY struct {
+	*fakePTY
+	full uint16
+}
+
+func (p *shrinkOnlyPTY) Resize(cols, rows uint16) error {
+	_ = p.fakePTY.Resize(cols, rows)
+	if rows < p.full {
+		p.feed([]byte("\x1b[H\x1b[2Jframe"))
+	}
+	return nil
+}
+
+// SWI-32: a reset while a nudge is in flight gets one more nudge after it, so a
+// view blanked after the agent drew its last frame is drawn again even when the
+// restore draws nothing (the ticket's "never leaves the view blank"). However
+// many arrive, there is one more shrink and it waits out the gap, so the agent
+// sees the full size in between.
+func TestResetDuringANudgeGetsOneMore(t *testing.T) {
+	p := &shrinkOnlyPTY{fakePTY: newFakePTY(), full: 30}
+	b := New(p, 0, nil)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n := len(resizesOf(p.fakePTY))
+	if !b.RequestRepaint() { // a worker's nudge: the agent draws at once
+		t.Fatal("nudge refused")
+	}
+	recv(t, c.Out)
+	// The developer resets now: everything the agent drew is blanked.
+	for range 10 {
+		if !c.Repaint() {
+			t.Fatal("a reset in flight should be queued")
+		}
+	}
+	// The next frame is drawn for the reset.
+	recv(t, c.Out)
+	waitNoNudge(t, b)
+	got := resizesOf(p.fakePTY)[n:]
+	small, full := [2]uint16{100, 29}, [2]uint16{100, 30}
+	if len(got) != 4 || got[0] != small || got[1] != full || got[2] != small || got[3] != full {
+		t.Fatalf("resizes = %v, want two shrink-restore pairs", got)
+	}
+	select {
+	case chunk := <-c.Out:
+		t.Fatalf("an extra frame after the queued nudge: %q", chunk)
+	default:
+	}
+
+	// A lazy request in flight is refused, and queues nothing.
+	every := repaintEvery
+	repaintEvery = 0
+	t.Cleanup(func() { repaintEvery = every })
+	n = len(resizesOf(p.fakePTY))
+	if !b.RequestRepaint() {
+		t.Fatal("nudge refused")
+	}
+	if b.RequestRepaint() {
+		t.Fatal("a lazy request in flight should be refused")
+	}
+	waitNoNudge(t, b)
+	if got := resizesOf(p.fakePTY)[n:]; len(got) != 2 {
+		t.Fatalf("resizes = %v, want one shrink-restore pair", got)
+	}
+}
+
+// timedPTY records when each resize reached the PTY.
+type timedPTY struct {
+	*fakePTY
+	at []time.Time // guarded by fakePTY.mu
+}
+
+func (p *timedPTY) Resize(cols, rows uint16) error {
+	p.mu.Lock()
+	p.at = append(p.at, time.Now())
+	p.mu.Unlock()
+	return p.fakePTY.Resize(cols, rows)
+}
+
+// SWI-32: a queued nudge's shrink waits a full gap after the restore before it.
+// Claude Code drew nothing on a shrink sent straight after a restore, so without
+// the wait a reset in flight can still leave the view blank.
+func TestQueuedNudgeWaitsOutTheGap(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 20 * time.Millisecond
+	p := &timedPTY{fakePTY: newFakePTY()}
+	b := New(p, 0, nil)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n := len(resizesOf(p.fakePTY))
+	for range 2 { // the first starts a nudge, the second queues one
+		if !c.Repaint() {
+			t.Fatal("reset refused")
+		}
+	}
+	waitNoNudge(t, b)
+	got := resizesOf(p.fakePTY)[n:]
+	small, full := [2]uint16{100, 29}, [2]uint16{100, 30}
+	if len(got) != 4 || got[0] != small || got[1] != full || got[2] != small || got[3] != full {
+		t.Fatalf("resizes = %v, want two shrink-restore pairs", got)
+	}
+	p.mu.Lock()
+	wait := p.at[n+2].Sub(p.at[n+1])
+	p.mu.Unlock()
+	if wait < nudgeGap {
+		t.Fatalf("the queued shrink came %v after the restore, want at least %v", wait, nudgeGap)
+	}
+}
+
+// SWI-32: closing the session drops a queued nudge, so nothing resizes the closed
+// PTY. The test closes between the restore and the queued shrink. A poll late by
+// a whole gap closes after that shrink instead, and passes without testing this.
+func TestCloseDropsAQueuedNudge(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 50 * time.Millisecond
+	p := newFakePTY()
+	b := New(p, 0, nil)
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n := len(resizesOf(p))
+	for range 2 {
+		if !c.Repaint() {
+			t.Fatal("reset refused")
+		}
+	}
+	waitFor(t, func() bool { return len(resizesOf(p)) >= n+2 }) // the restore
+	_ = b.Close()
+	n = len(resizesOf(p))
+	time.Sleep(2 * nudgeGap) // past when the queued shrink was due
+	if got := resizesOf(p)[n:]; len(got) != 0 {
+		t.Fatalf("resizes after close = %v, want none", got)
+	}
+}
+
+// SWI-32: the restore lands at the size current then.
+func TestNudgeRestoresTheSizeCurrentThen(t *testing.T) {
+	fastNudges(t)
+	nudgeGap = 20 * time.Millisecond
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	waitNoNudge(t, b)
+	repaintEvery = time.Hour // the forced path needs no debounce window to pass
+	n := len(resizesOf(p))
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	c.Resize(90, 20)
+	waitNoNudge(t, b)
+	got := resizesOf(p)[n:]
+	if len(got) != 3 || got[0] != [2]uint16{100, 29} || got[1] != [2]uint16{90, 20} || got[2] != [2]uint16{90, 20} {
+		t.Fatalf("resizes = %v, want the shrink, the client's resize, then the restore at 90x20", got)
+	}
+}
+
+// SWI-32: a reset on an unsized or closed session nudges nothing.
+func TestRepaintSkipsClosedOrUnsized(t *testing.T) {
+	p := newFakePTY()
+	b := New(p, 0, nil)
+	c, err := b.Attach(KindInTUI, 0, 0) // leaves the PTY unsized
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Repaint() || len(resizesOf(p)) != 0 {
+		t.Fatalf("an unsized session was nudged: %v", resizesOf(p))
+	}
+	one, err := b.Attach(KindInTUI, 80, 1) // sized, but too short to shrink
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Repaint() {
+		t.Fatal("a one-row PTY cannot be nudged")
+	}
+	_ = b.Close()
+	if c.Repaint() {
+		t.Fatal("a closed session should not be nudged")
+	}
+}
+
+// SWI-32: a detached client has no say over the shared PTY, at a size where a
+// client still attached does.
+func TestRepaintSkipsADetachedClient(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b := New(p, 0, nil)
+	defer func() { _ = b.Close() }()
+	stays, err := b.Attach(KindInTUI, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stays.Close()
+	gone, err := b.Attach(KindInTUI, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stays.Repaint() {
+		t.Fatal("an attached client should nudge at this size")
+	}
+	waitNoNudge(t, b)
+	gone.Close()
+	n := len(resizesOf(p))
+	if gone.Repaint() || len(resizesOf(p)) != n {
+		t.Fatal("a detached client should not nudge")
+	}
+}
+
+// SWI-32: a nudge marks the agent screen stale from the shrink until the
+// repaint after the restore settles, like a client's resize does, so a step
+// check never reads the frame drawn for the smaller size as fresh.
+func TestNudgeMarksTheScreenStale(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() >= 2 })
+	waitFor(t, func() bool {
+		p.feed([]byte("x"))
+		time.Sleep(5 * time.Millisecond)
+		_, stale := b.Screen()
+		return !stale
+	})
+
+	waitNoNudge(t, b)
+	repaintSettle = time.Hour
+	before := b.scr.Load().nudges.Load()
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a nudge must mark the screen stale")
+	}
+	// Output before the restore is the frame for the smaller size: still stale.
+	p.feed([]byte("\x1b[H\x1b[2Jsmall"))
+	time.Sleep(5 * time.Millisecond)
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("output before the restore must not read fresh")
+	}
+	waitFor(t, func() bool { return b.scr.Load().nudges.Load() > before })
+	p.feed([]byte("\x1b[H\x1b[2Jrepaint"))
+	waitFor(t, func() bool {
+		sc := b.scr.Load()
+		sc.flagMu.Lock()
+		defer sc.flagMu.Unlock()
+		return !sc.repaintAt.IsZero()
+	})
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("the repaint after the restore should clear the flag once it settled")
+	}
+}
+
+// freshScreen returns a broadcaster with an attached client whose agent screen
+// has settled and whose nudges are over.
+func freshScreen(t *testing.T, p *fakePTY) (*Broadcaster, *Conn) {
+	t.Helper()
+	b := newBroadcaster(p, 0, nil, true)
+	t.Cleanup(func() { _ = b.Close() })
+	c, err := b.Attach(KindInTUI, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	waitNoNudge(t, b)
+	waitFor(t, func() bool {
+		p.feed([]byte("x"))
+		time.Sleep(5 * time.Millisecond)
+		_, stale := b.Screen()
+		return !stale
+	})
+	return b, c
+}
+
+// SWI-32: an agent that draws on the shrink and nothing on the restore has
+// drawn its frame: the screen recovers on that nudge, however it got stale, or
+// a worker's steps would never be delivered again.
+func TestNudgeSettlesWhenTheRestoreDrawsNothing(t *testing.T) {
+	fastNudges(t)
+	p := &shrinkOnlyPTY{fakePTY: newFakePTY(), full: stepScreenRows}
+
+	// Stale from the start: the enabling nudge's shrink draws the frame.
+	b := newBroadcaster(p, 0, nil, true)
+	defer func() { _ = b.Close() }()
+	waitFor(t, func() bool { _, stale := b.Screen(); return !stale })
+	if l, _ := b.Screen(); !strings.Contains(screenText(l), "frame") {
+		t.Fatalf("screen = %q, want the frame", screenText(l))
+	}
+
+	// Fresh, then nudged again and again (ctrl+l on an idle worker).
+	for i := range 6 {
+		waitNoNudge(t, b)
+		if !b.RequestRepaint() {
+			t.Fatalf("nudge %d refused", i)
+		}
+		waitFor(t, func() bool { _, stale := b.Screen(); return !stale })
+	}
+}
+
+// SWI-32: a nudge the agent ignores altogether changes nothing on the screen,
+// so a fresh screen reads fresh again after it.
+func TestNudgeOfASilentAgentLeavesAFreshScreenFresh(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b, c := freshScreen(t, p)
+	repaintSettle = time.Hour
+	if !c.Repaint() {
+		t.Fatal("reset refused")
+	}
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a nudge must mark the screen stale")
+	}
+	waitNoNudge(t, b)
+	repaintSettle = 0
+	if _, stale := b.Screen(); stale {
+		t.Fatal("a nudge the agent ignored should leave the screen fresh")
+	}
+}
+
+// SWI-32: with no frame on the screen a silent agent proves nothing, so the
+// screen stays stale; the first output after that recovers it.
+func TestNudgeOfASilentAgentLeavesAStaleScreenStale(t *testing.T) {
+	fastNudges(t)
+	p := newFakePTY()
+	b := newBroadcaster(p, 0, nil, true) // stale until a repaint
+	defer func() { _ = b.Close() }()
+	waitNoNudge(t, b)
+	for range 3 {
+		if !b.RequestRepaint() {
+			t.Fatal("nudge refused")
+		}
+		waitNoNudge(t, b)
+	}
+	time.Sleep(5 * repaintSettle)
+	if _, stale := b.Screen(); !stale {
+		t.Fatal("a screen with no frame read fresh after silent nudges")
+	}
+	p.feed([]byte("frame"))
+	waitFor(t, func() bool { _, stale := b.Screen(); return !stale })
+}
+
+// SWI-32: a stale screen's first chunk parsed during the shrink is the frame the
+// restore settles over; with none, the restore alone proves nothing.
+func TestNudgeRestoreSettlesOverAChunkFromTheShrink(t *testing.T) {
+	saved := repaintSettle
+	repaintSettle = 0
+	t.Cleanup(func() { repaintSettle = saved })
+	done := make(chan struct{})
+	defer close(done)
+	sc := newScreen(100, 30) // stale until a repaint
+	go sc.parse(done)
+
+	sc.nudgeShrinks()
+	sc.nudgeRestored()
+	if !sc.isStale() {
+		t.Fatal("a restore with no chunk read fresh")
+	}
+	sc.nudgeShrinks()
+	sc.offer([]byte("frame"))
+	waitFor(t, func() bool { return strings.Contains(screenText(sc.view.Lines()), "frame") })
+	waitFor(t, func() bool { // the parser records the chunk just after writing it
+		sc.flagMu.Lock()
+		defer sc.flagMu.Unlock()
+		return sc.drawn
+	})
+	if !sc.isStale() {
+		t.Fatal("output before the restore read fresh")
+	}
+	sc.nudgeRestored()
+	if sc.isStale() {
+		t.Fatal("the restore should settle over the frame")
+	}
+}
+
+// SWI-32: a repaint still settling at the shrink has drawn the frame, so a nudge
+// the agent ignores doesn't lose it (ctrl+l right after a resize's repaint).
+func TestNudgeKeepsARepaintStillSettling(t *testing.T) {
+	saved := repaintSettle
+	repaintSettle = 0
+	t.Cleanup(func() { repaintSettle = saved })
+	sc := newScreen(100, 30)
+	sc.repaintAt = time.Now().Add(time.Hour) // stale, and not settled for now
+	sc.nudgeShrinks()
+	sc.nudgeRestored()
+	if sc.isStale() {
+		t.Fatal("the nudge lost a repaint that was settling")
+	}
+}
+
+// SWI-32: a drop or a client's resize during a nudge voids what the nudge saw.
+// The bytes parsed since may be a partial frame, or one for the old size, so the
+// restore alone must not read fresh.
+func TestNudgeRestoreIgnoresAResetInBetween(t *testing.T) {
+	saved := repaintSettle
+	repaintSettle = 0
+	t.Cleanup(func() { repaintSettle = saved })
+	for name, reset := range map[string]func(*screen){
+		"a drop": func(sc *screen) {
+			sc.flagMu.Lock()
+			sc.dropped = true
+			sc.flagMu.Unlock()
+			sc.takeDrop()
+		},
+		"a client's resize": func(sc *screen) { sc.markStale() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sc := newScreen(100, 30)
+			sc.stale = false // read fresh at the shrink
+			sc.nudgeShrinks()
+			reset(sc)
+			sc.nudgeRestored()
+			if !sc.isStale() {
+				t.Fatal("the restore read fresh over a reset")
+			}
+		})
+	}
+
+	// A drop not yet taken by the parser at the restore counts as well.
+	sc := newScreen(100, 30)
+	sc.stale = false
+	sc.nudgeShrinks()
+	for range screenQueue + 1 { // no parser here: the queue overflows
+		sc.offer([]byte("x"))
+	}
+	sc.nudgeRestored()
+	if !sc.isStale() {
+		t.Fatal("the restore read fresh over a pending drop")
 	}
 }

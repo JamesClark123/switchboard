@@ -464,3 +464,34 @@ func TestAttachReplaceOrphanAndGateRefusal(t *testing.T) {
 		t.Errorf("gate refusal = %v", err)
 	}
 }
+
+// SWI-32: SendRepaint sends a frame with only the repaint flag set.
+func TestAttachSendRepaint(t *testing.T) {
+	srv := newAttachServer()
+	srv.snapshot = &pb.AgentOutput_Snapshot{Data: []byte("s")} // the first frame the client waits for
+	conn := dialAttach(t, srv)
+
+	var sink syncBuf
+	as, err := conn.AttachAgent(context.Background(), client.AttachOptions{
+		SandboxID: "sb", Kind: client.AttachInTUI, Cols: 80, Rows: 24, Sink: &sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = as.Close() }()
+
+	if err := as.SendRepaint(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		for _, f := range srv.capturedFrames() {
+			if f.GetRepaint() {
+				if len(f.GetData()) != 0 || f.GetResize() != nil || f.GetAttach() != nil {
+					t.Fatalf("repaint frame carries more than the flag: %v", f)
+				}
+				return true
+			}
+		}
+		return false
+	}, "server saw the repaint frame")
+}

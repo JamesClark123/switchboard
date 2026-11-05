@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,7 +34,19 @@ type termState struct {
 	// likely meant as "back", but it would interrupt the worker's agent, so
 	// the first one is held and explained instead (SWI-14).
 	escHeld bool
+	// lastReset is when ctrl+l last reset the view (SWI-32): presses within
+	// termResetEvery of it are ignored, so a held key never floods the PTY
+	// with resizes (the daemon does not debounce a client's redraw request).
+	lastReset time.Time
 }
+
+// termResetEvery is the least time between two ctrl+l resets of the in-TUI
+// terminal (SWI-32); tests step nowFunc across it.
+const termResetEvery = time.Second
+
+// termResetText is the status after ctrl+l reset the terminal view; the next
+// other key clears it.
+const termResetText = "terminal reset"
 
 // termSink feeds daemon PTY bytes into the screen and wakes the Bubble Tea loop
 // so it re-renders. The signal is best-effort (buffered, non-blocking): a full
@@ -104,6 +117,9 @@ func (m Model) enterTerminalFrom(sb *pb.Sandbox, host string, d Daemon, returnTo
 	return m.attachTerminal(sb, host, d, returnTo, false)
 }
 
+// openingText is the status while an in-place attach is pending.
+const openingText = "opening terminal…"
+
 // attachTerminal opens the in-place terminal; replace attaches with
 // AttachInfo.replace_orphan (`t` → Replace).
 func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo screen, replace bool) (tea.Model, tea.Cmd) {
@@ -111,11 +127,18 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 	seq := m.termSeq
 	cols, rows := m.bodyWidth(), m.termRows()
 	id, name := sb.GetId(), sb.GetDisplayName()
-	m.status = "opening terminal…"
+	// SWI-24 (FR-533): a `v` failure arriving while this attach is pending
+	// is held, and a recent one already showing is held too; an older
+	// attach error isn't joined to it.
+	m.vHold.seq = seq
+	m.vHold.since = nowFunc()
+	m.termFail = ""
+	m.holdRecentVFail()
+	m.status = openingText
 	if replace {
 		m.status = replacingText
 	}
-	return m, func() tea.Msg {
+	return m, tea.Batch(func() tea.Msg {
 		screen := termview.New(cols, rows)
 		updates := make(chan struct{}, 1)
 		done := make(chan struct{})
@@ -136,10 +159,11 @@ func (m Model) attachTerminal(sb *pb.Sandbox, host string, d Daemon, returnTo sc
 			screen: screen, session: sess, cancel: cancel, updates: updates, done: done,
 			id: id, host: host, name: name, cols: cols, rows: rows, returnTo: returnTo, seq: seq,
 		}
-	}
+	}, m.vHoldLimitCmd())
 }
 
 func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
+	m.endVHoldAttach(msg.seq)
 	if msg.seq != m.termSeq || !m.attachAwaited(msg.returnTo) {
 		// A newer attach superseded it, or the developer moved on (another
 		// screen, an overlay) while it attached: detach rather than pull them in.
@@ -148,6 +172,7 @@ func (m Model) handleTermOpened(msg termOpenedMsg) (tea.Model, tea.Cmd) {
 		close(msg.done)
 		if msg.seq == m.termSeq {
 			m.status = "terminal for " + msg.name + " not opened — you moved on; press t again"
+			m.termFail = m.status
 		}
 		return m, nil
 	}
@@ -175,6 +200,7 @@ func (m Model) attachAwaited(from screen) bool {
 // changes screen only when it is about the terminal showing: a failed attach
 // leaves the developer wherever they are now.
 func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
+	m.endVHoldAttach(msg.seq)
 	showing := m.screen == screenTerminal && msg.seq == m.term.seq
 	if !showing && msg.seq != m.termSeq {
 		return m, nil // about an attach a newer one superseded: nothing to report
@@ -188,6 +214,7 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case errors.Is(msg.err, client.ErrExternalAlreadyOpen):
 			m.status = "an external terminal is already attached to " + msg.name
+			m.termFail = m.status
 		case !showing && !msg.replace && msg.sb != nil && isDetachedRefusal(msg.err) && m.attachAwaited(msg.returnTo):
 			// The record was stale: the daemon found the detached agent first.
 			// The dialog opens on its own, so it accepts on y alone.
@@ -197,6 +224,7 @@ func (m Model) handleTermClosed(msg termClosedMsg) (tea.Model, tea.Cmd) {
 			return out, dcmd
 		default:
 			m.status = "terminal: " + attachErrText(msg.err)
+			m.termFail = m.status
 		}
 		return m, cmd
 	}
@@ -261,8 +289,12 @@ func (m *Model) resizeTerminal() {
 	}
 }
 
+// termRows is the PTY's height: fixed at the terminal height less the chrome
+// with a one-line status, independent of the status line (SWI-24, FR-533), so
+// a status change never resizes the PTY or signals the agent and a terminal
+// opened during a wrapped message gets the same size as one opened with none.
 func (m Model) termRows() int {
-	if r := m.bodyHeight() - 2; r >= 3 {
+	if r := m.height - 8; r >= 3 {
 		return r
 	}
 	return 3
@@ -293,8 +325,26 @@ func (m Model) updateTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.status == escHoldHint {
-		m.status = "" // the held esc is resolved: this key is sent (or ignored)
+	if m.status == escHoldHint || (m.status == termResetText && msg.Type != tea.KeyCtrlL) {
+		m.status = "" // the held esc is resolved or the reset is over: this key is sent (or ignored)
+	}
+	if msg.Type == tea.KeyCtrlL {
+		// Reset the view (SWI-32): blank the local screen, ask the daemon to
+		// make the agent redraw, then forward the key as usual, so a plain
+		// shell clears and reprints its prompt. Repeat presses inside
+		// termResetEvery do none of the three.
+		now := nowFunc()
+		if !m.term.lastReset.IsZero() && now.Sub(m.term.lastReset) < termResetEvery {
+			return m, nil
+		}
+		m.term.lastReset = now
+		if m.term.screen != nil {
+			m.term.screen.Reset()
+		}
+		if err := m.term.session.SendRepaint(); err != nil {
+			return m.handleTermClosed(termClosedMsg{err: err, name: m.term.name, returnTo: m.term.returnTo, seq: m.term.seq})
+		}
+		m.status = termResetText
 	}
 	if b := keyToBytes(msg); len(b) > 0 {
 		// Typing snaps the view back to the live output so the user sees what
@@ -328,6 +378,7 @@ func (m Model) updateTerminalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m Model) terminalHelp() helpBindings {
 	return helpBindings{
 		hkey("ctrl+q", "detach"),
+		hkey("ctrl+l", "reset view"),
 	}
 }
 
@@ -344,7 +395,11 @@ func (m Model) viewTerminal() string {
 	if off := m.term.screen.ScrollOffset(); off > 0 {
 		header += dimStyle.Render("   ⇡ scrolled " + strconv.Itoa(off) + " (type to follow)")
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.term.screen.Render())
+	// The reset hint last (SWI-32): the scroll state matters more when a
+	// narrow terminal cuts the end. Cut to the width, or a wider header would
+	// pad every line past it.
+	header += dimStyle.Render(" · ctrl+l reset view")
+	return lipgloss.JoinVertical(lipgloss.Left, m.fitLine(header), "", m.term.screen.Render())
 }
 
 // keyToBytes translates a Bubble Tea key event into the raw bytes a PTY expects.

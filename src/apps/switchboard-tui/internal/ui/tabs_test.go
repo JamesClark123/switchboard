@@ -51,7 +51,7 @@ func TestGroupTabsMultiHost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := sized(New(&fakeDaemon{}, "/work").WithHosts(mgr, hs, "hosta").WithGroups(gs, nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithHosts(mgr, hs, "hosta").WithGroups(gs))
 
 	// Load the tab-bar data (aggregate + groups).
 	msg := runCmd(m.listDataCmd())
@@ -121,7 +121,7 @@ func TestGroupTabsMultiHost(t *testing.T) {
 func TestNewGroupAppearsInTabsImmediately(t *testing.T) {
 	s, _ := store.New(t.TempDir())
 	gs := s.Groups()
-	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs, nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs))
 	// Initial tab data: just "All Sandboxes".
 	m, _ = update(m, runCmd(m.listDataCmd()).(listDataMsg))
 	if len(m.tabs) != 1 {
@@ -153,7 +153,7 @@ func TestSingleHostHasNoHostTabs(t *testing.T) {
 	if _, err := gs.Save(store.Group{Name: "solo"}); err != nil {
 		t.Fatal(err)
 	}
-	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs, nil))
+	m := sized(New(&fakeDaemon{}, "/work").WithGroups(gs))
 	m, _ = update(m, runCmd(m.listDataCmd()).(listDataMsg))
 	if len(m.tabs) != 2 || m.tabs[1].kind != tabGroup {
 		t.Fatalf("tabs = %v, want [All, group]", m.tabs)

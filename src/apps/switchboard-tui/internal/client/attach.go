@@ -164,6 +164,16 @@ func (a *AttachStream) SendResize(cols, rows uint32) error {
 	return nil
 }
 
+// SendRepaint asks the daemon to make the agent redraw its whole frame (SWI-32):
+// the in-TUI terminal sends it after clearing its view with ctrl+l. An older
+// daemon ignores the field, so no redraw happens until the agent next draws.
+func (a *AttachStream) SendRepaint() error {
+	if err := a.stream.Send(&pb.AgentInput{Repaint: true}); err != nil {
+		return mapAttachErr(err)
+	}
+	return nil
+}
+
 // Close detaches this client. The daemon keeps the session running for other
 // attachments and future reconnects (FR-002/004).
 func (a *AttachStream) Close() error {
