@@ -1229,6 +1229,8 @@ func (m Model) activeHelp() helpBindings {
 		return m.sandboxMcpHelp()
 	case screenAttachPick:
 		return m.attachPickHelp()
+	case screenDetachedPick:
+		return m.detachedPickHelp()
 	case screenOpLog:
 		return m.opLogHelp()
 	case screenTerminal:
@@ -1347,7 +1349,7 @@ func (m Model) viewScreen() string {
 	}
 	// The start-up notice's orchestrator picker floats over the inbox (SWI-25 A2).
 	if m.screen == screenDetachedPick {
-		bg := m.chrome(m.viewNotifications(), m.detachedPickHelp())
+		bg := m.chrome(m.viewNotifications(), hb)
 		return overlayCenter(bg, m.detachedPickModal(), m.width, m.height)
 	}
 

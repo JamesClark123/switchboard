@@ -169,7 +169,7 @@ func (m Model) surfaceForScreen(sc screen) activeSurface {
 		return form(gKitItem, m.kitEditor.form)
 	case screenHosts:
 		return activeSurface{kind: surfaceItemList, which: ilHosts}
-	case screenNotifications:
+	case screenNotifications, screenDetachedPick:
 		return activeSurface{kind: surfaceItemList, which: ilNotifications}
 	case screenGroups:
 		return activeSurface{kind: surfaceItemList, which: ilGroups}
