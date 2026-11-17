@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.326
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/TestCaptureModelIDFixtures857860521/001
+
+▎ Your Max plan includes $100 a month in API credits to power your apps and agents. Claim them at https://clau.de/api-credits
+  1 more notice hidden (ctrl+o to expand)
+
+❯ /model claude-fable-5
+  ⎿  Set model to Fable 5 and saved as your default for new sessions
+
+❯ /model claude-fable-5-1
+  ⎿  Set model to Fable 5.1 and saved as your default for new sessions
+
+❯ /model claude-fable-5-2
+  ⎿  Set model to Fable 5.2 and saved as your default for new sessions
+
+❯ /model claude-haiku-4-5
+  ⎿  Set model to Haiku 4.5 and saved as your default for new sessions
+
+❯ /model claude-bogus-1
+  ⎿  Model 'claude-bogus-1' not found
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Select model
+   Switch between Claude models. Your pick becomes the default for new sessions. For other or older models, use --model.
+
+     1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+     2.  Opus 5.5               For complex work and everyday tasks
+     3.  Fable 5.2              For your toughest challenges
+     4.  Sonnet 5.5             Most efficient for simpler tasks
+     5.  Haiku 5.5              Fastest for quick answers
+     6.  Haiku 4.5 ✔            Newer version available · select Haiku for Haiku 5.5
+   ❯ ▾   More models
+     7.  Fable 5.1              Most capable for your hardest and longest-running tasks
+     8.  Haiku 4.5              Fastest for quick answers
+     9.  Sonnet 5               Efficient for routine tasks
+     10. Opus 5                 Best for everyday, complex tasks
+     11. Fable 5                Most capable for your hardest and longest-running tasks
+     12. Opus 4.8               Best for everyday, complex tasks
+     13. Opus 4.7               Best for everyday, complex tasks
+     ↓ 2 more
+
+
+
+   Enter to collapse · Esc to cancel

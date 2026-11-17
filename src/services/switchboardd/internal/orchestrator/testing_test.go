@@ -617,7 +617,13 @@ func sprintf(format string, args ...any) string { return fmtSprintf(format, args
 // putAction saves an action as a lanes-aware client does: the guard's current
 // list is fetched with CheckLaneChange and confirmed.
 func putAction(svc *Service, id string, a *pb.Action) (*pb.Action, error) {
-	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	return putActionAs(svc, id, a, true)
+}
+
+// putActionAs is putAction as a client that edits pinned models (setsModelID,
+// SWI-34) or one from before them.
+func putActionAs(svc *Service, id string, a *pb.Action, setsModelID bool) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, SetsModelId: setsModelID}
 	if impact, err := svc.CheckLaneChange(&pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
 		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: impact.GetUnlanedActions(), UnlanedRuns: impact.GetUnlanedRuns()}
 	}

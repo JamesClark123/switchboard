@@ -56,7 +56,8 @@ If typing fails, the guard's record is rolled back as `Deliver` does today (`rol
    The daemon does **not** filter the text. Control characters are refused in the **untrusted call values** before
    they are substituted (at call and compose time, research R13). The developer-authored text and other content
    typed into agents (such as escape-hatch results, which legitimately carry ANSI output) are left as they are. For
-   MODEL/EFFORT, an `expect` outside the fixed sets (`opus|fable|sonnet|haiku`, `low|medium|high|xhigh|max|auto`) is
+   MODEL/EFFORT, an `expect` outside the fixed sets (`opus|fable|sonnet|haiku` or a catalog model's display name such as
+   `Fable 5`, typed as its ID — SWI-34; `low|medium|high|xhigh|max|auto`) is
    refused `INVALID_ARGUMENT` before the guard commits, so nothing is recorded or typed.
 
    Either is sent as **one bracketed paste**, then `\r` after 50 ms (`agent.Registry.TypeStep`). This is

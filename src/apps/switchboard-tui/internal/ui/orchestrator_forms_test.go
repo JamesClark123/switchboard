@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jamesclark123/switchboard/apps/switchboard-tui/internal/client"
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -63,10 +64,53 @@ func TestActionFormLegacyShowsAndSavesDefaults(t *testing.T) {
 	}
 }
 
-// The options match the spec: no ultracode (US1 #5), off first.
+// optionValues lists a select's option values.
+func optionValues(opts []huh.Option[string]) []string {
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, o.Value)
+	}
+	return out
+}
+
+// The options match the spec: no ultracode (US1 #5), off first, the aliases
+// labelled as the family's latest, then the catalog by display name (SWI-34)
+// where the daemon runs pins.
 func TestActionFormOptionLists(t *testing.T) {
-	if strings.Join(modelOptions, ",") != "off,opus,fable,sonnet,haiku" || strings.Join(effortOptions, ",") != "off,low,medium,high,xhigh,max,auto" {
-		t.Errorf("options: %v %v", modelOptions, effortOptions)
+	var catalog []string
+	for _, m := range swb.Models {
+		catalog = append(catalog, m.ID)
+	}
+	pinned := optionValues(modelOptions(true, ""))
+	if strings.Join(pinned, ",") != "off,opus,fable,sonnet,haiku,"+strings.Join(catalog, ",") ||
+		strings.Join(optionValues(modelOptions(false, "")), ",") != "off,opus,fable,sonnet,haiku" ||
+		strings.Join(effortOptions, ",") != "off,low,medium,high,xhigh,max,auto" {
+		t.Errorf("options: %v %v %v", pinned, modelOptions(false, ""), effortOptions)
+	}
+	if o := modelOptions(true, ""); o[0].Key != "off" || o[1].Key != "opus (latest)" || o[4].Key != "haiku (latest)" || o[5].Key != "Opus 5.5" || o[5].Value != "claude-opus-5-5" {
+		t.Errorf("labels: %v", o)
+	}
+	// A stored pin the list lacks is kept as a labelled option; one it has, or
+	// an alias, adds nothing.
+	if o := modelOptions(false, "claude-fable-5"); len(o) != 6 || o[5].Key != "Fable 5 (needs a newer daemon)" || o[5].Value != "claude-fable-5" {
+		t.Errorf("stored pin, old daemon: %v", o)
+	}
+	if o := modelOptions(true, "claude-fable-9"); len(o) != 6+len(catalog) || o[5+len(catalog)].Key != "claude-fable-9 (not in this TUI's catalog)" || o[5+len(catalog)].Value != "claude-fable-9" {
+		t.Errorf("stored pin outside the catalog: %v", o)
+	}
+	if len(modelOptions(true, "claude-fable-5")) != 5+len(catalog) || len(modelOptions(false, "opus")) != 5 || len(modelOptions(false, "off")) != 5 {
+		t.Error("a listed pin or an alias adds no option")
+	}
+	for _, c := range pinned[1:] {
+		if modelChoice(c) == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
+			t.Errorf("model %q unmapped", c)
+		}
+	}
+	if modelChoice("claude-haiku-4-5") != pb.ModelChoice_MODEL_CHOICE_HAIKU || modelChoice("claude-fable-9") != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
+		t.Error("a pinned model's family is the catalog's; outside it, none")
+	}
+	if pinnedModelID("opus") != "" || pinnedModelID("off") != "" || pinnedModelID("") != "" || pinnedModelID("claude-fable-5") != "claude-fable-5" || pinnedModelID("claude-fable-9") != "claude-fable-9" {
+		t.Error("an ID, in the catalog or not, is a pin; an alias is not")
 	}
 	m, _ := jobsWith(t, jobsActions, nil, nil)
 	m, _ = update(m, tea.WindowSizeMsg{Width: 160, Height: 120})
@@ -75,11 +119,6 @@ func TestActionFormOptionLists(t *testing.T) {
 	for _, want := range []string{"Model", "Effort", "Clear after run", "Pre-prompts", "Post-prompts", "one prompt per line"} {
 		if !strings.Contains(ansi.Strip(m.View()), want) {
 			t.Errorf("form missing %q", want)
-		}
-	}
-	for _, c := range modelOptions[1:] {
-		if modelChoice(c) == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
-			t.Errorf("model %q unmapped", c)
 		}
 	}
 	for _, c := range effortOptions[1:] {
@@ -119,6 +158,115 @@ func TestActionFormOffKeepsValue(t *testing.T) {
 	sequenceToForm(w, &pb.ActionSequence{})
 	if w.model != "off" || w.modelKept != "opus" || w.effortKept != "medium" {
 		t.Errorf("unspecified = %+v", w)
+	}
+}
+
+// pinnedAction is review-pr pinned to Fable 5 (SWI-34).
+func pinnedAction() *pb.Action {
+	a := reviewAction()
+	a.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-5",
+		EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true}
+	return a
+}
+
+// SWI-34: a pinned model round-trips by its ID with its family beside it; off
+// keeps the pin; an alias clears it; a pin outside the catalog loads as its
+// alias; the summary shows what is typed.
+func TestActionFormPinnedModel(t *testing.T) {
+	m, d := jobsWith(t, jobsActions, []*pb.Action{pinnedAction()}, nil)
+	if v := ansi.Strip(wideView(m)); !strings.Contains(v, "pre: /model claude-fable-5 · /effort medium — post: /clear") {
+		t.Errorf("summary:\n%s", v)
+	}
+	m, _ = update(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	if !v.modelID || v.model != "claude-fable-5" || v.modelKept != "claude-fable-5" {
+		t.Fatalf("loaded = %+v", v)
+	}
+	m.jobs.form.NextGroup()
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "a version pins that exact model") || !strings.Contains(view, "Fable 5") {
+		t.Errorf("form:\n%s", view)
+	}
+	m, got := saveAction(t, m, d)
+	if s := got.GetSequence(); !s.GetModelEnabled() || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE || s.GetModelId() != "claude-fable-5" {
+		t.Errorf("pinned round-trip = %v", s)
+	}
+	m, _ = update(m, press("e"))
+	v = m.jobs.formVals.(*actionFormVals)
+	v.model = "off"
+	_, got = saveAction(t, m, d)
+	if s := got.GetSequence(); s.GetModelEnabled() || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE || s.GetModelId() != "claude-fable-5" {
+		t.Errorf("off keeps the pin: %v", s)
+	}
+	w := &actionFormVals{}
+	sequenceToForm(w, got.GetSequence())
+	if w.model != "off" || w.modelKept != "claude-fable-5" {
+		t.Errorf("reloaded off = %+v", w)
+	}
+	w.model = w.modelKept
+	if s := sequenceFromForm(w); !s.GetModelEnabled() || s.GetModelId() != "claude-fable-5" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE {
+		t.Errorf("back on = %v", s)
+	}
+	w.model = "opus"
+	if s := sequenceFromForm(w); s.GetModelId() != "" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_OPUS {
+		t.Errorf("an alias clears the pin: %v", s)
+	}
+	// A pin outside this TUI's catalog (a newer daemon's) is kept as stored,
+	// with the stored family.
+	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-9"})
+	if w.model != "claude-fable-9" || w.modelKept != "claude-fable-9" || w.modelFamily != "fable" {
+		t.Errorf("a pin outside the catalog = %+v", w)
+	}
+	if s := sequenceFromForm(w); s.GetModelId() != "claude-fable-9" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE {
+		t.Errorf("a pin outside the catalog saves as stored: %v", s)
+	}
+	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_SONNET, ModelId: "claude-sonnet-9"})
+	if s := sequenceFromForm(w); s.GetModelId() != "claude-sonnet-9" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_SONNET {
+		t.Errorf("the stored family: %v", s)
+	}
+	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, ModelId: "claude-haiku-4-5"})
+	if w.model != "claude-haiku-4-5" || w.modelFamily != "opus" {
+		t.Errorf("a pin without its family = %+v", w)
+	}
+	a := pinnedAction()
+	a.Sequence.ModelId = "claude-fable-9"
+	if got := sequenceSummary(a, true, true); got != "pre: /model claude-fable-9 · /effort medium — post: /clear" {
+		t.Errorf("summary of a pin outside the catalog = %q", got)
+	}
+}
+
+// A daemon without "model-id" (SWI-34) offers the aliases, with a hint, plus
+// a stored pin, labelled, which goes back as it is; a pin chosen against it
+// is refused at save, like an edited sequence against one without "steps".
+func TestActionFormOldDaemonHasNoPins(t *testing.T) {
+	m, d := jobsWith(t, jobsActions, []*pb.Action{pinnedAction()}, nil)
+	d.noModelID = true
+	m, _ = update(m, press("e"))
+	v := m.jobs.formVals.(*actionFormVals)
+	if v.modelID || !v.steps || v.model != "claude-fable-5" || v.modelKept != "claude-fable-5" {
+		t.Fatalf("loaded = %+v", v)
+	}
+	m.jobs.form.NextGroup()
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "pinned versions need a") || !strings.Contains(view, "> Fable 5 (needs a newer daemon)") || strings.Contains(view, "Opus 4.8") {
+		t.Errorf("form:\n%s", view)
+	}
+	v.description = "edited elsewhere"
+	m, got := saveAction(t, m, d)
+	if s := got.GetSequence(); got.GetDescription() != "edited elsewhere" || !s.GetModelEnabled() || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE || s.GetModelId() != "claude-fable-5" {
+		t.Errorf("an edit elsewhere keeps the stored pin: %v", got)
+	}
+	m, _ = update(m, press("e"))
+	v = m.jobs.formVals.(*actionFormVals)
+	v.model = "claude-haiku-4-5"
+	before := len(d.putActions)
+	m, _ = update(m, ctrlS())
+	if len(d.putActions) != before || !strings.Contains(m.jobs.status, "predates pinned models — update with u") {
+		t.Errorf("a new pin against an old daemon: status %q, %d saves", m.jobs.status, len(d.putActions)-before)
+	}
+	v.model = "fable"
+	_, got = saveAction(t, m, d)
+	if s := got.GetSequence(); s.GetModelId() != "" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE {
+		t.Errorf("an alias instead: %v", s)
 	}
 }
 

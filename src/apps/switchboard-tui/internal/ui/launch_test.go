@@ -61,6 +61,8 @@ type fakeDaemon struct {
 	// "steps" unless noSteps is set.
 	noLanes bool
 	noSteps bool
+	// SWI-34: "model-id" unless noModelID is set.
+	noModelID bool
 	// SWI-21 fakes: mcpEdit advertises "mcp-edit"; mcpPendings ride on the
 	// list; mcpViews answers GetMcpServerDefinition by name (mcpDefErr fails
 	// it); mcpSaveResults are popped one per SaveMcpServer (an empty queue
@@ -437,7 +439,7 @@ func (f *fakeDaemon) RuntimeBaselineMet() bool   { return f.baselineMet }
 func (f *fakeDaemon) McpGateway() (bool, string) { return f.mcpAvail, f.mcpReason }
 
 func (f *fakeDaemon) HasCapability(name string) bool {
-	return name == "lanes" && !f.noLanes || name == "steps" && !f.noSteps || name == "mcp-edit" && f.mcpEdit
+	return name == "lanes" && !f.noLanes || name == "steps" && !f.noSteps || name == "mcp-edit" && f.mcpEdit || name == "model-id" && !f.noModelID
 }
 
 func (f *fakeDaemon) UpdateDaemon(_ context.Context, target string, onProgress func(stage, message string)) error {

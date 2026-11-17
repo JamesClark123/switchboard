@@ -309,13 +309,17 @@ func ConfirmationAfter(lines []termview.Line, stepText string) (string, bool) {
 }
 
 // ModelConfirmed reports whether a confirmation line confirms `/model` set the
-// given family ("Opus", "Fable", "Sonnet", "Haiku"): `Set model to <Family> …`.
-// `Model 'x' not found` and a picker's `Kept model as …` are not.
-func ModelConfirmed(line, family string) bool {
-	if family == "" {
+// named model: `Set model to <name>` followed by a space or the end. name is a
+// family ("Opus", "Fable", "Sonnet", "Haiku"), which any version of it confirms
+// (`Set model to Fable 5.1 …`), or a catalog display name ("Fable 5.1", SWI-34),
+// which only that version confirms: "Fable 5" is not confirmed by `Set model
+// to Fable 5.1 …`. `Model 'x' not found` and a picker's `Kept model as …` are
+// not confirmations.
+func ModelConfirmed(line, name string) bool {
+	if name == "" {
 		return false
 	}
-	want := "Set model to " + family
+	want := "Set model to " + name
 	return line == want || strings.HasPrefix(line, want+" ")
 }
 

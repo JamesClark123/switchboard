@@ -224,7 +224,12 @@ Real-host flags in `mcp/hostflags.go` (all documentation-derived). See `research
 
 Prior feature: `specs/swi-17-feature-action-pre-post-prompts/plan.md` (Action Pre & Post Prompts, SWI-17;
 **implemented** — T001–T042 done, T043 manual quickstart pending). Every
-action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`), **Effort** (`/effort
+action gets a **sequence**: built-in **Model** (`/model opus|fable|sonnet|haiku`, or — SWI-34 — a specific version pinned
+by its ID, `/model claude-fable-5`, chosen by display name from the hand-kept catalog `switchboard-proto/models.go`;
+`ActionSequence.model_id` wins over the `model` alias when set, the read-back must name exactly that version, and the
+daemon advertises capability `model-id` so an older one, which would type the alias, is offered none; a pin-aware client sets
+`PutActionRequest.sets_model_id`, and a stored pin survives an older client's save; a pin the catalog has lost runs as
+stored, read back by the name its ID derives, `ModelDisplayFromID`), **Effort** (`/effort
 low|medium|high|xhigh|max|auto`; **ultracode dropped** — it is a sticky session toggle, research R1) and **Clear**
 (`/clear`), on by default incl. existing actions (absent `Action.sequence` = defaults), plus custom pre/post prompts
 (≤10 each, `{name}` placeholders, none in the first word, none in `!` steps). Steps go **one at a time, each only once

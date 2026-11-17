@@ -1566,6 +1566,10 @@ message ActionSequence {
   bool clear_enabled = 5;
   repeated string pre_prompts = 6;       // trimmed; <= 10; FR-204 rules
   repeated string post_prompts = 7;
+  // SWI-34: a specific model by its catalog ID (claude-fable-5-1); set => it
+  // is typed instead of the family alias `model` names, and the read-back
+  // must name exactly that model. Empty => `model` alone, as before.
+  string model_id = 8;
 }
 
 // A developer-authored recipe (FR-135..FR-141). Validated at save.
@@ -1903,6 +1907,9 @@ message PutActionRequest {
   Action action = 2;
   bool sets_lanes = 3;                   // FR-318a: a lanes-aware client always sets it
   LaneGuardConfirm guard = 4;            // FR-308a
+  // SWI-34: a client that edits ActionSequence.model_id always sets it; one
+  // that does not (before SWI-34) keeps a stored pin of the same family.
+  bool sets_model_id = 5;
 }
 message DeleteActionRequest { string orchestrator_id = 1; string name = 2; }
 message DeleteActionResponse { repeated string disabled_events = 1; }

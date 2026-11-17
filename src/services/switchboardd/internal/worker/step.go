@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	termview "github.com/jamesclark123/switchboard/libs/switchboard-termview"
 	"github.com/jamesclark123/switchboard/services/switchboardd/internal/agent"
@@ -162,15 +163,22 @@ var (
 // builtinText derives what a step types (contracts/worker-step.md §2): for
 // MODEL, EFFORT and CLEAR the command from kind + expect, never step.text;
 // for CUSTOM the text as is. ACTION_PROMPT is framed once the guard knows the
-// orchestrator's name. INVALID_ARGUMENT for an expect outside the fixed sets.
+// orchestrator's name. INVALID_ARGUMENT for an expect outside the fixed sets:
+// a MODEL expect is a family (`/model fable`) or a model's display name
+// (SWI-34, "Fable 5.1"), typed by the ID the name derives (`/model
+// claude-fable-5-1`; the catalog's IDs are those, by its test), so the
+// command is never more than `/model claude-<letters>-<digits>[-<digits>]`.
 func builtinText(step *pb.RunStep) (string, error) {
 	expect := strings.ToLower(strings.TrimSpace(step.GetExpect()))
 	switch step.GetKind() {
 	case pb.StepKind_STEP_KIND_MODEL:
-		if !modelFamilies[expect] {
-			return "", fmt.Errorf("%w: model %q is not one of opus, fable, sonnet, haiku", ErrInvalid, step.GetExpect())
+		if modelFamilies[expect] {
+			return "/model " + expect, nil
 		}
-		return "/model " + expect, nil
+		if id := swb.ModelIDFromDisplay(expect); id != "" {
+			return "/model " + id, nil
+		}
+		return "", fmt.Errorf("%w: model %q is neither a family (opus, fable, sonnet, haiku) nor a model name (Fable 5.1)", ErrInvalid, step.GetExpect())
 	case pb.StepKind_STEP_KIND_EFFORT:
 		if !effortLevels[expect] {
 			return "", fmt.Errorf("%w: effort %q is not one of low, medium, high, xhigh, max, auto", ErrInvalid, step.GetExpect())
@@ -198,7 +206,7 @@ const OtherPromptNote = "another prompt was submitted"
 type readSpec struct {
 	kind   pb.StepKind
 	text   string // what was typed (the echo to look for)
-	expect string // MODEL: family ("opus"); EFFORT: level
+	expect string // lower-cased; MODEL: family ("opus") or model name ("fable 5.1", SWI-34: see modelName); EFFORT: level
 	// transcript is the screen's transcript just before typing: what was on it
 	// then is no echo or reply of this send (agent.Added).
 	transcript []string
@@ -654,7 +662,7 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 	}
 	pass := false
 	if r.kind == pb.StepKind_STEP_KIND_MODEL {
-		pass = agent.ModelConfirmed(line, strings.ToUpper(r.expect[:1])+r.expect[1:])
+		pass = agent.ModelConfirmed(line, modelName(r.expect))
 	} else {
 		pass = agent.EffortConfirmed(line, r.expect)
 	}
@@ -662,6 +670,19 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 		return line, false
 	}
 	return "", true
+}
+
+// modelName is the name a MODEL step's expect, lower-cased, reads back as: a
+// model's display name (SWI-34, through the ID rule), else the family
+// capitalised.
+func modelName(expect string) string {
+	if id := swb.ModelIDFromDisplay(expect); id != "" {
+		return swb.ModelDisplayFromID(id)
+	}
+	if expect == "" {
+		return ""
+	}
+	return strings.ToUpper(expect[:1]) + expect[1:]
 }
 
 // clearCorroborated reports whether a clear SessionStart passes Clear's

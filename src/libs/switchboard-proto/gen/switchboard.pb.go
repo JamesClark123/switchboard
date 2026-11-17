@@ -9375,6 +9375,10 @@ type ActionSequence struct {
 	ClearEnabled  bool                   `protobuf:"varint,5,opt,name=clear_enabled,json=clearEnabled,proto3" json:"clear_enabled,omitempty"`
 	PrePrompts    []string               `protobuf:"bytes,6,rep,name=pre_prompts,json=prePrompts,proto3" json:"pre_prompts,omitempty"` // trimmed; <= 10; FR-204 rules
 	PostPrompts   []string               `protobuf:"bytes,7,rep,name=post_prompts,json=postPrompts,proto3" json:"post_prompts,omitempty"`
+	// SWI-34: a specific model by its catalog ID (claude-fable-5-1); set => it
+	// is typed instead of the family alias `model` names, and the read-back
+	// must name exactly that model. Empty => `model` alone, as before.
+	ModelId       string `protobuf:"bytes,8,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9456,6 +9460,13 @@ func (x *ActionSequence) GetPostPrompts() []string {
 		return x.PostPrompts
 	}
 	return nil
+}
+
+func (x *ActionSequence) GetModelId() string {
+	if x != nil {
+		return x.ModelId
+	}
+	return ""
 }
 
 // A developer-authored recipe (FR-135..FR-141). Validated at save.
@@ -12308,8 +12319,11 @@ type PutActionRequest struct {
 	Action         *Action                `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
 	SetsLanes      bool                   `protobuf:"varint,3,opt,name=sets_lanes,json=setsLanes,proto3" json:"sets_lanes,omitempty"` // FR-318a: a lanes-aware client always sets it
 	Guard          *LaneGuardConfirm      `protobuf:"bytes,4,opt,name=guard,proto3" json:"guard,omitempty"`                           // FR-308a
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// SWI-34: a client that edits ActionSequence.model_id always sets it; one
+	// that does not (before SWI-34) keeps a stored pin of the same family.
+	SetsModelId   bool `protobuf:"varint,5,opt,name=sets_model_id,json=setsModelId,proto3" json:"sets_model_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PutActionRequest) Reset() {
@@ -12368,6 +12382,13 @@ func (x *PutActionRequest) GetGuard() *LaneGuardConfirm {
 		return x.Guard
 	}
 	return nil
+}
+
+func (x *PutActionRequest) GetSetsModelId() bool {
+	if x != nil {
+		return x.SetsModelId
+	}
+	return false
 }
 
 type DeleteActionRequest struct {
@@ -15772,7 +15793,7 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12#\n" +
-	"\rdefault_value\x18\x04 \x01(\tR\fdefaultValue\"\xae\x02\n" +
+	"\rdefault_value\x18\x04 \x01(\tR\fdefaultValue\"\xc9\x02\n" +
 	"\x0eActionSequence\x12#\n" +
 	"\rmodel_enabled\x18\x01 \x01(\bR\fmodelEnabled\x121\n" +
 	"\x05model\x18\x02 \x01(\x0e2\x1b.switchboard.v1.ModelChoiceR\x05model\x12%\n" +
@@ -15781,7 +15802,8 @@ const file_switchboard_proto_rawDesc = "" +
 	"\rclear_enabled\x18\x05 \x01(\bR\fclearEnabled\x12\x1f\n" +
 	"\vpre_prompts\x18\x06 \x03(\tR\n" +
 	"prePrompts\x12!\n" +
-	"\fpost_prompts\x18\a \x03(\tR\vpostPrompts\"\xe7\x03\n" +
+	"\fpost_prompts\x18\a \x03(\tR\vpostPrompts\x12\x19\n" +
+	"\bmodel_id\x18\b \x01(\tR\amodelId\"\xe7\x03\n" +
 	"\x06Action\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12.\n" +
@@ -16063,13 +16085,14 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x02 \x01(\tR\tsandboxId\x12\x16\n" +
-	"\x06paused\x18\x03 \x01(\bR\x06paused\"\xc2\x01\n" +
+	"\x06paused\x18\x03 \x01(\bR\x06paused\"\xe6\x01\n" +
 	"\x10PutActionRequest\x12'\n" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12.\n" +
 	"\x06action\x18\x02 \x01(\v2\x16.switchboard.v1.ActionR\x06action\x12\x1d\n" +
 	"\n" +
 	"sets_lanes\x18\x03 \x01(\bR\tsetsLanes\x126\n" +
-	"\x05guard\x18\x04 \x01(\v2 .switchboard.v1.LaneGuardConfirmR\x05guard\"R\n" +
+	"\x05guard\x18\x04 \x01(\v2 .switchboard.v1.LaneGuardConfirmR\x05guard\x12\"\n" +
+	"\rsets_model_id\x18\x05 \x01(\bR\vsetsModelId\"R\n" +
 	"\x13DeleteActionRequest\x12'\n" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"?\n" +

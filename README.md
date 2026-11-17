@@ -489,7 +489,9 @@ four MCP tools on the `sxb-orch-…` server — `orchestrator_list_actions`,
 ```
 
 **Action sequence.** Every action carries a **sequence** around its prompt, edited in the
-action form: built-in **Model** (`/model opus|fable|sonnet|haiku`) and **Effort** (`/effort
+action form: built-in **Model** (`/model opus|fable|sonnet|haiku`, each the family's latest, or a specific
+version picked by name — `Fable 5`, `Haiku 4.5`, … — typed as its ID, `/model claude-fable-5`, and passing only
+when exactly that model is set; the list is a hand-kept catalog, updated as Claude ships models) and **Effort** (`/effort
 low|medium|high|xhigh|max|auto`), typed before the prompt, and **Clear** (`/clear`), typed once the
 run closes; plus up to 10 custom **pre-prompts** (before the action prompt) and 10 **post-prompts**
 (after the run closes), one per line, with the same `{name}` placeholders (not in a prompt's first

@@ -14,7 +14,9 @@ import (
 // The fixtures are the screens research R1 recorded, captured from Claude Code
 // 2.1.312 by TestCaptureFixtures, except auto-mode-dialog, which is
 // hand-authored (no start-up dialog appeared on the capture), and those of a real
-// turn, captured on Linux from 2.1.316 by TestCaptureTurnFixtures.
+// turn, captured on Linux from 2.1.316 by TestCaptureTurnFixtures. The pinned
+// model ones (model-set-id-*, model-not-found-id, model-picker-folded/-more/
+// -more-tail) are from 2.1.326, by TestCaptureModelIDFixtures (SWI-34).
 
 // confirm is a fixture's expected read-back of one command.
 type confirm struct {
@@ -61,6 +63,22 @@ func TestClaudeUIFixtures(t *testing.T) {
 		// An unknown model reads back as not confirmed, with the same empty box.
 		{name: "model-not-found", present: true, ready: true,
 			confirm: &confirm{cmd: "/model bogus", prefix: "Model 'bogus' not found", notFam: "bogus"}},
+		// A model pinned by its ID (SWI-34) reads back by its display name,
+		// which only that version confirms (the family still does).
+		{name: "model-set-id-fable-5", present: true, ready: true,
+			confirm: &confirm{cmd: "/model claude-fable-5", prefix: "Set model to Fable 5 and", model: "Fable 5", notFam: "Fable 5.1"}},
+		{name: "model-set-id-fable-5-1", present: true, ready: true,
+			confirm: &confirm{cmd: "/model claude-fable-5-1", prefix: "Set model to Fable 5.1 and", model: "Fable 5.1", notFam: "Fable 5"}},
+		{name: "model-set-id-fable-5-2", present: true, ready: true,
+			confirm: &confirm{cmd: "/model claude-fable-5-2", prefix: "Set model to Fable 5.2 and", model: "Fable 5.2", notFam: "Fable 5.1"}},
+		{name: "model-set-id-haiku-4-5", present: true, ready: true,
+			confirm: &confirm{cmd: "/model claude-haiku-4-5", prefix: "Set model to Haiku 4.5 and", model: "Haiku 4.5", notFam: "Haiku 5.5"}},
+		{name: "model-not-found-id", present: true, ready: true,
+			confirm: &confirm{cmd: "/model claude-bogus-1", prefix: "Model 'claude-bogus-1' not found", notFam: "Fable 5"}},
+		// The 2.1.326 picker: folded, with "More models" expanded, scrolled to its end.
+		{name: "model-picker-folded", modal: true, confirm: &confirm{cmd: "/model", missing: true}},
+		{name: "model-picker-more", modal: true, confirm: &confirm{cmd: "/model", missing: true}},
+		{name: "model-picker-more-tail", modal: true, confirm: &confirm{cmd: "/model", missing: true}},
 		{name: "effort-set-low", present: true, ready: true,
 			confirm: &confirm{cmd: "/effort low", prefix: "Set effort level to low (saved", effort: "low", notLvl: "medium"}},
 		{name: "effort-set-medium", present: true, ready: true,
@@ -604,6 +622,14 @@ func TestConfirmedMatchers(t *testing.T) {
 		{"model other family", ModelConfirmed("Set model to Opus 5.5", "Haiku"), false},
 		{"model prefix of a longer name", ModelConfirmed("Set model to Opusx 5", "Opus"), false},
 		{"model kept by a picker", ModelConfirmed("Kept model as Opus 5.5", "Opus"), false},
+		// A pinned model (SWI-34): its display name, exactly that version.
+		{"pinned exact", ModelConfirmed("Set model to Fable 5.1 and saved as your default for new sessions", "Fable 5.1"), true},
+		{"pinned bare line", ModelConfirmed("Set model to Fable 5", "Fable 5"), true},
+		{"pinned whole version is not a point release", ModelConfirmed("Set model to Fable 5.1 and saved as your default for new sessions", "Fable 5"), false},
+		{"pinned Opus 5 is not Opus 5.5", ModelConfirmed("Set model to Opus 5.5 and saved as your default for new sessions", "Opus 5"), false},
+		{"pinned point release is not the whole version", ModelConfirmed("Set model to Opus 5 and saved as your default for new sessions", "Opus 5.5"), false},
+		{"pinned, the family still confirms", ModelConfirmed("Set model to Opus 5 and saved as your default for new sessions", "Opus"), true},
+		{"pinned ID not found", ModelConfirmed("Model 'claude-bogus-1' not found", "Fable 5"), false},
 		{"effort exact", EffortConfirmed("Set effort level to low", "low"), true},
 		{"effort empty level", EffortConfirmed("Set effort level to low", ""), false},
 		{"effort high is not xhigh", EffortConfirmed("Set effort level to xhigh (saved …)", "high"), false},

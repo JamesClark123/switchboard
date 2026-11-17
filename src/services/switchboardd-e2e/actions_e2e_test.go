@@ -12,6 +12,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // actionsHookAddr is this suite's hook listener: apart from the TUI suite's
@@ -89,6 +90,8 @@ func TestActionSequenceE2E(t *testing.T) {
 		{"too many", func(s *pb.ActionSequence) { s.PostPrompts = eleven }, "more than 10 post-prompts"},
 		{"empty", func(s *pb.ActionSequence) { s.PrePrompts = []string{"ok", " "} }, "pre-prompt 2 is empty"},
 		{"model", func(s *pb.ActionSequence) { s.Model = pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED }, "model must be one of"},
+		{"pinned model unknown", func(s *pb.ActionSequence) { s.ModelId = "claude-sonnet-9" }, `model_id "claude-sonnet-9" is not in the catalog; it must be one of Opus 5.5 (claude-opus-5-5)`},
+		{"pinned model, other family", func(s *pb.ActionSequence) { s.ModelId = "claude-fable-5" }, `model_id "claude-fable-5" is Fable 5, a Fable model; model must be Fable`},
 		{"effort", func(s *pb.ActionSequence) { s.Effort = pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED }, "effort must be one of"},
 	} {
 		a := sequenced("bad")
@@ -125,6 +128,38 @@ func TestActionSequenceE2E(t *testing.T) {
 	if actions["legacy"].GetSequence() != nil {
 		t.Errorf("a legacy action reads back with no sequence: %v", actions["legacy"].GetSequence())
 	}
+	// SWI-34: a pinned model round-trips, and its run types the ID with the
+	// display name to read back.
+	pinned := sequenced("pinned")
+	pinned.Sequence.Model, pinned.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, " claude-fable-5 "
+	if _, err := putAction(ctx, c, o.GetId(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	det, err = c.GetOrchestrator(ctx, &pb.OrchestratorIdRequest{OrchestratorId: o.GetId()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range det.GetSummary().GetOrchestrator().GetActions() {
+		if a.GetName() == "pinned" && (a.GetSequence().GetModelId() != "claude-fable-5" || a.GetSequence().GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE) {
+			t.Errorf("pinned round-trip = %v", a.GetSequence())
+		}
+	}
+	// A client from before SWI-34 (no sets_model_id) keeps a stored pin.
+	oldClient := proto.Clone(pinned).(*pb.Action)
+	oldClient.Description, oldClient.Sequence.ModelId = "edited by an old client", ""
+	if saved, err := putActionAs(ctx, c, o.GetId(), oldClient, false); err != nil || saved.GetSequence().GetModelId() != "claude-fable-5" {
+		t.Errorf("an old client's edit keeps the pin: %v, %v", saved, err)
+	}
+	pinnedRun, err := c.CallAction(ctx, &pb.CallActionRequest{OrchestratorId: o.GetId(), Action: "pinned", Arguments: map[string]string{"pr": "7", "repo": "acme/web"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(stepTexts(pinnedRun.GetSteps()), "|"); got != "/model claude-fable-5|/effort high|/pre-setupskill|Look at 7 with review||/tear-down-skill acme/web|/clear" {
+		t.Errorf("pinned steps = %q", got)
+	}
+	if got := pinnedRun.GetSteps()[0].GetExpect(); got != "Fable 5" {
+		t.Errorf("pinned expect = %q", got)
+	}
 
 	// Calls snapshot the steps: the defaults for the legacy action, the
 	// custom prompts with their placeholders filled for the other. The action
@@ -158,7 +193,13 @@ func TestActionSequenceE2E(t *testing.T) {
 // putAction saves an action as a lanes-aware client does (SWI-18): the
 // open-lane guard's current list is fetched and confirmed.
 func putAction(ctx context.Context, c pb.SwitchboardClient, id string, a *pb.Action) (*pb.Action, error) {
-	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	return putActionAs(ctx, c, id, a, true)
+}
+
+// putActionAs is putAction as a client that edits pinned models (setsModelID,
+// SWI-34) or one from before them.
+func putActionAs(ctx context.Context, c pb.SwitchboardClient, id string, a *pb.Action, setsModelID bool) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, SetsModelId: setsModelID}
 	if imp, err := c.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
 		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: imp.GetUnlanedActions(), UnlanedRuns: imp.GetUnlanedRuns()}
 	}

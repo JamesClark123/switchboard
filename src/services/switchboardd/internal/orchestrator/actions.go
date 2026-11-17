@@ -93,6 +93,7 @@ func normalizeAction(a *pb.Action) *pb.Action {
 		arg.Name = strings.TrimSpace(arg.GetName())
 	}
 	if seq := out.GetSequence(); seq != nil {
+		seq.ModelId = strings.TrimSpace(seq.GetModelId())
 		for i, t := range seq.GetPrePrompts() {
 			seq.PrePrompts[i] = strings.TrimSpace(t)
 		}
@@ -112,6 +113,19 @@ func validateSequence(seq *pb.ActionSequence, declared map[string]bool) error {
 	if seq.GetModel() == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED || swb.ModelChoiceLabel(seq.GetModel()) == "unknown" {
 		return fmt.Errorf("%w: model must be one of Opus, Fable, Sonnet, Haiku", ErrInvalid)
 	}
+	// SWI-34: a pinned model (trimmed by normalizeAction) is a well-formed ID
+	// of the family the alias names, so a reader of the alias alone (an older
+	// daemon) runs a sane family; validatePin, at the write, holds it to the
+	// catalog.
+	if id := seq.GetModelId(); id != "" {
+		name := swb.ModelDisplayFromID(id)
+		if name == "" {
+			return fmt.Errorf("%w: model_id %q is not a model ID (claude-<family>-<major>[-<minor>], e.g. claude-fable-5-1)", ErrInvalid, id)
+		}
+		if family, _, _ := strings.Cut(name, " "); family != swb.ModelChoiceLabel(seq.GetModel()) {
+			return fmt.Errorf("%w: model_id %q is %s, a %s model; model must be %s", ErrInvalid, id, name, family, family)
+		}
+	}
 	if seq.GetEffort() == pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED || swb.EffortChoiceLabel(seq.GetEffort()) == "unknown" {
 		return fmt.Errorf("%w: effort must be one of low, medium, high, xhigh, max, auto", ErrInvalid)
 	}
@@ -119,6 +133,23 @@ func validateSequence(seq *pb.ActionSequence, declared map[string]bool) error {
 		return err
 	}
 	return validateStepPrompts("post-prompt", seq.GetPostPrompts(), declared)
+}
+
+// validatePin holds a sequence's pinned model (SWI-34) to the catalog at the
+// write, where the stored action is known: there is no free-text ID (the
+// picker and this daemon share the catalog), but the ID the action already
+// stores (kept) passes, so a pin that has left the catalog, or came from a
+// daemon with a newer one, blocks no unrelated edit; its runs type it as
+// stored (ModelStep).
+func validatePin(seq *pb.ActionSequence, kept string) error {
+	id := seq.GetModelId()
+	if id == "" || id == kept {
+		return nil
+	}
+	if _, ok := swb.ModelByID(id); ok {
+		return nil
+	}
+	return fmt.Errorf("%w: model_id %q is not in the catalog; it must be one of %s", ErrInvalid, id, strings.Join(swb.ModelNames(), ", "))
 }
 
 // validateStepPrompts checks one custom list (FR-204): at most maxStepPrompts
@@ -182,9 +213,11 @@ func buildSteps(a *pb.Action, args map[string]string) ([]*pb.RunStep, error) {
 	}
 	var steps []*pb.RunStep
 	if seq.GetModelEnabled() {
-		m := swb.ModelChoiceLabel(seq.GetModel())
-		steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL,
-			Text: "/model " + strings.ToLower(m), Expect: m})
+		// SWI-34: a pinned model is typed by its ID and read back by its
+		// display name (exactly that version), from the catalog or, for an ID
+		// it lacks, from the ID itself.
+		typed, expect := swb.ModelStep(seq)
+		steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL, Text: "/model " + typed, Expect: expect})
 	}
 	if seq.GetEffortEnabled() {
 		e := swb.EffortChoiceLabel(seq.GetEffort())
@@ -357,7 +390,7 @@ func (s *Service) PutAction(req *pb.PutActionRequest) (*pb.Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec, ch, _, err := rt.guarded(req.GetGuard(), putActionChange(a, timestamppb.New(s.clock.Now())))
+	rec, ch, _, err := rt.guarded(req.GetGuard(), putActionChange(a, timestamppb.New(s.clock.Now()), !req.GetSetsModelId()))
 	if err != nil {
 		return nil, err
 	}

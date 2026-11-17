@@ -2144,6 +2144,46 @@ func TestInvalidStepHalts(t *testing.T) {
 	}
 }
 
+// A pinned Model step (SWI-34) refused by a worker daemon (one that knows only
+// the family aliases) halts naming that cause; other INVALID_ARGUMENT notes
+// are the worker's reason as given.
+func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
+	pinned := reviewPR()
+	pinned.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-5", EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true}
+	env2, w2, o2, _, _ := seqEnv(t, 1, pinned)
+	w2.mu.Lock()
+	w2.steps = func(ctx context.Context, w *fakeWorker, req *pb.DeliverWorkerStepRequest) (*pb.DeliverWorkerStepResponse, error) {
+		return nil, status.Error(codes.InvalidArgument, "invalid: model \"Fable 5\" is not one of opus, fable, sonnet, haiku")
+	}
+	w2.mu.Unlock()
+	run := callSeq(t, env2, o2, "1")
+	waitFor(t, func() bool { return runNow(env2, o2, run.GetId()).GetStepStatus() == pb.StepStatus_STEP_STATUS_HALTED })
+	r := runNow(env2, o2, run.GetId())
+	if r.GetSteps()[0].GetText() != "/model claude-fable-5" || !strings.HasSuffix(r.GetStepNote(), "is not one of opus, fable, sonnet, haiku — the worker's daemon predates pinned models: update it, or skip the step") {
+		t.Errorf("pinned halt = %+v", r)
+	}
+	for name, c := range map[string]struct {
+		step *pb.RunStep
+		msg  string
+	}{
+		"alias step":   {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Opus"}, `model "bogus" is not one of opus, fable, sonnet, haiku`},
+		"another kind": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_EFFORT, Expect: "Fable 5"}, `effort "Fable 5" is not one of low, medium`},
+	} {
+		run := &pb.Run{Steps: []*pb.RunStep{c.step}}
+		if got := invalidNote(run, status.Error(codes.InvalidArgument, c.msg)); got != c.msg {
+			t.Errorf("%s: note %q, want the reason as given", name, got)
+		}
+	}
+	if got := invalidNote(&pb.Run{}, status.Error(codes.InvalidArgument, "x")); got != "x" {
+		t.Errorf("no step: %q", got)
+	}
+	// Whatever the wording: only a daemon before pins refuses one.
+	outside := &pb.Run{Steps: []*pb.RunStep{{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 9"}}}
+	if got := invalidNote(outside, status.Error(codes.InvalidArgument, `model "Fable 9" is unknown here`)); got != `model "Fable 9" is unknown here — the worker's daemon predates pinned models: update it, or skip the step` {
+		t.Errorf("a pin outside the catalog on an old daemon: %q", got)
+	}
+}
+
 // --- custom pre- and post-prompts (US2, T035) ---
 
 // callTicket calls review-pr with a ticket (the custom steps' placeholder).
