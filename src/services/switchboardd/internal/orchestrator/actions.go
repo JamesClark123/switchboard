@@ -113,10 +113,10 @@ func validateSequence(seq *pb.ActionSequence, declared map[string]bool) error {
 	if seq.GetModel() == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED || swb.ModelChoiceLabel(seq.GetModel()) == "unknown" {
 		return fmt.Errorf("%w: model must be one of Opus, Fable, Sonnet, Haiku", ErrInvalid)
 	}
-	// SWI-34: a pinned model must be in the catalog (there is no free-text
-	// ID) and of the family the alias names, so a reader of the alias alone
-	// (an older daemon) runs a sane family.
-	if id := strings.TrimSpace(seq.GetModelId()); id != "" {
+	// SWI-34: a pinned model (trimmed by normalizeAction) must be in the
+	// catalog (there is no free-text ID) and of the family the alias names, so
+	// a reader of the alias alone (an older daemon) runs a sane family.
+	if id := seq.GetModelId(); id != "" {
 		m, ok := swb.ModelByID(id)
 		if !ok {
 			return fmt.Errorf("%w: model_id %q is not in the catalog; model must be one of %s", ErrInvalid, id, strings.Join(swb.ModelDisplays(), ", "))

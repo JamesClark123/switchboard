@@ -885,6 +885,23 @@ func refusalReason(err error) string {
 	return strings.TrimPrefix(msg, worker.ErrPrecondition.Error()+": ")
 }
 
+// invalidNote is an INVALID_ARGUMENT's reason as the step's note. A pinned
+// Model step (SWI-34) refused by a worker daemon that knows only the family
+// aliases (one before "model-id"; the orchestrator learns nothing of a worker
+// daemon's capabilities) names that cause, so the developer can update it or
+// skip the step.
+func invalidNote(run *pb.Run, err error) string {
+	reason := refusalReason(err)
+	st := curStep(run)
+	if st == nil || st.GetKind() != pb.StepKind_STEP_KIND_MODEL {
+		return reason
+	}
+	if _, pinned := swb.ModelByDisplay(st.GetExpect()); pinned && strings.Contains(reason, "is not one of opus, fable, sonnet, haiku") && !strings.Contains(reason, "catalog") {
+		reason += " — the worker's daemon predates pinned models: update it, or skip the step"
+	}
+	return reason
+}
+
 // applyOutcome records a step call's answer on the run (research R5, R6).
 func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse, err error) bool {
 	res := classifyStep(err)
@@ -916,7 +933,7 @@ func (rt *runtime) applyOutcome(sent *pb.Run, resp *pb.DeliverWorkerStepResponse
 			}
 			fx = haltLocked(l, unsupportedNote)
 		case resInvalid:
-			fx = haltLocked(l, refusalReason(err))
+			fx = haltLocked(l, invalidNote(l, err))
 		default:
 			switch l.GetState() {
 			case pb.RunState_RUN_STATE_QUEUED:

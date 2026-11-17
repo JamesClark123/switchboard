@@ -42,18 +42,21 @@ type actionFormVals struct {
 	// The action's sequence (SWI-17, FR-218): model and effort are a choice or
 	// "off"; modelKept/effortKept are the values "off" keeps (model_enabled =
 	// false keeps the stored model). pre and post hold one prompt per line.
-	// A model is a family alias ("fable") or, pinned, a catalog ID
-	// ("claude-fable-5", SWI-34).
+	// A model is a family alias ("fable") or, pinned, a model ID
+	// ("claude-fable-5", SWI-34): a catalog one, or as stored (a daemon with a
+	// newer catalog), kept as is. modelFamily is the alias the stored enum
+	// names, the family sent with an ID the catalog cannot place.
 	model, effort         string
 	modelKept, effortKept string
+	modelFamily           string
 	clearAfter            bool
 	pre, post             string
 	// steps: the daemon, as last known when the form opened, keeps sequences
 	// (SWI-29 E4); without, the sequence fields are not built (the values still
 	// load). stepsKnown: anything was known of it, else the hint names no age.
 	// A save decides from the live daemon either way. modelID: it runs a
-	// pinned model (SWI-34); without, the Model select offers the aliases only
-	// and a stored pin loads as its alias (the daemon would type that anyway).
+	// pinned model (SWI-34); without, the Model select offers the aliases, plus
+	// a stored pin, labelled, so that an edit elsewhere keeps it.
 	steps, stepsKnown, modelID bool
 }
 
@@ -168,9 +171,6 @@ func (m Model) openActionForm(s orchSurface, t orchTarget, a *pb.Action) (tea.Mo
 	v.steps, v.stepsKnown = m.hostSteps(t.host)
 	v.modelID = m.hostModelID(t.host)
 	sequenceToForm(v, effectiveSequence(a))
-	if !v.modelID {
-		v.unpinModel()
-	}
 	if a != nil {
 		v.name, v.description, v.body, v.original = a.GetName(), a.GetDescription(), a.GetBody(), a.GetName()
 		v.lanes = append([]string(nil), a.GetLaneIds()...)
@@ -237,7 +237,7 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 			modelDesc = "typed as /model before each run; off skips it · pinned versions need a newer daemon (update with u)"
 		}
 		last = append(last,
-			huh.NewSelect[string]().Key("model").Title("Model").Description(modelDesc).Options(modelOptions(v.modelID)...).Height(modelSelectHeight).Value(&v.model),
+			huh.NewSelect[string]().Key("model").Title("Model").Description(modelDesc).Options(modelOptions(v.modelID, v.modelKept)...).Height(modelSelectHeight).Value(&v.model),
 			huh.NewSelect[string]().Key("effort").Title("Effort").Description("typed as /effort before each run; off skips it").Options(stringOptions(effortOptions)...).Value(&v.effort),
 			huh.NewConfirm().Key("clear").Title("Clear after run").Description("/clear once the run closes, so the next run starts fresh").Value(&v.clearAfter),
 			spec.text(&v.pre, "Pre-prompts").Key("pre").Lines(4).Description("one prompt per line, sent in order before the action prompt; a prompt can't span lines"),
@@ -368,14 +368,18 @@ var (
 	effortOptions = []string{"off", "low", "medium", "high", "xhigh", "max", "auto"}
 )
 
-// modelSelectHeight is the Model select's visible rows: with the catalog the
-// list outgrows a screen, so it scrolls.
-const modelSelectHeight = 8
+// modelSelectHeight is the Model select's height (title and description
+// included): with the catalog the list outgrows a screen, so it scrolls, from
+// the selected row down.
+const modelSelectHeight = 10
 
 // modelOptions are the Model select's options: off, the aliases (labelled
 // "opus (latest)") and, with pinned models offered, every catalog model by
-// its display name, valued by its ID.
-func modelOptions(pinned bool) []huh.Option[string] {
+// its display name, valued by its ID. A stored pin (kept) the list lacks is
+// added, labelled, so it stays selectable and an edit elsewhere keeps it: one
+// the daemon would not run, or an ID this TUI's catalog does not know (a
+// newer daemon's).
+func modelOptions(pinned bool, kept string) []huh.Option[string] {
 	out := []huh.Option[string]{huh.NewOption("off", "off")}
 	for _, a := range modelAliases {
 		out = append(out, huh.NewOption(a+" (latest)", a))
@@ -384,6 +388,13 @@ func modelOptions(pinned bool) []huh.Option[string] {
 		for _, m := range swb.Models {
 			out = append(out, huh.NewOption(m.Display, m.ID))
 		}
+	}
+	if id := pinnedModelID(kept); id != "" && !slices.ContainsFunc(out, func(o huh.Option[string]) bool { return o.Value == id }) {
+		label := id + " (not in this TUI's catalog)"
+		if m, ok := swb.ModelByID(id); ok {
+			label = m.Display + " (needs a newer daemon)"
+		}
+		out = append(out, huh.NewOption(label, id))
 	}
 	return out
 }
@@ -411,16 +422,16 @@ func effectiveSequence(a *pb.Action) *pb.ActionSequence {
 	}
 }
 
-// sequenceToForm loads a sequence into the form's values. A pinned model in
-// the catalog is selected by its ID; one outside it (stored by a newer daemon)
-// loads as its alias, which is what the daemon runs for it.
+// sequenceToForm loads a sequence into the form's values. A pinned model is
+// selected by its ID as stored, in this TUI's catalog or not.
 func sequenceToForm(v *actionFormVals, seq *pb.ActionSequence) {
-	v.modelKept = strings.ToLower(swb.ModelChoiceLabel(seq.GetModel()))
-	if !slices.Contains(modelAliases, v.modelKept) {
-		v.modelKept = "opus"
+	v.modelFamily = strings.ToLower(swb.ModelChoiceLabel(seq.GetModel()))
+	if !slices.Contains(modelAliases, v.modelFamily) {
+		v.modelFamily = "opus"
 	}
-	if m, ok := swb.ModelByID(seq.GetModelId()); ok {
-		v.modelKept = m.ID
+	v.modelKept = v.modelFamily
+	if id := seq.GetModelId(); id != "" {
+		v.modelKept = id
 	}
 	v.effortKept = swb.EffortChoiceLabel(seq.GetEffort())
 	if !slices.Contains(effortOptions[1:], v.effortKept) {
@@ -448,8 +459,12 @@ func sequenceFromForm(v *actionFormVals) *pb.ActionSequence {
 	if effort == "off" {
 		effort = v.effortKept
 	}
+	family := modelChoice(model)
+	if family == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
+		family = modelChoice(v.modelFamily) // an ID this TUI cannot place: the family as stored
+	}
 	return &pb.ActionSequence{
-		ModelEnabled: v.model != "off", Model: modelChoice(model), ModelId: pinnedModelID(model),
+		ModelEnabled: v.model != "off", Model: family, ModelId: pinnedModelID(model),
 		EffortEnabled: v.effort != "off", Effort: effortChoice(effort),
 		ClearEnabled: v.clearAfter,
 		PrePrompts:   promptLines(v.pre),
@@ -457,34 +472,27 @@ func sequenceFromForm(v *actionFormVals) *pb.ActionSequence {
 	}
 }
 
-// unpinModel replaces a pinned model by its family alias: the form of a
-// daemon without "model-id" offers no pin, and the daemon would type the
-// alias for one anyway.
-func (v *actionFormVals) unpinModel() {
-	m, ok := swb.ModelByID(v.modelKept)
-	if !ok {
-		return
-	}
-	v.modelKept = strings.ToLower(swb.ModelChoiceLabel(m.Family))
-	if v.model != "off" {
-		v.model = v.modelKept
-	}
-}
-
-// pinnedModelID is the catalog ID a form value names, "" for an alias.
+// pinnedModelID is the model ID a form value names: any value but off and
+// the aliases, so a stored ID outside this TUI's catalog survives a save.
 func pinnedModelID(s string) string {
-	if m, ok := swb.ModelByID(s); ok {
-		return m.ID
+	if s == "" || s == "off" || slices.Contains(modelAliases, s) {
+		return ""
 	}
-	return ""
+	return s
 }
 
 // modelChoice is the ModelChoice a form value names: an alias's, or a pinned
-// model's family, so the enum is set beside model_id and a reader of it alone
-// gets a sane family (UNSPECIFIED when neither, which the daemon refuses).
+// model's family (from the catalog, else the ID's claude-<family>- prefix), so
+// the enum is set beside model_id and a reader of it alone gets a sane family.
+// UNSPECIFIED when neither, which the daemon refuses.
 func modelChoice(s string) pb.ModelChoice {
 	if m, ok := swb.ModelByID(s); ok {
 		return m.Family
+	}
+	if rest, ok := strings.CutPrefix(s, "claude-"); ok {
+		if family, _, ok := strings.Cut(rest, "-"); ok {
+			s = family
+		}
 	}
 	for c := range pb.ModelChoice_name {
 		if mc := pb.ModelChoice(c); mc != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED && strings.ToLower(swb.ModelChoiceLabel(mc)) == s {
@@ -1181,6 +1189,13 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
+			if b, ok := op.formBaseline.(actionFormVals); seq.GetModelId() != "" && !od.HasCapability("model-id") &&
+				(!ok || sequenceFromForm(&b).GetModelId() != seq.GetModelId()) {
+				// SWI-34: an older daemon would run the alias for a pin: a
+				// pin chosen here is refused; a stored one goes back as it is.
+				op.status = m.tooOldForPins(t.host)
+				return m, nil
+			}
 			a.Sequence = seq
 		} else if b, ok := op.formBaseline.(actionFormVals); !ok || !proto.Equal(sequenceFromForm(&b), sequenceFromForm(v)) {
 			// E4: an older daemon would drop the sequence: an edited one is
@@ -1362,10 +1377,12 @@ func sequenceSummary(a *pb.Action, steps, known bool) string {
 }
 
 // modelTyped is what a sequence's Model step types after `/model`: a pinned
-// model's ID (SWI-34) when it is in the catalog, else the family alias.
+// model's ID (SWI-34) as stored, else the family alias. (The daemon's
+// buildSteps types the alias for an ID its own catalog lacks; the summary
+// shows what is stored, as the TUI cannot know the daemon's catalog.)
 func modelTyped(seq *pb.ActionSequence) string {
-	if m, ok := swb.ModelByID(seq.GetModelId()); ok {
-		return m.ID
+	if id := seq.GetModelId(); id != "" {
+		return id
 	}
 	return strings.ToLower(swb.ModelChoiceLabel(seq.GetModel()))
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/protobuf/proto"
 )
@@ -247,14 +248,11 @@ func TestValidateSequence(t *testing.T) {
 		"pinned model": {func(a *pb.Action) {
 			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-5"
 		}, ""},
-		"pinned model, padded": {func(a *pb.Action) {
-			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, " claude-fable-5\n"
-		}, ""},
 		"pinned model, off": {func(a *pb.Action) {
 			a.Sequence.ModelEnabled, a.Sequence.ModelId = false, "claude-opus-4-8"
 		}, ""},
 		"pinned model unknown": {func(a *pb.Action) { a.Sequence.ModelId = "claude-bogus-1" },
-			`model_id "claude-bogus-1" is not in the catalog; model must be one of Opus 5.5, Fable 5.2, Sonnet 5.5, Haiku 5.5, Fable 5.1, Haiku 4.5, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6`},
+			`model_id "claude-bogus-1" is not in the catalog; model must be one of ` + strings.Join(swb.ModelDisplays(), ", ")},
 		"pinned model by its name": {func(a *pb.Action) { a.Sequence.ModelId = "Opus 5" }, `model_id "Opus 5" is not in the catalog`},
 		"pinned model, other family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable-5" },
 			`model_id "claude-fable-5" is Fable 5, a Fable model; model must be Fable`},

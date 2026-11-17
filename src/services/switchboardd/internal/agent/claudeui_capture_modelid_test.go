@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	swb "github.com/jamesclark123/switchboard/libs/switchboard-proto"
 )
 
 // TestCaptureModelIDFixtures captures the screens of `/model <id>` (SWI-34),
@@ -99,10 +101,10 @@ func TestCaptureModelIDFixtures(t *testing.T) {
 	c.keys("\x1b")
 	c.waitScreen("the input box after Esc", 10*time.Second, hasBox)
 
-	// Every model the picker offers, set by the ID its display name derives
-	// (claude-<family>-<major>[-<minor>]), reads back as that display name.
+	// Every model the picker offers, set by the ID the catalog's rule derives
+	// from its display name, reads back as that display name.
 	for _, display := range rows {
-		id := modelIDFromDisplay(display)
+		id := swb.ModelIDFromDisplay(display)
 		c.settle() // a paste right after the last result can be lost
 		c.submit("/model " + id)
 		var line string
@@ -143,12 +145,6 @@ func pickerRows(screen string) []string {
 		}
 	}
 	return out
-}
-
-// modelIDFromDisplay is the ticket's rule: Fable 5.1 → claude-fable-5-1, Fable 5 → claude-fable-5.
-func modelIDFromDisplay(display string) string {
-	f := strings.Fields(display)
-	return "claude-" + strings.ToLower(f[0]) + "-" + strings.ReplaceAll(f[1], ".", "-")
 }
 
 // resultAfter is the `⎿` row right under the last row equal to echo, "" if none.

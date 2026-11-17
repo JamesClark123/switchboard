@@ -70,7 +70,7 @@ func TestClaudeUIFixtures(t *testing.T) {
 		{name: "model-set-id-fable-5-1", present: true, ready: true,
 			confirm: &confirm{cmd: "/model claude-fable-5-1", prefix: "Set model to Fable 5.1 and", model: "Fable 5.1", notFam: "Fable 5"}},
 		{name: "model-set-id-fable-5-2", present: true, ready: true,
-			confirm: &confirm{cmd: "/model claude-fable-5-2", prefix: "Set model to Fable 5.2 and", model: "Fable", notFam: "Fable 5.1"}},
+			confirm: &confirm{cmd: "/model claude-fable-5-2", prefix: "Set model to Fable 5.2 and", model: "Fable 5.2", notFam: "Fable 5.1"}},
 		{name: "model-set-id-haiku-4-5", present: true, ready: true,
 			confirm: &confirm{cmd: "/model claude-haiku-4-5", prefix: "Set model to Haiku 4.5 and", model: "Haiku 4.5", notFam: "Haiku 5.5"}},
 		{name: "model-not-found-id", present: true, ready: true,
