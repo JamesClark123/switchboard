@@ -106,9 +106,8 @@ func TestActionFormOptionLists(t *testing.T) {
 			t.Errorf("model %q unmapped", c)
 		}
 	}
-	if modelChoice("claude-haiku-4-5") != pb.ModelChoice_MODEL_CHOICE_HAIKU || modelChoice("claude-fable-9") != pb.ModelChoice_MODEL_CHOICE_FABLE ||
-		modelChoice("claude-zed-1") != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED || modelChoice("claude-fable") != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
-		t.Error("a pinned model's family: the catalog's, else its ID's prefix")
+	if modelChoice("claude-haiku-4-5") != pb.ModelChoice_MODEL_CHOICE_HAIKU || modelChoice("claude-fable-9") != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED {
+		t.Error("a pinned model's family is the catalog's; outside it, none")
 	}
 	if pinnedModelID("opus") != "" || pinnedModelID("off") != "" || pinnedModelID("") != "" || pinnedModelID("claude-fable-5") != "claude-fable-5" || pinnedModelID("claude-fable-9") != "claude-fable-9" {
 		t.Error("an ID, in the catalog or not, is a pin; an alias is not")
@@ -212,7 +211,7 @@ func TestActionFormPinnedModel(t *testing.T) {
 		t.Errorf("an alias clears the pin: %v", s)
 	}
 	// A pin outside this TUI's catalog (a newer daemon's) is kept as stored,
-	// with its family from the ID, else as stored.
+	// with the stored family.
 	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-9"})
 	if w.model != "claude-fable-9" || w.modelKept != "claude-fable-9" || w.modelFamily != "fable" {
 		t.Errorf("a pin outside the catalog = %+v", w)
@@ -220,9 +219,9 @@ func TestActionFormPinnedModel(t *testing.T) {
 	if s := sequenceFromForm(w); s.GetModelId() != "claude-fable-9" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_FABLE {
 		t.Errorf("a pin outside the catalog saves as stored: %v", s)
 	}
-	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_HAIKU, ModelId: "claude-zed-1"})
-	if s := sequenceFromForm(w); s.GetModelId() != "claude-zed-1" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_HAIKU {
-		t.Errorf("an ID of no known family keeps the stored one: %v", s)
+	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_HAIKU, ModelId: "claude-fable-9"})
+	if s := sequenceFromForm(w); s.GetModelId() != "claude-fable-9" || s.GetModel() != pb.ModelChoice_MODEL_CHOICE_HAIKU {
+		t.Errorf("the stored family, whatever the ID says: %v", s)
 	}
 	sequenceToForm(w, &pb.ActionSequence{ModelEnabled: true, ModelId: "claude-haiku-4-5"})
 	if w.model != "claude-haiku-4-5" || w.modelFamily != "opus" {

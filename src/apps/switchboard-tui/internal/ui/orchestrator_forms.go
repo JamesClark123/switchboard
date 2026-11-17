@@ -481,18 +481,14 @@ func pinnedModelID(s string) string {
 	return s
 }
 
-// modelChoice is the ModelChoice a form value names: an alias's, or a pinned
-// model's family (from the catalog, else the ID's claude-<family>- prefix), so
-// the enum is set beside model_id and a reader of it alone gets a sane family.
-// UNSPECIFIED when neither, which the daemon refuses.
+// modelChoice is the ModelChoice a form value names: an alias's, or a catalog
+// model's family, so the enum is set beside model_id and a reader of it alone
+// gets a sane family. UNSPECIFIED when neither: a pin outside the catalog
+// (sequenceFromForm keeps its stored family), or nothing, which the daemon
+// refuses.
 func modelChoice(s string) pb.ModelChoice {
 	if m, ok := swb.ModelByID(s); ok {
 		return m.Family
-	}
-	if rest, ok := strings.CutPrefix(s, "claude-"); ok {
-		if family, _, ok := strings.Cut(rest, "-"); ok {
-			s = family
-		}
 	}
 	for c := range pb.ModelChoice_name {
 		if mc := pb.ModelChoice(c); mc != pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED && strings.ToLower(swb.ModelChoiceLabel(mc)) == s {
@@ -1376,15 +1372,12 @@ func sequenceSummary(a *pb.Action, steps, known bool) string {
 	return strings.Join(parts, " — ")
 }
 
-// modelTyped is what a sequence's Model step types after `/model`: a pinned
-// model's ID (SWI-34) as stored, else the family alias. (The daemon's
-// buildSteps types the alias for an ID its own catalog lacks; the summary
-// shows what is stored, as the TUI cannot know the daemon's catalog.)
+// modelTyped is what a sequence's Model step types after `/model`, as the
+// daemon's buildSteps derives it: a pinned model's ID (SWI-34), else the
+// family alias.
 func modelTyped(seq *pb.ActionSequence) string {
-	if id := seq.GetModelId(); id != "" {
-		return id
-	}
-	return strings.ToLower(swb.ModelChoiceLabel(seq.GetModel()))
+	typed, _ := swb.ModelStep(seq)
+	return typed
 }
 
 // eventLine renders one timed event: [on|off] name → action · any disabled

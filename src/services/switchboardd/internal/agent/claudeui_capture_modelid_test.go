@@ -98,6 +98,18 @@ func TestCaptureModelIDFixtures(t *testing.T) {
 		}
 	}
 	t.Logf("picker rows: %q", rows)
+	// The catalog is the picker: the same names, in whatever order (the
+	// current model's row moves).
+	var catalog []string
+	for _, m := range swb.Models {
+		catalog = append(catalog, m.Display)
+	}
+	slices.Sort(catalog)
+	picker := slices.Clone(rows)
+	slices.Sort(picker)
+	if !slices.Equal(picker, catalog) {
+		t.Errorf("the picker offers %q but the catalog has %q: update switchboard-proto/models.go", picker, catalog)
+	}
 	c.keys("\x1b")
 	c.waitScreen("the input box after Esc", 10*time.Second, hasBox)
 

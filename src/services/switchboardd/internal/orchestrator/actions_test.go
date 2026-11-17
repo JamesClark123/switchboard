@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -251,9 +252,11 @@ func TestValidateSequence(t *testing.T) {
 		"pinned model, off": {func(a *pb.Action) {
 			a.Sequence.ModelEnabled, a.Sequence.ModelId = false, "claude-opus-4-8"
 		}, ""},
-		"pinned model unknown": {func(a *pb.Action) { a.Sequence.ModelId = "claude-bogus-1" },
-			`model_id "claude-bogus-1" is not in the catalog; model must be one of ` + strings.Join(swb.ModelDisplays(), ", ")},
-		"pinned model by its name": {func(a *pb.Action) { a.Sequence.ModelId = "Opus 5" }, `model_id "Opus 5" is not in the catalog`},
+		"pinned model outside the catalog, well-formed": {func(a *pb.Action) {
+			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-9"
+		}, ""}, // validatePin decides, at the write
+		"pinned model by its name": {func(a *pb.Action) { a.Sequence.ModelId = "Opus 5" }, `model_id "Opus 5" is not a model ID`},
+		"pinned model malformed":   {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable" }, `model_id "claude-fable" is not a model ID`},
 		"pinned model, other family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable-5" },
 			`model_id "claude-fable-5" is Fable 5, a Fable model; model must be Fable`},
 		"pinned model, unspecified family": {func(a *pb.Action) {
@@ -270,6 +273,66 @@ func TestValidateSequence(t *testing.T) {
 			t.Errorf("%s: refused: %v", name, err)
 		case c.want != "" && (!errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want)):
 			t.Errorf("%s: %v, want ErrInvalid containing %q", name, err, c.want)
+		}
+	}
+}
+
+// validatePin (SWI-34) holds a new pin to the catalog and lets a stored one
+// through, so a pin the catalog has lost blocks no unrelated edit.
+func TestValidatePin(t *testing.T) {
+	names := strings.Join(swb.ModelNames(), ", ")
+	for name, c := range map[string]struct {
+		id, kept string
+		want     string
+	}{
+		"none":                  {"", "", ""},
+		"catalog":               {"claude-fable-5", "", ""},
+		"catalog, another kept": {"claude-fable-5", "claude-opus-5", ""},
+		"unknown":               {"claude-fable-9", "", `model_id "claude-fable-9" is not in the catalog; it must be one of ` + names},
+		"unknown, kept":         {"claude-fable-9", "claude-fable-9", ""},
+		"unknown, another kept": {"claude-fable-9", "claude-fable-8", `model_id "claude-fable-9" is not in the catalog`},
+		"unknown, catalog kept": {"claude-fable-9", "claude-fable-5", `model_id "claude-fable-9" is not in the catalog`},
+	} {
+		err := validatePin(&pb.ActionSequence{ModelId: c.id}, c.kept)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: refused: %v", name, err)
+		case c.want != "" && (!errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: %v, want ErrInvalid containing %q", name, err, c.want)
+		}
+	}
+	// Through a save: a new unknown pin is refused; one the catalog has lost
+	// (or a newer daemon's) is kept by an unrelated edit, and replaced by a
+	// catalog one.
+	env, _, o, _ := dispatchEnv(t, 1, false)
+	pinned := reviewPR()
+	pinned.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-9", EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true}
+	if _, err := putAction(env.svc, o.GetId(), pinned); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "is not in the catalog") {
+		t.Fatalf("a new pin outside the catalog: %v", err)
+	}
+	catalog := swb.Models
+	swb.Models = append(slices.Clone(catalog), swb.Model{Display: "Fable 9", ID: "claude-fable-9", Family: pb.ModelChoice_MODEL_CHOICE_FABLE})
+	_, err := putAction(env.svc, o.GetId(), pinned)
+	swb.Models = catalog
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Description = "edited elsewhere"
+	if _, err := putAction(env.svc, o.GetId(), pinned); err != nil {
+		t.Errorf("an unrelated edit with a pin the catalog lost: %v", err)
+	}
+	pinned.Sequence.ModelId = "claude-fable-8"
+	if _, err := putAction(env.svc, o.GetId(), pinned); !errors.Is(err, ErrInvalid) {
+		t.Errorf("another pin outside the catalog: %v", err)
+	}
+	pinned.Sequence.ModelId = "claude-fable-5"
+	if _, err := putAction(env.svc, o.GetId(), pinned); err != nil {
+		t.Errorf("a catalog pin instead: %v", err)
+	}
+	rec, _ := env.reg.GetOrchestrator(o.GetId())
+	for _, a := range rec.GetActions() {
+		if a.GetName() == pinned.GetName() && (a.GetSequence().GetModelId() != "claude-fable-5" || a.GetDescription() != "edited elsewhere") {
+			t.Errorf("stored = %v", a)
 		}
 	}
 }
@@ -345,6 +408,12 @@ func TestBuildSteps(t *testing.T) {
 		}},
 		"pinned model outside the catalog": {func(s *pb.ActionSequence) {
 			s.Model, s.ModelId, s.EffortEnabled, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-9", false, false, nil, nil
+		}, []string{
+			"STEP_ROLE_SETUP STEP_KIND_MODEL /model claude-fable-9|Fable 9",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",
+		}},
+		"pinned model malformed": {func(s *pb.ActionSequence) {
+			s.Model, s.ModelId, s.EffortEnabled, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable", false, false, nil, nil
 		}, []string{
 			"STEP_ROLE_SETUP STEP_KIND_MODEL /model fable|Fable",
 			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",

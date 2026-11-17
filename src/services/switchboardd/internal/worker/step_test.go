@@ -536,6 +536,7 @@ func TestStepBuiltinTextIsDerived(t *testing.T) {
 		// SWI-34: a pinned model's expect is its display name; its ID is typed.
 		{pb.StepKind_STEP_KIND_MODEL, "/model fable", "Fable 5.1", "/model claude-fable-5-1"},
 		{pb.StepKind_STEP_KIND_MODEL, "", " haiku 4.5 ", "/model claude-haiku-4-5"},
+		{pb.StepKind_STEP_KIND_MODEL, "", "Fable 9.3", "/model claude-fable-9-3"}, // a name the catalog lacks: the ID rule's
 	} {
 		_, _ = h.e.svc.DeliverStep(bg, stepReq(c.kind, c.text, c.expect, int32(i+1)))
 		if got := h.typer.typed[i]; got != c.want {
@@ -546,14 +547,20 @@ func TestStepBuiltinTextIsDerived(t *testing.T) {
 	n, idx := h.typer.count(), h.run(t).GetStepIndex()
 	for _, req := range []*pb.DeliverWorkerStepRequest{
 		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "gpt", 9),
-		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "Fable 9", 9),
+		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "Fable five", 9),
+		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "Fa/ble 5", 9),
 		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "claude-fable-5-1", 9),
 		stepReq(pb.StepKind_STEP_KIND_EFFORT, "", "ultracode", 9),
 		stepReq(pb.StepKind_STEP_KIND_UNSPECIFIED, "x", "", 9),
 		custom("  ", 9),
 	} {
-		if _, err := h.e.svc.DeliverStep(bg, req); !errors.Is(err, ErrInvalid) {
+		_, err := h.e.svc.DeliverStep(bg, req)
+		if !errors.Is(err, ErrInvalid) {
 			t.Errorf("%v %q = %v, want ErrInvalid", req.GetStep().GetKind(), req.GetStep().GetExpect(), err)
+		}
+		// The orchestrator tells a pre-SWI-34 daemon's refusal by its wording.
+		if err != nil && strings.Contains(err.Error(), "is not one of opus, fable, sonnet, haiku") {
+			t.Errorf("%q reads as an older daemon's refusal", err)
 		}
 	}
 	if h.typer.count() != n || h.run(t).GetStepIndex() != idx {

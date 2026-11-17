@@ -511,10 +511,16 @@ func putActionChange(a *pb.Action, now *timestamppb.Timestamp) changeFn {
 				if saved.GetSequence() == nil && ex.GetSequence() != nil {
 					saved.Sequence = proto.Clone(ex.GetSequence()).(*pb.ActionSequence)
 				}
+				if err := validatePin(saved.GetSequence(), ex.GetSequence().GetModelId()); err != nil {
+					return ch, err
+				}
 				saved.CreatedAt, saved.UpdatedAt = ex.GetCreatedAt(), now
 				o.Actions[i] = saved
 				return ch, nil
 			}
+		}
+		if err := validatePin(saved.GetSequence(), ""); err != nil {
+			return ch, err
 		}
 		saved.CreatedAt, saved.UpdatedAt = now, now
 		o.Actions = append(o.Actions, saved)

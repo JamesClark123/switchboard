@@ -164,8 +164,12 @@ var (
 // MODEL, EFFORT and CLEAR the command from kind + expect, never step.text;
 // for CUSTOM the text as is. ACTION_PROMPT is framed once the guard knows the
 // orchestrator's name. INVALID_ARGUMENT for an expect outside the fixed sets:
-// a MODEL expect is a family (`/model fable`) or a catalog model's display
-// name (SWI-34), typed by its ID (`/model claude-fable-5-1`).
+// a MODEL expect is a family (`/model fable`) or a model's display name
+// (SWI-34, "Fable 5.1"), typed by its ID (`/model claude-fable-5-1`) from the
+// catalog or, for a name the catalog lacks, by the ID rule, so the command is
+// never more than `/model claude-<letters>-<digits>[-<digits>]`. (The refusal's
+// wording differs from a daemon's before SWI-34, which the orchestrator tells
+// apart: orchestrator.legacyModelRefusal.)
 func builtinText(step *pb.RunStep) (string, error) {
 	expect := strings.ToLower(strings.TrimSpace(step.GetExpect()))
 	switch step.GetKind() {
@@ -176,7 +180,10 @@ func builtinText(step *pb.RunStep) (string, error) {
 		if m, ok := swb.ModelByDisplay(expect); ok {
 			return "/model " + m.ID, nil
 		}
-		return "", fmt.Errorf("%w: model %q is not one of opus, fable, sonnet, haiku or a catalog model (%s)", ErrInvalid, step.GetExpect(), strings.Join(swb.ModelDisplays(), ", "))
+		if id := swb.ModelIDFromDisplay(expect); id != "" {
+			return "/model " + id, nil
+		}
+		return "", fmt.Errorf("%w: model %q is neither a family (opus, fable, sonnet, haiku) nor a model name (Fable 5.1)", ErrInvalid, step.GetExpect())
 	case pb.StepKind_STEP_KIND_EFFORT:
 		if !effortLevels[expect] {
 			return "", fmt.Errorf("%w: effort %q is not one of low, medium, high, xhigh, max, auto", ErrInvalid, step.GetExpect())
@@ -204,7 +211,7 @@ const OtherPromptNote = "another prompt was submitted"
 type readSpec struct {
 	kind   pb.StepKind
 	text   string // what was typed (the echo to look for)
-	expect string // MODEL: family ("opus"); EFFORT: level
+	expect string // lower-cased; MODEL: family ("opus") or model name ("fable 5.1", SWI-34: see modelName); EFFORT: level
 	// transcript is the screen's transcript just before typing: what was on it
 	// then is no echo or reply of this send (agent.Added).
 	transcript []string
@@ -671,10 +678,14 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 }
 
 // modelName is the name a MODEL step's expect, lower-cased, reads back as: a
-// catalog model's display name (SWI-34), else the family capitalised.
+// model's display name (SWI-34; the catalog's, else the ID rule's), else the
+// family capitalised.
 func modelName(expect string) string {
 	if m, ok := swb.ModelByDisplay(expect); ok {
 		return m.Display
+	}
+	if id := swb.ModelIDFromDisplay(expect); id != "" {
+		return swb.ModelDisplayFromID(id)
 	}
 	if expect == "" {
 		return ""

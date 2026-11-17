@@ -62,23 +62,27 @@ func ModelByDisplay(name string) (Model, bool) {
 	return Model{}, false
 }
 
-// ModelDisplays lists the catalog's display names in its order, for messages.
-func ModelDisplays() []string {
+// ModelNames lists the catalog as "<Display> (<ID>)", in its order, for
+// messages.
+func ModelNames() []string {
 	out := make([]string, 0, len(Models))
 	for _, m := range Models {
-		out = append(out, m.Display)
+		out = append(out, m.Display+" ("+m.ID+")")
 	}
 	return out
 }
 
 // ModelIDFromDisplay derives the ID a "<Family> <version>" display name maps
-// to: claude-<family>-<major>[-<minor>], the family lower-cased, the version's
-// dot a dash, and a whole version (`5`, that is 5.0) with no minor part. It
-// is "" for anything else. The catalog test keeps every entry consistent with
-// this rule; it is not a way to accept names outside the catalog.
+// to: claude-<family>-<major>[-<minor>], the family (letters) lower-cased,
+// the version's dot a dash, and a whole version (`5`, that is 5.0) with no
+// minor part. It is "" for anything else. The catalog test keeps every entry
+// consistent with this rule, and a worker derives a pinned step's command
+// from the name it is to read back (the command can only ever be `/model
+// claude-<letters>-<digits>[-<digits>]`); it is not a way to save names
+// outside the catalog.
 func ModelIDFromDisplay(name string) string {
 	family, version, ok := strings.Cut(name, " ")
-	if !ok || family == "" || version == "" || strings.ContainsAny(family, " .") {
+	if !ok || !letters(family) || version == "" {
 		return ""
 	}
 	major, minor, dotted := strings.Cut(version, ".")
@@ -92,6 +96,49 @@ func ModelIDFromDisplay(name string) string {
 	return id
 }
 
+// ModelDisplayFromID is the inverse of ModelIDFromDisplay: the "<Family>
+// <major>[.<minor>]" name a well-formed ID (claude-<letters>-<digits>[-<digits>],
+// lower-case) reads back as, "" for anything else. It names a pinned model the
+// catalog does not know (one stored before the catalog changed).
+func ModelDisplayFromID(id string) string {
+	rest, ok := strings.CutPrefix(id, "claude-")
+	if !ok {
+		return ""
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) < 2 || len(parts) > 3 || !letters(parts[0]) || strings.ToLower(parts[0]) != parts[0] {
+		return ""
+	}
+	for _, v := range parts[1:] {
+		if !digits(v) {
+			return ""
+		}
+	}
+	name := strings.ToUpper(parts[0][:1]) + parts[0][1:] + " " + parts[1]
+	if len(parts) == 3 {
+		name += "." + parts[2]
+	}
+	return name
+}
+
+// ModelStep is what a sequence's Model step types after `/model` and the name
+// it must read back (`Set model to <expect> …`): a pinned model's ID with its
+// display name, from the catalog or, for an ID the catalog lacks, derived
+// from the ID; else the family alias with the family. A pin that is no
+// well-formed ID at all runs as its family alias.
+func ModelStep(seq *pb.ActionSequence) (typed, expect string) {
+	if id := seq.GetModelId(); id != "" {
+		if m, ok := ModelByID(id); ok {
+			return id, m.Display
+		}
+		if name := ModelDisplayFromID(id); name != "" {
+			return id, name
+		}
+	}
+	family := ModelChoiceLabel(seq.GetModel())
+	return strings.ToLower(family), family
+}
+
 // digits reports whether s is one or more ASCII digits.
 func digits(s string) bool {
 	if s == "" {
@@ -99,6 +146,19 @@ func digits(s string) bool {
 	}
 	for _, r := range s {
 		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// letters reports whether s is one or more ASCII letters.
+func letters(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 			return false
 		}
 	}

@@ -2166,10 +2166,10 @@ func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
 		step *pb.RunStep
 		msg  string
 	}{
-		"alias step":             {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Opus"}, `model "bogus" is not one of opus, fable, sonnet, haiku`},
-		"newer daemon's refusal": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `model "Fable 5" is not one of opus, fable, sonnet, haiku or a catalog model (Opus 5.5)`},
-		"another kind":           {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_EFFORT, Expect: "Fable 5"}, `effort "Fable 5" is not one of low, medium`},
-		"another reason, pinned": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `the step has no text`},
+		"alias step":               {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Opus"}, `model "bogus" is not one of opus, fable, sonnet, haiku`},
+		"today's daemon's refusal": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `model "Fable 5" is neither a family (opus, fable, sonnet, haiku) nor a model name (Fable 5.1)`},
+		"another kind":             {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_EFFORT, Expect: "Fable 5"}, `effort "Fable 5" is not one of low, medium`},
+		"another reason, pinned":   {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `the step has no text`},
 	} {
 		run := &pb.Run{Steps: []*pb.RunStep{c.step}}
 		if got := invalidNote(run, status.Error(codes.InvalidArgument, c.msg)); got != c.msg {
@@ -2178,6 +2178,10 @@ func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
 	}
 	if got := invalidNote(&pb.Run{}, status.Error(codes.InvalidArgument, "x")); got != "x" {
 		t.Errorf("no step: %q", got)
+	}
+	outside := &pb.Run{Steps: []*pb.RunStep{{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 9"}}}
+	if got := invalidNote(outside, status.Error(codes.InvalidArgument, `model "Fable 9" is not one of opus, fable, sonnet, haiku`)); !strings.HasSuffix(got, "predates pinned models: update it, or skip the step") {
+		t.Errorf("a pin outside the catalog on an old daemon: %q", got)
 	}
 }
 

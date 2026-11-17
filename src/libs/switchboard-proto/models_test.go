@@ -37,9 +37,56 @@ func TestModelCatalogConsistent(t *testing.T) {
 		if got, ok := ModelByDisplay(m.Display); !ok || got != m {
 			t.Errorf("ModelByDisplay(%q) = %+v, %v", m.Display, got, ok)
 		}
+		if got := ModelDisplayFromID(m.ID); got != m.Display {
+			t.Errorf("ModelDisplayFromID(%q) = %q, want %q", m.ID, got, m.Display)
+		}
 	}
-	if got := ModelDisplays(); len(got) != len(Models) || got[0] != Models[0].Display || !slices.Contains(got, "Fable 5") {
-		t.Errorf("ModelDisplays = %q", got)
+	if got := ModelNames(); len(got) != len(Models) || got[0] != Models[0].Display+" ("+Models[0].ID+")" || !slices.Contains(got, "Fable 5 (claude-fable-5)") {
+		t.Errorf("ModelNames = %q", got)
+	}
+}
+
+func TestModelDisplayFromID(t *testing.T) {
+	cases := map[string]string{
+		"claude-fable-5-1":   "Fable 5.1",
+		"claude-fable-5":     "Fable 5",
+		"claude-opus-4-10":   "Opus 4.10",
+		"claude-zed-12":      "Zed 12",
+		"":                   "",
+		"fable-5":            "",
+		"claude-fable":       "",
+		"claude-fable-":      "",
+		"claude-fable-5-":    "",
+		"claude-fable-5-1-2": "",
+		"claude-Fable-5":     "",
+		"claude-fable5":      "",
+		"claude-fab le-5":    "",
+		"claude--5":          "",
+		"claude-fable-5.1":   "",
+	}
+	for id, want := range cases {
+		if got := ModelDisplayFromID(id); got != want {
+			t.Errorf("ModelDisplayFromID(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestModelStep(t *testing.T) {
+	cases := []struct {
+		name          string
+		seq           *pb.ActionSequence
+		typed, expect string
+	}{
+		{"alias", &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_HAIKU}, "haiku", "Haiku"},
+		{"catalog pin", &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-5"}, "claude-fable-5", "Fable 5"},
+		{"pin outside the catalog", &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-9-2"}, "claude-fable-9-2", "Fable 9.2"},
+		{"malformed pin", &pb.ActionSequence{Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable"}, "fable", "Fable"},
+		{"no model", &pb.ActionSequence{}, "unknown", "unknown"},
+	}
+	for _, c := range cases {
+		if typed, expect := ModelStep(c.seq); typed != c.typed || expect != c.expect {
+			t.Errorf("%s: ModelStep = %q, %q, want %q, %q", c.name, typed, expect, c.typed, c.expect)
+		}
 	}
 }
 
@@ -77,6 +124,9 @@ func TestModelIDFromDisplay(t *testing.T) {
 		"Opus 5 ":    "",
 		"Opus  5":    "",
 		"Op us 5":    "",
+		"Opus2 5":    "",
+		"Op.us 5":    "",
+		"Ünz 5":      "",
 	}
 	for name, want := range cases {
 		if got := ModelIDFromDisplay(name); got != want {
