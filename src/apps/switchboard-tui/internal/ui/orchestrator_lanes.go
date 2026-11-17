@@ -163,6 +163,14 @@ func (m Model) hostSteps(host string) (has, known bool) {
 	return daemonHasSteps(d), true
 }
 
+// hostModelID is whether host's daemon, as last known, runs a pinned model
+// (SWI-34: it advertises "model-id"); without, the action form offers only
+// the family aliases, as an older daemon would type the alias for a pin.
+func (m Model) hostModelID(host string) bool {
+	d := m.knownDaemon(host)
+	return d != nil && d.HasCapability("model-id")
+}
+
 // tooOldForSteps is the local refusal of a sequence edit against a daemon
 // without "steps", mirroring tooOldForLanes.
 func (m Model) tooOldForSteps(host string) string {

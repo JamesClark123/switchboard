@@ -101,3 +101,9 @@ const CapabilityLanes = "lanes"
 // actions carry a step sequence (SWI-17): a client shows and sends
 // Action.sequence only to such a daemon.
 const CapabilitySteps = "steps"
+
+// CapabilityModelID is advertised in DaemonInfo.capabilities by a daemon whose
+// Model step can pin a specific model (SWI-34, ActionSequence.model_id): a
+// client offers the catalog's versions only to such a daemon, as an older one
+// would ignore the field and run the family alias.
+const CapabilityModelID = "model-id"

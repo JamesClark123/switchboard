@@ -243,7 +243,25 @@ func TestValidateSequence(t *testing.T) {
 		"model unknown":           {func(a *pb.Action) { a.Sequence.Model = 99 }, "model must be one of"},
 		"model off, unspecified":  {func(a *pb.Action) { a.Sequence.ModelEnabled, a.Sequence.Model = false, 0 }, "model must be one of"},
 		"effort unspecified":      {func(a *pb.Action) { a.Sequence.Effort = pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED }, "effort must be one of"},
-		"effort unknown":          {func(a *pb.Action) { a.Sequence.Effort = 99 }, "effort must be one of"},
+		// SWI-34: a pinned model is a catalog ID of the alias's family.
+		"pinned model": {func(a *pb.Action) {
+			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-5"
+		}, ""},
+		"pinned model, padded": {func(a *pb.Action) {
+			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_FABLE, " claude-fable-5\n"
+		}, ""},
+		"pinned model, off": {func(a *pb.Action) {
+			a.Sequence.ModelEnabled, a.Sequence.ModelId = false, "claude-opus-4-8"
+		}, ""},
+		"pinned model unknown": {func(a *pb.Action) { a.Sequence.ModelId = "claude-bogus-1" },
+			`model_id "claude-bogus-1" is not in the catalog; model must be one of Opus 5.5, Fable 5.2, Sonnet 5.5, Haiku 5.5, Fable 5.1, Haiku 4.5, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6`},
+		"pinned model by its name": {func(a *pb.Action) { a.Sequence.ModelId = "Opus 5" }, `model_id "Opus 5" is not in the catalog`},
+		"pinned model, other family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable-5" },
+			`model_id "claude-fable-5" is Fable 5, a Fable model; model must be Fable`},
+		"pinned model, unspecified family": {func(a *pb.Action) {
+			a.Sequence.Model, a.Sequence.ModelId = pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED, "claude-fable-5"
+		}, "model must be one of Opus, Fable, Sonnet, Haiku"},
+		"effort unknown": {func(a *pb.Action) { a.Sequence.Effort = 99 }, "effort must be one of"},
 	}
 	for name, c := range cases {
 		a := withSequence(nil, nil)
@@ -265,6 +283,11 @@ func TestNormalizeActionTrimsStepPrompts(t *testing.T) {
 	}
 	if normalizeAction(reviewPR()).GetSequence() != nil {
 		t.Error("a legacy action must stay without a sequence")
+	}
+	pinned := withSequence(nil, nil)
+	pinned.Sequence.ModelId = "\t claude-fable-5 "
+	if got := normalizeAction(pinned).GetSequence().GetModelId(); got != "claude-fable-5" {
+		t.Errorf("model_id = %q", got)
 	}
 }
 
@@ -314,6 +337,23 @@ func TestBuildSteps(t *testing.T) {
 		"only a post-prompt": {func(s *pb.ActionSequence) {
 			s.ModelEnabled, s.EffortEnabled, s.ClearEnabled, s.PrePrompts = false, false, false, nil
 		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |", "STEP_ROLE_CLEANUP STEP_KIND_CUSTOM Summarise SWI-1|"}},
+		// SWI-34: a pinned model is typed by its ID and read back by its
+		// display name; one outside the catalog runs as its family alias.
+		"pinned model": {func(s *pb.ActionSequence) {
+			s.Model, s.ModelId, s.EffortEnabled, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-5", false, false, nil, nil
+		}, []string{
+			"STEP_ROLE_SETUP STEP_KIND_MODEL /model claude-fable-5|Fable 5",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",
+		}},
+		"pinned model outside the catalog": {func(s *pb.ActionSequence) {
+			s.Model, s.ModelId, s.EffortEnabled, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, "claude-fable-9", false, false, nil, nil
+		}, []string{
+			"STEP_ROLE_SETUP STEP_KIND_MODEL /model fable|Fable",
+			"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |",
+		}},
+		"pinned model, off": {func(s *pb.ActionSequence) {
+			s.ModelEnabled, s.ModelId, s.EffortEnabled, s.PrePrompts, s.PostPrompts = false, "claude-fable-5", false, nil, nil
+		}, []string{"STEP_ROLE_ACTION STEP_KIND_ACTION_PROMPT |", "STEP_ROLE_CLEANUP STEP_KIND_CLEAR /clear|"}},
 		"fable, auto": {func(s *pb.ActionSequence) {
 			s.Model, s.Effort, s.ClearEnabled, s.PrePrompts, s.PostPrompts = pb.ModelChoice_MODEL_CHOICE_FABLE, pb.EffortChoice_EFFORT_CHOICE_AUTO, false, nil, nil
 		}, []string{

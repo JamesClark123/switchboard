@@ -1566,6 +1566,10 @@ message ActionSequence {
   bool clear_enabled = 5;
   repeated string pre_prompts = 6;       // trimmed; <= 10; FR-204 rules
   repeated string post_prompts = 7;
+  // SWI-34: a specific model by its catalog ID (claude-fable-5-1); set => it
+  // is typed instead of the family alias `model` names, and the read-back
+  // must name exactly that model. Empty => `model` alone, as before.
+  string model_id = 8;
 }
 
 // A developer-authored recipe (FR-135..FR-141). Validated at save.

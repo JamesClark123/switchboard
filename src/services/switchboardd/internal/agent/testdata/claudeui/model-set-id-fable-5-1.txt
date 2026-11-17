@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.326
+▝▜██████▀  Fable 5.1 with high effort · Claude Max
+ ▝▝   ▝▝   /tmp/TestCaptureModelIDFixtures857860521/001
+
+▎ Your Max plan includes $100 a month in API credits to power your apps and agents. Claim them at https://clau.de/api-credits
+  1 more notice hidden (ctrl+o to expand)
+
+❯ /model claude-fable-5
+  ⎿  Set model to Fable 5 and saved as your default for new sessions
+
+❯ /model claude-fable-5-1
+  ⎿  Set model to Fable 5.1 and saved as your default for new sessions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

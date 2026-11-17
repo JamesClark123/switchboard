@@ -93,6 +93,7 @@ func normalizeAction(a *pb.Action) *pb.Action {
 		arg.Name = strings.TrimSpace(arg.GetName())
 	}
 	if seq := out.GetSequence(); seq != nil {
+		seq.ModelId = strings.TrimSpace(seq.GetModelId())
 		for i, t := range seq.GetPrePrompts() {
 			seq.PrePrompts[i] = strings.TrimSpace(t)
 		}
@@ -111,6 +112,18 @@ func validateSequence(seq *pb.ActionSequence, declared map[string]bool) error {
 	}
 	if seq.GetModel() == pb.ModelChoice_MODEL_CHOICE_UNSPECIFIED || swb.ModelChoiceLabel(seq.GetModel()) == "unknown" {
 		return fmt.Errorf("%w: model must be one of Opus, Fable, Sonnet, Haiku", ErrInvalid)
+	}
+	// SWI-34: a pinned model must be in the catalog (there is no free-text
+	// ID) and of the family the alias names, so a reader of the alias alone
+	// (an older daemon) runs a sane family.
+	if id := strings.TrimSpace(seq.GetModelId()); id != "" {
+		m, ok := swb.ModelByID(id)
+		if !ok {
+			return fmt.Errorf("%w: model_id %q is not in the catalog; model must be one of %s", ErrInvalid, id, strings.Join(swb.ModelDisplays(), ", "))
+		}
+		if m.Family != seq.GetModel() {
+			return fmt.Errorf("%w: model_id %q is %s, a %s model; model must be %s", ErrInvalid, id, m.Display, swb.ModelChoiceLabel(m.Family), swb.ModelChoiceLabel(m.Family))
+		}
 	}
 	if seq.GetEffort() == pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED || swb.EffortChoiceLabel(seq.GetEffort()) == "unknown" {
 		return fmt.Errorf("%w: effort must be one of low, medium, high, xhigh, max, auto", ErrInvalid)
@@ -182,9 +195,16 @@ func buildSteps(a *pb.Action, args map[string]string) ([]*pb.RunStep, error) {
 	}
 	var steps []*pb.RunStep
 	if seq.GetModelEnabled() {
-		m := swb.ModelChoiceLabel(seq.GetModel())
-		steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL,
-			Text: "/model " + strings.ToLower(m), Expect: m})
+		family := swb.ModelChoiceLabel(seq.GetModel())
+		text, expect := "/model "+strings.ToLower(family), family
+		// SWI-34: a pinned model is typed by its ID and read back by its
+		// display name (exactly that version). An ID outside this daemon's
+		// catalog (stored by a newer one) falls back to the family alias,
+		// which the step's text shows.
+		if m, ok := swb.ModelByID(seq.GetModelId()); ok {
+			text, expect = "/model "+m.ID, m.Display
+		}
+		steps = append(steps, &pb.RunStep{Role: pb.StepRole_STEP_ROLE_SETUP, Kind: pb.StepKind_STEP_KIND_MODEL, Text: text, Expect: expect})
 	}
 	if seq.GetEffortEnabled() {
 		e := swb.EffortChoiceLabel(seq.GetEffort())

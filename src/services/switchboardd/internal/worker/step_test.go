@@ -533,6 +533,9 @@ func TestStepBuiltinTextIsDerived(t *testing.T) {
 		{pb.StepKind_STEP_KIND_MODEL, "!rm -rf /", "Opus", "/model opus"},
 		{pb.StepKind_STEP_KIND_EFFORT, "/anything", " Medium ", "/effort medium"},
 		{pb.StepKind_STEP_KIND_CLEAR, "/model haiku", "", "/clear"},
+		// SWI-34: a pinned model's expect is its display name; its ID is typed.
+		{pb.StepKind_STEP_KIND_MODEL, "/model fable", "Fable 5.1", "/model claude-fable-5-1"},
+		{pb.StepKind_STEP_KIND_MODEL, "", " haiku 4.5 ", "/model claude-haiku-4-5"},
 	} {
 		_, _ = h.e.svc.DeliverStep(bg, stepReq(c.kind, c.text, c.expect, int32(i+1)))
 		if got := h.typer.typed[i]; got != c.want {
@@ -543,6 +546,8 @@ func TestStepBuiltinTextIsDerived(t *testing.T) {
 	n, idx := h.typer.count(), h.run(t).GetStepIndex()
 	for _, req := range []*pb.DeliverWorkerStepRequest{
 		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "gpt", 9),
+		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "Fable 9", 9),
+		stepReq(pb.StepKind_STEP_KIND_MODEL, "", "claude-fable-5-1", 9),
 		stepReq(pb.StepKind_STEP_KIND_EFFORT, "", "ultracode", 9),
 		stepReq(pb.StepKind_STEP_KIND_UNSPECIFIED, "x", "", 9),
 		custom("  ", 9),
@@ -571,6 +576,13 @@ func TestStepReadBack(t *testing.T) {
 		{"model not found", pb.StepKind_STEP_KIND_MODEL, "fable", empty,
 			withRows(empty, "❯ /model fable", "  ⎿  Model 'fable' not found"), pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "Model 'fable' not found"},
 		{"echo with no result", pb.StepKind_STEP_KIND_MODEL, "haiku", empty, withRows(empty, "❯ /model haiku"), pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "no confirmation"},
+		// SWI-34: a pinned model passes only on exactly its version.
+		{"pinned model set", pb.StepKind_STEP_KIND_MODEL, "Fable 5", empty, fixture(t, "model-set-id-fable-5"), pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL, ""},
+		{"pinned model, another version set", pb.StepKind_STEP_KIND_MODEL, "Fable 5", empty,
+			withRows(empty, "❯ /model claude-fable-5", "  ⎿  Set model to Fable 5.1 and saved as your default for new sessions"),
+			pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "Set model to Fable 5.1 and saved as your default for new sessions"},
+		{"pinned model not found", pb.StepKind_STEP_KIND_MODEL, "Fable 5", empty,
+			withRows(empty, "❯ /model claude-fable-5", "  ⎿  Model 'claude-fable-5' not found"), pb.StepOutcome_STEP_OUTCOME_NOT_ACCEPTED, "Model 'claude-fable-5' not found"},
 		{"effort set", pb.StepKind_STEP_KIND_EFFORT, "medium", empty, fixture(t, "effort-set-medium"), pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL, ""},
 		{"effort auto", pb.StepKind_STEP_KIND_EFFORT, "auto", empty, fixture(t, "effort-auto"), pb.StepOutcome_STEP_OUTCOME_AGENT_LOCAL, ""},
 		{"effort wrong level", pb.StepKind_STEP_KIND_EFFORT, "high", empty,
