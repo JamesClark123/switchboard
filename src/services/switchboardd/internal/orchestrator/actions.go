@@ -118,10 +118,12 @@ func validateSequence(seq *pb.ActionSequence, declared map[string]bool) error {
 	// daemon) runs a sane family; validatePin, at the write, holds it to the
 	// catalog.
 	if id := seq.GetModelId(); id != "" {
-		if m, ok := swb.ModelByID(id); ok && m.Family != seq.GetModel() {
-			return fmt.Errorf("%w: model_id %q is %s, a %s model; model must be %s", ErrInvalid, id, m.Display, swb.ModelChoiceLabel(m.Family), swb.ModelChoiceLabel(m.Family))
-		} else if !ok && swb.ModelDisplayFromID(id) == "" {
+		name := swb.ModelDisplayFromID(id)
+		if name == "" {
 			return fmt.Errorf("%w: model_id %q is not a model ID (claude-<family>-<major>[-<minor>], e.g. claude-fable-5-1)", ErrInvalid, id)
+		}
+		if family, _, _ := strings.Cut(name, " "); family != swb.ModelChoiceLabel(seq.GetModel()) {
+			return fmt.Errorf("%w: model_id %q is %s, a %s model; model must be %s", ErrInvalid, id, name, family, family)
 		}
 	}
 	if seq.GetEffort() == pb.EffortChoice_EFFORT_CHOICE_UNSPECIFIED || swb.EffortChoiceLabel(seq.GetEffort()) == "unknown" {
@@ -388,7 +390,7 @@ func (s *Service) PutAction(req *pb.PutActionRequest) (*pb.Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec, ch, _, err := rt.guarded(req.GetGuard(), putActionChange(a, timestamppb.New(s.clock.Now())))
+	rec, ch, _, err := rt.guarded(req.GetGuard(), putActionChange(a, timestamppb.New(s.clock.Now()), !req.GetSetsModelId()))
 	if err != nil {
 		return nil, err
 	}

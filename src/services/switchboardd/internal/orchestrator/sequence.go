@@ -885,24 +885,15 @@ func refusalReason(err error) string {
 	return strings.TrimPrefix(msg, worker.ErrPrecondition.Error()+": ")
 }
 
-// legacyModelRefusal is how a worker daemon before SWI-34 (v0.0.41 and
-// earlier, whose wording is frozen) refuses a Model step's expect outside the
-// four families; today's worker words its refusal differently (worker
-// builtinText), so the phrase tells the old daemon apart.
-const legacyModelRefusal = "is not one of opus, fable, sonnet, haiku"
-
 // invalidNote is an INVALID_ARGUMENT's reason as the step's note. A pinned
-// Model step (SWI-34) refused by a worker daemon that knows only the family
-// aliases (one before "model-id"; the orchestrator learns nothing of a worker
-// daemon's capabilities) names that cause, so the developer can update it or
-// skip the step.
+// Model step (SWI-34: its expect is a model name, "Fable 5") is typed by any
+// worker daemon from "model-id" on, so a refusal of one can only come from a
+// daemon before it, which knows the four families alone (the orchestrator
+// learns nothing of a worker daemon's capabilities): the note names that
+// cause, so the developer can update it or skip the step.
 func invalidNote(run *pb.Run, err error) string {
 	reason := refusalReason(err)
-	st := curStep(run)
-	if st == nil || st.GetKind() != pb.StepKind_STEP_KIND_MODEL || !strings.Contains(reason, legacyModelRefusal) {
-		return reason
-	}
-	if _, pinned := swb.ModelByDisplay(st.GetExpect()); pinned || swb.ModelIDFromDisplay(st.GetExpect()) != "" {
+	if st := curStep(run); st != nil && st.GetKind() == pb.StepKind_STEP_KIND_MODEL && swb.ModelIDFromDisplay(st.GetExpect()) != "" {
 		reason += " — the worker's daemon predates pinned models: update it, or skip the step"
 	}
 	return reason

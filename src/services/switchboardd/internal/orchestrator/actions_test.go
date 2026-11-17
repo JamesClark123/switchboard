@@ -257,6 +257,11 @@ func TestValidateSequence(t *testing.T) {
 		}, ""}, // validatePin decides, at the write
 		"pinned model by its name": {func(a *pb.Action) { a.Sequence.ModelId = "Opus 5" }, `model_id "Opus 5" is not a model ID`},
 		"pinned model malformed":   {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable" }, `model_id "claude-fable" is not a model ID`},
+		"pinned model, zero minor": {func(a *pb.Action) { a.Sequence.ModelId = "claude-opus-5-0" }, `model_id "claude-opus-5-0" is not a model ID`},
+		"pinned model outside the catalog, other family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable-9" },
+			`model_id "claude-fable-9" is Fable 9, a Fable model; model must be Fable`},
+		"pinned model of no family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-nova-1" },
+			`model_id "claude-nova-1" is Nova 1, a Nova model; model must be Nova`},
 		"pinned model, other family": {func(a *pb.Action) { a.Sequence.ModelId = "claude-fable-5" },
 			`model_id "claude-fable-5" is Fable 5, a Fable model; model must be Fable`},
 		"pinned model, unspecified family": {func(a *pb.Action) {
@@ -311,6 +316,7 @@ func TestValidatePin(t *testing.T) {
 		t.Fatalf("a new pin outside the catalog: %v", err)
 	}
 	catalog := swb.Models
+	t.Cleanup(func() { swb.Models = catalog })
 	swb.Models = append(slices.Clone(catalog), swb.Model{Display: "Fable 9", ID: "claude-fable-9", Family: pb.ModelChoice_MODEL_CHOICE_FABLE})
 	_, err := putAction(env.svc, o.GetId(), pinned)
 	swb.Models = catalog
@@ -330,10 +336,46 @@ func TestValidatePin(t *testing.T) {
 		t.Errorf("a catalog pin instead: %v", err)
 	}
 	rec, _ := env.reg.GetOrchestrator(o.GetId())
-	for _, a := range rec.GetActions() {
-		if a.GetName() == pinned.GetName() && (a.GetSequence().GetModelId() != "claude-fable-5" || a.GetDescription() != "edited elsewhere") {
-			t.Errorf("stored = %v", a)
+	if a := findAction(rec, pinned.GetName()); a.GetSequence().GetModelId() != "claude-fable-5" || a.GetDescription() != "edited elsewhere" {
+		t.Errorf("stored = %v", a)
+	}
+}
+
+// A client from before SWI-34 (PutActionRequest.sets_model_id unset) sends a
+// sequence with no model_id: a stored pin of the family it sends is kept; a
+// change of family drops it, as its choice; a client that edits pins clears
+// it by sending none.
+func TestPutActionOldClientKeepsPin(t *testing.T) {
+	env, _, o, _ := dispatchEnv(t, 1, false)
+	pinned := reviewPR()
+	pinned.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-5", EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true}
+	if _, err := putAction(env.svc, o.GetId(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	old := func(a *pb.Action) *pb.Action {
+		t.Helper()
+		saved, err := putActionAs(env.svc, o.GetId(), a, false)
+		if err != nil {
+			t.Fatal(err)
 		}
+		return saved
+	}
+	edited := proto.Clone(pinned).(*pb.Action)
+	edited.Description, edited.Sequence.ModelId = "edited by an old client", ""
+	if got := old(edited); got.GetSequence().GetModelId() != "claude-fable-5" || got.GetDescription() != "edited by an old client" {
+		t.Errorf("old client, same family = %v", got)
+	}
+	edited.Sequence.Model = pb.ModelChoice_MODEL_CHOICE_OPUS
+	if got := old(edited); got.GetSequence().GetModelId() != "" || got.GetSequence().GetModel() != pb.ModelChoice_MODEL_CHOICE_OPUS {
+		t.Errorf("old client, another family = %v", got)
+	}
+	if _, err := putAction(env.svc, o.GetId(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	unpinned := proto.Clone(pinned).(*pb.Action)
+	unpinned.Sequence.ModelId = ""
+	if got, err := putAction(env.svc, o.GetId(), unpinned); err != nil || got.GetSequence().GetModelId() != "" {
+		t.Errorf("a pin-aware client clears the pin: %v, %v", got, err)
 	}
 }
 

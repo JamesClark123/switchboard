@@ -236,8 +236,12 @@ func (m Model) actionForm(spec *formSpec, v *actionFormVals) *huh.Form {
 		if !v.modelID {
 			modelDesc = "typed as /model before each run; off skips it · pinned versions need a newer daemon (update with u)"
 		}
+		model := huh.NewSelect[string]().Key("model").Title("Model").Description(modelDesc).Options(modelOptions(v.modelID, v.modelKept)...).Value(&v.model)
+		if v.modelID {
+			model.Height(modelSelectHeight)
+		}
 		last = append(last,
-			huh.NewSelect[string]().Key("model").Title("Model").Description(modelDesc).Options(modelOptions(v.modelID, v.modelKept)...).Height(modelSelectHeight).Value(&v.model),
+			model,
 			huh.NewSelect[string]().Key("effort").Title("Effort").Description("typed as /effort before each run; off skips it").Options(stringOptions(effortOptions)...).Value(&v.effort),
 			huh.NewConfirm().Key("clear").Title("Clear after run").Description("/clear once the run closes, so the next run starts fresh").Value(&v.clearAfter),
 			spec.text(&v.pre, "Pre-prompts").Key("pre").Lines(4).Description("one prompt per line, sent in order before the action prompt; a prompt can't span lines"),
@@ -1208,7 +1212,7 @@ func (m Model) sendOrchOpForm(s orchSurface) (tea.Model, tea.Cmd) {
 		if a.GetType() == pb.ActionType_ACTION_TYPE_PROMPT && len(a.GetLaneIds()) == 0 {
 			// Un-laned: the open-lane guard applies (FR-308a).
 			w.check = func(ctx context.Context) (*pb.LaneChangeImpact, error) {
-				return od.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: &pb.PutActionRequest{Action: a, SetsLanes: true}}})
+				return od.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: &pb.PutActionRequest{Action: a, SetsLanes: true, SetsModelId: true}}})
 			}
 		}
 		return m, laneWriteCmd(w, nil, true)

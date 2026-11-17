@@ -496,7 +496,10 @@ func onRosterEntry(o *pb.Orchestrator, id string) *pb.Worker {
 // --- actions (US1/US5) ---
 
 // putActionChange upserts an action whose lane ids must all exist (FR-316a).
-func putActionChange(a *pb.Action, now *timestamppb.Timestamp) changeFn {
+// keepsPin: the client does not edit pinned models (PutActionRequest
+// .sets_model_id unset, SWI-34), so a stored pin of the same family survives
+// its save.
+func putActionChange(a *pb.Action, now *timestamppb.Timestamp, keepsPin bool) changeFn {
 	return func(o *pb.Orchestrator, _ []*pb.Run) (laneChange, error) {
 		ch := laneChange{briefing: true, savesUnlaned: a.GetType() == pb.ActionType_ACTION_TYPE_PROMPT && len(a.GetLaneIds()) == 0}
 		if err := checkLanesExist(o, a.GetLaneIds()); err != nil {
@@ -510,6 +513,13 @@ func putActionChange(a *pb.Action, now *timestamppb.Timestamp) changeFn {
 				// the defaults.
 				if saved.GetSequence() == nil && ex.GetSequence() != nil {
 					saved.Sequence = proto.Clone(ex.GetSequence()).(*pb.ActionSequence)
+				}
+				// A client from before SWI-34 sends no model_id: a stored pin of
+				// the family it sends is kept rather than dropped (a change of
+				// family is its choice).
+				if seq, stored := saved.GetSequence(), ex.GetSequence(); keepsPin && seq != nil && seq.GetModelId() == "" &&
+					stored.GetModelId() != "" && seq.GetModel() == stored.GetModel() {
+					seq.ModelId = stored.GetModelId()
 				}
 				if err := validatePin(saved.GetSequence(), ex.GetSequence().GetModelId()); err != nil {
 					return ch, err
@@ -601,7 +611,7 @@ func (s *Service) CheckLaneChange(req *pb.CheckLaneChangeRequest) (*pb.LaneChang
 		if err != nil {
 			return nil, err
 		}
-		fn = putActionChange(a, timestamppb.New(s.clock.Now()))
+		fn = putActionChange(a, timestamppb.New(s.clock.Now()), !c.PutAction.GetSetsModelId())
 	case *pb.CheckLaneChangeRequest_DeleteLane:
 		if err := nested(c.DeleteLane.GetOrchestratorId()); err != nil {
 			return nil, err

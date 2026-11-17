@@ -98,8 +98,9 @@ func ModelIDFromDisplay(name string) string {
 
 // ModelDisplayFromID is the inverse of ModelIDFromDisplay: the "<Family>
 // <major>[.<minor>]" name a well-formed ID (claude-<letters>-<digits>[-<digits>],
-// lower-case) reads back as, "" for anything else. It names a pinned model the
-// catalog does not know (one stored before the catalog changed).
+// lower-case, no zero minor) reads back as, "" for anything else, so the two
+// round-trip. It names a pinned model the catalog does not know (one stored
+// before the catalog changed).
 func ModelDisplayFromID(id string) string {
 	rest, ok := strings.CutPrefix(id, "claude-")
 	if !ok {
@@ -113,6 +114,9 @@ func ModelDisplayFromID(id string) string {
 		if !digits(v) {
 			return ""
 		}
+	}
+	if len(parts) == 3 && strings.TrimLeft(parts[2], "0") == "" {
+		return "" // a .0 has no minor part: claude-fable-5 is Fable 5 (5.0)
 	}
 	name := strings.ToUpper(parts[0][:1]) + parts[0][1:] + " " + parts[1]
 	if len(parts) == 3 {

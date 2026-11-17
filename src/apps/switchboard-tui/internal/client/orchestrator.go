@@ -116,7 +116,7 @@ func (c *Conn) SetWorkerPaused(ctx context.Context, id, sandboxID string, paused
 // PutAction saves an action as a lanes-aware client (sets_lanes, SWI-18
 // FR-318a), with guard confirming the open-lane guard's list.
 func (c *Conn) PutAction(ctx context.Context, id string, a *pb.Action, guard *pb.LaneGuardConfirm) (*pb.Action, error) {
-	out, err := c.API().PutAction(ctx, &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, Guard: guard})
+	out, err := c.API().PutAction(ctx, &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, SetsModelId: true, Guard: guard})
 	return out, c.orchErr(err)
 }
 

@@ -2144,9 +2144,9 @@ func TestInvalidStepHalts(t *testing.T) {
 	}
 }
 
-// A pinned Model step (SWI-34) refused by a worker daemon that knows only the
-// family aliases halts naming that cause; other INVALID_ARGUMENT notes are the
-// worker's reason as given.
+// A pinned Model step (SWI-34) refused by a worker daemon (one that knows only
+// the family aliases) halts naming that cause; other INVALID_ARGUMENT notes
+// are the worker's reason as given.
 func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
 	pinned := reviewPR()
 	pinned.Sequence = &pb.ActionSequence{ModelEnabled: true, Model: pb.ModelChoice_MODEL_CHOICE_FABLE, ModelId: "claude-fable-5", EffortEnabled: true, Effort: pb.EffortChoice_EFFORT_CHOICE_MEDIUM, ClearEnabled: true}
@@ -2166,10 +2166,8 @@ func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
 		step *pb.RunStep
 		msg  string
 	}{
-		"alias step":               {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Opus"}, `model "bogus" is not one of opus, fable, sonnet, haiku`},
-		"today's daemon's refusal": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `model "Fable 5" is neither a family (opus, fable, sonnet, haiku) nor a model name (Fable 5.1)`},
-		"another kind":             {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_EFFORT, Expect: "Fable 5"}, `effort "Fable 5" is not one of low, medium`},
-		"another reason, pinned":   {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 5"}, `the step has no text`},
+		"alias step":   {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Opus"}, `model "bogus" is not one of opus, fable, sonnet, haiku`},
+		"another kind": {&pb.RunStep{Kind: pb.StepKind_STEP_KIND_EFFORT, Expect: "Fable 5"}, `effort "Fable 5" is not one of low, medium`},
 	} {
 		run := &pb.Run{Steps: []*pb.RunStep{c.step}}
 		if got := invalidNote(run, status.Error(codes.InvalidArgument, c.msg)); got != c.msg {
@@ -2179,8 +2177,9 @@ func TestInvalidPinnedModelStepNamesTheOldDaemon(t *testing.T) {
 	if got := invalidNote(&pb.Run{}, status.Error(codes.InvalidArgument, "x")); got != "x" {
 		t.Errorf("no step: %q", got)
 	}
+	// Whatever the wording: only a daemon before pins refuses one.
 	outside := &pb.Run{Steps: []*pb.RunStep{{Kind: pb.StepKind_STEP_KIND_MODEL, Expect: "Fable 9"}}}
-	if got := invalidNote(outside, status.Error(codes.InvalidArgument, `model "Fable 9" is not one of opus, fable, sonnet, haiku`)); !strings.HasSuffix(got, "predates pinned models: update it, or skip the step") {
+	if got := invalidNote(outside, status.Error(codes.InvalidArgument, `model "Fable 9" is unknown here`)); got != `model "Fable 9" is unknown here — the worker's daemon predates pinned models: update it, or skip the step` {
 		t.Errorf("a pin outside the catalog on an old daemon: %q", got)
 	}
 }

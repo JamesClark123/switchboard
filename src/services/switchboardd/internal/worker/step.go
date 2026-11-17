@@ -165,20 +165,15 @@ var (
 // for CUSTOM the text as is. ACTION_PROMPT is framed once the guard knows the
 // orchestrator's name. INVALID_ARGUMENT for an expect outside the fixed sets:
 // a MODEL expect is a family (`/model fable`) or a model's display name
-// (SWI-34, "Fable 5.1"), typed by its ID (`/model claude-fable-5-1`) from the
-// catalog or, for a name the catalog lacks, by the ID rule, so the command is
-// never more than `/model claude-<letters>-<digits>[-<digits>]`. (The refusal's
-// wording differs from a daemon's before SWI-34, which the orchestrator tells
-// apart: orchestrator.legacyModelRefusal.)
+// (SWI-34, "Fable 5.1"), typed by the ID the name derives (`/model
+// claude-fable-5-1`; the catalog's IDs are those, by its test), so the
+// command is never more than `/model claude-<letters>-<digits>[-<digits>]`.
 func builtinText(step *pb.RunStep) (string, error) {
 	expect := strings.ToLower(strings.TrimSpace(step.GetExpect()))
 	switch step.GetKind() {
 	case pb.StepKind_STEP_KIND_MODEL:
 		if modelFamilies[expect] {
 			return "/model " + expect, nil
-		}
-		if m, ok := swb.ModelByDisplay(expect); ok {
-			return "/model " + m.ID, nil
 		}
 		if id := swb.ModelIDFromDisplay(expect); id != "" {
 			return "/model " + id, nil
@@ -678,12 +673,9 @@ func confirmed(r readSpec, lines []termview.Line) (string, bool) {
 }
 
 // modelName is the name a MODEL step's expect, lower-cased, reads back as: a
-// model's display name (SWI-34; the catalog's, else the ID rule's), else the
-// family capitalised.
+// model's display name (SWI-34, through the ID rule), else the family
+// capitalised.
 func modelName(expect string) string {
-	if m, ok := swb.ModelByDisplay(expect); ok {
-		return m.Display
-	}
 	if id := swb.ModelIDFromDisplay(expect); id != "" {
 		return swb.ModelDisplayFromID(id)
 	}

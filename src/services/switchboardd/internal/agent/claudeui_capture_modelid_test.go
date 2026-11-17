@@ -149,7 +149,7 @@ func (c *capture) stable() {
 
 // pickerRows lists the "<Family> <version>" names on a picker's numbered rows.
 func pickerRows(screen string) []string {
-	re := regexp.MustCompile(`^\s*(?:❯\s*)?\d+\.\s+(Opus|Fable|Sonnet|Haiku) (\d+(?:\.\d+)?)\s`)
+	re := regexp.MustCompile(`^\s*(?:❯\s*)?\d+\.\s+([A-Z][a-z]+) (\d+(?:\.\d+)?)\s`)
 	var out []string
 	for _, row := range strings.Split(screen, "\n") {
 		if m := re.FindStringSubmatch(row); m != nil && !slices.Contains(out, m[1]+" "+m[2]) {

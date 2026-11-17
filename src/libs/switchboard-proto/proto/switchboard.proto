@@ -1907,6 +1907,9 @@ message PutActionRequest {
   Action action = 2;
   bool sets_lanes = 3;                   // FR-318a: a lanes-aware client always sets it
   LaneGuardConfirm guard = 4;            // FR-308a
+  // SWI-34: a client that edits ActionSequence.model_id always sets it; one
+  // that does not (before SWI-34) keeps a stored pin of the same family.
+  bool sets_model_id = 5;
 }
 message DeleteActionRequest { string orchestrator_id = 1; string name = 2; }
 message DeleteActionResponse { repeated string disabled_events = 1; }

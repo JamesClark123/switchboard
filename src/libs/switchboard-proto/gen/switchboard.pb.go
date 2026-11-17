@@ -12319,8 +12319,11 @@ type PutActionRequest struct {
 	Action         *Action                `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
 	SetsLanes      bool                   `protobuf:"varint,3,opt,name=sets_lanes,json=setsLanes,proto3" json:"sets_lanes,omitempty"` // FR-318a: a lanes-aware client always sets it
 	Guard          *LaneGuardConfirm      `protobuf:"bytes,4,opt,name=guard,proto3" json:"guard,omitempty"`                           // FR-308a
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// SWI-34: a client that edits ActionSequence.model_id always sets it; one
+	// that does not (before SWI-34) keeps a stored pin of the same family.
+	SetsModelId   bool `protobuf:"varint,5,opt,name=sets_model_id,json=setsModelId,proto3" json:"sets_model_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PutActionRequest) Reset() {
@@ -12379,6 +12382,13 @@ func (x *PutActionRequest) GetGuard() *LaneGuardConfirm {
 		return x.Guard
 	}
 	return nil
+}
+
+func (x *PutActionRequest) GetSetsModelId() bool {
+	if x != nil {
+		return x.SetsModelId
+	}
+	return false
 }
 
 type DeleteActionRequest struct {
@@ -16075,13 +16085,14 @@ const file_switchboard_proto_rawDesc = "" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x02 \x01(\tR\tsandboxId\x12\x16\n" +
-	"\x06paused\x18\x03 \x01(\bR\x06paused\"\xc2\x01\n" +
+	"\x06paused\x18\x03 \x01(\bR\x06paused\"\xe6\x01\n" +
 	"\x10PutActionRequest\x12'\n" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12.\n" +
 	"\x06action\x18\x02 \x01(\v2\x16.switchboard.v1.ActionR\x06action\x12\x1d\n" +
 	"\n" +
 	"sets_lanes\x18\x03 \x01(\bR\tsetsLanes\x126\n" +
-	"\x05guard\x18\x04 \x01(\v2 .switchboard.v1.LaneGuardConfirmR\x05guard\"R\n" +
+	"\x05guard\x18\x04 \x01(\v2 .switchboard.v1.LaneGuardConfirmR\x05guard\x12\"\n" +
+	"\rsets_model_id\x18\x05 \x01(\bR\vsetsModelId\"R\n" +
 	"\x13DeleteActionRequest\x12'\n" +
 	"\x0forchestrator_id\x18\x01 \x01(\tR\x0eorchestratorId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"?\n" +

@@ -63,10 +63,16 @@ func TestModelDisplayFromID(t *testing.T) {
 		"claude-fab le-5":    "",
 		"claude--5":          "",
 		"claude-fable-5.1":   "",
+		"claude-fable-5-0":   "",
+		"claude-fable-5-00":  "",
+		"claude-fable-5-05":  "Fable 5.05",
 	}
 	for id, want := range cases {
 		if got := ModelDisplayFromID(id); got != want {
 			t.Errorf("ModelDisplayFromID(%q) = %q, want %q", id, got, want)
+		}
+		if want != "" && ModelIDFromDisplay(want) != id {
+			t.Errorf("ModelIDFromDisplay(%q) = %q, want %q back", want, ModelIDFromDisplay(want), id)
 		}
 	}
 }

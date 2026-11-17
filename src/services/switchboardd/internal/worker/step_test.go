@@ -558,10 +558,6 @@ func TestStepBuiltinTextIsDerived(t *testing.T) {
 		if !errors.Is(err, ErrInvalid) {
 			t.Errorf("%v %q = %v, want ErrInvalid", req.GetStep().GetKind(), req.GetStep().GetExpect(), err)
 		}
-		// The orchestrator tells a pre-SWI-34 daemon's refusal by its wording.
-		if err != nil && strings.Contains(err.Error(), "is not one of opus, fable, sonnet, haiku") {
-			t.Errorf("%q reads as an older daemon's refusal", err)
-		}
 	}
 	if h.typer.count() != n || h.run(t).GetStepIndex() != idx {
 		t.Error("an invalid step records and types nothing")

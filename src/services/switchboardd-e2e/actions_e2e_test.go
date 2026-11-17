@@ -12,6 +12,7 @@ import (
 	pb "github.com/jamesclark123/switchboard/libs/switchboard-proto/gen"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // actionsHookAddr is this suite's hook listener: apart from the TUI suite's
@@ -143,6 +144,12 @@ func TestActionSequenceE2E(t *testing.T) {
 			t.Errorf("pinned round-trip = %v", a.GetSequence())
 		}
 	}
+	// A client from before SWI-34 (no sets_model_id) keeps a stored pin.
+	oldClient := proto.Clone(pinned).(*pb.Action)
+	oldClient.Description, oldClient.Sequence.ModelId = "edited by an old client", ""
+	if saved, err := putActionAs(ctx, c, o.GetId(), oldClient, false); err != nil || saved.GetSequence().GetModelId() != "claude-fable-5" {
+		t.Errorf("an old client's edit keeps the pin: %v, %v", saved, err)
+	}
 	pinnedRun, err := c.CallAction(ctx, &pb.CallActionRequest{OrchestratorId: o.GetId(), Action: "pinned", Arguments: map[string]string{"pr": "7", "repo": "acme/web"}})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +193,13 @@ func TestActionSequenceE2E(t *testing.T) {
 // putAction saves an action as a lanes-aware client does (SWI-18): the
 // open-lane guard's current list is fetched and confirmed.
 func putAction(ctx context.Context, c pb.SwitchboardClient, id string, a *pb.Action) (*pb.Action, error) {
-	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true}
+	return putActionAs(ctx, c, id, a, true)
+}
+
+// putActionAs is putAction as a client that edits pinned models (setsModelID,
+// SWI-34) or one from before them.
+func putActionAs(ctx context.Context, c pb.SwitchboardClient, id string, a *pb.Action, setsModelID bool) (*pb.Action, error) {
+	req := &pb.PutActionRequest{OrchestratorId: id, Action: a, SetsLanes: true, SetsModelId: setsModelID}
 	if imp, err := c.CheckLaneChange(ctx, &pb.CheckLaneChangeRequest{OrchestratorId: id, Change: &pb.CheckLaneChangeRequest_PutAction{PutAction: req}}); err == nil {
 		req.Guard = &pb.LaneGuardConfirm{UnlanedActions: imp.GetUnlanedActions(), UnlanedRuns: imp.GetUnlanedRuns()}
 	}
